@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) void {
     const wgpu_dep = b.dependency("wgpu-native", .{});
 
     const ui_mod = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("src/ui_main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{

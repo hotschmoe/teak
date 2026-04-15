@@ -1,23 +1,38 @@
-//! By convention, root.zig is the root source file when making a library.
-const std = @import("std");
+//! Teak: TEA + Command Buffer UI Framework for Zig.
+//! Public library root — re-exports framework types.
 
-pub fn bufferedPrint() !void {
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
+pub const cmd = @import("cmd.zig");
+pub const model = @import("model.zig");
+pub const layout = @import("layout.zig");
+pub const hit_test = @import("hit_test.zig");
+pub const render = @import("render.zig");
+pub const transient = @import("transient.zig");
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+pub const Cmd = cmd.Cmd;
+pub const CmdBuffer = cmd.CmdBuffer;
+pub const GroupStyle = cmd.GroupStyle;
+pub const ButtonCmd = cmd.ButtonCmd;
+pub const ButtonStyle = cmd.ButtonStyle;
+pub const TextCmd = cmd.TextCmd;
+pub const Direction = cmd.Direction;
 
-    try stdout.flush(); // Don't forget to flush!
-}
+pub const Model = model.Model;
+pub const Msg = model.Msg;
+pub const update = model.update;
+pub const view = model.view;
 
-pub fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
+pub const Rect = layout.Rect;
+pub const LayoutEngine = layout.LayoutEngine;
 
-test "basic add functionality" {
-    try std.testing.expect(add(3, 7) == 10);
+pub const hitTest = hit_test.hitTest;
+pub const hoverTest = hit_test.hoverTest;
+
+pub const Vertex = render.Vertex;
+pub const emitQuad = render.emitQuad;
+pub const buildVertices = render.buildVertices;
+
+pub const TransientState = transient.TransientState;
+
+test {
+    @import("std").testing.refAllDecls(@This());
 }
