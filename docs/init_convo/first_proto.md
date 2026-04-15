@@ -298,7 +298,7 @@ Verify these numbers by hand. If they're wrong, fix the layout before touching r
 
 ## Phase 4: Render Pass (wgpu)
 
-This is where you bring zilmaril experience. The render pass takes `[]Cmd` and `[]Rect` and emits wgpu draw calls.
+The render pass takes `[]Cmd` and `[]Rect` and emits wgpu draw calls.
 
 ### The Minimal Renderer
 
