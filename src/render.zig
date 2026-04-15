@@ -1,8 +1,8 @@
 const std = @import("std");
-const cmd_mod = @import("cmd.zig");
-const Cmd = cmd_mod.Cmd;
-const layout_mod = @import("layout.zig");
-const Rect = layout_mod.Rect;
+const cmd = @import("cmd.zig");
+const Cmd = cmd.Cmd;
+const layout = @import("layout.zig");
+const Rect = layout.Rect;
 const TransientState = @import("transient.zig").TransientState;
 
 // ── Vertex ─────────────────────────────────────────────────────────
@@ -50,17 +50,15 @@ pub fn buildVertices(
 ) void {
     verts.clearRetainingCapacity();
 
-    for (cmds, rects, 0..) |cmd, rect, i| {
-        switch (cmd) {
+    for (cmds, rects, 0..) |c, rect, i| {
+        switch (c) {
             .text => {
                 // Placeholder: text rendered as a muted rectangle
                 emitQuad(verts, alloc, rect, .{ 0.15, 0.15, 0.2, 1.0 });
             },
             .button => |btn| {
-                const bg = if (transient.hover_index) |hi|
-                    (if (hi == i) btn.style.hover_bg else btn.style.bg)
-                else
-                    btn.style.bg;
+                const hovered = if (transient.hover_index) |hi| hi == i else false;
+                const bg = if (hovered) btn.style.hover_bg else btn.style.bg;
                 emitQuad(verts, alloc, rect, bg);
             },
             .push_group, .pop_group => {},
@@ -74,14 +72,14 @@ const model = @import("model.zig");
 
 test "buildVertices produces correct quad count" {
     const testing = std.testing;
-    var cb = cmd_mod.CmdBuffer.init(testing.allocator);
+    var cb = cmd.CmdBuffer.init(testing.allocator);
     defer cb.deinit();
 
     model.view(.{}, &cb);
     const cmds = cb.cmds.items;
 
     var rects_buf: [32]Rect = undefined;
-    layout_mod.LayoutEngine.doLayout(rects_buf[0..cmds.len], cmds, 400, 300);
+    layout.LayoutEngine.doLayout(rects_buf[0..cmds.len], cmds, 400, 300);
 
     var verts: std.ArrayList(Vertex) = .empty;
     defer verts.deinit(testing.allocator);
@@ -94,14 +92,14 @@ test "buildVertices produces correct quad count" {
 
 test "hover changes button color" {
     const testing = std.testing;
-    var cb = cmd_mod.CmdBuffer.init(testing.allocator);
+    var cb = cmd.CmdBuffer.init(testing.allocator);
     defer cb.deinit();
 
     model.view(.{}, &cb);
     const cmds = cb.cmds.items;
 
     var rects_buf: [32]Rect = undefined;
-    layout_mod.LayoutEngine.doLayout(rects_buf[0..cmds.len], cmds, 400, 300);
+    layout.LayoutEngine.doLayout(rects_buf[0..cmds.len], cmds, 400, 300);
 
     // Build without hover
     var verts_no_hover: std.ArrayList(Vertex) = .empty;

@@ -82,14 +82,20 @@ var g_width: u32 = 800;
 var g_height: u32 = 600;
 var g_resized: bool = true;
 
-fn loword(lp: LPARAM) i16 {
-    const unsigned: usize = @bitCast(lp);
-    return @bitCast(@as(u16, @truncate(unsigned)));
+fn loword(lp: LPARAM) u16 {
+    return @truncate(@as(usize, @bitCast(lp)));
 }
 
-fn hiword(lp: LPARAM) i16 {
-    const unsigned: usize = @bitCast(lp);
-    return @bitCast(@as(u16, @truncate(unsigned >> 16)));
+fn hiword(lp: LPARAM) u16 {
+    return @truncate(@as(usize, @bitCast(lp)) >> 16);
+}
+
+fn lowordSigned(lp: LPARAM) i16 {
+    return @bitCast(loword(lp));
+}
+
+fn hiwordSigned(lp: LPARAM) i16 {
+    return @bitCast(hiword(lp));
 }
 
 fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
@@ -100,8 +106,8 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             return 0;
         },
         WM_SIZE => {
-            const w: u32 = @intCast(@as(u16, @truncate(@as(usize, @bitCast(lp)))));
-            const h: u32 = @intCast(@as(u16, @truncate(@as(usize, @bitCast(lp)) >> 16)));
+            const w: u32 = loword(lp);
+            const h: u32 = hiword(lp);
             if (w > 0 and h > 0) {
                 g_width = w;
                 g_height = h;
@@ -110,13 +116,13 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             return 0;
         },
         WM_MOUSEMOVE => {
-            g_mouse_x = @floatFromInt(loword(lp));
-            g_mouse_y = @floatFromInt(hiword(lp));
+            g_mouse_x = @floatFromInt(lowordSigned(lp));
+            g_mouse_y = @floatFromInt(hiwordSigned(lp));
             return 0;
         },
         WM_LBUTTONDOWN => {
-            g_mouse_x = @floatFromInt(loword(lp));
-            g_mouse_y = @floatFromInt(hiword(lp));
+            g_mouse_x = @floatFromInt(lowordSigned(lp));
+            g_mouse_y = @floatFromInt(hiwordSigned(lp));
             g_clicked = true;
             return 0;
         },
@@ -130,10 +136,6 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
 
 fn wgpuStr(s: []const u8) c.WGPUStringView {
     return .{ .data = s.ptr, .length = s.len };
-}
-
-fn wgpuStrEmpty() c.WGPUStringView {
-    return .{ .data = null, .length = 0 };
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -179,7 +181,6 @@ pub fn main() !void {
     // ── wgpu Instance ──────────────────────────────────────────────
 
     var instance_desc = std.mem.zeroes(c.WGPUInstanceDescriptor);
-    _ = &instance_desc;
     const instance = c.wgpuCreateInstance(&instance_desc) orelse @panic("wgpuCreateInstance failed");
 
     // ── Surface ────────────────────────────────────────────────────

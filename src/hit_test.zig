@@ -12,6 +12,25 @@ pub const HitResult = struct {
     msg: Msg,
 };
 
+fn rectContains(r: Rect, px: f32, py: f32) bool {
+    return px >= r.x and px <= r.x + r.w and
+        py >= r.y and py <= r.y + r.h;
+}
+
+/// Walk backwards through cmds/rects (painter's order for z-ordering).
+/// Returns the first button index whose rect contains the point, or null.
+fn findButtonAt(cmds: []const Cmd, rects: []const Rect, mx: f32, my: f32) ?usize {
+    var i: usize = cmds.len;
+    while (i > 0) {
+        i -= 1;
+        switch (cmds[i]) {
+            .button => if (rectContains(rects[i], mx, my)) return i,
+            else => {},
+        }
+    }
+    return null;
+}
+
 /// Walk backwards through cmds/rects (painter's order for z-ordering).
 /// Returns the Msg embedded in the first button whose rect contains the point.
 pub fn hitTest(
@@ -20,48 +39,19 @@ pub fn hitTest(
     mouse_x: f32,
     mouse_y: f32,
 ) ?HitResult {
-    var i: usize = cmds.len;
-    while (i > 0) {
-        i -= 1;
-        switch (cmds[i]) {
-            .button => |btn| {
-                const r = rects[i];
-                if (mouse_x >= r.x and mouse_x <= r.x + r.w and
-                    mouse_y >= r.y and mouse_y <= r.y + r.h)
-                {
-                    return .{ .index = i, .msg = btn.msg };
-                }
-            },
-            else => {},
-        }
-    }
-    return null;
+    const i = findButtonAt(cmds, rects, mouse_x, mouse_y) orelse return null;
+    return .{ .index = i, .msg = cmds[i].button.msg };
 }
 
 /// Walk backwards, return the index of the first button whose rect contains the point.
-/// Used for hover detection — no Msg needed.
+/// Used for hover detection -- no Msg needed.
 pub fn hoverTest(
     cmds: []const Cmd,
     rects: []const Rect,
     mouse_x: f32,
     mouse_y: f32,
 ) ?usize {
-    var i: usize = cmds.len;
-    while (i > 0) {
-        i -= 1;
-        switch (cmds[i]) {
-            .button => {
-                const r = rects[i];
-                if (mouse_x >= r.x and mouse_x <= r.x + r.w and
-                    mouse_y >= r.y and mouse_y <= r.y + r.h)
-                {
-                    return i;
-                }
-            },
-            else => {},
-        }
-    }
-    return null;
+    return findButtonAt(cmds, rects, mouse_x, mouse_y);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

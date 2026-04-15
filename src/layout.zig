@@ -31,7 +31,7 @@ const CursorContext = struct {
     child_count: u32 = 0,
 };
 
-// Fixed-capacity stack (no BoundedArray in Zig 0.15.2)
+// Fixed-capacity stack for layout passes (no heap allocation)
 fn FixedStack(comptime T: type, comptime capacity: usize) type {
     return struct {
         buffer: [capacity]T = undefined,
