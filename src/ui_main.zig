@@ -535,7 +535,10 @@ pub fn main() !void {
         }
 
         // 3. Process input against the *previous* frame's layout.
-        const prev = current ^ 1;
+        // Before the swap, `current` indexes the buffer written last frame
+        // (the swap at step 4 will flip it to this frame's write slot).
+        // `prev` stays valid across the swap because it's a captured copy.
+        const prev = current;
         const prev_cmds = bufs[prev].cmds.items;
         const prev_rects = rects_store[prev][0..rects_len[prev]];
         const hover_under_mouse: ?usize = if (prev_cmds.len > 0)
@@ -603,8 +606,8 @@ pub fn main() !void {
         transient_state.frame_counter +%= 1;
 
         // 6. Diff against previous frame to decide whether to rebuild vertices.
-        // `prev` was captured before step 4 swapped buffers, so it still points
-        // at last frame's arena.
+        // `prev` was captured before step 4 swapped `current`, so bufs[prev]
+        // is last frame's data (while bufs[cur] is what we just built).
         const cmds_same = cmdsEqual(cur_cmds, bufs[prev].cmds.items);
         const rects_same = rectsEqual(rects_store[cur][0..cur_cmds.len], rects_store[prev][0..rects_len[prev]]);
         const transient_same = transientEqual(transient_state, prev_transient);
