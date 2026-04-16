@@ -8,16 +8,10 @@ const std = @import("std");
 //   pub fn update(model: *Model, msg: Msg) void;
 //   pub fn view(model: *const Model, cb: anytype, msgs: anytype) void;
 //
-// View takes *const Model (not Model by value) so that any slice the view
-// constructs into Model — e.g. a text buffer as []const u8 — remains valid
-// for the caller's arena lifetime. A by-value parameter would make such
-// slices dangle the moment view returned.
-//
-// `Components()` takes a tuple `.{ .name_a = A, .name_b = B }` plus an
-// optional AppLevel type carrying extra state, an extra Msg union, and
-// an update that runs on app-level Msg variants. At comptime it produces
-// a composed type exposing Model, Msg, update, view — with routing to
-// each component generated automatically.
+// view() takes *const Model (not Model by value) so slices the view constructs
+// into Model — e.g. a text buffer as []const u8 — stay valid for the caller's
+// arena lifetime. A by-value parameter would make such slices dangle the
+// moment view returned.
 
 pub fn validateComponent(comptime T: type) void {
     const name = @typeName(T);
@@ -75,7 +69,10 @@ fn MsgsStructFor(comptime Comp: type, comptime AppMsg: type) type {
 
 /// Fill in a MsgsStruct with pre-wrapped AppMsg values. Runs once per
 /// component per frame; the inline for unrolls to a handful of assignments.
-fn buildMsgs(
+/// Exposed publicly so apps can hand-call it when composing views outside
+/// the generated `view` (e.g. to override a single field with an app-level
+/// Msg while keeping the rest of the wiring automatic).
+pub fn buildMsgs(
     comptime Comp: type,
     comptime variant_name: []const u8,
     comptime AppMsg: type,

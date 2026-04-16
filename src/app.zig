@@ -10,17 +10,10 @@ const greeter = @import("greeter.zig");
 // main loop reads Model.focused and translates keys directly into
 // component Msgs (e.g. Msg{ .greeter = .{ .name_char = c } }). This keeps
 // AppLevel tiny and avoids duplicate enum plumbing.
-//
-// Layout:
-//   root: horizontal, padding 16, gap 16
-//     counter panel (intrinsic)
-//     greeter panel (flex=1, fills remaining space)
 
 pub const FocusField = enum { greeter };
 
 const AppLevel = struct {
-    /// Which widget currently holds keyboard focus. Visual focus ring is
-    /// mirrored into TransientState by the main loop.
     focused: ?FocusField = null,
 
     pub const Msg = union(enum) {
@@ -29,7 +22,7 @@ const AppLevel = struct {
     };
 
     // `@This().Msg` disambiguates against the file-scope `pub const Msg`
-    // alias below (both are in scope from inside this struct).
+    // alias below — both are in scope from inside this struct.
     pub fn update(model: anytype, msg: @This().Msg) void {
         switch (msg) {
             .focus_set => |f| model.focused = f,
@@ -50,23 +43,14 @@ pub const update = Composed.update;
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 16, .gap = 16 });
 
-    // Counter panel — intrinsic width.
-    counter.view(&m.counter, cb, .{
-        .increment = Msg{ .counter = .increment },
-        .decrement = Msg{ .counter = .decrement },
-        .reset = Msg{ .counter = .reset },
-    });
+    // Counter: payloadless variants wrap straight into AppMsg.
+    counter.view(&m.counter, cb, compose.buildMsgs(counter, "counter", Msg));
 
-    // Greeter panel wrapped in flex=1 so it claims remaining horizontal space.
-    // The text_input's focus_msg is an AppLevel focus_set, so clicking it
-    // routes straight to AppLevel.update (not Greeter.update).
+    // Greeter: wrapped in flex=1 so it claims remaining horizontal space.
+    // Its `focus` click routes to AppLevel (focus_set), not Greeter.update —
+    // so we hand-build this msgs struct instead of using buildMsgs.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .flex = 1 });
-    greeter.view(&m.greeter, cb, .{
-        .focus = Msg{ .focus_set = .greeter },
-        .name_backspace = Msg{ .greeter = .name_backspace },
-        .name_cursor_left = Msg{ .greeter = .name_cursor_left },
-        .name_cursor_right = Msg{ .greeter = .name_cursor_right },
-    });
+    greeter.view(&m.greeter, cb, .{ .focus = Msg{ .focus_set = .greeter } });
     cb.popGroup();
 
     cb.popGroup();

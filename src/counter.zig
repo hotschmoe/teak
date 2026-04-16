@@ -1,15 +1,9 @@
 const std = @import("std");
 
 // ── Counter Component ──────────────────────────────────────────────
-//
-// Matches the compose.zig component protocol:
-//   Model (default-initialisable), Msg (tagged union), update(*Model, Msg),
-//   view(Model, cb: anytype, msgs: anytype).
-//
-// The view receives a `msgs` struct pre-built by the composition layer with
-// one AppMsg-typed field per payloadless Msg variant. Components therefore
-// remain ignorant of the composed AppMsg shape — they write `msgs.increment`
-// and the emitted command carries a correctly-wrapped AppMsg.
+// Implements the compose.zig component protocol: Model, Msg, update, view.
+// The msgs parameter carries AppMsg-typed values pre-wrapped by the
+// composition layer so this component stays ignorant of the composed shape.
 
 pub const Model = struct {
     count: i32 = 0,

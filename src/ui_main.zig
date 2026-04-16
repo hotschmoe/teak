@@ -538,40 +538,32 @@ pub fn main() !void {
         const prev = current ^ 1;
         const prev_cmds = bufs[prev].cmds.items;
         const prev_rects = rects_store[prev][0..rects_len[prev]];
+        const hover_under_mouse: ?usize = if (prev_cmds.len > 0)
+            teak.hoverTest(prev_cmds, prev_rects, g_mouse_x, g_mouse_y)
+        else
+            null;
 
-        // 3a. Mouse-down → arm press_target.
+        // 3a. Mouse-down → arm press_target at the widget under the cursor.
         if (g_mouse_down_pending) {
             g_mouse_down_pending = false;
-            if (prev_cmds.len > 0) {
-                press_target = teak.hoverTest(prev_cmds, prev_rects, g_mouse_x, g_mouse_y);
-            }
+            press_target = hover_under_mouse;
         }
 
         // 3b. Mouse-up → fire click Msg if still over press_target.
         if (g_mouse_up_pending) {
             g_mouse_up_pending = false;
-            if (press_target) |pt| {
-                const cur_hit = if (prev_cmds.len > 0)
-                    teak.hoverTest(prev_cmds, prev_rects, g_mouse_x, g_mouse_y)
-                else
-                    null;
-                if (cur_hit != null and cur_hit.? == pt) {
-                    if (teak.hitTest(prev_cmds, prev_rects, g_mouse_x, g_mouse_y)) |hit| {
-                        App.update(&model, hit.msg);
-                        std.debug.print("click -> {s}\n", .{@tagName(hit.msg)});
-                    }
+            if (press_target != null and hover_under_mouse == press_target) {
+                if (teak.hitTest(prev_cmds, prev_rects, g_mouse_x, g_mouse_y)) |hit| {
+                    App.update(&model, hit.msg);
+                    std.debug.print("click -> {s}\n", .{@tagName(hit.msg)});
                 }
             }
             press_target = null;
         }
 
-        // 3c. Drag-off cancels press.
-        if (press_target) |pt| {
-            const cur_hit = if (prev_cmds.len > 0)
-                teak.hoverTest(prev_cmds, prev_rects, g_mouse_x, g_mouse_y)
-            else
-                null;
-            if (cur_hit == null or cur_hit.? != pt) press_target = null;
+        // 3c. Drag-off cancels press (no Msg emitted).
+        if (press_target != null and hover_under_mouse != press_target) {
+            press_target = null;
         }
 
         // 3d. Drain keyboard queue, route via Model.focused.
@@ -611,11 +603,10 @@ pub fn main() !void {
         transient_state.frame_counter +%= 1;
 
         // 6. Diff against previous frame to decide whether to rebuild vertices.
-        const prev_cur = current ^ 1;
-        const prev_cmds2 = bufs[prev_cur].cmds.items;
-        const prev_rects2 = rects_store[prev_cur][0..rects_len[prev_cur]];
-        const cmds_same = cmdsEqual(cur_cmds, prev_cmds2);
-        const rects_same = rectsEqual(rects_store[cur][0..cur_cmds.len], prev_rects2);
+        // `prev` was captured before step 4 swapped buffers, so it still points
+        // at last frame's arena.
+        const cmds_same = cmdsEqual(cur_cmds, bufs[prev].cmds.items);
+        const rects_same = rectsEqual(rects_store[cur][0..cur_cmds.len], rects_store[prev][0..rects_len[prev]]);
         const transient_same = transientEqual(transient_state, prev_transient);
 
         // Force rebuild every 30 frames while a text input is focused to
@@ -705,19 +696,16 @@ pub fn main() !void {
     std.debug.print("Teak UI exiting. (skipped {d} vertex rebuilds)\n", .{skip_count});
 }
 
-/// Map model.focused → cmd index of the corresponding text_input in the
-/// current frame. For proto 2 there is a single text_input, so a linear
-/// scan is fine.
+/// Map model.focused → cmd index of its text_input in the current frame.
+/// Proto 2 has exactly one text_input (greeter), so a linear scan suffices.
+/// When we add more focusable widgets, this will need a map from FocusField
+/// → predicate.
 fn focusIndex(cmds: []const teak.Cmd(App.Msg), focused: ?App.FocusField) ?usize {
-    const f = focused orelse return null;
-    switch (f) {
-        .greeter => {
-            for (cmds, 0..) |cc, i| {
-                if (cc == .text_input) return i;
-            }
-            return null;
-        },
+    if (focused == null) return null;
+    for (cmds, 0..) |cc, i| {
+        if (cc == .text_input) return i;
     }
+    return null;
 }
 
 // ════════════════════════════════════════════════════════════════════

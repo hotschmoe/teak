@@ -1,13 +1,9 @@
 const std = @import("std");
 
 // ── Greeter Component ──────────────────────────────────────────────
-//
-// Text input + live greeting. Demonstrates the spec's claim that widget
-// state is NOT hidden — the buffer, length, and cursor are explicit Model
-// fields. Undo/redo would replay Msg history; serialization captures full
-// state. The text_input command itself stores only a focus_msg; per-key
-// events come in as app-level Msgs (name_char/backspace/cursor_*), and the
-// app dispatcher routes them to this component's update based on focus.
+// Text input + live greeting. All widget state (buffer, length, cursor) is
+// explicit on Model — nothing hidden. The text_input command carries only a
+// focus_msg; per-key events arrive as component Msgs via the app dispatcher.
 
 pub const MAX_NAME: usize = 63;
 const BUFFER_LEN: usize = MAX_NAME + 1;
