@@ -1,113 +1,121 @@
-const cmd = @import("cmd.zig");
-const Cmd = cmd.Cmd;
+const std = @import("std");
+const cmd_mod = @import("cmd.zig");
 const layout = @import("layout.zig");
 const Rect = layout.Rect;
-const model = @import("model.zig");
-const Msg = model.Msg;
 
 // ── Hit-Test ───────────────────────────────────────────────────────
+//
+// Generic over the Cmd slice type. The Msg is recovered from the slice's
+// element type via its `MsgT` decl, so callers just pass `cb.cmds.items`.
 
-pub const HitResult = struct {
-    index: usize,
-    msg: Msg,
-};
+pub fn HitResult(comptime Msg: type) type {
+    return struct {
+        index: usize,
+        msg: Msg,
+    };
+}
+
+fn CmdMsg(comptime Slice: type) type {
+    return std.meta.Elem(Slice).MsgT;
+}
 
 fn rectContains(r: Rect, px: f32, py: f32) bool {
     return px >= r.x and px <= r.x + r.w and
         py >= r.y and py <= r.y + r.h;
 }
 
-/// Walk backwards through cmds/rects (painter's order for z-ordering).
-/// Returns the first button index whose rect contains the point, or null.
-fn findButtonAt(cmds: []const Cmd, rects: []const Rect, mx: f32, my: f32) ?usize {
+/// Walk cmds/rects backwards (painter's order for z-ordering). Returns
+/// the msg embedded in the first interactive widget whose rect contains
+/// the point, or null if nothing was hit.
+pub fn hitTest(
+    cmds: anytype,
+    rects: []const Rect,
+    mouse_x: f32,
+    mouse_y: f32,
+) ?HitResult(CmdMsg(@TypeOf(cmds))) {
     var i: usize = cmds.len;
     while (i > 0) {
         i -= 1;
+        const r = rects[i];
         switch (cmds[i]) {
-            .button => if (rectContains(rects[i], mx, my)) return i,
+            .button => |btn| if (rectContains(r, mouse_x, mouse_y)) {
+                return .{ .index = i, .msg = btn.msg };
+            },
+            .text_input => |ti| if (rectContains(r, mouse_x, mouse_y)) {
+                return .{ .index = i, .msg = ti.focus_msg };
+            },
             else => {},
         }
     }
     return null;
 }
 
-/// Walk backwards through cmds/rects (painter's order for z-ordering).
-/// Returns the Msg embedded in the first button whose rect contains the point.
-pub fn hitTest(
-    cmds: []const Cmd,
-    rects: []const Rect,
-    mouse_x: f32,
-    mouse_y: f32,
-) ?HitResult {
-    const i = findButtonAt(cmds, rects, mouse_x, mouse_y) orelse return null;
-    return .{ .index = i, .msg = cmds[i].button.msg };
-}
-
-/// Walk backwards, return the index of the first button whose rect contains the point.
-/// Used for hover detection -- no Msg needed.
+/// Walk backwards, return the index of the first interactive widget whose
+/// rect contains the point. No Msg produced. Used for hover and for
+/// mapping focus state from Model field → command index.
 pub fn hoverTest(
-    cmds: []const Cmd,
+    cmds: anytype,
     rects: []const Rect,
     mouse_x: f32,
     mouse_y: f32,
 ) ?usize {
-    return findButtonAt(cmds, rects, mouse_x, mouse_y);
+    var i: usize = cmds.len;
+    while (i > 0) {
+        i -= 1;
+        switch (cmds[i]) {
+            .button, .text_input => if (rectContains(rects[i], mouse_x, mouse_y)) return i,
+            else => {},
+        }
+    }
+    return null;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-const std = @import("std");
-const LayoutEngine = layout.LayoutEngine;
-const CmdBuffer = cmd.CmdBuffer;
-
-test "hit_test finds correct button" {
+test "hitTest finds button at point" {
     const testing = std.testing;
+    const Msg = union(enum) { inc, dec };
+    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
+
     var cb = CmdBuffer.init(testing.allocator);
     defer cb.deinit();
 
-    model.view(.{}, &cb);
-    const cmds = cb.cmds.items;
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0 });
+    cb.button(.inc, "+");
+    cb.button(.dec, "-");
+    cb.popGroup();
 
-    var rects: [32]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cmds.len], cmds, 400, 300);
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300);
 
-    // Click on "+" button (at 28,60 size 60x36)
-    const plus_hit = hitTest(cmds, rects[0..cmds.len], 50, 75);
-    try testing.expect(plus_hit != null);
-    try testing.expectEqual(Msg.increment, plus_hit.?.msg);
+    const hit_inc = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 30, 18);
+    try testing.expect(hit_inc != null);
+    try testing.expectEqual(Msg.inc, hit_inc.?.msg);
 
-    // Click on "-" button (at 96,60 size 60x36)
-    const minus_hit = hitTest(cmds, rects[0..cmds.len], 120, 75);
-    try testing.expect(minus_hit != null);
-    try testing.expectEqual(Msg.decrement, minus_hit.?.msg);
+    const hit_dec = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 90, 18);
+    try testing.expect(hit_dec != null);
+    try testing.expectEqual(Msg.dec, hit_dec.?.msg);
 
-    // Click on "Reset" button (at 20,116 size 66x36)
-    const reset_hit = hitTest(cmds, rects[0..cmds.len], 40, 130);
-    try testing.expect(reset_hit != null);
-    try testing.expectEqual(Msg.reset, reset_hit.?.msg);
-
-    // Click on empty space
-    const miss = hitTest(cmds, rects[0..cmds.len], 300, 250);
+    const miss = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 300, 250);
     try testing.expect(miss == null);
 }
 
-test "hover_test finds correct button index" {
+test "hitTest returns focus msg for text_input click" {
     const testing = std.testing;
+    const Msg = union(enum) { focus };
+    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
+
     var cb = CmdBuffer.init(testing.allocator);
     defer cb.deinit();
 
-    model.view(.{}, &cb);
-    const cmds = cb.cmds.items;
+    cb.pushGroup(.{ .direction = .vertical, .padding = 10, .gap = 0 });
+    cb.textInput(.focus, "", 0);
+    cb.popGroup();
 
-    var rects: [32]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cmds.len], cmds, 400, 300);
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300);
 
-    // Hover over "+" button
-    const hover = hoverTest(cmds, rects[0..cmds.len], 50, 75);
-    try testing.expect(hover != null);
-    try testing.expectEqual(@as(usize, 3), hover.?);
-
-    // Hover over empty space
-    const miss = hoverTest(cmds, rects[0..cmds.len], 300, 250);
-    try testing.expect(miss == null);
+    const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 100, 20);
+    try testing.expect(hit != null);
+    try testing.expectEqual(Msg.focus, hit.?.msg);
 }

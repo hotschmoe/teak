@@ -1,5 +1,6 @@
 const std = @import("std");
 const teak = @import("teak");
+const App = teak.App;
 
 const c = @cImport({
     @cDefine("WGPU_SHARED_LIBRARY", "1");
@@ -55,9 +56,16 @@ const CS_HREDRAW: UINT = 0x0002;
 const CS_VREDRAW: UINT = 0x0001;
 const WM_DESTROY: UINT = 0x0002;
 const WM_SIZE: UINT = 0x0005;
+const WM_CHAR: UINT = 0x0102;
+const WM_KEYDOWN: UINT = 0x0100;
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_LBUTTONDOWN: UINT = 0x0201;
+const WM_LBUTTONUP: UINT = 0x0202;
 const IDC_ARROW: LPCWSTR = @ptrFromInt(32512);
+
+const VK_BACK: WPARAM = 0x08;
+const VK_LEFT: WPARAM = 0x25;
+const VK_RIGHT: WPARAM = 0x27;
 
 extern "user32" fn RegisterClassExW(*const WNDCLASSEXW) callconv(WINAPI) u16;
 extern "user32" fn CreateWindowExW(DWORD, LPCWSTR, LPCWSTR, DWORD, c_int, c_int, c_int, c_int, ?HANDLE, ?HANDLE, ?HANDLE, ?*anyopaque) callconv(WINAPI) ?HANDLE;
@@ -71,31 +79,51 @@ extern "user32" fn LoadCursorW(?HANDLE, LPCWSTR) callconv(WINAPI) ?HANDLE;
 extern "kernel32" fn GetModuleHandleW(?LPCWSTR) callconv(WINAPI) ?HANDLE;
 
 // ════════════════════════════════════════════════════════════════════
-// Input State (written by WndProc, read by main loop)
+// Input State (written by WndProc, drained by main loop)
 // ════════════════════════════════════════════════════════════════════
 
 var g_mouse_x: f32 = 0;
 var g_mouse_y: f32 = 0;
-var g_clicked: bool = false;
 var g_running: bool = true;
 var g_width: u32 = 800;
 var g_height: u32 = 600;
 var g_resized: bool = true;
 
+// Edge events — set by wndProc, drained by main loop.
+var g_mouse_down_pending: bool = false;
+var g_mouse_up_pending: bool = false;
+
+var g_chars: [64]u8 = undefined;
+var g_chars_count: usize = 0;
+
+var g_keys: [32]App.SpecialKey = undefined;
+var g_keys_count: usize = 0;
+
 fn loword(lp: LPARAM) u16 {
     return @truncate(@as(usize, @bitCast(lp)));
 }
-
 fn hiword(lp: LPARAM) u16 {
     return @truncate(@as(usize, @bitCast(lp)) >> 16);
 }
-
 fn lowordSigned(lp: LPARAM) i16 {
     return @bitCast(loword(lp));
 }
-
 fn hiwordSigned(lp: LPARAM) i16 {
     return @bitCast(hiword(lp));
+}
+
+fn pushChar(ch: u8) void {
+    if (g_chars_count < g_chars.len) {
+        g_chars[g_chars_count] = ch;
+        g_chars_count += 1;
+    }
+}
+
+fn pushKey(k: App.SpecialKey) void {
+    if (g_keys_count < g_keys.len) {
+        g_keys[g_keys_count] = k;
+        g_keys_count += 1;
+    }
 }
 
 fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
@@ -123,11 +151,76 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
         WM_LBUTTONDOWN => {
             g_mouse_x = @floatFromInt(lowordSigned(lp));
             g_mouse_y = @floatFromInt(hiwordSigned(lp));
-            g_clicked = true;
+            g_mouse_down_pending = true;
+            return 0;
+        },
+        WM_LBUTTONUP => {
+            g_mouse_x = @floatFromInt(lowordSigned(lp));
+            g_mouse_y = @floatFromInt(hiwordSigned(lp));
+            g_mouse_up_pending = true;
+            return 0;
+        },
+        WM_CHAR => {
+            // WM_CHAR delivers a translated character. 0x08 is backspace —
+            // handle special keys via WM_KEYDOWN and ignore the control
+            // range from WM_CHAR to avoid dispatching \b as text.
+            if (wp >= 0x20 and wp < 0x7F) {
+                pushChar(@intCast(wp));
+            }
+            return 0;
+        },
+        WM_KEYDOWN => {
+            switch (wp) {
+                VK_BACK => pushKey(.backspace),
+                VK_LEFT => pushKey(.left),
+                VK_RIGHT => pushKey(.right),
+                else => {},
+            }
             return 0;
         },
         else => return DefWindowProcW(hwnd, msg, wp, lp),
     }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Frame Diff
+// ════════════════════════════════════════════════════════════════════
+
+fn cmdsEqual(a: []const teak.Cmd(App.Msg), b: []const teak.Cmd(App.Msg)) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ca, cb| {
+        if (std.meta.activeTag(ca) != std.meta.activeTag(cb)) return false;
+        switch (ca) {
+            .push_group => |ga| {
+                const gb = cb.push_group;
+                if (ga.direction != gb.direction or ga.padding != gb.padding or
+                    ga.gap != gb.gap or ga.flex != gb.flex) return false;
+            },
+            .pop_group => {},
+            .text => |ta| if (!std.mem.eql(u8, ta.content, cb.text.content)) return false,
+            .button => |ba| if (!std.mem.eql(u8, ba.label, cb.button.label)) return false,
+            .text_input => |tia| {
+                const tib = cb.text_input;
+                if (tia.cursor != tib.cursor) return false;
+                if (!std.mem.eql(u8, tia.content, tib.content)) return false;
+            },
+        }
+    }
+    return true;
+}
+
+fn rectsEqual(a: []const teak.Rect, b: []const teak.Rect) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ra, rb| {
+        if (ra.x != rb.x or ra.y != rb.y or ra.w != rb.w or ra.h != rb.h) return false;
+    }
+    return true;
+}
+
+fn transientEqual(a: teak.TransientState, b: teak.TransientState) bool {
+    return a.hover_index == b.hover_index and
+        a.press_index == b.press_index and
+        a.focus_index == b.focus_index;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -161,7 +254,7 @@ pub fn main() !void {
     };
     if (RegisterClassExW(&wc) == 0) @panic("RegisterClassExW failed");
 
-    const window_name = std.unicode.utf8ToUtf16LeStringLiteral("Teak Counter");
+    const window_name = std.unicode.utf8ToUtf16LeStringLiteral("Teak — Counter + Greeter");
     const hwnd = CreateWindowExW(
         0,
         class_name,
@@ -169,8 +262,8 @@ pub fn main() !void {
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        800,
-        600,
+        900,
+        500,
         null,
         null,
         hinstance,
@@ -195,7 +288,7 @@ pub fn main() !void {
     surface_desc.label = wgpuStr("teak-surface");
     const surface = c.wgpuInstanceCreateSurface(instance, &surface_desc) orelse @panic("wgpuInstanceCreateSurface failed");
 
-    // ── Adapter (synchronous via WaitAny) ──────────────────────────
+    // ── Adapter ────────────────────────────────────────────────────
 
     var adapter: c.WGPUAdapter = null;
 
@@ -210,11 +303,10 @@ pub fn main() !void {
     adapter_cb_info.userdata1 = @ptrCast(&adapter);
 
     _ = c.wgpuInstanceRequestAdapter(instance, &adapter_opts, adapter_cb_info);
-    // Poll until callback fires
     while (adapter == null) c.wgpuInstanceProcessEvents(instance);
     std.debug.print("Adapter acquired.\n", .{});
 
-    // ── Device (synchronous via WaitAny) ───────────────────────────
+    // ── Device ─────────────────────────────────────────────────────
 
     var device: c.WGPUDevice = null;
 
@@ -229,7 +321,6 @@ pub fn main() !void {
     device_cb_info.userdata1 = @ptrCast(&device);
 
     _ = c.wgpuAdapterRequestDevice(adapter, &device_desc, device_cb_info);
-    // Poll until callback fires
     while (device == null) c.wgpuInstanceProcessEvents(instance);
     std.debug.print("Device acquired.\n", .{});
 
@@ -278,7 +369,7 @@ pub fn main() !void {
     shader_desc.label = wgpuStr("quad-shader");
     const shader = c.wgpuDeviceCreateShaderModule(device, &shader_desc) orelse @panic("Shader creation failed");
 
-    // ── Bind Group Layout (one uniform buffer for screen_size) ─────
+    // ── Bind Group Layout ──────────────────────────────────────────
 
     var bgl_entry = std.mem.zeroes(c.WGPUBindGroupLayoutEntry);
     bgl_entry.binding = 0;
@@ -304,7 +395,6 @@ pub fn main() !void {
 
     const surf_format = c.WGPUTextureFormat_BGRA8Unorm;
 
-    // Vertex attributes: pos(2f), color(4f), uv(2f)
     const vert_attrs = [_]c.WGPUVertexAttribute{
         .{ .format = c.WGPUVertexFormat_Float32x2, .offset = 0, .shaderLocation = 0 },
         .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 8, .shaderLocation = 1 },
@@ -381,22 +471,36 @@ pub fn main() !void {
     const bind_group = c.wgpuDeviceCreateBindGroup(device, &bg_desc) orelse @panic("Bind group failed");
 
     // ════════════════════════════════════════════════════════════════
-    // Application State
+    // Application State — Double-buffered CmdBuffer + rects
     // ════════════════════════════════════════════════════════════════
 
-    var model = teak.Model{};
-    var cmd_buf = teak.CmdBuffer.init(gpa);
-    defer cmd_buf.deinit();
+    const MAX_RECTS: usize = 256;
+    const CmdBufT = teak.CmdBuffer(App.Msg);
+
+    var model: App.Model = .{};
+
+    var bufs: [2]CmdBufT = .{ CmdBufT.init(gpa), CmdBufT.init(gpa) };
+    defer for (&bufs) |*b| b.deinit();
+
+    var rects_store: [2][MAX_RECTS]teak.Rect = undefined;
+    var rects_len: [2]usize = .{ 0, 0 };
+    var current: u1 = 0;
 
     var verts: std.ArrayList(teak.Vertex) = .empty;
     defer verts.deinit(gpa);
 
-    var transient_state = teak.TransientState{};
-    var rects: [64]teak.Rect = undefined;
+    var transient_state: teak.TransientState = .{};
+    var prev_transient: teak.TransientState = .{};
 
-    // GPU vertex buffer — created when we know the size
+    // Mouse press tracking (proto: press_index is set on mousedown over a
+    // widget; mouseup fires the click Msg only if still over the same index;
+    // drag-off cancels the press without emitting a Msg).
+    var press_target: ?usize = null;
+
     var gpu_vert_buf: c.WGPUBuffer = null;
     var gpu_vert_buf_size: u64 = 0;
+
+    var skip_count: u64 = 0;
 
     // ════════════════════════════════════════════════════════════════
     // Main Loop
@@ -405,7 +509,7 @@ pub fn main() !void {
     std.debug.print("Teak UI running.\n", .{});
 
     while (g_running) {
-        // ── 1. Poll Win32 messages ─────────────────────────────────
+        // 1. Drain Win32 messages (fills g_chars/g_keys/mouse edge flags).
         var msg: MSG = undefined;
         while (PeekMessageW(&msg, null, 0, 0, PM_REMOVE) != 0) {
             _ = TranslateMessage(&msg);
@@ -413,7 +517,7 @@ pub fn main() !void {
         }
         if (!g_running) break;
 
-        // ── 2. Handle resize ───────────────────────────────────────
+        // 2. Handle resize (reconfigure surface + update uniform).
         if (g_resized) {
             g_resized = false;
             var surf_config = std.mem.zeroes(c.WGPUSurfaceConfiguration);
@@ -426,76 +530,136 @@ pub fn main() !void {
             surf_config.alphaMode = c.WGPUCompositeAlphaMode_Auto;
             c.wgpuSurfaceConfigure(surface, &surf_config);
 
-            // Update uniform buffer with new screen size
             const screen_size = [2]f32{ @floatFromInt(g_width), @floatFromInt(g_height) };
             c.wgpuQueueWriteBuffer(queue, uniform_buf, 0, &screen_size, @sizeOf([2]f32));
         }
 
-        // ── 3. Hit-test against LAST FRAME's data ─────────────────
-        const cmds_slice = cmd_buf.cmds.items;
-        if (g_clicked) {
-            g_clicked = false;
-            if (cmds_slice.len > 0) {
-                if (teak.hitTest(cmds_slice, rects[0..cmds_slice.len], g_mouse_x, g_mouse_y)) |hit| {
-                    teak.update(&model, hit.msg);
-                    std.debug.print("Click -> {s} -> count = {d}\n", .{ @tagName(hit.msg), model.count });
+        // 3. Process input against the *previous* frame's layout.
+        const prev = current ^ 1;
+        const prev_cmds = bufs[prev].cmds.items;
+        const prev_rects = rects_store[prev][0..rects_len[prev]];
+
+        // 3a. Mouse-down → arm press_target.
+        if (g_mouse_down_pending) {
+            g_mouse_down_pending = false;
+            if (prev_cmds.len > 0) {
+                press_target = teak.hoverTest(prev_cmds, prev_rects, g_mouse_x, g_mouse_y);
+            }
+        }
+
+        // 3b. Mouse-up → fire click Msg if still over press_target.
+        if (g_mouse_up_pending) {
+            g_mouse_up_pending = false;
+            if (press_target) |pt| {
+                const cur_hit = if (prev_cmds.len > 0)
+                    teak.hoverTest(prev_cmds, prev_rects, g_mouse_x, g_mouse_y)
+                else
+                    null;
+                if (cur_hit != null and cur_hit.? == pt) {
+                    if (teak.hitTest(prev_cmds, prev_rects, g_mouse_x, g_mouse_y)) |hit| {
+                        App.update(&model, hit.msg);
+                        std.debug.print("click -> {s}\n", .{@tagName(hit.msg)});
+                    }
                 }
             }
+            press_target = null;
         }
 
-        // ── 4. Update transient state (hover) ─────────────────────
-        if (cmds_slice.len > 0) {
-            transient_state.hover_index = teak.hoverTest(cmds_slice, rects[0..cmds_slice.len], g_mouse_x, g_mouse_y);
+        // 3c. Drag-off cancels press.
+        if (press_target) |pt| {
+            const cur_hit = if (prev_cmds.len > 0)
+                teak.hoverTest(prev_cmds, prev_rects, g_mouse_x, g_mouse_y)
+            else
+                null;
+            if (cur_hit == null or cur_hit.? != pt) press_target = null;
         }
+
+        // 3d. Drain keyboard queue, route via Model.focused.
+        for (g_chars[0..g_chars_count]) |ch| {
+            if (App.keyCharMsg(&model, ch)) |m| App.update(&model, m);
+        }
+        g_chars_count = 0;
+
+        for (g_keys[0..g_keys_count]) |k| {
+            if (App.keySpecialMsg(&model, k)) |m| App.update(&model, m);
+        }
+        g_keys_count = 0;
+
+        // 4. Build this frame into the other buffer.
+        current ^= 1;
+        const cur = current;
+        bufs[cur].reset();
+        App.view(&model, &bufs[cur]);
+
+        const cur_cmds = bufs[cur].cmds.items;
+        if (cur_cmds.len > MAX_RECTS) @panic("Too many commands for MAX_RECTS");
+
+        teak.LayoutEngine.doLayout(
+            rects_store[cur][0..cur_cmds.len],
+            cur_cmds,
+            @floatFromInt(g_width),
+            @floatFromInt(g_height),
+        );
+        rects_len[cur] = cur_cmds.len;
+
+        // 5. Update transient state (hover/press/focus) against THIS frame's layout.
+        transient_state.hover_index = teak.hoverTest(cur_cmds, rects_store[cur][0..cur_cmds.len], g_mouse_x, g_mouse_y);
+        transient_state.press_index = press_target;
+        transient_state.focus_index = focusIndex(cur_cmds, model.focused);
         transient_state.mouse_x = g_mouse_x;
         transient_state.mouse_y = g_mouse_y;
+        transient_state.frame_counter +%= 1;
 
-        // ── 5. Rebuild view ────────────────────────────────────────
-        cmd_buf.reset();
-        teak.view(model, &cmd_buf);
+        // 6. Diff against previous frame to decide whether to rebuild vertices.
+        const prev_cur = current ^ 1;
+        const prev_cmds2 = bufs[prev_cur].cmds.items;
+        const prev_rects2 = rects_store[prev_cur][0..rects_len[prev_cur]];
+        const cmds_same = cmdsEqual(cur_cmds, prev_cmds2);
+        const rects_same = rectsEqual(rects_store[cur][0..cur_cmds.len], prev_rects2);
+        const transient_same = transientEqual(transient_state, prev_transient);
 
-        // ── 6. Layout ──────────────────────────────────────────────
-        const cmds = cmd_buf.cmds.items;
-        if (cmds.len > 0) {
-            teak.LayoutEngine.doLayout(
-                rects[0..cmds.len],
-                cmds,
-                @floatFromInt(g_width),
-                @floatFromInt(g_height),
-            );
-        }
+        // Force rebuild every 30 frames while a text input is focused to
+        // drive the cursor blink. A real impl would notice blink phase
+        // explicitly; all-or-nothing is fine for the proto.
+        const blink_tick = transient_state.focus_index != null and
+            (transient_state.frame_counter % 30 == 0);
 
-        // ── 7. Build vertices ──────────────────────────────────────
-        teak.buildVertices(&verts, gpa, cmds, rects[0..cmds.len], transient_state);
+        const need_rebuild = !cmds_same or !rects_same or !transient_same or blink_tick;
 
-        // ── 8. Upload vertex data to GPU ───────────────────────────
-        const vert_data_size: u64 = @intCast(verts.items.len * @sizeOf(teak.Vertex));
-        if (vert_data_size > 0) {
-            // Recreate buffer if too small
-            if (gpu_vert_buf == null or vert_data_size > gpu_vert_buf_size) {
-                if (gpu_vert_buf) |buf| c.wgpuBufferRelease(buf);
-                gpu_vert_buf_size = @max(vert_data_size, 4096);
-                var vb_desc = std.mem.zeroes(c.WGPUBufferDescriptor);
-                vb_desc.label = wgpuStr("vertex-buf");
-                vb_desc.usage = c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst;
-                vb_desc.size = gpu_vert_buf_size;
-                gpu_vert_buf = c.wgpuDeviceCreateBuffer(device, &vb_desc);
+        if (need_rebuild) {
+            teak.buildVertices(&verts, gpa, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state);
+            const vert_data_size: u64 = @intCast(verts.items.len * @sizeOf(teak.Vertex));
+            if (vert_data_size > 0) {
+                if (gpu_vert_buf == null or vert_data_size > gpu_vert_buf_size) {
+                    if (gpu_vert_buf) |buf| c.wgpuBufferRelease(buf);
+                    gpu_vert_buf_size = @max(vert_data_size, 4096);
+                    var vb_desc = std.mem.zeroes(c.WGPUBufferDescriptor);
+                    vb_desc.label = wgpuStr("vertex-buf");
+                    vb_desc.usage = c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst;
+                    vb_desc.size = gpu_vert_buf_size;
+                    gpu_vert_buf = c.wgpuDeviceCreateBuffer(device, &vb_desc);
+                }
+                c.wgpuQueueWriteBuffer(queue, gpu_vert_buf, 0, verts.items.ptr, vert_data_size);
             }
-            c.wgpuQueueWriteBuffer(queue, gpu_vert_buf, 0, verts.items.ptr, vert_data_size);
+        } else {
+            skip_count += 1;
+            if (skip_count % 120 == 0) std.debug.print("diff: skipped vertex rebuild (total skipped = {d})\n", .{skip_count});
         }
 
-        // ── 9. Get surface texture ─────────────────────────────────
+        prev_transient = transient_state;
+
+        // 7. Acquire surface texture.
         var surface_texture: c.WGPUSurfaceTexture = undefined;
         c.wgpuSurfaceGetCurrentTexture(surface, &surface_texture);
         if (surface_texture.status != c.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal and
             surface_texture.status != c.WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal)
         {
-            continue; // Skip this frame
+            continue;
         }
 
         const texture_view = c.wgpuTextureCreateView(surface_texture.texture, null);
 
-        // ── 10. Encode render pass ─────────────────────────────────
+        // 8. Encode render pass.
         var enc_desc = std.mem.zeroes(c.WGPUCommandEncoderDescriptor);
         enc_desc.label = wgpuStr("frame-encoder");
         const encoder = c.wgpuDeviceCreateCommandEncoder(device, &enc_desc);
@@ -505,7 +669,7 @@ pub fn main() !void {
         color_attachment.loadOp = c.WGPULoadOp_Clear;
         color_attachment.storeOp = c.WGPUStoreOp_Store;
         color_attachment.clearValue = .{ .r = 0.08, .g = 0.08, .b = 0.1, .a = 1.0 };
-        color_attachment.depthSlice = 0xFFFFFFFF; // WGPU_DEPTH_SLICE_UNDEFINED
+        color_attachment.depthSlice = 0xFFFFFFFF;
 
         var rp_desc = std.mem.zeroes(c.WGPURenderPassDescriptor);
         rp_desc.label = wgpuStr("render-pass");
@@ -515,16 +679,17 @@ pub fn main() !void {
         const pass = c.wgpuCommandEncoderBeginRenderPass(encoder, &rp_desc);
 
         if (verts.items.len > 0 and gpu_vert_buf != null) {
+            const draw_byte_size: u64 = @intCast(verts.items.len * @sizeOf(teak.Vertex));
             c.wgpuRenderPassEncoderSetPipeline(pass, pipeline);
             c.wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, null);
-            c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, gpu_vert_buf, 0, vert_data_size);
+            c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, gpu_vert_buf, 0, draw_byte_size);
             c.wgpuRenderPassEncoderDraw(pass, @intCast(verts.items.len), 1, 0, 0);
         }
 
         c.wgpuRenderPassEncoderEnd(pass);
         c.wgpuRenderPassEncoderRelease(pass);
 
-        // ── 11. Submit + Present ───────────────────────────────────
+        // 9. Submit + present.
         var cmd_buf_desc = std.mem.zeroes(c.WGPUCommandBufferDescriptor);
         cmd_buf_desc.label = wgpuStr("frame-cmds");
         const command_buffer = c.wgpuCommandEncoderFinish(encoder, &cmd_buf_desc);
@@ -537,7 +702,22 @@ pub fn main() !void {
         c.wgpuTextureViewRelease(texture_view);
     }
 
-    std.debug.print("Teak UI exiting.\n", .{});
+    std.debug.print("Teak UI exiting. (skipped {d} vertex rebuilds)\n", .{skip_count});
+}
+
+/// Map model.focused → cmd index of the corresponding text_input in the
+/// current frame. For proto 2 there is a single text_input, so a linear
+/// scan is fine.
+fn focusIndex(cmds: []const teak.Cmd(App.Msg), focused: ?App.FocusField) ?usize {
+    const f = focused orelse return null;
+    switch (f) {
+        .greeter => {
+            for (cmds, 0..) |cc, i| {
+                if (cc == .text_input) return i;
+            }
+            return null;
+        },
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
