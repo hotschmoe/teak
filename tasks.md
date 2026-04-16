@@ -85,6 +85,13 @@ Extract `ui_main.zig` (762 LOC) into a `Host` interface + Win32 implementation. 
 - Render target handoff to wgpu (surface + queue + device).
 - Main loop driver (or expose a "poll + present" pair so the app owns the loop).
 
+The interface must also be satisfiable by **zunk's lifecycle** (`init` / `frame(dt)` / `resize(w,h)` / `cleanup`) so `host/wasm.zig` is a thin shim over zunk rather than a parallel implementation. See task 6 for the audit that informs the exact shape.
+
+Critical sub-decision: **wgpu backend abstraction**. Teak currently calls `wgpu-native` via `@cImport`. On web we'll call `zunk.web.gpu` (typed handles, slightly different API surface). The render-pass interface needs to be narrow enough that both back it. Options:
+- Trait-style vtable in `render.zig` that both backends satisfy (manual dispatch).
+- `comptime`-parameterized backend (`Renderer(comptime Gpu: type)`).
+- Convergence on a single shared wrapper that wgpu-native and zunk.web.gpu both conform to — *this is the conversation to have with zunk upstream* (task 6).
+
 Acceptance: swapping `win32.zig` for a stub shouldn't require touching anything in `src/*.zig` above it.
 
 ### 3b. Extract framework as library
@@ -145,19 +152,66 @@ Move `counter.zig`, `greeter.zig`, `app.zig`, `main.zig`, `ui_main.zig` → `exa
 
 ---
 
-## 6. Open two-way communication with zunk
+## 6. Co-develop with zunk (two-way feedback loop)
 
-**Why**: Zunk (WebAssembly / Zig native solution) and Teak (Zig-native UI) overlap at the WASM host target. Shared roadmap / shared pain points / shared test surface will mature both faster than either alone.
+**What zunk is**: A build tool + runtime library that takes a pure-Zig WASM binary, inspects its import table, and auto-generates the JS + HTML glue required to run it in a browser. Layered API: raw `extern "env" fn` at the bottom, ergonomic `zunk.web.*` modules (canvas, input, audio, gpu, app) in the middle, custom `bridge.js` escape hatch on top. Already ships WebGPU bindings (`zunk.web.gpu`, 33 extern fns, typed handles). Both projects are very early and need to mature together.
 
-**Note**: I (Claude) don't have enough context on zunk to scope this properly. Before starting: please drop a short paragraph or link about what zunk is, who maintains it, and what "two-way communication" means in practice (shared repo? cross-linked issues? design sync doc?).
+**Local path**: `../zunk/` (sibling repo). Co-development means neither repo pins a stable release of the other yet — we iterate against each other's `master`.
 
-**Placeholder deliverables** (fill in once scoped):
-- Identify zunk's current WASM entry-point / loader contract.
-- Prototype Teak's `host/wasm.zig` against zunk's API.
-- Shared design doc or cross-repo issue tracker for the wasm boundary.
-- Agreement on Zig version bump cadence so neither project blocks the other.
+### Why the fit is natural
 
-**Do before**: task 3a's `wasm.zig` implementation — need zunk's contract first.
+Zunk's lifecycle protocol and input model map almost directly onto what Teak's host layer needs:
+
+| Teak needs | Zunk provides |
+|---|---|
+| A main loop driver that respects `requestAnimationFrame` timing on web | `export fn frame(dt: f32) void` — zunk wires it to rAF automatically |
+| Resize handling | `export fn resize(w: u32, h: u32) void` — zunk generates the handler |
+| Keyboard + mouse input | `zunk.web.input` — polling model (shared-memory struct), matches how `ui_main.zig` already drains input queues |
+| WebGPU surface + device acquisition | `zunk.web.gpu.requestAdapter` / `requestDevice` — same async-callback pattern as wgpu-native |
+| One-shot init after canvas is ready | `export fn init() void` |
+
+Teak's current `ui_main.zig` main loop is structurally a `while (running) { drain_input; build_frame; render; present; }` — trivially re-shapes to zunk's per-rAF `frame(dt)`.
+
+### Audit work (required before `host/wasm.zig` can be written)
+
+Run this scoping exercise and write the result to `docs/zunk-integration.md`:
+
+1. **WebGPU coverage gap analysis**. Enumerate every wgpu call Teak makes today (`wgpuDeviceCreateShaderModule`, `wgpuDeviceCreateRenderPipeline`, `wgpuDeviceCreateBuffer`, `wgpuQueueWriteBuffer`, `wgpuCommandEncoder*`, `wgpuRenderPassEncoder*`, `wgpuSurfaceConfigure`, etc.) and check each against `zunk/src/web/gpu.zig`. File issues upstream for anything missing.
+2. **Shader format check**. Teak uses WGSL. Zunk's gpu.zig should pass WGSL through unmodified — confirm (WebGPU-native accepts WGSL in browsers).
+3. **Input event parity**. Teak needs `WM_CHAR`-equivalent Unicode text input (not just keydown scan codes) for the greeter. Confirm `zunk.web.input` exposes a text-input channel distinct from key-down events.
+4. **Async adapter/device pattern**. Our Win32 host spins: `while (adapter == null) wgpuInstanceProcessEvents(...)`. On web you can't spin — you have to yield. Understand how zunk sequences the adapter/device acquisition before `init` fires.
+5. **Main-loop ownership**. Teak currently owns its loop. Under zunk, zunk owns the rAF loop and calls into `frame(dt)`. The Host interface needs to support both ownership models ("host drives" vs. "app drives").
+
+### Teak → zunk feedback (what Teak needs from zunk)
+
+- WGSL shader module creation (confirm present and ergonomic).
+- Typed vertex buffer layouts / pipeline descriptors that match Teak's `teak.Vertex` struct.
+- A way to upload a vertex buffer of `N * @sizeOf(Vertex)` bytes per frame without per-call allocation (Teak does this via `wgpuQueueWriteBuffer`).
+- Text input event with Unicode codepoint (not raw keycode).
+- Clipboard read/write (future, not blocking).
+
+### Zunk → Teak feedback (what zunk will push back on)
+
+- No blocking calls anywhere in the host-facing Teak API (we may have some; audit).
+- All allocations explicitly sized — zunk's bundle-size story depends on no hidden heap growth.
+- Exact `extern fn` naming conventions if Teak ends up declaring any (prefer: Teak never declares any, always goes through `zunk.web.*`).
+
+### Concrete deliverables
+
+- `docs/zunk-integration.md` — the audit from above. Living document.
+- `examples/counter_greeter/` builds dual-target: `zig build ui` (native, wgpu-native) and `zig build web` (wasm, zunk). Same app code, different host.
+- A cross-repo design doc or ADR for the wgpu abstraction shape (see task 3a's sub-decision).
+- Shared understanding on Zig version bumps — if zunk moves to 0.16 first or vice versa, the other shouldn't be blocked for long. Coordinate with task 1.
+
+### Governance / logistics
+
+Since both repos are solo / very early, "two-way communication" for now just means:
+- Cross-linked issues when one project's decision affects the other.
+- A shared `INTEGRATION.md` in one repo (probably zunk since it's the build tool) listing known consumers and their minimum-version requirements.
+- Willingness to land small PRs upstream in zunk to close coverage gaps rather than working around them in Teak.
+
+**Do before**: task 3a's actual `wasm.zig` implementation — the audit has to land first.
+**Do after**: task 3b/c (library + examples extraction) so there's a clean consumer story to hand zunk.
 
 ---
 
@@ -215,10 +269,16 @@ Move `counter.zig`, `greeter.zig`, `app.zig`, `main.zig`, `ui_main.zig` → `exa
 2 (docs consolidation)
     ↓
 3 (restructure: host / lib / examples)  ← largest task, spawn subtasks
+    ├── 3a depends on 6's audit for the wasm host shape + wgpu abstraction
+    └── 3b/c can land independently
+    ↓
+6 (zunk audit) — runs in parallel with 3b/c; blocks 3a's wasm.zig
+    ↓
+3a (finish host abstraction with both win32 + wasm in hand)
     ↓
 4 (feature docs) + 5 (pitfalls) + 7 (HARDLINE) — parallel
-    ↓
-6 (zunk) — once 3a is landed and we know the wasm host shape
 ```
 
 Task 7 (HARDLINE) should have a stub drafted during task 3 even if finalized later — the restructure is exactly when drift is most likely.
+
+Task 6's audit should start **as soon as task 2 is done** — it's reading + documenting, no Teak code changes required, and the findings shape 3a's interface.
