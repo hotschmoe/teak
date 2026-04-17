@@ -40,7 +40,9 @@ Working document for the cleanup/abstraction phase after proto 2. Ordering is th
 
 **Why**: `src/` currently mixes framework core, Win32 host, composed demo, and CLI demo. To support (a) more hosts, (b) consumption as a library, and (c) multiple example apps, this has to be untangled.
 
-**Target layout** (draft — refine during implementation):
+**Target layout** — the full spec lives in [`tasks-file-struct.md`](tasks-file-struct.md); this section keeps only the top-level sketch. The companion doc records the `gpu/` backend split, the `platform/` boundary, and deviations from Isaac's reference sketch.
+
+Top-level sketch (refer to `tasks-file-struct.md` for the detailed tree):
 
 ```
 teak/
