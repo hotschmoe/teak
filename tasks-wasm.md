@@ -6,6 +6,26 @@ Companion to `tasks.md`. Records the concrete deficiencies surfaced by actually 
 
 ---
 
+## 0. Assessment: are we positioned to support wasm via zunk?
+
+**Yes, structurally** — with the understanding that both projects need to mature and zunk subsumes more of Rust's pipeline than trunk alone. Specifically, zunk replaces `wasm-bindgen` + `trunk` + the hand-written `index.html` in one tool, so our web story does **not** require us to ship HTML or JS glue. We only need to ship wasm-clean Zig plus a host impl that uses zunk's Layer 2 modules.
+
+**Three structural fits** (why this isn't speculative):
+
+1. **Core is wasm-clean today, proven.** The probe in §6 compiles the full pipeline to `wasm32-freestanding`. Library extraction (task 3b) is a packaging exercise, not a port.
+2. **The two platform concerns in `ui_main.zig` map 1:1 to zunk modules.** Windowing + input → `zunk.web.app` + `zunk.web.input`. GPU → `zunk.web.gpu`. The seam exists in our code already; task 3a just names it.
+3. **Input model is already polling.** Teak's `WM_CHAR` drain loop and zunk's shared-memory poll are the same pattern at different addresses. No async-event refactor needed.
+
+**Three frictions worth naming** (plan around these, don't discover them late):
+
+1. **Loop-ownership inversion.** Our `while (running) { peek; frame; present; }` becomes zunk's `export fn frame(dt: f32)`. Task 3a's host interface must support both a host-drives-loop model (Win32) and an app-provides-callbacks model (zunk/rAF). See §2d.
+2. **Async adapter/device acquisition.** Win32 spins `while (adapter == null) wgpuInstanceProcessEvents(...)`. Web can't spin — you yield. Zunk's lifecycle protocol (`export fn init()` fires *after* the GPU device is ready) is the resolution, but it changes the init sequencing: adapter/device acquisition moves out of our code and into zunk's pre-`init` bootstrap.
+3. **Zunk WebGPU coverage gaps that intersect Teak.** Zunk's own `README.md` contributing list flags **vertex buffer layouts, sampler support, depth/stencil state, and error handling** as known gaps. Teak's `Vertex` (8 × f32 interleaved) depends on vertex buffer layouts — that's an upstream PR into zunk, not a workaround in Teak. See §4.
+
+**Bottom line:** every gap below is either a known zunk coverage item (trackable via upstream issues) or a refactor we were already planning under tasks 3a/3c. No unknown-unknowns surfaced by the probe or the zunk audit. Proceed with the task-1→3→6 sequence as written; this doc is the input checklist, not a blocker.
+
+---
+
 ## 1. What is already wasm-clean (keep it that way)
 
 The entire framework core compiles to `wasm32-freestanding` today with zero changes:
@@ -84,37 +104,78 @@ Plus linked `wgpu_native.dll`. wasm32-freestanding cannot link a native dll — 
 
 The sub-decision called out in task 3a ("wgpu backend abstraction") is the keystone — pin it before writing either backend.
 
+### 2d. Main-loop ownership inversion
+
+Our Win32 host owns the loop: `while (running) { PeekMessage; drain_input; build_frame; render; present; }`. Zunk inverts this — **zunk owns the `requestAnimationFrame` loop and calls into exported functions**. Zunk's lifecycle protocol (from its README):
+
+| Export | Signature | When zunk calls it |
+|---|---|---|
+| `init` | `fn () void` | Once after WASM + canvas + GPU device are ready |
+| `frame` | `fn (dt: f32) void` | Every rAF tick |
+| `resize` | `fn (w: u32, h: u32) void` | On window resize |
+| `cleanup` | `fn () void` | On `beforeunload` |
+
+Mapping our current Win32 main onto this contract:
+
+- Everything *before* the loop (instance creation, adapter/device acquisition, surface configure, pipeline build, buffer allocation) → `init`. **Except** adapter/device acquisition, which zunk already completes before `init` fires (see §0 friction 2).
+- Everything *inside* the loop body → `frame(dt)`. Our input queue drain becomes a zunk input poll at the top of `frame`.
+- `WM_SIZE` handler → `resize(w, h)`.
+- Shutdown → `cleanup`.
+
+**Implication for task 3a**: the Host interface cannot bake in "who owns `while (running)`". Two clean shapes that both satisfy the rAF constraint:
+
+- **Callback-style Host**: Host exposes `registerFrameCallback(fn(dt) void)` and the platform impl chooses when to call it. Win32 impl calls it inside its own loop; wasm impl relies on zunk's generated rAF driver calling the exported `frame`.
+- **Thin "do one frame" Host**: Host exposes `pollInputs() → Inputs`, `beginFrame() → Encoder`, `endFrame()`. The app writes a `frame(dt)` function that calls these in order. Win32 impl wraps it in a `while (running)`; wasm impl exports it directly.
+
+The second shape is simpler and more in the spirit of "app is a pure function of state" — prefer it unless zunk integration forces otherwise.
+
 ---
 
 ## 3. Missing scaffolding (net-new, not a port)
 
-Even once the host abstraction lands, a web build needs artefacts that don't exist in any form today:
+Zunk subsumes the HTML + JS-glue + dev-server layers that a Rust-on-trunk stack would require us to hand-author. So the surface we *actually* need to produce shrinks to:
 
 | Artefact | Purpose | Depends on |
 |---|---|---|
-| `src/host/wasm.zig` | Host impl delegating to zunk | Task 3a interface, task 6 audit |
-| `examples/counter_greeter/web/index.html` | Loader page | Zunk's generator may produce this |
-| JS bridge (if any custom shims) | Unicode text input, clipboard, anything zunk doesn't cover yet | Task 6 gap analysis |
-| `zig build web` step | Dual-target the example | Task 3c layout |
-| Preview/serve story | `python -m http.server` or zunk CLI | None — doc-only |
+| `src/host/wasm.zig` | Host impl delegating to `zunk.web.app` / `input` / `gpu`; declares the `init` / `frame` / `resize` / `cleanup` exports zunk detects | Task 3a interface |
+| `examples/counter_greeter/build.zig` web branch | Invokes `zig build` with `-target wasm32-freestanding` and hands the artifact to `zunk run` / `zunk deploy` | Task 3c layout |
+| `bridge.js` (only if needed) | Custom shims for anything zunk's Layer 2 doesn't cover (unlikely per §4; would be a stopgap while upstreaming into zunk) | Task 6 audit |
 
-All of these are explicitly downstream of task 6's audit. Adding them here only as a reminder that the host impl is not the last piece.
+**Explicitly not in the list** (zunk handles these, and this is the architectural win over iced-on-trunk):
+
+- **No `index.html`.** Zunk auto-generates it from detected exports (`frame` export → rAF loop; `resize` export → fullscreen canvas handler; etc.).
+- **No JS glue.** Zunk's 5-tier resolver reads our wasm import table and emits exactly the JS we need (target: ~10 KB for a full canvas + input + GPU app).
+- **No dev server or file watcher.** `zunk run` does it.
+- **No deploy pipeline.** `zunk deploy` emits content-hashed `dist/` ready for any static host.
+- **No `build.zig.zon` entry for a web bundler.** Zunk is invoked as a CLI against our `.wasm` output.
 
 ---
 
-## 4. Audit inputs for task 6 (zunk integration)
+## 4. Zunk integration: known answers vs. open audit items
 
-From the wgpu calls observed in `ui_main.zig`, the concrete coverage questions for the `docs/zunk-integration.md` audit are:
+Zunk's README answered several questions the original audit listed. Splitting the checklist:
 
-- Surface acquisition: wgpu-native uses `wgpuInstanceCreateSurface` + HWND; web equivalent is canvas context. How does `zunk.web.gpu` expose this?
-- Adapter/device: Win32 host spins `while (adapter == null) wgpuInstanceProcessEvents(...)`. Web can't spin. Confirm zunk's async-sequencing model (pre-`init` callback? promise-to-export?).
-- Shader module: WGSL passed through (`quad.wgsl` already WGSL — no translation).
-- Pipeline + vertex buffer layout for `teak.Vertex` (8 × f32 interleaved: xy / rgba / uv).
-- Per-frame upload path: native uses `wgpuQueueWriteBuffer`; confirm zunk equivalent doesn't re-allocate per call.
-- Render pass encoder API shape: `beginRenderPass` / `setPipeline` / `setVertexBuffer` / `draw` / `end` / `submit`.
-- Input: `WM_CHAR`-equivalent Unicode channel (greeter needs it), not just keydown scancodes.
+### Known answers (from zunk README)
 
-These questions all have precise answers once zunk's `src/web/gpu.zig` and `src/web/input.zig` are read against the wgpu calls listed above.
+- **Input model**: polling via shared memory — `zunk.web.input.init()` + `input.poll()` each frame. Matches our existing drain-queue shape. No refactor.
+- **Shader format**: WebGPU in browsers accepts WGSL; `zunk.web.gpu` passes through. `shaders/quad.wgsl` needs no translation.
+- **Async adapter/device**: zunk sequences adapter/device acquisition **before `init` fires**. Our spin loop is deleted on web, not ported.
+- **Lifecycle shape**: `init` / `frame(dt)` / `resize(w, h)` / `cleanup` — documented. Host interface (§2d) designs to this.
+- **Text input**: `zunk.web.input` covers keyboard; **verify** it exposes a `WM_CHAR`-equivalent Unicode text channel distinct from keydown scancodes. Greeter needs it. If missing → upstream PR or `bridge.js` stopgap.
+- **HTML/JS generation**: zunk. Not our problem.
+
+### Open audit items (read `../zunk/src/web/gpu.zig` and compare against our wgpu calls)
+
+Enumerate every wgpu call `ui_main.zig` makes and check each against `zunk.web.gpu`'s 33 extern fns:
+
+- `wgpuInstanceCreateSurface` — web equivalent is implicit (canvas context). Verify `zunk.web.gpu` surfaces the device + queue + swapchain-equivalent cleanly.
+- `wgpuDeviceCreateShaderModule` — present in zunk? (likely — `particle-life` example uses WGSL).
+- `wgpuDeviceCreateRenderPipeline` — **vertex buffer layout coverage is a known gap** per zunk's own contributing list. This is the most likely blocker for Teak's WebGPU story. Check `zunk.web.gpu.createRenderPipeline` or equivalent; if vertex buffer layouts aren't parameterizable, that's the first upstream PR.
+- `wgpuDeviceCreateBuffer` / `wgpuQueueWriteBuffer` — per-frame upload path. Verify no hidden per-call allocation; zunk's README claims "no hidden heap growth" as a principle.
+- `wgpuCommandEncoder*` + `wgpuRenderPassEncoder*` (`beginRenderPass`, `setPipeline`, `setVertexBuffer`, `draw`, `end`, `submit`) — standard pipeline; verify coverage.
+- **Known zunk gaps that may hit us**: sampler support, depth/stencil state, error handling. Teak's current UI doesn't need samplers or depth/stencil, so these are "not blocking prototype" but "blocking text-rendering-via-glyph-atlas" (future task).
+
+**Deliverable**: `docs/zunk-integration.md` (task 6) reframes around this split. "Known answers" becomes a short reference section; "open audit items" becomes a checklist with upstream-issue links as they're filed.
 
 ---
 
@@ -123,11 +184,13 @@ These questions all have precise answers once zunk's `src/web/gpu.zig` and `src/
 No new ordering — these gaps slot into existing tasks:
 
 - **Task 1 (Zig 0.16)**: already done. Probe confirmed clean on 0.16.0.
-- **Task 3a (host abstraction)**: `build.zig` panic fix (§2a) lands here. Host interface must accommodate both a host-driven loop (Win32) and an app-provides-callbacks loop (zunk/rAF).
+- **Task 3a (host abstraction)**: `build.zig` panic fix (§2a) lands here. Host interface must accommodate both loop-ownership models (§2d) — prefer the "thin do-one-frame Host" shape so the wasm impl is an export surface, not a driver.
 - **Task 3b (library extraction)**: §1 is the easy half — core is already portable. Focus on packaging cleanness.
-- **Task 3c (examples extraction)**: CLI allocator swap (§2b) lands here.
+- **Task 3c (examples extraction)**: CLI allocator swap (§2b) lands here. Also the dual-target `build.zig` that produces both the native `ui` binary and the `wasm32-freestanding` artifact for zunk to consume.
 - **Task 5 (pitfalls)**: add the wasm-core compile check as a canary (§1).
-- **Task 6 (zunk audit)**: §4 is the input checklist.
+- **Task 6 (zunk audit)**: §4 is the input checklist — split into "known answers" (short reference) and "open items" (upstream-issue-backed checklist).
+
+**First upstream PR candidate into zunk** (task 6 side effect): vertex buffer layout support in `zunk.web.gpu.createRenderPipeline`, if the audit confirms it's missing. This is the narrowest load-bearing gap — everything else about our pipeline is standard.
 
 ---
 
