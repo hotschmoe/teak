@@ -37,21 +37,22 @@ Every arrow is a function call with explicit inputs and outputs. No globals, no 
 Requires **Zig 0.16.0+**.
 
 ```sh
-# Run the main executable
-zig build run
-
-# Run the UI (wgpu + Win32) — must specify aarch64 target on ARM64 Windows
-zig build ui -Dtarget=aarch64-windows-gnu
-
-# Run tests
+# Library tests (run from repo root)
 zig build test
+
+# Example app — CLI canary and wgpu UI both live in examples/counter_greeter
+cd examples/counter_greeter
+zig build test                               # example tests
+zig build run                                # CLI demo
+zig build ui -Dtarget=aarch64-windows-gnu    # wgpu + Win32 UI (ARM64 host)
+zig build ui                                 # wgpu + Win32 UI (x86_64 host)
 ```
 
 The wgpu-native dependency is fetched automatically by the Zig build system on first build.
 
 ### Cross-target builds
 
-`build.zig` auto-picks the right wgpu-native prebuilt (aarch64 or x86_64 Windows) based on the resolved target, so on a native x86_64 Windows host `zig build ui` just works without flags.
+The example's `build.zig` auto-picks the right wgpu-native prebuilt (aarch64 or x86_64 Windows) based on the resolved target, so on a native x86_64 Windows host `zig build ui` just works without flags.
 
 ### Windows ARM64 notes
 
@@ -61,23 +62,34 @@ Zig's own 0.16.0 `aarch64-windows` compiler binary is currently broken (upstream
 
 ```
 teak/
-├── build.zig
+├── build.zig              ← library build (module + tests)
 ├── build.zig.zon
-├── src/
-│   ├── main.zig           ← entry point, window creation, main loop
-│   ├── root.zig           ← public library root
-│   ├── teak.zig           ← re-exports framework types
-│   ├── model.zig          ← Model, Msg, update (the app)
-│   ├── cmd.zig            ← Cmd union, CmdBuffer, arena management
-│   ├── layout.zig         ← measure + position passes
-│   ├── hit_test.zig       ← mouse → CmdIndex → Msg
-│   ├── render.zig         ← []Cmd + []Rect → wgpu draw calls
-│   └── transient.zig      ← hover/press state
+├── src/                   ← the library, consumable as a Zig module
+│   ├── teak.zig           ← public library root / re-exports
+│   ├── core/
+│   │   ├── cmd.zig        ← Cmd union, CmdBuffer, arena management
+│   │   ├── component.zig  ← Components(), validateComponent, buildMsgs
+│   │   └── transient.zig  ← hover/press/focus state
+│   ├── layout/
+│   │   └── engine.zig     ← measure + position passes
+│   ├── input/
+│   │   └── hit_test.zig   ← mouse → CmdIndex → Msg
+│   └── render/
+│       ├── vertex.zig     ← Vertex struct + emitQuad
+│       └── build.zig      ← []Cmd + []Rect → vertex buffer
+├── examples/
+│   └── counter_greeter/   ← the proto-2 demo; consumes teak as a module
+│       ├── build.zig
+│       ├── build.zig.zon
+│       └── src/
+│           ├── main.zig        ← CLI canary entry
+│           ├── ui_main.zig     ← wgpu + Win32 entry
+│           ├── app.zig         ← composed app (counter + greeter)
+│           ├── counter.zig
+│           └── greeter.zig
 ├── shaders/
 │   └── quad.wgsl          ← shader for colored rectangles
-├── docs/
-│   └── init_convo/        ← original design conversation
-└── spec.md                ← full specification
+└── docs/                  ← spec, journal, archive
 ```
 
 ## Documentation

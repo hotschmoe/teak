@@ -1,6 +1,6 @@
 const std = @import("std");
 const teak = @import("teak");
-const App = teak.App;
+const App = @import("app.zig");
 
 const c = @cImport({
     @cDefine("WGPU_SHARED_LIBRARY", "1");

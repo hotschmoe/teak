@@ -120,7 +120,7 @@ test "greeter: cursor bounds" {
 
 test "greeter: view emits text_input + greeting" {
     const testing = std.testing;
-    const cmd = @import("cmd.zig");
+    const cmd = @import("teak").cmd;
 
     const AppMsg = Msg;
     var cb = cmd.CmdBuffer(AppMsg).init(testing.allocator);
@@ -142,7 +142,7 @@ test "greeter: view emits text_input + greeting" {
 
 test "greeter: empty name shows Hello, World!" {
     const testing = std.testing;
-    const cmd = @import("cmd.zig");
+    const cmd = @import("teak").cmd;
 
     const AppMsg = Msg;
     var cb = cmd.CmdBuffer(AppMsg).init(testing.allocator);

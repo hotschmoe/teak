@@ -1,6 +1,6 @@
 const std = @import("std");
 const teak = @import("teak");
-const App = teak.App;
+const App = @import("app.zig");
 
 pub fn main() !void {
     var gpa_impl: std.heap.DebugAllocator(.{}) = .init;

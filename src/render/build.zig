@@ -1,20 +1,10 @@
 const std = @import("std");
-const layout = @import("layout.zig");
+const layout = @import("../layout/engine.zig");
 const Rect = layout.Rect;
-const TransientState = @import("transient.zig").TransientState;
-
-// ── Vertex ─────────────────────────────────────────────────────────
-
-pub const Vertex = extern struct {
-    x: f32,
-    y: f32,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-    u: f32,
-    v: f32,
-};
+const TransientState = @import("../core/transient.zig").TransientState;
+const vertex = @import("vertex.zig");
+const Vertex = vertex.Vertex;
+const emitQuad = vertex.emitQuad;
 
 // Text-input visual constants. Monospace CHAR_WIDTH matches the layout
 // pass so the cursor sits on glyph boundaries.
@@ -22,33 +12,6 @@ const CHAR_WIDTH: f32 = 10;
 const BORDER_WIDTH: f32 = 2;
 const CURSOR_WIDTH: f32 = 2;
 const INPUT_TEXT_PADDING: f32 = 6;
-
-// ── Quad Emission ──────────────────────────────────────────────────
-
-pub fn emitQuad(
-    verts: *std.ArrayList(Vertex),
-    alloc: std.mem.Allocator,
-    rect: Rect,
-    color: [4]f32,
-) void {
-    const x0 = rect.x;
-    const y0 = rect.y;
-    const x1 = rect.x + rect.w;
-    const y1 = rect.y + rect.h;
-    const r = color[0];
-    const g = color[1];
-    const b = color[2];
-    const a = color[3];
-
-    verts.appendSlice(alloc, &.{
-        .{ .x = x0, .y = y0, .r = r, .g = g, .b = b, .a = a, .u = 0, .v = 0 },
-        .{ .x = x1, .y = y0, .r = r, .g = g, .b = b, .a = a, .u = 1, .v = 0 },
-        .{ .x = x0, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = 0, .v = 1 },
-        .{ .x = x1, .y = y0, .r = r, .g = g, .b = b, .a = a, .u = 1, .v = 0 },
-        .{ .x = x1, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = 1, .v = 1 },
-        .{ .x = x0, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = 0, .v = 1 },
-    }) catch unreachable;
-}
 
 fn insetRect(r: Rect, amount: f32) Rect {
     const w = @max(0, r.w - 2 * amount);
@@ -131,7 +94,7 @@ pub fn buildVertices(
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-const cmd_mod = @import("cmd.zig");
+const cmd_mod = @import("../core/cmd.zig");
 
 test "buildVertices emits one quad per button and text" {
     const testing = std.testing;

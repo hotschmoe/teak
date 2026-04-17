@@ -1,5 +1,5 @@
 const std = @import("std");
-const cmd = @import("cmd.zig");
+const cmd = @import("../core/cmd.zig");
 const Direction = cmd.Direction;
 const GroupStyle = cmd.GroupStyle;
 

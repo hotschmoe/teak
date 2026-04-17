@@ -1,5 +1,6 @@
 const std = @import("std");
-const compose = @import("compose.zig");
+const teak = @import("teak");
+const compose = teak.compose;
 const counter = @import("counter.zig");
 const greeter = @import("greeter.zig");
 
@@ -132,7 +133,7 @@ test "app: keyCharMsg produces greeter char when focused" {
 
 test "app: view emits expected root structure" {
     const testing = std.testing;
-    const cmd = @import("cmd.zig");
+    const cmd = teak.cmd;
 
     var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
     defer cb.deinit();
@@ -153,7 +154,7 @@ test "app: view emits expected root structure" {
 
 test "app: text_input click focus_msg is AppLevel.focus_set" {
     const testing = std.testing;
-    const cmd = @import("cmd.zig");
+    const cmd = teak.cmd;
 
     var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
     defer cb.deinit();
@@ -175,9 +176,9 @@ test "app: text_input click focus_msg is AppLevel.focus_set" {
 
 test "app: compose end-to-end — click + key produces updated greeting" {
     const testing = std.testing;
-    const cmd = @import("cmd.zig");
-    const layout = @import("layout.zig");
-    const hit_test = @import("hit_test.zig");
+    const cmd = teak.cmd;
+    const layout = teak.layout;
+    const hit_test = teak.hit_test;
 
     var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
     defer cb.deinit();

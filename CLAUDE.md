@@ -6,13 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Requires **Zig 0.16.0+**.
 
+The repo is split into a **library** (root `build.zig`) and **examples** (each with their own `build.zig`). Library tests run from root; example steps run from the example's directory.
+
 ```sh
-zig build run                               # Run the main CLI executable
-zig build ui -Dtarget=aarch64-windows-gnu   # Run the UI executable (wgpu + Win32)
-zig build test                              # Run all tests (library + CLI modules)
+# Library
+zig build test                              # Library tests (run from repo root)
+
+# Example: counter_greeter (CLI + wgpu UI)
+cd examples/counter_greeter
+zig build test                              # Example tests
+zig build run                               # CLI canary
+zig build ui -Dtarget=aarch64-windows-gnu   # wgpu + Win32 UI (ARM64 host)
+zig build ui                                # wgpu + Win32 UI (x86_64 host)
 ```
 
-The `wgpu-native` dependency is fetched automatically on first build. The build targets Windows ARM64 (Snapdragon X Elite) with a workaround for Zig's missing `i8mm` CPU feature detection on aarch64.
+The `wgpu-native` dependency lives in the example's `build.zig.zon` and is fetched automatically on first build of a UI target. The root library has no external dependencies. The build targets Windows ARM64 (Snapdragon X Elite) with a workaround for Zig's missing `i8mm` CPU feature detection on aarch64.
 
 ### Windows ARM64 toolchain workaround (Zig 0.16.0)
 
@@ -20,9 +28,9 @@ Zig 0.16.0's native `aarch64-windows` compiler binary is broken upstream ([Codeb
 
 Implications for building:
 - The native default target when running `zig build` is `x86_64-windows` (what Prism reports).
-- `build.zig.zon` declares two wgpu-native deps (`wgpu-native-aarch64` and `wgpu-native-x86_64`); `build.zig` selects the matching one by `target.result.cpu.arch` so no flags are needed on a native host.
+- The example's `build.zig.zon` declares two wgpu-native deps (`wgpu-native-aarch64` and `wgpu-native-x86_64`); its `build.zig` selects the matching one by `target.result.cpu.arch` so no flags are needed on a native host.
 - **On this aarch64 host, pass `-Dtarget=aarch64-windows-gnu` to `zig build ui`** so the output binary runs natively instead of under Prism. Without it, the build still succeeds — you just get an x86_64 UI binary that runs emulated. (On a native x86_64 Windows host, no flag is needed.)
-- `zig build` and `zig build test` work without the flag (they don't link wgpu).
+- Library `zig build test` from the root works without the flag (it doesn't link wgpu).
 
 Full details: [`docs/zig-016-win-arm64-crash.md`](docs/zig-016-win-arm64-crash.md). When #31865 ships a fix, drop the emulation workaround and remove `-Dtarget=` from `zig build ui`.
 
@@ -74,23 +82,39 @@ The compiler enforces exhaustive switching -- missing a `Msg` arm won't compile.
 
 Add a variant to the `Cmd` union + a case in each pass (layout, hit-test, render) + a convenience method on `CmdBuffer`.
 
-## Planned Module Structure
+## Module Structure
 
 ```
-src/
-  main.zig        -- entry point, window creation, main loop
-  root.zig        -- public library root
-  model.zig       -- Model, Msg, update, view (the application)
-  cmd.zig         -- Cmd union, CmdBuffer, arena management
-  layout.zig      -- measure + position passes
-  hit_test.zig    -- mouse -> CmdIndex -> Msg
-  render.zig      -- []Cmd + []Rect -> wgpu draw calls
-  transient.zig   -- hover/press state (TransientState)
+src/                           -- the library, consumable as a Zig module
+  teak.zig                     -- public library root / re-exports
+  core/
+    cmd.zig                    -- Cmd union, CmdBuffer, arena management
+    component.zig              -- Components(), validateComponent, buildMsgs
+    transient.zig              -- hover/press/focus state (TransientState)
+  layout/
+    engine.zig                 -- measure + position passes
+  input/
+    hit_test.zig               -- mouse -> CmdIndex -> Msg
+  render/
+    vertex.zig                 -- Vertex struct + emitQuad
+    build.zig                  -- []Cmd + []Rect + TransientState -> vertex buffer
+
+examples/
+  counter_greeter/             -- the proto-2 demo; consumes teak as a module
+    build.zig
+    build.zig.zon
+    src/
+      main.zig                 -- CLI canary entry
+      ui_main.zig              -- wgpu + Win32 entry
+      app.zig                  -- composed app (counter + greeter + focus)
+      counter.zig
+      greeter.zig
+
 shaders/
   quad.wgsl       -- shader for colored rectangles
 ```
 
-Each file does one thing. Keep them separate.
+The library has no external dependencies; `wgpu-native` is owned by whichever example wires up a GPU host. `src/gpu/` and `src/platform/` subdirectories (for backend-polymorphic GPU context and the Host interface) are planned in [`tasks-file-struct.md`](tasks-file-struct.md) but not yet executed — today the example's `ui_main.zig` contains the Win32 + wgpu-native glue directly.
 
 ## Implementation Status
 

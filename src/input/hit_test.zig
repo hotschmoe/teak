@@ -1,6 +1,6 @@
 const std = @import("std");
-const cmd_mod = @import("cmd.zig");
-const layout = @import("layout.zig");
+const cmd_mod = @import("../core/cmd.zig");
+const layout = @import("../layout/engine.zig");
 const Rect = layout.Rect;
 
 // ── Hit-Test ───────────────────────────────────────────────────────

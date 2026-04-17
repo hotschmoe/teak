@@ -58,7 +58,7 @@ test "counter update transitions" {
 
 test "counter view emits expected command shape" {
     const testing = std.testing;
-    const cmd = @import("cmd.zig");
+    const cmd = @import("teak").cmd;
 
     // Stand-in AppMsg: same variants as Counter.Msg so msgs can be built trivially.
     const AppMsg = Msg;
