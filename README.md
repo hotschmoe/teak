@@ -95,7 +95,7 @@ teak/
 ## Documentation
 
 - [`spec.md`](spec.md) — Full architecture specification, design rationale, and implementation plan.
-- [`docs/init_convo/`](docs/init_convo/) — Original design documents that shaped the framework.
+- [`docs/archive/init_convo/`](docs/archive/init_convo/) — Original design documents that shaped the framework.
 
 ## Status
 

@@ -4,7 +4,7 @@
 
 **Method**: read `../zunk/src/web/{gpu,input,app}.zig` at commit `d101693` on branch `dev-hotschmoe`; compared against every `wgpu*` call in `src/ui_main.zig` and every input touchpoint in the Win32 `WNDPROC`.
 
-**Companion docs**: `tasks-wasm.md` §4 (input checklist this doc fills in), `zunk_teak_convo.md` §8 (integration model).
+**Companion docs**: `tasks-wasm.md` §4 (input checklist this doc fills in), `journal/2026-04-16-zunk_teak_convo.md` §8 (integration model).
 
 **Status key**: ✅ covered · ⚠ partial / workaround available · ❌ missing, upstream PR required.
 
@@ -222,4 +222,4 @@ Explicitly not required, contrary to earlier worry items:
 - **No shader translation** — WGSL passes through.
 - **No adapter/device spin loop port** — zunk fronts this.
 - **No `index.html` or JS glue in Teak's tree** — zunk generates both.
-- **No zunk fork into Teak** — per `zunk_teak_convo.md` §8, none of the three reconsideration criteria hold.
+- **No zunk fork into Teak** — per `journal/2026-04-16-zunk_teak_convo.md` §8, none of the three reconsideration criteria hold.

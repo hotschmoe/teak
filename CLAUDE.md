@@ -114,11 +114,11 @@ shaders/
   quad.wgsl       -- shader for colored rectangles
 ```
 
-The library has no external dependencies; `wgpu-native` is owned by whichever example wires up a GPU host. `src/gpu/` and `src/platform/` subdirectories (for backend-polymorphic GPU context and the Host interface) are planned in [`tasks-file-struct.md`](tasks-file-struct.md) but not yet executed — today the example's `ui_main.zig` contains the Win32 + wgpu-native glue directly.
+The library has no external dependencies; `wgpu-native` is owned by whichever example wires up a GPU host. The `src/gpu/` and `src/platform/` split (backend-polymorphic GPU context + Host interface) is executed per [`docs/archive/tasks-file-struct.md`](docs/archive/tasks-file-struct.md); concrete backends live in `src/gpu/{native,web}.zig` and `src/platform/{win32,wasm}.zig`.
 
 ## Implementation Status
 
-The project is in **design-complete, implementation-starting** phase. The prototype goal is a clickable counter demonstrating the full closed loop. Implementation follows six sequential phases (see `docs/init_convo/first_proto.md` for details and checkpoints):
+The project is in **design-complete, implementation-starting** phase. The prototype goal is a clickable counter demonstrating the full closed loop. Implementation follows six sequential phases (see `docs/archive/init_convo/first_proto.md` for details and checkpoints):
 
 1. Model/Msg/update (pure Zig, no wgpu)
 2. CmdBuffer + view function
@@ -131,9 +131,9 @@ The project is in **design-complete, implementation-starting** phase. The protot
 ## Key Documentation
 
 - `spec.md` -- full architecture specification
-- `docs/init_convo/first_proto.md` -- phase-by-phase prototype guide with checkpoints
-- `docs/init_convo/ui-framework-diagrams.md` -- 15 architecture diagrams
-- `docs/init_convo/ui-framework-refinement.md` -- escape hatches, design tradeoffs, implementation traps
+- `docs/archive/init_convo/first_proto.md` -- phase-by-phase prototype guide with checkpoints
+- `docs/archive/init_convo/ui-framework-diagrams.md` -- 15 architecture diagrams
+- `docs/archive/init_convo/ui-framework-refinement.md` -- escape hatches, design tradeoffs, implementation traps
 
 ## Zig Conventions
 

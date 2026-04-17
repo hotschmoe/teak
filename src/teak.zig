@@ -4,7 +4,7 @@
 //! Re-exports the pure half of the framework: core/, layout/, input/,
 //! render/. Host and GPU backends (platform/*, gpu/*) are NOT re-exported
 //! — a consumer's build.zig picks a Host + Gpu backend module and wires
-//! them up. See `tasks-file-struct.md` for the load-bearing rationale.
+//! them up. See `docs/archive/tasks-file-struct.md` for the load-bearing rationale.
 
 pub const cmd = @import("core/cmd.zig");
 pub const component = @import("core/component.zig");

@@ -2,9 +2,9 @@
 
 **Date**: 2026-04-16
 **Scope**: Does integrating zunk as Teak's web host cause friction with the explicit rules and philosophies set out in:
-- `docs/init_convo/ui-framework-spec.md` (goals, Zig properties, LLM-friendliness)
-- `docs/init_convo/ui-framework-refinement.md` (the three walls, bounded escape hatches)
-- `docs/day1_recap.md` (validated scorecard, "no statics except Host" carve-out)
+- `docs/archive/init_convo/ui-framework-spec.md` (goals, Zig properties, LLM-friendliness)
+- `docs/archive/init_convo/ui-framework-refinement.md` (the three walls, bounded escape hatches)
+- `docs/journal/2026-04-15-day1_recap.md` (validated scorecard, "no statics except Host" carve-out)
 - `tasks.md` §5 (pitfalls), §6 (zunk co-dev), §7 (HARDLINE — keystone doc)
 
 **Short answer**: No fundamental violation. Three well-bounded clarifications to HARDLINE are needed to bring the draft into alignment with the direction we're already committed to. Zunk becomes *an implementation of a deliberate escape hatch*, not a deviation from the spec.
@@ -50,7 +50,7 @@ Current draft lists three bounded escape hatches:
 2. TransientState
 3. Flat-buffer-with-stack layout
 
-It omits the one `docs/day1_recap.md` already implicitly carved out: *"No `var` statics in `src/` except the Host layer."* That clause is load-bearing for zunk integration. Promote it to a named escape hatch:
+It omits the one `docs/journal/2026-04-15-day1_recap.md` already implicitly carved out: *"No `var` statics in `src/` except the Host layer."* That clause is load-bearing for zunk integration. Promote it to a named escape hatch:
 
 > **Host layer** (escape hatch 4). Bounded by:
 > (a) Platform-mutable state (window handles, GPU resources, input queues) is allowed **only** inside `src/host/*`.
