@@ -20,6 +20,39 @@ pub const Rect = struct {
     child_count: u32 = 0,
 };
 
+/// Intersect two rects. Returns a zero-size rect if fully disjoint.
+pub fn clipRect(a: Rect, b: Rect) Rect {
+    const x0 = @max(a.x, b.x);
+    const y0 = @max(a.y, b.y);
+    const x1 = @min(a.x + a.w, b.x + b.w);
+    const y1 = @min(a.y + a.h, b.y + b.h);
+    if (x1 <= x0 or y1 <= y0) return .{};
+    return .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
+}
+
+/// Scroll-clip stack shared by hit-test and render. Fixed depth mirrors
+/// LayoutEngine's FixedStack — exceeding it is a bug, not an allocation
+/// trigger. `top()` returns a huge sentinel rect when empty so callers
+/// don't branch on depth.
+pub const ClipStack = struct {
+    buffer: [16]Rect = undefined,
+    len: usize = 0,
+
+    pub fn push(self: *ClipStack, r: Rect) void {
+        self.buffer[self.len] = r;
+        self.len += 1;
+    }
+
+    pub fn pop(self: *ClipStack) void {
+        self.len -= 1;
+    }
+
+    pub fn top(self: *const ClipStack) Rect {
+        if (self.len == 0) return .{ .x = -1e9, .y = -1e9, .w = 2e9, .h = 2e9 };
+        return self.buffer[self.len - 1];
+    }
+};
+
 const GroupContext = struct {
     cmd_index: usize,
     direction: Direction,
@@ -149,9 +182,7 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, w, h, 0);
                 },
                 .text_input => |ti| {
-                    // Intrinsic size is min_width × INPUT_HEIGHT; flex can
-                    // grow the main axis, parent cross stretch can grow the
-                    // cross axis during the position pass.
+                    // Intrinsic size; flex/cross-stretch expand it in the position pass.
                     const w = ti.style.min_width;
                     const h = INPUT_HEIGHT;
                     rects[i] = .{ .w = w, .h = h };
@@ -224,12 +255,20 @@ pub const LayoutEngine = struct {
 
         for (cmds, 0..) |c, i| {
             switch (c) {
-                .push_group => |grp| {
-                    placeContainer(rects, &stack, i, grp.direction, grp.padding, grp.gap, grp.flex, 0, 0);
-                },
-                .push_scroll => |sc| {
-                    placeContainer(rects, &stack, i, sc.direction, sc.padding, sc.gap, sc.flex, sc.scroll_x, sc.scroll_y);
-                },
+                .push_group => |grp| placeContainer(rects, &stack, i, .{
+                    .direction = grp.direction,
+                    .padding = grp.padding,
+                    .gap = grp.gap,
+                    .flex = grp.flex,
+                }),
+                .push_scroll => |sc| placeContainer(rects, &stack, i, .{
+                    .direction = sc.direction,
+                    .padding = sc.padding,
+                    .gap = sc.gap,
+                    .flex = sc.flex,
+                    .scroll_x = sc.scroll_x,
+                    .scroll_y = sc.scroll_y,
+                }),
                 .text, .button, .checkbox, .radio => {
                     const ctx = stack.top();
                     if (ctx.child_count > 0) advanceCursor(ctx, ctx.gap);
@@ -257,29 +296,34 @@ pub const LayoutEngine = struct {
         }
     }
 
-    /// Place a push-{group|scroll} entry inside its parent and push a
-    /// fresh CursorContext for its children. `scroll_x`/`scroll_y` are 0
-    /// for ordinary groups; scroll containers pass the Model-owned offset
-    /// so children's cursors start shifted.
-    fn placeContainer(
-        rects: []Rect,
-        stack: *FixedStack(CursorContext, 32),
-        i: usize,
+    const ContainerSpec = struct {
         direction: Direction,
         padding: f32,
         gap: f32,
         flex: f32,
-        scroll_x: f32,
-        scroll_y: f32,
+        /// Children's cursor starts shifted by these offsets. Non-zero only
+        /// for scroll containers — an overflowing child ends up outside the
+        /// viewport, and the render/hit-test clip stacks discard it.
+        scroll_x: f32 = 0,
+        scroll_y: f32 = 0,
+    };
+
+    /// Place a push-{group|scroll} entry inside its parent and push a
+    /// fresh CursorContext for its children.
+    fn placeContainer(
+        rects: []Rect,
+        stack: *FixedStack(CursorContext, 32),
+        i: usize,
+        spec: ContainerSpec,
     ) void {
         if (stack.len > 0) {
             const parent = stack.top();
             if (parent.child_count > 0) advanceCursor(parent, parent.gap);
 
-            if (flex > 0 and parent.per_flex_unit > 0) {
+            if (spec.flex > 0 and parent.per_flex_unit > 0) {
                 switch (parent.direction) {
-                    .horizontal => rects[i].w += flex * parent.per_flex_unit,
-                    .vertical => rects[i].h += flex * parent.per_flex_unit,
+                    .horizontal => rects[i].w += spec.flex * parent.per_flex_unit,
+                    .vertical => rects[i].h += spec.flex * parent.per_flex_unit,
                 }
             }
 
@@ -294,31 +338,29 @@ pub const LayoutEngine = struct {
             advanceCursor(parent, advance_by);
         }
 
-        const inner_w = @max(0, rects[i].w - 2 * padding);
-        const inner_h = @max(0, rects[i].h - 2 * padding);
-        const inner_main: f32 = switch (direction) {
+        const inner_w = @max(0, rects[i].w - 2 * spec.padding);
+        const inner_h = @max(0, rects[i].h - 2 * spec.padding);
+        const inner_main: f32 = switch (spec.direction) {
             .horizontal => inner_w,
             .vertical => inner_h,
         };
-        const inner_cross: f32 = switch (direction) {
+        const inner_cross: f32 = switch (spec.direction) {
             .horizontal => inner_h,
             .vertical => inner_w,
         };
-        const fixed_main = rects[i].fixed_main;
-        const flex_total = rects[i].flex_total;
         const count = rects[i].child_count;
         const gaps: f32 = if (count > 1)
-            @as(f32, @floatFromInt(count - 1)) * gap
+            @as(f32, @floatFromInt(count - 1)) * spec.gap
         else
             0;
-        const extra = @max(0, inner_main - fixed_main - gaps);
-        const per_flex_unit: f32 = if (flex_total > 0) extra / flex_total else 0;
+        const extra = @max(0, inner_main - rects[i].fixed_main - gaps);
+        const per_flex_unit: f32 = if (rects[i].flex_total > 0) extra / rects[i].flex_total else 0;
 
         stack.push(.{
-            .x = rects[i].x + padding - scroll_x,
-            .y = rects[i].y + padding - scroll_y,
-            .direction = direction,
-            .gap = gap,
+            .x = rects[i].x + spec.padding - spec.scroll_x,
+            .y = rects[i].y + spec.padding - spec.scroll_y,
+            .direction = spec.direction,
+            .gap = spec.gap,
             .per_flex_unit = per_flex_unit,
             .inner_cross = inner_cross,
         });

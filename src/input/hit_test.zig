@@ -2,6 +2,8 @@ const std = @import("std");
 const cmd_mod = @import("../core/cmd.zig");
 const layout = @import("../layout/engine.zig");
 const Rect = layout.Rect;
+const ClipStack = layout.ClipStack;
+const clipRect = layout.clipRect;
 
 // ── Hit-Test ───────────────────────────────────────────────────────
 //
@@ -24,36 +26,23 @@ fn rectContains(r: Rect, px: f32, py: f32) bool {
         py >= r.y and py <= r.y + r.h;
 }
 
-fn rectIntersect(a: Rect, b: Rect) Rect {
-    const x0 = @max(a.x, b.x);
-    const y0 = @max(a.y, b.y);
-    const x1 = @min(a.x + a.w, b.x + b.w);
-    const y1 = @min(a.y + a.h, b.y + b.h);
-    if (x1 <= x0 or y1 <= y0) return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-    return .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
+/// Msg carried by an interactive leaf, if any. Lets hit-test and the
+/// interactive-leaf hoverTest arm share one predicate.
+fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
+    return switch (c) {
+        .button => |b| b.msg,
+        .text_input => |t| t.focus_msg,
+        .checkbox => |cb| cb.msg,
+        .radio => |r| r.msg,
+        .slider => |s| s.grab_msg,
+        else => null,
+    };
 }
 
-const ClipStack = struct {
-    buf: [16]Rect = undefined,
-    len: usize = 0,
-
-    fn push(self: *ClipStack, r: Rect) void {
-        self.buf[self.len] = r;
-        self.len += 1;
-    }
-    fn pop(self: *ClipStack) void {
-        self.len -= 1;
-    }
-    fn top(self: *const ClipStack) Rect {
-        if (self.len == 0) return .{ .x = -1e9, .y = -1e9, .w = 2e9, .h = 2e9 };
-        return self.buf[self.len - 1];
-    }
-};
-
-/// Walk cmds/rects forward, maintaining a scroll-clip stack; keep the
-/// *last* hit (z-order = painter's order, so later draws are on top).
-/// Inside a scroll container, the mouse must fall inside the viewport
-/// rect as well as the widget rect.
+/// Forward-walk cmds/rects maintaining a scroll-clip stack; keep the
+/// *last* hit so painter's order wins (a later draw is on top). A
+/// backward walk would be simpler for z-order but couldn't honor scroll
+/// clips that accumulate top-down.
 pub fn hitTest(
     cmds: anytype,
     rects: []const Rect,
@@ -66,29 +55,12 @@ pub fn hitTest(
     for (cmds, 0..) |c, i| {
         const cur_clip = clip.top();
         switch (c) {
-            .push_scroll => clip.push(rectIntersect(rects[i], cur_clip)),
+            .push_scroll => clip.push(clipRect(rects[i], cur_clip)),
             .pop_scroll => clip.pop(),
-            .button => |btn| {
+            else => if (leafMsg(c)) |msg| {
                 if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
-                    best = .{ .index = i, .msg = btn.msg };
+                    best = .{ .index = i, .msg = msg };
             },
-            .text_input => |ti| {
-                if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
-                    best = .{ .index = i, .msg = ti.focus_msg };
-            },
-            .checkbox => |cb| {
-                if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
-                    best = .{ .index = i, .msg = cb.msg };
-            },
-            .radio => |rd| {
-                if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
-                    best = .{ .index = i, .msg = rd.msg };
-            },
-            .slider => |sl| {
-                if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
-                    best = .{ .index = i, .msg = sl.grab_msg };
-            },
-            else => {},
         }
     }
     return best;
@@ -107,13 +79,12 @@ pub fn hoverTest(
     for (cmds, 0..) |c, i| {
         const cur_clip = clip.top();
         switch (c) {
-            .push_scroll => clip.push(rectIntersect(rects[i], cur_clip)),
+            .push_scroll => clip.push(clipRect(rects[i], cur_clip)),
             .pop_scroll => clip.pop(),
-            .button, .text_input, .checkbox, .radio, .slider => {
+            else => if (leafMsg(c) != null) {
                 if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
                     best = i;
             },
-            else => {},
         }
     }
     return best;

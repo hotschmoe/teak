@@ -1,13 +1,14 @@
 const std = @import("std");
 const layout = @import("../layout/engine.zig");
 const Rect = layout.Rect;
+const ClipStack = layout.ClipStack;
+const clipRect = layout.clipRect;
 const TransientState = @import("../core/transient.zig").TransientState;
 const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
 
-// Text-input visual constants. Monospace CHAR_WIDTH matches the layout
-// pass so the cursor sits on glyph boundaries.
+// CHAR_WIDTH mirrors the layout pass so the cursor sits on glyph boundaries.
 const CHAR_WIDTH: f32 = 10;
 const BORDER_WIDTH: f32 = 2;
 const CURSOR_WIDTH: f32 = 2;
@@ -19,34 +20,6 @@ fn insetRect(r: Rect, amount: f32) Rect {
     const h = @max(0, r.h - 2 * amount);
     return .{ .x = r.x + amount, .y = r.y + amount, .w = w, .h = h };
 }
-
-/// Intersect `r` with `clip`. Returns a rect with w/h=0 if fully outside.
-fn clipRect(r: Rect, clip: Rect) Rect {
-    const x0 = @max(r.x, clip.x);
-    const y0 = @max(r.y, clip.y);
-    const x1 = @min(r.x + r.w, clip.x + clip.w);
-    const y1 = @min(r.y + r.h, clip.y + clip.h);
-    if (x1 <= x0 or y1 <= y0) return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
-    return .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
-}
-
-const ClipStack = struct {
-    buffer: [16]Rect = undefined,
-    len: usize = 0,
-
-    fn push(self: *ClipStack, r: Rect) void {
-        self.buffer[self.len] = r;
-        self.len += 1;
-    }
-    fn pop(self: *ClipStack) void {
-        self.len -= 1;
-    }
-    /// Returns the innermost clip, or a huge rect if the stack is empty.
-    fn top(self: *const ClipStack) Rect {
-        if (self.len == 0) return .{ .x = -1e9, .y = -1e9, .w = 2e9, .h = 2e9 };
-        return self.buffer[self.len - 1];
-    }
-};
 
 fn emit(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, r: Rect, color: [4]f32, clip: Rect) void {
     const cr = clipRect(r, clip);
@@ -122,7 +95,6 @@ pub fn buildVertices(
                 }
             },
             .checkbox => |cb| {
-                // Box on the left, label placeholder to the right.
                 const box_rect = Rect{
                     .x = rect.x,
                     .y = rect.y + @max(0, (rect.h - cb.style.size) * 0.5),
@@ -148,8 +120,8 @@ pub fn buildVertices(
                 }
             },
             .radio => |rd| {
-                // Render like checkbox with a smaller filled inner square to
-                // suggest a radio dot. (Quads only — no circle primitive.)
+                // Quads-only renderer: a filled inner square stands in for
+                // the classic radio dot until we get a circle primitive.
                 const box_rect = Rect{
                     .x = rect.x,
                     .y = rect.y + @max(0, (rect.h - rd.style.size) * 0.5),
@@ -202,15 +174,8 @@ pub fn buildVertices(
                 };
                 emit(verts, alloc, thumb, sl.style.thumb, cur_clip);
             },
-            .push_scroll => {
-                // Intersect the scroll container's own rect with the
-                // current clip and push. All subsequent emits are clipped
-                // to the viewport until pop_scroll.
-                clip.push(clipRect(rect, cur_clip));
-            },
-            .pop_scroll => {
-                clip.pop();
-            },
+            .push_scroll => clip.push(clipRect(rect, cur_clip)),
+            .pop_scroll => clip.pop(),
             .push_group, .pop_group => {},
         }
     }
