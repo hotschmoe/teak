@@ -1,12 +1,12 @@
 const std = @import("std");
 const teak = @import("teak");
-const compose = teak.compose;
+const component = teak.component;
 const counter = @import("counter.zig");
 const greeter = @import("greeter.zig");
 
 // ── Composed Application ───────────────────────────────────────────
 //
-// Compose counter + greeter into one app via compose.zig, plus AppLevel
+// Compose counter + greeter into one app via teak.component.Components, plus AppLevel
 // state for focus tracking. Keyboard events aren't in AppLevel.Msg — the
 // main loop reads Model.focused and translates keys directly into
 // component Msgs (e.g. Msg{ .greeter = .{ .name_char = c } }). This keeps
@@ -32,7 +32,7 @@ const AppLevel = struct {
     }
 };
 
-const Composed = compose.Components(.{
+const Composed = component.Components(.{
     .counter = counter,
     .greeter = greeter,
 }, AppLevel);
@@ -45,7 +45,7 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 16, .gap = 16 });
 
     // Counter: payloadless variants wrap straight into AppMsg.
-    counter.view(&m.counter, cb, compose.buildMsgs(counter, "counter", Msg));
+    counter.view(&m.counter, cb, component.buildMsgs(counter, "counter", Msg));
 
     // Greeter: wrapped in flex=1 so it claims remaining horizontal space.
     // Its `focus` click routes to AppLevel (focus_set), not Greeter.update —

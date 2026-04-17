@@ -1,7 +1,7 @@
 const std = @import("std");
 
 // ── Counter Component ──────────────────────────────────────────────
-// Implements the compose.zig component protocol: Model, Msg, update, view.
+// Implements the component protocol (see src/core/component.zig): Model, Msg, update, view.
 // The msgs parameter carries AppMsg-typed values pre-wrapped by the
 // composition layer so this component stays ignorant of the composed shape.
 

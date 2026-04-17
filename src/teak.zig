@@ -7,7 +7,7 @@
 //! them up. See `tasks-file-struct.md` for the load-bearing rationale.
 
 pub const cmd = @import("core/cmd.zig");
-pub const compose = @import("core/component.zig");
+pub const component = @import("core/component.zig");
 pub const transient = @import("core/transient.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
@@ -40,8 +40,8 @@ pub const buildVertices = render.buildVertices;
 
 pub const TransientState = transient.TransientState;
 
-pub const Components = compose.Components;
-pub const validateComponent = compose.validateComponent;
+pub const Components = component.Components;
+pub const validateComponent = component.validateComponent;
 
 pub const InputState = host.InputState;
 pub const validateHost = host.validateHost;
