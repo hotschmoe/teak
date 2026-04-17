@@ -67,15 +67,14 @@ pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
     };
 }
 
-pub const SpecialKey = enum { backspace, left, right };
-
-pub fn keySpecialMsg(m: *const Model, key: SpecialKey) ?Msg {
+pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     const f = m.focused orelse return null;
     return switch (f) {
         .greeter => switch (key) {
             .backspace => Msg{ .greeter = .name_backspace },
             .left => Msg{ .greeter = .name_cursor_left },
             .right => Msg{ .greeter = .name_cursor_right },
+            else => null,
         },
     };
 }

@@ -58,17 +58,52 @@ pub fn build(b: *std.Build) void {
     };
     const wgpu_dep = b.dependency(wgpu_dep_name, .{});
 
-    const ui_mod = b.createModule(.{
-        .root_source_file = b.path("src/ui_main.zig"),
+    // Platform + GPU backend modules live inside the teak source tree
+    // but are NOT published under the `teak` library module — the library
+    // stays wasm-clean and wgpu-free. The consumer (this example) creates
+    // the backend modules directly from the teak dep's LazyPaths and
+    // wires wgpu include/library paths onto the GPU backend module.
+    const platform_win32_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("src/platform/win32.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
         },
     });
-    ui_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
-    ui_mod.addLibraryPath(wgpu_dep.path("lib"));
-    ui_mod.linkSystemLibrary("wgpu_native.dll", .{});
+
+    // Shader source lives at repo root (shaders/quad.wgsl). Expose it as
+    // a named module so `gpu/native.zig` can @embedFile it without
+    // crossing its own module's package boundary.
+    const shaders_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("shaders/shaders.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const gpu_native_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("src/gpu/native.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-shaders", .module = shaders_mod },
+        },
+    });
+    gpu_native_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
+    gpu_native_mod.addLibraryPath(wgpu_dep.path("lib"));
+    gpu_native_mod.linkSystemLibrary("wgpu_native.dll", .{});
+
+    const ui_mod = b.createModule(.{
+        .root_source_file = b.path("src/ui_main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-platform-win32", .module = platform_win32_mod },
+            .{ .name = "teak-gpu-native", .module = gpu_native_mod },
+        },
+    });
 
     const ui_exe = b.addExecutable(.{ .name = "counter_greeter-ui", .root_module = ui_mod });
 
