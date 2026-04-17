@@ -154,9 +154,13 @@ Move `counter.zig`, `greeter.zig`, `app.zig`, `main.zig`, `ui_main.zig` → `exa
 
 ## 6. Co-develop with zunk (two-way feedback loop)
 
-**What zunk is**: A build tool + runtime library that takes a pure-Zig WASM binary, inspects its import table, and auto-generates the JS + HTML glue required to run it in a browser. Layered API: raw `extern "env" fn` at the bottom, ergonomic `zunk.web.*` modules (canvas, input, audio, gpu, app) in the middle, custom `bridge.js` escape hatch on top. Already ships WebGPU bindings (`zunk.web.gpu`, 33 extern fns, typed handles). Both projects are very early and need to mature together.
+**What zunk is**: A Zig build plugin + runtime library that takes a pure-Zig WASM binary, inspects its import table, and auto-generates the JS + HTML glue required to run it in a browser. Layered API: raw `extern "env" fn` at the bottom, ergonomic `zunk.web.*` modules (canvas, input, audio, gpu, app) in the middle, custom `bridge.js` escape hatch on top. Already ships WebGPU bindings (`zunk.web.gpu`, 33 extern fns, typed handles).
 
-**Local path**: `../zunk/` (sibling repo). Co-development means neither repo pins a stable release of the other yet — we iterate against each other's `master`.
+**Integration model**: zunk is consumed as a normal Zig dependency — **no globally-installed CLI, no external tooling**. Consumer's `build.zig.zon` declares `.zunk = .{ ... }`; consumer's `build.zig` imports zunk and calls `zunk.installApp(b, zunk_dep, user_exe, .{})` which wires the zunk CLI as a build-graph artifact. `zig build run` compiles the wasm, invokes zunk against it, emits HTML/JS, starts a dev server. Cleaner than Rust's trunk-based equivalents — see `zunk_teak_convo.md` §8 for the full logistics breakdown with code pointers.
+
+**Ownership**: Both repos owned by @hotschmoe. Teak is the primary focus, but zunk must remain a **general-purpose Zig wasm build tool** that Teak happens to be one consumer of — standing on its own two feet for others, or at minimum as inspiration for Zig projects leveraging comptime + WASM introspection. This is a deliberate commitment, not an accident of history.
+
+**Local path**: `../zunk/` (sibling repo). Neither repo pins a stable release of the other yet — we iterate against each other's `master`.
 
 ### Why the fit is natural
 
@@ -205,10 +209,22 @@ Run this scoping exercise and write the result to `docs/zunk-integration.md`:
 
 ### Governance / logistics
 
-Since both repos are solo / very early, "two-way communication" for now just means:
-- Cross-linked issues when one project's decision affects the other.
-- A shared `INTEGRATION.md` in one repo (probably zunk since it's the build tool) listing known consumers and their minimum-version requirements.
-- Willingness to land small PRs upstream in zunk to close coverage gaps rather than working around them in Teak.
+Same owner for both repos; "two-way communication" mostly means keeping the line between Teak-specific and general-purpose clean so future contributors to either repo (or to zunk as a standalone tool) aren't surprised:
+
+- **Upstream preference.** When Teak needs a zunk feature, add it to zunk as a general-purpose feature, not as a Teak-specific hack. If Teak's need isn't generalizable, that's a signal the need is wrong.
+- **No forking, no absorbing.** If zunk has a gap, PR it upstream. See `zunk_teak_convo.md` §8 for the three-criteria test that must be met before reconsidering this — none hold today.
+- **Cross-linked issues** when one project's decision affects the other. The owner-of-both may know; a future reader of either repo in isolation won't.
+- **Shared `INTEGRATION.md`** in zunk listing known consumers (currently Teak + zunk's own example apps) and their minimum-version requirements.
+
+### Independence commitment
+
+Zunk must remain a general-purpose Zig wasm build tool even while Teak is its primary consumer. Three concrete commitments (also captured as standing action items in `zunk_teak_convo.md`):
+
+- **Never ship Teak-specific resolution rules** into zunk's 5-tier resolver. If Teak needs a special case, it's a general case (or it's a bug).
+- **Never absorb zunk's HTML/JS generation into Teak.** The coupling is already at the cleanest possible layer (`zunk.installApp`); absorbing would only add mission creep. See `zunk_teak_convo.md` §8 for the full analysis and the three criteria that would justify revisiting.
+- **Never fork zunk into Teak's tree.** If zunk atrophies, vendor the minimum needed shims into `src/host/wasm/` and drop the dep — don't carry the whole toolchain.
+
+The Rust precedent: iced doesn't absorb trunk. Teak shouldn't absorb zunk. Zig's build plugin model makes the integration cleaner than Rust's; take the win.
 
 **Do before**: task 3a's actual `wasm.zig` implementation — the audit has to land first.
 **Do after**: task 3b/c (library + examples extraction) so there's a clean consumer story to hand zunk.
