@@ -49,11 +49,13 @@ zig build test
 
 The wgpu-native dependency is fetched automatically by the Zig build system on first build.
 
+### Cross-target builds
+
+`build.zig` auto-picks the right wgpu-native prebuilt (aarch64 or x86_64 Windows) based on the resolved target, so on a native x86_64 Windows host `zig build ui` just works without flags.
+
 ### Windows ARM64 notes
 
-The wgpu-native dependency is aarch64-windows. `zig build ui` needs `-Dtarget=aarch64-windows-gnu` so the linked binary matches the prebuilt wgpu lib.
-
-Zig's own 0.16.0 `aarch64-windows` compiler binary is currently broken (upstream [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865)) — so we run the **x86_64-windows** `zig.exe` under Windows-on-ARM (Prism) emulation, and cross-compile the app to native `aarch64-windows`. Only the compiler is emulated; `teak-ui.exe` is a real ARM64 binary. See [`docs/zig-016-win-arm64-crash.md`](docs/zig-016-win-arm64-crash.md) for the full story.
+Zig's own 0.16.0 `aarch64-windows` compiler binary is currently broken (upstream [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865)) — so we run the **x86_64-windows** `zig.exe` under Windows-on-ARM (Prism) emulation, and cross-compile the app to native `aarch64-windows` with `-Dtarget=aarch64-windows-gnu`. Only the compiler is emulated; `teak-ui.exe` is a real ARM64 binary. See [`docs/zig-016-win-arm64-crash.md`](docs/zig-016-win-arm64-crash.md) for the full story.
 
 ## Project Structure
 

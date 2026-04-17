@@ -20,8 +20,8 @@ Zig 0.16.0's native `aarch64-windows` compiler binary is broken upstream ([Codeb
 
 Implications for building:
 - The native default target when running `zig build` is `x86_64-windows` (what Prism reports).
-- The `wgpu-native` dep in `build.zig.zon` is an aarch64-windows prebuilt. Linking an x86_64 build against it fails with `lld-link: machine type arm64 conflicts with x64`.
-- **`zig build ui` must be passed `-Dtarget=aarch64-windows-gnu`** so the linked binary matches the wgpu lib. The resulting `teak-ui.exe` is a real ARM64 binary — only the compiler runs emulated.
+- `build.zig.zon` declares two wgpu-native deps (`wgpu-native-aarch64` and `wgpu-native-x86_64`); `build.zig` selects the matching one by `target.result.cpu.arch` so no flags are needed on a native host.
+- **On this aarch64 host, pass `-Dtarget=aarch64-windows-gnu` to `zig build ui`** so the output binary runs natively instead of under Prism. Without it, the build still succeeds — you just get an x86_64 UI binary that runs emulated. (On a native x86_64 Windows host, no flag is needed.)
 - `zig build` and `zig build test` work without the flag (they don't link wgpu).
 
 Full details: [`docs/zig-016-win-arm64-crash.md`](docs/zig-016-win-arm64-crash.md). When #31865 ships a fix, drop the emulation workaround and remove `-Dtarget=` from `zig build ui`.

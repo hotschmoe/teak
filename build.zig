@@ -52,7 +52,17 @@ pub fn build(b: *std.Build) void {
 
     // --- wgpu UI executable ---
 
-    const wgpu_dep = b.dependency("wgpu-native", .{});
+    // Pick the wgpu-native prebuilt for the resolved target architecture.
+    // Keeps `zig build ui` working on both aarch64-windows (native on
+    // Snapdragon) and x86_64-windows (native or Prism-emulated host).
+    const wgpu_dep_name: []const u8 = if (target.result.os.tag != .windows)
+        @panic("wgpu-native: only Windows targets are wired up; add the release to build.zig.zon")
+    else switch (target.result.cpu.arch) {
+        .aarch64 => "wgpu-native-aarch64",
+        .x86_64 => "wgpu-native-x86_64",
+        else => @panic("wgpu-native: unsupported Windows arch (need aarch64 or x86_64)"),
+    };
+    const wgpu_dep = b.dependency(wgpu_dep_name, .{});
 
     const ui_mod = b.createModule(.{
         .root_source_file = b.path("src/ui_main.zig"),
