@@ -47,24 +47,18 @@ pub fn validateComponent(comptime T: type) void {
 /// runs, we populate each field with a pre-wrapped AppMsg value.
 fn MsgsStructFor(comptime Comp: type, comptime AppMsg: type) type {
     const msg_info = @typeInfo(Comp.Msg).@"union";
-    comptime var fields: []const std.builtin.Type.StructField = &.{};
+    comptime var names: []const []const u8 = &.{};
+    comptime var types: []const type = &.{};
     inline for (msg_info.fields) |f| {
         if (f.type == void) {
-            fields = fields ++ &[_]std.builtin.Type.StructField{.{
-                .name = f.name,
-                .type = AppMsg,
-                .default_value_ptr = null,
-                .is_comptime = false,
-                .alignment = @alignOf(AppMsg),
-            }};
+            names = names ++ &[_][]const u8{f.name};
+            types = types ++ &[_]type{AppMsg};
         }
     }
-    return @Type(.{ .@"struct" = .{
-        .layout = .auto,
-        .fields = fields,
-        .decls = &.{},
-        .is_tuple = false,
-    }});
+    const n = names.len;
+    const types_arr: [n]type = types[0..n].*;
+    const attrs: [n]std.builtin.Type.StructField.Attributes = @splat(.{});
+    return @Struct(.auto, null, names, &types_arr, &attrs);
 }
 
 /// Fill in a MsgsStruct with pre-wrapped AppMsg values. Runs once per
@@ -89,49 +83,48 @@ pub fn buildMsgs(
 }
 
 fn GenerateModel(comptime components: anytype, comptime AppLevel: ?type) type {
-    comptime var fields: []const std.builtin.Type.StructField = &.{};
+    const Attrs = std.builtin.Type.StructField.Attributes;
+    comptime var names: []const []const u8 = &.{};
+    comptime var types: []const type = &.{};
+    comptime var attrs_list: []const Attrs = &.{};
     inline for (std.meta.fields(@TypeOf(components))) |field| {
         const T = @field(components, field.name);
-        fields = fields ++ &[_]std.builtin.Type.StructField{.{
-            .name = field.name,
-            .type = T.Model,
-            .default_value_ptr = default_ptr: {
-                const default: T.Model = .{};
-                break :default_ptr @ptrCast(&default);
-            },
-            .is_comptime = false,
-            .alignment = @alignOf(T.Model),
-        }};
+        names = names ++ &[_][]const u8{field.name};
+        types = types ++ &[_]type{T.Model};
+        const default: T.Model = .{};
+        attrs_list = attrs_list ++ &[_]Attrs{.{ .default_value_ptr = @ptrCast(&default) }};
     }
     if (AppLevel) |AL| {
         inline for (std.meta.fields(AL)) |field| {
-            fields = fields ++ &[_]std.builtin.Type.StructField{field};
+            names = names ++ &[_][]const u8{field.name};
+            types = types ++ &[_]type{field.type};
+            attrs_list = attrs_list ++ &[_]Attrs{.{
+                .@"comptime" = field.is_comptime,
+                .@"align" = field.alignment,
+                .default_value_ptr = field.default_value_ptr,
+            }};
         }
     }
-    return @Type(.{ .@"struct" = .{
-        .layout = .auto,
-        .fields = fields,
-        .decls = &.{},
-        .is_tuple = false,
-    }});
+    const n = names.len;
+    const types_arr: [n]type = types[0..n].*;
+    const attrs_arr: [n]Attrs = attrs_list[0..n].*;
+    return @Struct(.auto, null, names, &types_arr, &attrs_arr);
 }
 
 fn GenerateMsg(comptime components: anytype, comptime AppLevel: ?type) type {
-    comptime var union_fields: []const std.builtin.Type.UnionField = &.{};
-    comptime var enum_fields: []const std.builtin.Type.EnumField = &.{};
+    const UAttrs = std.builtin.Type.UnionField.Attributes;
+    comptime var names: []const []const u8 = &.{};
+    comptime var types: []const type = &.{};
+    comptime var attrs_list: []const UAttrs = &.{};
+    comptime var values: []const u16 = &.{};
     comptime var idx: u16 = 0;
 
     inline for (std.meta.fields(@TypeOf(components))) |field| {
         const T = @field(components, field.name);
-        union_fields = union_fields ++ &[_]std.builtin.Type.UnionField{.{
-            .name = field.name,
-            .type = T.Msg,
-            .alignment = @alignOf(T.Msg),
-        }};
-        enum_fields = enum_fields ++ &[_]std.builtin.Type.EnumField{.{
-            .name = field.name,
-            .value = idx,
-        }};
+        names = names ++ &[_][]const u8{field.name};
+        types = types ++ &[_]type{T.Msg};
+        attrs_list = attrs_list ++ &[_]UAttrs{.{}};
+        values = values ++ &[_]u16{idx};
         idx += 1;
     }
 
@@ -139,29 +132,22 @@ fn GenerateMsg(comptime components: anytype, comptime AppLevel: ?type) type {
         if (@hasDecl(AL, "Msg")) {
             const AL_Msg_info = @typeInfo(AL.Msg).@"union";
             inline for (AL_Msg_info.fields) |uf| {
-                union_fields = union_fields ++ &[_]std.builtin.Type.UnionField{uf};
-                enum_fields = enum_fields ++ &[_]std.builtin.Type.EnumField{.{
-                    .name = uf.name,
-                    .value = idx,
-                }};
+                names = names ++ &[_][]const u8{uf.name};
+                types = types ++ &[_]type{uf.type};
+                attrs_list = attrs_list ++ &[_]UAttrs{.{ .@"align" = uf.alignment }};
+                values = values ++ &[_]u16{idx};
                 idx += 1;
             }
         }
     }
 
-    const TagT = @Type(.{ .@"enum" = .{
-        .tag_type = u16,
-        .fields = enum_fields,
-        .decls = &.{},
-        .is_exhaustive = true,
-    }});
+    const n = names.len;
+    const values_arr: [n]u16 = values[0..n].*;
+    const TagT = @Enum(u16, .exhaustive, names, &values_arr);
 
-    return @Type(.{ .@"union" = .{
-        .layout = .auto,
-        .tag_type = TagT,
-        .fields = union_fields,
-        .decls = &.{},
-    }});
+    const types_arr: [n]type = types[0..n].*;
+    const attrs_arr: [n]UAttrs = attrs_list[0..n].*;
+    return @Union(.auto, TagT, names, &types_arr, &attrs_arr);
 }
 
 pub fn Components(comptime components: anytype, comptime AppLevel: ?type) type {

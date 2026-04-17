@@ -4,15 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build Commands
 
-Requires **Zig 0.15.2+**.
+Requires **Zig 0.16.0+**.
 
 ```sh
-zig build run       # Run the main CLI executable
-zig build ui        # Run the UI executable (wgpu + Win32)
-zig build test      # Run all tests (library + CLI modules)
+zig build run                               # Run the main CLI executable
+zig build ui -Dtarget=aarch64-windows-gnu   # Run the UI executable (wgpu + Win32)
+zig build test                              # Run all tests (library + CLI modules)
 ```
 
 The `wgpu-native` dependency is fetched automatically on first build. The build targets Windows ARM64 (Snapdragon X Elite) with a workaround for Zig's missing `i8mm` CPU feature detection on aarch64.
+
+### Windows ARM64 toolchain workaround (Zig 0.16.0)
+
+Zig 0.16.0's native `aarch64-windows` compiler binary is broken upstream ([Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865)) — it segfaults on any compile. This machine runs the **x86_64-windows** `zig.exe` (installed at `C:\zig\`) under Windows-on-ARM (Prism) emulation and **cross-compiles** to aarch64-windows.
+
+Implications for building:
+- The native default target when running `zig build` is `x86_64-windows` (what Prism reports).
+- The `wgpu-native` dep in `build.zig.zon` is an aarch64-windows prebuilt. Linking an x86_64 build against it fails with `lld-link: machine type arm64 conflicts with x64`.
+- **`zig build ui` must be passed `-Dtarget=aarch64-windows-gnu`** so the linked binary matches the wgpu lib. The resulting `teak-ui.exe` is a real ARM64 binary — only the compiler runs emulated.
+- `zig build` and `zig build test` work without the flag (they don't link wgpu).
+
+Full details: [`docs/zig-016-win-arm64-crash.md`](docs/zig-016-win-arm64-crash.md). When #31865 ships a fix, drop the emulation workaround and remove `-Dtarget=` from `zig build ui`.
 
 ## Architecture
 
