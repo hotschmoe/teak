@@ -1,4 +1,5 @@
 const std = @import("std");
+const teak = @import("teak");
 
 pub fn build(b: *std.Build) void {
     const target = blk: {
@@ -45,74 +46,24 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
     // --- wgpu UI executable ---
+    //
+    // One helper call wires teak + platform + gpu modules, links
+    // wgpu-native, and installs wgpu_native.dll alongside the binary.
 
-    // Pick the wgpu-native prebuilt for the resolved target architecture.
-    // Keeps `zig build ui` working on both aarch64-windows (native on
-    // Snapdragon) and x86_64-windows (native or Prism-emulated host).
-    const wgpu_dep_name: []const u8 = if (target.result.os.tag != .windows)
-        @panic("wgpu-native: only Windows targets are wired up; add the release to build.zig.zon")
-    else switch (target.result.cpu.arch) {
-        .aarch64 => "wgpu-native-aarch64",
-        .x86_64 => "wgpu-native-x86_64",
-        else => @panic("wgpu-native: unsupported Windows arch (need aarch64 or x86_64)"),
-    };
-    const wgpu_dep = b.dependency(wgpu_dep_name, .{});
-
-    // Platform + GPU backend modules live inside the teak source tree
-    // but are NOT published under the `teak` library module — the library
-    // stays wasm-clean and wgpu-free. The consumer (this example) creates
-    // the backend modules directly from the teak dep's LazyPaths and
-    // wires wgpu include/library paths onto the GPU backend module.
-    const platform_win32_mod = b.createModule(.{
-        .root_source_file = teak_dep.path("src/platform/win32.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "teak", .module = teak_mod },
-        },
+    const ui_exe = b.addExecutable(.{
+        .name = "counter_greeter-ui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ui_main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
-
-    // Shader source lives at repo root (shaders/quad.wgsl). Expose it as
-    // a named module so `gpu/native.zig` can @embedFile it without
-    // crossing its own module's package boundary.
-    const shaders_mod = b.createModule(.{
-        .root_source_file = teak_dep.path("shaders/shaders.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const gpu_native_mod = b.createModule(.{
-        .root_source_file = teak_dep.path("src/gpu/native.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "teak", .module = teak_mod },
-            .{ .name = "teak-shaders", .module = shaders_mod },
-        },
-    });
-    gpu_native_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
-    gpu_native_mod.addLibraryPath(wgpu_dep.path("lib"));
-    gpu_native_mod.linkSystemLibrary("wgpu_native.dll", .{});
-
-    const ui_mod = b.createModule(.{
-        .root_source_file = b.path("src/ui_main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "teak", .module = teak_mod },
-            .{ .name = "teak-platform-win32", .module = platform_win32_mod },
-            .{ .name = "teak-gpu-native", .module = gpu_native_mod },
-        },
-    });
-
-    const ui_exe = b.addExecutable(.{ .name = "counter_greeter-ui", .root_module = ui_mod });
+    teak.linkWin32Wgpu(b, ui_exe, .{});
 
     const install_ui = b.addInstallArtifact(ui_exe, .{});
-    const install_dll = b.addInstallBinFile(wgpu_dep.path("lib/wgpu_native.dll"), "wgpu_native.dll");
 
     const ui_run = b.addRunArtifact(ui_exe);
     ui_run.step.dependOn(&install_ui.step);
-    ui_run.step.dependOn(&install_dll.step);
     if (b.args) |args| ui_run.addArgs(args);
 
     const ui_step = b.step("ui", "Run Teak UI demo (wgpu + Win32)");

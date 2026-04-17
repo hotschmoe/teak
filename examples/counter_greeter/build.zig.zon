@@ -5,16 +5,6 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .teak = .{ .path = "../.." },
-        // wgpu-native prebuilts are per-target. build.zig selects the right
-        // one based on the resolved target architecture.
-        .@"wgpu-native-aarch64" = .{
-            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-windows-aarch64-msvc-release.zip",
-            .hash = "N-V-__8AABFHyAO2T8ZpcMlS-0UlZgx3vsCRtVx8IspCf6Ov",
-        },
-        .@"wgpu-native-x86_64" = .{
-            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-windows-x86_64-msvc-release.zip",
-            .hash = "N-V-__8AAO0eBwSB7GxV-NB9TuztsaPlUh8rDiZ4-Kr-K_s8",
-        },
     },
     .paths = .{
         "build.zig",
