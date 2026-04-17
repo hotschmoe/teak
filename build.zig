@@ -16,6 +16,44 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
+
+    // Integration tests: full-pipeline round trip + wasm-canary.
+    const integ_mod = b.createModule(.{
+        .root_source_file = b.path("test/integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "teak", .module = mod }},
+    });
+    const integ_tests = b.addTest(.{ .root_module = integ_mod });
+    test_step.dependOn(&b.addRunArtifact(integ_tests).step);
+
+    // wasm32-freestanding compile canary. Run `zig build test-wasm` to
+    // assert the framework core stays posix-dep-free. The artifact isn't
+    // executed — successful compile is the signal.
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    const wasm_mod = b.addModule("teak-wasm-canary", .{
+        .root_source_file = b.path("src/teak.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    const wasm_integ_mod = b.createModule(.{
+        .root_source_file = b.path("test/integration_test.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{.{ .name = "teak", .module = wasm_mod }},
+    });
+    const wasm_canary = b.addExecutable(.{
+        .name = "teak-wasm-canary",
+        .root_module = wasm_integ_mod,
+    });
+    wasm_canary.entry = .disabled;
+    wasm_canary.rdynamic = true;
+
+    const wasm_step = b.step("test-wasm", "Compile framework core for wasm32-freestanding (posix-dep canary)");
+    wasm_step.dependOn(&wasm_canary.step);
 }
 
 fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {

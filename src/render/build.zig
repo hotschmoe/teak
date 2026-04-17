@@ -12,11 +12,46 @@ const CHAR_WIDTH: f32 = 10;
 const BORDER_WIDTH: f32 = 2;
 const CURSOR_WIDTH: f32 = 2;
 const INPUT_TEXT_PADDING: f32 = 6;
+const SLIDER_TRACK_PADDING: f32 = 2;
 
 fn insetRect(r: Rect, amount: f32) Rect {
     const w = @max(0, r.w - 2 * amount);
     const h = @max(0, r.h - 2 * amount);
     return .{ .x = r.x + amount, .y = r.y + amount, .w = w, .h = h };
+}
+
+/// Intersect `r` with `clip`. Returns a rect with w/h=0 if fully outside.
+fn clipRect(r: Rect, clip: Rect) Rect {
+    const x0 = @max(r.x, clip.x);
+    const y0 = @max(r.y, clip.y);
+    const x1 = @min(r.x + r.w, clip.x + clip.w);
+    const y1 = @min(r.y + r.h, clip.y + clip.h);
+    if (x1 <= x0 or y1 <= y0) return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    return .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
+}
+
+const ClipStack = struct {
+    buffer: [16]Rect = undefined,
+    len: usize = 0,
+
+    fn push(self: *ClipStack, r: Rect) void {
+        self.buffer[self.len] = r;
+        self.len += 1;
+    }
+    fn pop(self: *ClipStack) void {
+        self.len -= 1;
+    }
+    /// Returns the innermost clip, or a huge rect if the stack is empty.
+    fn top(self: *const ClipStack) Rect {
+        if (self.len == 0) return .{ .x = -1e9, .y = -1e9, .w = 2e9, .h = 2e9 };
+        return self.buffer[self.len - 1];
+    }
+};
+
+fn emit(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, r: Rect, color: [4]f32, clip: Rect) void {
+    const cr = clipRect(r, clip);
+    if (cr.w <= 0 or cr.h <= 0) return;
+    emitQuad(verts, alloc, cr, color);
 }
 
 /// Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits a
@@ -31,10 +66,13 @@ pub fn buildVertices(
 ) void {
     verts.clearRetainingCapacity();
 
+    var clip: ClipStack = .{};
+
     for (cmds, rects, 0..) |c, rect, i| {
+        const cur_clip = clip.top();
         switch (c) {
             .text => {
-                emitQuad(verts, alloc, rect, .{ 0.15, 0.15, 0.2, 1.0 });
+                emit(verts, alloc, rect, .{ 0.15, 0.15, 0.2, 1.0 }, cur_clip);
             },
             .button => |btn| {
                 const pressed = if (transient.press_index) |pi| pi == i else false;
@@ -45,20 +83,16 @@ pub fn buildVertices(
                     btn.style.hover_bg
                 else
                     btn.style.bg;
-                emitQuad(verts, alloc, rect, bg);
+                emit(verts, alloc, rect, bg, cur_clip);
             },
             .text_input => |ti| {
                 const focused = if (transient.focus_index) |fi| fi == i else false;
                 const border_color = if (focused) ti.style.focus_border else ti.style.border;
 
-                // Outer rect = border color; inner inset rect = bg.
-                emitQuad(verts, alloc, rect, border_color);
+                emit(verts, alloc, rect, border_color, cur_clip);
                 const inner = insetRect(rect, BORDER_WIDTH);
-                emitQuad(verts, alloc, inner, ti.style.bg);
+                emit(verts, alloc, inner, ti.style.bg, cur_clip);
 
-                // Text content placeholder: a muted rectangle sized to the
-                // text length. Real glyphs come later; this at least shows
-                // that typing changes the displayed length.
                 if (ti.content.len > 0 and inner.w > 2 * INPUT_TEXT_PADDING) {
                     const text_w_raw = @as(f32, @floatFromInt(ti.content.len)) * CHAR_WIDTH;
                     const max_w = @max(0, inner.w - 2 * INPUT_TEXT_PADDING);
@@ -70,7 +104,7 @@ pub fn buildVertices(
                         .w = text_w,
                         .h = text_h,
                     };
-                    emitQuad(verts, alloc, text_rect, .{ 0.55, 0.55, 0.6, 1.0 });
+                    emit(verts, alloc, text_rect, .{ 0.55, 0.55, 0.6, 1.0 }, cur_clip);
                 }
 
                 // Blinking cursor when focused. ~0.5s on / 0.5s off at 60fps.
@@ -84,8 +118,98 @@ pub fn buildVertices(
                         .w = CURSOR_WIDTH,
                         .h = cursor_h,
                     };
-                    emitQuad(verts, alloc, cursor_rect, ti.style.cursor);
+                    emit(verts, alloc, cursor_rect, ti.style.cursor, cur_clip);
                 }
+            },
+            .checkbox => |cb| {
+                // Box on the left, label placeholder to the right.
+                const box_rect = Rect{
+                    .x = rect.x,
+                    .y = rect.y + @max(0, (rect.h - cb.style.size) * 0.5),
+                    .w = cb.style.size,
+                    .h = cb.style.size,
+                };
+                emit(verts, alloc, box_rect, cb.style.box_border, cur_clip);
+                const inner = insetRect(box_rect, BORDER_WIDTH);
+                emit(verts, alloc, inner, cb.style.box_bg, cur_clip);
+                if (cb.checked) {
+                    const check = insetRect(inner, 2);
+                    emit(verts, alloc, check, cb.style.check, cur_clip);
+                }
+                if (cb.label.len > 0) {
+                    const label_x = box_rect.x + cb.style.size + cb.style.label_gap;
+                    const label_w = @as(f32, @floatFromInt(cb.label.len)) * CHAR_WIDTH;
+                    emit(verts, alloc, .{
+                        .x = label_x,
+                        .y = rect.y + @max(0, (rect.h - 16) * 0.5),
+                        .w = label_w,
+                        .h = 16,
+                    }, .{ 0.55, 0.55, 0.6, 1.0 }, cur_clip);
+                }
+            },
+            .radio => |rd| {
+                // Render like checkbox with a smaller filled inner square to
+                // suggest a radio dot. (Quads only — no circle primitive.)
+                const box_rect = Rect{
+                    .x = rect.x,
+                    .y = rect.y + @max(0, (rect.h - rd.style.size) * 0.5),
+                    .w = rd.style.size,
+                    .h = rd.style.size,
+                };
+                emit(verts, alloc, box_rect, rd.style.box_border, cur_clip);
+                const inner = insetRect(box_rect, BORDER_WIDTH);
+                emit(verts, alloc, inner, rd.style.box_bg, cur_clip);
+                if (rd.selected) {
+                    const dot = insetRect(box_rect, rd.style.size * 0.28);
+                    emit(verts, alloc, dot, rd.style.dot, cur_clip);
+                }
+                if (rd.label.len > 0) {
+                    const label_x = box_rect.x + rd.style.size + rd.style.label_gap;
+                    const label_w = @as(f32, @floatFromInt(rd.label.len)) * CHAR_WIDTH;
+                    emit(verts, alloc, .{
+                        .x = label_x,
+                        .y = rect.y + @max(0, (rect.h - 16) * 0.5),
+                        .w = label_w,
+                        .h = 16,
+                    }, .{ 0.55, 0.55, 0.6, 1.0 }, cur_clip);
+                }
+            },
+            .slider => |sl| {
+                const v = @min(@max(sl.value, 0), 1);
+                const track_h = sl.style.track_height;
+                const track = Rect{
+                    .x = rect.x,
+                    .y = rect.y + @max(0, (rect.h - track_h) * 0.5),
+                    .w = rect.w,
+                    .h = track_h,
+                };
+                emit(verts, alloc, track, sl.style.track_bg, cur_clip);
+                if (v > 0 and track.w > 2 * SLIDER_TRACK_PADDING) {
+                    const fill = Rect{
+                        .x = track.x + SLIDER_TRACK_PADDING,
+                        .y = track.y + SLIDER_TRACK_PADDING,
+                        .w = @max(0, (track.w - 2 * SLIDER_TRACK_PADDING) * v),
+                        .h = @max(0, track.h - 2 * SLIDER_TRACK_PADDING),
+                    };
+                    emit(verts, alloc, fill, sl.style.track_fill, cur_clip);
+                }
+                const thumb_x = rect.x + v * @max(0, rect.w - sl.style.thumb_size);
+                const thumb = Rect{
+                    .x = thumb_x,
+                    .y = rect.y + @max(0, (rect.h - sl.style.thumb_size) * 0.5),
+                    .w = sl.style.thumb_size,
+                    .h = sl.style.thumb_size,
+                };
+                emit(verts, alloc, thumb, sl.style.thumb, cur_clip);
+            },
+            .push_scroll => {
+                // Intersect the scroll container's own rect with the
+                // current clip and push. All subsequent emits are clipped
+                // to the viewport until pop_scroll.
+                clip.push(clipRect(rect, cur_clip));
+            },
+            .pop_scroll => {
+                clip.pop();
             },
             .push_group, .pop_group => {},
         }
@@ -118,6 +242,35 @@ test "buildVertices emits one quad per button and text" {
     buildVertices(&verts, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{});
     // 1 text + 1 button = 2 quads * 6 verts
     try testing.expectEqual(@as(usize, 12), verts.items.len);
+}
+
+test "buildVertices clips child widgets to scroll container" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
+
+    var cb = CmdBuffer.init(testing.allocator);
+    defer cb.deinit();
+
+    // 100x100 viewport, two buttons — first fits, second overflows.
+    cb.pushScroll(.{ .width = 100, .height = 100, .padding = 0, .gap = 0 });
+    cb.button(.a, "A"); // y = 0..36, fits
+    cb.button(.a, "B"); // y = 36..72, fits
+    cb.button(.a, "C"); // y = 72..108, partially clipped
+    cb.button(.a, "D"); // y = 108..144, fully clipped
+    cb.popScroll();
+
+    var rects: [16]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 400);
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    buildVertices(&verts, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{});
+
+    // Button D is fully outside the clip → no vertices.
+    // Buttons A/B fit, C is partially clipped. Exact vertex count depends
+    // on how many quads each button emits (1), so expect 3 * 6 = 18.
+    try testing.expectEqual(@as(usize, 18), verts.items.len);
 }
 
 test "buildVertices draws border + bg + cursor for focused text input" {

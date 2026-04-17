@@ -11,6 +11,7 @@ pub const component = @import("core/component.zig");
 pub const transient = @import("core/transient.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
+pub const focus = @import("input/focus.zig");
 pub const keys = @import("input/keys.zig");
 pub const render = @import("render/build.zig");
 pub const vertex = @import("render/vertex.zig");
@@ -20,11 +21,18 @@ pub const gpu = @import("gpu/context.zig");
 pub const Cmd = cmd.Cmd;
 pub const CmdBuffer = cmd.CmdBuffer;
 pub const GroupStyle = cmd.GroupStyle;
+pub const ScrollStyle = cmd.ScrollStyle;
 pub const ButtonCmd = cmd.ButtonCmd;
 pub const ButtonStyle = cmd.ButtonStyle;
 pub const TextCmd = cmd.TextCmd;
 pub const TextInputCmd = cmd.TextInputCmd;
 pub const TextInputStyle = cmd.TextInputStyle;
+pub const CheckboxCmd = cmd.CheckboxCmd;
+pub const CheckboxStyle = cmd.CheckboxStyle;
+pub const RadioCmd = cmd.RadioCmd;
+pub const RadioStyle = cmd.RadioStyle;
+pub const SliderCmd = cmd.SliderCmd;
+pub const SliderStyle = cmd.SliderStyle;
 pub const Direction = cmd.Direction;
 
 pub const Rect = layout.Rect;
@@ -32,6 +40,9 @@ pub const LayoutEngine = layout.LayoutEngine;
 
 pub const hitTest = hit_test.hitTest;
 pub const hoverTest = hit_test.hoverTest;
+pub const sliderValueAt = hit_test.sliderValueAt;
+pub const nextFocusable = focus.nextFocusable;
+pub const prevFocusable = focus.prevFocusable;
 pub const SpecialKey = keys.SpecialKey;
 
 pub const Vertex = vertex.Vertex;

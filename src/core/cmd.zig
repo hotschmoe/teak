@@ -38,6 +38,55 @@ pub const TextInputStyle = struct {
     min_width: f32 = 120,
 };
 
+pub const CheckboxStyle = struct {
+    box_bg: [4]f32 = .{ 0.12, 0.12, 0.14, 1.0 },
+    box_border: [4]f32 = .{ 0.35, 0.35, 0.4, 1.0 },
+    check: [4]f32 = .{ 0.3, 0.7, 1.0, 1.0 },
+    fg: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
+    /// Outer square edge length.
+    size: f32 = 18,
+    /// Gap between the box and the label.
+    label_gap: f32 = 8,
+};
+
+pub const RadioStyle = struct {
+    box_bg: [4]f32 = .{ 0.12, 0.12, 0.14, 1.0 },
+    box_border: [4]f32 = .{ 0.35, 0.35, 0.4, 1.0 },
+    dot: [4]f32 = .{ 0.3, 0.7, 1.0, 1.0 },
+    fg: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
+    size: f32 = 18,
+    label_gap: f32 = 8,
+};
+
+pub const SliderStyle = struct {
+    track_bg: [4]f32 = .{ 0.18, 0.18, 0.22, 1.0 },
+    track_fill: [4]f32 = .{ 0.3, 0.5, 1.0, 1.0 },
+    thumb: [4]f32 = .{ 0.85, 0.85, 0.9, 1.0 },
+    track_height: f32 = 6,
+    thumb_size: f32 = 16,
+    /// Default sliders expand along the main axis.
+    flex: f32 = 1,
+    min_width: f32 = 120,
+};
+
+pub const ScrollStyle = struct {
+    direction: Direction = .vertical,
+    padding: f32 = 0,
+    gap: f32 = 0,
+    /// Flex weight used in the parent's main-axis distribution. 0 means
+    /// use the intrinsic size (capped by width/height below).
+    flex: f32 = 0,
+    /// Fixed viewport sizes. 0 means "measured from children" (in which
+    /// case overflow scrolling is pointless, but the shape still works).
+    width: f32 = 0,
+    height: f32 = 0,
+    /// Current scroll offsets, read from Model. The framework does not
+    /// own this state; the host translates wheel / drag events into app
+    /// Msgs that update the Model fields feeding this value back in.
+    scroll_x: f32 = 0,
+    scroll_y: f32 = 0,
+};
+
 // ── Generic Cmd + CmdBuffer over Msg ───────────────────────────────
 //
 // Per proto 2 Option A: CmdBuffer is generic over the composed AppMsg.
@@ -65,6 +114,44 @@ pub fn TextInputCmd(comptime Msg: type) type {
     };
 }
 
+pub fn CheckboxCmd(comptime Msg: type) type {
+    return struct {
+        /// Msg fired on click. The app flips `Model.checked` in its
+        /// update handler — the framework does not mutate `checked` here.
+        msg: Msg,
+        checked: bool,
+        label: []const u8,
+        style: CheckboxStyle = .{},
+    };
+}
+
+pub fn RadioCmd(comptime Msg: type) type {
+    return struct {
+        /// Msg fired on click. Radio-group semantics (only one selected
+        /// at a time) are app state: the app sets `Model.selected_index`
+        /// to this radio's index on msg, and passes `selected =
+        /// (Model.selected_index == i)` when emitting the command.
+        msg: Msg,
+        selected: bool,
+        label: []const u8,
+        style: RadioStyle = .{},
+    };
+}
+
+pub fn SliderCmd(comptime Msg: type) type {
+    return struct {
+        /// Msg fired on mousedown inside the slider's track. The app
+        /// reads the slider's rect from `rects[hit.index]` and computes
+        /// the new value from mouse_x relative to the rect — the
+        /// framework does not fabricate a value-carrying Msg (HARDLINE §3
+        /// forbids function-pointer callbacks on Cmd variants).
+        grab_msg: Msg,
+        /// Current value in [0, 1] — rendering only.
+        value: f32 = 0,
+        style: SliderStyle = .{},
+    };
+}
+
 pub fn Cmd(comptime Msg: type) type {
     return union(enum) {
         /// Re-expose Msg so that generic helpers can recover it from the Cmd type.
@@ -72,9 +159,14 @@ pub fn Cmd(comptime Msg: type) type {
 
         push_group: GroupStyle,
         pop_group,
+        push_scroll: ScrollStyle,
+        pop_scroll,
         text: TextCmd,
         button: ButtonCmd(Msg),
         text_input: TextInputCmd(Msg),
+        checkbox: CheckboxCmd(Msg),
+        radio: RadioCmd(Msg),
+        slider: SliderCmd(Msg),
     };
 }
 
@@ -160,6 +252,37 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .cursor = cursor,
                 .style = style,
+            } }) catch unreachable;
+        }
+
+        pub fn pushScroll(self: *Self, style: ScrollStyle) void {
+            self.cmds.append(self.backing, .{ .push_scroll = style }) catch unreachable;
+        }
+
+        pub fn popScroll(self: *Self) void {
+            self.cmds.append(self.backing, .pop_scroll) catch unreachable;
+        }
+
+        pub fn checkbox(self: *Self, msg: Msg, checked: bool, label: []const u8) void {
+            self.cmds.append(self.backing, .{ .checkbox = .{
+                .msg = msg,
+                .checked = checked,
+                .label = label,
+            } }) catch unreachable;
+        }
+
+        pub fn radio(self: *Self, msg: Msg, selected: bool, label: []const u8) void {
+            self.cmds.append(self.backing, .{ .radio = .{
+                .msg = msg,
+                .selected = selected,
+                .label = label,
+            } }) catch unreachable;
+        }
+
+        pub fn slider(self: *Self, grab_msg: Msg, value: f32) void {
+            self.cmds.append(self.backing, .{ .slider = .{
+                .grab_msg = grab_msg,
+                .value = value,
             } }) catch unreachable;
         }
     };
