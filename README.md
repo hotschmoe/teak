@@ -4,6 +4,14 @@ A Zig-native UI framework built on **TEA (The Elm Architecture)** + **command bu
 
 Teak explores what a UI paradigm looks like when designed from Zig's strengths — comptime metaprogramming, tagged unions with exhaustive switching, explicit allocators, and arena-based memory — rather than porting an existing framework.
 
+> **Design rules are non-negotiable.** Teak is an experiment in a specific
+> paradigm; the failure mode is accidentally reinventing React/Flutter/etc.
+> by reaching for a familiar shortcut. The keystone doc
+> [`docs/HARDLINE.md`](docs/HARDLINE.md) lists the core invariants, the
+> named escape hatches, and the forbidden patterns. Read it before
+> proposing anything that touches state flow, widget identity, or the
+> host boundary — when a PR bumps against HARDLINE, the PR yields.
+
 ## Architecture
 
 | Layer           | Paradigm         | Zig Mechanism                    |
@@ -94,6 +102,7 @@ teak/
 
 ## Documentation
 
+- [`docs/HARDLINE.md`](docs/HARDLINE.md) — The non-negotiable rules: core invariants, named escape hatches, forbidden patterns, drift-audit checklist. Start here.
 - [`spec.md`](spec.md) — Full architecture specification, design rationale, and implementation plan.
 - [`docs/archive/init_convo/`](docs/archive/init_convo/) — Original design documents that shaped the framework.
 

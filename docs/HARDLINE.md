@@ -55,7 +55,9 @@ frame_counter, mouse_x/y) live outside `Model`.
 
 **Bounded by the three-rule gate** — a field qualifies for TransientState only if **all** hold:
 1. **Derivable** — recomputable from `Model` + current inputs in one pass.
-2. **Non-logical** — `update` never reads it; `view` never reads it.
+2. **Non-logical** — only the render pass reads it; the host writes it
+   (typically from hit-test output, mouse coords, and the frame counter).
+   `update`, `view`, `layout`, and hit-test never reference it.
 3. **Safely losable** — dropping it across a frame boundary is a cosmetic glitch, not a correctness bug.
 
 If a field fails any rule, it goes in `Model`.
@@ -80,15 +82,13 @@ lifecycle entry points — `init`, `frame(dt)`, `resize`, `cleanup` — are
 allowed and belong here.
 
 **Bounded by**:
-- (a) Platform-mutable state (window handles, GPU resources, input
-  queues) is allowed **only** inside `src/platform/*` and `src/gpu/*`.
-- (b) Host must be replaceable — swapping `win32.zig` for `wasm.zig`
+- (a) Host must be replaceable — swapping `win32.zig` for `wasm.zig`
   must not require any change in `src/{core,layout,input,render}/*`
   above it. The contract is `validateHost` / `validateGpu`.
-- (c) No platform type leaks into the framework-facing API. No
+- (b) No platform type leaks into the framework-facing API. No
   `HWND`, no `zunk.web.gpu.Handle`, no `c.WGPUDevice` in `teak.zig`
   re-exports.
-- (d) Framework code never imports `src/platform/*` or
+- (c) Framework code never imports `src/platform/*` or
   `src/gpu/*` directly. Dependency arrow points inward only.
 
 The rAF / `frame(dt)` lifecycle lives at this layer. See
@@ -122,7 +122,18 @@ it gets pushed back until the pattern is removed or §4 is invoked.
   `cleanup` are explicitly allowed under escape hatch 4.)
 - **Components importing `host/*` or `gpu/*`.** Dependency arrow points
   inward. A component reading from `platform/win32` or `gpu/native`
-  breaks escape hatch 4(d).
+  breaks escape hatch 4(c).
+- **Conditional compilation in framework core.** No
+  `if (builtin.os.tag == ...)`, `switch (builtin.target.os.tag)`, or
+  `@import("builtin")`-gated branches inside
+  `src/{core,layout,input,render}/*`. Platform branching happens in
+  `src/platform/*` and `src/gpu/*` only; the greppable form of escape
+  hatch 4(c).
+- **General-purpose allocator in `view()`.** `view`'s signature is
+  `fn(Model, *CmdBuffer) void` — no `std.mem.Allocator` parameter, no
+  `anytype` that smuggles one in. The per-frame arena is reachable
+  through `CmdBuffer` by design; a second allocator path defeats the
+  bulk-free guarantee in §1.
 - **`view()` reading wall-clock time.** `performance.now()`,
   `std.time.nanoTimestamp()`, `Date.now()` — none of these belong in
   view. Animation `t` values live in TransientState, advanced from
@@ -176,3 +187,9 @@ first):
       dep — revert or isolate.
 - [ ] No imports from `src/platform/*` or `src/gpu/*` inside
       `src/{core,layout,input,render}/*`. `grep -rn '@import("\.\./platform"' src/core src/layout src/input src/render` must be empty.
+- [ ] No conditional compilation in framework core.
+      `grep -rn 'builtin\.os\.tag\|builtin\.target' src/core src/layout src/input src/render`
+      must be empty.
+- [ ] `view` signatures take only `Model` + `*CmdBuffer`. No
+      `std.mem.Allocator` parameter reaches any `view` function in
+      framework core or components.

@@ -2,6 +2,36 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Read this first: HARDLINE
+
+Teak is a **novel UI framework**, not a port of React/Flutter/SwiftUI. The
+failure mode is drift — reaching for a familiar pattern (reactive signals,
+virtual DOM diffing, widget-internal state, lifecycle hooks) because
+"that's how UI frameworks do it" and accidentally recreating someone
+else's paradigm.
+
+[`docs/HARDLINE.md`](docs/HARDLINE.md) is the keystone doc. It lists:
+
+- **§1 Core invariants** — all state in `Model`, every transition is a
+  `Msg`, `view` is pure, passes are independent, per-frame arena only.
+- **§2 Deliberate breaks** — the four named escape hatches (comptime
+  component stitching, TransientState, flat-buffer layout, Host layer),
+  each with explicit bounds.
+- **§3 Forbidden patterns** — concrete things to reject: widget-internal
+  statics, fn-pointer smuggling on `Cmd`, ID hashing, VDOM diffing,
+  reactive signals, per-widget lifecycle hooks, platform imports in
+  core, conditional compilation in core, allocator parameters in
+  `view`, wall-clock reads in `view`.
+- **§4 Proposing a new break** — the process (high bar) for adding a new
+  escape hatch.
+- **§5 Drift audit checklist** — greppable rules to verify the codebase
+  still conforms.
+
+**Before touching state flow, widget identity, passes, or the host
+boundary: check HARDLINE.** When a proposed change bumps against it,
+the change yields, not the doc. If you believe the doc is wrong, invoke
+§4 — don't quietly work around it.
+
 ## Build Commands
 
 Requires **Zig 0.16.0+**.
@@ -130,6 +160,7 @@ The project is in **design-complete, implementation-starting** phase. The protot
 
 ## Key Documentation
 
+- `docs/HARDLINE.md` -- **the non-negotiable rules**. Read before any design-touching change. See the "Read this first: HARDLINE" section above.
 - `spec.md` -- full architecture specification
 - `docs/archive/init_convo/first_proto.md` -- phase-by-phase prototype guide with checkpoints
 - `docs/archive/init_convo/ui-framework-diagrams.md` -- 15 architecture diagrams

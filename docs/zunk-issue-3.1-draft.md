@@ -1,9 +1,9 @@
 # Ready-to-file zunk issue (drafted on teak side, not yet submitted)
 
 **Target repo**: `hotschmoe/zunk`
-**Target branch for resulting PR**: `dev-hotschmoe`
-**Drafted**: 2026-04-16
-**Source**: Teak's `docs/zunk-integration.md` §3.1 audit against `zunk` commit `d101693`
+**Target branch for resulting PR**: `master` (v0.1.0 tip)
+**Drafted**: 2026-04-16 · **Re-scoped**: 2026-04-17 (zunk v0.1.0 / Zig 0.16.0 migration)
+**Source**: Teak's `docs/zunk-integration.md` §3.1 audit, re-verified against `zunk` commit `5835cf0` (v0.1.0, post-Zig-0.16.0 migration)
 
 Paste everything below the `---` line into https://github.com/hotschmoe/zunk/issues/new.
 
@@ -23,7 +23,7 @@ Paste everything below the `---` line into https://github.com/hotschmoe/zunk/iss
 
 Teak is the first external zunk consumer (per `INTEGRATION.md` intent in `docs/zunk-integration.md`). Its render pipeline is:
 
-1. Traverse command buffer + rect buffer on CPU → produce `[]Vertex` where `Vertex = struct { pos: [2]f32, color: [4]f32, rect_pos: [2]f32, rect_size: [2]f32 }` (32 bytes interleaved).
+1. Traverse command buffer + rect buffer on CPU → produce `[]Vertex` where `Vertex = struct { pos: [2]f32, color: [4]f32, uv: [2]f32 }` (8 × f32 = 32 bytes interleaved; 3 attributes at `@location(0..2)`, offsets 0 / 8 / 24).
 2. Upload to `BufferUsage.VERTEX | BufferUsage.COPY_DST` buffer via `wgpuQueueWriteBuffer` (native) / `bufferWrite` (web).
 3. Bind via `wgpuRenderPassEncoderSetVertexBuffer(pass, 0, buf, 0, size)`.
 4. `draw(count, 1, 0, 0)` — shader reads `@location(0)`/`@location(1)`/... attributes.
@@ -32,7 +32,7 @@ Step 3 has no zunk equivalent today. Rewriting Teak to use storage buffers would
 
 ### Current gap
 
-Scanning `src/web/gpu.zig` at `d101693`:
+Scanning `src/web/gpu.zig` at `5835cf0` (v0.1.0):
 
 - `createRenderPipeline(layout, shader, vert_entry, frag_entry)` — no vertex-buffer-layout parameter.
 - `createRenderPipelineHDR(...)` — adds `(format, blending)` but still no vertex layout.
@@ -41,7 +41,9 @@ Scanning `src/web/gpu.zig` at `d101693`:
 
 ### Proposed API
 
-Open to redesign — this is the shape a wgpu-native consumer would expect:
+Single path — **extend the existing externs in place, no `_v2`**. Zunk is pre-1.0 (v0.1.0 cut today), all current consumers are in-tree under `examples/`, and the pointer+length blob pattern already matches `zunk_gpu_create_bind_group_layout(entries_ptr, entries_len)` where `len=0` is a valid empty case. Shape below is open to redesign on details.
+
+Zig-side types:
 
 ```zig
 pub const VertexFormat = enum(u32) {
@@ -66,12 +68,26 @@ pub const VertexBufferLayout = extern struct {
     attributes_ptr: [*]const VertexAttribute,
     attributes_len: u32,
 };
+```
 
-pub fn createRenderPipelineWithVertexLayout(
+Zig-side API — extend `createRenderPipeline` / `createRenderPipelineHDR` with a trailing `vertex_buffers` parameter (default empty = today's behavior); add one new binding fn:
+
+```zig
+pub fn createRenderPipeline(
     layout: PipelineLayout,
     shader: ShaderModule,
     vertex_entry: []const u8,
     fragment_entry: []const u8,
+    vertex_buffers: []const VertexBufferLayout, // &.{} for storage-buffer-fed pipelines
+) RenderPipeline;
+
+pub fn createRenderPipelineHDR(
+    layout: PipelineLayout,
+    shader: ShaderModule,
+    vertex_entry: []const u8,
+    fragment_entry: []const u8,
+    format: TextureFormat,
+    blending: bool,
     vertex_buffers: []const VertexBufferLayout,
 ) RenderPipeline;
 
@@ -84,15 +100,22 @@ pub fn renderPassSetVertexBuffer(
 ) void;
 ```
 
-Paired externs (u64 split into lo/hi following the existing `zunk_gpu_*` convention):
+Paired externs — extend the existing two in place, add one new (u64 split into lo/hi per the existing `zunk_gpu_*` convention):
 
 ```zig
-extern "env" fn zunk_gpu_create_render_pipeline_v2(
+extern "env" fn zunk_gpu_create_render_pipeline(
+    layout_h: i32, shader_h: i32,
+    vert_ptr: [*]const u8, vert_len: u32,
+    frag_ptr: [*]const u8, frag_len: u32,
+    vbuf_layouts_ptr: [*]const u8, vbuf_layouts_len: u32, // new; len=0 allowed
+) i32;
+
+extern "env" fn zunk_gpu_create_render_pipeline_hdr(
     layout_h: i32, shader_h: i32,
     vert_ptr: [*]const u8, vert_len: u32,
     frag_ptr: [*]const u8, frag_len: u32,
     format: u32, blending: u32,
-    vbuf_layouts_ptr: [*]const u8, vbuf_layouts_len: u32,
+    vbuf_layouts_ptr: [*]const u8, vbuf_layouts_len: u32, // new
 ) i32;
 
 extern "env" fn zunk_gpu_render_pass_set_vertex_buffer(
@@ -102,7 +125,7 @@ extern "env" fn zunk_gpu_render_pass_set_vertex_buffer(
 ) void;
 ```
 
-Existing `createRenderPipeline` / `createRenderPipelineHDR` stay for backward compat. Alternative: overload existing signature with an optional `vertex_buffers: []const VertexBufferLayout = &.{}` parameter — your call.
+Existing in-tree examples (`particle-life`, `audio-demo-1/2`, `imgui-demo`, `input-demo`) get a trailing `&.{}` at each call site — one-line edit per example.
 
 ### JS-side sketch
 
@@ -127,10 +150,10 @@ Teak becomes the second consumer.
 
 ### Coordination note
 
-Teak's short-path plan (`docs/path_to_wasm_test.md`) pins zunk to a commit *after* this issue lands AND after zunk is on Zig 0.16.0. If the 0.15→0.16 bump is a separate in-flight PR, land order doesn't matter as long as both are in when Teak pins.
+Teak's short-path plan (`docs/path_to_wasm_test.md`) pins zunk to a commit *after* this issue lands, on top of v0.1.0. The Zig 0.16.0 migration is already in (zunk commits `5a98341` + `6e73e53`, tagged as v0.1.0 at `5835cf0`), so this feature is the last remaining blocker for Teak's `zig build web` bring-up.
 
 ### References
 
 - Teak audit: `hotschmoe/teak/docs/zunk-integration.md` §3.1
 - Teak wasm path plan: `hotschmoe/teak/docs/path_to_wasm_test.md`
-- zunk source scanned: `src/web/gpu.zig` @ `d101693`
+- zunk source scanned: `src/web/gpu.zig` @ `5835cf0` (v0.1.0, 2026-04-17)
