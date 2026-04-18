@@ -155,20 +155,46 @@ pub fn linkWin32Wgpu(
     exe.step.dependOn(&install_dll.step);
 }
 
-pub const WebWgpuOptions = struct {};
+pub const WebWgpuOptions = struct {
+    port: u16 = 8080,
+    output_dir: []const u8 = "dist",
+};
 
-/// Wire the WASM + WebGPU backend onto `exe`. Adds `teak`,
-/// `teak-platform-wasm`, and `teak-gpu-web` imports. No native
-/// dependencies — the web backend targets `wasm32-freestanding` plus a
-/// JS shim (not fetched here; consumers wire the shim into their page).
+/// Wire the wasm + WebGPU (zunk) backend onto `exe`. Adds `teak`,
+/// `teak-platform-wasm`, and `teak-gpu-web` imports; sets wasm linker
+/// flags; registers `web` (build) and `web-run` (build + serve) steps
+/// that drive zunk's CLI (`zunk build --wasm ...` / `zunk run ...`).
+///
+/// Consumer pattern:
+///
+///     const web_exe = b.addExecutable(.{
+///         .name = "myapp-web",
+///         .root_module = b.createModule(.{
+///             .root_source_file = b.path("src/web_main.zig"),
+///             .target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding, .abi = .none }),
+///             .optimize = optimize,
+///         }),
+///     });
+///     teak.linkWebWgpu(b, web_exe, .{});
+///
+/// Step names `web` / `web-run` are deliberately renamed from zunk's
+/// default `run` to avoid colliding with a CLI `run` step the caller
+/// may have already registered.
 pub fn linkWebWgpu(
     b: *std.Build,
     exe: *std.Build.Step.Compile,
-    _: WebWgpuOptions,
+    opts: WebWgpuOptions,
 ) void {
     const root = exe.root_module;
     const target = root.resolved_target.?;
     const optimize = root.optimize.?;
+
+    if (target.result.cpu.arch != .wasm32 or target.result.os.tag != .freestanding) {
+        @panic("teak.linkWebWgpu: target must be wasm32-freestanding");
+    }
+    exe.rdynamic = true;
+    exe.entry = .disabled;
+    exe.export_memory = true;
 
     const teak_dep = b.dependencyFromBuildZig(BuildZig, .{
         .target = target,
@@ -176,12 +202,29 @@ pub fn linkWebWgpu(
     });
     const teak_mod = teak_dep.module("teak");
 
+    // Look up zunk on teak's builder (where `.zunk` is declared in
+    // build.zig.zon). Consumers don't need zunk in their own zon.
+    const zunk_dep = teak_dep.builder.dependency("zunk", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zunk_mod = zunk_dep.module("zunk");
+
+    // Shared shader module — same one the native path uses so the wgsl
+    // source lives in exactly one place.
+    const shaders_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("shaders/shaders.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const platform_mod = b.createModule(.{
         .root_source_file = teak_dep.path("src/platform/wasm.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
+            .{ .name = "zunk", .module = zunk_mod },
         },
     });
 
@@ -191,10 +234,43 @@ pub fn linkWebWgpu(
         .optimize = optimize,
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
+            .{ .name = "zunk", .module = zunk_mod },
+            .{ .name = "teak-shaders", .module = shaders_mod },
         },
     });
 
     root.addImport("teak", teak_mod);
     root.addImport("teak-platform-wasm", platform_mod);
     root.addImport("teak-gpu-web", gpu_mod);
+
+    // Inline of zunk.installApp — forked so we can rename the step from
+    // `run` (zunk's default) to `web-run` to avoid collisions. Upstream
+    // candidate: accept `run_step_name` option on zunk.installApp and
+    // drop this fork.
+    const cli = zunk_dep.artifact("zunk");
+    b.installArtifact(exe);
+
+    const gen_cmd = b.addRunArtifact(cli);
+    gen_cmd.addArg("build");
+    gen_cmd.addArg("--wasm");
+    gen_cmd.addArtifactArg(exe);
+    gen_cmd.addArg("--output-dir");
+    gen_cmd.addArg(opts.output_dir);
+    gen_cmd.setCwd(b.path("."));
+
+    const web_step = b.step("web", "Build wasm + dist/ via zunk");
+    web_step.dependOn(&gen_cmd.step);
+
+    const serve_cmd = b.addRunArtifact(cli);
+    serve_cmd.addArg("run");
+    serve_cmd.addArg("--wasm");
+    serve_cmd.addArtifactArg(exe);
+    serve_cmd.addArg("--output-dir");
+    serve_cmd.addArg(opts.output_dir);
+    serve_cmd.addArg("--port");
+    serve_cmd.addArg(b.fmt("{d}", .{opts.port}));
+    serve_cmd.setCwd(b.path("."));
+
+    const web_run = b.step("web-run", "Build and serve wasm on localhost");
+    web_run.dependOn(&serve_cmd.step);
 }

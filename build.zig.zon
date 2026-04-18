@@ -17,6 +17,10 @@
             .hash = "N-V-__8AAO0eBwSB7GxV-NB9TuztsaPlUh8rDiZ4-Kr-K_s8",
             .lazy = true,
         },
+        // Path dep during zunk co-development. Switch to a
+        // `git+https://github.com/hotschmoe/zunk.git#<sha>` + hash once zunk
+        // cuts a release tag teak CI can pin to.
+        .zunk = .{ .path = "../zunk" },
     },
     .paths = .{
         "build.zig",

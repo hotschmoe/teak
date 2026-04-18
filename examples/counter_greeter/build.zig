@@ -68,4 +68,30 @@ pub fn build(b: *std.Build) void {
 
     const ui_step = b.step("ui", "Run Teak UI demo (wgpu + Win32)");
     ui_step.dependOn(&ui_run.step);
+
+    // --- web executable (wasm + zunk) ---
+    //
+    // `teak.linkWebWgpu` registers `web` (build) and `web-run` (serve)
+    // steps. The zunk CLI generates dist/index.html + app.js + app.wasm.
+
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+        .abi = .none,
+    });
+    const web_optimize: std.builtin.OptimizeMode = b.option(
+        std.builtin.OptimizeMode,
+        "web-optimize",
+        "Optimize mode for the wasm build (default: ReleaseFast)",
+    ) orelse .ReleaseFast;
+
+    const web_exe = b.addExecutable(.{
+        .name = "counter_greeter-web",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/web_main.zig"),
+            .target = wasm_target,
+            .optimize = web_optimize,
+        }),
+    });
+    teak.linkWebWgpu(b, web_exe, .{});
 }
