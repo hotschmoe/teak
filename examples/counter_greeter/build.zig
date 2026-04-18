@@ -71,14 +71,15 @@ pub fn build(b: *std.Build) void {
 
     // --- web executable (wasm + zunk) ---
     //
-    // `teak.linkWebWgpu` registers `web` (build) and `web-run` (serve)
-    // steps. The zunk CLI generates dist/index.html + app.js + app.wasm.
+    // `teak.linkWebWgpu` registers the `web` and `web-run` steps; zunk's
+    // CLI generates dist/index.html + app.js + app.wasm.
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
         .abi = .none,
     });
+    // Default ReleaseFast — Debug wasm is too large to usefully ship.
     const web_optimize: std.builtin.OptimizeMode = b.option(
         std.builtin.OptimizeMode,
         "web-optimize",

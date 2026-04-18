@@ -1,13 +1,12 @@
 //! Wasm entry for counter_greeter. Zunk inverts control — it owns the
-//! rAF loop and calls `init` / `frame(dt)` / `resize(w, h)` on its own
-//! schedule. All mutable state is module-level `var`; `frame` walks the
-//! same TEA+layout+render pipeline `ui_main.zig` runs inside a Win32
+//! rAF loop and calls the exported `init`/`frame`/`resize`. All state
+//! is module-level `var` because exports can't close over a struct.
+//! `frame` walks the same pipeline `ui_main.zig` runs inside a Win32
 //! while-loop.
 //!
-//! Allocation: a single 1 MiB FixedBufferAllocator — not DebugAllocator,
-//! which pulls posix imports that blow up the wasm module. CmdBuffer and
-//! vertex arraylist both retain capacity frame-over-frame; the FBA
-//! watermark plateaus once all widgets have been allocated once.
+//! FixedBufferAllocator rather than DebugAllocator: the latter pulls
+//! posix imports that blow up the wasm module. Capacity retains across
+//! frames, so the FBA watermark plateaus after warmup.
 
 const std = @import("std");
 const teak = @import("teak");
@@ -26,8 +25,6 @@ comptime {
 const MAX_RECTS: usize = 256;
 const CmdBufT = teak.CmdBuffer(App.Msg);
 
-// ── Module-level state ─────────────────────────────────────────────
-
 var scratch_bytes: [1 << 20]u8 = undefined;
 var fba: std.heap.FixedBufferAllocator = undefined;
 
@@ -44,8 +41,6 @@ var verts: std.ArrayList(teak.Vertex) = .empty;
 
 var transient_state: teak.TransientState = .{};
 var press_target: ?usize = null;
-
-// ── Exports (zunk lifecycle) ──────────────────────────────────────
 
 export fn init() void {
     fba = std.heap.FixedBufferAllocator.init(&scratch_bytes);
@@ -98,7 +93,6 @@ export fn frame(_: f32) void {
         if (App.keySpecialMsg(&model, k)) |m| App.update(&model, m);
     }
 
-    // Build this frame into the other slot.
     current ^= 1;
     const cur = current;
     bufs[cur].reset();

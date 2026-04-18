@@ -163,23 +163,8 @@ pub const WebWgpuOptions = struct {
 /// Wire the wasm + WebGPU (zunk) backend onto `exe`. Adds `teak`,
 /// `teak-platform-wasm`, and `teak-gpu-web` imports; sets wasm linker
 /// flags; registers `web` (build) and `web-run` (build + serve) steps
-/// that drive zunk's CLI (`zunk build --wasm ...` / `zunk run ...`).
-///
-/// Consumer pattern:
-///
-///     const web_exe = b.addExecutable(.{
-///         .name = "myapp-web",
-///         .root_module = b.createModule(.{
-///             .root_source_file = b.path("src/web_main.zig"),
-///             .target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding, .abi = .none }),
-///             .optimize = optimize,
-///         }),
-///     });
-///     teak.linkWebWgpu(b, web_exe, .{});
-///
-/// Step names `web` / `web-run` are deliberately renamed from zunk's
-/// default `run` to avoid colliding with a CLI `run` step the caller
-/// may have already registered.
+/// that drive zunk's CLI. Step names are `web` / `web-run` rather than
+/// zunk's default `run` so the caller can keep a CLI `run` step.
 pub fn linkWebWgpu(
     b: *std.Build,
     exe: *std.Build.Step.Compile,
@@ -210,8 +195,6 @@ pub fn linkWebWgpu(
     });
     const zunk_mod = zunk_dep.module("zunk");
 
-    // Shared shader module — same one the native path uses so the wgsl
-    // source lives in exactly one place.
     const shaders_mod = b.createModule(.{
         .root_source_file = teak_dep.path("shaders/shaders.zig"),
         .target = target,
@@ -243,10 +226,8 @@ pub fn linkWebWgpu(
     root.addImport("teak-platform-wasm", platform_mod);
     root.addImport("teak-gpu-web", gpu_mod);
 
-    // Inline of zunk.installApp — forked so we can rename the step from
-    // `run` (zunk's default) to `web-run` to avoid collisions. Upstream
-    // candidate: accept `run_step_name` option on zunk.installApp and
-    // drop this fork.
+    // Forked from zunk.installApp so the serve step is `web-run` rather
+    // than `run`. Upstream candidate: `run_step_name` option on installApp.
     const cli = zunk_dep.artifact("zunk");
     b.installArtifact(exe);
 

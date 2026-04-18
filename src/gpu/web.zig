@@ -1,16 +1,9 @@
 //! WebGPU backend via zunk. Mirrors `gpu/native.zig`'s pipeline shape —
-//! shared wgsl shader, same 32-byte Vertex layout (pos/color/uv at
-//! offsets 0/8/24), same uniform buffer carrying `screen_size: vec2f`.
-//!
-//! Differences from native:
-//!   * No surface config — zunk wires the canvas as the render target.
-//!   * No encoder/queue/submit plumbing — `beginRenderPass` and
-//!     `present()` wrap that on zunk's JS side.
-//!   * `resize` just updates the uniform; zunk handles swap-chain.
-//!
-//! `init` takes `handle: anytype` so the example's call site
-//! (`Gpu.init(host.nativeHandle(), w, h)`) matches the native backend —
-//! the handle is unused here (zunk already owns the device + canvas).
+//! shared wgsl shader, same Vertex layout, same screen_size uniform.
+//! Zunk owns the canvas + swap-chain, so there's no surface config and
+//! `beginRenderPass` / `present` wrap encoder/queue/submit on the JS
+//! side. `init` takes `handle: anytype` purely to mirror the native
+//! call site; the handle is unused.
 
 const std = @import("std");
 const teak = @import("teak");
@@ -36,14 +29,11 @@ pub const Gpu = struct {
     pub fn init(_: anytype, width: u32, height: u32) !Gpu {
         const shader = zgpu.createShaderModule(SHADER_CODE);
 
-        const bgl_entries = [_]zgpu.BindGroupLayoutEntry{
+        const bgl = zgpu.createBindGroupLayout(&.{
             zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX, .uniform)
                 .withMinSize(8),
-        };
-        const bgl = zgpu.createBindGroupLayout(&bgl_entries);
-
-        const pl_layouts = [_]zgpu.BindGroupLayout{bgl};
-        const pl = zgpu.createPipelineLayout(&pl_layouts);
+        });
+        const pl = zgpu.createPipelineLayout(&.{bgl});
 
         const attrs = [_]zgpu.VertexAttribute{
             zgpu.VertexAttribute.init(0, .float32x2, 0),
@@ -57,10 +47,9 @@ pub const Gpu = struct {
 
         const uniform_buf = zgpu.createBuffer(8, zgpu.BufferUsage.UNIFORM | zgpu.BufferUsage.COPY_DST);
 
-        const bg_entries = [_]zgpu.BindGroupEntry{
+        const bind_group = zgpu.createBindGroup(bgl, &.{
             zgpu.BindGroupEntry.initBufferFull(0, uniform_buf, 8),
-        };
-        const bind_group = zgpu.createBindGroup(bgl, &bg_entries);
+        });
 
         var self: Gpu = .{
             .pipeline = pipeline,

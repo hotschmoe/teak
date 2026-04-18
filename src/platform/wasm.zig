@@ -1,12 +1,9 @@
 //! Wasm host backed by zunk's `web.input` + `web.app` modules. Zunk
-//! owns the rAF loop — it calls the app-exported `init`/`frame`/`resize`;
-//! this Host's `pollInputs` snapshots zunk's shared-memory input state
-//! into teak's `InputState`.
+//! owns the rAF loop; `pollInputs` snapshots zunk's shared-memory
+//! state into teak's `InputState`.
 //!
-//! Mouse edge events (`mouse_down`/`mouse_up`) are derived locally by
-//! diffing the button state across polls — zunk reports current state,
-//! not edges. Key press events come through zunk's `keys_pressed`
-//! bitmap (edge-triggered for the current poll tick).
+//! Mouse `mouse_down`/`mouse_up` are derived locally from diffs of the
+//! button state because zunk reports held-state, not edges.
 
 const std = @import("std");
 const teak = @import("teak");
@@ -20,19 +17,17 @@ pub const SpecialKey = teak.SpecialKey;
 
 pub const NativeHandle = struct {};
 
-// Mapping from zunk.web.input.Key → teak.SpecialKey. Keys not in
-// zunk's enum yet (Delete/Home/End) are tracked in
+// Delete/Home/End are absent from zunk.web.input.Key; tracked in
 // docs/zunk-handoff.md as a follow-up ask.
-const KeyMapping = struct { z: zinput.Key, t: SpecialKey };
-const key_mappings = [_]KeyMapping{
-    .{ .z = .backspace, .t = .backspace },
-    .{ .z = .enter, .t = .enter },
-    .{ .z = .tab, .t = .tab },
-    .{ .z = .escape, .t = .escape },
-    .{ .z = .arrow_left, .t = .left },
-    .{ .z = .arrow_right, .t = .right },
-    .{ .z = .arrow_up, .t = .up },
-    .{ .z = .arrow_down, .t = .down },
+const key_mappings = [_]struct { from: zinput.Key, to: SpecialKey }{
+    .{ .from = .backspace, .to = .backspace },
+    .{ .from = .enter, .to = .enter },
+    .{ .from = .tab, .to = .tab },
+    .{ .from = .escape, .to = .escape },
+    .{ .from = .arrow_left, .to = .left },
+    .{ .from = .arrow_right, .to = .right },
+    .{ .from = .arrow_up, .to = .up },
+    .{ .from = .arrow_down, .to = .down },
 };
 
 pub const Host = struct {
@@ -63,8 +58,8 @@ pub const Host = struct {
         self.keys_len = 0;
         for (key_mappings) |m| {
             if (self.keys_len >= self.keys_buf.len) break;
-            if (zinput.isKeyPressed(m.z)) {
-                self.keys_buf[self.keys_len] = m.t;
+            if (zinput.isKeyPressed(m.from)) {
+                self.keys_buf[self.keys_len] = m.to;
                 self.keys_len += 1;
             }
         }
