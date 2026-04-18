@@ -4,6 +4,13 @@
 //!
 //! Mouse `mouse_down`/`mouse_up` are derived locally from diffs of the
 //! button state because zunk reports held-state, not edges.
+//!
+//! Mouse coords are normalized from device pixels to CSS pixels by
+//! dividing by devicePixelRatio. Zunk reports mouse_x/y in canvas
+//! backing pixels (which it sets to clientWidth × DPR) while
+//! viewport_width/height is reported in CSS pixels — at DPR > 1 the
+//! two frames diverge and hit-tests miss every widget. Tracked in
+//! docs/zunk-handoff.md §2.
 
 const std = @import("std");
 const teak = @import("teak");
@@ -50,6 +57,8 @@ pub const Host = struct {
         zinput.poll();
 
         const mouse = zinput.getMouse();
+        const dpr = zinput.getDevicePixelRatio();
+        const inv_dpr: f32 = if (dpr > 0.0) 1.0 / dpr else 1.0;
         const cur_left = mouse.buttons.left;
         const mouse_down = !self.prev_left and cur_left;
         const mouse_up = self.prev_left and !cur_left;
@@ -73,8 +82,8 @@ pub const Host = struct {
         self.height = h;
 
         return .{
-            .mouse_x = mouse.x,
-            .mouse_y = mouse.y,
+            .mouse_x = mouse.x * inv_dpr,
+            .mouse_y = mouse.y * inv_dpr,
             .mouse_down = mouse_down,
             .mouse_up = mouse_up,
             .chars = zinput.getTypedChars(),
