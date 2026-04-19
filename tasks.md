@@ -3,7 +3,12 @@
 Working document. Current phase: **text rendering**. See §"Phase
 history" at the bottom for what shipped before this phase.
 
-**Status (2026-04-19)**: phase starting. Design-stage, no code yet.
+**Status (2026-04-19)**: **WS1 complete** (`6d94be2` + `e59edc4`).
+Host + GPU contracts extended with `textMeasurer` / `rasterizeText`
+decls; stubs return the pre-WS1 CHAR_WIDTH numbers for zero visual
+drift. Layout pass now dispatches text widths through the measurer.
+Next up: **WS2** (native DirectWrite path) — see workstream table
+below.
 
 ---
 
@@ -78,20 +83,22 @@ Host-interface change lands.
 
 ### Workstreams
 
-**WS1 — Host-interface extension (design + skeleton)**
-- Add `measureText(content: []const u8, font: FontSpec) TextMetrics`
-  to the Host interface. `FontSpec` minimum viable: `{ size_px: f32,
-  family: enum { sans, serif, mono } }`. No custom font loading in
-  v1.
-- Return type: `struct { width: f32, height: f32, ascent: f32,
-  descent: f32 }`. Ascent/descent exposed now so cursor placement
-  doesn't need a second API call later.
-- Add corresponding `rasterizeText` on the GPU-context interface
-  (`src/gpu/context.zig`). Return: an opaque `TextureHandle` plus
-  the metrics used to rasterize.
-- **Acceptance**: HARDLINE §2 updated; feature doc at
-  `docs/features/text.md` written; both backends compile against
-  stubs that return dummy values. No rendering yet.
+**WS1 — Host-interface extension (design + skeleton)** ✅
+- `FontSpec` / `FontFamily` / `TextMetrics` / `TextMeasurer` /
+  `TextureHandle` in `src/core/text.zig`.
+- `validateHost` now requires `textMeasurer(*Host) TextMeasurer`;
+  `validateGpu` now requires `rasterizeText(...) TextureHandle`.
+- `font: FontSpec = DEFAULT_FONT` on five text-bearing Cmd variants.
+- Stubs in all four backends return `len * 10` width / 20 height
+  (pre-WS1 numbers) — zero visual drift.
+- Layout pass takes a `TextMeasurer` parameter and dispatches four
+  text-width sites through it. Render pass stays on CHAR_WIDTH
+  until WS2/WS3.
+- `teak.monoMeasurer()` shared helper for CLI canaries and tests
+  that have no Host (pragmatic addition — stateless, placeholder).
+- HARDLINE §2 extended with escape-hatch-4 clause (d) covering
+  surface extensions + interface-value clarification. Feature doc
+  at `docs/features/text.md`.
 
 **WS2 — Native path (DirectWrite, Windows)**
 - Integrate DirectWrite for measurement + rasterization on Windows.
