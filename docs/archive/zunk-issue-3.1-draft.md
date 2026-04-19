@@ -1,4 +1,11 @@
-# Ready-to-file zunk issue (drafted on teak side, not yet submitted)
+# Ready-to-file zunk issue (archived 2026-04-18)
+
+> **Archived**: resolved upstream. Zunk's `web.gpu` now exposes
+> `VertexBufferLayout` / `VertexAttribute` and `createRenderPipeline`
+> accepts them. Teak's `src/gpu/web.zig` consumes it (lines 38-46).
+> Kept for historical reference.
+
+# Original draft
 
 **Target repo**: `hotschmoe/zunk`
 **Target branch for resulting PR**: `master` (v0.1.0 tip)

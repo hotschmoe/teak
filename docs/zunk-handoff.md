@@ -5,6 +5,11 @@ zunk (branch `dev-hotschmoe` @ `c8395f5`, zunk v0.2.0). These are the
 rough edges surfaced during integration. All are minor; teak is working
 around each locally. Ordered by priority.
 
+**Companion doc**: [`zunk-roadmap.md`](zunk-roadmap.md) — the bigger
+workstreams (sampler + texture primitives, text-to-texture helper).
+That's where the "what do we build next?" conversation lives; this doc
+is the smaller-ticket follow-up list.
+
 ## 1. `installApp` step-name collision
 
 **Problem.** `zunk.build.installApp` unconditionally registers a build

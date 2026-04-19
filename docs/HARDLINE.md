@@ -167,29 +167,29 @@ real need, the process is:
 
 ## 5. Drift audit checklist
 
-Run before every release (or on a quarterly cadence, whichever comes
-first):
+`zig build audit` automates the greppable half (marked **[auto]** below)
+and also runs the wasm-canary compile. Run it before every release or
+quarterly, whichever comes first. The **[manual]** items still need
+human review.
 
-- [ ] No `var` statics in `src/{core,layout,input,render}/*`. Only
+- [ ] **[manual]** No `var` statics in `src/{core,layout,input,render}/*`. Only
       `src/platform/*` and `src/gpu/*` are allowed to carry mutable
       module-level state.
-- [ ] No `fn_ptr` fields on `Cmd` variants. `grep` the `Cmd` union for
-      `*const fn` / `fn(` in field types.
-- [ ] All `pub` surface area in `src/teak.zig` has a feature doc (see
-      `tasks.md` §4). If not, either write the doc or drop the
-      `pub` until it's ready.
-- [ ] `validateComponent` / `validateHost` / `validateGpu` coverage
-      matches the contract stated in its comment. Missing check? Add
-      it.
-- [ ] `wasm32-freestanding` canary still compiles (see
-      `test/integration_test.zig` + `zig build test-wasm`). If a
-      commit regressed this, framework core has picked up a posix
-      dep — revert or isolate.
-- [ ] No imports from `src/platform/*` or `src/gpu/*` inside
-      `src/{core,layout,input,render}/*`. `grep -rn '@import("\.\./platform"' src/core src/layout src/input src/render` must be empty.
-- [ ] No conditional compilation in framework core.
-      `grep -rn 'builtin\.os\.tag\|builtin\.target' src/core src/layout src/input src/render`
-      must be empty.
-- [ ] `view` signatures take only `Model` + `*CmdBuffer`. No
-      `std.mem.Allocator` parameter reaches any `view` function in
-      framework core or components.
+- [ ] **[auto]** No `fn_ptr` fields on `Cmd` variants. Audit greps
+      `src/core/cmd.zig` for `*const fn` / `: fn(`.
+- [ ] **[manual]** All `pub` surface area in `src/teak.zig` has a feature
+      doc under `docs/features/`. If not, either write the doc or drop
+      the `pub` until it's ready.
+- [ ] **[manual]** `validateComponent` / `validateHost` / `validateGpu`
+      coverage matches the contract stated in its comment. Missing
+      check? Add it.
+- [ ] **[auto]** `wasm32-freestanding` canary still compiles. `zig
+      build audit` depends on `test-wasm`; if the canary breaks, the
+      framework core has picked up a posix dep — revert or isolate.
+- [ ] **[auto]** No imports from `src/platform/*` or `src/gpu/*` inside
+      `src/{core,layout,input,render}/*`. Audit greps for
+      `@import("../platform/` and `@import("../gpu/`.
+- [ ] **[auto]** No conditional compilation in framework core. Audit
+      greps for `builtin.os.tag`, `builtin.target`, `@import("builtin")`.
+- [ ] **[auto]** `view` signatures take no `std.mem.Allocator`
+      parameter. Audit finds `fn view(` and scans the signature body.

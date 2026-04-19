@@ -54,6 +54,25 @@ pub fn build(b: *std.Build) void {
 
     const wasm_step = b.step("test-wasm", "Compile framework core for wasm32-freestanding (posix-dep canary)");
     wasm_step.dependOn(&wasm_canary.step);
+
+    // HARDLINE drift audit — greppable half of docs/HARDLINE.md §5.
+    // Depends on the wasm canary so one command gates both.
+    const audit_exe = b.addExecutable(.{
+        .name = "teak-audit",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/audit.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const audit_run = b.addRunArtifact(audit_exe);
+    audit_run.setCwd(b.path("."));
+    audit_run.has_side_effects = true;
+    audit_run.stdio = .inherit;
+
+    const audit_step = b.step("audit", "Run HARDLINE drift audit (greppable rules from HARDLINE §5)");
+    audit_step.dependOn(&audit_run.step);
+    audit_step.dependOn(wasm_step);
 }
 
 fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {
