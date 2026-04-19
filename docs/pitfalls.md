@@ -28,6 +28,8 @@ regressions automatically.
 
 **Related audit rule**: HARDLINE §3 forbids allocation in `view` — which means any slice `view` stores must be borrowed from `Model` or from the per-frame arena. By-value params can't do either.
 
+**Recurrence**: the same shape bit when iterating a model array inside `view`: `for (m.items) |item|` captures by value — `item.label[0..item.label_len]` then dangles after the iteration ends. Fix is `for (m.items) |*item|`. First caught in tree example, 2026-04-19. The lesson: *any* slice you plan to hand to a `Cmd` must be rooted in something that outlives the frame, not in a loop-iteration copy.
+
 ---
 
 ### 2. Simplifier collapsing the double-buffer

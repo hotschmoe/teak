@@ -33,3 +33,7 @@ jobs:
       - name: Example tests (todo)
         run: zig build test
         working-directory: examples/todo
+
+      - name: Example tests (tree)
+        run: zig build test
+        working-directory: examples/tree

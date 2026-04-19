@@ -1,0 +1,14 @@
+.{
+    .name = .tree,
+    .version = "0.0.0",
+    .fingerprint = 0xb73e5edcc881f623, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .teak = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

@@ -40,7 +40,7 @@ zig build web            # wasm + WebGPU via zunk — writes dist/
 zig build web-run        # same, then serves dist/ on localhost:8080
 ```
 
-Two examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter) and **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list).
+Three examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), and **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array).
 
 Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until Zig ships a fix for [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865). See [`docs/zig-016-win-arm64-crash.md`](docs/zig-016-win-arm64-crash.md).
 
@@ -75,6 +75,7 @@ src/
 
 examples/counter_greeter/  proto-2 demo; composed Components + focus routing
 examples/todo/             dynamic-list demo; N rows, Msg-with-index, scroll
+examples/tree/             recursive tree with expand/collapse over flat Model
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)
