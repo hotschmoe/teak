@@ -5,3 +5,4 @@
 //! file-struct spec) means they can't be embedded directly from there.
 
 pub const quad_wgsl = @embedFile("quad.wgsl");
+pub const textured_quad_wgsl = @embedFile("textured_quad.wgsl");

@@ -5,11 +5,16 @@ const ClipStack = layout.ClipStack;
 const clipRect = layout.clipRect;
 const TransientState = @import("../core/transient.zig").TransientState;
 const text_mod = @import("../core/text.zig");
+const TextDraw = text_mod.TextDraw;
+const TextMeasurer = text_mod.TextMeasurer;
+const FontSpec = text_mod.FontSpec;
 const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
 
-// CHAR_WIDTH mirrors the layout pass so the cursor sits on glyph boundaries.
+// WS3 will delete CHAR_WIDTH entirely. WS2 has zero uses — cursor
+// placement goes through the measurer, text extents come from
+// TextDraw rects.
 const CHAR_WIDTH: f32 = 10;
 const BORDER_WIDTH: f32 = 2;
 const CURSOR_WIDTH: f32 = 2;
@@ -28,25 +33,74 @@ fn emit(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, r: Rect, color:
     emitQuad(verts, alloc, cr, color);
 }
 
-/// Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits a
-/// quad (or several) per visible widget. Presentation state (hover,
-/// press, focus, blink) pulls from TransientState without touching Model.
+fn emitText(
+    text_draws: *std.ArrayList(TextDraw),
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    font: FontSpec,
+    color: [4]f32,
+    rect: Rect,
+    clip: Rect,
+) void {
+    if (content.len == 0) return;
+    if (rect.w <= 0 or rect.h <= 0) return;
+    text_draws.append(alloc, .{
+        .rect_x = rect.x,
+        .rect_y = rect.y,
+        .rect_w = rect.w,
+        .rect_h = rect.h,
+        .content = content,
+        .font = font,
+        .color = color,
+        .clip_x = clip.x,
+        .clip_y = clip.y,
+        .clip_w = clip.w,
+        .clip_h = clip.h,
+    }) catch {};
+}
+
+/// Place a text run vertically centered inside `outer`, width measured
+/// via the measurer. Horizontal alignment is left-padded.
+fn placeLabel(
+    outer: Rect,
+    content: []const u8,
+    font: FontSpec,
+    measurer: TextMeasurer,
+    x_padding: f32,
+) Rect {
+    const m = measurer.measure(content, font);
+    const y = outer.y + @max(0, (outer.h - m.height) * 0.5);
+    return .{
+        .x = outer.x + x_padding,
+        .y = y,
+        .w = @min(m.width, @max(0, outer.w - 2 * x_padding)),
+        .h = m.height,
+    };
+}
+
+/// Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits
+/// solid-fill quads into `verts` + textured draw records into
+/// `text_draws`. Presentation state (hover, press, focus, blink) pulls
+/// from TransientState without touching Model.
 pub fn buildVertices(
     verts: *std.ArrayList(Vertex),
+    text_draws: *std.ArrayList(TextDraw),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
     transient: TransientState,
+    measurer: TextMeasurer,
 ) void {
     verts.clearRetainingCapacity();
+    text_draws.clearRetainingCapacity();
 
     var clip: ClipStack = .{};
 
     for (cmds, rects, 0..) |c, rect, i| {
         const cur_clip = clip.top();
         switch (c) {
-            .text => {
-                emit(verts, alloc, rect, .{ 0.15, 0.15, 0.2, 1.0 }, cur_clip);
+            .text => |txt| {
+                emitText(text_draws, alloc, txt.content, txt.font, txt.color, rect, cur_clip);
             },
             .button => |btn| {
                 const pressed = if (transient.press_index) |pi| pi == i else false;
@@ -58,6 +112,11 @@ pub fn buildVertices(
                 else
                     btn.style.bg;
                 emit(verts, alloc, rect, bg, cur_clip);
+
+                if (btn.label.len > 0) {
+                    const label_rect = placeLabel(rect, btn.label, btn.font, measurer, 8);
+                    emitText(text_draws, alloc, btn.label, btn.font, btn.style.fg, label_rect, cur_clip);
+                }
             },
             .text_input => |ti| {
                 const focused = if (transient.focus_index) |fi| fi == i else false;
@@ -68,23 +127,21 @@ pub fn buildVertices(
                 emit(verts, alloc, inner, ti.style.bg, cur_clip);
 
                 if (ti.content.len > 0 and inner.w > 2 * INPUT_TEXT_PADDING) {
-                    const text_w_raw = @as(f32, @floatFromInt(ti.content.len)) * CHAR_WIDTH;
+                    const m = measurer.measure(ti.content, ti.font);
                     const max_w = @max(0, inner.w - 2 * INPUT_TEXT_PADDING);
-                    const text_w = @min(text_w_raw, max_w);
-                    const text_h = @max(0, inner.h - 2 * INPUT_TEXT_PADDING);
                     const text_rect = Rect{
                         .x = inner.x + INPUT_TEXT_PADDING,
-                        .y = inner.y + INPUT_TEXT_PADDING,
-                        .w = text_w,
-                        .h = text_h,
+                        .y = inner.y + @max(0, (inner.h - m.height) * 0.5),
+                        .w = @min(m.width, max_w),
+                        .h = m.height,
                     };
-                    emit(verts, alloc, text_rect, .{ 0.55, 0.55, 0.6, 1.0 }, cur_clip);
+                    emitText(text_draws, alloc, ti.content, ti.font, ti.style.fg, text_rect, cur_clip);
                 }
 
                 // Blinking cursor when focused. ~0.5s on / 0.5s off at 60fps.
                 if (focused and ((transient.frame_counter / 30) & 1) == 0) {
-                    const cursor_x = inner.x + INPUT_TEXT_PADDING +
-                        @as(f32, @floatFromInt(ti.cursor)) * CHAR_WIDTH;
+                    const prefix_w = measurer.prefixWidth(ti.content, ti.font, ti.cursor);
+                    const cursor_x = inner.x + INPUT_TEXT_PADDING + prefix_w;
                     const cursor_h = @max(0, inner.h - 2 * INPUT_TEXT_PADDING);
                     const cursor_rect = Rect{
                         .x = cursor_x,
@@ -111,13 +168,14 @@ pub fn buildVertices(
                 }
                 if (cb.label.len > 0) {
                     const label_x = box_rect.x + cb.style.size + cb.style.label_gap;
-                    const label_w = @as(f32, @floatFromInt(cb.label.len)) * CHAR_WIDTH;
-                    emit(verts, alloc, .{
+                    const m = measurer.measure(cb.label, cb.font);
+                    const label_rect = Rect{
                         .x = label_x,
-                        .y = rect.y + @max(0, (rect.h - 16) * 0.5),
-                        .w = label_w,
-                        .h = 16,
-                    }, .{ 0.55, 0.55, 0.6, 1.0 }, cur_clip);
+                        .y = rect.y + @max(0, (rect.h - m.height) * 0.5),
+                        .w = m.width,
+                        .h = m.height,
+                    };
+                    emitText(text_draws, alloc, cb.label, cb.font, cb.style.fg, label_rect, cur_clip);
                 }
             },
             .radio => |rd| {
@@ -138,13 +196,14 @@ pub fn buildVertices(
                 }
                 if (rd.label.len > 0) {
                     const label_x = box_rect.x + rd.style.size + rd.style.label_gap;
-                    const label_w = @as(f32, @floatFromInt(rd.label.len)) * CHAR_WIDTH;
-                    emit(verts, alloc, .{
+                    const m = measurer.measure(rd.label, rd.font);
+                    const label_rect = Rect{
                         .x = label_x,
-                        .y = rect.y + @max(0, (rect.h - 16) * 0.5),
-                        .w = label_w,
-                        .h = 16,
-                    }, .{ 0.55, 0.55, 0.6, 1.0 }, cur_clip);
+                        .y = rect.y + @max(0, (rect.h - m.height) * 0.5),
+                        .w = m.width,
+                        .h = m.height,
+                    };
+                    emitText(text_draws, alloc, rd.label, rd.font, rd.style.fg, label_rect, cur_clip);
                 }
             },
             .slider => |sl| {
@@ -189,7 +248,12 @@ pub fn buildVertices(
 
 const cmd_mod = @import("../core/cmd.zig");
 
-test "buildVertices emits one quad per button and text" {
+fn newTextDraws(alloc: std.mem.Allocator) std.ArrayList(TextDraw) {
+    _ = alloc;
+    return .empty;
+}
+
+test "buildVertices emits one bg quad per button and one TextDraw per label/text" {
     const testing = std.testing;
     const Msg = union(enum) { a };
     const CmdBuffer = cmd_mod.CmdBuffer(Msg);
@@ -207,10 +271,13 @@ test "buildVertices emits one quad per button and text" {
 
     var verts: std.ArrayList(Vertex) = .empty;
     defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
 
-    buildVertices(&verts, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{});
-    // 1 text + 1 button = 2 quads * 6 verts
-    try testing.expectEqual(@as(usize, 12), verts.items.len);
+    buildVertices(&verts, &text_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    // 1 button bg = 1 quad * 6 verts. Text and label go to text_draws.
+    try testing.expectEqual(@as(usize, 6), verts.items.len);
+    try testing.expectEqual(@as(usize, 2), text_draws.items.len); // "hello" + "+"
 }
 
 test "buildVertices clips child widgets to scroll container" {
@@ -221,7 +288,7 @@ test "buildVertices clips child widgets to scroll container" {
     var cb = CmdBuffer.init(testing.allocator);
     defer cb.deinit();
 
-    // 100x100 viewport, two buttons — first fits, second overflows.
+    // 100x100 viewport, four buttons — first two fit, third partial, fourth fully clipped.
     cb.pushScroll(.{ .width = 100, .height = 100, .padding = 0, .gap = 0 });
     cb.button(.a, "A"); // y = 0..36, fits
     cb.button(.a, "B"); // y = 36..72, fits
@@ -234,12 +301,16 @@ test "buildVertices clips child widgets to scroll container" {
 
     var verts: std.ArrayList(Vertex) = .empty;
     defer verts.deinit(testing.allocator);
-    buildVertices(&verts, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{});
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    buildVertices(&verts, &text_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
 
-    // Button D is fully outside the clip → no vertices.
-    // Buttons A/B fit, C is partially clipped. Exact vertex count depends
-    // on how many quads each button emits (1), so expect 3 * 6 = 18.
+    // 3 visible button backgrounds = 3 * 6 verts. D fully clipped emits nothing.
+    // C's bg still emits a (clipped) quad.
     try testing.expectEqual(@as(usize, 18), verts.items.len);
+    // All four labels go into text_draws regardless of clip — the GPU
+    // pass does visibility clipping on the draw side.
+    try testing.expectEqual(@as(usize, 4), text_draws.items.len);
 }
 
 test "buildVertices draws border + bg + cursor for focused text input" {
@@ -259,12 +330,15 @@ test "buildVertices draws border + bg + cursor for focused text input" {
 
     var verts: std.ArrayList(Vertex) = .empty;
     defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
 
     // Focused, blink-on frame (frame_counter 0 -> on).
-    buildVertices(&verts, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{
+    buildVertices(&verts, &text_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{
         .focus_index = 1,
         .frame_counter = 0,
-    });
-    // border + bg + text + cursor = 4 quads = 24 verts
-    try testing.expectEqual(@as(usize, 24), verts.items.len);
+    }, text_mod.monoMeasurer());
+    // border + bg + cursor = 3 quads = 18 verts. Content goes to text_draws.
+    try testing.expectEqual(@as(usize, 18), verts.items.len);
+    try testing.expectEqual(@as(usize, 1), text_draws.items.len); // "ab"
 }

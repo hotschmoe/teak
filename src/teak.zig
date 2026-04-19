@@ -69,6 +69,7 @@ pub const TextMetrics = text.TextMetrics;
 pub const TextMeasurer = text.TextMeasurer;
 pub const TextureHandle = text.TextureHandle;
 pub const TEXTURE_HANDLE_NONE = text.TEXTURE_HANDLE_NONE;
+pub const TextDraw = text.TextDraw;
 pub const monoMeasurer = text.monoMeasurer;
 
 test {

@@ -73,8 +73,12 @@ test "round-trip: click button → update → view reflects new state" {
 
     var verts: std.ArrayList(teak.Vertex) = .empty;
     defer verts.deinit(testing.allocator);
-    teak.buildVertices(&verts, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{});
-    try testing.expect(verts.items.len >= 12); // 2 buttons × 6 verts
+    var text_draws: std.ArrayList(teak.TextDraw) = .empty;
+    defer text_draws.deinit(testing.allocator);
+    teak.buildVertices(&verts, &text_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, teak.monoMeasurer());
+    // 2 button bg quads = 12 verts; labels go to text_draws.
+    try testing.expect(verts.items.len >= 12);
+    try testing.expect(text_draws.items.len == 2);
 }
 
 // ── WASM canary: pipeline compiles without posix ─────────────────
@@ -112,7 +116,9 @@ export fn teak_wasm_probe() u32 {
 
     var verts: std.ArrayList(teak.Vertex) = .empty;
     defer verts.deinit(gpa);
-    teak.buildVertices(&verts, gpa, cb.cmds.items, rects[0..cb.cmds.items.len], .{});
+    var text_draws: std.ArrayList(teak.TextDraw) = .empty;
+    defer text_draws.deinit(gpa);
+    teak.buildVertices(&verts, &text_draws, gpa, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, teak.monoMeasurer());
 
     return @intCast(verts.items.len);
 }

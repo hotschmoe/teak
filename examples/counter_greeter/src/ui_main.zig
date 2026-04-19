@@ -107,6 +107,8 @@ pub fn main() !void {
 
     var verts: std.ArrayList(teak.Vertex) = .empty;
     defer verts.deinit(gpa);
+    var text_draws: std.ArrayList(teak.TextDraw) = .empty;
+    defer text_draws.deinit(gpa);
 
     var transient_state: teak.TransientState = .{};
     var prev_transient: teak.TransientState = .{};
@@ -203,8 +205,9 @@ pub fn main() !void {
         const need_rebuild = !cmds_same or !rects_same or !transient_same or blink_tick;
 
         if (need_rebuild) {
-            teak.buildVertices(&verts, gpa, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state);
+            teak.buildVertices(&verts, &text_draws, gpa, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state, measurer);
             gpu.uploadVertices(verts.items);
+            gpu.uploadText(text_draws.items);
         } else {
             skip_count += 1;
             if (skip_count % 120 == 0) std.debug.print("diff: skipped vertex rebuild (total skipped = {d})\n", .{skip_count});

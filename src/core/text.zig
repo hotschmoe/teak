@@ -49,6 +49,25 @@ pub const TextMeasurer = struct {
 pub const TextureHandle = u32;
 pub const TEXTURE_HANDLE_NONE: TextureHandle = 0;
 
+/// Render-pass output for one run of text. The GPU backend consumes
+/// these in `uploadText` — rasterizes (cached) via `rasterizeText`,
+/// emits 6 textured vertices per draw, records draw metadata for the
+/// text pass. `clip` carries the scroll-clip rect at emit time so
+/// offscreen text draws can be dropped before rasterization.
+pub const TextDraw = struct {
+    rect_x: f32,
+    rect_y: f32,
+    rect_w: f32,
+    rect_h: f32,
+    content: []const u8,
+    font: FontSpec,
+    color: [4]f32,
+    clip_x: f32,
+    clip_y: f32,
+    clip_w: f32,
+    clip_h: f32,
+};
+
 /// Stateless 10-px-per-byte, 20-px-line-height measurer. Used by CLI
 /// canaries that run layout without a Host, and by tests whose
 /// assertions were written against the pre-WS1 `CHAR_WIDTH` constant.

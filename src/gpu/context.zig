@@ -15,11 +15,12 @@ pub const ClearColor = [4]f32;
 pub const FontSpec = text.FontSpec;
 pub const TextureHandle = text.TextureHandle;
 pub const TEXTURE_HANDLE_NONE = text.TEXTURE_HANDLE_NONE;
+pub const TextDraw = text.TextDraw;
 
 /// Comptime contract. A Gpu must expose these declarations. `init`
 /// signatures vary per backend (the handle shape is platform-specific).
 pub fn validateGpu(comptime T: type) void {
-    const required = [_][]const u8{ "deinit", "resize", "uploadVertices", "renderFrame", "rasterizeText" };
+    const required = [_][]const u8{ "deinit", "resize", "uploadVertices", "renderFrame", "rasterizeText", "uploadText" };
     inline for (required) |name| {
         if (!@hasDecl(T, name)) {
             @compileError("Gpu '" ++ @typeName(T) ++ "' is missing declaration '" ++ name ++ "'");
@@ -44,6 +45,7 @@ test "validateGpu accepts a minimal shape" {
         ) TextureHandle {
             return TEXTURE_HANDLE_NONE;
         }
+        pub fn uploadText(_: *@This(), _: []const TextDraw) void {}
     };
     comptime validateGpu(Stub);
 }

@@ -32,6 +32,7 @@ var rects_len: [2]usize = .{ 0, 0 };
 var current: u1 = 0;
 
 var verts: std.ArrayList(teak.Vertex) = .empty;
+var text_draws: std.ArrayList(teak.TextDraw) = .empty;
 
 var transient_state: teak.TransientState = .{};
 var press_target: ?usize = null;
@@ -102,7 +103,9 @@ export fn frame(_: f32) void {
     transient_state.frame_counter +%= 1;
 
     verts.clearRetainingCapacity();
-    teak.buildVertices(&verts, alloc, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state);
+    text_draws.clearRetainingCapacity();
+    teak.buildVertices(&verts, &text_draws, alloc, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state, host.textMeasurer());
     gpu.uploadVertices(verts.items);
+    gpu.uploadText(text_draws.items);
     gpu.renderFrame(.{ 0.08, 0.08, 0.1, 1.0 });
 }

@@ -20,6 +20,9 @@ pub const GroupStyle = struct {
 pub const TextCmd = struct {
     content: []const u8,
     font: FontSpec = DEFAULT_FONT,
+    /// Foreground color for the rendered glyphs. Default is light grey
+    /// suitable for the dark scene bg that examples currently use.
+    color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
 };
 
 pub const ButtonStyle = struct {

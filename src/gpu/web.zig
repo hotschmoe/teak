@@ -15,6 +15,7 @@ const Vertex = teak.Vertex;
 pub const ClearColor = teak.ClearColor;
 pub const TextureHandle = teak.TextureHandle;
 pub const FontSpec = teak.FontSpec;
+pub const TextDraw = teak.TextDraw;
 
 const SHADER_CODE = @import("teak-shaders").quad_wgsl;
 
@@ -120,6 +121,11 @@ pub const Gpu = struct {
     ) TextureHandle {
         return teak.TEXTURE_HANDLE_NONE;
     }
+
+    /// WS2 / WS4 stub — text draws are ignored on web until WS4 wires
+    /// the textured pipeline. `zig build web` keeps compiling but the
+    /// browser renders solid-fill only (as it did pre-WS2).
+    pub fn uploadText(_: *Gpu, _: []const TextDraw) void {}
 };
 
 comptime {
