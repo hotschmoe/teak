@@ -29,3 +29,7 @@ jobs:
       - name: Example tests (counter_greeter)
         run: zig build test
         working-directory: examples/counter_greeter
+
+      - name: Example tests (todo)
+        run: zig build test
+        working-directory: examples/todo

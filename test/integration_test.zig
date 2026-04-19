@@ -99,6 +99,7 @@ export fn teak_wasm_probe() u32 {
     cb.checkbox(.ping, true, "ok");
     cb.radio(.ping, false, "pick");
     cb.slider(.ping, 0.42);
+    cb.divider();
     cb.pushScroll(.{ .width = 100, .height = 100 });
     cb.button(.ping, "inside");
     cb.popScroll();

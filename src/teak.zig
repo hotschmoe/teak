@@ -33,6 +33,7 @@ pub const RadioCmd = cmd.RadioCmd;
 pub const RadioStyle = cmd.RadioStyle;
 pub const SliderCmd = cmd.SliderCmd;
 pub const SliderStyle = cmd.SliderStyle;
+pub const DividerStyle = cmd.DividerStyle;
 pub const Direction = cmd.Direction;
 
 pub const Rect = layout.Rect;

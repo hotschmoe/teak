@@ -1,3 +1,8 @@
+//! Native entry for the todo example. Win32 + wgpu-native via teak's
+//! Host / Gpu backends. The loop shape is the same as counter_greeter:
+//! double-buffered CmdBuffer + rects, hit-test against the previous
+//! frame, diff-skip vertex rebuild when nothing changed.
+
 const std = @import("std");
 const teak = @import("teak");
 const platform = @import("teak-platform-win32");
@@ -12,9 +17,7 @@ comptime {
     teak.validateGpu(Gpu);
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Frame Diff
-// ════════════════════════════════════════════════════════════════════
+// ── Frame diff ─────────────────────────────────────────────────────
 
 fn cmdsEqual(a: []const teak.Cmd(App.Msg), b: []const teak.Cmd(App.Msg)) bool {
     if (a.len != b.len) return false;
@@ -36,7 +39,11 @@ fn cmdsEqual(a: []const teak.Cmd(App.Msg), b: []const teak.Cmd(App.Msg)) bool {
             },
             .pop_scroll => {},
             .text => |ta| if (!std.mem.eql(u8, ta.content, cb.text.content)) return false,
-            .button => |ba| if (!std.mem.eql(u8, ba.label, cb.button.label)) return false,
+            .button => |ba| {
+                const bb = cb.button;
+                if (!std.mem.eql(u8, ba.label, bb.label)) return false;
+                if (!std.meta.eql(ba.msg, bb.msg)) return false;
+            },
             .text_input => |tia| {
                 const tib = cb.text_input;
                 if (tia.cursor != tib.cursor) return false;
@@ -46,11 +53,13 @@ fn cmdsEqual(a: []const teak.Cmd(App.Msg), b: []const teak.Cmd(App.Msg)) bool {
                 const kb = cb.checkbox;
                 if (ka.checked != kb.checked) return false;
                 if (!std.mem.eql(u8, ka.label, kb.label)) return false;
+                if (!std.meta.eql(ka.msg, kb.msg)) return false;
             },
             .radio => |ra| {
                 const rb = cb.radio;
                 if (ra.selected != rb.selected) return false;
                 if (!std.mem.eql(u8, ra.label, rb.label)) return false;
+                if (!std.meta.eql(ra.msg, rb.msg)) return false;
             },
             .slider => |sa| if (sa.value != cb.slider.value) return false,
             .divider => |da| {
@@ -77,25 +86,20 @@ fn transientEqual(a: teak.TransientState, b: teak.TransientState) bool {
         a.focus_index == b.focus_index;
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Main
-// ════════════════════════════════════════════════════════════════════
+// ── Main ───────────────────────────────────────────────────────────
 
 pub fn main() !void {
     var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_impl.deinit();
     const gpa = gpa_impl.allocator();
 
-    var host = try Host.init("Teak — Counter + Greeter", 900, 500);
+    var host = try Host.init("Teak — Todo", 720, 600);
     defer host.deinit();
 
-    var gpu = try Gpu.init(host.nativeHandle(), 900, 500);
+    var gpu = try Gpu.init(host.nativeHandle(), 720, 600);
     defer gpu.deinit();
 
-    std.debug.print("Adapter + device acquired.\n", .{});
-
-    // ── Application state: double-buffered CmdBuffer + rects ──────
-    const MAX_RECTS: usize = 256;
+    const MAX_RECTS: usize = 2048; // Todo lists grow; counter_greeter only needs 256.
     const CmdBufT = teak.CmdBuffer(App.Msg);
 
     var model: App.Model = .{};
@@ -112,26 +116,15 @@ pub fn main() !void {
 
     var transient_state: teak.TransientState = .{};
     var prev_transient: teak.TransientState = .{};
-
-    // Proto press model: press_index arms on mousedown over a widget;
-    // mouseup fires the click Msg only if still over the same index;
-    // drag-off cancels without emitting a Msg.
     var press_target: ?usize = null;
-
     var skip_count: u64 = 0;
 
-    std.debug.print("Teak UI running.\n", .{});
-
     while (!host.shouldClose()) {
-        // 1. Drain events.
         const input = host.pollInputs();
         if (host.shouldClose()) break;
 
-        // 2. Handle resize.
         if (input.resized) gpu.resize(input.width, input.height);
 
-        // 3. Input against the *previous* frame's layout.
-        // `prev` captures last frame's write slot before we flip `current`.
         const prev = current;
         const prev_cmds = bufs[prev].cmds.items;
         const prev_rects = rects_store[prev][0..rects_len[prev]];
@@ -146,18 +139,14 @@ pub fn main() !void {
             if (press_target != null and hover_under_mouse == press_target) {
                 if (teak.hitTest(prev_cmds, prev_rects, input.mouse_x, input.mouse_y)) |hit| {
                     App.update(&model, hit.msg);
-                    std.debug.print("click -> {s}\n", .{@tagName(hit.msg)});
                 }
             }
             press_target = null;
         }
-
-        // Drag-off cancels the press.
         if (press_target != null and hover_under_mouse != press_target) {
             press_target = null;
         }
 
-        // Route keyboard via Model.focused.
         for (input.chars) |ch| {
             if (App.keyCharMsg(&model, ch)) |m| App.update(&model, m);
         }
@@ -165,7 +154,6 @@ pub fn main() !void {
             if (App.keySpecialMsg(&model, k)) |m| App.update(&model, m);
         }
 
-        // 4. Build this frame into the other buffer.
         current ^= 1;
         const cur = current;
         bufs[cur].reset();
@@ -182,22 +170,16 @@ pub fn main() !void {
         );
         rects_len[cur] = cur_cmds.len;
 
-        // 5. Update transient state against THIS frame's layout.
         transient_state.hover_index = teak.hoverTest(cur_cmds, rects_store[cur][0..cur_cmds.len], input.mouse_x, input.mouse_y);
         transient_state.press_index = press_target;
-        transient_state.focus_index = focusIndex(cur_cmds, model.focused);
+        transient_state.focus_index = focusIndex(cur_cmds, model.input_focused);
         transient_state.mouse_x = input.mouse_x;
         transient_state.mouse_y = input.mouse_y;
         transient_state.frame_counter +%= 1;
 
-        // 6. Diff against previous frame (bufs[prev] is last frame since
-        // `prev` was captured before the swap at step 4).
         const cmds_same = cmdsEqual(cur_cmds, bufs[prev].cmds.items);
         const rects_same = rectsEqual(rects_store[cur][0..cur_cmds.len], rects_store[prev][0..rects_len[prev]]);
         const transient_same = transientEqual(transient_state, prev_transient);
-
-        // Force rebuild every 30 frames while a text input is focused so
-        // the cursor blink animates. A real impl would track blink phase.
         const blink_tick = transient_state.focus_index != null and
             (transient_state.frame_counter % 30 == 0);
 
@@ -208,23 +190,19 @@ pub fn main() !void {
             gpu.uploadVertices(verts.items);
         } else {
             skip_count += 1;
-            if (skip_count % 120 == 0) std.debug.print("diff: skipped vertex rebuild (total skipped = {d})\n", .{skip_count});
         }
 
         prev_transient = transient_state;
-
-        // 7. Render + present.
         gpu.renderFrame(.{ 0.08, 0.08, 0.1, 1.0 });
     }
 
-    std.debug.print("Teak UI exiting. (skipped {d} vertex rebuilds)\n", .{skip_count});
+    std.debug.print("Teak Todo exiting. (skipped {d} vertex rebuilds)\n", .{skip_count});
 }
 
-/// Map model.focused → cmd index of its text_input in the current frame.
-/// Proto 2 has exactly one text_input (greeter), so a linear scan suffices.
-/// When we add more focusable widgets, this needs a predicate per field.
-fn focusIndex(cmds: []const teak.Cmd(App.Msg), focused: ?App.FocusField) ?usize {
-    if (focused == null) return null;
+/// Locate the add-input in the current frame so TransientState.focus_index
+/// can drive the cursor blink. Todo has exactly one text_input.
+fn focusIndex(cmds: []const teak.Cmd(App.Msg), focused: bool) ?usize {
+    if (!focused) return null;
     for (cmds, 0..) |cc, i| {
         if (cc == .text_input) return i;
     }

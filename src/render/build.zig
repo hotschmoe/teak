@@ -174,6 +174,9 @@ pub fn buildVertices(
                 };
                 emit(verts, alloc, thumb, sl.style.thumb, cur_clip);
             },
+            .divider => |dv| {
+                emit(verts, alloc, rect, dv.color, cur_clip);
+            },
             .push_scroll => clip.push(clipRect(rect, cur_clip)),
             .pop_scroll => clip.pop(),
             .push_group, .pop_group => {},

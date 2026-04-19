@@ -33,12 +33,14 @@ zig build test           # unit + integration tests
 zig build test-wasm      # wasm32-freestanding compile canary
 zig build audit          # HARDLINE drift audit (depends on test-wasm)
 
-# From examples/counter_greeter
+# From examples/counter_greeter or examples/todo
 zig build run            # CLI canary
 zig build ui             # wgpu + Win32 window
 zig build web            # wasm + WebGPU via zunk — writes dist/
 zig build web-run        # same, then serves dist/ on localhost:8080
 ```
+
+Two examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter) and **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list).
 
 Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until Zig ships a fix for [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865). See [`docs/zig-016-win-arm64-crash.md`](docs/zig-016-win-arm64-crash.md).
 
@@ -71,7 +73,8 @@ src/
 ├── platform/             Host interface + Win32 / wasm backends
 └── gpu/                  Gpu interface + wgpu-native / zunk backends
 
-examples/counter_greeter/  proto-2 demo; consumes teak as a module
+examples/counter_greeter/  proto-2 demo; composed Components + focus routing
+examples/todo/             dynamic-list demo; N rows, Msg-with-index, scroll
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)

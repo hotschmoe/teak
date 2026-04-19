@@ -106,6 +106,10 @@ fn printFrame(cmds: []const teak.Cmd(App.Msg), rects: []const teak.Rect) void {
                 r.w,
                 r.h,
             }),
+            // Other Cmd variants (checkbox, radio, slider, divider, scroll)
+            // aren't emitted by this app. The canary only prints what
+            // counter + greeter actually produce.
+            else => {},
         }
     }
 }

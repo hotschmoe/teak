@@ -69,6 +69,11 @@ pub const SliderStyle = struct {
     min_width: f32 = 120,
 };
 
+pub const DividerStyle = struct {
+    thickness: f32 = 1,
+    color: [4]f32 = .{ 0.35, 0.35, 0.4, 1.0 },
+};
+
 pub const ScrollStyle = struct {
     direction: Direction = .vertical,
     padding: f32 = 0,
@@ -167,6 +172,7 @@ pub fn Cmd(comptime Msg: type) type {
         checkbox: CheckboxCmd(Msg),
         radio: RadioCmd(Msg),
         slider: SliderCmd(Msg),
+        divider: DividerStyle,
     };
 }
 
@@ -210,6 +216,14 @@ pub fn CmdBuffer(comptime Msg: type) type {
 
         pub fn text(self: *Self, content: []const u8) void {
             self.cmds.append(self.backing, .{ .text = .{ .content = content } }) catch unreachable;
+        }
+
+        pub fn divider(self: *Self) void {
+            self.cmds.append(self.backing, .{ .divider = .{} }) catch unreachable;
+        }
+
+        pub fn dividerStyled(self: *Self, style: DividerStyle) void {
+            self.cmds.append(self.backing, .{ .divider = style }) catch unreachable;
         }
 
         pub fn button(self: *Self, msg: Msg, label: []const u8) void {

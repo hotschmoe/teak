@@ -208,6 +208,21 @@ pub const LayoutEngine = struct {
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, sl.style.flex);
                 },
+                .divider => |dv| {
+                    // Thickness goes on the parent's main-axis; cross stretches
+                    // to the inner width/height in positionPass (placeFlexLeaf).
+                    const parent_dir = if (stack.len > 0) stack.top().direction else .horizontal;
+                    const w: f32 = switch (parent_dir) {
+                        .horizontal => dv.thickness,
+                        .vertical => 0,
+                    };
+                    const h: f32 = switch (parent_dir) {
+                        .horizontal => 0,
+                        .vertical => dv.thickness,
+                    };
+                    rects[i] = .{ .w = w, .h = h };
+                    addLeafToTop(&stack, w, h, 0);
+                },
                 .pop_group, .pop_scroll => {
                     const grp = stack.pop();
                     const gaps: f32 = if (grp.child_count > 1)
@@ -289,6 +304,7 @@ pub const LayoutEngine = struct {
                 .slider => |sl| {
                     placeFlexLeaf(rects, &stack, i, sl.style.flex);
                 },
+                .divider => placeFlexLeaf(rects, &stack, i, 0),
                 .pop_group, .pop_scroll => {
                     _ = stack.pop();
                 },
@@ -483,6 +499,46 @@ test "horizontal flex distributes remaining space" {
     try testing.expectEqual(@as(f32, 60), rects[1].w);
     // Right group (cmd 4, the flex=1 push): intrinsic 60 + 680 remainder = 740.
     try testing.expectEqual(@as(f32, 740), rects[4].w);
+}
+
+test "divider stretches on cross-axis, takes thickness on main-axis" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // Vertical group: divider is a horizontal line — h=thickness, w
+    // stretches to the container's full inner width (300, since the root
+    // group is stretched to the window).
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.text("top");
+    cb.divider();
+    cb.text("bot");
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 300, 200);
+
+    // rects[2] is the divider. Default thickness is 1.
+    try testing.expectEqual(@as(f32, 1), rects[2].h);
+    try testing.expectEqual(@as(f32, 300), rects[2].w);
+
+    // Horizontal group: divider is a vertical pillar — w=thickness, h
+    // stretches to the container's full inner height (200).
+    var cb2 = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb2.deinit();
+
+    cb2.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0 });
+    cb2.text("left");
+    cb2.dividerStyled(.{ .thickness = 3 });
+    cb2.text("right");
+    cb2.popGroup();
+
+    var rects2: [8]Rect = undefined;
+    LayoutEngine.doLayout(rects2[0..cb2.cmds.items.len], cb2.cmds.items, 300, 200);
+
+    try testing.expectEqual(@as(f32, 3), rects2[2].w);
+    try testing.expectEqual(@as(f32, 200), rects2[2].h);
 }
 
 test "horizontal flex respects padding and gap" {
