@@ -59,25 +59,6 @@ fn emitText(
     }) catch {};
 }
 
-/// Place a text run vertically centered inside `outer`, width measured
-/// via the measurer. Horizontal alignment is left-padded.
-fn placeLabel(
-    outer: Rect,
-    content: []const u8,
-    font: FontSpec,
-    measurer: TextMeasurer,
-    x_padding: f32,
-) Rect {
-    const m = measurer.measure(content, font);
-    const y = outer.y + @max(0, (outer.h - m.height) * 0.5);
-    return .{
-        .x = outer.x + x_padding,
-        .y = y,
-        .w = @min(m.width, @max(0, outer.w - 2 * x_padding)),
-        .h = m.height,
-    };
-}
-
 /// Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits
 /// solid-fill quads into `verts` + textured draw records into
 /// `text_draws`. Presentation state (hover, press, focus, blink) pulls
@@ -114,7 +95,13 @@ pub fn buildVertices(
                 emit(verts, alloc, rect, bg, cur_clip);
 
                 if (btn.label.len > 0) {
-                    const label_rect = placeLabel(rect, btn.label, btn.font, measurer, 8);
+                    const m = measurer.measure(btn.label, btn.font);
+                    const label_rect = Rect{
+                        .x = rect.x + 8,
+                        .y = rect.y + @max(0, (rect.h - m.height) * 0.5),
+                        .w = @min(m.width, @max(0, rect.w - 16)),
+                        .h = m.height,
+                    };
                     emitText(text_draws, alloc, btn.label, btn.font, btn.style.fg, label_rect, cur_clip);
                 }
             },
