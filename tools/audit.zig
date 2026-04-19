@@ -67,6 +67,13 @@ const simple_rules = [_]Rule{
     RULE_CMD_HAS_NO_FN_PTRS,
 };
 
+const NO_MODULE_VARS_RULE = Rule{
+    .name = "framework core has no module-scope var statics",
+    .reason = "HARDLINE §5 — mutable module-level state lives in platform/ and gpu/ only.",
+    .dirs = &FRAMEWORK_CORE_DIRS,
+    .forbid_any = &.{},
+};
+
 const VIEW_SIG_RULE = Rule{
     .name = "view() takes no std.mem.Allocator parameter",
     .reason = "HARDLINE §3 — the per-frame arena reaches view() via CmdBuffer; a second allocator path defeats bulk-free.",
@@ -92,13 +99,17 @@ pub fn main(init: std.process.Init) !void {
     defer freeHits(gpa, view_hits);
     total_violations += reportRule(VIEW_SIG_RULE, view_hits);
 
+    const var_hits = try auditModuleVars(gpa, io, NO_MODULE_VARS_RULE.dirs);
+    defer freeHits(gpa, var_hits);
+    total_violations += reportRule(NO_MODULE_VARS_RULE, var_hits);
+
     if (total_violations > 0) {
         std.debug.print("\nHARDLINE audit FAILED with {d} violation(s).\n", .{total_violations});
         std.debug.print("See docs/HARDLINE.md §5 for the rules.\n", .{});
         std.process.exit(1);
     }
     std.debug.print("\nHARDLINE audit PASSED. Automated half of §5 is clean.\n", .{});
-    std.debug.print("Manual review still required: validator coverage, feature-doc completeness, var statics.\n", .{});
+    std.debug.print("Manual review still required: validator coverage + feature-doc completeness.\n", .{});
 }
 
 // ── Rule engine ────────────────────────────────────────────────────
@@ -222,6 +233,107 @@ fn scanFile(
 fn stripLineComment(line: []const u8) []const u8 {
     if (std.mem.indexOf(u8, line, "//")) |idx| return line[0..idx];
     return line;
+}
+
+// ── Dedicated: module-scope var statics ────────────────────────────
+//
+// A `var` declaration at column 0 (or after `pub ` at column 0) is
+// module-scope. Function-local vars are indented. Test blocks use
+// `test "..." { var ... }` which is also indented. So a simple
+// column-zero check catches the real violations without false
+// positives.
+
+fn auditModuleVars(gpa: std.mem.Allocator, io: Io, dirs: []const []const u8) ![]Hit {
+    var hits: std.ArrayList(Hit) = .empty;
+    errdefer {
+        for (hits.items) |h| {
+            gpa.free(h.path);
+            gpa.free(h.text);
+        }
+        hits.deinit(gpa);
+    }
+
+    for (dirs) |dir_path| {
+        try scanDirForModuleVars(gpa, io, &hits, dir_path);
+    }
+
+    return hits.toOwnedSlice(gpa);
+}
+
+fn scanDirForModuleVars(
+    gpa: std.mem.Allocator,
+    io: Io,
+    hits: *std.ArrayList(Hit),
+    dir_path: []const u8,
+) !void {
+    const cwd = Dir.cwd();
+    var dir = cwd.openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.path, ".zig")) continue;
+
+        const full_path = try std.fs.path.join(gpa, &.{ dir_path, entry.path });
+        defer gpa.free(full_path);
+
+        try scanFileForModuleVars(gpa, io, hits, full_path);
+    }
+}
+
+fn scanFileForModuleVars(
+    gpa: std.mem.Allocator,
+    io: Io,
+    hits: *std.ArrayList(Hit),
+    file_path: []const u8,
+) !void {
+    const cwd = Dir.cwd();
+    const contents = cwd.readFileAlloc(io, file_path, gpa, .unlimited) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer gpa.free(contents);
+
+    const prefixes = [_][]const u8{
+        "var ",
+        "pub var ",
+        "threadlocal var ",
+        "pub threadlocal var ",
+        "export var ",
+        "pub export var ",
+        "extern var ",
+        "pub extern var ",
+    };
+
+    var line_no: usize = 0;
+    var it = std.mem.splitScalar(u8, contents, '\n');
+    while (it.next()) |line| {
+        line_no += 1;
+        const stripped = stripLineComment(line);
+        var is_module_var = false;
+        for (prefixes) |p| {
+            if (std.mem.startsWith(u8, stripped, p)) {
+                is_module_var = true;
+                break;
+            }
+        }
+        if (!is_module_var) continue;
+
+        const path_copy = try gpa.dupe(u8, file_path);
+        const text_copy = try gpa.dupe(u8, std.mem.trim(u8, line, " \t\r"));
+        try hits.append(gpa, .{
+            .path = path_copy,
+            .line = line_no,
+            .pattern = "module-scope var",
+            .text = text_copy,
+        });
+    }
 }
 
 // ── Dedicated: view() signatures ───────────────────────────────────

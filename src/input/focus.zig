@@ -85,6 +85,20 @@ test "prevFocusable wraps backward" {
     try testing.expectEqual(@as(?usize, 2), prevFocusable(cb.cmds.items, 0)); // wrap
 }
 
+test "nextFocusable with a single focusable wraps back to itself" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.textInput(.a, "", 0); // idx 0 — only focusable
+
+    // Advance from the only focusable. `next` is strict-after, so it
+    // must wrap and land back on 0.
+    try testing.expectEqual(@as(?usize, 0), nextFocusable(cb.cmds.items, 0));
+    try testing.expectEqual(@as(?usize, 0), prevFocusable(cb.cmds.items, 0));
+}
+
 test "nextFocusable returns null when no focusables" {
     const testing = std.testing;
     const Msg = union(enum) { a };

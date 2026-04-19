@@ -64,12 +64,11 @@ Builds an anonymous struct with one field per payloadless variant of `Comp.Msg`,
 - `buildMsgs` only wraps **payloadless** variants. A variant like `.append: u8` is skipped — the component's `view` must construct those `AppMsg` values explicitly (or use the manual composition path).
 - AppLevel's `Msg` and each component's `Msg` share a flat variant namespace in the generated `App.Msg`. Collisions compile-error via the underlying `@Union` builder.
 - The generated `Msg` tag type is `u16`. A composition with more than 65,535 combined variants would overflow — not a practical concern.
-- Nested `Components` inside an AppLevel is untested. Use at your own risk until a test lands.
+- Nested `Components` doesn't work today. The generated `view` takes `(model, cb)` (two params), but `validateComponent` requires `(model, cb, msgs)` (three params) so the outer `Components` rejects it at comptime. Fixing this is a deliberate scope decision — the generated view would need a third ignored `msgs` parameter, which cascades to a breaking change at top-level call sites. Revisit when a real nesting need appears; until then, compose by hand.
 
 ## Test coverage target
 
 The colocated tests cover the happy path end-to-end. Before expanding this feature:
 
 - **Negative validator tests.** Add a commented-out block per `@compileError` path with the expected message — HARDLINE §5 asks for 100 % validator coverage.
-- **Nested composition.** One test with `Components` inside an AppLevel field, to confirm routing works through two layers.
 - **Variant payload wrapping.** A test that a component's `.append: u8` variant gets wrapped correctly when driven through `App.update`.

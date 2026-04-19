@@ -172,9 +172,9 @@ and also runs the wasm-canary compile. Run it before every release or
 quarterly, whichever comes first. The **[manual]** items still need
 human review.
 
-- [ ] **[manual]** No `var` statics in `src/{core,layout,input,render}/*`. Only
-      `src/platform/*` and `src/gpu/*` are allowed to carry mutable
-      module-level state.
+- [ ] **[auto]** No `var` statics at module scope in
+      `src/{core,layout,input,render}/*`. Audit greps for column-zero
+      `var ` / `pub var `. Function-local vars are fine.
 - [ ] **[auto]** No `fn_ptr` fields on `Cmd` variants. Audit greps
       `src/core/cmd.zig` for `*const fn` / `: fn(`.
 - [ ] **[manual]** All `pub` surface area in `src/teak.zig` has a feature

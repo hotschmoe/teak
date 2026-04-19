@@ -485,6 +485,49 @@ test "horizontal flex distributes remaining space" {
     try testing.expectEqual(@as(f32, 740), rects[4].w);
 }
 
+test "horizontal flex respects padding and gap" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    const CmdBuffer = cmd.CmdBuffer(Msg);
+
+    var cb = CmdBuffer.init(testing.allocator);
+    defer cb.deinit();
+
+    // Root: 800 wide, padding=10 (20 consumed), gap=20 (×2 gaps = 40
+    // consumed between 3 children). Inner = 780. Each child has
+    // intrinsic 60 (3×60 = 180 fixed_main). Extra after gaps + intrinsic:
+    // 780 - 40 - 180 = 560. Three flex=1 children split 560 evenly.
+    // Each child ends up at 60 + 560/3 ≈ 246.67 wide.
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 10, .gap = 20 });
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .flex = 1 });
+    cb.button(.a, "Hi");
+    cb.popGroup();
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .flex = 1 });
+    cb.button(.a, "Hi");
+    cb.popGroup();
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .flex = 1 });
+    cb.button(.a, "Hi");
+    cb.popGroup();
+    cb.popGroup();
+
+    var rects: [32]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600);
+
+    // Child push_group entries are cmds 1, 4, 7 (pop_group cmds sit
+    // between them in the buffer).
+    const expected_w: f32 = 60 + 560.0 / 3.0;
+    try testing.expectApproxEqAbs(expected_w, rects[1].w, 0.01);
+    try testing.expectApproxEqAbs(expected_w, rects[4].w, 0.01);
+    try testing.expectApproxEqAbs(expected_w, rects[7].w, 0.01);
+
+    // First child starts at x=padding=10.
+    try testing.expectEqual(@as(f32, 10), rects[1].x);
+    // Second starts at 10 + expected_w + gap(20).
+    try testing.expectApproxEqAbs(10 + expected_w + 20, rects[4].x, 0.01);
+    // Third starts at 10 + 2*(expected_w + gap).
+    try testing.expectApproxEqAbs(10 + 2 * (expected_w + 20), rects[7].x, 0.01);
+}
+
 test "checkbox sizes include label and box" {
     const testing = std.testing;
     const Msg = union(enum) { toggle };

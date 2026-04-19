@@ -193,6 +193,37 @@ test "sliderValueAt maps mouse_x to [0, 1]" {
     try testing.expectEqual(@as(f32, 1), sliderValueAt(r, 500)); // clamp high
 }
 
+test "hitTest intersects nested scroll clips" {
+    const testing = std.testing;
+    const Msg = union(enum) { pick };
+    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
+
+    var cb = CmdBuffer.init(testing.allocator);
+    defer cb.deinit();
+
+    // Outer scroll 80×80, inner scroll 200×200 nested inside. Buttons
+    // are 36 tall with gap=0, so they stack at y=0..36, 36..72, 72..108.
+    // Button C (y=72..108) straddles the outer clip boundary at y=80 —
+    // a point inside its rect but below the outer viewport must miss.
+    cb.pushScroll(.{ .direction = .vertical, .padding = 0, .gap = 0, .width = 80, .height = 80 });
+    cb.pushScroll(.{ .direction = .vertical, .padding = 0, .gap = 0, .width = 200, .height = 200 });
+    cb.button(.pick, "A"); // y ∈ [0, 36]
+    cb.button(.pick, "B"); // y ∈ [36, 72]
+    cb.button(.pick, "C"); // y ∈ [72, 108] — straddles y=80 outer edge
+    cb.popScroll();
+    cb.popScroll();
+
+    var rects: [16]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600);
+
+    // Sanity: button A is inside both viewports → hit.
+    try testing.expect(hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 10, 10) != null);
+    // The actual test: y=90 is inside button C's rect AND the inner
+    // viewport (y < 200), but outside the outer viewport (y > 80).
+    // Clip intersection wins → miss.
+    try testing.expect(hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 10, 90) == null);
+}
+
 test "hitTest returns msg for checkbox/radio/slider clicks" {
     const testing = std.testing;
     const Msg = union(enum) { toggle, pick, grab };

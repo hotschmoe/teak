@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  library:
+    name: Library tests + HARDLINE audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # One command gates tests, wasm canary, and the greppable half of
+      # HARDLINE §5. The audit step depends on test-wasm internally.
+      - name: Library tests
+        run: zig build test
+
+      - name: HARDLINE audit (depends on test-wasm)
+        run: zig build audit
+
+      - name: Example tests (counter_greeter)
+        run: zig build test
+        working-directory: examples/counter_greeter
