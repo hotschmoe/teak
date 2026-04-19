@@ -2,7 +2,7 @@
 
 Working document for the cleanup/abstraction phase after proto 2. Ordering is the user's proposed sequence; dependencies are called out where they matter.
 
-**Status (2026-04-18)**: tasks 1, 2, 3 (all subtasks), 6, and 7 are landed. The WASM gap supplement (`docs/archive/tasks-wasm.md`) is closed out — every item folded into the completed restructure + zunk integration. Remaining open work: task 4 (feature docs) and task 5 (pitfalls + canary playbook).
+**Status (2026-04-18)**: tasks 1, 2, 3, 6, 7 landed. Task 4 (feature docs) landed — seven docs in `docs/features/` plus an index + template. Task 5 (pitfalls playbook) landed in minimal form — `docs/pitfalls.md` has four entries backed by real bugs, a canary-test category list, and a template for future entries. All docs intentionally kept lean; expand as new features / pitfalls land. Phase is complete.
 
 ---
 
@@ -113,7 +113,7 @@ Move `counter.zig`, `greeter.zig`, `app.zig`, `main.zig`, `ui_main.zig` → `exa
 
 ---
 
-## 4. Document "library-candidate" features
+## 4. ✅ Document "library-candidate" features
 
 **Why**: Several pieces exist in-tree but haven't earned their stripes as library surface. `validateComponent` is the canonical example — it's in `compose.zig` but we should decide whether it's `pub`, what contract it promises, and what errors it guarantees.
 
@@ -136,7 +136,7 @@ Move `counter.zig`, `greeter.zig`, `app.zig`, `main.zig`, `ui_main.zig` → `exa
 
 ---
 
-## 5. Pitfalls + test-and-validate playbook
+## 5. ✅ Pitfalls + test-and-validate playbook (minimal)
 
 **Why**: The proto-2 UAF bug ("input f" instead of "input H") and the simplifier's double-buffer regression were caught by ad-hoc canaries, not by a repeatable process. We should encode those lessons.
 
@@ -286,11 +286,5 @@ The Rust precedent: iced doesn't absorb trunk. Teak shouldn't absorb zunk. Zig's
 
 ## Execution order
 
-Tasks 1 → 2 → 3 → 6 → 7 are done (see per-section ✅). What's left:
-
-```
-4 (feature docs)   ← independent; needed before anything gets blessed 1.0
-5 (pitfalls)       ← independent; backs task 7's drift-audit checklist
-```
-
-Both can land in parallel. Neither blocks new feature work.
+All seven phase tasks complete. This doc is now a historical record of
+the cleanup/abstraction phase; next work opens a new plan.
