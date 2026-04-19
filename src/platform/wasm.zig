@@ -44,6 +44,8 @@ pub const Host = struct {
     first_poll: bool = true,
     keys_buf: [16]SpecialKey = undefined,
     keys_len: usize = 0,
+    chars_buf: [32]u8 = undefined,
+    chars_len: usize = 0,
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         zinput.init();
@@ -73,6 +75,20 @@ pub const Host = struct {
             }
         }
 
+        // Zunk pushes Backspace (8) and Enter (10) into typed_chars in
+        // addition to reporting them as pressed keys. Without this filter,
+        // backspace double-acts: it inserts char 8 then deletes one, and the
+        // user sees nothing change. Drop ASCII control codes here — the
+        // special-key path owns those events. Tracked upstream at
+        // https://github.com/hotschmoe/zunk/issues/8.
+        self.chars_len = 0;
+        for (zinput.getTypedChars()) |c| {
+            if (c < 0x20 or c == 0x7f) continue;
+            if (self.chars_len >= self.chars_buf.len) break;
+            self.chars_buf[self.chars_len] = c;
+            self.chars_len += 1;
+        }
+
         const vp = zinput.getViewportSize();
         const w = if (vp.w != 0) vp.w else self.width;
         const h = if (vp.h != 0) vp.h else self.height;
@@ -86,7 +102,7 @@ pub const Host = struct {
             .mouse_y = mouse.y * inv_dpr,
             .mouse_down = mouse_down,
             .mouse_up = mouse_up,
-            .chars = zinput.getTypedChars(),
+            .chars = self.chars_buf[0..self.chars_len],
             .keys = self.keys_buf[0..self.keys_len],
             .resized = resized,
             .width = w,
