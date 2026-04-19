@@ -17,7 +17,6 @@ pub fn main() !void {
 
     std.debug.print("── Teak Todo — CLI Canary ──\n", .{});
 
-    // Add three items.
     for ([_][]const u8{ "buy milk", "ship teak", "read spec" }) |label| {
         App.update(&model, .input_focus);
         for (label) |c| App.update(&model, .{ .input_char = c });

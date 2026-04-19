@@ -90,13 +90,9 @@ pub fn update(m: *Model, msg: Msg) void {
 
         .remove => |i| {
             if (i >= m.items_len) return;
-            // Shift [i+1..end] left by one. Preserves order — simpler
-            // than swap-remove and the app is small enough that the
-            // cost doesn't matter.
-            var k: usize = i;
-            while (k + 1 < m.items_len) : (k += 1) {
-                m.items[k] = m.items[k + 1];
-            }
+            // Order-preserving shift; swap-remove would be cheaper but
+            // would reorder the list on every delete.
+            std.mem.copyForwards(Item, m.items[i .. m.items_len - 1], m.items[i + 1 .. m.items_len]);
             m.items_len -= 1;
         },
 
@@ -206,7 +202,6 @@ test "add_item is a no-op when input is empty" {
 test "toggle flips done; ignores out-of-range" {
     const t = std.testing;
     var m: Model = .{};
-    // Prime with one item.
     for ("hi") |c| update(&m, .{ .input_char = c });
     update(&m, .add_item);
 
@@ -216,7 +211,6 @@ test "toggle flips done; ignores out-of-range" {
     update(&m, .{ .toggle = 0 });
     try t.expect(!m.items[0].done);
 
-    // Out-of-range is ignored silently.
     update(&m, .{ .toggle = 99 });
 }
 

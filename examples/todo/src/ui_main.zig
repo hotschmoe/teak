@@ -62,11 +62,7 @@ fn cmdsEqual(a: []const teak.Cmd(App.Msg), b: []const teak.Cmd(App.Msg)) bool {
                 if (!std.meta.eql(ra.msg, rb.msg)) return false;
             },
             .slider => |sa| if (sa.value != cb.slider.value) return false,
-            .divider => |da| {
-                const db = cb.divider;
-                if (da.thickness != db.thickness) return false;
-                if (!std.mem.eql(u8, std.mem.asBytes(&da.color), std.mem.asBytes(&db.color))) return false;
-            },
+            .divider => |da| if (!std.meta.eql(da, cb.divider)) return false,
         }
     }
     return true;
