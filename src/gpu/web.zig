@@ -36,12 +36,12 @@ pub const Gpu = struct {
         const pl = zgpu.createPipelineLayout(&.{bgl});
 
         const attrs = [_]zgpu.VertexAttribute{
-            zgpu.VertexAttribute.init(0, .float32x2, 0),
-            zgpu.VertexAttribute.init(1, .float32x4, 8),
-            zgpu.VertexAttribute.init(2, .float32x2, 24),
+            .{ .shader_location = 0, .format = .float32x2, .offset = 0 },
+            .{ .shader_location = 1, .format = .float32x4, .offset = 8 },
+            .{ .shader_location = 2, .format = .float32x2, .offset = 24 },
         };
         const layouts = [_]zgpu.VertexBufferLayout{
-            zgpu.VertexBufferLayout.init(@sizeOf(Vertex), .vertex, &attrs),
+            zgpu.VertexBufferLayout.fromSlice(@sizeOf(Vertex), .vertex, &attrs),
         };
         const pipeline = zgpu.createRenderPipeline(pl, shader, "vs_main", "fs_main", &layouts);
 
