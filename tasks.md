@@ -2,7 +2,19 @@
 
 Working document for the cleanup/abstraction phase after proto 2. Ordering is the user's proposed sequence; dependencies are called out where they matter.
 
-**Status (2026-04-18)**: tasks 1, 2, 3, 6, 7 landed. Task 4 (feature docs) landed — seven docs in `docs/features/` plus an index + template. Task 5 (pitfalls playbook) landed in minimal form — `docs/pitfalls.md` has four entries backed by real bugs, a canary-test category list, and a template for future entries. All docs intentionally kept lean; expand as new features / pitfalls land. Phase is complete.
+**Status (2026-04-18)**: phase complete.
+
+All seven tasks landed. Follow-up hardening also complete:
+
+- `zig build audit` (`tools/audit.zig`) enforces the greppable half of HARDLINE §5 — no platform/gpu imports in core, no conditional compilation, no fn-pointer Cmd fields, no `Allocator` in `view()`, no module-scope `var`. Depends on `test-wasm` so one command gates both.
+- Missing tests filled in per `docs/features/` targets — nested scroll clip intersection (hit-test), single-focusable wrap (focus), padding+gap+flex interaction (layout). Nested-`Components` test revealed a real arity-mismatch limitation; documented instead of papered over.
+- `README.md` rewritten (old one called Teak an "early prototype" pre-proto-2).
+- `.github/workflows/ci.yml` runs library tests + audit + example tests on every push.
+- `docs/zunk-roadmap.md` sent to the zunk team — samplers + textures + minimal text-to-texture, with acceptance criteria. Small open asks stay in `docs/zunk-handoff.md`.
+
+**Current wait state**: zunk team is building the workstreams in `zunk-roadmap.md`. Text rendering is the downstream unblock once samplers + textures land. Until then, Teak's GPU-layer design stays frozen — no speculative abstraction for features we haven't seen working code against (per HARDLINE "no premature abstraction").
+
+**Next phase planning**: pending. Candidates under discussion — a second example (stress test for dynamic content / Msg-with-index pattern), a small widget addition (divider is the obvious one), general polish. No commitment yet.
 
 ---
 
