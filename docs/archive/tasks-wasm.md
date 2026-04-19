@@ -1,4 +1,6 @@
-# Teak: WASM Gap Supplement
+# Teak: WASM Gap Supplement (archived 2026-04-18)
+
+> **Archived**: every gap in this punch list has landed. Win32/wgpu panic moved into `teak.linkWin32Wgpu`; `src/platform/{win32,wasm}.zig` + `src/gpu/{native,web}.zig` split is live; `examples/counter_greeter` ships a working `web` step (zunk-generated `dist/index.html` + `app.js` + `app.wasm`); §6's probe is now the `zig build test-wasm` canary in root `build.zig`. Kept for historical reference.
 
 Companion to `tasks.md`. Records the concrete deficiencies surfaced by actually building Teak against `wasm32-freestanding`, so the upcoming refactor (tasks 3a / 3b / 6) has a precise punch list rather than a vague "make it work on web."
 

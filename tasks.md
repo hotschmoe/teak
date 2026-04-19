@@ -2,9 +2,11 @@
 
 Working document for the cleanup/abstraction phase after proto 2. Ordering is the user's proposed sequence; dependencies are called out where they matter.
 
+**Status (2026-04-18)**: tasks 1, 2, 3 (all subtasks), 6, and 7 are landed. The WASM gap supplement (`docs/archive/tasks-wasm.md`) is closed out — every item folded into the completed restructure + zunk integration. Remaining open work: task 4 (feature docs) and task 5 (pitfalls + canary playbook).
+
 ---
 
-## 1. Migrate to Zig v0.16.0
+## 1. ✅ Migrate to Zig v0.16.0
 
 **Why**: We're pinned to Zig 0.15.2 in `CLAUDE.md` and `build.zig`. 0.16 will bring breaking changes (std API, builder API, comptime semantics) — better to migrate once now than to accumulate drift.
 
@@ -21,7 +23,7 @@ Working document for the cleanup/abstraction phase after proto 2. Ordering is th
 
 ---
 
-## 2. Documentation cleanup + consolidation
+## 2. ✅ Documentation cleanup + consolidation
 
 **Why**: We have `docs/init_convo/` (4 original-design MDs), `docs/proto_2.md` (phase plan), `docs/proto2_post.md` (postmortem), `docs/day1_recap.md` (review), and `CLAUDE.md`. Already sprawling after one day.
 
@@ -36,7 +38,7 @@ Working document for the cleanup/abstraction phase after proto 2. Ordering is th
 
 ---
 
-## 3. New file structure: framework / host / example split
+## 3. ✅ New file structure: framework / host / example split
 
 **Why**: `src/` currently mixes framework core, Win32 host, composed demo, and CLI demo. To support (a) more hosts, (b) consumption as a library, and (c) multiple example apps, this has to be untangled.
 
@@ -154,7 +156,10 @@ Move `counter.zig`, `greeter.zig`, `app.zig`, `main.zig`, `ui_main.zig` → `exa
 
 ---
 
-## 6. Co-develop with zunk (two-way feedback loop)
+## 6. ✅ Co-develop with zunk (two-way feedback loop)
+
+> **Status 2026-04-18**: integration landed. `src/platform/wasm.zig` + `src/gpu/web.zig` consume zunk's `web.input` / `web.app` / `web.gpu`; `examples/counter_greeter` builds a working `dist/` via `teak.linkWebWgpu` → `zunk build`. Audit doc lives at `docs/zunk-integration.md`; open upstream asks tracked in `docs/zunk-handoff.md`. The WASM gap punch list (archived at `docs/archive/tasks-wasm.md`) is closed. Governance/independence commitments below remain ongoing.
+
 
 **What zunk is**: A Zig build plugin + runtime library that takes a pure-Zig WASM binary, inspects its import table, and auto-generates the JS + HTML glue required to run it in a browser. Layered API: raw `extern "env" fn` at the bottom, ergonomic `zunk.web.*` modules (canvas, input, audio, gpu, app) in the middle, custom `bridge.js` escape hatch on top. Already ships WebGPU bindings (`zunk.web.gpu`, 33 extern fns, typed handles).
 
@@ -233,7 +238,7 @@ The Rust precedent: iced doesn't absorb trunk. Teak shouldn't absorb zunk. Zig's
 
 ---
 
-## 7. HARDLINE spec: TEA + K philosophy lockdown
+## 7. ✅ HARDLINE spec: TEA + K philosophy lockdown
 
 **Why**: Day-1 already showed how easy it is to drift (the simplifier quietly broke the double-buffer by collapsing two "identical" variables). As the surface grows, pressure to "just add an escape hatch" will mount. We need a document that (a) states the invariants, (b) enumerates the deliberate breaks we've *already* taken, and (c) sets the bar for any future break.
 
@@ -279,24 +284,13 @@ The Rust precedent: iced doesn't absorb trunk. Teak shouldn't absorb zunk. Zig's
 
 ---
 
-## Suggested execution order
+## Execution order
+
+Tasks 1 → 2 → 3 → 6 → 7 are done (see per-section ✅). What's left:
 
 ```
-1 (Zig 0.16)
-    ↓
-2 (docs consolidation)
-    ↓
-3 (restructure: host / lib / examples)  ← largest task, spawn subtasks
-    ├── 3a depends on 6's audit for the wasm host shape + wgpu abstraction
-    └── 3b/c can land independently
-    ↓
-6 (zunk audit) — runs in parallel with 3b/c; blocks 3a's wasm.zig
-    ↓
-3a (finish host abstraction with both win32 + wasm in hand)
-    ↓
-4 (feature docs) + 5 (pitfalls) + 7 (HARDLINE) — parallel
+4 (feature docs)   ← independent; needed before anything gets blessed 1.0
+5 (pitfalls)       ← independent; backs task 7's drift-audit checklist
 ```
 
-Task 7 (HARDLINE) should have a stub drafted during task 3 even if finalized later — the restructure is exactly when drift is most likely.
-
-Task 6's audit should start **as soon as task 2 is done** — it's reading + documenting, no Teak code changes required, and the findings shape 3a's interface.
+Both can land in parallel. Neither blocks new feature work.
