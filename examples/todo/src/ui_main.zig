@@ -163,6 +163,7 @@ pub fn main() !void {
             cur_cmds,
             @floatFromInt(input.width),
             @floatFromInt(input.height),
+            host.textMeasurer(),
         );
         rects_len[cur] = cur_cmds.len;
 

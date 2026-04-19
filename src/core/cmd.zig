@@ -1,4 +1,8 @@
 const std = @import("std");
+const text = @import("text.zig");
+
+pub const FontSpec = text.FontSpec;
+const DEFAULT_FONT = text.DEFAULT_FONT;
 
 // ── Shared (Msg-independent) types ─────────────────────────────────
 
@@ -15,6 +19,7 @@ pub const GroupStyle = struct {
 
 pub const TextCmd = struct {
     content: []const u8,
+    font: FontSpec = DEFAULT_FONT,
 };
 
 pub const ButtonStyle = struct {
@@ -103,6 +108,7 @@ pub fn ButtonCmd(comptime Msg: type) type {
         msg: Msg,
         label: []const u8,
         style: ButtonStyle = .{},
+        font: FontSpec = DEFAULT_FONT,
     };
 }
 
@@ -116,6 +122,7 @@ pub fn TextInputCmd(comptime Msg: type) type {
         content: []const u8,
         cursor: usize,
         style: TextInputStyle = .{},
+        font: FontSpec = DEFAULT_FONT,
     };
 }
 
@@ -127,6 +134,7 @@ pub fn CheckboxCmd(comptime Msg: type) type {
         checked: bool,
         label: []const u8,
         style: CheckboxStyle = .{},
+        font: FontSpec = DEFAULT_FONT,
     };
 }
 
@@ -140,6 +148,7 @@ pub fn RadioCmd(comptime Msg: type) type {
         selected: bool,
         label: []const u8,
         style: RadioStyle = .{},
+        font: FontSpec = DEFAULT_FONT,
     };
 }
 

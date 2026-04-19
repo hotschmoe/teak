@@ -16,6 +16,8 @@ const c = @cImport({
 });
 
 pub const ClearColor = teak.ClearColor;
+pub const TextureHandle = teak.TextureHandle;
+pub const FontSpec = teak.FontSpec;
 
 // ── wgpu helpers ───────────────────────────────────────────────────
 
@@ -361,6 +363,19 @@ pub const Gpu = struct {
         c.wgpuCommandBufferRelease(command_buffer);
 
         _ = c.wgpuSurfacePresent(self.surface);
+    }
+
+    /// WS1 stub — returns the sentinel "no texture" handle. WS2 replaces
+    /// with DirectWrite rasterization + wgpu texture upload.
+    pub fn rasterizeText(
+        _: *Gpu,
+        _: []const u8,
+        _: FontSpec,
+        _: [4]f32,
+        _: u32,
+        _: u32,
+    ) TextureHandle {
+        return teak.TEXTURE_HANDLE_NONE;
     }
 };
 

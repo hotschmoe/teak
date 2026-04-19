@@ -186,7 +186,7 @@ test "app: compose end-to-end — click + key produces updated greeting" {
     view(&m, &cb);
 
     var rects: [64]layout.Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600);
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, teak.monoMeasurer());
 
     // Find and click the text input
     var ti_idx: ?usize = null;

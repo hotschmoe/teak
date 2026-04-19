@@ -10,6 +10,9 @@ const teak = @import("teak");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
+pub const TextMeasurer = teak.TextMeasurer;
+pub const TextMetrics = teak.TextMetrics;
+pub const FontSpec = teak.FontSpec;
 
 // ── Win32 types + constants ────────────────────────────────────────
 
@@ -295,6 +298,22 @@ pub const Host = struct {
 
     pub fn nativeHandle(self: *const Host) NativeHandle {
         return .{ .hinstance = self.hinstance, .hwnd = self.hwnd };
+    }
+
+    /// WS1 stub — returns the CHAR_WIDTH / TEXT_HEIGHT approximation
+    /// today's layout pass already assumes. WS2 replaces with
+    /// DirectWrite-backed real metrics.
+    pub fn textMeasurer(self: *Host) TextMeasurer {
+        return .{ .ctx = @ptrCast(self), .measure_fn = stubMeasure };
+    }
+
+    fn stubMeasure(_: *anyopaque, text_bytes: []const u8, _: FontSpec) TextMetrics {
+        return .{
+            .width = @as(f32, @floatFromInt(text_bytes.len)) * 10,
+            .height = 20,
+            .ascent = 15,
+            .descent = 5,
+        };
     }
 };
 

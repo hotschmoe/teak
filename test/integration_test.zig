@@ -47,7 +47,7 @@ test "round-trip: click button → update → view reflects new state" {
     // Frame 1: build view, layout.
     App.view(&model, &cb);
     var rects: [64]teak.Rect = undefined;
-    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 400);
+    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 400, teak.monoMeasurer());
 
     // Click the first button ("+"). Find its rect and hit-test its center.
     var inc_idx: ?usize = null;
@@ -69,7 +69,7 @@ test "round-trip: click button → update → view reflects new state" {
     // Frame 2: render vertices. Must produce at least one quad per button.
     cb.reset();
     App.view(&model, &cb);
-    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 400);
+    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 400, teak.monoMeasurer());
 
     var verts: std.ArrayList(teak.Vertex) = .empty;
     defer verts.deinit(testing.allocator);
@@ -106,7 +106,7 @@ export fn teak_wasm_probe() u32 {
     cb.popGroup();
 
     var rects: [32]teak.Rect = undefined;
-    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300);
+    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, teak.monoMeasurer());
 
     _ = teak.hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 10, 10);
 

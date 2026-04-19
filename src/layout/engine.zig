@@ -1,8 +1,10 @@
 const std = @import("std");
 const cmd = @import("../core/cmd.zig");
+const text = @import("../core/text.zig");
 const Direction = cmd.Direction;
 const GroupStyle = cmd.GroupStyle;
 const ScrollStyle = cmd.ScrollStyle;
+const TextMeasurer = text.TextMeasurer;
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -111,6 +113,10 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
 // only read Msg-independent fields (styles, labels, content).
 
 pub const LayoutEngine = struct {
+    /// WS1: kept as a fallback for non-text sizing (button chrome,
+    /// input height, etc.). Real text width comes from the measurer.
+    /// WS3 removes this entirely once the render pass also switches to
+    /// the measurer.
     const CHAR_WIDTH: f32 = 10;
     const TEXT_HEIGHT: f32 = 20;
     const BUTTON_HEIGHT: f32 = 36;
@@ -123,8 +129,14 @@ pub const LayoutEngine = struct {
     /// Run both passes: measure then position. The first push_group (the
     /// root) is resized to the window before position runs, so flex
     /// resolves against the real window size.
-    pub fn doLayout(rects: []Rect, cmds: anytype, window_w: f32, window_h: f32) void {
-        measurePass(rects, cmds);
+    pub fn doLayout(
+        rects: []Rect,
+        cmds: anytype,
+        window_w: f32,
+        window_h: f32,
+        measurer: TextMeasurer,
+    ) void {
+        measurePass(rects, cmds, measurer);
         if (cmds.len > 0) {
             switch (cmds[0]) {
                 .push_group => {
@@ -140,7 +152,7 @@ pub const LayoutEngine = struct {
     /// Pass 1 — measure. Bottom-up via an explicit stack. Each command
     /// writes its intrinsic size to rects[i]; push_group entries also
     /// record fixed_main, flex_total, child_count for the position pass.
-    pub fn measurePass(rects: []Rect, cmds: anytype) void {
+    pub fn measurePass(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void {
         var stack: FixedStack(GroupContext, 32) = .{};
 
         for (cmds, 0..) |c, i| {
@@ -169,13 +181,12 @@ pub const LayoutEngine = struct {
                     });
                 },
                 .text => |txt| {
-                    const w = @as(f32, @floatFromInt(txt.content.len)) * CHAR_WIDTH;
-                    const h = TEXT_HEIGHT;
-                    rects[i] = .{ .w = w, .h = h };
-                    addLeafToTop(&stack, w, h, 0);
+                    const m = measurer.measure(txt.content, txt.font);
+                    rects[i] = .{ .w = m.width, .h = m.height };
+                    addLeafToTop(&stack, m.width, m.height, 0);
                 },
                 .button => |btn| {
-                    const label_w = @as(f32, @floatFromInt(btn.label.len)) * CHAR_WIDTH + BUTTON_H_PADDING;
+                    const label_w = measurer.measure(btn.label, btn.font).width + BUTTON_H_PADDING;
                     const w = @max(label_w, BUTTON_MIN_WIDTH);
                     const h = BUTTON_HEIGHT;
                     rects[i] = .{ .w = w, .h = h };
@@ -189,14 +200,14 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, w, h, ti.style.flex);
                 },
                 .checkbox => |cb| {
-                    const label_w = @as(f32, @floatFromInt(cb.label.len)) * CHAR_WIDTH;
+                    const label_w = measurer.measure(cb.label, cb.font).width;
                     const w = cb.style.size + (if (cb.label.len > 0) cb.style.label_gap + label_w else 0);
                     const h = @max(cb.style.size, TEXT_HEIGHT);
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, 0);
                 },
                 .radio => |rd| {
-                    const label_w = @as(f32, @floatFromInt(rd.label.len)) * CHAR_WIDTH;
+                    const label_w = measurer.measure(rd.label, rd.font).width;
                     const w = rd.style.size + (if (rd.label.len > 0) rd.style.label_gap + label_w else 0);
                     const h = @max(rd.style.size, TEXT_HEIGHT);
                     rects[i] = .{ .w = w, .h = h };
@@ -440,6 +451,22 @@ pub const LayoutEngine = struct {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
+/// Test-local measurer that reproduces the pre-WS1 CHAR_WIDTH=10 /
+/// TEXT_HEIGHT=20 numbers so existing assertions stay valid. Ctx is
+/// unused — stub ignores it — so `undefined` is fine here.
+fn stubMeasureForTest(_: *anyopaque, txt: []const u8, _: text.FontSpec) text.TextMetrics {
+    return .{
+        .width = @as(f32, @floatFromInt(txt.len)) * 10,
+        .height = 20,
+        .ascent = 15,
+        .descent = 5,
+    };
+}
+const test_measurer: TextMeasurer = .{
+    .ctx = undefined,
+    .measure_fn = stubMeasureForTest,
+};
+
 test "measure pass sizes basic widgets" {
     const testing = std.testing;
     const Msg = union(enum) { a, b, c };
@@ -458,7 +485,7 @@ test "measure pass sizes basic widgets" {
     cb.popGroup();
 
     var rects: [32]Rect = undefined;
-    LayoutEngine.measurePass(rects[0..cb.cmds.items.len], cb.cmds.items);
+    LayoutEngine.measurePass(rects[0..cb.cmds.items.len], cb.cmds.items, test_measurer);
 
     try testing.expectEqual(@as(f32, 80), rects[1].w);
     try testing.expectEqual(@as(f32, 20), rects[1].h);
@@ -491,7 +518,7 @@ test "horizontal flex distributes remaining space" {
     cb.popGroup();
 
     var rects: [32]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600);
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
 
     // Root: 800 wide.
     try testing.expectEqual(@as(f32, 800), rects[0].w);
@@ -517,7 +544,7 @@ test "divider stretches on cross-axis, takes thickness on main-axis" {
     cb.popGroup();
 
     var rects: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 300, 200);
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 300, 200, test_measurer);
 
     // rects[2] is the divider. Default thickness is 1.
     try testing.expectEqual(@as(f32, 1), rects[2].h);
@@ -535,7 +562,7 @@ test "divider stretches on cross-axis, takes thickness on main-axis" {
     cb2.popGroup();
 
     var rects2: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects2[0..cb2.cmds.items.len], cb2.cmds.items, 300, 200);
+    LayoutEngine.doLayout(rects2[0..cb2.cmds.items.len], cb2.cmds.items, 300, 200, test_measurer);
 
     try testing.expectEqual(@as(f32, 3), rects2[2].w);
     try testing.expectEqual(@as(f32, 200), rects2[2].h);
@@ -567,7 +594,7 @@ test "horizontal flex respects padding and gap" {
     cb.popGroup();
 
     var rects: [32]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600);
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
 
     // Child push_group entries are cmds 1, 4, 7 (pop_group cmds sit
     // between them in the buffer).
@@ -595,7 +622,7 @@ test "checkbox sizes include label and box" {
     cb.popGroup();
 
     var rects: [8]Rect = undefined;
-    LayoutEngine.measurePass(rects[0..cb.cmds.items.len], cb.cmds.items);
+    LayoutEngine.measurePass(rects[0..cb.cmds.items.len], cb.cmds.items, test_measurer);
     // size 18 + gap 8 + 5*10 = 76
     try testing.expectEqual(@as(f32, 76), rects[1].w);
 }
@@ -611,7 +638,7 @@ test "slider measures intrinsic min_width, grows with flex" {
     cb.popGroup();
 
     var rects: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 100);
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 100, test_measurer);
     // Slider has flex=1 by default and no siblings, so it expands to fill.
     try testing.expectEqual(@as(f32, 400), rects[1].w);
 }
@@ -638,7 +665,7 @@ test "scroll container clamps to fixed viewport size" {
     cb.popScroll();
 
     var rects: [16]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600);
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
 
     // Scroll container is clamped to 200x100.
     try testing.expectEqual(@as(f32, 200), rects[0].w);
@@ -662,7 +689,7 @@ test "text_input cross-axis stretches in vertical parent" {
     cb.popGroup();
 
     var rects: [16]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300);
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, test_measurer);
 
     // Parent inner width = 400 - 20 = 380.
     try testing.expectEqual(@as(f32, 380), rects[1].w);

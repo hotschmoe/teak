@@ -13,6 +13,8 @@ const zgpu = zunk.web.gpu;
 const Vertex = teak.Vertex;
 
 pub const ClearColor = teak.ClearColor;
+pub const TextureHandle = teak.TextureHandle;
+pub const FontSpec = teak.FontSpec;
 
 const SHADER_CODE = @import("teak-shaders").quad_wgsl;
 
@@ -104,6 +106,19 @@ pub const Gpu = struct {
 
         zgpu.renderPassEnd(pass);
         zgpu.present();
+    }
+
+    /// WS1 stub — returns the sentinel "no texture" handle. WS4 replaces
+    /// with `zgpu.rasterizeText(...)` wiring.
+    pub fn rasterizeText(
+        _: *Gpu,
+        _: []const u8,
+        _: FontSpec,
+        _: [4]f32,
+        _: u32,
+        _: u32,
+    ) TextureHandle {
+        return teak.TEXTURE_HANDLE_NONE;
     }
 };
 

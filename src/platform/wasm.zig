@@ -21,6 +21,9 @@ const zapp = zunk.web.app;
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
+pub const TextMeasurer = teak.TextMeasurer;
+pub const TextMetrics = teak.TextMetrics;
+pub const FontSpec = teak.FontSpec;
 
 pub const NativeHandle = struct {};
 
@@ -116,6 +119,21 @@ pub const Host = struct {
 
     pub fn nativeHandle(_: *const Host) NativeHandle {
         return .{};
+    }
+
+    /// WS1 stub — mirrors the CHAR_WIDTH approximation. WS4 replaces
+    /// with `zunk.web.gpu.measureText`.
+    pub fn textMeasurer(self: *Host) TextMeasurer {
+        return .{ .ctx = @ptrCast(self), .measure_fn = stubMeasure };
+    }
+
+    fn stubMeasure(_: *anyopaque, text_bytes: []const u8, _: FontSpec) TextMetrics {
+        return .{
+            .width = @as(f32, @floatFromInt(text_bytes.len)) * 10,
+            .height = 20,
+            .ascent = 15,
+            .descent = 5,
+        };
     }
 };
 

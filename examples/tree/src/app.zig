@@ -304,7 +304,7 @@ test "end-to-end: click the collapsed 'input' row's chevron expands it" {
     view(&m, &cb);
 
     var rects: [512]teak.Rect = undefined;
-    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 700, 500);
+    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 700, 500, teak.monoMeasurer());
 
     // Find the ">" button (the collapsed chevron).
     var chevron_rect: ?teak.Rect = null;

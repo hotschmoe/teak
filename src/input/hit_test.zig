@@ -1,6 +1,7 @@
 const std = @import("std");
 const cmd_mod = @import("../core/cmd.zig");
 const layout = @import("../layout/engine.zig");
+const text_mod = @import("../core/text.zig");
 const Rect = layout.Rect;
 const ClipStack = layout.ClipStack;
 const clipRect = layout.clipRect;
@@ -117,7 +118,7 @@ test "hitTest finds button at point" {
     cb.popGroup();
 
     var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300);
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
 
     const hit_inc = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 30, 18);
     try testing.expect(hit_inc != null);
@@ -155,7 +156,7 @@ test "hitTest clips descendants to scroll viewport" {
     cb.popScroll();
 
     var rects: [16]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600);
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
 
     // A button inside the viewport is hittable.
     try testing.expect(hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 10, 10) != null);
@@ -176,7 +177,7 @@ test "hitTest returns focus msg for text_input click" {
     cb.popGroup();
 
     var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300);
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
 
     const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 100, 20);
     try testing.expect(hit != null);
@@ -214,7 +215,7 @@ test "hitTest intersects nested scroll clips" {
     cb.popScroll();
 
     var rects: [16]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600);
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
 
     // Sanity: button A is inside both viewports → hit.
     try testing.expect(hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 10, 10) != null);
@@ -239,7 +240,7 @@ test "hitTest returns msg for checkbox/radio/slider clicks" {
     cb.popGroup();
 
     var rects: [16]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300);
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
 
     const cb_hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], rects[1].x + 2, rects[1].y + 2);
     try testing.expectEqual(Msg.toggle, cb_hit.?.msg);

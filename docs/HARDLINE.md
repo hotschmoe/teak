@@ -90,6 +90,20 @@ allowed and belong here.
   re-exports.
 - (c) Framework code never imports `src/platform/*` or
   `src/gpu/*` directly. Dependency arrow points inward only.
+- (d) The Host and GPU validated surfaces may extend as new
+  platform-owned concerns arise (text measurement, rasterization,
+  future: clipboard, file dialogs). Each extension adds one decl to
+  `validateHost` or `validateGpu` and is documented in the
+  corresponding feature doc. Surface extensions are not new escape
+  hatches — they remain bounded by (a)–(c).
+
+Cross-boundary interface values (e.g. `TextMeasurer` in
+`src/core/text.zig`, a `*anyopaque` + fn-pointer pair returned by
+`Host.textMeasurer()`) live in core but carry no platform types
+across the boundary — the fn pointer's implementation lives in a
+Host backend, the caller sees only the vtable. These are not
+Cmd fn-pointers (§3 forbids those); Cmd variants are data, interface
+values are how core calls into the Host layer without importing it.
 
 The rAF / `frame(dt)` lifecycle lives at this layer. See
 `docs/journal/2026-04-16-zunk_teak_convo.md` for the audit that

@@ -12,6 +12,11 @@ const std = @import("std");
 
 pub const SpecialKey = @import("../input/keys.zig").SpecialKey;
 
+const text = @import("../core/text.zig");
+pub const TextMeasurer = text.TextMeasurer;
+pub const TextMetrics = text.TextMetrics;
+pub const FontSpec = text.FontSpec;
+
 /// Per-frame input snapshot returned by `Host.pollInputs`.
 ///
 /// `mouse_x` / `mouse_y` are the current cursor position (state, not an
@@ -35,7 +40,7 @@ pub const InputState = struct {
 /// signatures vary per backend and are NOT validated (some hosts take a
 /// title, some take a canvas selector, etc.).
 pub fn validateHost(comptime T: type) void {
-    const required = [_][]const u8{ "deinit", "pollInputs", "shouldClose", "nativeHandle" };
+    const required = [_][]const u8{ "deinit", "pollInputs", "shouldClose", "nativeHandle", "textMeasurer" };
     inline for (required) |name| {
         if (!@hasDecl(T, name)) {
             @compileError("Host '" ++ @typeName(T) ++ "' is missing declaration '" ++ name ++ "'");
@@ -54,6 +59,13 @@ test "validateHost accepts a minimal shape" {
             return true;
         }
         pub fn nativeHandle(_: *@This()) void {}
+        pub fn textMeasurer(_: *@This()) TextMeasurer {
+            return .{ .ctx = undefined, .measure_fn = stubMeasure };
+        }
+
+        fn stubMeasure(_: *anyopaque, _: []const u8, _: FontSpec) TextMetrics {
+            return .{ .width = 0, .height = 0, .ascent = 0, .descent = 0 };
+        }
     };
     comptime validateHost(Stub);
 }

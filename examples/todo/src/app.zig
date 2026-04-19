@@ -283,7 +283,7 @@ test "end-to-end: click delete button on item 0 removes it" {
     view(&m, &cb);
 
     var rects: [256]teak.Rect = undefined;
-    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 600, 500);
+    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 600, 500, teak.monoMeasurer());
 
     // First "x" button is the delete for item 0.
     var first_x: ?teak.Rect = null;

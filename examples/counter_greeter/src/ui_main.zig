@@ -88,6 +88,8 @@ pub fn main() !void {
     var gpu = try Gpu.init(host.nativeHandle(), 900, 500);
     defer gpu.deinit();
 
+    const measurer = host.textMeasurer();
+
     std.debug.print("Adapter + device acquired.\n", .{});
 
     // ── Application state: double-buffered CmdBuffer + rects ──────
@@ -175,6 +177,7 @@ pub fn main() !void {
             cur_cmds,
             @floatFromInt(input.width),
             @floatFromInt(input.height),
+            measurer,
         );
         rects_len[cur] = cur_cmds.len;
 

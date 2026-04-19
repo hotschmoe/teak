@@ -38,7 +38,7 @@ pub fn main() !void {
     App.view(&model, &cb);
     var rects: [512]teak.Rect = undefined;
     const cmds = cb.cmds.items;
-    teak.LayoutEngine.doLayout(rects[0..cmds.len], cmds, 700, 500);
+    teak.LayoutEngine.doLayout(rects[0..cmds.len], cmds, 700, 500, teak.monoMeasurer());
     std.debug.print("\nframe has {d} commands\n", .{cmds.len});
 }
 

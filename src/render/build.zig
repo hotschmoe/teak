@@ -4,6 +4,7 @@ const Rect = layout.Rect;
 const ClipStack = layout.ClipStack;
 const clipRect = layout.clipRect;
 const TransientState = @import("../core/transient.zig").TransientState;
+const text_mod = @import("../core/text.zig");
 const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
@@ -202,7 +203,7 @@ test "buildVertices emits one quad per button and text" {
     cb.popGroup();
 
     var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300);
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
 
     var verts: std.ArrayList(Vertex) = .empty;
     defer verts.deinit(testing.allocator);
@@ -229,7 +230,7 @@ test "buildVertices clips child widgets to scroll container" {
     cb.popScroll();
 
     var rects: [16]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 400);
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 400, text_mod.monoMeasurer());
 
     var verts: std.ArrayList(Vertex) = .empty;
     defer verts.deinit(testing.allocator);
@@ -254,7 +255,7 @@ test "buildVertices draws border + bg + cursor for focused text input" {
     cb.popGroup();
 
     var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300);
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
 
     var verts: std.ArrayList(Vertex) = .empty;
     defer verts.deinit(testing.allocator);

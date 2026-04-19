@@ -9,6 +9,7 @@
 pub const cmd = @import("core/cmd.zig");
 pub const component = @import("core/component.zig");
 pub const transient = @import("core/transient.zig");
+pub const text = @import("core/text.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
@@ -60,6 +61,15 @@ pub const validateHost = host.validateHost;
 
 pub const ClearColor = gpu.ClearColor;
 pub const validateGpu = gpu.validateGpu;
+
+pub const FontFamily = text.FontFamily;
+pub const FontSpec = text.FontSpec;
+pub const DEFAULT_FONT = text.DEFAULT_FONT;
+pub const TextMetrics = text.TextMetrics;
+pub const TextMeasurer = text.TextMeasurer;
+pub const TextureHandle = text.TextureHandle;
+pub const TEXTURE_HANDLE_NONE = text.TEXTURE_HANDLE_NONE;
+pub const monoMeasurer = text.monoMeasurer;
 
 test {
     @import("std").testing.refAllDecls(@This());

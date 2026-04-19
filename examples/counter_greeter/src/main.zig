@@ -15,7 +15,7 @@ pub fn main() !void {
 
     var rects: [128]teak.Rect = undefined;
     const cmds = cb.cmds.items;
-    teak.LayoutEngine.doLayout(rects[0..cmds.len], cmds, 800, 400);
+    teak.LayoutEngine.doLayout(rects[0..cmds.len], cmds, 800, 400, teak.monoMeasurer());
 
     std.debug.print("── Teak Prototype 2: Composed App ──\n", .{});
     std.debug.print("counter.count = {d}, greeter = \"{s}\", focused = {?}\n\n", .{
@@ -69,7 +69,7 @@ pub fn main() !void {
     cb.reset();
     App.view(&model, &cb);
     const cmds2 = cb.cmds.items;
-    teak.LayoutEngine.doLayout(rects[0..cmds2.len], cmds2, 800, 400);
+    teak.LayoutEngine.doLayout(rects[0..cmds2.len], cmds2, 800, 400, teak.monoMeasurer());
 
     std.debug.print("\n── Frame After Updates ──\n", .{});
     printFrame(cmds2, rects[0..cmds2.len]);
@@ -122,7 +122,7 @@ test "full composed loop: click + keyboard updates model" {
 
     App.view(&model, &cb);
     var rects: [128]teak.Rect = undefined;
-    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 400);
+    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 400, teak.monoMeasurer());
 
     // Click the "+" button.
     var plus_rect: ?teak.Rect = null;
