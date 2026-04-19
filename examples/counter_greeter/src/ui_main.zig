@@ -27,6 +27,14 @@ fn cmdsEqual(a: []const teak.Cmd(App.Msg), b: []const teak.Cmd(App.Msg)) bool {
                     ga.gap != gb.gap or ga.flex != gb.flex) return false;
             },
             .pop_group => {},
+            .push_scroll => |sa| {
+                const sb = cb.push_scroll;
+                if (sa.direction != sb.direction or sa.padding != sb.padding or
+                    sa.gap != sb.gap or sa.flex != sb.flex or
+                    sa.width != sb.width or sa.height != sb.height or
+                    sa.scroll_x != sb.scroll_x or sa.scroll_y != sb.scroll_y) return false;
+            },
+            .pop_scroll => {},
             .text => |ta| if (!std.mem.eql(u8, ta.content, cb.text.content)) return false,
             .button => |ba| if (!std.mem.eql(u8, ba.label, cb.button.label)) return false,
             .text_input => |tia| {
@@ -34,6 +42,17 @@ fn cmdsEqual(a: []const teak.Cmd(App.Msg), b: []const teak.Cmd(App.Msg)) bool {
                 if (tia.cursor != tib.cursor) return false;
                 if (!std.mem.eql(u8, tia.content, tib.content)) return false;
             },
+            .checkbox => |ka| {
+                const kb = cb.checkbox;
+                if (ka.checked != kb.checked) return false;
+                if (!std.mem.eql(u8, ka.label, kb.label)) return false;
+            },
+            .radio => |ra| {
+                const rb = cb.radio;
+                if (ra.selected != rb.selected) return false;
+                if (!std.mem.eql(u8, ra.label, rb.label)) return false;
+            },
+            .slider => |sa| if (sa.value != cb.slider.value) return false,
         }
     }
     return true;
