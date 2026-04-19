@@ -451,21 +451,11 @@ pub const LayoutEngine = struct {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-/// Test-local measurer that reproduces the pre-WS1 CHAR_WIDTH=10 /
-/// TEXT_HEIGHT=20 numbers so existing assertions stay valid. Ctx is
-/// unused — stub ignores it — so `undefined` is fine here.
-fn stubMeasureForTest(_: *anyopaque, txt: []const u8, _: text.FontSpec) text.TextMetrics {
-    return .{
-        .width = @as(f32, @floatFromInt(txt.len)) * 10,
-        .height = 20,
-        .ascent = 15,
-        .descent = 5,
-    };
-}
-const test_measurer: TextMeasurer = .{
-    .ctx = undefined,
-    .measure_fn = stubMeasureForTest,
-};
+/// Pre-WS1 CHAR_WIDTH=10 / TEXT_HEIGHT=20 measurer — the same stub
+/// every existing assertion was written against. Shared with
+/// `src/input/hit_test.zig`, `src/render/build.zig`, and example
+/// tests via `text.monoMeasurer`.
+const test_measurer = text.monoMeasurer();
 
 test "measure pass sizes basic widgets" {
     const testing = std.testing;
