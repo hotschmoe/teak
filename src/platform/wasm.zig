@@ -18,14 +18,27 @@ const zunk = @import("zunk");
 
 const zinput = zunk.web.input;
 const zapp = zunk.web.app;
+const zgpu = zunk.web.gpu;
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
 pub const TextMeasurer = teak.TextMeasurer;
 pub const TextMetrics = teak.TextMetrics;
 pub const FontSpec = teak.FontSpec;
+pub const FontFamily = teak.FontFamily;
 
 pub const NativeHandle = struct {};
+
+const MEASURE_CACHE_CAPACITY: usize = 128;
+
+const MeasureCacheEntry = struct {
+    content_hash: u64,
+    content_len: u32,
+    size_px: u16,
+    family: FontFamily,
+    metrics: TextMetrics,
+    last_used: u64,
+};
 
 // Delete/Home/End are absent from zunk.web.input.Key; tracked in
 // docs/zunk-handoff.md as a follow-up ask.
@@ -49,6 +62,9 @@ pub const Host = struct {
     keys_len: usize = 0,
     chars_buf: [32]u8 = undefined,
     chars_len: usize = 0,
+    measure_cache: [MEASURE_CACHE_CAPACITY]MeasureCacheEntry = undefined,
+    measure_cache_len: usize = 0,
+    measure_tick: u64 = 0,
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         zinput.init();
@@ -121,21 +137,88 @@ pub const Host = struct {
         return .{};
     }
 
-    /// WS1 stub — 10-px-per-byte approximation. WS4 replaces with
-    /// `zunk.web.gpu.measureText`.
+    /// Measures via canvas 2D through `zunk.web.gpu.measureText`. Results
+    /// are cached by (content_hash, size, family) because every
+    /// measurement pays a wasm↔JS round-trip. Zunk's `TextMetrics`
+    /// carries only width/height; ascent/descent are synthesized with
+    /// the same 0.75/0.25 split `teak.monoMeasurer` uses.
     pub fn textMeasurer(self: *Host) TextMeasurer {
-        return .{ .ctx = @ptrCast(self), .measure_fn = stubMeasure };
+        return .{ .ctx = @ptrCast(self), .measure_fn = zunkMeasure };
     }
 
-    fn stubMeasure(_: *anyopaque, text_bytes: []const u8, _: FontSpec) TextMetrics {
+    fn zunkMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
+        const self: *Host = @ptrCast(@alignCast(ctx));
+        self.measure_tick += 1;
+        const size_px: u16 = @intFromFloat(font.size_px);
+        const content_hash = std.hash.Wyhash.hash(0, text_bytes);
+
+        for (self.measure_cache[0..self.measure_cache_len]) |*e| {
+            if (e.content_hash == content_hash and
+                e.content_len == text_bytes.len and
+                e.size_px == size_px and
+                e.family == font.family)
+            {
+                e.last_used = self.measure_tick;
+                return e.metrics;
+            }
+        }
+
+        var font_buf: [32]u8 = undefined;
+        const css = std.fmt.bufPrint(&font_buf, "{d}px {s}", .{
+            size_px,
+            cssFontFamily(font.family),
+        }) catch return fallbackMetrics(font);
+
+        const raw = zgpu.measureText(text_bytes, css);
+        const metrics: TextMetrics = .{
+            .width = @floatFromInt(raw.width),
+            .height = @floatFromInt(raw.height),
+            .ascent = font.size_px * 0.75,
+            .descent = font.size_px * 0.25,
+        };
+
+        if (self.measure_cache_len >= self.measure_cache.len) {
+            var oldest: usize = 0;
+            var oldest_tick: u64 = self.measure_cache[0].last_used;
+            for (self.measure_cache[0..self.measure_cache_len], 0..) |*e, i| {
+                if (e.last_used < oldest_tick) {
+                    oldest = i;
+                    oldest_tick = e.last_used;
+                }
+            }
+            self.measure_cache[oldest] = self.measure_cache[self.measure_cache_len - 1];
+            self.measure_cache_len -= 1;
+        }
+
+        self.measure_cache[self.measure_cache_len] = .{
+            .content_hash = content_hash,
+            .content_len = @intCast(text_bytes.len),
+            .size_px = size_px,
+            .family = font.family,
+            .metrics = metrics,
+            .last_used = self.measure_tick,
+        };
+        self.measure_cache_len += 1;
+        return metrics;
+    }
+
+    fn fallbackMetrics(font: FontSpec) TextMetrics {
         return .{
-            .width = @as(f32, @floatFromInt(text_bytes.len)) * 10,
-            .height = 20,
-            .ascent = 15,
-            .descent = 5,
+            .width = 0,
+            .height = font.size_px,
+            .ascent = font.size_px * 0.75,
+            .descent = font.size_px * 0.25,
         };
     }
 };
+
+fn cssFontFamily(family: FontFamily) []const u8 {
+    return switch (family) {
+        .sans => "sans-serif",
+        .serif => "serif",
+        .mono => "monospace",
+    };
+}
 
 comptime {
     teak.validateHost(Host);
