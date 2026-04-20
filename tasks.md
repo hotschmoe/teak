@@ -3,12 +3,21 @@
 Working document. Current phase: **text rendering**. See §"Phase
 history" at the bottom for what shipped before this phase.
 
-**Status (2026-04-19)**: **WS1 complete** (`6d94be2` + `e59edc4`).
-Host + GPU contracts extended with `textMeasurer` / `rasterizeText`
-decls; stubs return the pre-WS1 CHAR_WIDTH numbers for zero visual
-drift. Layout pass now dispatches text widths through the measurer.
-Next up: **WS2** (native DirectWrite path) — see workstream table
-below.
+**Status (2026-04-19)**: **WS1 + WS2 complete**.
+
+- WS1 (`6d94be2`, `e59edc4`) — Host/GPU contracts + stubs + layout
+  measurer threading.
+- WS2 (`d129d36`, `19bf1c8`, `04e3862`, `551d7c9`) — native text
+  rendering. GDI measurer + rasterizer, second render pipeline,
+  glyph cache (256-entry LRU, 120-frame TTL), render emits
+  `TextDraw` records, cursor placement via `measurer.prefixWidth`.
+  Sharpness pass: nearest mag filter + integer-pixel rect/UV snap.
+
+Native: real glyphs in all three examples. CHAR_WIDTH has zero
+uses anywhere in `src/`; WS3 is now a delete-only cleanup.
+
+Next up: **WS3** (kill CHAR_WIDTH const + audit rule — trivial) and
+**WS4** (web path via zunk). WS4 is the substantive next step.
 
 ---
 
@@ -100,45 +109,61 @@ Host-interface change lands.
   surface extensions + interface-value clarification. Feature doc
   at `docs/features/text.md`.
 
-**WS2 — Native path (DirectWrite, Windows)**
-- Integrate DirectWrite for measurement + rasterization on Windows.
-  IDWriteFactory → IDWriteTextLayout gives us `GetMetrics()` and a
-  bitmap render target.
-- Emit a single-channel (R8) grayscale bitmap; upload to a texture
-  via wgpu-native.
-- Glyph cache keyed by `(content_hash, font_hash, color)`. LRU with
-  N-frame unused eviction. Exact N is tunable; start with 120
-  frames (~2 s at 60 fps).
-- Text pipeline: new render pipeline with a textured-quad shader
-  that samples the R8 atlas and multiplies by a per-quad color
-  uniform. Coexists with the existing solid-fill pipeline; solid
-  rectangles still use the fast path.
-- **Acceptance**: `zig build ui` renders the counter_greeter,
-  todo, and tree examples with real glyphs. No more
-  content-length-times-10 fake text widths; measurement and render
-  agree because both call the same Host path.
+**WS2 — Native path (Win32 + wgpu)** ✅
+- GDI instead of DirectWrite. Zero-COM, matches existing
+  `win32.zig` style. Trade-off and non-goals documented in the
+  plan (`.claude/plans/parallel-sleeping-frost.md`).
+- Measurement via `GetTextExtentPoint32W` + `GetTextMetricsW`
+  on a cached memory DC; HFONT cache keyed by (family, size_px).
+  Segoe UI / Cambria / Cascadia Mono for `.sans` / `.serif` /
+  `.mono`.
+- Rasterization via `CreateDIBSection` (32bpp BGRA) + `DrawTextW`
+  + alpha-from-luminance post-pass. Uploaded to wgpu BGRA8Unorm
+  textures with `queueWriteTexture`.
+- Glyph cache: 256 entries, LRU with 120-frame TTL, keyed by
+  content hash × font × packed color × dimensions. Content length
+  + hash re-compared on hit.
+- Text pipeline: `shaders/textured_quad.wgsl`, reuses the same
+  Vertex layout and blend state as the solid pipeline. Sampler
+  is `magFilter = Nearest, minFilter = Linear, clamp_to_edge`.
+- `renderFrame` runs solid pass then text pass. Text quads are
+  snapped to integer pixels before UV math to avoid edge-repeat
+  bleed.
+- **Done**: counter_greeter / todo / tree all render real glyphs
+  under `zig build ui`. Tested interactively; frame-diff still
+  works (200k+ idle frames skipped without artifacts).
 
-**WS3 — Remove `CHAR_WIDTH`**
-- Delete the constant from `src/layout/engine.zig:114` and
-  `src/render/build.zig:12`. Both sites now call
-  `host.measureText(...)`.
-- Cursor placement in `render/build.zig:86` uses the Host-reported
-  width of `content[0..cursor]` — exact, not proportional.
-- **Acceptance**: `rg CHAR_WIDTH src/` returns zero matches. Audit
-  rule: add `no-char-width` to `tools/audit.zig` so it can't come
-  back.
+**WS3 — Remove `CHAR_WIDTH`** (now trivial after WS2)
+- Delete the unused `const CHAR_WIDTH` in `src/layout/engine.zig`
+  and `src/render/build.zig`. Also `src/platform/wasm.zig` /
+  `src/platform/win32.zig` if any lingering use exists there
+  (check before deleting).
+- Add an audit rule in `tools/audit.zig` that greps for
+  `CHAR_WIDTH` in the whole `src/` tree and fails. Call it
+  `no-char-width` or fold into the existing "no-fake-text-metrics"
+  category.
+- **Acceptance**: `rg CHAR_WIDTH src/` returns zero matches;
+  `zig build audit` enforces it going forward.
 
-**WS4 — Web path (zunk wrapper)**
-- `src/gpu/web.zig` implements `rasterizeText` by calling
-  `zgpu.rasterizeText(...)` and re-exposing the returned `Texture`.
-- `src/platform/wasm.zig` implements `measureText` by calling
-  `zgpu.measureText(...)`. Font-family mapping: Teak's `.sans` /
-  `.serif` / `.mono` → CSS font strings (`"14px sans-serif"`,
-  `"14px serif"`, `"14px monospace"`).
-- Same glyph-cache implementation as WS2; only the rasterizer
-  backend differs.
-- **Acceptance**: `zig build web` in each example renders real
-  text in the browser, matching the native output at 1× DPR.
+**WS4 — Web path (zunk wrapper)** — next substantive workstream
+- Today's state: web compiles but renders no text at all. WS2
+  replaced the old grey placeholder rectangles with `TextDraw`
+  records, and `src/gpu/web.zig`'s `uploadText` is a no-op stub.
+  Button backgrounds / input borders still render; glyph slots
+  are empty.
+- `src/platform/wasm.zig` implements `textMeasurer` by calling
+  `zunk.web.gpu.measureText(content, css_font)`. Font-family
+  mapping: `.sans` / `.serif` / `.mono` → CSS strings
+  (`"14px sans-serif"`, `"14px serif"`, `"14px monospace"`).
+  Cache measurements by `(content_hash, font)` since the call is
+  synchronous and may be per-call expensive.
+- `src/gpu/web.zig` implements `rasterizeText` calling
+  `zgpu.rasterizeText(...)`, implements `uploadText` mirroring
+  `native.zig`'s structure (text pipeline + sampler + glyph
+  cache). Cache semantics identical — only the rasterizer
+  differs.
+- **Acceptance**: `zig build web` in each example shows real text
+  in the browser at 1× DPR, matching the native output.
 
 **WS5 — Glyph-cache hardening**
 - Cache-hit-rate instrumentation (debug build only): counters for
