@@ -3,7 +3,7 @@
 Working document. Current phase: **text rendering**. See §"Phase
 history" at the bottom for what shipped before this phase.
 
-**Status (2026-04-19)**: **WS1 + WS2 + WS3 complete**.
+**Status (2026-04-19)**: **WS1 + WS2 + WS3 + WS4 complete**.
 
 - WS1 (`6d94be2`, `e59edc4`) — Host/GPU contracts + stubs + layout
   measurer threading.
@@ -15,10 +15,17 @@ history" at the bottom for what shipped before this phase.
 - WS3 — `CHAR_WIDTH` const deleted from `engine.zig` + `build.zig`;
   lingering comment references scrubbed; `no-char-width` audit rule
   added. `rg CHAR_WIDTH src/` returns zero matches.
+- WS4 (`e6f6cf8`, `d1425e7`, `6e6a60c`) — web text via zunk wrapper.
+  `measureText` + 128-entry LRU measure cache, `rasterizeText` +
+  256-entry glyph cache mirroring native, text pipeline + BGL +
+  nearest-mag sampler. Dropped stale DPR mouse-scaling workaround
+  (zunk v0.5.2+ unified on CSS pixels). Stabilized per-font height
+  at `ceil(size_px * 1.2)` so labels don't jitter by descender.
 
-Native: real glyphs in all three examples.
+Native + web: real glyphs in all three examples. Browser-verified at
+HiDPI.
 
-Next up: **WS4** (web path via zunk).
+Next up: **WS5** (glyph-cache hardening — instrumentation + canary).
 
 ---
 
@@ -144,25 +151,28 @@ Host-interface change lands.
 - **Done**: `rg CHAR_WIDTH src/` returns zero matches; library tests
   and audit both pass.
 
-**WS4 — Web path (zunk wrapper)** — next substantive workstream
-- Today's state: web compiles but renders no text at all. WS2
-  replaced the old grey placeholder rectangles with `TextDraw`
-  records, and `src/gpu/web.zig`'s `uploadText` is a no-op stub.
-  Button backgrounds / input borders still render; glyph slots
-  are empty.
-- `src/platform/wasm.zig` implements `textMeasurer` by calling
-  `zunk.web.gpu.measureText(content, css_font)`. Font-family
-  mapping: `.sans` / `.serif` / `.mono` → CSS strings
-  (`"14px sans-serif"`, `"14px serif"`, `"14px monospace"`).
-  Cache measurements by `(content_hash, font)` since the call is
-  synchronous and may be per-call expensive.
-- `src/gpu/web.zig` implements `rasterizeText` calling
-  `zgpu.rasterizeText(...)`, implements `uploadText` mirroring
-  `native.zig`'s structure (text pipeline + sampler + glyph
-  cache). Cache semantics identical — only the rasterizer
-  differs.
-- **Acceptance**: `zig build web` in each example shows real text
-  in the browser at 1× DPR, matching the native output.
+**WS4 — Web path (zunk wrapper)** ✅
+- `src/platform/wasm.zig` `zunkMeasure` calls
+  `zunk.web.gpu.measureText(content, css_font)` with a 128-entry
+  LRU cache keyed by `(content_hash, content_len, size_px, family)`.
+  Font-family mapping: `.sans` / `.serif` / `.mono` → CSS
+  `sans-serif` / `serif` / `monospace`. Height is stabilized at
+  `ceil(size_px * 1.2)` — zunk's `TextMetrics` returns glyph-tight
+  ascent+descent which varies per string, and native returns
+  font-scope `tm.tmHeight`; matching that keeps baselines stable.
+- `src/gpu/web.zig` `rasterizeText` + `uploadText` mirror
+  `native.zig` verbatim: 256-entry LRU glyph cache, same
+  `textCacheKey` XOR, same pixel-snap + UV math, same draw loop.
+  Second pipeline uses `textured_quad.wgsl`; sampler is
+  nearest-mag / linear-min / clamp-to-edge. Zunk exposes no
+  destroy for texture views or bind groups — cache eviction
+  destroys the texture only (bounded leak at 256 entries).
+- Dropped the pre-v0.5.2 `mouse * inv_dpr` workaround in
+  `pollInputs`; zunk unified pointer and viewport on CSS pixels,
+  and the extra divide was halving coords on HiDPI. Hit-tests now
+  land under the cursor.
+- **Done**: counter_greeter / todo / tree all render real glyphs
+  under `zig build web`. Browser-verified at HiDPI.
 
 **WS5 — Glyph-cache hardening**
 - Cache-hit-rate instrumentation (debug build only): counters for
