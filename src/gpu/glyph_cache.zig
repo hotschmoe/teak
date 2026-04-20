@@ -200,15 +200,16 @@ fn resetTestBackend() void {
     TestBackend.destroy_count = 0;
 }
 
+const test_font = teak.FontSpec{ .family = .sans, .size_px = 14 };
+const test_color = [4]f32{ 1, 1, 1, 1 };
+
 test "lookup miss, insert, then hit" {
     resetTestBackend();
     var cache = GlyphCache(TestBackend){};
-    const font = teak.FontSpec{ .family = .sans, .size_px = 14 };
-    const color = [4]f32{ 1, 1, 1, 1 };
 
     cache.tick();
     const content = "hello";
-    const key = textCacheKey(content, font, color, 50, 20);
+    const key = textCacheKey(content, test_font, test_color, 50, 20);
     const hash = std.hash.Wyhash.hash(0, content);
 
     try std.testing.expectEqual(teak.TEXTURE_HANDLE_NONE, cache.lookup(key, content.len, hash));
@@ -233,8 +234,6 @@ test "lookup miss, insert, then hit" {
 test "LRU eviction picks the oldest untouched entry" {
     resetTestBackend();
     var cache = GlyphCache(TestBackend){};
-    const font = teak.FontSpec{ .family = .sans, .size_px = 14 };
-    const color = [4]f32{ 1, 1, 1, 1 };
 
     // Fill to capacity, one entry per frame, so slot 0 has
     // last_used_frame == 1 and slot CAPACITY-1 has == CAPACITY.
@@ -243,7 +242,7 @@ test "LRU eviction picks the oldest untouched entry" {
         cache.tick();
         var buf: [8]u8 = undefined;
         const content = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
-        const key = textCacheKey(content, font, color, 50, 20);
+        const key = textCacheKey(content, test_font, test_color, 50, 20);
         const hash = std.hash.Wyhash.hash(0, content);
         _ = cache.insert(key, @intCast(content.len), hash, i + 1, i + 1, i + 1);
     }
@@ -253,7 +252,7 @@ test "LRU eviction picks the oldest untouched entry" {
     cache.tick();
     {
         const content = "0";
-        const key = textCacheKey(content, font, color, 50, 20);
+        const key = textCacheKey(content, test_font, test_color, 50, 20);
         const hash = std.hash.Wyhash.hash(0, content);
         const h = cache.lookup(key, content.len, hash);
         try std.testing.expect(h != teak.TEXTURE_HANDLE_NONE);
@@ -263,7 +262,7 @@ test "LRU eviction picks the oldest untouched entry" {
     // entry; eviction should remove slot 1's texture (u32 value 2).
     cache.tick();
     const fresh = "fresh";
-    const fresh_key = textCacheKey(fresh, font, color, 50, 20);
+    const fresh_key = textCacheKey(fresh, test_font, test_color, 50, 20);
     const fresh_hash = std.hash.Wyhash.hash(0, fresh);
 
     const before_evictions = cache.stats().evictions;
@@ -276,13 +275,13 @@ test "LRU eviction picks the oldest untouched entry" {
 
     // Slot 1's content "1" should no longer hit.
     const gone = "1";
-    const gone_key = textCacheKey(gone, font, color, 50, 20);
+    const gone_key = textCacheKey(gone, test_font, test_color, 50, 20);
     const gone_hash = std.hash.Wyhash.hash(0, gone);
     try std.testing.expectEqual(teak.TEXTURE_HANDLE_NONE, cache.lookup(gone_key, gone.len, gone_hash));
 
     // Slot 0's content "0" still hits (we refreshed it).
     const kept = "0";
-    const kept_key = textCacheKey(kept, font, color, 50, 20);
+    const kept_key = textCacheKey(kept, test_font, test_color, 50, 20);
     const kept_hash = std.hash.Wyhash.hash(0, kept);
     try std.testing.expect(cache.lookup(kept_key, kept.len, kept_hash) != teak.TEXTURE_HANDLE_NONE);
 }
@@ -290,15 +289,13 @@ test "LRU eviction picks the oldest untouched entry" {
 test "WS5: fixed UI × 200 frames drops to 0 misses after frame 1" {
     resetTestBackend();
     var cache = GlyphCache(TestBackend){};
-    const font = teak.FontSpec{ .family = .sans, .size_px = 14 };
-    const color = [4]f32{ 1, 1, 1, 1 };
     const strings = [_][]const u8{ "Hello", "+", "-", "count: 0" };
 
     var frame: u32 = 0;
     while (frame < 200) : (frame += 1) {
         cache.tick();
         for (strings) |s| {
-            const key = textCacheKey(s, font, color, 100, 20);
+            const key = textCacheKey(s, test_font, test_color, 100, 20);
             const hash = std.hash.Wyhash.hash(0, s);
             const handle = cache.lookup(key, s.len, hash);
             if (handle == teak.TEXTURE_HANDLE_NONE) {
@@ -318,15 +315,13 @@ test "WS5: fixed UI × 200 frames drops to 0 misses after frame 1" {
 test "clear calls destroyEntry on every entry and resets len" {
     resetTestBackend();
     var cache = GlyphCache(TestBackend){};
-    const font = teak.FontSpec{ .family = .sans, .size_px = 14 };
-    const color = [4]f32{ 1, 1, 1, 1 };
 
     var i: u32 = 0;
     while (i < 5) : (i += 1) {
         cache.tick();
         var buf: [4]u8 = undefined;
         const content = std.fmt.bufPrint(&buf, "s{d}", .{i}) catch unreachable;
-        const key = textCacheKey(content, font, color, 50, 20);
+        const key = textCacheKey(content, test_font, test_color, 50, 20);
         const hash = std.hash.Wyhash.hash(0, content);
         _ = cache.insert(key, @intCast(content.len), hash, i, i, i);
     }
