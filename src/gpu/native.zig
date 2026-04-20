@@ -734,37 +734,43 @@ pub const Gpu = struct {
         self.text_vert_count = 0;
 
         for (draws) |draw| {
-            // Clip entirely offscreen drops the whole quad.
-            const vis_x0_f = @max(draw.rect_x, draw.clip_x);
-            const vis_y0_f = @max(draw.rect_y, draw.clip_y);
-            const vis_x1_f = @min(draw.rect_x + draw.rect_w, draw.clip_x + draw.clip_w);
-            const vis_y1_f = @min(draw.rect_y + draw.rect_h, draw.clip_y + draw.clip_h);
-            if (vis_x1_f <= vis_x0_f or vis_y1_f <= vis_y0_f) continue;
+            // Snap rect + clip to integer pixel boundaries FIRST, then
+            // derive visibility + UVs from the snapped coordinates. This
+            // keeps texture size == rect size (in pixels) and ensures
+            // UVs land on exact texel boundaries, not fractional offsets
+            // that ClampToEdge would paper over by duplicating the edge
+            // texel (visible as a stray pixel on glyph edges).
+            const r_x = @floor(draw.rect_x);
+            const r_y = @floor(draw.rect_y);
+            const r_w = @ceil(draw.rect_x + draw.rect_w) - r_x;
+            const r_h = @ceil(draw.rect_y + draw.rect_h) - r_y;
 
-            // Snap the quad to integer pixel boundaries. GDI rasterizes
-            // at whole pixels; non-integer vertex positions combined with
-            // any filter bleed the edges. Outer-ceil / outer-floor pair
-            // ensures the quad never covers less than the visible rect.
-            const vis_x0 = @floor(vis_x0_f);
-            const vis_y0 = @floor(vis_y0_f);
-            const vis_x1 = @ceil(vis_x1_f);
-            const vis_y1 = @ceil(vis_y1_f);
+            const c_x0 = @floor(draw.clip_x);
+            const c_y0 = @floor(draw.clip_y);
+            const c_x1 = @ceil(draw.clip_x + draw.clip_w);
+            const c_y1 = @ceil(draw.clip_y + draw.clip_h);
 
-            // Round texture size up to integer pixels.
-            const tex_w: u32 = @intFromFloat(@ceil(draw.rect_w));
-            const tex_h: u32 = @intFromFloat(@ceil(draw.rect_h));
+            const vis_x0 = @max(r_x, c_x0);
+            const vis_y0 = @max(r_y, c_y0);
+            const vis_x1 = @min(r_x + r_w, c_x1);
+            const vis_y1 = @min(r_y + r_h, c_y1);
+            if (vis_x1 <= vis_x0 or vis_y1 <= vis_y0) continue;
+
+            const tex_w: u32 = @intFromFloat(r_w);
+            const tex_h: u32 = @intFromFloat(r_h);
             if (tex_w == 0 or tex_h == 0) continue;
 
             const handle = self.rasterizeText(draw.content, draw.font, draw.color, tex_w, tex_h);
             if (handle == teak.TEXTURE_HANDLE_NONE) continue;
             const entry = &self.text_cache[handle - 1];
 
-            // UVs: clipped rect maps to a sub-rect of the full texture.
-            // `u0/u1` would shadow Zig's integer-type primitives.
-            const uv_u0 = (vis_x0 - draw.rect_x) / draw.rect_w;
-            const uv_v0 = (vis_y0 - draw.rect_y) / draw.rect_h;
-            const uv_u1 = (vis_x1 - draw.rect_x) / draw.rect_w;
-            const uv_v1 = (vis_y1 - draw.rect_y) / draw.rect_h;
+            // UVs on exact texel boundaries (0, k/N, or 1). No
+            // ClampToEdge edge-repeat slop. `u0/u1` would shadow
+            // Zig's integer-type primitives.
+            const uv_u0 = (vis_x0 - r_x) / r_w;
+            const uv_v0 = (vis_y0 - r_y) / r_h;
+            const uv_u1 = (vis_x1 - r_x) / r_w;
+            const uv_v1 = (vis_y1 - r_y) / r_h;
 
             // Color is passed through the vertex stream so the shader
             // can multiply the alpha-from-texture by color.a.
