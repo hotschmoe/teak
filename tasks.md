@@ -3,15 +3,15 @@
 Working document. Current phase: **text rendering**. See §"Phase
 history" at the bottom for what shipped before this phase.
 
-**Status (2026-04-19)**: **WS1 + WS2 + WS3 + WS4 complete**.
+**Status (2026-04-19)**: **WS1 + WS2 + WS3 + WS4 + WS5 complete**.
 
 - WS1 (`6d94be2`, `e59edc4`) — Host/GPU contracts + stubs + layout
   measurer threading.
 - WS2 (`d129d36`, `19bf1c8`, `04e3862`, `551d7c9`) — native text
   rendering. GDI measurer + rasterizer, second render pipeline,
-  glyph cache (256-entry LRU, 120-frame TTL), render emits
-  `TextDraw` records, cursor placement via `measurer.prefixWidth`.
-  Sharpness pass: nearest mag filter + integer-pixel rect/UV snap.
+  glyph cache (256-entry LRU), render emits `TextDraw` records,
+  cursor placement via `measurer.prefixWidth`. Sharpness pass:
+  nearest mag filter + integer-pixel rect/UV snap.
 - WS3 — `CHAR_WIDTH` const deleted from `engine.zig` + `build.zig`;
   lingering comment references scrubbed; `no-char-width` audit rule
   added. `rg CHAR_WIDTH src/` returns zero matches.
@@ -21,11 +21,17 @@ history" at the bottom for what shipped before this phase.
   nearest-mag sampler. Dropped stale DPR mouse-scaling workaround
   (zunk v0.5.2+ unified on CSS pixels). Stabilized per-font height
   at `ceil(size_px * 1.2)` so labels don't jitter by descender.
+- WS5 — factored the duplicated native/web glyph cache into
+  `src/gpu/glyph_cache.zig` (`GlyphCache(Backend)` generic, shared
+  `textCacheKey`, single LRU implementation). Added debug-build
+  hit/miss/eviction counters with 60-frame periodic logging on
+  native. Steady-state canary in the shared module asserts 0 misses
+  after frame 1 across a 200-frame fixed render.
 
 Native + web: real glyphs in all three examples. Browser-verified at
 HiDPI.
 
-Next up: **WS5** (glyph-cache hardening — instrumentation + canary).
+Next up: open — text rendering phase is shipped.
 
 ---
 
@@ -128,9 +134,11 @@ Host-interface change lands.
 - Rasterization via `CreateDIBSection` (32bpp BGRA) + `DrawTextW`
   + alpha-from-luminance post-pass. Uploaded to wgpu BGRA8Unorm
   textures with `queueWriteTexture`.
-- Glyph cache: 256 entries, LRU with 120-frame TTL, keyed by
-  content hash × font × packed color × dimensions. Content length
-  + hash re-compared on hit.
+- Glyph cache: 256-entry LRU (no TTL — the cap alone bounds
+  memory, and age-based eviction would work against WS5's steady-
+  state 0% miss goal), keyed by content hash × font × packed color
+  × dimensions. Content length + hash re-compared on hit. Factored
+  into `src/gpu/glyph_cache.zig` under WS5.
 - Text pipeline: `shaders/textured_quad.wgsl`, reuses the same
   Vertex layout and blend state as the solid pipeline. Sampler
   is `magFilter = Nearest, minFilter = Linear, clamp_to_edge`.
@@ -174,14 +182,33 @@ Host-interface change lands.
 - **Done**: counter_greeter / todo / tree all render real glyphs
   under `zig build web`. Browser-verified at HiDPI.
 
-**WS5 — Glyph-cache hardening**
-- Cache-hit-rate instrumentation (debug build only): counters for
-  hits, misses, evictions per frame. Log once a second.
-- Regression test: a CLI canary that renders a fixed string
-  across 200 frames and asserts the miss count drops to zero
-  after frame 1.
-- **Acceptance**: cache miss rate stays at 0% on steady-state
-  UI. First-frame misses are expected.
+**WS5 — Glyph-cache hardening** ✅
+- Shared cache module `src/gpu/glyph_cache.zig` — `GlyphCache(
+  comptime Backend: type)` generic (same idiom as
+  `std.ArrayList(T)`). Backend declares `Texture` / `View` /
+  `BindGroup` types + a `destroyEntry` method; cache dispatches at
+  compile time. Native and web now each own a small `Backend`
+  struct and instantiate the cache; the 256-entry LRU, swap-with-
+  last eviction, handle allocation, and `textCacheKey` XOR
+  composition live in one file.
+- Debug-only instrumentation: `hits`, `misses`, `evictions`
+  counters gated on `builtin.mode == .Debug` so release builds
+  compile the increments out. `shouldReport()` returns true every
+  60 frames; native's `uploadText` logs `[teak glyph_cache native]
+  hits=… misses=… evictions=…` and resets. Web tracks silently
+  (wasm32-freestanding has no `std.debug.print` sink).
+- Unit tests in `glyph_cache.zig` against a stub `TestBackend`:
+  miss-then-hit, LRU picks untouched oldest, `clear` destroys
+  every entry. WS5 canary: render four fixed strings × 200 frames
+  and assert `misses == 4` (first frame only), `hits == 4 * 199`,
+  `evictions == 0`. Wired into `zig build test` via a third test
+  module.
+- Dead `TEXT_CACHE_TTL_FRAMES = 120` constant dropped from native
+  — never applied, would have caused spurious misses on idle
+  steady-state UI.
+- **Acceptance met**: canary holds 0% miss rate after frame 1.
+  First-frame misses expected. `zig build test` passes; `zig
+  build audit` still clean.
 
 ### Non-goals for this phase
 
@@ -202,7 +229,7 @@ Explicitly out of scope — push back if they creep in:
   rasterize whole strings and cache the bitmap. Per-glyph packing is
   a v2 optimization once we see the cache hit pattern.
 
-### Sequencing
+### Sequencing (historical)
 
 ```
 WS1 (Host-interface design)
@@ -211,11 +238,13 @@ WS2 (Native path) ─── WS3 (CHAR_WIDTH removal, fed by WS2)
   ↓
 WS4 (Web path)
   ↓
-WS5 (Hardening)
+WS5 (Factor shared cache + hardening)
 ```
 
-WS2 and WS3 are tightly coupled — WS2 lands the real measurement;
-WS3 flips call sites to use it; they'll likely ship in the same PR.
+WS2 and WS3 shipped together. WS5 also bundled two concerns: the
+cache factoring (native/web de-dupe) and the instrumentation +
+canary; splitting would have meant adding counters twice before
+unifying.
 
 ### Open asks for zunk
 

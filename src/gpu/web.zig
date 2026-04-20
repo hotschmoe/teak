@@ -9,6 +9,7 @@
 const std = @import("std");
 const teak = @import("teak");
 const zunk = @import("zunk");
+const glyph_cache = @import("glyph_cache.zig");
 
 const zgpu = zunk.web.gpu;
 const Vertex = teak.Vertex;
@@ -23,19 +24,28 @@ const SHADER_SOLID = @import("teak-shaders").quad_wgsl;
 const SHADER_TEXT = @import("teak-shaders").textured_quad_wgsl;
 
 // ── Text cache ─────────────────────────────────────────────────────
+//
+// Layout, LRU, keying shared with gpu/native.zig via
+// `glyph_cache.GlyphCache(Backend)`. Only destroy semantics differ:
+// zunk exposes `destroyTexture` but no explicit destroy for views /
+// bind groups / pipelines / BGLs — those are released when the JS
+// handle table drops them. Bounded leak, documented below.
 
-const TEXT_CACHE_CAPACITY: usize = 256;
-const TEXT_VERT_BUF_CAPACITY: usize = 256 * 6;
+const TEXT_VERT_BUF_CAPACITY: usize = glyph_cache.CAPACITY * 6;
 
-const TextCacheEntry = struct {
-    key: u64,
-    content_len: u32,
-    content_hash: u64,
-    texture: zgpu.Texture,
-    view: zgpu.TextureView,
-    bind_group: zgpu.BindGroup,
-    last_used_frame: u64,
+const WebBackend = struct {
+    pub const Texture = zgpu.Texture;
+    pub const View = zgpu.TextureView;
+    pub const BindGroup = zgpu.BindGroup;
+
+    pub fn destroyEntry(e: anytype) void {
+        // Only the texture has an explicit destroy; views and bind
+        // groups are GC'd on the JS side (see module comment).
+        zgpu.destroyTexture(e.texture);
+    }
 };
+
+const TextCache = glyph_cache.GlyphCache(WebBackend);
 
 const TextDrawRecord = struct {
     bind_group: zgpu.BindGroup,
@@ -57,15 +67,13 @@ pub const Gpu = struct {
     text_pipeline: zgpu.RenderPipeline,
     text_bgl: zgpu.BindGroupLayout,
     sampler: zgpu.Sampler,
-    text_cache: [TEXT_CACHE_CAPACITY]TextCacheEntry,
-    text_cache_len: usize,
-    text_draws: [TEXT_CACHE_CAPACITY]TextDrawRecord,
+    text_cache: TextCache,
+    text_draws: [glyph_cache.CAPACITY]TextDrawRecord,
     text_draw_count: usize,
     text_verts: [TEXT_VERT_BUF_CAPACITY]Vertex,
     text_vert_count: u32,
     text_vert_buf: ?zgpu.Buffer,
     text_vert_buf_size: u32,
-    frame_counter: u64,
 
     pub fn init(_: anytype, width: u32, height: u32) !Gpu {
         const shader = zgpu.createShaderModule(SHADER_SOLID);
@@ -125,29 +133,23 @@ pub const Gpu = struct {
             .text_pipeline = text_pipeline,
             .text_bgl = text_bgl,
             .sampler = sampler,
-            .text_cache = undefined,
-            .text_cache_len = 0,
+            .text_cache = .{},
             .text_draws = undefined,
             .text_draw_count = 0,
             .text_verts = undefined,
             .text_vert_count = 0,
             .text_vert_buf = null,
             .text_vert_buf_size = 0,
-            .frame_counter = 0,
         };
         self.writeScreenSize();
         return self;
     }
 
     pub fn deinit(self: *Gpu) void {
-        // Zunk exposes destroyTexture / destroySampler but no explicit
-        // destroy for texture views, bind groups, pipelines, or BGLs —
-        // they're released when the JS handle table drops them. Destroy
-        // only what we can; the rest are one-shot per Host lifetime so
-        // the leak is bounded.
-        for (self.text_cache[0..self.text_cache_len]) |*e| {
-            zgpu.destroyTexture(e.texture);
-        }
+        // Per-entry destroy semantics (texture only) live on
+        // `WebBackend.destroyEntry`; see the module-level comment for
+        // why zunk doesn't destroy views / bind groups / pipelines.
+        self.text_cache.clear();
         zgpu.destroySampler(self.sampler);
         if (self.text_vert_buf) |tb| zgpu.bufferDestroy(tb);
         if (self.vert_buf) |vb| zgpu.bufferDestroy(vb);
@@ -218,29 +220,13 @@ pub const Gpu = struct {
     ) TextureHandle {
         if (width == 0 or height == 0) return teak.TEXTURE_HANDLE_NONE;
 
-        const key = textCacheKey(text_bytes, font, color, width, height);
+        const key = glyph_cache.textCacheKey(text_bytes, font, color, width, height);
         const content_hash = std.hash.Wyhash.hash(0, text_bytes);
 
-        for (self.text_cache[0..self.text_cache_len], 0..) |*e, i| {
-            if (e.key == key and e.content_len == text_bytes.len and e.content_hash == content_hash) {
-                e.last_used_frame = self.frame_counter;
-                return @intCast(i + 1);
-            }
-        }
+        const hit = self.text_cache.lookup(key, text_bytes.len, content_hash);
+        if (hit != teak.TEXTURE_HANDLE_NONE) return hit;
 
-        if (self.text_cache_len >= self.text_cache.len) {
-            var oldest: usize = 0;
-            var oldest_frame: u64 = self.text_cache[0].last_used_frame;
-            for (self.text_cache[0..self.text_cache_len], 0..) |*e, i| {
-                if (e.last_used_frame < oldest_frame) {
-                    oldest = i;
-                    oldest_frame = e.last_used_frame;
-                }
-            }
-            zgpu.destroyTexture(self.text_cache[oldest].texture);
-            self.text_cache[oldest] = self.text_cache[self.text_cache_len - 1];
-            self.text_cache_len -= 1;
-        }
+        self.text_cache.evictLRU();
 
         var font_buf: [32]u8 = undefined;
         const size_px: u16 = @intFromFloat(font.size_px);
@@ -257,17 +243,14 @@ pub const Gpu = struct {
             zgpu.BindGroupEntry.initSampler(2, self.sampler),
         });
 
-        self.text_cache[self.text_cache_len] = .{
-            .key = key,
-            .content_len = @intCast(text_bytes.len),
-            .content_hash = content_hash,
-            .texture = texture,
-            .view = view,
-            .bind_group = bind_group,
-            .last_used_frame = self.frame_counter,
-        };
-        self.text_cache_len += 1;
-        return @intCast(self.text_cache_len);
+        return self.text_cache.insert(
+            key,
+            @intCast(text_bytes.len),
+            content_hash,
+            texture,
+            view,
+            bind_group,
+        );
     }
 
     /// Per-frame text orchestration. Rasterizes each TextDraw (with
@@ -275,7 +258,7 @@ pub const Gpu = struct {
     /// draw entry for `renderFrame`'s text pass. Must be called after
     /// `uploadVertices` and before `renderFrame`.
     pub fn uploadText(self: *Gpu, draws: []const TextDraw) void {
-        self.frame_counter += 1;
+        self.text_cache.tick();
         self.text_draw_count = 0;
         self.text_vert_count = 0;
 
@@ -306,7 +289,7 @@ pub const Gpu = struct {
 
             const handle = self.rasterizeText(draw.content, draw.font, draw.color, tex_w, tex_h);
             if (handle == teak.TEXTURE_HANDLE_NONE) continue;
-            const entry = &self.text_cache[handle - 1];
+            const entry = self.text_cache.entryPtr(handle);
 
             const uv_u0 = (vis_x0 - r_x) / r_w;
             const uv_v0 = (vis_y0 - r_y) / r_h;
@@ -351,19 +334,6 @@ pub const Gpu = struct {
         zgpu.bufferWriteTyped(Vertex, self.text_vert_buf.?, 0, self.text_verts[0..self.text_vert_count]);
     }
 };
-
-fn textCacheKey(content: []const u8, font: FontSpec, color: [4]f32, w: u32, h: u32) u64 {
-    const content_hash = std.hash.Wyhash.hash(0, content);
-    const color_bits =
-        (@as(u32, @intFromFloat(std.math.clamp(color[0], 0, 1) * 255)) << 24) |
-        (@as(u32, @intFromFloat(std.math.clamp(color[1], 0, 1) * 255)) << 16) |
-        (@as(u32, @intFromFloat(std.math.clamp(color[2], 0, 1) * 255)) << 8) |
-        (@as(u32, @intFromFloat(std.math.clamp(color[3], 0, 1) * 255)));
-    const size_px: u16 = @intFromFloat(font.size_px);
-    const font_bits: u64 = (@as(u64, size_px) << 16) | @as(u64, @intFromEnum(font.family));
-    const dim_bits: u64 = (@as(u64, w) << 32) | @as(u64, h);
-    return content_hash ^ font_bits ^ @as(u64, color_bits) ^ dim_bits;
-}
 
 fn cssFontFamily(family: FontFamily) []const u8 {
     return switch (family) {

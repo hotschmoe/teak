@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const teak = @import("teak");
+const glyph_cache = @import("glyph_cache.zig");
 
 const Vertex = teak.Vertex;
 
@@ -143,24 +144,36 @@ const FontCacheEntry = struct {
 };
 
 // ── Text cache ─────────────────────────────────────────────────────
+//
+// Cache layout, LRU policy, and key composition are shared with
+// gpu/web.zig via `glyph_cache.GlyphCache(Backend)`. Only the resource
+// types and the destroy semantics differ.
 
-const TEXT_CACHE_CAPACITY: usize = 256;
-const TEXT_CACHE_TTL_FRAMES: u64 = 120;
-const TEXT_VERT_BUF_CAPACITY: usize = 256 * 6; // 256 text draws × 6 verts
+const TEXT_VERT_BUF_CAPACITY: usize = glyph_cache.CAPACITY * 6; // 6 verts per draw
 
-const TextCacheEntry = struct {
-    key: u64,
-    content_len: u32,
-    content_hash: u64,
-    texture: c.WGPUTexture,
-    view: c.WGPUTextureView,
-    bind_group: c.WGPUBindGroup,
-    last_used_frame: u64,
+const NativeBackend = struct {
+    pub const Texture = c.WGPUTexture;
+    pub const View = c.WGPUTextureView;
+    pub const BindGroup = c.WGPUBindGroup;
+
+    pub fn destroyEntry(e: anytype) void {
+        c.wgpuBindGroupRelease(e.bind_group);
+        c.wgpuTextureViewRelease(e.view);
+        c.wgpuTextureRelease(e.texture);
+    }
 };
+
+const TextCache = glyph_cache.GlyphCache(NativeBackend);
 
 const TextDrawRecord = struct {
     bind_group: c.WGPUBindGroup,
     vert_offset: u32, // in vertices, not bytes
+};
+
+const RasterResult = struct {
+    texture: c.WGPUTexture,
+    view: c.WGPUTextureView,
+    bind_group: c.WGPUBindGroup,
 };
 
 const SHADER_TEXT = @import("teak-shaders").textured_quad_wgsl;
@@ -239,15 +252,13 @@ pub const Gpu = struct {
     text_pipeline: c.WGPURenderPipeline,
     text_bgl: c.WGPUBindGroupLayout,
     sampler: c.WGPUSampler,
-    text_cache: [TEXT_CACHE_CAPACITY]TextCacheEntry,
-    text_cache_len: usize,
-    text_draws: [TEXT_CACHE_CAPACITY]TextDrawRecord,
+    text_cache: TextCache,
+    text_draws: [glyph_cache.CAPACITY]TextDrawRecord,
     text_draw_count: usize,
     text_verts: [TEXT_VERT_BUF_CAPACITY]Vertex,
     text_vert_count: u32,
     text_vert_buf: c.WGPUBuffer,
     text_vert_buf_size: u64,
-    frame_counter: u64,
 
     // ── Rasterization state (GDI) ──────────────────────────────────
     raster_dc: HDC,
@@ -513,15 +524,13 @@ pub const Gpu = struct {
             .text_pipeline = text_pipeline,
             .text_bgl = text_bgl,
             .sampler = sampler,
-            .text_cache = undefined,
-            .text_cache_len = 0,
+            .text_cache = .{},
             .text_draws = undefined,
             .text_draw_count = 0,
             .text_verts = undefined,
             .text_vert_count = 0,
             .text_vert_buf = null,
             .text_vert_buf_size = 0,
-            .frame_counter = 0,
             .raster_dc = raster_dc,
             .raster_font_cache = undefined,
             .raster_font_cache_len = 0,
@@ -532,8 +541,9 @@ pub const Gpu = struct {
 
     pub fn deinit(self: *Gpu) void {
         // Text cache entries first — bind groups hold refs to the
-        // texture views, which hold refs to textures.
-        for (self.text_cache[0..self.text_cache_len]) |*e| freeTextEntry(e);
+        // texture views, which hold refs to textures. `NativeBackend.
+        // destroyEntry` releases all three in the right order.
+        self.text_cache.clear();
         if (self.text_vert_buf) |tb| c.wgpuBufferRelease(tb);
         c.wgpuSamplerRelease(self.sampler);
         c.wgpuBindGroupLayoutRelease(self.text_bgl);
@@ -554,12 +564,6 @@ pub const Gpu = struct {
         c.wgpuAdapterRelease(self.adapter);
         c.wgpuSurfaceRelease(self.surface);
         c.wgpuInstanceRelease(self.instance);
-    }
-
-    fn freeTextEntry(e: *TextCacheEntry) void {
-        c.wgpuBindGroupRelease(e.bind_group);
-        c.wgpuTextureViewRelease(e.view);
-        c.wgpuTextureRelease(e.texture);
     }
 
     pub fn resize(self: *Gpu, width: u32, height: u32) void {
@@ -683,45 +687,25 @@ pub const Gpu = struct {
     ) TextureHandle {
         if (width == 0 or height == 0) return teak.TEXTURE_HANDLE_NONE;
 
-        const key = textCacheKey(text_bytes, font, color, width, height);
+        const key = glyph_cache.textCacheKey(text_bytes, font, color, width, height);
         const content_hash = std.hash.Wyhash.hash(0, text_bytes);
 
-        // Cache hit — return the existing slot.
-        for (self.text_cache[0..self.text_cache_len], 0..) |*e, i| {
-            if (e.key == key and e.content_len == text_bytes.len and e.content_hash == content_hash) {
-                e.last_used_frame = self.frame_counter;
-                return @intCast(i + 1);
-            }
-        }
+        const hit = self.text_cache.lookup(key, text_bytes.len, content_hash);
+        if (hit != teak.TEXTURE_HANDLE_NONE) return hit;
 
-        // Cache miss — evict the oldest entry if we're full.
-        if (self.text_cache_len >= self.text_cache.len) {
-            var oldest: usize = 0;
-            var oldest_frame: u64 = self.text_cache[0].last_used_frame;
-            for (self.text_cache[0..self.text_cache_len], 0..) |*e, i| {
-                if (e.last_used_frame < oldest_frame) {
-                    oldest = i;
-                    oldest_frame = e.last_used_frame;
-                }
-            }
-            freeTextEntry(&self.text_cache[oldest]);
-            // Swap-with-last to compact.
-            self.text_cache[oldest] = self.text_cache[self.text_cache_len - 1];
-            self.text_cache_len -= 1;
-        }
+        self.text_cache.evictLRU();
 
-        // Rasterize via GDI into a DIB, upload to a wgpu texture, create
-        // a bind group binding it.
-        const texture = rasterAndUpload(self, text_bytes, font, color, width, height) orelse
+        const r = rasterAndUpload(self, text_bytes, font, color, width, height) orelse
             return teak.TEXTURE_HANDLE_NONE;
 
-        self.text_cache[self.text_cache_len] = texture;
-        self.text_cache[self.text_cache_len].key = key;
-        self.text_cache[self.text_cache_len].content_len = @intCast(text_bytes.len);
-        self.text_cache[self.text_cache_len].content_hash = content_hash;
-        self.text_cache[self.text_cache_len].last_used_frame = self.frame_counter;
-        self.text_cache_len += 1;
-        return @intCast(self.text_cache_len); // handle = slot index + 1
+        return self.text_cache.insert(
+            key,
+            @intCast(text_bytes.len),
+            content_hash,
+            r.texture,
+            r.view,
+            r.bind_group,
+        );
     }
 
     /// Per-frame text orchestration. Rasterizes each TextDraw (with
@@ -729,9 +713,18 @@ pub const Gpu = struct {
     /// draw entry for `renderFrame`'s text pass. Must be called after
     /// `uploadVertices` and before `renderFrame`.
     pub fn uploadText(self: *Gpu, draws: []const TextDraw) void {
-        self.frame_counter += 1;
+        self.text_cache.tick();
         self.text_draw_count = 0;
         self.text_vert_count = 0;
+
+        if (self.text_cache.shouldReport()) {
+            const s = self.text_cache.stats();
+            std.debug.print(
+                "[teak glyph_cache native] hits={d} misses={d} evictions={d} (last 60 frames)\n",
+                .{ s.hits, s.misses, s.evictions },
+            );
+            self.text_cache.resetStats();
+        }
 
         for (draws) |draw| {
             // Snap rect + clip to integer pixel boundaries FIRST, then
@@ -762,7 +755,7 @@ pub const Gpu = struct {
 
             const handle = self.rasterizeText(draw.content, draw.font, draw.color, tex_w, tex_h);
             if (handle == teak.TEXTURE_HANDLE_NONE) continue;
-            const entry = &self.text_cache[handle - 1];
+            const entry = self.text_cache.entryPtr(handle);
 
             // UVs on exact texel boundaries (0, k/N, or 1). No
             // ClampToEdge edge-repeat slop. `u0/u1` would shadow
@@ -815,21 +808,6 @@ pub const Gpu = struct {
     }
 };
 
-// ── Cache helpers ──────────────────────────────────────────────────
-
-fn textCacheKey(content: []const u8, font: FontSpec, color: [4]f32, w: u32, h: u32) u64 {
-    const content_hash = std.hash.Wyhash.hash(0, content);
-    const color_bits =
-        (@as(u32, @intFromFloat(std.math.clamp(color[0], 0, 1) * 255)) << 24) |
-        (@as(u32, @intFromFloat(std.math.clamp(color[1], 0, 1) * 255)) << 16) |
-        (@as(u32, @intFromFloat(std.math.clamp(color[2], 0, 1) * 255)) << 8) |
-        (@as(u32, @intFromFloat(std.math.clamp(color[3], 0, 1) * 255)));
-    const size_px: u16 = @intFromFloat(font.size_px);
-    const font_bits: u64 = (@as(u64, size_px) << 16) | @as(u64, @intFromEnum(font.family));
-    const dim_bits: u64 = (@as(u64, w) << 32) | @as(u64, h);
-    return content_hash ^ font_bits ^ @as(u64, color_bits) ^ dim_bits;
-}
-
 // ── GDI rasterization ──────────────────────────────────────────────
 
 fn rasterAndUpload(
@@ -839,7 +817,7 @@ fn rasterAndUpload(
     color: [4]f32,
     width: u32,
     height: u32,
-) ?TextCacheEntry {
+) ?RasterResult {
     const hfont = getOrCreateFont(self, font) orelse return null;
 
     // CreateDIBSection with negative height yields top-down rows,
@@ -971,14 +949,10 @@ fn rasterAndUpload(
         return null;
     };
 
-    return TextCacheEntry{
-        .key = 0, // caller fills in
-        .content_len = 0,
-        .content_hash = 0,
+    return RasterResult{
         .texture = texture,
         .view = view,
         .bind_group = bind_group,
-        .last_used_frame = 0,
     };
 }
 

@@ -27,6 +27,19 @@ pub fn build(b: *std.Build) void {
     const integ_tests = b.addTest(.{ .root_module = integ_mod });
     test_step.dependOn(&b.addRunArtifact(integ_tests).step);
 
+    // Shared glyph cache (src/gpu/glyph_cache.zig) — tests exercise the
+    // factored LRU + instrumentation against a stub backend. Not
+    // reachable from src/teak.zig (core can't import src/gpu/* per
+    // HARDLINE §3), so it needs its own test module.
+    const glyph_cache_mod = b.createModule(.{
+        .root_source_file = b.path("src/gpu/glyph_cache.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "teak", .module = mod }},
+    });
+    const glyph_cache_tests = b.addTest(.{ .root_module = glyph_cache_mod });
+    test_step.dependOn(&b.addRunArtifact(glyph_cache_tests).step);
+
     // wasm32-freestanding compile canary. Run `zig build test-wasm` to
     // assert the framework core stays posix-dep-free. The artifact isn't
     // executed — successful compile is the signal.
