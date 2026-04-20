@@ -478,7 +478,12 @@ pub const Gpu = struct {
         sampler_desc.addressModeU = c.WGPUAddressMode_ClampToEdge;
         sampler_desc.addressModeV = c.WGPUAddressMode_ClampToEdge;
         sampler_desc.addressModeW = c.WGPUAddressMode_ClampToEdge;
-        sampler_desc.magFilter = c.WGPUFilterMode_Linear;
+        // Nearest on magnification avoids bilinear re-blurring of the
+        // grayscale-AA that GDI already baked into the atlas. Linear on
+        // minification handles the case where a text rect is smaller
+        // than its backing texture (rare — `uploadText` sizes the text
+        // quad to match the rasterization extent).
+        sampler_desc.magFilter = c.WGPUFilterMode_Nearest;
         sampler_desc.minFilter = c.WGPUFilterMode_Linear;
         sampler_desc.mipmapFilter = c.WGPUMipmapFilterMode_Nearest;
         sampler_desc.lodMinClamp = 0;
@@ -730,11 +735,20 @@ pub const Gpu = struct {
 
         for (draws) |draw| {
             // Clip entirely offscreen drops the whole quad.
-            const vis_x0 = @max(draw.rect_x, draw.clip_x);
-            const vis_y0 = @max(draw.rect_y, draw.clip_y);
-            const vis_x1 = @min(draw.rect_x + draw.rect_w, draw.clip_x + draw.clip_w);
-            const vis_y1 = @min(draw.rect_y + draw.rect_h, draw.clip_y + draw.clip_h);
-            if (vis_x1 <= vis_x0 or vis_y1 <= vis_y0) continue;
+            const vis_x0_f = @max(draw.rect_x, draw.clip_x);
+            const vis_y0_f = @max(draw.rect_y, draw.clip_y);
+            const vis_x1_f = @min(draw.rect_x + draw.rect_w, draw.clip_x + draw.clip_w);
+            const vis_y1_f = @min(draw.rect_y + draw.rect_h, draw.clip_y + draw.clip_h);
+            if (vis_x1_f <= vis_x0_f or vis_y1_f <= vis_y0_f) continue;
+
+            // Snap the quad to integer pixel boundaries. GDI rasterizes
+            // at whole pixels; non-integer vertex positions combined with
+            // any filter bleed the edges. Outer-ceil / outer-floor pair
+            // ensures the quad never covers less than the visible rect.
+            const vis_x0 = @floor(vis_x0_f);
+            const vis_y0 = @floor(vis_y0_f);
+            const vis_x1 = @ceil(vis_x1_f);
+            const vis_y1 = @ceil(vis_y1_f);
 
             // Round texture size up to integer pixels.
             const tex_w: u32 = @intFromFloat(@ceil(draw.rect_w));
