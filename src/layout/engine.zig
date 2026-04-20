@@ -113,11 +113,6 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
 // only read Msg-independent fields (styles, labels, content).
 
 pub const LayoutEngine = struct {
-    /// WS1: kept as a fallback for non-text sizing (button chrome,
-    /// input height, etc.). Real text width comes from the measurer.
-    /// WS3 removes this entirely once the render pass also switches to
-    /// the measurer.
-    const CHAR_WIDTH: f32 = 10;
     const TEXT_HEIGHT: f32 = 20;
     const BUTTON_HEIGHT: f32 = 36;
     const BUTTON_MIN_WIDTH: f32 = 60;
@@ -451,7 +446,7 @@ pub const LayoutEngine = struct {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-/// Pre-WS1 CHAR_WIDTH=10 / TEXT_HEIGHT=20 measurer — the same stub
+/// 10-px-per-byte, 20-px-line-height stub measurer — the same numbers
 /// every existing assertion was written against. Shared with
 /// `src/input/hit_test.zig`, `src/render/build.zig`, and example
 /// tests via `text.monoMeasurer`.

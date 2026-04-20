@@ -61,10 +61,18 @@ const RULE_CMD_HAS_NO_FN_PTRS = Rule{
     },
 };
 
+const RULE_NO_CHAR_WIDTH = Rule{
+    .name = "no CHAR_WIDTH constant anywhere in src/",
+    .reason = "WS3 — real text measurement goes through TextMeasurer; the 10-px-per-byte placeholder must not return.",
+    .dirs = &.{"src"},
+    .forbid_any = &.{"CHAR_WIDTH"},
+};
+
 const simple_rules = [_]Rule{
     RULE_NO_PLATFORM_IMPORTS,
     RULE_NO_COND_COMP,
     RULE_CMD_HAS_NO_FN_PTRS,
+    RULE_NO_CHAR_WIDTH,
 };
 
 const NO_MODULE_VARS_RULE = Rule{

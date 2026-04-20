@@ -121,8 +121,8 @@ pub const Host = struct {
         return .{};
     }
 
-    /// WS1 stub — mirrors the CHAR_WIDTH approximation. WS4 replaces
-    /// with `zunk.web.gpu.measureText`.
+    /// WS1 stub — 10-px-per-byte approximation. WS4 replaces with
+    /// `zunk.web.gpu.measureText`.
     pub fn textMeasurer(self: *Host) TextMeasurer {
         return .{ .ctx = @ptrCast(self), .measure_fn = stubMeasure };
     }

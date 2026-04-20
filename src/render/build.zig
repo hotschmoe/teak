@@ -12,10 +12,6 @@ const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
 
-// WS3 will delete CHAR_WIDTH entirely. WS2 has zero uses — cursor
-// placement goes through the measurer, text extents come from
-// TextDraw rects.
-const CHAR_WIDTH: f32 = 10;
 const BORDER_WIDTH: f32 = 2;
 const CURSOR_WIDTH: f32 = 2;
 const INPUT_TEXT_PADDING: f32 = 6;

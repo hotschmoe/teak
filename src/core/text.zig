@@ -69,10 +69,10 @@ pub const TextDraw = struct {
 };
 
 /// Stateless 10-px-per-byte, 20-px-line-height measurer. Used by CLI
-/// canaries that run layout without a Host, and by tests whose
-/// assertions were written against the pre-WS1 `CHAR_WIDTH` constant.
-/// Not a production measurer — real platforms return glyph-accurate
-/// metrics via their Host's `textMeasurer()`.
+/// canaries that run layout without a Host, and by tests that assert
+/// on these exact pre-glyph-metrics numbers. Not a production
+/// measurer — real platforms return glyph-accurate metrics via their
+/// Host's `textMeasurer()`.
 pub fn monoMeasurer() TextMeasurer {
     const S = struct {
         fn measure(_: *anyopaque, t: []const u8, _: FontSpec) TextMetrics {

@@ -3,7 +3,7 @@
 Working document. Current phase: **text rendering**. See §"Phase
 history" at the bottom for what shipped before this phase.
 
-**Status (2026-04-19)**: **WS1 + WS2 complete**.
+**Status (2026-04-19)**: **WS1 + WS2 + WS3 complete**.
 
 - WS1 (`6d94be2`, `e59edc4`) — Host/GPU contracts + stubs + layout
   measurer threading.
@@ -12,12 +12,13 @@ history" at the bottom for what shipped before this phase.
   glyph cache (256-entry LRU, 120-frame TTL), render emits
   `TextDraw` records, cursor placement via `measurer.prefixWidth`.
   Sharpness pass: nearest mag filter + integer-pixel rect/UV snap.
+- WS3 — `CHAR_WIDTH` const deleted from `engine.zig` + `build.zig`;
+  lingering comment references scrubbed; `no-char-width` audit rule
+  added. `rg CHAR_WIDTH src/` returns zero matches.
 
-Native: real glyphs in all three examples. CHAR_WIDTH has zero
-uses anywhere in `src/`; WS3 is now a delete-only cleanup.
+Native: real glyphs in all three examples.
 
-Next up: **WS3** (kill CHAR_WIDTH const + audit rule — trivial) and
-**WS4** (web path via zunk). WS4 is the substantive next step.
+Next up: **WS4** (web path via zunk).
 
 ---
 
@@ -133,17 +134,15 @@ Host-interface change lands.
   under `zig build ui`. Tested interactively; frame-diff still
   works (200k+ idle frames skipped without artifacts).
 
-**WS3 — Remove `CHAR_WIDTH`** (now trivial after WS2)
-- Delete the unused `const CHAR_WIDTH` in `src/layout/engine.zig`
-  and `src/render/build.zig`. Also `src/platform/wasm.zig` /
-  `src/platform/win32.zig` if any lingering use exists there
-  (check before deleting).
-- Add an audit rule in `tools/audit.zig` that greps for
-  `CHAR_WIDTH` in the whole `src/` tree and fails. Call it
-  `no-char-width` or fold into the existing "no-fake-text-metrics"
-  category.
-- **Acceptance**: `rg CHAR_WIDTH src/` returns zero matches;
-  `zig build audit` enforces it going forward.
+**WS3 — Remove `CHAR_WIDTH`** ✅
+- Deleted the unused `const CHAR_WIDTH` from
+  `src/layout/engine.zig` and `src/render/build.zig`. No lingering
+  use in `src/platform/*`; comment-only references scrubbed from
+  `engine.zig`, `build.zig`, `core/text.zig`, and `platform/wasm.zig`.
+- `RULE_NO_CHAR_WIDTH` added to `tools/audit.zig`, scanning the whole
+  `src/` tree. `zig build audit` enforces it going forward.
+- **Done**: `rg CHAR_WIDTH src/` returns zero matches; library tests
+  and audit both pass.
 
 **WS4 — Web path (zunk wrapper)** — next substantive workstream
 - Today's state: web compiles but renders no text at all. WS2
