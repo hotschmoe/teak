@@ -178,7 +178,11 @@ pub const Host = struct {
             .descent = font.size_px * 0.25,
         };
 
-        if (self.measure_cache_len >= self.measure_cache.len) {
+        const slot = if (self.measure_cache_len < self.measure_cache.len) blk: {
+            const i = self.measure_cache_len;
+            self.measure_cache_len += 1;
+            break :blk i;
+        } else blk: {
             var oldest: usize = 0;
             var oldest_tick: u64 = self.measure_cache[0].last_used;
             for (self.measure_cache[0..self.measure_cache_len], 0..) |*e, i| {
@@ -187,11 +191,10 @@ pub const Host = struct {
                     oldest_tick = e.last_used;
                 }
             }
-            self.measure_cache[oldest] = self.measure_cache[self.measure_cache_len - 1];
-            self.measure_cache_len -= 1;
-        }
+            break :blk oldest;
+        };
 
-        self.measure_cache[self.measure_cache_len] = .{
+        self.measure_cache[slot] = .{
             .content_hash = content_hash,
             .content_len = @intCast(text_bytes.len),
             .size_px = size_px,
@@ -199,7 +202,6 @@ pub const Host = struct {
             .metrics = metrics,
             .last_used = self.measure_tick,
         };
-        self.measure_cache_len += 1;
         return metrics;
     }
 
