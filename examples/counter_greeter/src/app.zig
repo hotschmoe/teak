@@ -23,6 +23,11 @@ const AppLevel = struct {
     /// Theme toggle — drives `cb.theme = Theme.dark_default vs
     /// Theme.light_default` at the host boundary (see ui_main.zig).
     dark_mode: bool = true,
+    /// Set when the user has asked the host to open the secondary
+    /// stats window; cleared when the user asks to close it. The host
+    /// (ui_main.zig) reads this flag and creates / tears down the
+    /// actual platform + GPU resources — neither belongs in Model.
+    show_stats_window: bool = false,
 
     pub const Msg = union(enum) {
         focus_set: FocusField,
@@ -30,6 +35,8 @@ const AppLevel = struct {
         help_open,
         help_close,
         toggle_theme,
+        open_stats_window,
+        close_stats_window,
     };
 
     // `@This().Msg` disambiguates against the file-scope `pub const Msg`
@@ -41,6 +48,8 @@ const AppLevel = struct {
             .help_open => model.show_help_modal = true,
             .help_close => model.show_help_modal = false,
             .toggle_theme => model.dark_mode = !model.dark_mode,
+            .open_stats_window => model.show_stats_window = true,
+            .close_stats_window => model.show_stats_window = false,
         }
     }
 };
@@ -57,11 +66,16 @@ pub const update = Composed.update;
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
 
-    // Top toolbar: Help button + theme toggle. Two AppLevel Msgs;
-    // the theme button cycles cb.theme via ui_main.zig.
+    // Top toolbar: Help button + theme toggle + stats-window toggle.
+    // AppLevel Msgs only; the host (ui_main.zig) consumes
+    // `show_stats_window` to manage the secondary platform window.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 8, .gap = 8 });
     cb.button(Msg{ .help_open = {} }, "Help");
     cb.button(Msg{ .toggle_theme = {} }, if (m.dark_mode) "Light mode" else "Dark mode");
+    cb.button(
+        if (m.show_stats_window) Msg{ .close_stats_window = {} } else Msg{ .open_stats_window = {} },
+        if (m.show_stats_window) "Close stats" else "Open stats",
+    );
     cb.popGroup();
 
     // Main row: counter on the left, greeter on the right.
@@ -161,6 +175,29 @@ pub fn view(m: *const Model, cb: anytype) void {
         cb.popGroup();
         cb.popOverlay();
     }
+}
+
+/// Build the secondary "Stats" window's UI. Same Cmd type as the
+/// primary view so layout / render passes are window-agnostic — the
+/// host just hands a different CmdBuffer to a different surface. No
+/// interactive widgets here: the secondary window's only job is to
+/// mirror the counter value in a separate top-level window.
+pub fn statsView(m: *const Model, cb: anytype) void {
+    cb.pushGroup(.{ .direction = .vertical, .padding = 16, .gap = 8, .bg = cb.theme.panel_bg });
+    cb.heading("Stats");
+    const text_buf = std.fmt.allocPrint(
+        cb.arena.allocator(),
+        "Counter: {d}",
+        .{m.counter.count},
+    ) catch "Counter: ?";
+    cb.text(text_buf);
+    const name_buf = std.fmt.allocPrint(
+        cb.arena.allocator(),
+        "Name: {s}",
+        .{if (m.greeter.name_len > 0) m.greeter.name[0..m.greeter.name_len] else "(unset)"},
+    ) catch "Name: ?";
+    cb.text(name_buf);
+    cb.popGroup();
 }
 
 /// Translate a character typed while a text input is focused into the

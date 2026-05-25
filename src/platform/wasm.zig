@@ -269,6 +269,20 @@ pub const Host = struct {
         return null;
     }
 
+    /// Web is always single-window — there is no secondary input queue
+    /// to drain. Returns null so callers can short-circuit cleanly.
+    pub fn pollSecondaryInputs(_: *Host, _: u32) ?InputState {
+        return null;
+    }
+
+    /// No-op: there are no secondary windows on the web host.
+    pub fn closeSecondaryWindow(_: *Host, _: u32) void {}
+
+    /// No secondary windows -> no handles to hand out.
+    pub fn secondaryWindowHandle(_: *const Host, _: u32) ?NativeHandle {
+        return null;
+    }
+
     /// Browser monotonic time. Goes through zunk which calls
     /// performance.now() under the hood; if that's not yet wired,
     /// falls back to 0 (subs degrade gracefully — `every` never fires).

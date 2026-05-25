@@ -112,8 +112,17 @@ pub const InputState = struct {
 /// - `openSecondaryWindow(title, w, h)` returns an opaque window handle
 ///   for a second top-level window sharing this Host's event source.
 ///   Tracked as a Host-internal id; the app holds it and renders into
-///   it via the GPU layer's `renderToWindow`. Stub-only for now;
-///   single-window hosts return `null`.
+///   it via the GPU layer's `renderToWindow`. Single-window hosts
+///   (wasm) return `null`.
+/// - `pollSecondaryInputs(window_id)` returns the per-frame input
+///   snapshot for the given secondary window, or `null` if the id is
+///   invalid or the host is single-window. The primary window keeps
+///   using the legacy `pollInputs()` — secondaries are additive.
+/// - `closeSecondaryWindow(window_id)` destroys the window and frees
+///   its slot. No-op on single-window hosts or invalid ids.
+/// - `secondaryWindowHandle(window_id)` returns the `NativeHandle` for
+///   a secondary window so the app can hand it to `gpu.openSecondarySurface`.
+///   Returns `null` for invalid ids.
 pub fn validateHost(comptime T: type) void {
     const required = [_][]const u8{
         "deinit",
@@ -127,6 +136,9 @@ pub fn validateHost(comptime T: type) void {
         "openFileDialog",
         "saveFileDialog",
         "openSecondaryWindow",
+        "pollSecondaryInputs",
+        "closeSecondaryWindow",
+        "secondaryWindowHandle",
         // Monotonic millisecond timestamp on the host's clock. Used by
         // subscriptions (`Sub.at(deadline_ms, msg)`) and by anything
         // else that needs a host-side wall-clock without violating
@@ -168,6 +180,13 @@ test "validateHost accepts a minimal shape" {
             return null;
         }
         pub fn openSecondaryWindow(_: *@This(), _: []const u8, _: u32, _: u32) ?u32 {
+            return null;
+        }
+        pub fn pollSecondaryInputs(_: *@This(), _: u32) ?InputState {
+            return null;
+        }
+        pub fn closeSecondaryWindow(_: *@This(), _: u32) void {}
+        pub fn secondaryWindowHandle(_: *const @This(), _: u32) ?void {
             return null;
         }
         pub fn nowMs(_: *const @This()) u64 {

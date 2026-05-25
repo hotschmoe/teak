@@ -14,6 +14,19 @@ const ImageDraw = teak.ImageDraw;
 const IMAGE_CACHE_CAPACITY: usize = 64;
 const IMAGE_VERT_BUF_CAPACITY: usize = IMAGE_CACHE_CAPACITY * 6;
 
+/// Mirror of `platform/win32.zig`'s MAX_SECONDARY_WINDOWS. We keep them
+/// in lock-step so the same id space covers both layers; the GPU side
+/// doesn't actually import the platform module (HARDLINE §4(c) — GPU
+/// receives opaque hinstance/hwnd pointers, never platform types).
+pub const MAX_SECONDARY_SURFACES: usize = 4;
+
+const SurfaceSlot = struct {
+    surface: c.WGPUSurface,
+    width: u32,
+    height: u32,
+    active: bool,
+};
+
 const c = @cImport({
     @cDefine("WGPU_SHARED_LIBRARY", "1");
     @cInclude("webgpu.h");
@@ -299,6 +312,17 @@ pub const Gpu = struct {
     image_vert_count: u32,
     image_vert_buf: c.WGPUBuffer,
     image_vert_buf_size: u64,
+
+    // ── Secondary surfaces ─────────────────────────────────────────
+    //
+    // The primary `surface` field above stays untouched — single-window
+    // apps see no behavior change. Each entry below is an opaque wgpu
+    // surface configured against an additional native window provided
+    // by the Host layer; the device, queue, pipelines, and caches are
+    // all shared. `renderToWindow(id)` picks the right surface;
+    // `uniform_buf` is rewritten per call so the shader sees that
+    // window's size.
+    secondary_surfaces: [MAX_SECONDARY_SURFACES]SurfaceSlot,
 
     /// `handle` duck-types as `{ hinstance, hwnd }` (matches
     /// `platform/win32.zig`'s NativeHandle). Other surface sources would
@@ -611,6 +635,12 @@ pub const Gpu = struct {
             .image_vert_count = 0,
             .image_vert_buf = null,
             .image_vert_buf_size = 0,
+            .secondary_surfaces = .{
+                .{ .surface = null, .width = 0, .height = 0, .active = false },
+                .{ .surface = null, .width = 0, .height = 0, .active = false },
+                .{ .surface = null, .width = 0, .height = 0, .active = false },
+                .{ .surface = null, .width = 0, .height = 0, .active = false },
+            },
         };
         gpu.resize(width, height);
         return gpu;
@@ -650,6 +680,18 @@ pub const Gpu = struct {
         c.wgpuDeviceRelease(self.device);
         c.wgpuAdapterRelease(self.adapter);
         c.wgpuSurfaceRelease(self.surface);
+
+        // Release any still-active secondary surfaces. Apps that pair
+        // `openSecondarySurface` with `closeSecondaryWindow` will have
+        // already done so; this is the safety net for early-exit paths.
+        for (&self.secondary_surfaces) |*slot| {
+            if (slot.active and slot.surface != null) {
+                c.wgpuSurfaceRelease(slot.surface);
+                slot.active = false;
+                slot.surface = null;
+            }
+        }
+
         c.wgpuInstanceRelease(self.instance);
     }
 
@@ -685,9 +727,44 @@ pub const Gpu = struct {
         c.wgpuQueueWriteBuffer(self.queue, self.vert_buf, 0, verts.ptr, byte_size);
     }
 
+    /// Render against the primary window. Thin wrapper around
+    /// `renderToWindow(0, ...)` so single-window callers keep their
+    /// existing call site verbatim.
     pub fn renderFrame(self: *Gpu, clear_color: ClearColor) void {
+        self.renderToWindow(0, clear_color);
+    }
+
+    /// Render the most-recently-uploaded vertex / text / image draws
+    /// into the surface for `window_id`. `id = 0` selects the primary
+    /// surface (the existing `renderFrame` path); `id >= 1` indexes
+    /// secondary surfaces opened via `openSecondarySurface`.
+    ///
+    /// The uniform buffer is rewritten with the target window's size
+    /// before issuing draws so the shader's vec2f screen_size matches
+    /// the surface being rendered into. The caller is expected to have
+    /// uploaded vertex/text/image data matching this window already
+    /// (apps that render different content per window simply call
+    /// upload* + renderToWindow once per window per frame).
+    pub fn renderToWindow(self: *Gpu, window_id: u32, clear_color: ClearColor) void {
+        const target_w: u32, const target_h: u32, const surface_handle: c.WGPUSurface = blk: {
+            if (window_id == 0) break :blk .{ self.width, self.height, self.surface };
+            if (window_id > MAX_SECONDARY_SURFACES) return;
+            const slot = self.secondary_surfaces[window_id - 1];
+            if (!slot.active or slot.surface == null) return;
+            break :blk .{ slot.width, slot.height, slot.surface };
+        };
+
+        // The shared uniform buffer holds the target window's pixel
+        // size; the vertex shader divides clip-space against it. Must
+        // be rewritten for EVERY renderToWindow call (primary included)
+        // — otherwise rendering a secondary leaves its dims in the
+        // uniform, scaling the next primary frame to the secondary's
+        // viewport. Single 8-byte queue write per frame per window.
+        const screen_size = [2]f32{ @floatFromInt(target_w), @floatFromInt(target_h) };
+        c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &screen_size, @sizeOf([2]f32));
+
         var surface_texture: c.WGPUSurfaceTexture = undefined;
-        c.wgpuSurfaceGetCurrentTexture(self.surface, &surface_texture);
+        c.wgpuSurfaceGetCurrentTexture(surface_handle, &surface_texture);
         if (surface_texture.status != c.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal and
             surface_texture.status != c.WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal)
         {
@@ -761,7 +838,90 @@ pub const Gpu = struct {
         c.wgpuQueueSubmit(self.queue, 1, &command_buffer);
         c.wgpuCommandBufferRelease(command_buffer);
 
-        _ = c.wgpuSurfacePresent(self.surface);
+        _ = c.wgpuSurfacePresent(surface_handle);
+    }
+
+    /// Create a wgpu surface bound to an additional native window.
+    /// `hinstance`/`hwnd` are opaque pointers (HARDLINE §4(c) — the
+    /// GPU layer never imports platform types). Returns a 1-based slot
+    /// id matching the Host's secondary id space, or `null` on
+    /// full-table / surface-create failure.
+    pub fn openSecondarySurface(self: *Gpu, hinstance: *anyopaque, hwnd: *anyopaque, w: u32, h: u32) ?u32 {
+        var slot_idx: usize = MAX_SECONDARY_SURFACES;
+        for (self.secondary_surfaces, 0..) |slot, i| {
+            if (!slot.active) {
+                slot_idx = i;
+                break;
+            }
+        }
+        if (slot_idx == MAX_SECONDARY_SURFACES) return null;
+
+        var hwnd_source = std.mem.zeroes(c.WGPUSurfaceSourceWindowsHWND);
+        hwnd_source.chain.sType = c.WGPUSType_SurfaceSourceWindowsHWND;
+        hwnd_source.hinstance = @ptrCast(hinstance);
+        hwnd_source.hwnd = @ptrCast(hwnd);
+
+        var surface_desc = std.mem.zeroes(c.WGPUSurfaceDescriptor);
+        surface_desc.nextInChain = @ptrCast(&hwnd_source.chain);
+        surface_desc.label = wgpuStr("teak-secondary-surface");
+        const surface = c.wgpuInstanceCreateSurface(self.instance, &surface_desc) orelse return null;
+
+        // Configure the surface with the same format the primary uses.
+        var surf_config = std.mem.zeroes(c.WGPUSurfaceConfiguration);
+        surf_config.device = self.device;
+        surf_config.format = self.surf_format;
+        surf_config.usage = c.WGPUTextureUsage_RenderAttachment;
+        surf_config.width = w;
+        surf_config.height = h;
+        surf_config.presentMode = c.WGPUPresentMode_Fifo;
+        surf_config.alphaMode = c.WGPUCompositeAlphaMode_Auto;
+        c.wgpuSurfaceConfigure(surface, &surf_config);
+
+        self.secondary_surfaces[slot_idx] = .{
+            .surface = surface,
+            .width = w,
+            .height = h,
+            .active = true,
+        };
+        return @intCast(slot_idx + 1);
+    }
+
+    /// Release the secondary surface for `window_id`. No-op on invalid
+    /// ids. Apps pair this with `host.closeSecondaryWindow` — same id.
+    pub fn closeSecondarySurface(self: *Gpu, window_id: u32) void {
+        if (window_id == 0 or window_id > MAX_SECONDARY_SURFACES) return;
+        const slot = &self.secondary_surfaces[window_id - 1];
+        if (slot.active and slot.surface != null) {
+            c.wgpuSurfaceRelease(slot.surface);
+        }
+        slot.* = .{ .surface = null, .width = 0, .height = 0, .active = false };
+    }
+
+    /// Resize either the primary surface (id == 0) or a secondary one
+    /// (id >= 1). For the primary this rewrites the shared uniform
+    /// buffer; for secondaries the uniform is rewritten lazily inside
+    /// `renderToWindow` each frame.
+    pub fn resizeWindow(self: *Gpu, window_id: u32, w: u32, h: u32) void {
+        if (window_id == 0) {
+            self.resize(w, h);
+            return;
+        }
+        if (window_id > MAX_SECONDARY_SURFACES) return;
+        const slot = &self.secondary_surfaces[window_id - 1];
+        if (!slot.active or slot.surface == null) return;
+
+        slot.width = w;
+        slot.height = h;
+
+        var surf_config = std.mem.zeroes(c.WGPUSurfaceConfiguration);
+        surf_config.device = self.device;
+        surf_config.format = self.surf_format;
+        surf_config.usage = c.WGPUTextureUsage_RenderAttachment;
+        surf_config.width = w;
+        surf_config.height = h;
+        surf_config.presentMode = c.WGPUPresentMode_Fifo;
+        surf_config.alphaMode = c.WGPUCompositeAlphaMode_Auto;
+        c.wgpuSurfaceConfigure(slot.surface, &surf_config);
     }
 
     /// Rasterize `text_bytes` into a BGRA8Unorm texture `width × height`

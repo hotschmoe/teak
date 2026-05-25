@@ -105,6 +105,7 @@ extern "user32" fn LoadCursorW(?HANDLE, LPCWSTR) callconv(WINAPI) ?HANDLE;
 extern "user32" fn GetDC(?HANDLE) callconv(WINAPI) ?HDC;
 extern "user32" fn ReleaseDC(?HANDLE, HDC) callconv(WINAPI) c_int;
 extern "user32" fn GetKeyState(c_int) callconv(WINAPI) i16;
+extern "user32" fn DestroyWindow(HANDLE) callconv(WINAPI) BOOL;
 extern "kernel32" fn GetModuleHandleW(?LPCWSTR) callconv(WINAPI) ?HANDLE;
 
 // Clipboard externs.
@@ -536,6 +537,149 @@ var g_ime_active: bool = false;
 var g_ime_text: [256]u8 = undefined;
 var g_ime_text_len: usize = 0;
 var g_ime_cursor: usize = 0;
+
+// ── Secondary windows ──────────────────────────────────────────────
+//
+// Single shared message queue (one per thread) feeds both the primary
+// `wndProc` and `secondaryWndProc`; Win32 routes each message to the
+// hwnd's registered class proc, so the primary pollInputs loop pumps
+// secondary messages too. Each slot owns an independent input queue
+// drained by `pollSecondaryInputs`.
+
+pub const MAX_SECONDARY_WINDOWS: usize = 4;
+
+const SecondaryWindow = struct {
+    hwnd: HANDLE,
+    width: u32,
+    height: u32,
+    resized: bool,
+    mouse_x: f32,
+    mouse_y: f32,
+    mouse_down_pending: bool,
+    mouse_up_pending: bool,
+    wheel_dx: f32,
+    wheel_dy: f32,
+    chars: [64]u8,
+    chars_count: usize,
+    keys: [32]SpecialKey,
+    keys_count: usize,
+    closed: bool,
+};
+
+var g_secondaries: [MAX_SECONDARY_WINDOWS]?SecondaryWindow = .{ null, null, null, null };
+var g_secondary_class_registered: bool = false;
+
+/// Walk the slot table for an hwnd match. Returns a pointer to the
+/// SecondaryWindow inside the optional payload (caller writes through
+/// it back into g_secondaries), or null if the hwnd isn't tracked.
+/// Single-message dispatch — keep it simple; the table is at most
+/// MAX_SECONDARY_WINDOWS entries.
+fn findSecondaryByHwnd(hwnd: HANDLE) ?*SecondaryWindow {
+    for (&g_secondaries) |*slot| {
+        if (slot.* == null) continue;
+        const sw: *SecondaryWindow = &slot.*.?;
+        if (sw.hwnd == hwnd) return sw;
+    }
+    return null;
+}
+
+fn secondaryPushChar(sw: *SecondaryWindow, ch: u8) void {
+    if (sw.chars_count < sw.chars.len) {
+        sw.chars[sw.chars_count] = ch;
+        sw.chars_count += 1;
+    }
+}
+
+fn secondaryPushKey(sw: *SecondaryWindow, k: SpecialKey) void {
+    if (sw.keys_count < sw.keys.len) {
+        sw.keys[sw.keys_count] = k;
+        sw.keys_count += 1;
+    }
+}
+
+fn secondaryWndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
+    const sw_opt = findSecondaryByHwnd(hwnd);
+    const sw = sw_opt orelse return DefWindowProcW(hwnd, msg, wp, lp);
+    switch (msg) {
+        WM_DESTROY => {
+            sw.closed = true;
+            return 0;
+        },
+        WM_SIZE => {
+            const w: u32 = loword(lp);
+            const h: u32 = hiword(lp);
+            if (w > 0 and h > 0) {
+                sw.width = w;
+                sw.height = h;
+                sw.resized = true;
+            }
+            return 0;
+        },
+        WM_MOUSEMOVE => {
+            sw.mouse_x = @floatFromInt(lowordSigned(lp));
+            sw.mouse_y = @floatFromInt(hiwordSigned(lp));
+            return 0;
+        },
+        WM_LBUTTONDOWN => {
+            sw.mouse_x = @floatFromInt(lowordSigned(lp));
+            sw.mouse_y = @floatFromInt(hiwordSigned(lp));
+            sw.mouse_down_pending = true;
+            return 0;
+        },
+        WM_LBUTTONUP => {
+            sw.mouse_x = @floatFromInt(lowordSigned(lp));
+            sw.mouse_y = @floatFromInt(hiwordSigned(lp));
+            sw.mouse_up_pending = true;
+            return 0;
+        },
+        WM_MOUSEWHEEL => {
+            const raw_delta: i16 = @bitCast(@as(u16, @truncate(wp >> 16)));
+            const delta: f32 = @floatFromInt(raw_delta);
+            sw.wheel_dy += -(delta / WHEEL_DELTA) * WHEEL_PIXELS_PER_NOTCH;
+            return 0;
+        },
+        WM_MOUSEHWHEEL => {
+            const raw_delta: i16 = @bitCast(@as(u16, @truncate(wp >> 16)));
+            const delta: f32 = @floatFromInt(raw_delta);
+            sw.wheel_dx += (delta / WHEEL_DELTA) * WHEEL_PIXELS_PER_NOTCH;
+            return 0;
+        },
+        WM_CHAR => {
+            if (wp >= 0x20 and wp < 0x7F) {
+                secondaryPushChar(sw, @intCast(wp));
+            }
+            return 0;
+        },
+        WM_KEYDOWN => {
+            const shift_down = GetKeyState(VK_SHIFT) < 0;
+            const ctrl_down = GetKeyState(VK_CONTROL) < 0;
+            switch (wp) {
+                VK_BACK => secondaryPushKey(sw, .backspace),
+                VK_DELETE => secondaryPushKey(sw, .delete),
+                VK_LEFT => secondaryPushKey(sw, if (shift_down) .shift_left else .left),
+                VK_RIGHT => secondaryPushKey(sw, if (shift_down) .shift_right else .right),
+                VK_UP => secondaryPushKey(sw, if (shift_down) .shift_up else .up),
+                VK_DOWN => secondaryPushKey(sw, if (shift_down) .shift_down else .down),
+                VK_HOME => secondaryPushKey(sw, if (shift_down) .shift_home else .home),
+                VK_END => secondaryPushKey(sw, if (shift_down) .shift_end else .end),
+                VK_PRIOR => secondaryPushKey(sw, .page_up),
+                VK_NEXT => secondaryPushKey(sw, .page_down),
+                VK_RETURN => secondaryPushKey(sw, .enter),
+                VK_TAB => secondaryPushKey(sw, .tab),
+                VK_ESCAPE => secondaryPushKey(sw, .escape),
+                VK_A => if (ctrl_down) secondaryPushKey(sw, .ctrl_a),
+                VK_C => if (ctrl_down) secondaryPushKey(sw, .ctrl_c),
+                VK_V => if (ctrl_down) secondaryPushKey(sw, .ctrl_v),
+                VK_X => if (ctrl_down) secondaryPushKey(sw, .ctrl_x),
+                VK_Y => if (ctrl_down) secondaryPushKey(sw, .ctrl_y),
+                VK_Z => if (ctrl_down) secondaryPushKey(sw, .ctrl_z),
+                else => {},
+            }
+            return 0;
+        },
+        else => return DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
 
 fn loword(lp: LPARAM) u16 {
     return @truncate(@as(usize, @bitCast(lp)));
@@ -1078,10 +1222,150 @@ pub const Host = struct {
         return runFileDialog(self, filter, true);
     }
 
-    /// Single-window for now — secondary windows would need extra wgpu
-    /// surface plumbing in the Gpu layer. Returns null to indicate
-    /// "not supported on this host"; callers should fall back.
-    pub fn openSecondaryWindow(_: *Host, _: []const u8, _: u32, _: u32) ?u32 {
+    /// Create a second top-level Win32 window. Returns an opaque id
+    /// (1-based slot index) on success, `null` if the slot table is
+    /// full or window creation fails. The GPU surface for the new
+    /// window is NOT created here — the app must call
+    /// `gpu.openSecondarySurface(host.secondaryWindowHandle(id))` to
+    /// bind a wgpu surface in lock-step.
+    pub fn openSecondaryWindow(self: *Host, title: []const u8, w: u32, h: u32) ?u32 {
+        // Find first empty slot.
+        var slot_idx: usize = MAX_SECONDARY_WINDOWS;
+        for (g_secondaries, 0..) |s, i| {
+            if (s == null) {
+                slot_idx = i;
+                break;
+            }
+        }
+        if (slot_idx == MAX_SECONDARY_WINDOWS) return null;
+
+        // Register the secondary class once per process.
+        if (!g_secondary_class_registered) {
+            const sec_class = std.unicode.utf8ToUtf16LeStringLiteral("TeakSecondaryWindow");
+            const wc = WNDCLASSEXW{
+                .style = CS_HREDRAW | CS_VREDRAW,
+                .lpfnWndProc = &secondaryWndProc,
+                .hInstance = self.hinstance,
+                .hCursor = LoadCursorW(null, IDC_ARROW),
+                .lpszClassName = sec_class,
+            };
+            if (RegisterClassExW(&wc) == 0) return null;
+            g_secondary_class_registered = true;
+        }
+
+        var title_buf: [256]u16 = undefined;
+        const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title) catch return null;
+        if (title_len >= title_buf.len) return null;
+        title_buf[title_len] = 0;
+
+        const sec_class = std.unicode.utf8ToUtf16LeStringLiteral("TeakSecondaryWindow");
+        const hwnd = CreateWindowExW(
+            0,
+            sec_class,
+            @ptrCast(&title_buf),
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            @intCast(w),
+            @intCast(h),
+            null,
+            null,
+            self.hinstance,
+            null,
+        ) orelse return null;
+
+        g_secondaries[slot_idx] = .{
+            .hwnd = hwnd,
+            .width = w,
+            .height = h,
+            .resized = true, // first poll should publish dimensions
+            .mouse_x = 0,
+            .mouse_y = 0,
+            .mouse_down_pending = false,
+            .mouse_up_pending = false,
+            .wheel_dx = 0,
+            .wheel_dy = 0,
+            .chars = undefined,
+            .chars_count = 0,
+            .keys = undefined,
+            .keys_count = 0,
+            .closed = false,
+        };
+
+        _ = ShowWindow(hwnd, SW_SHOW);
+        return @intCast(slot_idx + 1);
+    }
+
+    /// Drain input queues for the given secondary window id. Returns
+    /// null when `id` is 0, out of range, the slot is empty, or the
+    /// window has been closed (caller treats as "window gone" and
+    /// should call `closeSecondaryWindow`).
+    pub fn pollSecondaryInputs(_: *Host, window_id: u32) ?InputState {
+        if (window_id == 0 or window_id > MAX_SECONDARY_WINDOWS) return null;
+        const slot_idx: usize = @intCast(window_id - 1);
+        const slot_opt = &g_secondaries[slot_idx];
+        if (slot_opt.* == null) return null;
+        const sw: *SecondaryWindow = &slot_opt.*.?;
+        if (sw.closed) return null;
+
+        const mouse_down = sw.mouse_down_pending;
+        const mouse_up = sw.mouse_up_pending;
+        const resized = sw.resized;
+        const wheel_dx = sw.wheel_dx;
+        const wheel_dy = sw.wheel_dy;
+        sw.mouse_down_pending = false;
+        sw.mouse_up_pending = false;
+        sw.resized = false;
+        sw.wheel_dx = 0;
+        sw.wheel_dy = 0;
+
+        const input: InputState = .{
+            .mouse_x = sw.mouse_x,
+            .mouse_y = sw.mouse_y,
+            .mouse_down = mouse_down,
+            .mouse_up = mouse_up,
+            .wheel_dx = wheel_dx,
+            .wheel_dy = wheel_dy,
+            .chars = sw.chars[0..sw.chars_count],
+            .keys = sw.keys[0..sw.keys_count],
+            .resized = resized,
+            .width = sw.width,
+            .height = sw.height,
+        };
+
+        // Reset queues for the next frame. Slices we returned point
+        // into the same buffers; caller must consume before the next
+        // poll. Same lifetime contract as the primary pollInputs.
+        sw.chars_count = 0;
+        sw.keys_count = 0;
+
+        return input;
+    }
+
+    /// Destroy a secondary window and free its slot. No-op on invalid
+    /// ids. Idempotent — calling twice is safe (second call hits a
+    /// null slot).
+    pub fn closeSecondaryWindow(_: *Host, window_id: u32) void {
+        if (window_id == 0 or window_id > MAX_SECONDARY_WINDOWS) return;
+        const slot_idx: usize = @intCast(window_id - 1);
+        if (g_secondaries[slot_idx]) |sw| {
+            // DestroyWindow posts WM_DESTROY; secondaryWndProc handles
+            // it (sets `closed`). We blank the slot here directly so
+            // the id can be reused immediately.
+            _ = DestroyWindow(sw.hwnd);
+            g_secondaries[slot_idx] = null;
+        }
+    }
+
+    /// Look up the native handle for a secondary window so the app can
+    /// pass it to `gpu.openSecondarySurface`. Returns null for invalid
+    /// or empty ids.
+    pub fn secondaryWindowHandle(self: *const Host, window_id: u32) ?NativeHandle {
+        if (window_id == 0 or window_id > MAX_SECONDARY_WINDOWS) return null;
+        const slot_idx: usize = @intCast(window_id - 1);
+        if (g_secondaries[slot_idx]) |sw| {
+            return .{ .hinstance = self.hinstance, .hwnd = sw.hwnd };
+        }
         return null;
     }
 

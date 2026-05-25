@@ -139,6 +139,25 @@ pub fn main() !void {
 
     var skip_count: u64 = 0;
 
+    // ── Secondary "Stats" window ──────────────────────────────────
+    //
+    // Lifecycle tracked here at the host boundary (HARDLINE §4(c) — the
+    // app world never sees Host.openSecondaryWindow). The Model's
+    // `show_stats_window` flag drives create/destroy; the id pair is
+    // reset to null after destroy so the next open allocates fresh.
+    const STATS_W: u32 = 360;
+    const STATS_H: u32 = 200;
+    var stats_window_id: ?u32 = null;
+    var stats_buf = CmdBufT.init(gpa);
+    defer stats_buf.deinit();
+    var stats_rects: [MAX_RECTS]teak.Rect = undefined;
+    var stats_verts: std.ArrayList(teak.Vertex) = .empty;
+    defer stats_verts.deinit(gpa);
+    var stats_text_draws: std.ArrayList(teak.TextDraw) = .empty;
+    defer stats_text_draws.deinit(gpa);
+    var stats_image_draws: std.ArrayList(teak.ImageDraw) = .empty;
+    defer stats_image_draws.deinit(gpa);
+
     std.debug.print("Teak UI running.\n", .{});
 
     while (!host.shouldClose()) {
@@ -259,7 +278,13 @@ pub fn main() !void {
         const blink_tick = transient_state.focus_index != null and
             (transient_state.frame_counter % 30 == 0);
 
-        const need_rebuild = !cmds_same or !rects_same or !transient_same or blink_tick;
+        // Force a primary-window rebuild every frame while the stats
+        // window is open: the secondary render path overwrites the
+        // shared GPU vertex/text/image buffers, so the primary surface
+        // must re-upload its own data each frame to avoid drawing the
+        // stats content into the main window.
+        const stats_open = model.show_stats_window;
+        const need_rebuild = !cmds_same or !rects_same or !transient_same or blink_tick or stats_open;
 
         if (need_rebuild) {
             teak.buildVertices(&verts, &text_draws, &image_draws, gpa, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state, measurer);
@@ -275,6 +300,85 @@ pub fn main() !void {
 
         // 7. Render + present.
         gpu.renderFrame(.{ 0.08, 0.08, 0.1, 1.0 });
+
+        // 8. Secondary "Stats" window lifecycle + render. Model owns
+        //    the open/closed flag; the host owns the platform + GPU
+        //    resources keyed off `stats_window_id`. Lock-step semantics
+        //    — the same id covers both Host slot and Gpu surface slot.
+        if (model.show_stats_window and stats_window_id == null) {
+            if (host.openSecondaryWindow("Teak — Stats", STATS_W, STATS_H)) |wid| {
+                if (host.secondaryWindowHandle(wid)) |nh| {
+                    if (gpu.openSecondarySurface(nh.hinstance, nh.hwnd, STATS_W, STATS_H)) |_| {
+                        stats_window_id = wid;
+                    } else {
+                        // GPU surface failed — release the window so we
+                        // don't leak a hwnd with no renderer attached.
+                        host.closeSecondaryWindow(wid);
+                    }
+                } else {
+                    host.closeSecondaryWindow(wid);
+                }
+            }
+        } else if (!model.show_stats_window and stats_window_id != null) {
+            const wid = stats_window_id.?;
+            gpu.closeSecondarySurface(wid);
+            host.closeSecondaryWindow(wid);
+            stats_window_id = null;
+        }
+
+        if (stats_window_id) |wid| {
+            const stats_input = host.pollSecondaryInputs(wid);
+            // Detect user-closed window: pollSecondaryInputs returns
+            // null once WM_DESTROY has fired. Mirror that back into the
+            // Model so the toolbar button label flips.
+            if (stats_input == null) {
+                gpu.closeSecondarySurface(wid);
+                host.closeSecondaryWindow(wid);
+                stats_window_id = null;
+                App.update(&model, .close_stats_window);
+            } else {
+                const si = stats_input.?;
+                if (si.resized) gpu.resizeWindow(wid, si.width, si.height);
+                const sw_f: f32 = @floatFromInt(si.width);
+                const sh_f: f32 = @floatFromInt(si.height);
+
+                stats_buf.reset();
+                stats_buf.theme = if (model.dark_mode) teak.Theme.dark_default else teak.Theme.light_default;
+                App.statsView(&model, &stats_buf);
+
+                const stats_cmds = stats_buf.cmds.items;
+                if (stats_cmds.len <= MAX_RECTS) {
+                    teak.LayoutEngine.doLayout(
+                        stats_rects[0..stats_cmds.len],
+                        stats_cmds,
+                        sw_f,
+                        sh_f,
+                        measurer,
+                    );
+                    const stats_transient: teak.TransientState = .{};
+                    teak.buildVertices(
+                        &stats_verts,
+                        &stats_text_draws,
+                        &stats_image_draws,
+                        gpa,
+                        stats_cmds,
+                        stats_rects[0..stats_cmds.len],
+                        stats_transient,
+                        measurer,
+                    );
+                    gpu.uploadVertices(stats_verts.items);
+                    gpu.uploadText(stats_text_draws.items);
+                    gpu.uploadImages(stats_image_draws.items);
+                    gpu.renderToWindow(wid, .{ 0.08, 0.08, 0.1, 1.0 });
+                }
+            }
+        }
+    }
+
+    // Tidy up any stats resources still open on exit.
+    if (stats_window_id) |wid| {
+        gpu.closeSecondarySurface(wid);
+        host.closeSecondaryWindow(wid);
     }
 
     std.debug.print("Teak UI exiting. (skipped {d} vertex rebuilds)\n", .{skip_count});
