@@ -49,7 +49,7 @@ Both honor the same scroll clip stack (`push_scroll` / `pop_scroll` push/pop rec
 
 - **Forward walk, last-wins.** Painter's order — later draws paint on top, so the last match at a pixel wins. A backward walk would be simpler for z-order but couldn't honor scroll clips that accumulate top-down.
 - **Clipped.** A widget under a scroll container only hits if the mouse is inside the intersection of all enclosing clips.
-- **No allocation.** The scroll clip stack is a fixed-depth `ClipStack` (16 levels). Exceeding it is a bug — deepening nested scrolls is not a supported use case.
+- **No allocation.** The scroll clip stack is a fixed-depth `ClipStack` (16 levels). Exceeding it is a bug — deepening nested scrolls is not a supported use case. `ClipStack.push`/`pop` `std.debug.assert` overflow/underflow so a bad pass crashes loudly in Debug/ReleaseSafe and is zero-cost in ReleaseFast.
 - **Generic over `Msg`.** The `Msg` type is recovered from `cmds`'s element type via the `MsgT` decl. Callers pass `cb.cmds.items` directly.
 - **Reads only the previous frame.** The main loop hit-tests against frame N-1 when dispatching clicks during frame N. One-frame latency is correct and imperceptible.
 - **Modal overlays block fallthrough.** A `push_overlay` with `modal = true` claims any click inside its rect that no interactive child caught. If `backdrop_msg` is set, that Msg is dispatched (click-outside-to-close idiom). Otherwise the click is silently consumed — `HitResult{ .index = push_overlay_idx, .msg = null }`. Non-modal overlays (default) still fall through to base widgets when no leaf catches the click, preserving tooltip / popover / debug-overlay semantics.

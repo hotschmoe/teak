@@ -36,16 +36,22 @@ pub fn clipRect(a: Rect, b: Rect) Rect {
 /// LayoutEngine's FixedStack — exceeding it is a bug, not an allocation
 /// trigger. `top()` returns a huge sentinel rect when empty so callers
 /// don't branch on depth.
+///
+/// `push` and `pop` `std.debug.assert` the depth invariant: overflow on
+/// push and underflow on pop are programmer errors, not recoverable
+/// conditions. Zero-cost in ReleaseFast; loud crash in Debug/ReleaseSafe.
 pub const ClipStack = struct {
     buffer: [16]Rect = undefined,
     len: usize = 0,
 
     pub fn push(self: *ClipStack, r: Rect) void {
+        std.debug.assert(self.len < self.buffer.len);
         self.buffer[self.len] = r;
         self.len += 1;
     }
 
     pub fn pop(self: *ClipStack) void {
+        std.debug.assert(self.len > 0);
         self.len -= 1;
     }
 
@@ -102,17 +108,26 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
 
         const Self = @This();
 
+        // push / pop / top `std.debug.assert` against the capacity bound
+        // and the non-empty bound respectively. Overflow on push,
+        // underflow on pop, and read-empty on top are all programmer
+        // errors — the layout passes own the matched push/pop discipline.
+        // Zero cost in ReleaseFast; loud crash in Debug/ReleaseSafe.
+
         fn push(self: *Self, item: T) void {
+            std.debug.assert(self.len < capacity);
             self.buffer[self.len] = item;
             self.len += 1;
         }
 
         fn pop(self: *Self) T {
+            std.debug.assert(self.len > 0);
             self.len -= 1;
             return self.buffer[self.len];
         }
 
         fn top(self: *Self) *T {
+            std.debug.assert(self.len > 0);
             return &self.buffer[self.len - 1];
         }
     };
@@ -980,4 +995,57 @@ test "text_input cross-axis stretches in vertical parent" {
 
     // Parent inner width = 400 - 20 = 380.
     try testing.expectEqual(@as(f32, 380), rects[1].w);
+}
+
+test "ClipStack: round-trip up to capacity without tripping bounds" {
+    const testing = std.testing;
+    var clips: ClipStack = .{};
+
+    // top() on empty returns the huge sentinel; this is documented
+    // behavior, not a bug. We do NOT assert here — only push/pop do.
+    const empty_top = clips.top();
+    try testing.expect(empty_top.w > 1e8);
+
+    // Push the full capacity (16) and confirm the stack accepts every
+    // one without a panic.
+    var i: usize = 0;
+    while (i < clips.buffer.len) : (i += 1) {
+        clips.push(.{ .x = @floatFromInt(i), .y = 0, .w = 10, .h = 10 });
+    }
+    try testing.expectEqual(@as(usize, 16), clips.len);
+    try testing.expectEqual(@as(f32, 15), clips.top().x);
+
+    // Pop them all; depth returns to zero, no underflow.
+    i = 0;
+    while (i < 16) : (i += 1) clips.pop();
+    try testing.expectEqual(@as(usize, 0), clips.len);
+}
+
+test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
+    const testing = std.testing;
+    const Msg = union(enum) { noop };
+    const CmdBuffer = cmd.CmdBuffer(Msg);
+
+    var cb = CmdBuffer.init(testing.allocator);
+    defer cb.deinit();
+
+    // Documented max for the measure-pass FixedStack is 32. Push 32
+    // groups, all of which must coexist on the stack simultaneously
+    // during the measure pass — this is the boundary case.
+    const DEPTH: usize = 32;
+    var i: usize = 0;
+    while (i < DEPTH) : (i += 1) {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    }
+    // Add a single leaf so the innermost group has measured content.
+    cb.text("leaf");
+    i = 0;
+    while (i < DEPTH) : (i += 1) cb.popGroup();
+
+    const rects = testing.allocator.alloc(Rect, cb.cmds.items.len) catch unreachable;
+    defer testing.allocator.free(rects);
+    // If FixedStack's push asserted on overflow this would panic — it
+    // must not, because 32 is the documented capacity.
+    LayoutEngine.doLayout(rects, cb.cmds.items, 800, 600, test_measurer);
+    try testing.expectEqual(@as(f32, 800), rects[0].w);
 }

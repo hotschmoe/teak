@@ -41,7 +41,7 @@ Monospace approximation: `content.len * CHAR_WIDTH` where `CHAR_WIDTH = 10`, `TE
 ## Invariants
 
 - **No allocation.** Caller owns the `rects` slice. Layout writes in place.
-- **Stack bounded.** `FixedStack` depth 32 — exceeding it is a bug, not a growth trigger. A UI nesting 32+ groups deep has bigger problems.
+- **Stack bounded.** `FixedStack` depth 32 — exceeding it is a bug, not a growth trigger. A UI nesting 32+ groups deep has bigger problems. `push`/`pop`/`top` `std.debug.assert` against overflow and underflow respectively (see `src/layout/engine.zig` — both the generic `FixedStack(T, capacity)` and `ClipStack`), so a bad pass crashes loudly in Debug/ReleaseSafe and is zero-cost in ReleaseFast.
 - **Independent passes.** `measurePass` and `positionPass` can each be swapped out without touching the other, so long as the intermediate `Rect` shape is preserved.
 - **Deterministic.** Same `[]Cmd` + same window size → same `[]Rect`. No random, no time-varying inputs.
 - **Flex is proportional.** `flex = 2` gets twice the remaining main-axis space of `flex = 1`. `flex = 0` uses intrinsic size.
@@ -105,4 +105,4 @@ cb.popOverlay();
 - **Scroll viewport** (covered): a `push_scroll` with `width = 200, height = 200` produces a rect with those dimensions regardless of child intrinsic sizes.
 - **Root stretch** (covered): root `push_group` ends up at `(window_w, window_h)`.
 - **Padding + gap** (partial): covered for simple groups; missing a test that mixes gap + padding + flex in one group.
-- **Depth-limit guard** (missing): a `@panic`-free test that 33 nested `push_group`s trigger a detectable error rather than silently clobbering the stack. Currently it's undefined behavior — worth an assert in debug builds.
+- **Depth-limit boundary** (covered): `src/layout/engine.zig` test "FixedStack (via 32-deep group nesting): documented depth is reachable" pushes the full 32-group depth through `measurePass` to confirm the documented capacity is actually reachable without tripping the assert. `src/layout/engine.zig` test "ClipStack: round-trip up to capacity without tripping bounds" does the same for the 16-deep render/hit-test clip stack. Overflow and underflow themselves are `std.debug.assert`ed at the stack call sites — not test-exercised, since a tripped assert is a panic the harness can't observe portably.

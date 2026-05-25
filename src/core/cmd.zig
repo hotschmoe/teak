@@ -678,6 +678,10 @@ pub fn CmdBuffer(comptime Msg: type) type {
         ///     horizontal: [label] [content] [units]
         ///     [validation]
         pub fn pushFormRow(self: *Self, opts: FormRowOpts) void {
+            // Cap of 8 in-flight form rows; deeper nesting is a bug, not
+            // a growth trigger. Assert mirrors the layout stacks: loud
+            // crash in Debug/ReleaseSafe, zero cost in ReleaseFast.
+            std.debug.assert(self.form_row_depth < self.form_row_stack.len);
             // Outer vertical (content row + validation message).
             self.cmds.append(self.backing, .{ .push_group = .{
                 .direction = .vertical,
@@ -1022,4 +1026,26 @@ test "CmdBuffer.mixedText: empty parts list still emits a (zero-content) rich_te
     const rt = cb.cmds.items[0].rich_text;
     try testing.expectEqual(@as(usize, 0), rt.content.len);
     try testing.expectEqual(@as(usize, 0), rt.spans.len);
+}
+
+test "CmdBuffer.pushFormRow: documented depth of 8 is reachable without tripping the assert" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // form_row_stack is 8 deep. Push 8 form rows, all in flight
+    // simultaneously, then pop them all back out. This exercises the
+    // full bound on both sides; if pushFormRow's assert fired at the
+    // boundary or popFormRow's bookkeeping was off, this would crash.
+    const DEPTH: u8 = 8;
+    var i: u8 = 0;
+    while (i < DEPTH) : (i += 1) {
+        cb.pushFormRow(.{ .label = "row" });
+    }
+    try testing.expectEqual(DEPTH, cb.form_row_depth);
+
+    i = 0;
+    while (i < DEPTH) : (i += 1) cb.popFormRow();
+    try testing.expectEqual(@as(u8, 0), cb.form_row_depth);
 }
