@@ -9,6 +9,10 @@ const teak = @import("teak");
 const glyph_cache = @import("glyph_cache.zig");
 
 const Vertex = teak.Vertex;
+const ImageDraw = teak.ImageDraw;
+
+const IMAGE_CACHE_CAPACITY: usize = 64;
+const IMAGE_VERT_BUF_CAPACITY: usize = IMAGE_CACHE_CAPACITY * 6;
 
 const c = @cImport({
     @cDefine("WGPU_SHARED_LIBRARY", "1");
@@ -177,6 +181,26 @@ const RasterResult = struct {
 };
 
 const SHADER_TEXT = @import("teak-shaders").textured_quad_wgsl;
+const SHADER_IMAGE = @import("teak-shaders").image_wgsl;
+
+// ── Image cache (app-driven, no LRU) ───────────────────────────────
+//
+// Unlike the glyph cache, the app explicitly creates image textures
+// via `uploadImage`. The returned handle is a slot index (+1 so 0 is
+// the sentinel). Slot churn is the app's problem — we never evict.
+
+const ImageEntry = struct {
+    texture: c.WGPUTexture,
+    view: c.WGPUTextureView,
+    bind_group: c.WGPUBindGroup,
+    width: u32,
+    height: u32,
+};
+
+const ImageDrawRecord = struct {
+    bind_group: c.WGPUBindGroup,
+    vert_offset: u32,
+};
 
 // ── wgpu helpers ───────────────────────────────────────────────────
 
@@ -264,6 +288,17 @@ pub const Gpu = struct {
     raster_dc: HDC,
     raster_font_cache: [8]FontCacheEntry,
     raster_font_cache_len: usize,
+
+    // ── Image pass (shares text_bgl + sampler) ─────────────────────
+    image_pipeline: c.WGPURenderPipeline,
+    image_cache: [IMAGE_CACHE_CAPACITY]ImageEntry,
+    image_cache_len: usize,
+    image_draws: [IMAGE_CACHE_CAPACITY]ImageDrawRecord,
+    image_draw_count: usize,
+    image_verts: [IMAGE_VERT_BUF_CAPACITY]Vertex,
+    image_vert_count: u32,
+    image_vert_buf: c.WGPUBuffer,
+    image_vert_buf_size: u64,
 
     /// `handle` duck-types as `{ hinstance, hwnd }` (matches
     /// `platform/win32.zig`'s NativeHandle). Other surface sources would
@@ -484,6 +519,39 @@ pub const Gpu = struct {
         text_pipeline_desc.fragment = &text_frag_state;
         const text_pipeline = c.wgpuDeviceCreateRenderPipeline(device, &text_pipeline_desc) orelse return error.TextPipelineFailed;
 
+        // ── Image pipeline — same BGL, sampler, vertex layout. Only the
+        //    fragment shader differs (texture * tint, no alpha-from-tex
+        //    trick).
+        var image_wgsl_desc = std.mem.zeroes(c.WGPUShaderSourceWGSL);
+        image_wgsl_desc.chain.sType = c.WGPUSType_ShaderSourceWGSL;
+        image_wgsl_desc.code = wgpuStr(SHADER_IMAGE);
+        var image_shader_desc = std.mem.zeroes(c.WGPUShaderModuleDescriptor);
+        image_shader_desc.nextInChain = @ptrCast(&image_wgsl_desc.chain);
+        image_shader_desc.label = wgpuStr("image-shader");
+        const image_shader = c.wgpuDeviceCreateShaderModule(device, &image_shader_desc) orelse return error.ImageShaderFailed;
+        defer c.wgpuShaderModuleRelease(image_shader);
+
+        var image_frag_state = std.mem.zeroes(c.WGPUFragmentState);
+        image_frag_state.module = image_shader;
+        image_frag_state.entryPoint = wgpuStr("fs_main");
+        image_frag_state.targetCount = 1;
+        image_frag_state.targets = &color_target;
+
+        var image_pipeline_desc = std.mem.zeroes(c.WGPURenderPipelineDescriptor);
+        image_pipeline_desc.label = wgpuStr("image-pipeline");
+        image_pipeline_desc.layout = text_pipeline_layout;
+        image_pipeline_desc.vertex.module = image_shader;
+        image_pipeline_desc.vertex.entryPoint = wgpuStr("vs_main");
+        image_pipeline_desc.vertex.bufferCount = 1;
+        image_pipeline_desc.vertex.buffers = &vert_buf_layout;
+        image_pipeline_desc.primitive.topology = c.WGPUPrimitiveTopology_TriangleList;
+        image_pipeline_desc.primitive.frontFace = c.WGPUFrontFace_CCW;
+        image_pipeline_desc.primitive.cullMode = c.WGPUCullMode_None;
+        image_pipeline_desc.multisample.count = 1;
+        image_pipeline_desc.multisample.mask = 0xFFFFFFFF;
+        image_pipeline_desc.fragment = &image_frag_state;
+        const image_pipeline = c.wgpuDeviceCreateRenderPipeline(device, &image_pipeline_desc) orelse return error.ImagePipelineFailed;
+
         var sampler_desc = std.mem.zeroes(c.WGPUSamplerDescriptor);
         sampler_desc.label = wgpuStr("text-sampler");
         sampler_desc.addressModeU = c.WGPUAddressMode_ClampToEdge;
@@ -534,12 +602,31 @@ pub const Gpu = struct {
             .raster_dc = raster_dc,
             .raster_font_cache = undefined,
             .raster_font_cache_len = 0,
+            .image_pipeline = image_pipeline,
+            .image_cache = undefined,
+            .image_cache_len = 0,
+            .image_draws = undefined,
+            .image_draw_count = 0,
+            .image_verts = undefined,
+            .image_vert_count = 0,
+            .image_vert_buf = null,
+            .image_vert_buf_size = 0,
         };
         gpu.resize(width, height);
         return gpu;
     }
 
     pub fn deinit(self: *Gpu) void {
+        // Image cache entries — same release order as text (bind group →
+        // view → texture). Vertex buffer last.
+        for (self.image_cache[0..self.image_cache_len]) |e| {
+            c.wgpuBindGroupRelease(e.bind_group);
+            c.wgpuTextureViewRelease(e.view);
+            c.wgpuTextureRelease(e.texture);
+        }
+        if (self.image_vert_buf) |ib| c.wgpuBufferRelease(ib);
+        c.wgpuRenderPipelineRelease(self.image_pipeline);
+
         // Text cache entries first — bind groups hold refs to the
         // texture views, which hold refs to textures. `NativeBackend.
         // destroyEntry` releases all three in the right order.
@@ -639,6 +726,18 @@ pub const Gpu = struct {
             c.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.bind_group, 0, null);
             c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.vert_buf, 0, draw_byte_size);
             c.wgpuRenderPassEncoderDraw(pass, self.vert_count, 1, 0, 0);
+        }
+
+        // Image pass first (drawn under text + same layer as solids),
+        // then text on top so glyphs stay readable over images.
+        if (self.image_draw_count > 0 and self.image_vert_buf != null) {
+            const image_byte_size: u64 = @intCast(self.image_vert_count * @sizeOf(Vertex));
+            c.wgpuRenderPassEncoderSetPipeline(pass, self.image_pipeline);
+            c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.image_vert_buf, 0, image_byte_size);
+            for (self.image_draws[0..self.image_draw_count]) |rec| {
+                c.wgpuRenderPassEncoderSetBindGroup(pass, 0, rec.bind_group, 0, null);
+                c.wgpuRenderPassEncoderDraw(pass, 6, 1, rec.vert_offset, 0);
+            }
         }
 
         if (self.text_draw_count > 0 and self.text_vert_buf != null) {
@@ -805,6 +904,164 @@ pub const Gpu = struct {
             self.text_vert_buf = c.wgpuDeviceCreateBuffer(self.device, &vb_desc);
         }
         c.wgpuQueueWriteBuffer(self.queue, self.text_vert_buf, 0, &self.text_verts, byte_size);
+    }
+
+    /// Upload an RGBA8 image. `bytes.len` must equal `width * height * 4`.
+    /// Returns an opaque handle the app stashes in `ImageCmd.handle`.
+    /// Returns `TEXTURE_HANDLE_NONE` on bad dims, oversized cache, or
+    /// device failure.
+    pub fn uploadImage(self: *Gpu, bytes: []const u8, width: u32, height: u32) TextureHandle {
+        if (width == 0 or height == 0) return teak.TEXTURE_HANDLE_NONE;
+        if (bytes.len < @as(usize, width) * @as(usize, height) * 4) return teak.TEXTURE_HANDLE_NONE;
+        if (self.image_cache_len >= self.image_cache.len) return teak.TEXTURE_HANDLE_NONE;
+
+        var tex_desc = std.mem.zeroes(c.WGPUTextureDescriptor);
+        tex_desc.label = wgpuStr("image-texture");
+        tex_desc.usage = c.WGPUTextureUsage_TextureBinding | c.WGPUTextureUsage_CopyDst;
+        tex_desc.dimension = c.WGPUTextureDimension_2D;
+        tex_desc.size = .{ .width = width, .height = height, .depthOrArrayLayers = 1 };
+        tex_desc.format = c.WGPUTextureFormat_RGBA8Unorm;
+        tex_desc.mipLevelCount = 1;
+        tex_desc.sampleCount = 1;
+        const texture = c.wgpuDeviceCreateTexture(self.device, &tex_desc) orelse return teak.TEXTURE_HANDLE_NONE;
+
+        var dst = std.mem.zeroes(c.WGPUTexelCopyTextureInfo);
+        dst.texture = texture;
+        dst.mipLevel = 0;
+        dst.aspect = c.WGPUTextureAspect_All;
+
+        var data_layout = std.mem.zeroes(c.WGPUTexelCopyBufferLayout);
+        data_layout.offset = 0;
+        data_layout.bytesPerRow = width * 4;
+        data_layout.rowsPerImage = height;
+
+        var write_size = std.mem.zeroes(c.WGPUExtent3D);
+        write_size.width = width;
+        write_size.height = height;
+        write_size.depthOrArrayLayers = 1;
+
+        c.wgpuQueueWriteTexture(self.queue, &dst, bytes.ptr, @as(usize, width) * @as(usize, height) * 4, &data_layout, &write_size);
+
+        var view_desc = std.mem.zeroes(c.WGPUTextureViewDescriptor);
+        view_desc.label = wgpuStr("image-texture-view");
+        view_desc.format = c.WGPUTextureFormat_RGBA8Unorm;
+        view_desc.dimension = c.WGPUTextureViewDimension_2D;
+        view_desc.mipLevelCount = 1;
+        view_desc.arrayLayerCount = 1;
+        view_desc.aspect = c.WGPUTextureAspect_All;
+        const view = c.wgpuTextureCreateView(texture, &view_desc) orelse {
+            c.wgpuTextureRelease(texture);
+            return teak.TEXTURE_HANDLE_NONE;
+        };
+
+        var bg_entries: [3]c.WGPUBindGroupEntry = undefined;
+        bg_entries[0] = std.mem.zeroes(c.WGPUBindGroupEntry);
+        bg_entries[0].binding = 0;
+        bg_entries[0].buffer = self.uniform_buf;
+        bg_entries[0].offset = 0;
+        bg_entries[0].size = 8;
+        bg_entries[1] = std.mem.zeroes(c.WGPUBindGroupEntry);
+        bg_entries[1].binding = 1;
+        bg_entries[1].textureView = view;
+        bg_entries[2] = std.mem.zeroes(c.WGPUBindGroupEntry);
+        bg_entries[2].binding = 2;
+        bg_entries[2].sampler = self.sampler;
+
+        var bg_desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
+        bg_desc.label = wgpuStr("image-bg");
+        bg_desc.layout = self.text_bgl;
+        bg_desc.entryCount = bg_entries.len;
+        bg_desc.entries = &bg_entries;
+        const bind_group = c.wgpuDeviceCreateBindGroup(self.device, &bg_desc) orelse {
+            c.wgpuTextureViewRelease(view);
+            c.wgpuTextureRelease(texture);
+            return teak.TEXTURE_HANDLE_NONE;
+        };
+
+        const slot = self.image_cache_len;
+        self.image_cache[slot] = .{
+            .texture = texture,
+            .view = view,
+            .bind_group = bind_group,
+            .width = width,
+            .height = height,
+        };
+        self.image_cache_len += 1;
+        return @intCast(slot + 1);
+    }
+
+    /// Per-frame draw orchestration for images. Walks ImageDraws, emits
+    /// 6 textured vertices per visible draw, records a draw entry per
+    /// image. Call after `uploadText` and before `renderFrame`.
+    pub fn uploadImages(self: *Gpu, draws: []const ImageDraw) void {
+        self.image_draw_count = 0;
+        self.image_vert_count = 0;
+
+        for (draws) |draw| {
+            if (draw.handle == teak.TEXTURE_HANDLE_NONE) continue;
+            const slot = draw.handle - 1;
+            if (slot >= self.image_cache_len) continue;
+            const entry = self.image_cache[slot];
+
+            // Pixel-aligned visibility clip (same trick as uploadText).
+            const r_x = draw.rect_x;
+            const r_y = draw.rect_y;
+            const r_w = draw.rect_w;
+            const r_h = draw.rect_h;
+
+            const c_x0 = draw.clip_x;
+            const c_y0 = draw.clip_y;
+            const c_x1 = draw.clip_x + draw.clip_w;
+            const c_y1 = draw.clip_y + draw.clip_h;
+
+            const vis_x0 = @max(r_x, c_x0);
+            const vis_y0 = @max(r_y, c_y0);
+            const vis_x1 = @min(r_x + r_w, c_x1);
+            const vis_y1 = @min(r_y + r_h, c_y1);
+            if (vis_x1 <= vis_x0 or vis_y1 <= vis_y0) continue;
+
+            const uv_u0 = (vis_x0 - r_x) / r_w;
+            const uv_v0 = (vis_y0 - r_y) / r_h;
+            const uv_u1 = (vis_x1 - r_x) / r_w;
+            const uv_v1 = (vis_y1 - r_y) / r_h;
+
+            const r = draw.tint[0];
+            const g = draw.tint[1];
+            const b = draw.tint[2];
+            const a = draw.tint[3];
+
+            const offset = self.image_vert_count;
+            if (offset + 6 > self.image_verts.len) break;
+
+            const v = &self.image_verts;
+            v[offset + 0] = .{ .x = vis_x0, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v0 };
+            v[offset + 1] = .{ .x = vis_x1, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
+            v[offset + 2] = .{ .x = vis_x0, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
+            v[offset + 3] = .{ .x = vis_x1, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
+            v[offset + 4] = .{ .x = vis_x1, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v1 };
+            v[offset + 5] = .{ .x = vis_x0, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
+
+            self.image_vert_count += 6;
+            self.image_draws[self.image_draw_count] = .{
+                .bind_group = entry.bind_group,
+                .vert_offset = offset,
+            };
+            self.image_draw_count += 1;
+        }
+
+        const byte_size: u64 = @intCast(self.image_vert_count * @sizeOf(Vertex));
+        if (byte_size == 0) return;
+
+        if (self.image_vert_buf == null or byte_size > self.image_vert_buf_size) {
+            if (self.image_vert_buf) |buf| c.wgpuBufferRelease(buf);
+            self.image_vert_buf_size = @max(byte_size, 4096);
+            var vb_desc = std.mem.zeroes(c.WGPUBufferDescriptor);
+            vb_desc.label = wgpuStr("image-vert-buf");
+            vb_desc.usage = c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst;
+            vb_desc.size = self.image_vert_buf_size;
+            self.image_vert_buf = c.wgpuDeviceCreateBuffer(self.device, &vb_desc);
+        }
+        c.wgpuQueueWriteBuffer(self.queue, self.image_vert_buf, 0, &self.image_verts, byte_size);
     }
 };
 

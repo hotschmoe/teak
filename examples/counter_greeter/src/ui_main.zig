@@ -224,6 +224,7 @@ pub fn main() !void {
             teak.buildVertices(&verts, &text_draws, &image_draws, gpa, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state, measurer);
             gpu.uploadVertices(verts.items);
             gpu.uploadText(text_draws.items);
+            gpu.uploadImages(image_draws.items);
         } else {
             skip_count += 1;
             if (skip_count % 120 == 0) std.debug.print("diff: skipped vertex rebuild (total skipped = {d})\n", .{skip_count});

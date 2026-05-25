@@ -6,3 +6,4 @@
 
 pub const quad_wgsl = @embedFile("quad.wgsl");
 pub const textured_quad_wgsl = @embedFile("textured_quad.wgsl");
+pub const image_wgsl = @embedFile("image.wgsl");

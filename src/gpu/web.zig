@@ -333,6 +333,20 @@ pub const Gpu = struct {
         }
         zgpu.bufferWriteTyped(Vertex, self.text_vert_buf.?, 0, self.text_verts[0..self.text_vert_count]);
     }
+
+    // ── Image surface (stub; web backend pending parity with native) ──
+    // Honest acknowledgment: native uploads RGBA textures + draws via a
+    // dedicated image pipeline; web still owes both. For now the renderer
+    // falls back to the tinted-placeholder quad emitted in render/build.zig
+    // when the handle is TEXTURE_HANDLE_NONE, so apps that depend on the
+    // surface contract still link and run — they just don't see textured
+    // images on the web target until this implements the zunk texture
+    // upload + a parallel pipeline.
+    pub fn uploadImage(_: *Gpu, _: []const u8, _: u32, _: u32) TextureHandle {
+        return teak.TEXTURE_HANDLE_NONE;
+    }
+
+    pub fn uploadImages(_: *Gpu, _: []const teak.ImageDraw) void {}
 };
 
 fn cssFontFamily(family: FontFamily) []const u8 {
