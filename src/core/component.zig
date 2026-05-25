@@ -45,7 +45,11 @@ pub fn validateComponent(comptime T: type) void {
 /// Build an anonymous struct type with one field per payloadless variant
 /// of `Comp.Msg`. Each field's type is `AppMsg`; when the composed view
 /// runs, we populate each field with a pre-wrapped AppMsg value.
-fn MsgsStructFor(comptime Comp: type, comptime AppMsg: type) type {
+///
+/// Public so `ComponentList` (and any future per-index msg generator)
+/// can reuse the same shape — the msgs struct passed to a child view
+/// is always `MsgsStructFor(Child, AppMsg)`, no matter who built it.
+pub fn MsgsStructFor(comptime Comp: type, comptime AppMsg: type) type {
     const msg_info = @typeInfo(Comp.Msg).@"union";
     comptime var names: []const []const u8 = &.{};
     comptime var types: []const type = &.{};

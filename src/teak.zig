@@ -13,6 +13,7 @@ pub const text = @import("core/text.zig");
 pub const sub = @import("core/sub.zig");
 pub const theme = @import("core/theme.zig");
 pub const text_field = @import("core/text_field.zig");
+pub const component_list = @import("core/component_list.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
@@ -88,6 +89,7 @@ pub const TransientState = transient.TransientState;
 
 pub const Components = component.Components;
 pub const validateComponent = component.validateComponent;
+pub const ComponentList = component_list.ComponentList;
 
 pub const InputState = host.InputState;
 pub const Clipboard = host.Clipboard;
