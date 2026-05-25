@@ -214,13 +214,35 @@ validateHost (HARDLINE §4(d)).
 **Tests**: `src/input/a11y.zig`, `test/integration_test.zig`.
 
 `buildA11yTree(arena, cmds, rects, focus_index) → []A11yNode` — pure
-function over `[]Cmd` + `[]Rect`, walks once, skips `pop_*` entries.
-Each node carries `role`, `cmd_index`, `bounds`, `label`, `focused`,
-and a packed `state` (checkbox/radio: 0/1; slider: [0, 1]).
+function over `[]Cmd` + `[]Rect`. Each node carries `role`, `cmd_index`,
+`bounds`, `label`, `focused`, and a packed `state` (checkbox/radio: 0/1;
+slider: [0, 1]).
 
 Roles map to Cmd variants: `group`, `scroll`, `text`, `rich_text`,
 `button`, `text_input`, `checkbox`, `radio`, `slider`, `divider`,
 `image`, `overlay`.
+
+**Mirrors hit-test semantics.** `buildTree` is structured exactly like
+`hit_test.zig` — two passes over `[]Cmd` (`.overlay` then `.base`),
+maintaining the same `layout.ClipStack` and `overlay_depth` counter:
+
+- **Scroll clipping.** Each node's `bounds` are intersected with the
+  surrounding scroll-clip stack. A widget fully scrolled out of its
+  parent's viewport produces a zero-area clipped rect and is omitted
+  from the tree; a partially-clipped one reports only the visible
+  portion. Screen readers don't announce widgets the user can't see.
+- **Modal occlusion.** If the overlay pass finds any `push_overlay`
+  with `.modal = true` and non-empty clipped bounds, the base pass is
+  skipped entirely. A screen reader doesn't announce widgets behind
+  a modal — same rule `hitTestLayer` uses to refuse clicks. The modal
+  overlay node itself is still emitted so the host can announce
+  "dialog opened" and trap focus.
+- **Non-modal overlays don't occlude.** Tooltips, debug overlays, and
+  popovers (`modal = false`) keep the base layer announceable, mirror-
+  ing how the base layer keeps receiving clicks outside their bounds.
+- **A modal nested in a scrolled-away parent** has empty clipped
+  bounds and therefore does NOT occlude the base — same rule
+  `hit_test` uses to decide whether the modal can claim a click.
 
 Win32 and wasm both implement `publishA11yTree` as a stable no-op —
 the surface is in place so apps call unconditionally. Real UIA
