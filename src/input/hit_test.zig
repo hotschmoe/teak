@@ -164,6 +164,53 @@ pub fn sliderValueAt(rect: Rect, mouse_x: f32) f32 {
     return @min(@max(t, 0), 1);
 }
 
+/// Drag state for a slider currently being held. The host computes this
+/// each frame while `press_target` points at a slider; the app reads
+/// `.value` and dispatches its own value-carrying Msg (typically a
+/// component Msg accepting `f32`) — fn-pointer-free per HARDLINE §3.
+pub fn SliderDrag(comptime Msg: type) type {
+    return struct {
+        /// Cmd index of the slider being dragged. Same index that fed
+        /// `grab_msg` to `update` on mousedown.
+        index: usize,
+        /// The slider's own `grab_msg` — useful when one app handles
+        /// multiple sliders: the app dispatches `.value` to a route
+        /// derived from `grab_msg` (e.g. by switch on its tag).
+        grab_msg: Msg,
+        /// Current normalized value in [0, 1] computed from
+        /// `mouse_x` and the slider's rect.
+        value: f32,
+    };
+}
+
+/// Combine `press_target` + the previous frame's slider rect into a
+/// `SliderDrag` whenever the held widget is a slider. Returns null if
+/// nothing is pressed or the pressed widget isn't a slider. The host
+/// calls this each frame while the mouse button is held and dispatches
+/// the resulting value to a value-carrying Msg the app supplies.
+///
+/// Closes ergonomic gap 1 — every numeric input no longer rewrites the
+/// "fetch rect by index, compute value, build Msg" dance.
+pub fn sliderDrag(
+    cmds: anytype,
+    rects: []const Rect,
+    press_target: ?usize,
+    mouse_x: f32,
+) ?SliderDrag(CmdMsg(@TypeOf(cmds))) {
+    const idx = press_target orelse return null;
+    if (idx >= cmds.len) return null;
+    if (idx >= rects.len) return null;
+    const c = cmds[idx];
+    return switch (c) {
+        .slider => |s| .{
+            .index = idx,
+            .grab_msg = s.grab_msg,
+            .value = sliderValueAt(rects[idx], mouse_x),
+        },
+        else => null,
+    };
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 test "hitTest finds button at point" {
@@ -340,6 +387,58 @@ test "hitTest: clicking outside the overlay falls through to base layer" {
     const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 30, 18);
     try testing.expect(hit != null);
     try testing.expectEqual(Msg.base_click, hit.?.msg);
+}
+
+test "sliderDrag returns value when press_target is a slider" {
+    const testing = std.testing;
+    const Msg = union(enum) { grab_a, grab_b, focus };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.textInput(.focus, "", 0); // index 1
+    cb.slider(.grab_a, 0.3); // index 2
+    cb.slider(.grab_b, 0.7); // index 3
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    // No press → null.
+    try testing.expect(sliderDrag(cb.cmds.items, rects[0..cb.cmds.items.len], null, 100) == null);
+
+    // Press on the text input (not a slider) → null.
+    try testing.expect(sliderDrag(cb.cmds.items, rects[0..cb.cmds.items.len], 1, 100) == null);
+
+    // Press on slider A, mouse at the middle → value ≈ 0.5, grab_msg = .grab_a.
+    const mid_x = rects[2].x + rects[2].w * 0.5;
+    const d_a = sliderDrag(cb.cmds.items, rects[0..cb.cmds.items.len], 2, mid_x).?;
+    try testing.expectEqual(@as(usize, 2), d_a.index);
+    try testing.expectEqual(Msg.grab_a, d_a.grab_msg);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), d_a.value, 0.01);
+
+    // Press on slider B, mouse off the left → clamped to 0; grab_msg = .grab_b.
+    const d_b = sliderDrag(cb.cmds.items, rects[0..cb.cmds.items.len], 3, rects[3].x - 100).?;
+    try testing.expectEqual(@as(usize, 3), d_b.index);
+    try testing.expectEqual(Msg.grab_b, d_b.grab_msg);
+    try testing.expectEqual(@as(f32, 0), d_b.value);
+}
+
+test "sliderDrag: out-of-range press_target returns null" {
+    const testing = std.testing;
+    const Msg = union(enum) { grab };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0 });
+    cb.slider(.grab, 0.5);
+    cb.popGroup();
+
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 100, text_mod.monoMeasurer());
+
+    // Press index past end of cmds → null, no crash.
+    try testing.expect(sliderDrag(cb.cmds.items, rects[0..cb.cmds.items.len], 99, 100) == null);
 }
 
 test "hitTest returns msg for checkbox/radio/slider clicks" {
