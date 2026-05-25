@@ -12,6 +12,7 @@ pub const transient = @import("core/transient.zig");
 pub const text = @import("core/text.zig");
 pub const sub = @import("core/sub.zig");
 pub const theme = @import("core/theme.zig");
+pub const text_field = @import("core/text_field.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
@@ -70,6 +71,12 @@ pub const Palette = theme.Palette;
 pub const Typography = theme.Typography;
 pub const dark_palette = theme.dark_palette;
 pub const light_palette = theme.light_palette;
+
+pub const TextField = text_field.TextField;
+pub const textFieldChar = text_field.textFieldChar;
+pub const textFieldSpecial = text_field.textFieldSpecial;
+pub const textFieldReplaceSelection = text_field.textFieldReplaceSelection;
+pub const keyNeedsClipboard = text_field.keyNeedsClipboard;
 
 pub const Vertex = vertex.Vertex;
 pub const emitQuad = vertex.emitQuad;
