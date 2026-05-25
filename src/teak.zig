@@ -10,6 +10,7 @@ pub const cmd = @import("core/cmd.zig");
 pub const component = @import("core/component.zig");
 pub const transient = @import("core/transient.zig");
 pub const text = @import("core/text.zig");
+pub const sub = @import("core/sub.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
@@ -56,6 +57,9 @@ pub const SpecialKey = keys.SpecialKey;
 pub const A11yNode = a11y.A11yNode;
 pub const A11yRole = a11y.Role;
 pub const buildA11yTree = a11y.buildTree;
+
+pub const Sub = sub.Sub;
+pub const runSubs = sub.runSubs;
 
 pub const Vertex = vertex.Vertex;
 pub const emitQuad = vertex.emitQuad;

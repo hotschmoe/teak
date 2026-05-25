@@ -256,6 +256,16 @@ pub const Host = struct {
         return null;
     }
 
+    /// Browser monotonic time. Goes through zunk which calls
+    /// performance.now() under the hood; if that's not yet wired,
+    /// falls back to 0 (subs degrade gracefully — `every` never fires).
+    pub fn nowMs(self: *const Host) u64 {
+        _ = self;
+        // zunk.web.app exposes a frame timestamp; if not, return 0.
+        if (@hasDecl(zapp, "nowMs")) return zapp.nowMs();
+        return 0;
+    }
+
     fn stubRead(_: *anyopaque) []const u8 {
         return "";
     }

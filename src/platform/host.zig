@@ -112,6 +112,11 @@ pub fn validateHost(comptime T: type) void {
         "openFileDialog",
         "saveFileDialog",
         "openSecondaryWindow",
+        // Monotonic millisecond timestamp on the host's clock. Used by
+        // subscriptions (`Sub.at(deadline_ms, msg)`) and by anything
+        // else that needs a host-side wall-clock without violating
+        // HARDLINE §3's "no wall-clock in view".
+        "nowMs",
     };
     inline for (required) |name| {
         if (!@hasDecl(T, name)) {
@@ -149,6 +154,9 @@ test "validateHost accepts a minimal shape" {
         }
         pub fn openSecondaryWindow(_: *@This(), _: []const u8, _: u32, _: u32) ?u32 {
             return null;
+        }
+        pub fn nowMs(_: *const @This()) u64 {
+            return 0;
         }
 
         fn stubMeasure(_: *anyopaque, _: []const u8, _: FontSpec) TextMetrics {

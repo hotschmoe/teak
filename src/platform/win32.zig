@@ -620,6 +620,13 @@ pub const Host = struct {
         return null;
     }
 
+    /// Monotonic milliseconds since some arbitrary epoch. Uses Zig's
+    /// `std.time.milliTimestamp` which is fine for sub-driven cadence
+    /// — subs compare deltas, not absolute values.
+    pub fn nowMs(_: *const Host) u64 {
+        return @intCast(std.time.milliTimestamp());
+    }
+
     fn runFileDialog(self: *Host, filter: FileDialogFilter, save: bool) FileDialogResult {
         var file_buf: [260]u16 = [_]u16{0} ** 260;
 
