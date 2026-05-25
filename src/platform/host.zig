@@ -61,6 +61,24 @@ pub const FileDialogFilter = struct {
     pattern: []const u8 = "*.*",
 };
 
+/// Async file dialog poll result. Returned by `pollFileDialogResult` for
+/// requests submitted via `requestFileDialog` / `requestSaveFileDialog`.
+/// Required because browser file pickers are async + gesture-gated and
+/// can't fit the synchronous `openFileDialog` shape. Win32 still implements
+/// the sync API and additionally supports the async API by completing
+/// the request immediately and parking the result in a slot.
+///
+/// `pending` means the host is still waiting on the user / browser.
+/// `ok` carries the chosen path (UTF-8, valid until the next poll for
+/// the same id). `cancelled` is a terminal state — the host frees the
+/// slot and a subsequent poll on the same id returns `pending` (treated
+/// as "request unknown / already consumed").
+pub const FileDialogPoll = union(enum) {
+    pending: void,
+    ok: []const u8,
+    cancelled: void,
+};
+
 /// Per-frame input snapshot returned by `Host.pollInputs`.
 ///
 /// `mouse_x` / `mouse_y` are the current cursor position (state, not an
@@ -123,6 +141,19 @@ pub const InputState = struct {
 /// - `secondaryWindowHandle(window_id)` returns the `NativeHandle` for
 ///   a secondary window so the app can hand it to `gpu.openSecondarySurface`.
 ///   Returns `null` for invalid ids.
+/// - `requestFileDialog(filter)` / `requestSaveFileDialog(filter)` submit
+///   an async file dialog and return an opaque `u32` request id (0 = the
+///   submission failed; valid ids are non-zero). The app polls the same
+///   id via `pollFileDialogResult` each frame (or via a `Sub`) until the
+///   union resolves to `.ok` or `.cancelled`. Win32 completes the request
+///   immediately on the same call so the very first poll returns the
+///   result; wasm dispatches to the browser's async file picker and
+///   stays in `.pending` until the JS bridge fires the resolution
+///   callback (zunk issue #14).
+/// - `pollFileDialogResult(id)` returns `.pending` / `.ok(path)` /
+///   `.cancelled` for the given request id. On a `.ok` / `.cancelled`
+///   return the host MAY recycle the slot — apps must consume the path
+///   immediately and not poll the same id again.
 pub fn validateHost(comptime T: type) void {
     const required = [_][]const u8{
         "deinit",
@@ -135,6 +166,9 @@ pub fn validateHost(comptime T: type) void {
         "publishA11yTree",
         "openFileDialog",
         "saveFileDialog",
+        "requestFileDialog",
+        "requestSaveFileDialog",
+        "pollFileDialogResult",
         "openSecondaryWindow",
         "pollSecondaryInputs",
         "closeSecondaryWindow",
@@ -178,6 +212,15 @@ test "validateHost accepts a minimal shape" {
         }
         pub fn saveFileDialog(_: *@This(), _: FileDialogFilter) FileDialogResult {
             return null;
+        }
+        pub fn requestFileDialog(_: *@This(), _: FileDialogFilter) u32 {
+            return 0;
+        }
+        pub fn requestSaveFileDialog(_: *@This(), _: FileDialogFilter) u32 {
+            return 0;
+        }
+        pub fn pollFileDialogResult(_: *@This(), _: u32) FileDialogPoll {
+            return .{ .cancelled = {} };
         }
         pub fn openSecondaryWindow(_: *@This(), _: []const u8, _: u32, _: u32) ?u32 {
             return null;

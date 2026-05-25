@@ -26,6 +26,7 @@ pub const ImeState = teak.ImeState;
 pub const A11yNode = teak.A11yNode;
 pub const FileDialogResult = teak.FileDialogResult;
 pub const FileDialogFilter = teak.FileDialogFilter;
+pub const FileDialogPoll = teak.FileDialogPoll;
 
 pub const NativeHandle = struct {};
 
@@ -55,6 +56,39 @@ const key_mappings = [_]struct { from: zinput.Key, to: SpecialKey }{
     .{ .from = .page_down, .to = .page_down },
 };
 
+/// Async file-dialog slot state. Matches the Win32 slot table's
+/// semantics but with explicit `pending` since the wasm side genuinely
+/// waits on a browser promise resolution.
+const FileDialogSlotState = enum { free, pending, resolved_ok, resolved_cancelled };
+
+const FileDialogSlot = struct {
+    state: FileDialogSlotState = .free,
+    path_buf: [1024]u8 = undefined,
+    path_len: u32 = 0,
+};
+
+const MAX_FILE_DIALOG_SLOTS: usize = 4;
+
+/// JS-side imports (wired by zunk's resolver — see zunk issue #14).
+/// Stays in a sub-namespace so `@hasDecl` in submitFileDialog can short
+/// circuit cleanly when the symbol isn't resolved yet (browser builds
+/// where zunk's bridge hasn't shipped).
+const externs = struct {
+    extern "env" fn __zunk_request_file_dialog(
+        id: u32,
+        mode: u32,
+        name_ptr: [*]const u8,
+        name_len: u32,
+        pattern_ptr: [*]const u8,
+        pattern_len: u32,
+    ) void;
+};
+
+/// Pointer to the live Host so the wasm export callback can write the
+/// dialog result into the right slot table. Set by `Host.init`, cleared
+/// by `Host.deinit`. Single-host process — single global is sufficient.
+var g_active_host: ?*Host = null;
+
 pub const Host = struct {
     width: u32,
     height: u32,
@@ -67,6 +101,7 @@ pub const Host = struct {
     measure_cache: [MEASURE_CACHE_CAPACITY]MeasureCacheEntry = undefined,
     measure_cache_len: usize = 0,
     measure_tick: u64 = 0,
+    file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = .{ .{}, .{}, .{}, .{} },
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         zinput.init();
@@ -74,7 +109,16 @@ pub const Host = struct {
         return .{ .width = width, .height = height };
     }
 
-    pub fn deinit(_: *Host) void {}
+    /// Register the address of an initialized Host so the wasm export
+    /// callback can find it. Apps should call this once after `init`.
+    /// Single-host process — re-registering overrides the previous.
+    pub fn activate(self: *Host) void {
+        g_active_host = self;
+    }
+
+    pub fn deinit(_: *Host) void {
+        g_active_host = null;
+    }
 
     pub fn pollInputs(self: *Host) InputState {
         zinput.poll();
@@ -252,14 +296,98 @@ pub const Host = struct {
     pub fn publishA11yTree(_: *Host, _: []const A11yNode) void {}
 
     // Browser file dialogs go through the showOpenFilePicker API which
-    // is async and gesture-gated — incompatible with this synchronous
-    // surface shape. Stubs return null; tracked as follow-up.
+    // is async and gesture-gated — incompatible with the synchronous
+    // `openFileDialog` shape. The sync variants stay no-op; apps that
+    // need cross-platform file picking should use the async
+    // `requestFileDialog` / `pollFileDialogResult` pair below.
     pub fn openFileDialog(_: *Host, _: FileDialogFilter) FileDialogResult {
         return null;
     }
 
     pub fn saveFileDialog(_: *Host, _: FileDialogFilter) FileDialogResult {
         return null;
+    }
+
+    /// Submit an async open-file request. Bridges to the JS shim
+    /// `__zunk_request_file_dialog` (tracked in zunk issue #14). Returns
+    /// the request id; the app polls `pollFileDialogResult(id)` each
+    /// frame (or via a Sub) until it resolves. While the JS bridge is
+    /// pending in zunk, this routes through a slot table that stays
+    /// in `.pending` forever — the surface contract is honored so the
+    /// example compiles and runs cleanly.
+    pub fn requestFileDialog(self: *Host, filter: FileDialogFilter) u32 {
+        return submitFileDialog(self, filter, 0);
+    }
+
+    pub fn requestSaveFileDialog(self: *Host, filter: FileDialogFilter) u32 {
+        return submitFileDialog(self, filter, 1);
+    }
+
+    pub fn pollFileDialogResult(self: *Host, id: u32) FileDialogPoll {
+        if (id == 0 or id > self.file_dialog_slots.len) return .{ .pending = {} };
+        const slot = &self.file_dialog_slots[id - 1];
+        return switch (slot.state) {
+            .free => .{ .pending = {} },
+            .pending => .{ .pending = {} },
+            .resolved_ok => blk: {
+                const path = slot.path_buf[0..slot.path_len];
+                slot.state = .free;
+                slot.path_len = 0;
+                break :blk .{ .ok = path };
+            },
+            .resolved_cancelled => blk: {
+                slot.state = .free;
+                break :blk .{ .cancelled = {} };
+            },
+        };
+    }
+
+    fn submitFileDialog(self: *Host, filter: FileDialogFilter, mode: u32) u32 {
+        var slot_idx: usize = self.file_dialog_slots.len;
+        for (&self.file_dialog_slots, 0..) |*s, i| {
+            if (s.state == .free) {
+                slot_idx = i;
+                break;
+            }
+        }
+        if (slot_idx == self.file_dialog_slots.len) return 0;
+        self.file_dialog_slots[slot_idx].state = .pending;
+        self.file_dialog_slots[slot_idx].path_len = 0;
+        const id: u32 = @intCast(slot_idx + 1);
+        // Best-effort dispatch. If zunk hasn't wired the JS shim yet,
+        // the request just stays `.pending` forever (apps treat that
+        // as "no file picker available on this host").
+        if (@hasDecl(externs, "__zunk_request_file_dialog")) {
+            externs.__zunk_request_file_dialog(
+                id,
+                mode,
+                filter.name.ptr,
+                @intCast(filter.name.len),
+                filter.pattern.ptr,
+                @intCast(filter.pattern.len),
+            );
+        }
+        return id;
+    }
+
+    /// JS-side callback: invoked by zunk's runtime when the browser
+    /// promise resolves (or rejects via user-cancel). `path_len == 0`
+    /// signals a cancel. The exported name is `__zunk_file_dialog_result`
+    /// — must match the symbol zunk's JS shim looks up.
+    pub export fn __zunk_file_dialog_result(id: u32, path_ptr: [*]const u8, path_len: u32) void {
+        if (id == 0 or id > g_active_host.?.file_dialog_slots.len) return;
+        const slot = &g_active_host.?.file_dialog_slots[id - 1];
+        if (slot.state != .pending) return;
+        if (path_len == 0) {
+            slot.state = .resolved_cancelled;
+            slot.path_len = 0;
+            return;
+        }
+        const cap: u32 = @intCast(slot.path_buf.len);
+        const copy_len: u32 = @min(path_len, cap);
+        @memcpy(slot.path_buf[0..copy_len], path_ptr[0..copy_len]);
+        slot.path_len = copy_len;
+        slot.state = .resolved_ok;
     }
 
     /// Web has no concept of a second top-level window (popup blockers

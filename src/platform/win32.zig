@@ -18,6 +18,7 @@ pub const Clipboard = teak.Clipboard;
 pub const ImeState = teak.ImeState;
 pub const A11yNode = teak.A11yNode;
 pub const FileDialogResult = teak.FileDialogResult;
+pub const FileDialogPoll = teak.FileDialogPoll;
 pub const FileDialogFilter = teak.FileDialogFilter;
 
 // ── Win32 types + constants ────────────────────────────────────────
@@ -158,6 +159,17 @@ const OFN_EXPLORER: DWORD = 0x00080000;
 
 extern "comdlg32" fn GetOpenFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
 extern "comdlg32" fn GetSaveFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
+
+/// Async file-dialog slot table — see Host.file_dialog_slots. Four
+/// concurrent requests is plenty for any reasonable app; oversaturating
+/// returns id 0 ("submission failed") and the app should back off.
+const MAX_FILE_DIALOG_SLOTS: usize = 4;
+
+const FileDialogSlot = struct {
+    active: bool = false,
+    has_path: bool = false,
+    path_len: usize = 0,
+};
 
 // ── IME externs (imm32) ───────────────────────────────────────────
 //
@@ -938,6 +950,17 @@ pub const Host = struct {
     dialog_path_buf: [1024]u8 = undefined,
     dialog_path_len: usize = 0,
 
+    /// Per-request slots for async file dialogs. Win32 fills these in
+    /// the same call as the request (the OS picker is sync), so the
+    /// app's first poll always resolves. The path slice in `.ok` aliases
+    /// `dialog_path_buf`, so only one open dialog result is valid at a
+    /// time — apps polling more than one request id in flight must
+    /// consume each `.ok` immediately. The 4-slot cap is generous; the
+    /// pattern is "request → wait one frame → poll → consume".
+    file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = .{
+        .{}, .{}, .{}, .{},
+    },
+
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         g_running = true;
         g_width = width;
@@ -1006,6 +1029,7 @@ pub const Host = struct {
             .clipboard_len = 0,
             .dialog_path_buf = undefined,
             .dialog_path_len = 0,
+            .file_dialog_slots = .{ .{}, .{}, .{}, .{} },
         };
     }
 
@@ -1222,6 +1246,39 @@ pub const Host = struct {
         return runFileDialog(self, filter, true);
     }
 
+    /// Async file dialog request. Win32 has a synchronous file picker
+    /// (`GetOpenFileNameW`), so we just run it inline and park the
+    /// result in a per-request slot. Returns the slot's id (1-based;
+    /// 0 means "no free slot"); the app polls via `pollFileDialogResult`.
+    /// Designed so the same Host surface works for the browser (where
+    /// the picker is genuinely async) without diverging.
+    pub fn requestFileDialog(self: *Host, filter: FileDialogFilter) u32 {
+        return submitFileDialog(self, filter, false);
+    }
+
+    pub fn requestSaveFileDialog(self: *Host, filter: FileDialogFilter) u32 {
+        return submitFileDialog(self, filter, true);
+    }
+
+    /// Read the parked result for a request id. On Win32 this is a
+    /// single-frame round trip — the slot is filled before the request
+    /// call returns, so the first poll always resolves. After `.ok` /
+    /// `.cancelled` the slot is freed; a second poll on the same id
+    /// returns `.pending` (treated by callers as "unknown / consumed").
+    pub fn pollFileDialogResult(self: *Host, id: u32) FileDialogPoll {
+        if (id == 0 or id > MAX_FILE_DIALOG_SLOTS) return .{ .pending = {} };
+        const slot = &self.file_dialog_slots[id - 1];
+        if (!slot.active) return .{ .pending = {} };
+        const result: FileDialogPoll = if (slot.has_path)
+            .{ .ok = self.dialog_path_buf[0..slot.path_len] }
+        else
+            .{ .cancelled = {} };
+        slot.active = false;
+        slot.has_path = false;
+        slot.path_len = 0;
+        return result;
+    }
+
     /// Create a second top-level Win32 window. Returns an opaque id
     /// (1-based slot index) on success, `null` if the slot table is
     /// full or window creation fails. The GPU surface for the new
@@ -1374,6 +1431,33 @@ pub const Host = struct {
     /// — subs compare deltas, not absolute values.
     pub fn nowMs(_: *const Host) u64 {
         return @intCast(std.time.milliTimestamp());
+    }
+
+    /// Submit a request-style file dialog: find a free slot, run the
+    /// (synchronous) OS picker, park the result, return the slot id.
+    /// Returns 0 if the table is full or path conversion fails — the
+    /// app treats 0 as "submission rejected, try later".
+    fn submitFileDialog(self: *Host, filter: FileDialogFilter, save: bool) u32 {
+        var slot_idx: usize = MAX_FILE_DIALOG_SLOTS;
+        for (self.file_dialog_slots, 0..) |s, i| {
+            if (!s.active) {
+                slot_idx = i;
+                break;
+            }
+        }
+        if (slot_idx == MAX_FILE_DIALOG_SLOTS) return 0;
+
+        const result = runFileDialog(self, filter, save);
+        const slot = &self.file_dialog_slots[slot_idx];
+        slot.active = true;
+        if (result) |_| {
+            slot.has_path = true;
+            slot.path_len = self.dialog_path_len;
+        } else {
+            slot.has_path = false;
+            slot.path_len = 0;
+        }
+        return @intCast(slot_idx + 1);
     }
 
     fn runFileDialog(self: *Host, filter: FileDialogFilter, save: bool) FileDialogResult {
