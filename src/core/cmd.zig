@@ -1,5 +1,6 @@
 const std = @import("std");
 const text = @import("text.zig");
+const theme_mod = @import("theme.zig");
 
 pub const FontSpec = text.FontSpec;
 const DEFAULT_FONT = text.DEFAULT_FONT;
@@ -333,6 +334,12 @@ pub fn CmdBuffer(comptime Msg: type) type {
         cmds: std.ArrayList(CmdT),
         arena: std.heap.ArenaAllocator,
         backing: std.mem.Allocator,
+        /// Style + typography defaults consulted by the un-styled
+        /// convenience emitters (`button`, `text`, `slider`, etc.).
+        /// Apps assign `cb.theme = teak.Theme.dark_default` (or their
+        /// own derived theme) before each `view()` call. Explicit
+        /// `*Styled` emitters bypass theme.
+        theme: theme_mod.Theme = theme_mod.Theme.dark_default,
 
         pub fn init(backing: std.mem.Allocator) Self {
             return .{
@@ -340,6 +347,14 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cmds = .empty,
                 .backing = backing,
             };
+        }
+
+        /// Replace the active theme. Returns the previous theme so callers
+        /// can stash and restore (e.g. for a themed sub-tree).
+        pub fn setTheme(self: *Self, t: theme_mod.Theme) theme_mod.Theme {
+            const prev = self.theme;
+            self.theme = t;
+            return prev;
         }
 
         pub fn deinit(self: *Self) void {
@@ -363,11 +378,53 @@ pub fn CmdBuffer(comptime Msg: type) type {
         }
 
         pub fn text(self: *Self, content: []const u8) void {
-            self.cmds.append(self.backing, .{ .text = .{ .content = content } }) catch unreachable;
+            self.cmds.append(self.backing, .{ .text = .{
+                .content = content,
+                .font = self.theme.typography.body,
+                .color = self.theme.text_color,
+            } }) catch unreachable;
+        }
+
+        /// Body text in the theme's heading color/size — for section
+        /// titles. Saves an explicit FontSpec at every call site.
+        pub fn heading(self: *Self, content: []const u8) void {
+            self.cmds.append(self.backing, .{ .text = .{
+                .content = content,
+                .font = self.theme.typography.heading,
+                .color = self.theme.heading_color,
+            } }) catch unreachable;
+        }
+
+        /// Body text in the theme's "muted" color — placeholders, units,
+        /// secondary labels.
+        pub fn textMuted(self: *Self, content: []const u8) void {
+            self.cmds.append(self.backing, .{ .text = .{
+                .content = content,
+                .font = self.theme.typography.small,
+                .color = self.theme.muted_color,
+            } }) catch unreachable;
+        }
+
+        /// Body text in the theme's danger color — validation messages.
+        pub fn textDanger(self: *Self, content: []const u8) void {
+            self.cmds.append(self.backing, .{ .text = .{
+                .content = content,
+                .font = self.theme.typography.small,
+                .color = self.theme.danger_color,
+            } }) catch unreachable;
+        }
+
+        /// Monospace text in body color — column data, code, numerics.
+        pub fn textMono(self: *Self, content: []const u8) void {
+            self.cmds.append(self.backing, .{ .text = .{
+                .content = content,
+                .font = self.theme.typography.mono,
+                .color = self.theme.text_color,
+            } }) catch unreachable;
         }
 
         pub fn divider(self: *Self) void {
-            self.cmds.append(self.backing, .{ .divider = .{} }) catch unreachable;
+            self.cmds.append(self.backing, .{ .divider = self.theme.divider }) catch unreachable;
         }
 
         pub fn dividerStyled(self: *Self, style: DividerStyle) void {
@@ -378,6 +435,8 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .button = .{
                 .msg = msg,
                 .label = label,
+                .style = self.theme.button,
+                .font = self.theme.typography.body,
             } }) catch unreachable;
         }
 
@@ -399,6 +458,8 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .focus_msg = focus_msg,
                 .content = content,
                 .cursor = cursor,
+                .style = self.theme.text_input,
+                .font = self.theme.typography.body,
             } }) catch unreachable;
         }
 
@@ -430,6 +491,8 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .msg = msg,
                 .checked = checked,
                 .label = label,
+                .style = self.theme.checkbox,
+                .font = self.theme.typography.body,
             } }) catch unreachable;
         }
 
@@ -438,6 +501,8 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .msg = msg,
                 .selected = selected,
                 .label = label,
+                .style = self.theme.radio,
+                .font = self.theme.typography.body,
             } }) catch unreachable;
         }
 
@@ -445,6 +510,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .slider = .{
                 .grab_msg = grab_msg,
                 .value = value,
+                .style = self.theme.slider,
             } }) catch unreachable;
         }
 

@@ -11,6 +11,7 @@ pub const component = @import("core/component.zig");
 pub const transient = @import("core/transient.zig");
 pub const text = @import("core/text.zig");
 pub const sub = @import("core/sub.zig");
+pub const theme = @import("core/theme.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
@@ -60,6 +61,12 @@ pub const buildA11yTree = a11y.buildTree;
 
 pub const Sub = sub.Sub;
 pub const runSubs = sub.runSubs;
+
+pub const Theme = theme.Theme;
+pub const Palette = theme.Palette;
+pub const Typography = theme.Typography;
+pub const dark_palette = theme.dark_palette;
+pub const light_palette = theme.light_palette;
 
 pub const Vertex = vertex.Vertex;
 pub const emitQuad = vertex.emitQuad;
