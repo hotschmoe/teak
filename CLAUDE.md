@@ -119,15 +119,24 @@ src/                           -- the library, consumable as a Zig module
   teak.zig                     -- public library root / re-exports
   core/
     cmd.zig                    -- Cmd union, CmdBuffer, arena management
-                               --   (incl. overlay, image, virtual_list, rich_text variants)
-    component.zig              -- Components(), validateComponent, buildMsgs
+                               --   (incl. overlay, image, virtual_list, rich_text variants;
+                               --    pushFormRow/popFormRow; mixedText; theme-aware emitters)
+    component.zig              -- Components(), validateComponent, buildMsgs, MsgsStructFor
+    component_list.zig         -- ComponentList(Child, cap) — dynamic homogeneous list
+                               --   (HARDLINE §2 hatch 1)
+    text_field.zig             -- TextField(cap) canonical text-input component +
+                               --   textFieldChar/textFieldSpecial/textFieldReplaceSelection
+                               --   key dispatch helpers
+    theme.zig                  -- Theme, Palette, Typography, dark/light presets
+    debug_overlay.zig          -- appendDebugOverlay — cmd+rect dump as overlay
     transient.zig              -- hover/press/focus state (TransientState)
     text.zig                   -- TextMeasurer interface + FontSpec + TextureHandle
     sub.zig                    -- Sub(Msg) declarative timers (HARDLINE §2 hatch 6)
   layout/
     engine.zig                 -- measure + position passes
   input/
-    hit_test.zig               -- mouse -> CmdIndex -> Msg (two-layer: base + overlay)
+    hit_test.zig               -- mouse -> CmdIndex -> Msg (two-layer: base + overlay);
+                               --   sliderDrag helper
     focus.zig                  -- next/prev focusable traversal
     keys.zig                   -- SpecialKey (incl. shift+arrows, ctrl chords)
     a11y.zig                   -- []Cmd + []Rect -> []A11yNode
@@ -157,6 +166,8 @@ shaders/
 The library has no external dependencies; `wgpu-native` is owned by whichever example wires up a GPU host. The `src/gpu/` and `src/platform/` split (backend-polymorphic GPU context + Host interface) is executed per [`docs/archive/tasks-file-struct.md`](docs/archive/tasks-file-struct.md); concrete backends live in `src/gpu/{native,web}.zig` and `src/platform/{win32,wasm}.zig`.
 
 **Functional gaps overview**: [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md) covers the 8 features added in the `functional_gaps_yolo` branch — overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs, virtual list, a11y tree, rich text via rich_zig.
+
+**Ergonomic helpers**: [`docs/features/ergonomic-helpers.md`](docs/features/ergonomic-helpers.md) covers the 7 ergonomic helpers also added on `functional_gaps_yolo` — Theme system, mixed-font text builder, sliderDrag, TextField + key dispatch helpers, pushFormRow / popFormRow, ComponentList, and appendDebugOverlay.
 
 ## Implementation Status
 

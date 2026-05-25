@@ -20,12 +20,16 @@ const AppLevel = struct {
     /// Demo: help modal open/closed state. Driven by AppLevel Msgs so
     /// nothing platform-specific leaks into the component world.
     show_help_modal: bool = false,
+    /// Theme toggle — drives `cb.theme = Theme.dark_default vs
+    /// Theme.light_default` at the host boundary (see ui_main.zig).
+    dark_mode: bool = true,
 
     pub const Msg = union(enum) {
         focus_set: FocusField,
         focus_clear,
         help_open,
         help_close,
+        toggle_theme,
     };
 
     // `@This().Msg` disambiguates against the file-scope `pub const Msg`
@@ -36,6 +40,7 @@ const AppLevel = struct {
             .focus_clear => model.focused = null,
             .help_open => model.show_help_modal = true,
             .help_close => model.show_help_modal = false,
+            .toggle_theme => model.dark_mode = !model.dark_mode,
         }
     }
 };
@@ -52,10 +57,11 @@ pub const update = Composed.update;
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
 
-    // Top toolbar with a Help button — proof that AppLevel state can
-    // drive overlay visibility.
+    // Top toolbar: Help button + theme toggle. Two AppLevel Msgs;
+    // the theme button cycles cb.theme via ui_main.zig.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 8, .gap = 8 });
     cb.button(Msg{ .help_open = {} }, "Help");
+    cb.button(Msg{ .toggle_theme = {} }, if (m.dark_mode) "Light mode" else "Dark mode");
     cb.popGroup();
 
     // Main row: counter on the left, greeter on the right.
@@ -90,7 +96,7 @@ pub fn view(m: *const Model, cb: anytype) void {
         });
         // Inner panel: centered card with text + close button.
         cb.pushGroup(.{ .direction = .vertical, .padding = 16, .gap = 12 });
-        cb.text("Teak — Functional Gaps demo");
+        cb.heading("Teak — Functional Gaps + Ergonomic Helpers demo");
 
         // Rich text via rich_zig markup. Parsed once per frame into the
         // CmdBuffer's arena — fine for a panel that doesn't change.
@@ -101,6 +107,38 @@ pub fn view(m: *const Model, cb: anytype) void {
             .{ .size_px = 14, .family = .sans },
         ) catch teak.RichTextCmd{ .content = "(rich text parse failed)" };
         cb.richTextStyled(rich);
+
+        // Mixed-font demo: a results line where the value is mono and
+        // the units are muted. Identical shape any engineering UI
+        // would use for readouts.
+        cb.mixedText(&.{
+            .{ .text = "Count: ", .color = cb.theme.muted_color },
+            .{ .text = std.fmt.allocPrint(
+                cb.arena.allocator(),
+                "{d}",
+                .{m.counter.count},
+            ) catch "?", .font = cb.theme.typography.mono },
+            .{ .text = "  ·  Name: ", .color = cb.theme.muted_color },
+            .{ .text = if (m.greeter.name_len > 0)
+                m.greeter.name[0..m.greeter.name_len]
+            else
+                "(unset)", .font = cb.theme.typography.mono },
+        });
+
+        // Form row demo: label + content + units + validation. The
+        // form-row helper brackets the layout; the textInput inside is
+        // a non-functional placeholder for this illustrative demo.
+        cb.pushFormRow(.{
+            .label = "Throughput",
+            .units = "ops/s",
+            .validation = if (m.counter.count < 0) "negative — check sign" else "",
+        });
+        cb.textMono(std.fmt.allocPrint(
+            cb.arena.allocator(),
+            "{d}.0",
+            .{m.counter.count},
+        ) catch "0");
+        cb.popFormRow();
 
         cb.button(Msg{ .help_close = {} }, "Close");
         cb.popGroup();
