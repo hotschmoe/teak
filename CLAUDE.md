@@ -119,32 +119,44 @@ src/                           -- the library, consumable as a Zig module
   teak.zig                     -- public library root / re-exports
   core/
     cmd.zig                    -- Cmd union, CmdBuffer, arena management
+                               --   (incl. overlay, image, virtual_list, rich_text variants)
     component.zig              -- Components(), validateComponent, buildMsgs
     transient.zig              -- hover/press/focus state (TransientState)
+    text.zig                   -- TextMeasurer interface + FontSpec + TextureHandle
+    sub.zig                    -- Sub(Msg) declarative timers (HARDLINE §2 hatch 6)
   layout/
     engine.zig                 -- measure + position passes
   input/
-    hit_test.zig               -- mouse -> CmdIndex -> Msg
+    hit_test.zig               -- mouse -> CmdIndex -> Msg (two-layer: base + overlay)
+    focus.zig                  -- next/prev focusable traversal
+    keys.zig                   -- SpecialKey (incl. shift+arrows, ctrl chords)
+    a11y.zig                   -- []Cmd + []Rect -> []A11yNode
   render/
     vertex.zig                 -- Vertex struct + emitQuad
-    build.zig                  -- []Cmd + []Rect + TransientState -> vertex buffer
+    build.zig                  -- []Cmd + []Rect + TransientState
+                               --   -> vertex / text_draws / image_draws buffers
 
 examples/
   counter_greeter/             -- the proto-2 demo; consumes teak as a module
-    build.zig
+    build.zig                  -- wires teak + rich_zig + Win32/web targets
     build.zig.zon
     src/
       main.zig                 -- CLI canary entry
       ui_main.zig              -- wgpu + Win32 entry
-      app.zig                  -- composed app (counter + greeter + focus)
+      app.zig                  -- composed app (counter + greeter + help modal)
       counter.zig
-      greeter.zig
+      greeter.zig              -- text input w/ selection + clipboard editing
+      rich_zig_adapter.zig     -- rich_zig markup -> teak RichTextSpan[]
 
 shaders/
-  quad.wgsl       -- shader for colored rectangles
+  quad.wgsl              -- shader for colored rectangles
+  textured_quad.wgsl     -- alpha-from-texture (text glyphs)
+  image.wgsl             -- texture * tint (RGBA images)
 ```
 
 The library has no external dependencies; `wgpu-native` is owned by whichever example wires up a GPU host. The `src/gpu/` and `src/platform/` split (backend-polymorphic GPU context + Host interface) is executed per [`docs/archive/tasks-file-struct.md`](docs/archive/tasks-file-struct.md); concrete backends live in `src/gpu/{native,web}.zig` and `src/platform/{win32,wasm}.zig`.
+
+**Functional gaps overview**: [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md) covers the 8 features added in the `functional_gaps_yolo` branch — overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs, virtual list, a11y tree, rich text via rich_zig.
 
 ## Implementation Status
 

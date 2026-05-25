@@ -115,17 +115,27 @@ Commands are a tagged union:
 const Cmd = union(enum) {
     push_group: GroupStyle,
     pop_group,
+    push_scroll: ScrollStyle,
+    pop_scroll,
+    push_overlay: OverlayStyle,         // floating layer, draws above + hit-tests first
+    pop_overlay,
+    push_virtual_list: VirtualListStyle, // 10k-row tables w/ bounded per-frame work
+    pop_virtual_list,
     text: TextCmd,
-    button: ButtonCmd,
-    text_input: TextInputCmd,
-    image: ImageCmd,
-    spacer: f32,
+    rich_text: RichTextCmd,             // mixed-run styled text (color/font per span)
+    image: ImageCmd,                    // textured quad, opaque TextureHandle
+    button: ButtonCmd(Msg),
+    text_input: TextInputCmd(Msg),      // carries selection_anchor for ranges
+    checkbox: CheckboxCmd(Msg),
+    radio: RadioCmd(Msg),
+    slider: SliderCmd(Msg),
     divider: DividerStyle,
-    custom: CustomCmd,
 };
 ```
 
 Adding a new widget = adding a variant + a case in each pass + a convenience method on CmdBuffer.
+
+The overlay layer + subscription runtime were added under HARDLINE §2 escape hatches 5 and 6 respectively. See [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md) for the full functional-gaps push that closed the production-readiness list.
 
 ### Passes
 

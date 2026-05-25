@@ -48,6 +48,7 @@ tests; names the gaps.
 | Hit-test + hover-test | [hit-test.md](hit-test.md) |
 | Layout engine | [layout.md](layout.md) |
 | Focus traversal | [focus.md](focus.md) |
+| Functional gaps (8 features) — yolo push | [functional-gaps.md](functional-gaps.md) |
 
 ## Not yet documented
 
