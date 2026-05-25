@@ -5,6 +5,10 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .teak = .{ .path = "../.." },
+        // rich_zig is a sibling repo; we use only its parser/style/text
+        // modules (no terminal rendering) to build mixed-style runs for
+        // teak's rich_text Cmd.
+        .rich_zig = .{ .path = "../../../rich_zig" },
     },
     .paths = .{
         "build.zig",

@@ -17,6 +17,9 @@ pub fn build(b: *std.Build) void {
     const teak_dep = b.dependency("teak", .{ .target = target, .optimize = optimize });
     const teak_mod = teak_dep.module("teak");
 
+    const rich_zig_dep = b.dependency("rich_zig", .{ .target = target, .optimize = optimize });
+    const rich_zig_mod = rich_zig_dep.module("rich_zig");
+
     // --- CLI executable (run) ---
 
     const exe = b.addExecutable(.{
@@ -27,6 +30,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "teak", .module = teak_mod },
+                .{ .name = "rich_zig", .module = rich_zig_mod },
             },
         }),
     });
@@ -59,6 +63,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     teak.linkWin32Wgpu(b, ui_exe, .{});
+    ui_exe.root_module.addImport("rich_zig", rich_zig_mod);
 
     const install_ui = b.addInstallArtifact(ui_exe, .{});
 
@@ -95,4 +100,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     teak.linkWebWgpu(b, web_exe, .{});
+
+    // rich_zig adapter for wasm: same rich_zig source compiled for
+    // wasm. The adapter uses only the Text + markup parser path, so
+    // pure-Zig std + WebAssembly is sufficient.
+    const rich_zig_dep_wasm = b.dependency("rich_zig", .{ .target = wasm_target, .optimize = web_optimize });
+    const rich_zig_mod_wasm = rich_zig_dep_wasm.module("rich_zig");
+    web_exe.root_module.addImport("rich_zig", rich_zig_mod_wasm);
 }

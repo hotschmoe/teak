@@ -3,6 +3,7 @@ const teak = @import("teak");
 const component = teak.component;
 const counter = @import("counter.zig");
 const greeter = @import("greeter.zig");
+const rich_zig_adapter = @import("rich_zig_adapter.zig");
 
 // ── Composed Application ───────────────────────────────────────────
 //
@@ -90,7 +91,17 @@ pub fn view(m: *const Model, cb: anytype) void {
         // Inner panel: centered card with text + close button.
         cb.pushGroup(.{ .direction = .vertical, .padding = 16, .gap = 12 });
         cb.text("Teak — Functional Gaps demo");
-        cb.text("Overlay (this modal), virtual list, image, rich text now live.");
+
+        // Rich text via rich_zig markup. Parsed once per frame into the
+        // CmdBuffer's arena — fine for a panel that doesn't change.
+        const rich = rich_zig_adapter.buildRichText(
+            cb.arena.allocator(),
+            "[bold]Overlay[/], [bold]virtual list[/], [bold]image[/], and [bold red]rich text[/] now live.",
+            .{ 0.92, 0.92, 0.94, 1.0 },
+            .{ .size_px = 14, .family = .sans },
+        ) catch teak.RichTextCmd{ .content = "(rich text parse failed)" };
+        cb.richTextStyled(rich);
+
         cb.button(Msg{ .help_close = {} }, "Close");
         cb.popGroup();
         cb.popOverlay();
