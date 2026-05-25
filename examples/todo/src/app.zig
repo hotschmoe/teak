@@ -298,7 +298,8 @@ test "end-to-end: click delete button on item 0 removes it" {
     const r = first_x.?;
     const hit = teak.hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], r.x + 2, r.y + 2);
     try t.expect(hit != null);
-    update(&m, hit.?.msg);
+    try t.expect(hit.?.msg != null);
+    update(&m, hit.?.msg.?);
 
     try t.expectEqual(@as(u16, 1), m.items_len);
     try t.expectEqualStrings("b", m.items[0].label[0..m.items[0].label_len]);

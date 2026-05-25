@@ -161,8 +161,14 @@ pub fn main() !void {
         if (input.mouse_up) {
             if (press_target != null and hover_under_mouse == press_target) {
                 if (teak.hitTest(prev_cmds, prev_rects, input.mouse_x, input.mouse_y)) |hit| {
-                    App.update(&model, hit.msg);
-                    std.debug.print("click -> {s}\n", .{@tagName(hit.msg)});
+                    // `hit.msg` is `?Msg`: null means a modal overlay
+                    // consumed the click but the app didn't ask for a
+                    // Msg (HARDLINE §2 hatch 5). Either way, don't fall
+                    // through to base widgets.
+                    if (hit.msg) |m| {
+                        App.update(&model, m);
+                        std.debug.print("click -> {s}\n", .{@tagName(m)});
+                    }
                 }
             }
             press_target = null;

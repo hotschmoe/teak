@@ -24,7 +24,19 @@ pub fn hoverTest(
 pub fn sliderValueAt(rect: Rect, mouse_x: f32, style: SliderStyle) f32;
 ```
 
-`HitResult{ index, msg }` — `msg` is the `Msg` embedded in the hit command. The main loop dispatches it directly; **no ID hashing**, no widget registry.
+`HitResult{ index, msg: ?Msg }` — `index` is the cmd index of the hit; `msg` is the `Msg` to dispatch through `update`. The main loop calls `update` directly with it; **no ID hashing**, no widget registry.
+
+`msg` is **optional**. `null` means a *modal* overlay (HARDLINE §2 hatch 5) consumed the click but the app didn't supply a `backdrop_msg`. The host must treat the click as handled (do NOT fall through to widgets behind the modal) but skip the `update` call. The canonical host pattern is:
+
+```zig
+if (teak.hitTest(prev_cmds, prev_rects, mx, my)) |hit| {
+    if (hit.msg) |m| App.update(&model, m);
+    // No else branch: `hit != null and hit.msg == null` means
+    // "modal consumed the click, no Msg requested." Skipping the
+    // update is the whole point; falling through to base widgets
+    // would re-introduce the click-through bug.
+}
+```
 
 `hitTest` and `hoverTest` differ by intent:
 
@@ -40,6 +52,28 @@ Both honor the same scroll clip stack (`push_scroll` / `pop_scroll` push/pop rec
 - **No allocation.** The scroll clip stack is a fixed-depth `ClipStack` (16 levels). Exceeding it is a bug — deepening nested scrolls is not a supported use case.
 - **Generic over `Msg`.** The `Msg` type is recovered from `cmds`'s element type via the `MsgT` decl. Callers pass `cb.cmds.items` directly.
 - **Reads only the previous frame.** The main loop hit-tests against frame N-1 when dispatching clicks during frame N. One-frame latency is correct and imperceptible.
+- **Modal overlays block fallthrough.** A `push_overlay` with `modal = true` claims any click inside its rect that no interactive child caught. If `backdrop_msg` is set, that Msg is dispatched (click-outside-to-close idiom). Otherwise the click is silently consumed — `HitResult{ .index = push_overlay_idx, .msg = null }`. Non-modal overlays (default) still fall through to base widgets when no leaf catches the click, preserving tooltip / popover / debug-overlay semantics.
+
+## Modal overlay: click-outside-to-close
+
+`OverlayStyle(Msg)` exposes two fields that turn a regular overlay into a true modal:
+
+```zig
+cb.pushOverlay(.{
+    .x = 0, .y = 0,
+    .width = window_w, .height = window_h,
+    .backdrop = .{ 0, 0, 0, 0.55 },   // dim scrim
+    .modal = true,                     // blocks fallthrough
+    .backdrop_msg = Msg.help_close,    // click backdrop -> dismiss
+});
+// ... inner card with a Close button ...
+cb.popOverlay();
+```
+
+- `modal: bool` — when true, hits inside the overlay's rect do NOT fall through to the base layer even with no interactive child to catch them.
+- `backdrop_msg: ?Msg` — when the click lands inside the overlay rect but on no interactive leaf, dispatch this Msg. Data only — HARDLINE §3 bans fn-pointer callbacks on Cmd variants.
+
+Interactive children inside the overlay still win over the backdrop (painter's order: a leaf hit recorded during the overlay-layer walk takes precedence). The Close button, the text input inside a search modal, etc. continue to work exactly as before.
 
 ## Non-goals / known limits
 
@@ -53,5 +87,9 @@ Both honor the same scroll clip stack (`push_scroll` / `pop_scroll` push/pop rec
 - **Painter's order** (covered): two overlapping buttons, click lands on the later one.
 - **Scroll clipping** (covered): widget outside the scroll viewport doesn't hit.
 - **Slider value mapping** (covered): click at known X, assert value is as expected.
-- **Nested scroll clipping** (missing): two `push_scroll` levels; widget visible in the inner but clipped by the outer shouldn't hit.
+- **Nested scroll clipping** (covered): two `push_scroll` levels; widget visible in the inner but clipped by the outer doesn't hit.
 - **Empty buffer** (covered implicitly via integration test): `hitTest` on empty `cmds` returns `null` without panicking.
+- **Modal overlay — silent consume** (covered): `modal = true`, no `backdrop_msg`, click on backdrop returns `HitResult{ .msg = null }`.
+- **Modal overlay — backdrop_msg** (covered): `modal = true`, `backdrop_msg` set, click on backdrop returns that Msg.
+- **Modal overlay — leaf wins** (covered): clicking an interactive child of a modal overlay still returns the child's Msg (not the backdrop_msg).
+- **Non-modal overlay fallthrough** (covered): default `modal = false`, click on the overlay's empty area falls through to a base button underneath.

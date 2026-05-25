@@ -394,7 +394,8 @@ test "end-to-end: click the collapsed 'input' row's chevron expands it" {
     const r = chevron_rect.?;
     const hit = teak.hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], r.x + 2, r.y + 2);
     try t.expect(hit != null);
-    update(&m, hit.?.msg);
+    try t.expect(hit.?.msg != null);
+    update(&m, hit.?.msg.?);
 
     // The first collapsed node in sample_tree is "input" → verify it's
     // now expanded.

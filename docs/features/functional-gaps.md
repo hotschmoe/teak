@@ -37,6 +37,13 @@ buffer that:
 - Hit-tests **before** non-overlay content (so a tooltip / menu /
   modal wins clicks at the same point).
 - Optionally fills a `backdrop` color behind its children (for modals).
+- Optionally claims clicks landing on the empty backdrop (`modal: bool`)
+  and dispatches a `backdrop_msg: ?Msg` for click-outside-to-close.
+  `OverlayStyle` is Msg-generic to carry the Msg as data (HARDLINE §3
+  still bans fn-pointer callbacks on Cmd variants). Hit-test's
+  `HitResult.msg` is `?Msg`: `null` = modal consumed but no Msg —
+  host must not fall through. See `docs/features/hit-test.md` for the
+  full pattern.
 
 The two-layer walk is implemented inside both `buildVertices` and
 `hitTest` — each pass walks the buffer twice (`.base`, then `.overlay`)

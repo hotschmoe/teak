@@ -93,6 +93,12 @@ pub fn view(m: *const Model, cb: anytype) void {
             .height = 500,
             .padding = 0,
             .backdrop = .{ 0, 0, 0, 0.55 },
+            // Modal: clicking the dim scrim must NOT activate widgets
+            // underneath. Click-outside-to-close dismisses via help_close
+            // — matches HARDLINE §2 hatch 5's "modal + backdrop_msg"
+            // pattern.
+            .modal = true,
+            .backdrop_msg = Msg{ .help_close = {} },
         });
         // Inner panel: centered card with text + close button.
         cb.pushGroup(.{ .direction = .vertical, .padding = 16, .gap = 12 });
@@ -348,7 +354,8 @@ test "app: compose end-to-end — click + key produces updated greeting" {
     const r = rects[ti_idx.?];
     const hit = hit_test.hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], r.x + 5, r.y + 5);
     try testing.expect(hit != null);
-    update(&m, hit.?.msg);
+    try testing.expect(hit.?.msg != null);
+    update(&m, hit.?.msg.?);
     try testing.expectEqual(@as(?FocusField, .greeter), m.focused);
 
     // Type "Hi"

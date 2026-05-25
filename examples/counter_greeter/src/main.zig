@@ -44,16 +44,20 @@ pub fn main() !void {
 
     if (plus_rect) |r| {
         if (teak.hitTest(cmds, rects[0..cmds.len], r.x + 2, r.y + 2)) |hit| {
-            App.update(&model, hit.msg);
-            App.update(&model, hit.msg);
-            std.debug.print("clicked '+' twice -> counter.count = {d}\n", .{model.counter.count});
+            if (hit.msg) |m| {
+                App.update(&model, m);
+                App.update(&model, m);
+                std.debug.print("clicked '+' twice -> counter.count = {d}\n", .{model.counter.count});
+            }
         }
     }
 
     if (input_rect) |r| {
         if (teak.hitTest(cmds, rects[0..cmds.len], r.x + 5, r.y + 5)) |hit| {
-            App.update(&model, hit.msg);
-            std.debug.print("clicked text input -> focused = {?}\n", .{model.focused});
+            if (hit.msg) |m| {
+                App.update(&model, m);
+                std.debug.print("clicked text input -> focused = {?}\n", .{model.focused});
+            }
         }
     }
 
@@ -136,7 +140,7 @@ test "full composed loop: click + keyboard updates model" {
 
     const pr = plus_rect.?;
     if (teak.hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], pr.x + 2, pr.y + 2)) |hit| {
-        App.update(&model, hit.msg);
+        if (hit.msg) |m| App.update(&model, m);
     }
     try testing.expectEqual(@as(i32, 1), model.counter.count);
 
@@ -151,7 +155,7 @@ test "full composed loop: click + keyboard updates model" {
     try testing.expect(input_rect != null);
     const ir = input_rect.?;
     if (teak.hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], ir.x + 5, ir.y + 5)) |hit| {
-        App.update(&model, hit.msg);
+        if (hit.msg) |m| App.update(&model, m);
     }
     try testing.expectEqual(@as(?App.FocusField, .greeter), model.focused);
 

@@ -78,7 +78,8 @@ export fn frame(_: f32) void {
     if (input.mouse_up) {
         if (press_target != null and hover_under_mouse == press_target) {
             if (teak.hitTest(prev_cmds, prev_rects, input.mouse_x, input.mouse_y)) |hit| {
-                App.update(&model, hit.msg);
+                // `hit.msg` is `?Msg`: null = modal consumed but no Msg.
+                if (hit.msg) |m| App.update(&model, m);
             }
         }
         press_target = null;

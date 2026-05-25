@@ -117,7 +117,7 @@ const Cmd = union(enum) {
     pop_group,
     push_scroll: ScrollStyle,
     pop_scroll,
-    push_overlay: OverlayStyle,         // floating layer, draws above + hit-tests first
+    push_overlay: OverlayStyle(Msg),    // floating layer, draws above + hit-tests first; `modal`/`backdrop_msg` for click-outside-to-close
     pop_overlay,
     push_virtual_list: VirtualListStyle, // 10k-row tables w/ bounded per-frame work
     pop_virtual_list,

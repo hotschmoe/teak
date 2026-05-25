@@ -109,32 +109,54 @@ pub const ScrollStyle = struct {
 // Position is explicit (app fills .x/.y from prev-frame anchor or mouse
 // coords — same pattern as the slider). Width/height = 0 means measured
 // from children; >0 = forced size.
+//
+// Promoted to a Msg-generic type so `backdrop_msg` (a click-outside-to-
+// close hook) can carry a Msg without smuggling a function pointer
+// (HARDLINE §3). Existing call sites use anonymous struct literals
+// (`cb.pushOverlay(.{ .x = ... })`) so the type lift is transparent.
 
-pub const OverlayStyle = struct {
-    /// Window-absolute top-left in pixels. The app typically computes
-    /// this from `prev_rects[anchor_idx]` or `mouse_x/y`.
-    x: f32 = 0,
-    y: f32 = 0,
-    /// 0 = measured from children, >0 = forced. Forced sizes are how
-    /// modals occupy the full window (set both to window size).
-    width: f32 = 0,
-    height: f32 = 0,
-    padding: f32 = 8,
-    gap: f32 = 4,
-    direction: Direction = .vertical,
-    /// Backdrop fill drawn behind the overlay's children. Alpha 0 means
-    /// no backdrop quad. Modals typically set this to a semi-opaque
-    /// black, tooltips/popups leave it at zero and put their own bg in
-    /// a child group/panel.
-    backdrop: [4]f32 = .{ 0, 0, 0, 0 },
-    /// Optical anchor side relative to (x, y) — the overlay shifts by
-    /// (-w*anchor_x_frac, -h*anchor_y_frac). For a tooltip below the
-    /// cursor, set anchor at top-left (0, 0). For a context menu
-    /// pinned to a button's bottom-right, set (1, 1). Saves the app
-    /// from re-measuring.
-    anchor_x_frac: f32 = 0,
-    anchor_y_frac: f32 = 0,
-};
+pub fn OverlayStyle(comptime Msg: type) type {
+    return struct {
+        pub const MsgT = Msg;
+
+        /// Window-absolute top-left in pixels. The app typically computes
+        /// this from `prev_rects[anchor_idx]` or `mouse_x/y`.
+        x: f32 = 0,
+        y: f32 = 0,
+        /// 0 = measured from children, >0 = forced. Forced sizes are how
+        /// modals occupy the full window (set both to window size).
+        width: f32 = 0,
+        height: f32 = 0,
+        padding: f32 = 8,
+        gap: f32 = 4,
+        direction: Direction = .vertical,
+        /// Backdrop fill drawn behind the overlay's children. Alpha 0 means
+        /// no backdrop quad. Modals typically set this to a semi-opaque
+        /// black, tooltips/popups leave it at zero and put their own bg in
+        /// a child group/panel.
+        backdrop: [4]f32 = .{ 0, 0, 0, 0 },
+        /// Optical anchor side relative to (x, y) — the overlay shifts by
+        /// (-w*anchor_x_frac, -h*anchor_y_frac). For a tooltip below the
+        /// cursor, set anchor at top-left (0, 0). For a context menu
+        /// pinned to a button's bottom-right, set (1, 1). Saves the app
+        /// from re-measuring.
+        anchor_x_frac: f32 = 0,
+        anchor_y_frac: f32 = 0,
+        /// When true, hits inside this overlay's rect do NOT fall
+        /// through to the base layer even if no interactive child claims
+        /// them. Set on modals so clicking the dim backdrop doesn't
+        /// activate a button underneath. Default `false` preserves the
+        /// passthrough behavior tooltips / popovers / the debug overlay
+        /// rely on.
+        modal: bool = false,
+        /// Dispatched when the click lands inside the overlay's rect but
+        /// on no interactive leaf — pair with `modal = true` for the
+        /// "click outside the dialog to dismiss it" idiom. The Msg is
+        /// data only (HARDLINE §3 bans fn-pointer callbacks). Independent
+        /// of `modal`, but only meaningful together.
+        backdrop_msg: ?Msg = null,
+    };
+}
 
 // ── Image rendering (functional gap #2) ─────────────────────────────
 //
@@ -326,7 +348,7 @@ pub fn Cmd(comptime Msg: type) type {
         pop_group,
         push_scroll: ScrollStyle,
         pop_scroll,
-        push_overlay: OverlayStyle,
+        push_overlay: OverlayStyle(Msg),
         pop_overlay,
         push_virtual_list: VirtualListStyle,
         pop_virtual_list,
@@ -583,7 +605,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
 
         // ── Overlay / virtual list / image / rich text ─────────────
 
-        pub fn pushOverlay(self: *Self, style: OverlayStyle) void {
+        pub fn pushOverlay(self: *Self, style: OverlayStyle(Msg)) void {
             self.cmds.append(self.backing, .{ .push_overlay = style }) catch unreachable;
         }
 

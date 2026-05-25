@@ -13,8 +13,18 @@ const clipRect = layout.clipRect;
 
 pub fn HitResult(comptime Msg: type) type {
     return struct {
+        /// Cmd index of the hit. Useful for the host to look up the
+        /// hit's rect (e.g. slider-drag). For a modal-backdrop hit with
+        /// no `backdrop_msg`, this is the `push_overlay` cmd index — the
+        /// hit was consumed by the modal but produces no Msg.
         index: usize,
-        msg: Msg,
+        /// Msg to dispatch through `update`. `null` means the modal
+        /// overlay (HARDLINE §2 hatch 5) consumed the click but the app
+        /// didn't request a Msg for it (no `backdrop_msg`). Hosts must
+        /// still treat the click as "handled" — i.e. NOT fall through
+        /// to the base layer — but skip the `update` call. The pattern
+        /// is `if (hit) |h| if (h.msg) |m| App.update(&model, m);`.
+        msg: ?Msg,
     };
 }
 
@@ -46,13 +56,22 @@ fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
 /// (HARDLINE §2 escape hatch 5) wins z-order without per-cmd z fields.
 /// A backward walk would be simpler for z-order but couldn't honor
 /// scroll clips that accumulate top-down.
+///
+/// `HitResult.msg` is `?Msg`: a `null` msg means a modal overlay
+/// consumed the click but the app didn't supply a `backdrop_msg`. The
+/// host must NOT fall through to widgets behind the modal in that
+/// case — see the doc on `HitResult.msg`.
 pub fn hitTest(
     cmds: anytype,
     rects: []const Rect,
     mouse_x: f32,
     mouse_y: f32,
 ) ?HitResult(CmdMsg(@TypeOf(cmds))) {
-    // Overlay layer first (it wins): a hit there short-circuits.
+    // Overlay layer first (it wins): a hit there short-circuits. A
+    // modal overlay containing the mouse but with no interactive leaf
+    // returns a "consumed, no Msg" result that *also* short-circuits —
+    // the base layer must NOT receive clicks landing on a modal's dim
+    // backdrop, regardless of `backdrop_msg`.
     if (hitTestLayer(cmds, rects, mouse_x, mouse_y, .overlay)) |h| return h;
     return hitTestLayer(cmds, rects, mouse_x, mouse_y, .base);
 }
@@ -70,6 +89,15 @@ fn hitTestLayer(
     var clip: ClipStack = .{};
     var overlay_depth: u32 = 0;
     var best: ?HitResult(Msg) = null;
+
+    // Track the innermost modal overlay containing the mouse during
+    // the .overlay pass so we can synthesize a "consumed" hit if no
+    // interactive leaf claimed the click. Painter's-order applies: a
+    // later modal overlay overrides an earlier one if both contain
+    // the point.
+    var modal_index: ?usize = null;
+    var modal_msg: ?Msg = null;
+
     for (cmds, 0..) |c, i| {
         const cur_clip = clip.top();
         const in_overlay = overlay_depth > 0;
@@ -80,12 +108,23 @@ fn hitTestLayer(
         switch (c) {
             .push_scroll => clip.push(clipRect(rects[i], cur_clip)),
             .pop_scroll => clip.pop(),
-            .push_overlay => {
+            .push_overlay => |ov| {
                 overlay_depth += 1;
                 // Overlay is its own clip so contents are bounded by
                 // the overlay rect (e.g. menu items past the menu's
                 // height shouldn't hit-test).
                 clip.push(clipRect(rects[i], cur_clip));
+                // Note a modal overlay containing the mouse so we can
+                // claim the click below even if no leaf catches it.
+                // Honor the parent clip too — a modal nested under a
+                // scrolled-away parent shouldn't claim.
+                if (layer == .overlay and ov.modal and
+                    rectContains(rects[i], mouse_x, mouse_y) and
+                    rectContains(cur_clip, mouse_x, mouse_y))
+                {
+                    modal_index = i;
+                    modal_msg = ov.backdrop_msg;
+                }
             },
             .pop_overlay => {
                 overlay_depth -= 1;
@@ -100,7 +139,12 @@ fn hitTestLayer(
             },
         }
     }
-    return best;
+    if (best) |h| return h;
+    // No leaf claimed the click. If a modal overlay contained the
+    // mouse, consume the click on its behalf so base-layer widgets
+    // underneath don't accidentally fire.
+    if (modal_index) |idx| return .{ .index = idx, .msg = modal_msg };
+    return null;
 }
 
 /// Like hitTest but returns only the index (no msg). Also respects
@@ -231,11 +275,11 @@ test "hitTest finds button at point" {
 
     const hit_inc = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 30, 18);
     try testing.expect(hit_inc != null);
-    try testing.expectEqual(Msg.inc, hit_inc.?.msg);
+    try testing.expectEqual(@as(?Msg, Msg.inc), hit_inc.?.msg);
 
     const hit_dec = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 90, 18);
     try testing.expect(hit_dec != null);
-    try testing.expectEqual(Msg.dec, hit_dec.?.msg);
+    try testing.expectEqual(@as(?Msg, Msg.dec), hit_dec.?.msg);
 
     const miss = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 300, 250);
     try testing.expect(miss == null);
@@ -290,7 +334,7 @@ test "hitTest returns focus msg for text_input click" {
 
     const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 100, 20);
     try testing.expect(hit != null);
-    try testing.expectEqual(Msg.focus, hit.?.msg);
+    try testing.expectEqual(@as(?Msg, Msg.focus), hit.?.msg);
 }
 
 test "sliderValueAt maps mouse_x to [0, 1]" {
@@ -358,7 +402,7 @@ test "hitTest: overlay wins over base layer at the same point" {
 
     const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 30, 18);
     try testing.expect(hit != null);
-    try testing.expectEqual(Msg.overlay_click, hit.?.msg);
+    try testing.expectEqual(@as(?Msg, Msg.overlay_click), hit.?.msg);
 }
 
 test "hitTest: clicking outside the overlay falls through to base layer" {
@@ -386,7 +430,7 @@ test "hitTest: clicking outside the overlay falls through to base layer" {
     // Click over the base button only.
     const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 30, 18);
     try testing.expect(hit != null);
-    try testing.expectEqual(Msg.base_click, hit.?.msg);
+    try testing.expectEqual(@as(?Msg, Msg.base_click), hit.?.msg);
 }
 
 test "sliderDrag returns value when press_target is a slider" {
@@ -459,11 +503,147 @@ test "hitTest returns msg for checkbox/radio/slider clicks" {
     layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
 
     const cb_hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], rects[1].x + 2, rects[1].y + 2);
-    try testing.expectEqual(Msg.toggle, cb_hit.?.msg);
+    try testing.expectEqual(@as(?Msg, Msg.toggle), cb_hit.?.msg);
 
     const rd_hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], rects[2].x + 2, rects[2].y + 2);
-    try testing.expectEqual(Msg.pick, rd_hit.?.msg);
+    try testing.expectEqual(@as(?Msg, Msg.pick), rd_hit.?.msg);
 
     const sl_hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], rects[3].x + 10, rects[3].y + 10);
-    try testing.expectEqual(Msg.grab, sl_hit.?.msg);
+    try testing.expectEqual(@as(?Msg, Msg.grab), sl_hit.?.msg);
+}
+
+// ── Modal overlay (click-outside-to-close, no fallthrough) ─────────
+
+test "hitTest: modal overlay consumes click on backdrop with no backdrop_msg" {
+    const testing = std.testing;
+    const Msg = union(enum) { base_click };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // Base-layer button under where the modal will sit. Without
+    // `modal=true`, the click on the empty backdrop area would fall
+    // through and fire base_click.
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.button(.base_click, "Underneath");
+    cb.pushOverlay(.{
+        .x = 0,
+        .y = 0,
+        .width = 200,
+        .height = 200,
+        .padding = 0,
+        .modal = true,
+        // No backdrop_msg: clicking the dim area should be silently
+        // swallowed — neither base_click nor any Msg fires.
+    });
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
+
+    // Click inside the modal's rect but on no interactive leaf.
+    const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 100, 100);
+    try testing.expect(hit != null);
+    // Consumed-but-actionless: msg is null, index points at the
+    // push_overlay cmd so the host can correlate if it wants.
+    try testing.expectEqual(@as(?Msg, null), hit.?.msg);
+}
+
+test "hitTest: modal overlay with backdrop_msg returns it on backdrop click" {
+    const testing = std.testing;
+    const Msg = union(enum) { base_click, dismiss };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.button(.base_click, "Underneath");
+    cb.pushOverlay(.{
+        .x = 0,
+        .y = 0,
+        .width = 200,
+        .height = 200,
+        .padding = 0,
+        .modal = true,
+        .backdrop_msg = .dismiss,
+    });
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
+
+    const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 100, 100);
+    try testing.expect(hit != null);
+    try testing.expectEqual(@as(?Msg, Msg.dismiss), hit.?.msg);
+}
+
+test "hitTest: leaf inside modal overlay still wins over backdrop_msg" {
+    const testing = std.testing;
+    const Msg = union(enum) { dismiss, close };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushOverlay(.{
+        .x = 0,
+        .y = 0,
+        .width = 400,
+        .height = 200,
+        .padding = 16,
+        .modal = true,
+        .backdrop_msg = .dismiss,
+    });
+    cb.button(.close, "Close"); // an inner leaf that should win
+    cb.popOverlay();
+
+    var rects: [16]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
+
+    // Click on the close button itself — leaf wins, NOT the backdrop.
+    const button_rect = rects[1];
+    const hit = hitTest(
+        cb.cmds.items,
+        rects[0..cb.cmds.items.len],
+        button_rect.x + 4,
+        button_rect.y + 4,
+    );
+    try testing.expect(hit != null);
+    try testing.expectEqual(@as(?Msg, Msg.close), hit.?.msg);
+}
+
+test "hitTest: non-modal overlay backdrop click falls through to base" {
+    const testing = std.testing;
+    const Msg = union(enum) { base_click };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // Non-modal overlay — its empty area should still let the base
+    // button claim the click. This preserves debug-overlay / tooltip /
+    // popover semantics where the user must be able to interact with
+    // content underneath.
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.button(.base_click, "Underneath");
+    cb.pushOverlay(.{
+        .x = 0,
+        .y = 0,
+        .width = 400,
+        .height = 200,
+        .padding = 0,
+        // modal defaults to false; no backdrop_msg.
+    });
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
+
+    // Click inside the overlay rect but on the base button.
+    const button_rect = rects[1];
+    const hit = hitTest(
+        cb.cmds.items,
+        rects[0..cb.cmds.items.len],
+        button_rect.x + 4,
+        button_rect.y + 4,
+    );
+    try testing.expect(hit != null);
+    try testing.expectEqual(@as(?Msg, Msg.base_click), hit.?.msg);
 }

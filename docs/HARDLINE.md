@@ -123,11 +123,22 @@ menus can render outside their declaring parent.
 - Exactly two priority levels: non-overlay (z=0) and overlay (z=1).
   Each pass walks the buffer twice in the same forward order; within
   a level, painter's order = doc order (unchanged from §1).
-- Overlay position comes from explicit `x`, `y` on `OverlayStyle`.
+- Overlay position comes from explicit `x`, `y` on `OverlayStyle(Msg)`.
   The app computes them (typically from the previous frame's anchor
   rect or mouse coords). No anchor-by-cmd-index coupling.
 - Overlays do not contribute to their parent's measured size — they
   hop the layout but stay in the buffer.
+- `OverlayStyle(Msg)` is Msg-generic so `backdrop_msg: ?Msg` can carry
+  a click-outside-to-close Msg as **data** (HARDLINE §3 still bans
+  fn-pointer callbacks). A non-null `backdrop_msg` is dispatched when
+  a click lands in the overlay rect but on no interactive leaf.
+- `modal: bool = false` on `OverlayStyle(Msg)` decides whether the
+  overlay swallows otherwise-unhandled clicks (`true`, for modals) or
+  lets them fall through to the base layer (`false`, for tooltips,
+  popovers, the debug overlay). Hit-test's return type is
+  `?HitResult(Msg)` where `HitResult.msg` is `?Msg`: a `null` msg
+  means "modal consumed, no Msg requested" — the host must NOT route
+  the click through to widgets behind the modal.
 
 ### Escape hatch 6: Subscriptions
 

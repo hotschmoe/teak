@@ -61,9 +61,10 @@ test "round-trip: click button → update → view reflects new state" {
     const r = rects[inc_idx.?];
     const hit = teak.hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], r.x + r.w / 2, r.y + r.h / 2);
     try testing.expect(hit != null);
+    try testing.expect(hit.?.msg != null);
 
     // Dispatch the msg; model advances.
-    App.update(&model, hit.?.msg);
+    App.update(&model, hit.?.msg.?);
     try testing.expectEqual(@as(i32, 1), model.counter.count);
 
     // Frame 2: render vertices. Must produce at least one quad per button.
