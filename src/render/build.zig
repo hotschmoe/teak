@@ -273,10 +273,44 @@ fn buildLayer(
                     emitText(text_draws, alloc, ti.content, ti.font, ti.style.fg, text_rect, cur_clip);
                 }
 
-                // Blinking cursor when focused. ~0.5s on / 0.5s off at 60fps.
-                if (focused and ((transient.frame_counter / 30) & 1) == 0) {
+                // IME composition: when the focused input has an active
+                // pre-commit string, draw it inline at the caret with an
+                // underline indicator. The composition lives in
+                // TransientState (mirror of Host.imeState()) and never
+                // enters Model — commit fires WM_CHAR which flows through
+                // the normal text-input update path.
+                const ime_drawn = focused and transient.ime_active and transient.ime_text.len > 0;
+                if (ime_drawn) {
                     const prefix_w = measurer.prefixWidth(ti.content, ti.font, ti.cursor);
-                    const cursor_x = inner.x + INPUT_TEXT_PADDING + prefix_w;
+                    const m = measurer.measure(transient.ime_text, ti.font);
+                    const text_rect = Rect{
+                        .x = inner.x + INPUT_TEXT_PADDING + prefix_w,
+                        .y = inner.y + @max(0, (inner.h - m.height) * 0.5),
+                        .w = m.width,
+                        .h = m.height,
+                    };
+                    emitText(text_draws, alloc, transient.ime_text, ti.font, ti.style.fg, text_rect, cur_clip);
+                    const underline_y = text_rect.y + m.height - 1;
+                    const underline_rect = Rect{
+                        .x = text_rect.x,
+                        .y = underline_y,
+                        .w = m.width,
+                        .h = 1,
+                    };
+                    emit(verts, alloc, underline_rect, ti.style.cursor, cur_clip);
+                }
+
+                // Blinking cursor when focused. ~0.5s on / 0.5s off at 60fps.
+                // While IME composition is active the caret moves to the
+                // end of the composition string so the user sees where
+                // the next codepoint will commit.
+                if (focused and ((transient.frame_counter / 30) & 1) == 0) {
+                    const base_prefix = measurer.prefixWidth(ti.content, ti.font, ti.cursor);
+                    const ime_offset = if (ime_drawn)
+                        measurer.prefixWidth(transient.ime_text, ti.font, transient.ime_cursor)
+                    else
+                        0;
+                    const cursor_x = inner.x + INPUT_TEXT_PADDING + base_prefix + ime_offset;
                     const cursor_h = @max(0, inner.h - 2 * INPUT_TEXT_PADDING);
                     const cursor_rect = Rect{
                         .x = cursor_x,

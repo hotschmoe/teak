@@ -84,7 +84,10 @@ fn rectsEqual(a: []const teak.Rect, b: []const teak.Rect) bool {
 fn transientEqual(a: teak.TransientState, b: teak.TransientState) bool {
     return a.hover_index == b.hover_index and
         a.press_index == b.press_index and
-        a.focus_index == b.focus_index;
+        a.focus_index == b.focus_index and
+        a.ime_active == b.ime_active and
+        a.ime_cursor == b.ime_cursor and
+        std.mem.eql(u8, a.ime_text, b.ime_text);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -240,6 +243,10 @@ pub fn main() !void {
         transient_state.mouse_x = input.mouse_x;
         transient_state.mouse_y = input.mouse_y;
         transient_state.frame_counter +%= 1;
+        const ime = host.imeState();
+        transient_state.ime_active = ime.active;
+        transient_state.ime_text = ime.text;
+        transient_state.ime_cursor = ime.cursor;
 
         // 6. Diff against previous frame (bufs[prev] is last frame since
         // `prev` was captured before the swap at step 4).

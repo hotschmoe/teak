@@ -157,6 +157,31 @@ const OFN_EXPLORER: DWORD = 0x00080000;
 
 extern "comdlg32" fn GetOpenFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
 extern "comdlg32" fn GetSaveFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
+
+// ── IME externs (imm32) ───────────────────────────────────────────
+//
+// Imm* APIs surface the IME composition string to the application. The
+// system delivers WM_IME_STARTCOMPOSITION, WM_IME_COMPOSITION (one or
+// more times as the user edits the pre-commit string), and
+// WM_IME_ENDCOMPOSITION. On commit, the system additionally posts
+// WM_CHAR for each committed codepoint — which means we don't need to
+// route committed text ourselves, just the pre-commit display.
+//
+// ImmGetCompositionStringW with GCS_COMPSTR returns the UTF-16 bytes of
+// the in-flight string; with GCS_CURSORPOS returns the caret offset
+// (in UTF-16 code units) inside it.
+const HIMC = *anyopaque;
+const WM_IME_STARTCOMPOSITION: UINT = 0x010D;
+const WM_IME_ENDCOMPOSITION: UINT = 0x010E;
+const WM_IME_COMPOSITION: UINT = 0x010F;
+const GCS_COMPSTR: DWORD = 0x0008;
+const GCS_CURSORPOS: DWORD = 0x0080;
+const GCS_RESULTSTR: DWORD = 0x0800;
+
+extern "imm32" fn ImmGetContext(HANDLE) callconv(WINAPI) ?HIMC;
+extern "imm32" fn ImmReleaseContext(HANDLE, HIMC) callconv(WINAPI) BOOL;
+extern "imm32" fn ImmGetCompositionStringW(HIMC, DWORD, ?*anyopaque, DWORD) callconv(WINAPI) c_long;
+
 const VK_SHIFT: c_int = 0x10;
 const VK_CONTROL: c_int = 0x11;
 const VK_A: WPARAM = 0x41;
@@ -278,6 +303,16 @@ var g_chars_count: usize = 0;
 var g_keys: [32]SpecialKey = undefined;
 var g_keys_count: usize = 0;
 
+// IME composition mirror — populated from WM_IME_* messages and read by
+// `imeState()`. The UTF-8 buffer is 256 bytes (≈85 CJK glyphs); longer
+// compositions truncate cleanly. `g_ime_text_len == 0` plus
+// `g_ime_active == false` means "no composition", which is also the
+// default ImeState the renderer expects.
+var g_ime_active: bool = false;
+var g_ime_text: [256]u8 = undefined;
+var g_ime_text_len: usize = 0;
+var g_ime_cursor: usize = 0;
+
 fn loword(lp: LPARAM) u16 {
     return @truncate(@as(usize, @bitCast(lp)));
 }
@@ -303,6 +338,24 @@ fn pushKey(k: SpecialKey) void {
         g_keys[g_keys_count] = k;
         g_keys_count += 1;
     }
+}
+
+/// Map a UTF-16 code-unit offset to a UTF-8 byte offset by walking the
+/// UTF-8 buffer's codepoints. Used to translate IME caret positions
+/// (delivered as UTF-16 offsets) onto our UTF-8 composition mirror.
+/// Clamped to the buffer's byte length on overrun.
+fn utf16OffsetToUtf8(utf8: []const u8, utf16_off: usize) usize {
+    var byte_i: usize = 0;
+    var u16_i: usize = 0;
+    while (byte_i < utf8.len and u16_i < utf16_off) {
+        const len = std.unicode.utf8ByteSequenceLength(utf8[byte_i]) catch return utf8.len;
+        if (byte_i + len > utf8.len) return utf8.len;
+        const cp = std.unicode.utf8Decode(utf8[byte_i..][0..len]) catch return utf8.len;
+        // BMP codepoints take one UTF-16 unit; astral plane takes two.
+        u16_i += if (cp >= 0x10000) 2 else 1;
+        byte_i += len;
+    }
+    return byte_i;
 }
 
 fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
@@ -364,6 +417,71 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             if (wp >= 0x20 and wp < 0x7F) {
                 pushChar(@intCast(wp));
             }
+            return 0;
+        },
+        WM_IME_STARTCOMPOSITION => {
+            g_ime_active = true;
+            g_ime_text_len = 0;
+            g_ime_cursor = 0;
+            // Returning 0 suppresses the default IME window so the
+            // composition is only rendered inline by teak. The caret
+            // still receives WM_CHAR on commit via the IME's normal
+            // result-string flow.
+            return 0;
+        },
+        WM_IME_COMPOSITION => {
+            // GCS_RESULTSTR is delivered alongside the final
+            // WM_IME_COMPOSITION when the user commits. We let the
+            // system handle it (DefWindowProcW posts WM_CHAR per
+            // committed codepoint), but we also clear our pre-commit
+            // mirror so the renderer doesn't keep the stale composition
+            // up between commit and ENDCOMPOSITION.
+            const flags: DWORD = @intCast(@as(usize, @bitCast(lp)) & 0xFFFFFFFF);
+            if ((flags & GCS_COMPSTR) != 0) {
+                const himc_opt = ImmGetContext(hwnd);
+                if (himc_opt) |himc| {
+                    defer _ = ImmReleaseContext(hwnd, himc);
+                    var utf16_buf: [256]u16 = undefined;
+                    const byte_len = ImmGetCompositionStringW(
+                        himc,
+                        GCS_COMPSTR,
+                        @ptrCast(&utf16_buf),
+                        @intCast(utf16_buf.len * @sizeOf(u16)),
+                    );
+                    if (byte_len > 0) {
+                        const u16_units: usize = @intCast(@divTrunc(byte_len, @as(c_long, @sizeOf(u16))));
+                        const clamped: usize = @min(u16_units, utf16_buf.len);
+                        const written = std.unicode.utf16LeToUtf8(g_ime_text[0..], utf16_buf[0..clamped]) catch 0;
+                        g_ime_text_len = written;
+                    } else {
+                        g_ime_text_len = 0;
+                    }
+                    // Caret position is a UTF-16 code-unit offset; convert
+                    // to a UTF-8 byte offset against our newly-decoded
+                    // mirror so the renderer can place the caret correctly.
+                    const cur_units = ImmGetCompositionStringW(himc, GCS_CURSORPOS, null, 0);
+                    if (cur_units >= 0 and g_ime_text_len > 0) {
+                        g_ime_cursor = utf16OffsetToUtf8(
+                            g_ime_text[0..g_ime_text_len],
+                            @intCast(cur_units),
+                        );
+                    } else {
+                        g_ime_cursor = g_ime_text_len;
+                    }
+                }
+            } else if ((flags & GCS_COMPSTR) == 0 and (flags & GCS_RESULTSTR) != 0) {
+                // Commit-only message: drop the pre-commit mirror but
+                // stay active until WM_IME_ENDCOMPOSITION arrives.
+                g_ime_text_len = 0;
+                g_ime_cursor = 0;
+            }
+            // Pass through so the IME's commit -> WM_CHAR path still fires.
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        },
+        WM_IME_ENDCOMPOSITION => {
+            g_ime_active = false;
+            g_ime_text_len = 0;
+            g_ime_cursor = 0;
             return 0;
         },
         WM_KEYDOWN => {
@@ -635,11 +753,18 @@ pub const Host = struct {
         return .{ .ctx = @ptrCast(self), .read_fn = clipRead, .write_fn = clipWrite };
     }
 
-    /// IME composition is not surfaced yet. WM_IME_* messages reach the
-    /// window proc but we don't propagate the composition string into
-    /// state. Stub returns inactive so apps render the regular cursor.
+    /// Composition state mirror, populated by WM_IME_* handlers in
+    /// `wndProc`. The slice points into `g_ime_text` which is overwritten
+    /// on the next WM_IME_COMPOSITION — callers must consume it within
+    /// the current frame (the host loop snapshots it into TransientState
+    /// before kicking off render). When inactive the default value is
+    /// safe: empty slice, cursor 0.
     pub fn imeState(_: *const Host) ImeState {
-        return .{};
+        return .{
+            .active = g_ime_active,
+            .text = g_ime_text[0..g_ime_text_len],
+            .cursor = g_ime_cursor,
+        };
     }
 
     /// Forward the a11y tree to the platform. UI Automation integration
