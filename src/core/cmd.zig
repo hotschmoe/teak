@@ -226,6 +226,23 @@ pub const RichTextCmd = struct {
     default_font: FontSpec = DEFAULT_FONT,
 };
 
+// ── Mixed-font text builder ────────────────────────────────────────
+//
+// Ergonomic constructor for RichTextCmd: an app declares a list of
+// styled parts and the framework computes byte offsets + spans in the
+// arena. Closes ergonomic gap 7 — mixing mono columns + sans labels in
+// one paragraph no longer requires hand-rolling spans.
+
+pub const MixedPart = struct {
+    text: []const u8,
+    /// null falls back to the theme's `typography.body` at emit time.
+    font: ?FontSpec = null,
+    /// null falls back to the theme's `text_color` at emit time.
+    color: ?[4]f32 = null,
+    bold: bool = false,
+    italic: bool = false,
+};
+
 // ── Generic Cmd + CmdBuffer over Msg ───────────────────────────────
 //
 // Per proto 2 Option A: CmdBuffer is generic over the composed AppMsg.
@@ -570,6 +587,48 @@ pub fn CmdBuffer(comptime Msg: type) type {
         pub fn richTextStyled(self: *Self, c: RichTextCmd) void {
             self.cmds.append(self.backing, .{ .rich_text = c }) catch unreachable;
         }
+
+        /// Build a RichTextCmd from a slice of MixedPart, baking content
+        /// + spans into the per-frame arena. Each part gets its own span;
+        /// null font/color fields inherit the theme's body font and text
+        /// color so apps only spell out the overrides.
+        ///
+        /// Example:
+        ///   cb.mixedText(&.{
+        ///       .{ .text = "Length: ", .color = cb.theme.muted_color },
+        ///       .{ .text = "42.0",     .font = cb.theme.typography.mono },
+        ///       .{ .text = " mm",      .color = cb.theme.muted_color },
+        ///   });
+        pub fn mixedText(self: *Self, parts: []const MixedPart) void {
+            const arena_alloc = self.arena.allocator();
+
+            var total_len: usize = 0;
+            for (parts) |p| total_len += p.text.len;
+
+            const content = arena_alloc.alloc(u8, total_len) catch unreachable;
+            const spans = arena_alloc.alloc(RichTextSpan, parts.len) catch unreachable;
+
+            var cursor: usize = 0;
+            for (parts, 0..) |p, i| {
+                @memcpy(content[cursor .. cursor + p.text.len], p.text);
+                spans[i] = .{
+                    .start = @intCast(cursor),
+                    .end = @intCast(cursor + p.text.len),
+                    .font = p.font orelse self.theme.typography.body,
+                    .color = p.color orelse self.theme.text_color,
+                    .bold = p.bold,
+                    .italic = p.italic,
+                };
+                cursor += p.text.len;
+            }
+
+            self.cmds.append(self.backing, .{ .rich_text = .{
+                .content = content,
+                .spans = spans,
+                .default_font = self.theme.typography.body,
+                .default_color = self.theme.text_color,
+            } }) catch unreachable;
+        }
     };
 }
 
@@ -637,4 +696,70 @@ test "CmdBuffer reset clears commands" {
 test "Cmd exposes Msg type via MsgT" {
     const Msg = union(enum) { a, b };
     try std.testing.expectEqual(Msg, Cmd(Msg).MsgT);
+}
+
+test "CmdBuffer.mixedText: bakes content + per-part spans from theme defaults" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    const mono_font: FontSpec = .{ .size_px = 14, .family = .mono };
+    const muted: [4]f32 = .{ 0.6, 0.6, 0.6, 1.0 };
+
+    cb.mixedText(&.{
+        .{ .text = "Length: ", .color = muted },
+        .{ .text = "42.0", .font = mono_font },
+        .{ .text = " mm", .color = muted },
+    });
+
+    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
+    const rt = cb.cmds.items[0].rich_text;
+    try testing.expectEqualStrings("Length: 42.0 mm", rt.content);
+    try testing.expectEqual(@as(usize, 3), rt.spans.len);
+
+    try testing.expectEqual(@as(u32, 0), rt.spans[0].start);
+    try testing.expectEqual(@as(u32, 8), rt.spans[0].end);
+    try testing.expectEqual(muted, rt.spans[0].color);
+    // Part 0 has no font override -> theme default (sans body 14).
+    try testing.expectEqual(text.FontFamily.sans, rt.spans[0].font.family);
+
+    try testing.expectEqual(@as(u32, 8), rt.spans[1].start);
+    try testing.expectEqual(@as(u32, 12), rt.spans[1].end);
+    try testing.expectEqual(text.FontFamily.mono, rt.spans[1].font.family);
+
+    try testing.expectEqual(@as(u32, 12), rt.spans[2].start);
+    try testing.expectEqual(@as(u32, 15), rt.spans[2].end);
+}
+
+test "CmdBuffer.mixedText: bold + italic flags propagate to span" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.mixedText(&.{
+        .{ .text = "hello ", .bold = true },
+        .{ .text = "world", .italic = true },
+    });
+
+    const rt = cb.cmds.items[0].rich_text;
+    try testing.expect(rt.spans[0].bold);
+    try testing.expect(!rt.spans[0].italic);
+    try testing.expect(!rt.spans[1].bold);
+    try testing.expect(rt.spans[1].italic);
+}
+
+test "CmdBuffer.mixedText: empty parts list still emits a (zero-content) rich_text" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.mixedText(&.{});
+
+    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
+    const rt = cb.cmds.items[0].rich_text;
+    try testing.expectEqual(@as(usize, 0), rt.content.len);
+    try testing.expectEqual(@as(usize, 0), rt.spans.len);
 }
