@@ -64,6 +64,8 @@ pub const Components = component.Components;
 pub const validateComponent = component.validateComponent;
 
 pub const InputState = host.InputState;
+pub const Clipboard = host.Clipboard;
+pub const ImeState = host.ImeState;
 pub const validateHost = host.validateHost;
 
 pub const ClearColor = gpu.ClearColor;

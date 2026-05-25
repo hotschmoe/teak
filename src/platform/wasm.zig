@@ -21,6 +21,8 @@ pub const TextMeasurer = teak.TextMeasurer;
 pub const TextMetrics = teak.TextMetrics;
 pub const FontSpec = teak.FontSpec;
 pub const FontFamily = teak.FontFamily;
+pub const Clipboard = teak.Clipboard;
+pub const ImeState = teak.ImeState;
 
 pub const NativeHandle = struct {};
 
@@ -213,6 +215,26 @@ pub const Host = struct {
             .descent = font.size_px * 0.25,
         };
     }
+
+    // ── Clipboard + IME (stubs; web backend not yet wired) ─────────
+    //
+    // Browser clipboard requires async navigator.clipboard.* + a user
+    // gesture, which doesn't fit the synchronous Clipboard.read shape
+    // without a JS-side cache. Stubbed to satisfy validateHost; the
+    // contract is honored (no crashes, sane no-op).
+    pub fn clipboard(_: *Host) Clipboard {
+        return .{ .ctx = undefined, .read_fn = stubRead, .write_fn = stubWrite };
+    }
+
+    pub fn imeState(_: *const Host) ImeState {
+        return .{};
+    }
+
+    fn stubRead(_: *anyopaque) []const u8 {
+        return "";
+    }
+
+    fn stubWrite(_: *anyopaque, _: []const u8) void {}
 };
 
 fn cssFontFamily(family: FontFamily) []const u8 {

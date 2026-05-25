@@ -114,9 +114,31 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
             .backspace => Msg{ .greeter = .name_backspace },
             .left => Msg{ .greeter = .name_cursor_left },
             .right => Msg{ .greeter = .name_cursor_right },
+            .shift_left => Msg{ .greeter = .name_select_left },
+            .shift_right => Msg{ .greeter = .name_select_right },
+            .ctrl_a => Msg{ .greeter = .name_select_all },
+            .escape => Msg{ .greeter = .name_select_none },
+            // ctrl_c / ctrl_x / ctrl_v are routed by the host loop
+            // through clipboard() — they don't translate to a single
+            // component Msg here. The host calls the appropriate one
+            // directly using the clipboard surface.
             else => null,
         },
     };
+}
+
+/// True if this key requires clipboard interaction at the host level.
+/// The host loop calls clipboard.read()/write() then dispatches the
+/// resulting bytes through a normal Msg (paste → name_replace_selection,
+/// copy/cut → write selectionText to clipboard).
+pub fn keyNeedsClipboard(key: teak.SpecialKey) bool {
+    return key == .ctrl_c or key == .ctrl_x or key == .ctrl_v;
+}
+
+/// Currently selected greeter text, or "" if none. Used by the host
+/// when handling ctrl_c / ctrl_x.
+pub fn greeterSelection(m: *const Model) []const u8 {
+    return greeter.selectionText(&m.greeter);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

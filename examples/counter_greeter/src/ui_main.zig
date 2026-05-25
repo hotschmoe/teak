@@ -178,7 +178,31 @@ pub fn main() !void {
             if (App.keyCharMsg(&model, ch)) |m| App.update(&model, m);
         }
         for (input.keys) |k| {
-            if (App.keySpecialMsg(&model, k)) |m| App.update(&model, m);
+            if (App.keyNeedsClipboard(k)) {
+                // Host glue: copy/cut → write selectionText to OS clipboard
+                // then (for cut) drop the selection via backspace.
+                const clip = host.clipboard();
+                switch (k) {
+                    .ctrl_c => {
+                        const sel = App.greeterSelection(&model);
+                        if (sel.len > 0) clip.write(sel);
+                    },
+                    .ctrl_x => {
+                        const sel = App.greeterSelection(&model);
+                        if (sel.len > 0) {
+                            clip.write(sel);
+                            App.update(&model, .{ .greeter = .name_backspace });
+                        }
+                    },
+                    .ctrl_v => {
+                        const bytes = clip.read();
+                        if (bytes.len > 0) App.update(&model, .{ .greeter = .{ .name_replace_selection = bytes } });
+                    },
+                    else => {},
+                }
+            } else if (App.keySpecialMsg(&model, k)) |m| {
+                App.update(&model, m);
+            }
         }
 
         // 4. Build this frame into the other buffer.

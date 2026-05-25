@@ -14,6 +14,8 @@ pub const TextMeasurer = teak.TextMeasurer;
 pub const TextMetrics = teak.TextMetrics;
 pub const FontSpec = teak.FontSpec;
 pub const FontFamily = teak.FontFamily;
+pub const Clipboard = teak.Clipboard;
+pub const ImeState = teak.ImeState;
 
 // ── Win32 types + constants ────────────────────────────────────────
 
@@ -91,7 +93,30 @@ extern "user32" fn PostQuitMessage(c_int) callconv(WINAPI) void;
 extern "user32" fn LoadCursorW(?HANDLE, LPCWSTR) callconv(WINAPI) ?HANDLE;
 extern "user32" fn GetDC(?HANDLE) callconv(WINAPI) ?HDC;
 extern "user32" fn ReleaseDC(?HANDLE, HDC) callconv(WINAPI) c_int;
+extern "user32" fn GetKeyState(c_int) callconv(WINAPI) i16;
 extern "kernel32" fn GetModuleHandleW(?LPCWSTR) callconv(WINAPI) ?HANDLE;
+
+// Clipboard externs.
+extern "user32" fn OpenClipboard(?HANDLE) callconv(WINAPI) BOOL;
+extern "user32" fn CloseClipboard() callconv(WINAPI) BOOL;
+extern "user32" fn EmptyClipboard() callconv(WINAPI) BOOL;
+extern "user32" fn GetClipboardData(UINT) callconv(WINAPI) ?HANDLE;
+extern "user32" fn SetClipboardData(UINT, HANDLE) callconv(WINAPI) ?HANDLE;
+extern "kernel32" fn GlobalAlloc(UINT, usize) callconv(WINAPI) ?HANDLE;
+extern "kernel32" fn GlobalLock(HANDLE) callconv(WINAPI) ?*anyopaque;
+extern "kernel32" fn GlobalUnlock(HANDLE) callconv(WINAPI) BOOL;
+extern "kernel32" fn GlobalSize(HANDLE) callconv(WINAPI) usize;
+
+const CF_UNICODETEXT: UINT = 13;
+const GMEM_MOVEABLE: UINT = 0x0002;
+const VK_SHIFT: c_int = 0x10;
+const VK_CONTROL: c_int = 0x11;
+const VK_A: WPARAM = 0x41;
+const VK_C: WPARAM = 0x43;
+const VK_V: WPARAM = 0x56;
+const VK_X: WPARAM = 0x58;
+const VK_Y: WPARAM = 0x59;
+const VK_Z: WPARAM = 0x5A;
 
 // ── GDI types + externs (text measurement) ────────────────────────
 
@@ -267,18 +292,28 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             return 0;
         },
         WM_KEYDOWN => {
+            // High bit of GetKeyState = held. Read once per WM_KEYDOWN
+            // so shift/ctrl reflect the same instant as the key event.
+            const shift_down = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            const ctrl_down = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             switch (wp) {
                 VK_BACK => pushKey(.backspace),
                 VK_DELETE => pushKey(.delete),
-                VK_LEFT => pushKey(.left),
-                VK_RIGHT => pushKey(.right),
-                VK_UP => pushKey(.up),
-                VK_DOWN => pushKey(.down),
-                VK_HOME => pushKey(.home),
-                VK_END => pushKey(.end),
+                VK_LEFT => pushKey(if (shift_down) .shift_left else .left),
+                VK_RIGHT => pushKey(if (shift_down) .shift_right else .right),
+                VK_UP => pushKey(if (shift_down) .shift_up else .up),
+                VK_DOWN => pushKey(if (shift_down) .shift_down else .down),
+                VK_HOME => pushKey(if (shift_down) .shift_home else .home),
+                VK_END => pushKey(if (shift_down) .shift_end else .end),
                 VK_RETURN => pushKey(.enter),
                 VK_TAB => pushKey(.tab),
                 VK_ESCAPE => pushKey(.escape),
+                VK_A => if (ctrl_down) pushKey(.ctrl_a),
+                VK_C => if (ctrl_down) pushKey(.ctrl_c),
+                VK_V => if (ctrl_down) pushKey(.ctrl_v),
+                VK_X => if (ctrl_down) pushKey(.ctrl_x),
+                VK_Y => if (ctrl_down) pushKey(.ctrl_y),
+                VK_Z => if (ctrl_down) pushKey(.ctrl_z),
                 else => {},
             }
             return 0;
@@ -303,6 +338,13 @@ pub const Host = struct {
     measure_dc: HDC,
     font_cache: [8]FontCacheEntry,
     font_cache_len: usize,
+
+    /// Persistent UTF-8 buffer for the most recent clipboard read.
+    /// Valid until the next `clipboard().read()` call (which overwrites
+    /// it). 64K is plenty for any reasonable text payload; longer pastes
+    /// truncate cleanly.
+    clipboard_buf: [65536]u8 = undefined,
+    clipboard_len: usize = 0,
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         g_running = true;
@@ -356,6 +398,8 @@ pub const Host = struct {
             .measure_dc = measure_dc,
             .font_cache = undefined,
             .font_cache_len = 0,
+            .clipboard_buf = undefined,
+            .clipboard_len = 0,
         };
     }
 
@@ -491,6 +535,63 @@ pub const Host = struct {
     /// WS1 stub numbers so a broken font path doesn't explode layouts.
     fn fallbackMetrics() TextMetrics {
         return .{ .width = 0, .height = 20, .ascent = 15, .descent = 5 };
+    }
+
+    pub fn clipboard(self: *Host) Clipboard {
+        return .{ .ctx = @ptrCast(self), .read_fn = clipRead, .write_fn = clipWrite };
+    }
+
+    /// IME composition is not surfaced yet. WM_IME_* messages reach the
+    /// window proc but we don't propagate the composition string into
+    /// state. Stub returns inactive so apps render the regular cursor.
+    pub fn imeState(_: *const Host) ImeState {
+        return .{};
+    }
+
+    fn clipRead(ctx: *anyopaque) []const u8 {
+        const self: *Host = @ptrCast(@alignCast(ctx));
+        if (OpenClipboard(null) == 0) return self.clipboard_buf[0..0];
+        defer _ = CloseClipboard();
+
+        const handle = GetClipboardData(CF_UNICODETEXT) orelse return self.clipboard_buf[0..0];
+        const ptr = GlobalLock(handle) orelse return self.clipboard_buf[0..0];
+        defer _ = GlobalUnlock(handle);
+
+        const utf16_ptr: [*]const u16 = @ptrCast(@alignCast(ptr));
+        // Find UTF-16 null terminator.
+        var utf16_len: usize = 0;
+        while (utf16_ptr[utf16_len] != 0) : (utf16_len += 1) {
+            if (utf16_len >= self.clipboard_buf.len) break;
+        }
+
+        const written = std.unicode.utf16LeToUtf8(self.clipboard_buf[0..], utf16_ptr[0..utf16_len]) catch 0;
+        self.clipboard_len = written;
+        return self.clipboard_buf[0..written];
+    }
+
+    fn clipWrite(ctx: *anyopaque, t: []const u8) void {
+        const self: *Host = @ptrCast(@alignCast(ctx));
+        _ = self;
+        if (t.len == 0) return;
+
+        // UTF-8 → UTF-16 conversion. Cap at 32K UTF-16 code units (~64KB)
+        // which is plenty for clipboard text.
+        var utf16_buf: [32768]u16 = undefined;
+        const utf16_len = std.unicode.utf8ToUtf16Le(&utf16_buf, t) catch return;
+        if (utf16_len >= utf16_buf.len) return;
+
+        const total_bytes = (utf16_len + 1) * @sizeOf(u16);
+        const hmem = GlobalAlloc(GMEM_MOVEABLE, total_bytes) orelse return;
+        const lock = GlobalLock(hmem) orelse return;
+        const dst: [*]u16 = @ptrCast(@alignCast(lock));
+        @memcpy(dst[0..utf16_len], utf16_buf[0..utf16_len]);
+        dst[utf16_len] = 0;
+        _ = GlobalUnlock(hmem);
+
+        if (OpenClipboard(null) == 0) return;
+        defer _ = CloseClipboard();
+        _ = EmptyClipboard();
+        _ = SetClipboardData(CF_UNICODETEXT, hmem);
     }
 };
 
