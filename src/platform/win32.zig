@@ -191,6 +191,230 @@ const VK_X: WPARAM = 0x58;
 const VK_Y: WPARAM = 0x59;
 const VK_Z: WPARAM = 0x5A;
 
+// ── UIA (uiautomationcore.dll) ─────────────────────────────────────
+//
+// Minimal-viable UI Automation bridge. Goal: let Narrator and
+// Inspect.exe detect that the teak window is an automation provider at
+// all, and re-announce structure on every publishA11yTree call. Per-
+// A11yNode fragment providers are a follow-up (see the TODO near
+// `g_published_nodes` below).
+//
+// HARDLINE: this is a Host §4(d) surface extension — same hatch
+// clipboard / file dialogs / a11y-publishing already use. No platform
+// types leak above the Host boundary; `publishA11yTree`'s public shape
+// is unchanged.
+
+const HRESULT = c_long;
+const ULONG = c_ulong;
+const LONG = c_long;
+const SHORT = c_short;
+const VARIANT_BOOL = SHORT;
+const BSTR = ?[*:0]u16;
+
+const S_OK: HRESULT = 0;
+const E_NOINTERFACE: HRESULT = @bitCast(@as(u32, 0x80004002));
+const E_POINTER: HRESULT = @bitCast(@as(u32, 0x80004003));
+const E_FAIL: HRESULT = @bitCast(@as(u32, 0x80004005));
+const E_INVALIDARG: HRESULT = @bitCast(@as(u32, 0x80070057));
+
+const GUID = extern struct {
+    Data1: u32,
+    Data2: u16,
+    Data3: u16,
+    Data4: [8]u8,
+};
+
+const IID_IUnknown: GUID = .{
+    .Data1 = 0x00000000,
+    .Data2 = 0,
+    .Data3 = 0,
+    .Data4 = .{ 0, 0, 0, 0, 0, 0, 0, 0x46 },
+};
+const IID_IRawElementProviderSimple: GUID = .{
+    .Data1 = 0xD6DD68D1,
+    .Data2 = 0x86FD,
+    .Data3 = 0x4332,
+    .Data4 = .{ 0x86, 0x66, 0x9A, 0xBE, 0xDE, 0xA2, 0xD2, 0x4C },
+};
+
+// Provider option bits (only ServerSideProvider matters for us).
+const ProviderOptions_ServerSideProvider: c_int = 0x01;
+
+// UIA property + control type constants we need.
+const UIA_ControlTypePropertyId: c_long = 30003;
+const UIA_NamePropertyId: c_long = 30005;
+const UIA_IsKeyboardFocusablePropertyId: c_long = 30009;
+const UIA_HasKeyboardFocusPropertyId: c_long = 30008;
+const UIA_BoundingRectanglePropertyId: c_long = 30001;
+
+// Control types: just the ones our roles map to.
+const UIA_WindowControlTypeId: c_long = 50032;
+const UIA_GroupControlTypeId: c_long = 50026;
+const UIA_TextControlTypeId: c_long = 50020;
+const UIA_ButtonControlTypeId: c_long = 50000;
+const UIA_EditControlTypeId: c_long = 50004;
+const UIA_CheckBoxControlTypeId: c_long = 50002;
+const UIA_RadioButtonControlTypeId: c_long = 50013;
+const UIA_SliderControlTypeId: c_long = 50015;
+const UIA_SeparatorControlTypeId: c_long = 50038;
+const UIA_ImageControlTypeId: c_long = 50006;
+const UIA_PaneControlTypeId: c_long = 50033;
+
+// Event ids
+const UIA_StructureChangedEventId: c_long = 20002;
+const StructureChangeType_ChildrenInvalidated: c_int = 4;
+
+const UiaRootObjectId: LPARAM = -25;
+const WM_GETOBJECT: UINT = 0x003D;
+
+// VARIANT — *minimum* shape for the few types we return. Real VARIANT
+// is much larger; this layout is the truncated form UIA tolerates when
+// we only ever set vt = VT_I4, VT_BSTR, or VT_BOOL.
+const VT_EMPTY: u16 = 0;
+const VT_I4: u16 = 3;
+const VT_BSTR: u16 = 8;
+const VT_BOOL: u16 = 11;
+const VT_R8: u16 = 5;
+const VT_ARRAY: u16 = 0x2000;
+
+const VARIANT = extern struct {
+    vt: u16,
+    wReserved1: u16 = 0,
+    wReserved2: u16 = 0,
+    wReserved3: u16 = 0,
+    // 8-byte payload union. Use raw bytes; cast per vt.
+    payload: [16]u8 = [_]u8{0} ** 16,
+};
+
+extern "uiautomationcore" fn UiaReturnRawElementProvider(hwnd: HANDLE, wParam: WPARAM, lParam: LPARAM, el: *anyopaque) callconv(WINAPI) LRESULT;
+extern "uiautomationcore" fn UiaHostProviderFromHwnd(hwnd: HANDLE, ppProvider: *?*anyopaque) callconv(WINAPI) HRESULT;
+extern "uiautomationcore" fn UiaRaiseStructureChangedEvent(provider: *anyopaque, change_type: c_int, runtime_id: ?[*]const c_int, runtime_id_len: c_int) callconv(WINAPI) HRESULT;
+extern "uiautomationcore" fn UiaDisconnectProvider(provider: *anyopaque) callconv(WINAPI) HRESULT;
+
+extern "oleaut32" fn SysAllocString(psz: [*:0]const u16) callconv(WINAPI) BSTR;
+extern "oleaut32" fn SysFreeString(bstr: BSTR) callconv(WINAPI) void;
+
+const IRawElementProviderSimple_Vtbl = extern struct {
+    QueryInterface: *const fn (*RootProvider, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+    AddRef: *const fn (*RootProvider) callconv(WINAPI) ULONG,
+    Release: *const fn (*RootProvider) callconv(WINAPI) ULONG,
+    get_ProviderOptions: *const fn (*RootProvider, *c_int) callconv(WINAPI) HRESULT,
+    GetPatternProvider: *const fn (*RootProvider, c_long, *?*anyopaque) callconv(WINAPI) HRESULT,
+    GetPropertyValue: *const fn (*RootProvider, c_long, *VARIANT) callconv(WINAPI) HRESULT,
+    get_HostRawElementProvider: *const fn (*RootProvider, *?*anyopaque) callconv(WINAPI) HRESULT,
+};
+
+/// Module-singleton COM object. We only ever publish ONE root provider
+/// per window (single-window for now). Storage is module-scope so the
+/// vtable function pointers can reach the host title without a
+/// per-instance allocation.
+const RootProvider = extern struct {
+    vtbl: *const IRawElementProviderSimple_Vtbl,
+};
+
+fn rpQueryInterface(self: *RootProvider, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    if (guidEql(iid, &IID_IUnknown) or guidEql(iid, &IID_IRawElementProviderSimple)) {
+        ppv.* = @ptrCast(self);
+        return S_OK;
+    }
+    ppv.* = null;
+    return E_NOINTERFACE;
+}
+
+fn rpAddRef(_: *RootProvider) callconv(WINAPI) ULONG {
+    // Static singleton — module owns the lifetime, Win32 holds the
+    // pointer for the process lifetime.
+    return 1;
+}
+
+fn rpRelease(_: *RootProvider) callconv(WINAPI) ULONG {
+    return 1;
+}
+
+fn rpGetProviderOptions(_: *RootProvider, opts: *c_int) callconv(WINAPI) HRESULT {
+    opts.* = ProviderOptions_ServerSideProvider;
+    return S_OK;
+}
+
+fn rpGetPatternProvider(_: *RootProvider, _: c_long, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+    // No patterns implemented yet (Toggle/Value/Invoke are follow-up).
+    out.* = null;
+    return S_OK;
+}
+
+fn rpGetPropertyValue(_: *RootProvider, prop_id: c_long, var_out: *VARIANT) callconv(WINAPI) HRESULT {
+    switch (prop_id) {
+        UIA_ControlTypePropertyId => {
+            var_out.* = .{ .vt = VT_I4 };
+            const v: c_long = UIA_WindowControlTypeId;
+            @memcpy(var_out.payload[0..@sizeOf(c_long)], std.mem.asBytes(&v));
+            return S_OK;
+        },
+        UIA_NamePropertyId => {
+            const bstr = SysAllocString(@ptrCast(&g_window_title_w));
+            var_out.* = .{ .vt = VT_BSTR };
+            @memcpy(var_out.payload[0..@sizeOf(BSTR)], std.mem.asBytes(&bstr));
+            return S_OK;
+        },
+        UIA_IsKeyboardFocusablePropertyId => {
+            var_out.* = .{ .vt = VT_BOOL };
+            const v: VARIANT_BOOL = 0;
+            @memcpy(var_out.payload[0..@sizeOf(VARIANT_BOOL)], std.mem.asBytes(&v));
+            return S_OK;
+        },
+        else => {
+            var_out.* = .{ .vt = VT_EMPTY };
+            return S_OK;
+        },
+    }
+}
+
+fn rpGetHostRawElementProvider(_: *RootProvider, pp: *?*anyopaque) callconv(WINAPI) HRESULT {
+    if (g_hwnd_for_uia) |hwnd| {
+        return UiaHostProviderFromHwnd(hwnd, pp);
+    }
+    pp.* = null;
+    return E_FAIL;
+}
+
+fn guidEql(a: *const GUID, b: *const GUID) bool {
+    if (a.Data1 != b.Data1) return false;
+    if (a.Data2 != b.Data2) return false;
+    if (a.Data3 != b.Data3) return false;
+    return std.mem.eql(u8, &a.Data4, &b.Data4);
+}
+
+var g_root_provider_vtbl: IRawElementProviderSimple_Vtbl = .{
+    .QueryInterface = rpQueryInterface,
+    .AddRef = rpAddRef,
+    .Release = rpRelease,
+    .get_ProviderOptions = rpGetProviderOptions,
+    .GetPatternProvider = rpGetPatternProvider,
+    .GetPropertyValue = rpGetPropertyValue,
+    .get_HostRawElementProvider = rpGetHostRawElementProvider,
+};
+
+var g_root_provider: RootProvider = .{ .vtbl = &g_root_provider_vtbl };
+
+/// Window title in UTF-16, allocated once and reused across
+/// GetPropertyValue(NamePropertyId) calls. Updated by `Host.init`.
+var g_window_title_w: [256]u16 = [_]u16{0} ** 256;
+
+/// HWND captured at Host.init for UiaHostProviderFromHwnd. Null before
+/// init / after deinit so the property getter can fail closed.
+var g_hwnd_for_uia: ?HANDLE = null;
+
+// TODO(uia): per-node IRawElementProviderFragment providers so Narrator
+// can iterate buttons/inputs/sliders. The tree is captured here; the
+// vtable + provider pool are the missing pieces.
+var g_published_nodes: []const A11yNode = &.{};
+
+/// Coarse change detector — we only need to know whether the tree
+/// *shape* has changed since the last publish so we can fire a single
+/// StructureChanged event. A perfect diff is overkill for an MVP.
+var g_last_tree_len: usize = 0;
+var g_last_focus_index: ?u32 = null;
+
 // ── GDI types + externs (text measurement) ────────────────────────
 
 const HDC = *anyopaque;
@@ -338,6 +562,15 @@ fn pushKey(k: SpecialKey) void {
         g_keys[g_keys_count] = k;
         g_keys_count += 1;
     }
+}
+
+/// Compare two optional u32 focus indices. Used by publishA11yTree to
+/// decide whether the tree shape changed enough to fire a UIA
+/// StructureChanged event.
+fn focusEq(a: ?u32, b: ?u32) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    return a.? == b.?;
 }
 
 /// Map a UTF-16 code-unit offset to a UTF-8 byte offset by walking the
@@ -516,6 +749,17 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             }
             return 0;
         },
+        WM_GETOBJECT => {
+            // UIA root request — hand back our singleton provider. Any
+            // other object id (MSAA, etc.) falls through to DefWindowProc
+            // so the system can synthesize a default. UIA owns the AddRef
+            // contract here; our static AddRef-returns-1 is safe because
+            // the provider lives in module storage.
+            if (lp == UiaRootObjectId) {
+                return UiaReturnRawElementProvider(hwnd, wp, lp, @ptrCast(&g_root_provider));
+            }
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        },
         else => return DefWindowProcW(hwnd, msg, wp, lp),
     }
 }
@@ -576,6 +820,13 @@ pub const Host = struct {
         if (title_len >= title_buf.len) return error.TitleTooLong;
         title_buf[title_len] = 0;
 
+        // Mirror the title into module storage so UIA's
+        // GetPropertyValue(Name) can hand it to SysAllocString without
+        // touching the Host struct. Length-clamped + null-terminated.
+        const title_clamped = @min(title_len, g_window_title_w.len - 1);
+        @memcpy(g_window_title_w[0..title_clamped], title_buf[0..title_clamped]);
+        g_window_title_w[title_clamped] = 0;
+
         const hwnd = CreateWindowExW(
             0,
             class_name,
@@ -591,6 +842,11 @@ pub const Host = struct {
             null,
         ) orelse return error.CreateWindowFailed;
         _ = ShowWindow(hwnd, SW_SHOW);
+
+        // Capture the HWND so UIA's get_HostRawElementProvider can hand
+        // it to UiaHostProviderFromHwnd for any property we don't
+        // ourselves answer.
+        g_hwnd_for_uia = hwnd;
 
         const screen_dc = GetDC(null) orelse return error.GetDcFailed;
         defer _ = ReleaseDC(null, screen_dc);
@@ -610,6 +866,13 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        // Disconnect any lingering UIA listeners (Narrator, Inspect)
+        // so they drop their references cleanly before we tear down
+        // the underlying window/DC. Return value is ignored — there's
+        // nothing actionable if it fails.
+        _ = UiaDisconnectProvider(&g_root_provider);
+        g_hwnd_for_uia = null;
+
         for (self.font_cache[0..self.font_cache_len]) |entry| {
             _ = DeleteObject(entry.hfont);
         }
@@ -767,11 +1030,42 @@ pub const Host = struct {
         };
     }
 
-    /// Forward the a11y tree to the platform. UI Automation integration
-    /// is non-trivial — for now we accept the tree and discard it,
-    /// keeping the surface stable so apps can call it unconditionally.
-    /// Future: register an IRawElementProviderSimple per node.
-    pub fn publishA11yTree(_: *Host, _: []const A11yNode) void {}
+    /// Forward the a11y tree to the platform. We expose a single root
+    /// IRawElementProviderSimple (handled via WM_GETOBJECT) and fire a
+    /// StructureChanged event whenever the published tree differs from
+    /// the previous one — enough for Narrator / Inspect.exe to see the
+    /// window as a UIA provider and re-walk it. Per-node fragment
+    /// providers are a follow-up (see TODO(uia) above `g_published_nodes`).
+    pub fn publishA11yTree(_: *Host, nodes: []const A11yNode) void {
+        // Capture the current tree so the upcoming per-node fragment
+        // provider work can consume it. Stored as a slice into the
+        // caller's arena memory; valid until the next publish call,
+        // which is exactly the lifetime UIA needs for a single frame.
+        g_published_nodes = nodes;
+
+        // Coarse change detection: tree length + focused-cmd index is
+        // enough to catch every shape change the framework can produce
+        // in one frame without paying for a structural diff.
+        var focus_idx: ?u32 = null;
+        for (nodes) |n| {
+            if (n.focused) {
+                focus_idx = n.cmd_index;
+                break;
+            }
+        }
+        const changed = nodes.len != g_last_tree_len or !focusEq(focus_idx, g_last_focus_index);
+        g_last_tree_len = nodes.len;
+        g_last_focus_index = focus_idx;
+
+        if (changed) {
+            _ = UiaRaiseStructureChangedEvent(
+                &g_root_provider,
+                StructureChangeType_ChildrenInvalidated,
+                null,
+                0,
+            );
+        }
+    }
 
     /// Blocks until the user picks a file or cancels. Returns a UTF-8
     /// slice into the Host's dialog buffer (valid until the next
