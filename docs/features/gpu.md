@@ -19,10 +19,14 @@ A Gpu type must expose these declarations:
 | `renderFrame` | `fn(*Gpu, ClearColor) void` | Encode + submit + present one frame using the last uploaded vertices, text draws, and image draws. |
 | `rasterizeText` | `fn(*Gpu, []const u8, FontSpec, [4]f32, u32, u32) TextureHandle` | Rasterize a string at a given font + color into a glyph-atlas texture and return an opaque handle. Backends cache by (text, font, color); the app stashes the handle in its Model. |
 | `uploadText` | `fn(*Gpu, []const TextDraw) void` | Per-frame: ingest the renderer's `TextDraw` list and build the textured-quad buffer that `renderFrame` will draw. |
-| `uploadImage` | `fn(*Gpu, []const u8, u32, u32) TextureHandle` | Upload an RGBA8 image (`width * height * 4` bytes) and return an opaque handle the app stashes in `ImageCmd.handle`. App-driven cache; cached for the lifetime of the Gpu. |
+| `uploadImage` | `fn(*Gpu, []const u8, u32, u32) TextureHandle` | Upload an RGBA8 image (`width * height * 4` bytes) and return an opaque handle the app stashes in `ImageCmd.handle`. App-driven cache; cached for the lifetime of the Gpu. Implemented on both native and web (web wires zunk v0.6.0+ texture upload). |
 | `uploadImages` | `fn(*Gpu, []const ImageDraw) void` | Per-frame counterpart to `uploadText` for images. Walks `ImageDraw`s and records a draw entry per visible image. |
+| `renderToWindow` | `fn(*Gpu, u32, ClearColor) void` | Render the last-uploaded buffers into the surface for `window_id` (0 = primary, ≥1 = secondaries opened via `openSecondarySurface`). `renderFrame` is a thin wrapper for `renderToWindow(0, ...)`. The shared uniform buffer is rewritten with the target window's pixel dims before each call. |
+| `openSecondarySurface` | `fn(*Gpu, *anyopaque, *anyopaque, u32, u32) ?u32` | Create a wgpu surface bound to an additional native window. Takes `(hinstance, hwnd, w, h)` as opaque pointers so the GPU module never imports platform types (HARDLINE §4(c)). Returns a 1-based id matching the Host's secondary id space. |
+| `closeSecondarySurface` | `fn(*Gpu, u32) void` | Release the surface for the given secondary id. No-op on invalid ids. |
+| `resizeWindow` | `fn(*Gpu, u32, u32, u32) void` | Reconfigure a window's surface. `id = 0` is the primary (same effect as `resize`). |
 
-`ClearColor = [4]f32` (RGBA, 0..1). `validateGpu` comptime-asserts every non-`init` decl above. `rasterizeText` / `uploadText` / `uploadImage` / `uploadImages` are HARDLINE §4(d) surface extensions added during the `functional_gaps_yolo` push. Compile-error format:
+`ClearColor = [4]f32` (RGBA, 0..1). `validateGpu` comptime-asserts every non-`init` decl above. `rasterizeText` / `uploadText` / `uploadImage` / `uploadImages` / `renderToWindow` / `openSecondarySurface` / `closeSecondarySurface` / `resizeWindow` are HARDLINE §4(d) surface extensions added during / after the `functional_gaps_yolo` push. Compile-error format:
 
 ```
 Gpu 'MyGpu' is missing declaration 'uploadVertices'
@@ -42,7 +46,7 @@ Gpu 'MyGpu' is missing declaration 'uploadVertices'
 - **No multiple render passes.** Adding e.g. a post-process pass would expand the contract to `beginFrame` / `endFrame` pair — not planned.
 - **No query objects / timestamps.** Profiling happens externally.
 - **`init` signatures differ.** Native takes a Win32 `HWND` and window dimensions; web takes an empty placeholder (canvas is implicit to zunk). Example builds bind them explicitly.
-- **No `renderToWindow`.** `Host.openSecondaryWindow` is stub-only and the Gpu contract has no companion call for rendering into a non-primary window. Both arrive together when secondary windows ship.
+- **Multi-window: native only.** `renderToWindow(id)` works for both primary (id 0) and secondary windows on Win32 + native wgpu, with per-surface tables on both Host and Gpu layers. The shared uniform buffer holds the target window's dims and is rewritten at the start of every `renderToWindow` call so cross-window renders don't bleed each other's viewports. Wasm `openSecondaryWindow` returns null — no secondary surfaces on web.
 
 ## Test coverage target
 

@@ -298,14 +298,80 @@ still build and test green.
 Per-section "stub" notes call out the remaining work; the big-ticket
 items are:
 
-- **IME**: WM_IME_* handling on Win32 (compose + commit text).
-- **wgpu image pipeline on web**: parallel to native; needs zunk
-  texture upload + a second pipeline.
-- **UIA on Win32**: full `IRawElementProviderSimple` per a11y node.
-- **Multi-window**: per-window wgpu surface in `src/gpu/native.zig`,
-  Host-side window-id tracking.
-- **Browser file dialogs**: showOpenFilePicker / showSaveFilePicker
-  bridge (async + gesture-gated, breaks the synchronous Host shape).
+- ~~**IME**: WM_IME_* handling on Win32 (compose + commit text).~~ —
+  closed: `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION` /
+  `WM_IME_ENDCOMPOSITION` now drive a UTF-8 composition mirror;
+  `imeState()` returns the live string; the renderer draws it inline
+  at the caret with an underline indicator. UTF-16 caret offsets from
+  `ImmGetCompositionStringW` are translated to UTF-8 byte offsets so
+  astral-plane / surrogate pairs caret correctly. Commit still flows
+  through `WM_CHAR -> TextField` so committed text enters Model via
+  the existing path. Composition rides
+  [`TransientState`](../HARDLINE.md#escape-hatch-2-transientstate)
+  (HARDLINE §2 hatch 2) since it's derivable / non-logical / safely
+  losable.
+- ~~**wgpu image pipeline on web**: parallel to native; needs zunk
+  texture upload + a second pipeline.~~ — closed: zunk v0.6.0+ already
+  exposes the primitives (`createTexture`, `writeTexture`,
+  `createTextureView`); `src/gpu/web.zig` now has a 64-slot image
+  cache + dedicated `image_pipeline` driven by `shaders/image.wgsl`,
+  parallel to native. RGBA8 textures upload via `zgpu.writeTexture`
+  and render through a shared `text_bgl` + sampler (both pipelines
+  bind `{uniform, texture, sampler}`). Drawn before text so labels
+  read on top. No zunk-side change was required for the image
+  surface — the gap was entirely teak-side.
+- ~~**UIA on Win32**: full `IRawElementProviderSimple` per a11y node.~~ —
+  partially closed: the window now exposes a singleton
+  `IRawElementProviderSimple` root provider via `WM_GETOBJECT`
+  (ControlType = Window, Name = window title,
+  HostRawElementProvider from `UiaHostProviderFromHwnd`), and fires
+  `UiaRaiseStructureChangedEvent` on every `publishA11yTree` where
+  the tree shape changes. Narrator + Inspect.exe now detect the
+  window as a UIA provider. Per-A11yNode
+  `IRawElementProviderFragment` providers (so Narrator can iterate
+  buttons / inputs / sliders) are still tracked as a follow-up — see
+  the `TODO(uia)` near `g_published_nodes` in `src/platform/win32.zig`.
+- ~~**Multi-window**: per-window wgpu surface in `src/gpu/native.zig`,
+  Host-side window-id tracking.~~ — closed: Host gains additive
+  `pollSecondaryInputs(id)`, `closeSecondaryWindow(id)`,
+  `secondaryWindowHandle(id)`; `openSecondaryWindow` returns a real
+  1-based id. Win32 maintains a 4-slot secondary window table with
+  its own wndProc; primary `pollInputs` is unchanged because the
+  shared message pump already routes per-HWND. GPU native gains a
+  parallel surface table with `openSecondarySurface`, `resizeWindow`,
+  `renderToWindow(id)`; `renderFrame` becomes a wrapper for
+  `renderToWindow(0, ...)`. The shared uniform buffer is rewritten
+  at the start of every `renderToWindow` call (primary included) so
+  switching windows mid-frame doesn't scale the next one to the
+  previous window's viewport. Counter-greeter demos this with an
+  "Open stats" button that opens a 360x200 secondary window.
+- ~~**Browser file dialogs**: showOpenFilePicker / showSaveFilePicker
+  bridge (async + gesture-gated, breaks the synchronous Host
+  shape).~~ — surface closed, JS shim tracked in zunk issue
+  [#14](https://github.com/hotschmoe/zunk/issues/14): Host gains an
+  additive async request/poll pair
+  (`requestFileDialog(filter) -> u32`,
+  `pollFileDialogResult(id) -> FileDialogPoll`); Win32 implements it
+  synchronously (the OS picker blocks inside the request, the result
+  parks in a 4-slot table on Host); wasm wires the call to
+  `__zunk_request_file_dialog` and exports
+  `__zunk_file_dialog_result` for the JS bridge. Until zunk's JS
+  shim ships, wasm requests stay `.pending` forever — apps see the
+  surface as "file picker unavailable on this host" rather than as
+  a missing API. The legacy synchronous `openFileDialog` /
+  `saveFileDialog` are unchanged for native-only callers.
 
-These are real follow-up items — not silent gaps. The surface contracts
-exist and apps can target them today.
+Remaining follow-ups after this push:
+
+- **UIA per-node fragment providers**: see TODO(uia) in
+  `src/platform/win32.zig`. Lets Narrator iterate the widget tree
+  rather than just announcing "window opened".
+- **zunk #14**: the JS-side `showOpenFilePicker` bridge that resolves
+  promised paths into `__zunk_file_dialog_result(id, path_ptr, len)`.
+  Surface contract is in place; the runtime glue needs writing.
+- **Web a11y**: mirrored DOM with `aria-*` attributes — the
+  `publishA11yTree` Host surface is still a no-op on wasm.
+- **Multi-window resize**: secondary windows currently track their
+  size via `gpu.resizeWindow(id, w, h)` but the Win32 secondary
+  wndProc doesn't yet send resize events back to the app; tracked
+  alongside the multi-window primitives.
