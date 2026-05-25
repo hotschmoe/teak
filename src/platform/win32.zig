@@ -332,10 +332,13 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             return 0;
         },
         WM_KEYDOWN => {
-            // High bit of GetKeyState = held. Read once per WM_KEYDOWN
-            // so shift/ctrl reflect the same instant as the key event.
-            const shift_down = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-            const ctrl_down = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            // High bit of GetKeyState = held. GetKeyState returns SHORT
+            // (i16); checking `< 0` is equivalent to "high bit set" and
+            // avoids the C idiom `& 0x8000` which Zig rejects (32768
+            // doesn't fit in i16). Read once per WM_KEYDOWN so shift /
+            // ctrl reflect the same instant as the key event.
+            const shift_down = GetKeyState(VK_SHIFT) < 0;
+            const ctrl_down = GetKeyState(VK_CONTROL) < 0;
             switch (wp) {
                 VK_BACK => pushKey(.backspace),
                 VK_DELETE => pushKey(.delete),
