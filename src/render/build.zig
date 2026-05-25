@@ -147,7 +147,13 @@ fn buildLayer(
             },
             .push_scroll => clip.push(clipRect(rect, cur_clip)),
             .pop_scroll => clip.pop(),
-            .push_group, .pop_group, .push_virtual_list, .pop_virtual_list => {},
+            .push_group => |grp| {
+                // Optional panel/card fill. Drawn BEFORE children so they
+                // paint on top. Layout already gives us the group's full
+                // (padded) rect; no inset.
+                if (visible) if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+            },
+            .pop_group, .push_virtual_list, .pop_virtual_list => {},
             .text => |txt| {
                 if (visible) emitText(text_draws, alloc, txt.content, txt.font, txt.color, rect, cur_clip);
             },
@@ -550,4 +556,113 @@ test "buildVertices draws border + bg + cursor for focused text input" {
     // border + bg + cursor = 3 quads = 18 verts. Content goes to text_draws.
     try testing.expectEqual(@as(usize, 18), verts.items.len);
     try testing.expectEqual(@as(usize, 1), text_draws.items.len); // "ab"
+}
+
+test "buildVertices: GroupStyle.bg emits a panel quad BEFORE children" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
+
+    var cb = CmdBuffer.init(testing.allocator);
+    defer cb.deinit();
+
+    // Single group with a red bg + a text child. The bg quad must be the
+    // first 6 vertices in the stream (text goes to text_draws, not verts).
+    cb.pushGroup(.{ .bg = .{ 1, 0, 0, 1 } });
+    cb.text("hello");
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    // One bg quad = 6 vertices, all red. Text is in text_draws.
+    try testing.expectEqual(@as(usize, 6), verts.items.len);
+    try testing.expectEqual(@as(usize, 1), text_draws.items.len);
+    // Every vertex of the bg quad should carry the red color we passed in.
+    for (verts.items) |v| {
+        try testing.expectEqual(@as(f32, 1), v.r);
+        try testing.expectEqual(@as(f32, 0), v.g);
+        try testing.expectEqual(@as(f32, 0), v.b);
+        try testing.expectEqual(@as(f32, 1), v.a);
+    }
+}
+
+test "buildVertices: GroupStyle.bg = null emits no panel quad (regression)" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
+
+    var cb = CmdBuffer.init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{}); // bg defaults to null
+    cb.text("hello");
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    // Null bg → no quad at all. Text still flows to text_draws.
+    try testing.expectEqual(@as(usize, 0), verts.items.len);
+    try testing.expectEqual(@as(usize, 1), text_draws.items.len);
+}
+
+test "buildVertices: nested groups with bg render outer first, then inner" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
+
+    var cb = CmdBuffer.init(testing.allocator);
+    defer cb.deinit();
+
+    // Outer red, inner green. Painter's order → outer bg verts first,
+    // then inner bg verts.
+    cb.pushGroup(.{ .bg = .{ 1, 0, 0, 1 } });
+    cb.pushGroup(.{ .bg = .{ 0, 1, 0, 1 } });
+    cb.text("inner");
+    cb.popGroup();
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    // Two bg quads = 12 vertices. First 6 = red (outer), next 6 = green (inner).
+    try testing.expectEqual(@as(usize, 12), verts.items.len);
+    for (verts.items[0..6]) |v| {
+        try testing.expectEqual(@as(f32, 1), v.r);
+        try testing.expectEqual(@as(f32, 0), v.g);
+        try testing.expectEqual(@as(f32, 0), v.b);
+    }
+    for (verts.items[6..12]) |v| {
+        try testing.expectEqual(@as(f32, 0), v.r);
+        try testing.expectEqual(@as(f32, 1), v.g);
+        try testing.expectEqual(@as(f32, 0), v.b);
+    }
 }

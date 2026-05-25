@@ -28,8 +28,13 @@ const FontFamily = text.FontFamily;
 // when switching dark/light).
 
 pub const Palette = struct {
-    /// Window / panel background.
+    /// Window / scene background — what the empty window draws as.
     bg: [4]f32,
+    /// Elevated panel / card surface. Slightly distinct from `bg` so a
+    /// modal card or section panel reads as a separate layer. Consumed
+    /// by `GroupStyle.bg` to paint readable card backgrounds over a dim
+    /// overlay scrim (the help-modal idiom).
+    bg_panel: [4]f32,
     /// Sunken bg used for inputs, scroll wells.
     bg_sunken: [4]f32,
     /// Raised bg used for buttons and the "card" surface.
@@ -77,6 +82,11 @@ pub const Theme = struct {
     muted_color: [4]f32,
     /// Color used by `cb.textDanger(...)`.
     danger_color: [4]f32,
+    /// Fill for elevated panel / card group backgrounds (assign to
+    /// `GroupStyle.bg`). Typical usage is the inner group of a modal
+    /// overlay — the dim overlay scrim sits behind, the panel sits on
+    /// top with this fill, and text reads against the opaque card.
+    panel_bg: [4]f32,
 
     button: cmd.ButtonStyle,
     text_input: cmd.TextInputStyle,
@@ -101,6 +111,7 @@ pub const Theme = struct {
             .heading_color = p.fg,
             .muted_color = p.fg_muted,
             .danger_color = p.danger,
+            .panel_bg = p.bg_panel,
             .button = .{
                 .bg = p.bg_raised,
                 .hover_bg = p.bg_hover,
@@ -155,6 +166,7 @@ pub const Theme = struct {
 
 pub const dark_palette: Palette = .{
     .bg = .{ 0.08, 0.08, 0.10, 1.0 },
+    .bg_panel = .{ 0.15, 0.15, 0.18, 1.0 },
     .bg_sunken = .{ 0.12, 0.12, 0.14, 1.0 },
     .bg_raised = .{ 0.25, 0.25, 0.28, 1.0 },
     .bg_hover = .{ 0.35, 0.35, 0.40, 1.0 },
@@ -168,6 +180,7 @@ pub const dark_palette: Palette = .{
 
 pub const light_palette: Palette = .{
     .bg = .{ 0.96, 0.96, 0.97, 1.0 },
+    .bg_panel = .{ 0.97, 0.97, 0.98, 1.0 },
     .bg_sunken = .{ 1.00, 1.00, 1.00, 1.0 },
     .bg_raised = .{ 0.88, 0.88, 0.92, 1.0 },
     .bg_hover = .{ 0.82, 0.82, 0.88, 1.0 },
@@ -204,6 +217,17 @@ test "Theme.fromPalette: custom accent flows into slider track_fill + input focu
     try std.testing.expectEqual(@as([4]f32, .{ 1.0, 0.5, 0.0, 1.0 }), t.text_input.focus_border);
     try std.testing.expectEqual(@as([4]f32, .{ 1.0, 0.5, 0.0, 1.0 }), t.checkbox.check);
     try std.testing.expectEqual(@as([4]f32, .{ 1.0, 0.5, 0.0, 1.0 }), t.radio.dot);
+}
+
+test "Theme.fromPalette: panel_bg flows from palette.bg_panel" {
+    const t = Theme.dark_default;
+    try std.testing.expectEqual(dark_palette.bg_panel, t.panel_bg);
+    const tl = Theme.light_default;
+    try std.testing.expectEqual(light_palette.bg_panel, tl.panel_bg);
+    // Dark panel sits brighter than the scene bg (so it reads as a card).
+    const scene_sum = t.palette.bg[0] + t.palette.bg[1] + t.palette.bg[2];
+    const panel_sum = t.panel_bg[0] + t.panel_bg[1] + t.panel_bg[2];
+    try std.testing.expect(panel_sum > scene_sum);
 }
 
 test "Theme.typography has body, heading, mono, small" {

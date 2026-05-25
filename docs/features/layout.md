@@ -65,6 +65,40 @@ Replacing layout (e.g. with a constraint solver):
 
 Read-only extension (e.g. a debug pass that measures overflow): walk `[]Cmd` + `[]Rect` after `doLayout`. Nothing in the framework prevents it.
 
+## Group fills (`GroupStyle.bg`)
+
+`GroupStyle` (in `src/core/cmd.zig`, consumed by both layout and render) carries an optional `bg: ?[4]f32 = null`. When non-null, the render pass emits a single solid-fill quad at the group's full padded rect **before** any of the group's children draw — children paint on top. Default `null` preserves the prior no-fill behaviour, so existing call sites are unaffected.
+
+This is presentation data on a Cmd, not new state-flow shape — HARDLINE §3 is undisturbed (no fn-pointer, no widget-internal state, the view function still pure). No corner radius in this pass; rounded panels are a separate concern when one is asked for.
+
+### Panel / modal-card idiom
+
+The most common use: paint a readable opaque card behind a modal overlay's text. The overlay's `backdrop` is a dim scrim; the *inner* group is the panel.
+
+```zig
+cb.pushOverlay(.{
+    .x = 0,
+    .y = 0,
+    .width = window_w,
+    .height = window_h,
+    .backdrop = .{ 0, 0, 0, 0.78 }, // dim scrim behind the card
+    .modal = true,
+    .backdrop_msg = Msg{ .close = {} },
+});
+cb.pushGroup(.{
+    .padding = 16,
+    .gap = 12,
+    .bg = cb.theme.panel_bg, // opaque card surface from theme
+});
+cb.heading("Settings");
+// ... rich text, form rows, buttons ...
+cb.button(Msg{ .close = {} }, "Close");
+cb.popGroup();
+cb.popOverlay();
+```
+
+`Theme.panel_bg` (derived from `Palette.bg_panel`) is sized to sit one layer above the scene `bg` so it reads as elevated. Apps that want a flat-toned panel can override `bg` per-call rather than going through the theme.
+
 ## Test coverage target
 
 - **Flex distribution** (covered): three children with weights 1/2/1 in a fixed-width group split the space 25/50/25.

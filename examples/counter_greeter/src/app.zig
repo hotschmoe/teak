@@ -92,7 +92,11 @@ pub fn view(m: *const Model, cb: anytype) void {
             .width = 900,
             .height = 500,
             .padding = 0,
-            .backdrop = .{ 0, 0, 0, 0.55 },
+            // Dim scrim behind the panel — opaque enough to push the
+            // underlying UI back so the modal panel reads as the focused
+            // surface. The panel itself supplies its own opaque fill via
+            // GroupStyle.bg (theme.panel_bg) below.
+            .backdrop = .{ 0, 0, 0, 0.78 },
             // Modal: clicking the dim scrim must NOT activate widgets
             // underneath. Click-outside-to-close dismisses via help_close
             // — matches HARDLINE §2 hatch 5's "modal + backdrop_msg"
@@ -100,8 +104,15 @@ pub fn view(m: *const Model, cb: anytype) void {
             .modal = true,
             .backdrop_msg = Msg{ .help_close = {} },
         });
-        // Inner panel: centered card with text + close button.
-        cb.pushGroup(.{ .direction = .vertical, .padding = 16, .gap = 12 });
+        // Inner panel: centered card with text + close button. The
+        // `bg = panel_bg` is what makes the help text readable — without
+        // it the labels float directly on the dim scrim.
+        cb.pushGroup(.{
+            .direction = .vertical,
+            .padding = 16,
+            .gap = 12,
+            .bg = cb.theme.panel_bg,
+        });
         cb.heading("Teak — Functional Gaps + Ergonomic Helpers demo");
 
         // Rich text via rich_zig markup. Parsed once per frame into the

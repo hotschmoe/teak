@@ -17,6 +17,14 @@ pub const GroupStyle = struct {
     /// 0 = intrinsic (measured from children). >0 = flex weight; parent
     /// distributes remaining main-axis space proportionally.
     flex: f32 = 0,
+    /// Optional solid background fill. When non-null, the render pass
+    /// emits a single quad at the group's full (padded) rect BEFORE
+    /// drawing the group's children — children paint on top. Default
+    /// `null` preserves the prior no-fill behavior. This is the panel /
+    /// card idiom: pair with an overlay's dim backdrop for a readable
+    /// modal. No corner radius in this pass — rounded panels are a
+    /// separate concern.
+    bg: ?[4]f32 = null,
 };
 
 pub const TextCmd = struct {
