@@ -479,6 +479,17 @@ pub fn CmdBuffer(comptime Msg: type) type {
             } }) catch unreachable;
         }
 
+        /// Text with explicit font + color, bypassing theme defaults.
+        /// Useful for one-off styled labels (debug overlays, custom
+        /// chrome) where the theme doesn't provide a fitting token.
+        pub fn textStyled(self: *Self, content: []const u8, font: FontSpec, color: [4]f32) void {
+            self.cmds.append(self.backing, .{ .text = .{
+                .content = content,
+                .font = font,
+                .color = color,
+            } }) catch unreachable;
+        }
+
         pub fn divider(self: *Self) void {
             self.cmds.append(self.backing, .{ .divider = self.theme.divider }) catch unreachable;
         }
