@@ -342,6 +342,39 @@ pub fn Cmd(comptime Msg: type) type {
     };
 }
 
+// ── Form row (ergonomic gap 4) ─────────────────────────────────────
+//
+// Composite [label, content, units] horizontal layout with an optional
+// validation message stacked below it. push/pop pair so the app can
+// emit any cmds it wants in the middle (text_input, slider, mixedText,
+// etc.) — the framework brackets the label + units + validation.
+
+pub const FormRowOpts = struct {
+    /// Label to the left of the content (theme.text_color). Empty
+    /// string skips the label cmd.
+    label: []const u8 = "",
+    /// Suffix to the right of the content (theme.muted_color, small
+    /// font). Typical: unit suffixes like "kg", "mm/s", "Hz".
+    units: []const u8 = "",
+    /// Message drawn below the row in theme.danger_color (small font).
+    /// Empty = no validation row. Apps drive this from their own
+    /// validation state in Model.
+    validation: []const u8 = "",
+    /// Horizontal gap between label, content, and units.
+    gap: f32 = 8,
+    /// Vertical gap between the content row and the validation message.
+    validation_gap: f32 = 4,
+};
+
+/// Per-row state captured at push time and consumed at pop time so
+/// `popFormRow()` knows what to append. A small fixed-depth stack
+/// supports nested rows (e.g. a row inside an overlay/modal). Eight
+/// is the same depth the layout engine uses for its group stack.
+const PendingFormRow = struct {
+    units: []const u8,
+    validation: []const u8,
+};
+
 pub fn CmdBuffer(comptime Msg: type) type {
     return struct {
         const Self = @This();
@@ -357,6 +390,11 @@ pub fn CmdBuffer(comptime Msg: type) type {
         /// own derived theme) before each `view()` call. Explicit
         /// `*Styled` emitters bypass theme.
         theme: theme_mod.Theme = theme_mod.Theme.dark_default,
+        /// Stack of in-flight form rows; pushed by `pushFormRow`,
+        /// drained by `popFormRow`. Reset by `reset()` along with the
+        /// rest of the per-frame state.
+        form_row_stack: [8]PendingFormRow = undefined,
+        form_row_depth: u8 = 0,
 
         pub fn init(backing: std.mem.Allocator) Self {
             return .{
@@ -382,6 +420,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
         pub fn reset(self: *Self) void {
             self.cmds.clearRetainingCapacity();
             _ = self.arena.reset(.retain_capacity);
+            self.form_row_depth = 0;
         }
 
         // ── Convenience emitters ───────────────────────────────────
@@ -588,6 +627,68 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .rich_text = c }) catch unreachable;
         }
 
+        /// Begin a form row. Emits an outer vertical group + an inner
+        /// horizontal group, then writes the label. The caller emits
+        /// their content cmds (text_input, slider, etc.) and closes the
+        /// row with `popFormRow()`.
+        ///
+        /// Layout shape:
+        ///   vertical
+        ///     horizontal: [label] [content] [units]
+        ///     [validation]
+        pub fn pushFormRow(self: *Self, opts: FormRowOpts) void {
+            // Outer vertical (content row + validation message).
+            self.cmds.append(self.backing, .{ .push_group = .{
+                .direction = .vertical,
+                .padding = 0,
+                .gap = opts.validation_gap,
+            } }) catch unreachable;
+            // Inner horizontal (label + content + units).
+            self.cmds.append(self.backing, .{ .push_group = .{
+                .direction = .horizontal,
+                .padding = 0,
+                .gap = opts.gap,
+            } }) catch unreachable;
+            if (opts.label.len > 0) {
+                self.cmds.append(self.backing, .{ .text = .{
+                    .content = opts.label,
+                    .font = self.theme.typography.body,
+                    .color = self.theme.text_color,
+                } }) catch unreachable;
+            }
+            self.form_row_stack[self.form_row_depth] = .{
+                .units = opts.units,
+                .validation = opts.validation,
+            };
+            self.form_row_depth += 1;
+        }
+
+        /// Close the most recent `pushFormRow`. Appends the units
+        /// suffix (if any), closes the horizontal group, appends the
+        /// validation message (if any), then closes the outer vertical
+        /// group.
+        pub fn popFormRow(self: *Self) void {
+            if (self.form_row_depth == 0) return;
+            self.form_row_depth -= 1;
+            const pending = self.form_row_stack[self.form_row_depth];
+            if (pending.units.len > 0) {
+                self.cmds.append(self.backing, .{ .text = .{
+                    .content = pending.units,
+                    .font = self.theme.typography.small,
+                    .color = self.theme.muted_color,
+                } }) catch unreachable;
+            }
+            self.cmds.append(self.backing, .pop_group) catch unreachable;
+            if (pending.validation.len > 0) {
+                self.cmds.append(self.backing, .{ .text = .{
+                    .content = pending.validation,
+                    .font = self.theme.typography.small,
+                    .color = self.theme.danger_color,
+                } }) catch unreachable;
+            }
+            self.cmds.append(self.backing, .pop_group) catch unreachable;
+        }
+
         /// Build a RichTextCmd from a slice of MixedPart, baking content
         /// + spans into the per-frame arena. Each part gets its own span;
         /// null font/color fields inherit the theme's body font and text
@@ -748,6 +849,124 @@ test "CmdBuffer.mixedText: bold + italic flags propagate to span" {
     try testing.expect(!rt.spans[0].italic);
     try testing.expect(!rt.spans[1].bold);
     try testing.expect(rt.spans[1].italic);
+}
+
+test "CmdBuffer.pushFormRow: emits vertical, horizontal, label" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushFormRow(.{ .label = "Mass", .units = "kg" });
+    cb.textInput(.focus, "10", 2);
+    cb.popFormRow();
+
+    // Expected sequence:
+    //   0: push_group (outer vertical)
+    //   1: push_group (inner horizontal)
+    //   2: text "Mass"
+    //   3: text_input
+    //   4: text "kg" (units)
+    //   5: pop_group (inner horizontal)
+    //   6: pop_group (outer vertical)
+    try testing.expectEqual(@as(usize, 7), cb.cmds.items.len);
+    try testing.expectEqual(Direction.vertical, cb.cmds.items[0].push_group.direction);
+    try testing.expectEqual(Direction.horizontal, cb.cmds.items[1].push_group.direction);
+    try testing.expectEqualStrings("Mass", cb.cmds.items[2].text.content);
+    try testing.expectEqual(.text_input, std.meta.activeTag(cb.cmds.items[3]));
+    try testing.expectEqualStrings("kg", cb.cmds.items[4].text.content);
+    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[5]));
+    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[6]));
+}
+
+test "CmdBuffer.pushFormRow with validation: validation text sits below content row" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushFormRow(.{
+        .label = "Speed",
+        .units = "m/s",
+        .validation = "must be positive",
+    });
+    cb.textInput(.focus, "-5", 2);
+    cb.popFormRow();
+
+    // Validation comes AFTER the inner pop_group (between inner pop and
+    // outer pop) so it stacks vertically under the content row.
+    // Sequence:
+    //   0: push_group (vertical)
+    //   1: push_group (horizontal)
+    //   2: text "Speed"
+    //   3: text_input
+    //   4: text "m/s"
+    //   5: pop_group (horizontal)
+    //   6: text "must be positive"  (danger color)
+    //   7: pop_group (vertical)
+    try testing.expectEqual(@as(usize, 8), cb.cmds.items.len);
+    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[5]));
+    try testing.expectEqualStrings("must be positive", cb.cmds.items[6].text.content);
+    // Validation uses danger color.
+    try testing.expectEqual(cb.theme.danger_color, cb.cmds.items[6].text.color);
+    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[7]));
+}
+
+test "CmdBuffer.pushFormRow: no label/units/validation → minimal bracket" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushFormRow(.{});
+    cb.textInput(.focus, "", 0);
+    cb.popFormRow();
+
+    // 4 cmds: outer push, inner push, text_input, inner pop, outer pop = 5
+    try testing.expectEqual(@as(usize, 5), cb.cmds.items.len);
+    try testing.expectEqual(.push_group, std.meta.activeTag(cb.cmds.items[0]));
+    try testing.expectEqual(.push_group, std.meta.activeTag(cb.cmds.items[1]));
+    try testing.expectEqual(.text_input, std.meta.activeTag(cb.cmds.items[2]));
+    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[3]));
+    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[4]));
+}
+
+test "CmdBuffer.pushFormRow: nested form rows track their own state" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushFormRow(.{ .label = "Outer", .units = "u_o" });
+    cb.pushFormRow(.{ .label = "Inner", .units = "u_i" });
+    cb.textInput(.focus, "", 0);
+    cb.popFormRow(); // inner — should append "u_i"
+    cb.popFormRow(); // outer — should append "u_o"
+
+    // Find the units text cmds and verify the ORDER is inner then outer.
+    var units_seen: [2][]const u8 = .{ "", "" };
+    var u_idx: usize = 0;
+    for (cb.cmds.items) |c| {
+        if (c == .text and (std.mem.eql(u8, c.text.content, "u_i") or std.mem.eql(u8, c.text.content, "u_o"))) {
+            units_seen[u_idx] = c.text.content;
+            u_idx += 1;
+        }
+    }
+    try testing.expectEqualStrings("u_i", units_seen[0]);
+    try testing.expectEqualStrings("u_o", units_seen[1]);
+}
+
+test "CmdBuffer.reset clears in-flight form row depth" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushFormRow(.{ .label = "Mass" });
+    try testing.expectEqual(@as(u8, 1), cb.form_row_depth);
+
+    cb.reset();
+    try testing.expectEqual(@as(u8, 0), cb.form_row_depth);
 }
 
 test "CmdBuffer.mixedText: empty parts list still emits a (zero-content) rich_text" {

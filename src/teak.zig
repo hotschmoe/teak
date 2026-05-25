@@ -34,6 +34,7 @@ pub const ImageCmd = cmd.ImageCmd;
 pub const RichTextSpan = cmd.RichTextSpan;
 pub const RichTextCmd = cmd.RichTextCmd;
 pub const MixedPart = cmd.MixedPart;
+pub const FormRowOpts = cmd.FormRowOpts;
 pub const ButtonCmd = cmd.ButtonCmd;
 pub const ButtonStyle = cmd.ButtonStyle;
 pub const TextCmd = cmd.TextCmd;
