@@ -16,10 +16,15 @@ pub const FocusField = enum { greeter };
 
 const AppLevel = struct {
     focused: ?FocusField = null,
+    /// Demo: help modal open/closed state. Driven by AppLevel Msgs so
+    /// nothing platform-specific leaks into the component world.
+    show_help_modal: bool = false,
 
     pub const Msg = union(enum) {
         focus_set: FocusField,
         focus_clear,
+        help_open,
+        help_close,
     };
 
     // `@This().Msg` disambiguates against the file-scope `pub const Msg`
@@ -28,6 +33,8 @@ const AppLevel = struct {
         switch (msg) {
             .focus_set => |f| model.focused = f,
             .focus_clear => model.focused = null,
+            .help_open => model.show_help_modal = true,
+            .help_close => model.show_help_modal = false,
         }
     }
 };
@@ -42,6 +49,15 @@ pub const Msg = Composed.Msg;
 pub const update = Composed.update;
 
 pub fn view(m: *const Model, cb: anytype) void {
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+
+    // Top toolbar with a Help button — proof that AppLevel state can
+    // drive overlay visibility.
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 8, .gap = 8 });
+    cb.button(Msg{ .help_open = {} }, "Help");
+    cb.popGroup();
+
+    // Main row: counter on the left, greeter on the right.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 16, .gap = 16 });
 
     // Counter: payloadless variants wrap straight into AppMsg.
@@ -55,6 +71,30 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
 
     cb.popGroup();
+
+    cb.popGroup();
+
+    // Modal overlay rendered last so it's at the top of the buffer;
+    // hit-test gives it precedence regardless. The host should set the
+    // overlay's width/height to the window size for a true modal
+    // backdrop — for now we use a generous 900x500.
+    if (m.show_help_modal) {
+        cb.pushOverlay(.{
+            .x = 0,
+            .y = 0,
+            .width = 900,
+            .height = 500,
+            .padding = 0,
+            .backdrop = .{ 0, 0, 0, 0.55 },
+        });
+        // Inner panel: centered card with text + close button.
+        cb.pushGroup(.{ .direction = .vertical, .padding = 16, .gap = 12 });
+        cb.text("Teak — Functional Gaps demo");
+        cb.text("Overlay (this modal), virtual list, image, rich text now live.");
+        cb.button(Msg{ .help_close = {} }, "Close");
+        cb.popGroup();
+        cb.popOverlay();
+    }
 }
 
 /// Translate a character typed while a text input is focused into the
@@ -142,13 +182,52 @@ test "app: view emits expected root structure" {
     update(&m, .{ .greeter = .{ .name_char = 'X' } });
     view(&m, &cb);
 
-    // Root push
+    // Root push: the top-level vertical wrapper (toolbar + main row).
     try testing.expectEqual(.push_group, std.meta.activeTag(cb.cmds.items[0]));
-    try testing.expectEqual(cmd.Direction.horizontal, cb.cmds.items[0].push_group.direction);
+    try testing.expectEqual(cmd.Direction.vertical, cb.cmds.items[0].push_group.direction);
 
-    // Last cmd is the root pop.
+    // Last cmd is the root pop. With the modal closed, that's the
+    // outer pop_group; with the modal open, it'd be a pop_overlay.
     const last = cb.cmds.items.len - 1;
     try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[last]));
+}
+
+test "app: opening help modal appends an overlay region" {
+    const testing = std.testing;
+
+    var cb = teak.cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    var m: Model = .{};
+    update(&m, .help_open);
+    try testing.expect(m.show_help_modal);
+    view(&m, &cb);
+
+    // Buffer should now contain a push_overlay and a pop_overlay.
+    var saw_push_overlay = false;
+    var saw_pop_overlay = false;
+    var saw_close_button = false;
+    for (cb.cmds.items) |c| {
+        switch (c) {
+            .push_overlay => saw_push_overlay = true,
+            .pop_overlay => saw_pop_overlay = true,
+            .button => |b| if (std.meta.eql(b.msg, Msg.help_close)) {
+                saw_close_button = true;
+            },
+            else => {},
+        }
+    }
+    try testing.expect(saw_push_overlay);
+    try testing.expect(saw_pop_overlay);
+    try testing.expect(saw_close_button);
+
+    // Close it again — overlay region must disappear.
+    update(&m, .help_close);
+    cb.reset();
+    view(&m, &cb);
+    for (cb.cmds.items) |c| {
+        try testing.expect(std.meta.activeTag(c) != .push_overlay);
+    }
 }
 
 test "app: text_input click focus_msg is AppLevel.focus_set" {

@@ -852,6 +852,117 @@ test "scroll container clamps to fixed viewport size" {
     try testing.expectEqual(@as(f32, -14), rects[2].y);
 }
 
+test "overlay positions absolutely and does NOT contribute to parent size" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // Root vertical with a button + an overlay containing more content.
+    // The overlay must not push the root height beyond just the button.
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.button(.a, "Anchor"); // 6 chars * 10 + 16 = 76 wide, 36 tall
+    cb.pushOverlay(.{ .x = 200, .y = 50, .padding = 0, .gap = 0 });
+    cb.button(.a, "OvBtn");
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
+
+    // Root height in this DSL is forced to window height (800x600) by doLayout
+    // because it's the first push_group. But the OVERLAY rect must be at (200, 50),
+    // and the button inside the overlay (cmd index 3) follows.
+    try testing.expectEqual(@as(f32, 200), rects[2].x); // push_overlay
+    try testing.expectEqual(@as(f32, 50), rects[2].y);
+    // Overlay child sits at overlay's inner top-left.
+    try testing.expectEqual(@as(f32, 200), rects[3].x);
+    try testing.expectEqual(@as(f32, 50), rects[3].y);
+}
+
+test "overlay anchor_frac shifts overlay by -w*frac" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.pushOverlay(.{
+        .x = 300,
+        .y = 200,
+        .width = 100,
+        .height = 50,
+        .padding = 0,
+        .anchor_x_frac = 1.0, // right edge at x=300
+        .anchor_y_frac = 1.0, // bottom edge at y=200
+    });
+    cb.text("x");
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
+
+    // Overlay's top-left = (300 - 100*1.0, 200 - 50*1.0) = (200, 150).
+    try testing.expectEqual(@as(f32, 200), rects[1].x);
+    try testing.expectEqual(@as(f32, 150), rects[1].y);
+}
+
+test "virtual list claims total_count * item_extent on main axis" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // 10,000 rows of 24px each, visible window 0..3.
+    cb.pushVirtualList(.{
+        .direction = .vertical,
+        .total_count = 10_000,
+        .item_extent = 24,
+        .visible_start = 0,
+        .visible_end = 3,
+    });
+    cb.text("row 0");
+    cb.text("row 1");
+    cb.text("row 2");
+    cb.popVirtualList();
+
+    var rects: [16]Rect = undefined;
+    LayoutEngine.measurePass(rects[0..cb.cmds.items.len], cb.cmds.items, test_measurer);
+
+    // The virtual-list container's height = 10000 * 24 = 240000 even
+    // though only three rows were emitted.
+    try testing.expectEqual(@as(f32, 240000), rects[0].h);
+}
+
+test "virtual list children sit at visible_start * item_extent offset" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // Render rows 500..503 — first child should land at y=500*24=12000.
+    cb.pushScroll(.{ .direction = .vertical, .padding = 0, .gap = 0, .width = 400, .height = 200 });
+    cb.pushVirtualList(.{
+        .direction = .vertical,
+        .total_count = 1000,
+        .item_extent = 24,
+        .visible_start = 500,
+        .visible_end = 503,
+    });
+    cb.text("row 500");
+    cb.text("row 501");
+    cb.text("row 502");
+    cb.popVirtualList();
+    cb.popScroll();
+
+    var rects: [16]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
+
+    // First text (index 2 — after push_scroll + push_virtual_list).
+    try testing.expectEqual(@as(f32, 12000), rects[2].y);
+}
+
 test "text_input cross-axis stretches in vertical parent" {
     const testing = std.testing;
     const Msg = union(enum) { focus };

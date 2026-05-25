@@ -287,6 +287,61 @@ test "hitTest intersects nested scroll clips" {
     try testing.expect(hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 10, 90) == null);
 }
 
+test "hitTest: overlay wins over base layer at the same point" {
+    const testing = std.testing;
+    const Msg = union(enum) { base_click, overlay_click };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.button(.base_click, "Bottom"); // y ∈ [0, 36], x ∈ [0, 60]
+    cb.pushOverlay(.{
+        .x = 0,
+        .y = 0,
+        .width = 100,
+        .height = 36,
+        .padding = 0,
+    });
+    cb.button(.overlay_click, "Top"); // covers the same pixels
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
+
+    const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 30, 18);
+    try testing.expect(hit != null);
+    try testing.expectEqual(Msg.overlay_click, hit.?.msg);
+}
+
+test "hitTest: clicking outside the overlay falls through to base layer" {
+    const testing = std.testing;
+    const Msg = union(enum) { base_click, overlay_click };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.button(.base_click, "Bottom"); // y ∈ [0, 36]
+    cb.pushOverlay(.{
+        .x = 200,
+        .y = 200,
+        .width = 100,
+        .height = 36,
+        .padding = 0,
+    });
+    cb.button(.overlay_click, "Far");
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
+
+    // Click over the base button only.
+    const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 30, 18);
+    try testing.expect(hit != null);
+    try testing.expectEqual(Msg.base_click, hit.?.msg);
+}
+
 test "hitTest returns msg for checkbox/radio/slider clicks" {
     const testing = std.testing;
     const Msg = union(enum) { toggle, pick, grab };

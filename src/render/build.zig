@@ -447,6 +447,79 @@ test "buildVertices clips child widgets to scroll container" {
     try testing.expectEqual(@as(usize, 4), text_draws.items.len);
 }
 
+test "buildVertices draws overlay backdrop + content after base layer" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
+
+    var cb = CmdBuffer.init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.button(.a, "Base");
+    cb.pushOverlay(.{
+        .x = 100,
+        .y = 100,
+        .width = 200,
+        .height = 100,
+        .padding = 0,
+        .backdrop = .{ 0, 0, 0, 0.5 },
+    });
+    cb.button(.a, "OvBtn");
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    // 3 quads expected: base button bg, overlay backdrop, overlay button bg.
+    try testing.expectEqual(@as(usize, 18), verts.items.len);
+    // Both button labels rendered.
+    try testing.expectEqual(@as(usize, 2), text_draws.items.len);
+}
+
+test "buildVertices rich_text emits one TextDraw per span" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
+
+    var cb = CmdBuffer.init(testing.allocator);
+    defer cb.deinit();
+
+    const spans = [_]@import("../core/cmd.zig").RichTextSpan{
+        .{ .start = 0, .end = 5, .color = .{ 1, 0, 0, 1 } }, // "hello"
+        .{ .start = 6, .end = 11, .color = .{ 0, 1, 0, 1 } }, // "world"
+    };
+
+    cb.pushGroup(.{});
+    cb.richText("hello world", &spans);
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    // "hello", " " (uncovered), "world" = 3 draws.
+    try testing.expectEqual(@as(usize, 3), text_draws.items.len);
+}
+
 test "buildVertices draws border + bg + cursor for focused text input" {
     const testing = std.testing;
     const Msg = union(enum) { focus };
