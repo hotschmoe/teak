@@ -21,7 +21,8 @@ Every arrow is an explicit function call with typed inputs and outputs. No globa
 ## Status
 
 - **Proto-2 shipped** on Win32 + wgpu-native and on WebAssembly + WebGPU (via [zunk](https://github.com/hotschmoe/zunk)).
-- **Text rendering** is the next major feature, blocked on zunk's upcoming sampler + texture support. See [`docs/zunk-roadmap.md`](docs/zunk-roadmap.md).
+- **Text rendering shipped.** Both backends rasterize glyph-accurate text into a texture atlas and draw via `uploadText` / `renderFrame`.
+- **Functional-gaps push landed** on `functional_gaps_yolo`: overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs surface, virtual list, a11y tree, rich text. See [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md).
 
 ## Build commands
 
@@ -42,7 +43,7 @@ zig build web-run        # same, then serves dist/ on localhost:8080
 
 Three examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), and **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array).
 
-Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until Zig ships a fix for [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865). See [`docs/zig-016-win-arm64-crash.md`](docs/zig-016-win-arm64-crash.md).
+Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until Zig ships a fix for [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865). See [`docs/archive/zig-016-win-arm64-crash.md`](docs/archive/zig-016-win-arm64-crash.md).
 
 ## Where to read next
 
@@ -50,7 +51,7 @@ Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until
 - [`CLAUDE.md`](CLAUDE.md) — orientation for LLMs and new contributors.
 - [`docs/features/`](docs/features/) — one contract per `pub` surface unit (`Components`, `TransientState`, `Host`, `Gpu`, hit-test, layout, focus).
 - [`docs/pitfalls.md`](docs/pitfalls.md) — real bugs we hit and how to recognise their shape next time.
-- [`docs/zunk-roadmap.md`](docs/zunk-roadmap.md) — what Teak needs from zunk next, in priority order.
+- [`docs/archive/zunk-roadmap.md`](docs/archive/zunk-roadmap.md) — what Teak needs from zunk next, in priority order.
 - [`spec.md`](spec.md) — full architecture spec.
 
 ## Module layout

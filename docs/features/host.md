@@ -8,7 +8,7 @@ Escape hatch 4 in [HARDLINE §2](../HARDLINE.md#escape-hatch-4-host-interface). 
 
 ## Contract
 
-A Host type must expose four declarations:
+A Host type must expose these declarations:
 
 | Decl | Signature | Purpose |
 |---|---|---|
@@ -17,8 +17,16 @@ A Host type must expose four declarations:
 | `pollInputs` | `fn(*Host) InputState` | Drain one frame's events. Called once per frame at the top of the main loop. |
 | `shouldClose` | `fn(*const Host) bool` | True when the user closed the window. The wasm host returns `false` unconditionally; the page lifecycle is zunk's problem. |
 | `nativeHandle` | `fn(*const Host) NativeHandleT` | Opaque handle the matching Gpu backend consumes. Shape is a private agreement between the Host and its Gpu. |
+| `textMeasurer` | `fn(*Host) TextMeasurer` | Return a glyph-accurate measurer vtable. Native hosts wrap their font system; headless / wasm hosts may return `monoMeasurer()`. |
+| `clipboard` | `fn(*Host) Clipboard` | Return a Clipboard vtable for OS-level cut / copy / paste. `read` returns a UTF-8 slice valid until the next `read`. No-op impls (empty read, discard write) are acceptable for headless / wasm. |
+| `imeState` | `fn(*const Host) ImeState` | Current IME composition snapshot. Hosts without IME return `.{ .active = false }`. |
+| `publishA11yTree` | `fn(*Host, []const A11yNode) void` | Hand the accessibility tree to whatever screen-reader API the platform exposes (UI Automation on Windows, AT-SPI on Linux, mirrored DOM on web). No-op on hosts without one. |
+| `openFileDialog` | `fn(*Host, FileDialogFilter) FileDialogResult` | Block until the user picks a path; `null` on cancel. Native hosts call the OS file picker; web stubs return `null`. |
+| `saveFileDialog` | `fn(*Host, FileDialogFilter) FileDialogResult` | Save-side counterpart of `openFileDialog`. |
+| `openSecondaryWindow` | `fn(*Host, []const u8, u32, u32) ?u32` | Open a second top-level window sharing this Host's event source; returns an opaque id the app holds and renders into via the GPU layer. Single-window hosts return `null`. |
+| `nowMs` | `fn(*const Host) u64` | Monotonic millisecond timestamp on the host's clock. Used by `Sub.at(deadline_ms, msg)` and anything else needing a host-side wall clock without violating HARDLINE §3's "no wall-clock in `view`". |
 
-`validateHost` comptime-asserts `deinit`, `pollInputs`, `shouldClose`, `nativeHandle` exist. Compile-error format:
+`validateHost` comptime-asserts every non-`init` decl above. The clipboard / IME / a11y / dialog / secondary-window / `nowMs` decls landed during the `functional_gaps_yolo` push as HARDLINE §4(d) surface extensions. Compile-error format:
 
 ```
 Host 'MyHost' is missing declaration 'pollInputs'
@@ -58,10 +66,10 @@ pub const InputState = struct {
 ## Non-goals / known limits
 
 - **No keyboard auto-repeat handling.** Backends report raw key events. A widget that wants repeat (e.g. holding backspace to delete) must implement it in `update` based on frame timing.
-- **No IME / composition.** `chars` is ASCII for the Win32 backend, UTF-8 for wasm but capped at 32 bytes per frame (zunk limit) — IME paste of >32 bytes silently truncates. Tracked in [zunk-handoff.md](../zunk-handoff.md).
-- **No clipboard.** Not in the contract. Add a decl + backend impls when the first widget needs it.
+- **IME surface only.** `imeState()` is in the contract and the Win32 host wires WM_IME_* messages through it, but `chars` on Win32 is still ASCII-fast-path and wasm caps `chars` at 32 bytes per frame (zunk limit) — IME paste of >32 bytes silently truncates. Tracked in [zunk-handoff.md](../archive/zunk-handoff.md).
 - **No focus-in / focus-out.** Apps track focus in `Model`; backends don't report window-focus edges today.
 - **No gamepad / touch / pen.** Single mouse + keyboard only.
+- **Secondary windows are stub-only.** `openSecondaryWindow` is in the contract for forward compatibility; current backends return `null` and the GPU layer has no `renderToWindow` yet.
 
 ## Test coverage target
 
