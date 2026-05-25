@@ -32,6 +32,8 @@ pub const InputState = struct {
     mouse_y: f32,
     mouse_down: bool,       // edge — true only the frame the button went down
     mouse_up: bool,         // edge — true only the frame the button went up
+    wheel_dx: f32,          // accumulator — pixels of intended horizontal scroll
+    wheel_dy: f32,          // accumulator — pixels of intended vertical scroll
     chars: []const u8,      // queue — typed Unicode codepoints this frame (ASCII for now)
     keys: []const SpecialKey, // queue — backspace, enter, arrows, etc. this frame
     resized: bool,
@@ -43,6 +45,8 @@ pub const InputState = struct {
 **Slice lifetime**: `chars` and `keys` reference Host-internal buffers. They are valid **only until the next `pollInputs` call**. Copy into `Model` if you need to retain.
 
 **Edge vs state**: `mouse_down` / `mouse_up` are edges — the Host computes them by diffing against the previous poll. `mouse_x` / `mouse_y` are state. A widget that wants "is the button currently held?" must track it in `Model` based on edges.
+
+**Wheel sign convention**: `wheel_dx` / `wheel_dy` carry pixels of *intended* scroll accumulated since the previous `pollInputs`. Positive `wheel_dy` means the user wants the content to scroll **down** (visible viewport advances toward higher y); positive `wheel_dx` means scroll **right**. This matches the DOM `WheelEvent.deltaX` / `deltaY` convention. Backends translate native wheel notches into pixels — Win32 maps each `WHEEL_DELTA` (120 raw units) to ~48 px (the standard "3 lines"); the wasm host forwards zunk's already-pixel `mouse.wheel`. Zero when no wheel events arrived. Apps translate `wheel_dy` into a regular Msg (e.g. `.scroll_by`) and route it through `update`, same as any other input — there is no wheel-handler callback.
 
 ## Invariants
 

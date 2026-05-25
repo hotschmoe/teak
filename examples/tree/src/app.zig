@@ -22,6 +22,14 @@ const teak = @import("teak");
 pub const MAX_NODES = 128;
 pub const MAX_LABEL = 48;
 pub const INDENT_PER_LEVEL: f32 = 20;
+/// Fixed viewport height for the scroll region. Mirrored from the
+/// `pushScroll` call in `view`. Kept here so the keyboard handler can
+/// translate page_up / page_down into a viewport-sized delta and the
+/// update arm can clamp against the visible window without needing
+/// layout output.
+pub const SCROLL_VIEWPORT_HEIGHT: f32 = 400;
+/// Pixel delta for an arrow-key step. Roughly one row.
+pub const SCROLL_LINE_PX: f32 = 24;
 
 // ── Model ──────────────────────────────────────────────────────────
 
@@ -44,6 +52,11 @@ pub const Model = struct {
     /// Click-selected node, highlighted in the render pass (optional —
     /// kept for future expansion, unused today beyond storage).
     selected: ?u16 = null,
+    /// Vertical scroll offset of the file-tree viewport, in pixels.
+    /// Fed back into `ScrollStyle.scroll_y` every frame. Mouse wheel
+    /// and arrow / page keys translate into `.scroll_by` Msgs that
+    /// nudge this field.
+    scroll_y: f32 = 0,
 
     pub fn init() Model {
         var m: Model = .{};
@@ -83,6 +96,8 @@ pub const Model = struct {
 pub const Msg = union(enum) {
     toggle: u16, // node pre-order index
     select: u16,
+    /// Relative scroll delta in pixels; positive = scroll down.
+    scroll_by: f32,
 };
 
 // ── Update ─────────────────────────────────────────────────────────
@@ -95,6 +110,13 @@ pub fn update(m: *Model, msg: Msg) void {
         },
         .select => |i| {
             if (i < m.nodes_len) m.selected = i;
+        },
+        .scroll_by => |dy| {
+            // Best-effort clamp. Without `content_height` from layout
+            // we can only enforce >= 0; overscroll past the bottom is
+            // tolerated and self-corrects once the user scrolls back.
+            const next = m.scroll_y + dy;
+            m.scroll_y = if (next < 0) 0 else next;
         },
     }
 }
@@ -112,7 +134,8 @@ pub fn view(m: *const Model, cb: anytype) void {
         .padding = 0,
         .gap = 2,
         .flex = 1,
-        .height = 400,
+        .height = SCROLL_VIEWPORT_HEIGHT,
+        .scroll_y = m.scroll_y,
     });
 
     // Walk pre-order. `hide_below_depth` is the shallow-most collapsed
@@ -196,14 +219,29 @@ const sample_tree = [_]SampleEntry{
     .{ .depth = 1, .label = "pitfalls.md" },
 };
 
-// Tree has no text input → no key translation. Host loop still calls
-// these; they return null.
+// Tree has no text input, but it does want arrow / page keys to drive
+// the scroll viewport.
 pub fn keyCharMsg(_: *const Model, _: u8) ?Msg {
     return null;
 }
 
-pub fn keySpecialMsg(_: *const Model, _: teak.SpecialKey) ?Msg {
-    return null;
+pub fn keySpecialMsg(_: *const Model, k: teak.SpecialKey) ?Msg {
+    return switch (k) {
+        .up => .{ .scroll_by = -SCROLL_LINE_PX },
+        .down => .{ .scroll_by = SCROLL_LINE_PX },
+        .page_up => .{ .scroll_by = -SCROLL_VIEWPORT_HEIGHT },
+        .page_down => .{ .scroll_by = SCROLL_VIEWPORT_HEIGHT },
+        .home => .{ .scroll_by = -1.0e9 }, // clamped to 0 in update
+        else => null,
+    };
+}
+
+/// Wheel-input glue. The host calls this with `input.wheel_dy`; a zero
+/// value short-circuits to null so the loop avoids an unnecessary
+/// dispatch.
+pub fn wheelMsg(_: *const Model, wheel_dy: f32) ?Msg {
+    if (wheel_dy == 0) return null;
+    return .{ .scroll_by = wheel_dy };
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -293,6 +331,43 @@ test "collapse of an outer subtree hides all nested descendants, not just direct
     }
     try t.expect(!found_cmd); // src's grandchildren hidden
     try t.expect(found_examples); // sibling of src still visible
+}
+
+test "scroll_by nudges Model.scroll_y and clamps at 0" {
+    const t = std.testing;
+    var m = Model.init();
+
+    try t.expectEqual(@as(f32, 0), m.scroll_y);
+
+    update(&m, .{ .scroll_by = 60 });
+    try t.expectEqual(@as(f32, 60), m.scroll_y);
+
+    update(&m, .{ .scroll_by = -24 });
+    try t.expectEqual(@as(f32, 36), m.scroll_y);
+
+    // Overscrolling past 0 clamps.
+    update(&m, .{ .scroll_by = -1000 });
+    try t.expectEqual(@as(f32, 0), m.scroll_y);
+}
+
+test "keySpecialMsg routes arrows and page keys into scroll_by" {
+    const t = std.testing;
+    const m = Model.init();
+
+    try t.expectEqual(@as(?Msg, .{ .scroll_by = -SCROLL_LINE_PX }), keySpecialMsg(&m, .up));
+    try t.expectEqual(@as(?Msg, .{ .scroll_by = SCROLL_LINE_PX }), keySpecialMsg(&m, .down));
+    try t.expectEqual(@as(?Msg, .{ .scroll_by = -SCROLL_VIEWPORT_HEIGHT }), keySpecialMsg(&m, .page_up));
+    try t.expectEqual(@as(?Msg, .{ .scroll_by = SCROLL_VIEWPORT_HEIGHT }), keySpecialMsg(&m, .page_down));
+    try t.expectEqual(@as(?Msg, null), keySpecialMsg(&m, .escape));
+}
+
+test "wheelMsg passes through non-zero deltas and squelches zero" {
+    const t = std.testing;
+    const m = Model.init();
+
+    try t.expectEqual(@as(?Msg, null), wheelMsg(&m, 0));
+    try t.expectEqual(@as(?Msg, .{ .scroll_by = 48 }), wheelMsg(&m, 48));
+    try t.expectEqual(@as(?Msg, .{ .scroll_by = -16 }), wheelMsg(&m, -16));
 }
 
 test "end-to-end: click the collapsed 'input' row's chevron expands it" {

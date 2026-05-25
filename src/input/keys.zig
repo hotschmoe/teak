@@ -16,6 +16,8 @@ pub const SpecialKey = enum {
     down,
     home,
     end,
+    page_up,
+    page_down,
     enter,
     tab,
     escape,

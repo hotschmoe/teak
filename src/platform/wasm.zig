@@ -51,6 +51,8 @@ const key_mappings = [_]struct { from: zinput.Key, to: SpecialKey }{
     .{ .from = .arrow_right, .to = .right },
     .{ .from = .arrow_up, .to = .up },
     .{ .from = .arrow_down, .to = .down },
+    .{ .from = .page_up, .to = .page_up },
+    .{ .from = .page_down, .to = .page_down },
 };
 
 pub const Host = struct {
@@ -114,11 +116,22 @@ pub const Host = struct {
         self.width = w;
         self.height = h;
 
+        // Zunk exposes a single `mouse.wheel` accumulator (vertical
+        // only) in CSS pixels with deltaMode=0 — positive = scroll
+        // down, matching the InputState convention. No horizontal-
+        // wheel API today; tracked as a follow-up ask alongside the
+        // other zunk gaps in docs/zunk-handoff.md.
+        // TODO: zunk horizontal wheel events.
+        const wheel_dy = mouse.wheel;
+        const wheel_dx: f32 = 0;
+
         return .{
             .mouse_x = mouse.x,
             .mouse_y = mouse.y,
             .mouse_down = mouse_down,
             .mouse_up = mouse_up,
+            .wheel_dx = wheel_dx,
+            .wheel_dy = wheel_dy,
             .chars = self.chars_buf[0..self.chars_len],
             .keys = self.keys_buf[0..self.keys_len],
             .resized = resized,

@@ -80,6 +80,13 @@ export fn frame(_: f32) void {
         press_target = null;
     }
 
+    // Wheel + keyboard scrolling. Mirrors ui_main; wasm host stubs
+    // wheel_dx to zero today (zunk has no horizontal-wheel API).
+    if (App.wheelMsg(&model, input.wheel_dy)) |m| App.update(&model, m);
+    for (input.keys) |k| {
+        if (App.keySpecialMsg(&model, k)) |m| App.update(&model, m);
+    }
+
     current ^= 1;
     const cur = current;
     bufs[cur].reset();

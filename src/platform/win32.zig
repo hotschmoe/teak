@@ -71,12 +71,20 @@ const WM_KEYDOWN: UINT = 0x0100;
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
+const WM_MOUSEWHEEL: UINT = 0x020A;
+const WM_MOUSEHWHEEL: UINT = 0x020E;
+const WHEEL_DELTA: f32 = 120;
+/// Pixels per wheel notch (standard "3 lines × 16 px") — matches the
+/// DOM convention browsers use when `deltaMode == 0` (pixel deltas).
+const WHEEL_PIXELS_PER_NOTCH: f32 = 48;
 const IDC_ARROW: LPCWSTR = @ptrFromInt(32512);
 
 const VK_BACK: WPARAM = 0x08;
 const VK_TAB: WPARAM = 0x09;
 const VK_RETURN: WPARAM = 0x0D;
 const VK_ESCAPE: WPARAM = 0x1B;
+const VK_PRIOR: WPARAM = 0x21; // page up
+const VK_NEXT: WPARAM = 0x22; // page down
 const VK_END: WPARAM = 0x23;
 const VK_HOME: WPARAM = 0x24;
 const VK_LEFT: WPARAM = 0x25;
@@ -256,6 +264,14 @@ var g_resized: bool = false;
 var g_mouse_down_pending: bool = false;
 var g_mouse_up_pending: bool = false;
 
+// Wheel accumulators — pixels of intended scroll since the last
+// pollInputs drain. Sign convention matches the InputState doc:
+// positive wheel_dy = scroll down. Win32's WM_MOUSEWHEEL reports the
+// opposite (positive = away from user = scroll up) so we negate. The
+// horizontal axis already matches (positive = scroll right).
+var g_wheel_dx: f32 = 0;
+var g_wheel_dy: f32 = 0;
+
 var g_chars: [64]u8 = undefined;
 var g_chars_count: usize = 0;
 
@@ -323,6 +339,25 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             g_mouse_up_pending = true;
             return 0;
         },
+        WM_MOUSEWHEEL => {
+            // GET_WHEEL_DELTA_WPARAM: HIWORD of wparam, signed. Win32
+            // sends positive when the wheel turns away from the user
+            // (= content should scroll up); we want the InputState
+            // convention "positive = scroll down" so negate.
+            const raw_delta: i16 = @bitCast(@as(u16, @truncate(wp >> 16)));
+            const delta: f32 = @floatFromInt(raw_delta);
+            g_wheel_dy += -(delta / WHEEL_DELTA) * WHEEL_PIXELS_PER_NOTCH;
+            return 0;
+        },
+        WM_MOUSEHWHEEL => {
+            // Horizontal wheel: Win32 reports positive when tilted
+            // right (= content should scroll right), which already
+            // matches our "positive = scroll right" convention.
+            const raw_delta: i16 = @bitCast(@as(u16, @truncate(wp >> 16)));
+            const delta: f32 = @floatFromInt(raw_delta);
+            g_wheel_dx += (delta / WHEEL_DELTA) * WHEEL_PIXELS_PER_NOTCH;
+            return 0;
+        },
         WM_CHAR => {
             // 0x08 (backspace) and other control chars arrive here too —
             // ignore them; special keys route through WM_KEYDOWN.
@@ -348,6 +383,8 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
                 VK_DOWN => pushKey(if (shift_down) .shift_down else .down),
                 VK_HOME => pushKey(if (shift_down) .shift_home else .home),
                 VK_END => pushKey(if (shift_down) .shift_end else .end),
+                VK_PRIOR => pushKey(.page_up),
+                VK_NEXT => pushKey(.page_down),
                 VK_RETURN => pushKey(.enter),
                 VK_TAB => pushKey(.tab),
                 VK_ESCAPE => pushKey(.escape),
@@ -479,15 +516,21 @@ pub const Host = struct {
         const mouse_down = g_mouse_down_pending;
         const mouse_up = g_mouse_up_pending;
         const resized = g_resized;
+        const wheel_dx = g_wheel_dx;
+        const wheel_dy = g_wheel_dy;
         g_mouse_down_pending = false;
         g_mouse_up_pending = false;
         g_resized = false;
+        g_wheel_dx = 0;
+        g_wheel_dy = 0;
 
         return .{
             .mouse_x = g_mouse_x,
             .mouse_y = g_mouse_y,
             .mouse_down = mouse_down,
             .mouse_up = mouse_up,
+            .wheel_dx = wheel_dx,
+            .wheel_dy = wheel_dy,
             .chars = g_chars[0..g_chars_count],
             .keys = g_keys[0..g_keys_count],
             .resized = resized,

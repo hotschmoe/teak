@@ -153,6 +153,14 @@ pub fn main() !void {
             press_target = null;
         }
 
+        // Translate wheel + keyboard into scroll Msgs. Same loop shape
+        // as counter_greeter's text-input handler — host snapshot ->
+        // app-side translator -> update.
+        if (App.wheelMsg(&model, input.wheel_dy)) |m| App.update(&model, m);
+        for (input.keys) |k| {
+            if (App.keySpecialMsg(&model, k)) |m| App.update(&model, m);
+        }
+
         current ^= 1;
         const cur = current;
         bufs[cur].reset();

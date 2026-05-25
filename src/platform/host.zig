@@ -68,11 +68,21 @@ pub const FileDialogFilter = struct {
 /// frame the button transitioned. `chars` and `keys` are queues drained
 /// and returned in receive order; the slices reference Host-internal
 /// storage and are valid only until the next `pollInputs` call.
+///
+/// `wheel_dx` / `wheel_dy` are accumulated pixels of intended scroll
+/// since the previous `pollInputs`. Sign convention matches the DOM
+/// `WheelEvent.deltaX` / `deltaY`: positive `wheel_dy` means the user
+/// wants the content to scroll **down** (visible viewport advances
+/// toward higher y) and positive `wheel_dx` means scroll right. Hosts
+/// translate native wheel notches into pixels (typically 120 raw units
+/// = ~48 px on Win32). Zero when no wheel events arrived this frame.
 pub const InputState = struct {
     mouse_x: f32,
     mouse_y: f32,
     mouse_down: bool,
     mouse_up: bool,
+    wheel_dx: f32,
+    wheel_dy: f32,
     chars: []const u8,
     keys: []const SpecialKey,
     resized: bool,
@@ -168,4 +178,10 @@ test "validateHost accepts a minimal shape" {
         fn stubWrite(_: *anyopaque, _: []const u8) void {}
     };
     comptime validateHost(Stub);
+}
+
+test "InputState wheel_d{x,y} zero-default through std.mem.zeroes" {
+    const z = std.mem.zeroes(InputState);
+    try std.testing.expectEqual(@as(f32, 0), z.wheel_dx);
+    try std.testing.expectEqual(@as(f32, 0), z.wheel_dy);
 }
