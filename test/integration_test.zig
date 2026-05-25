@@ -83,6 +83,55 @@ test "round-trip: click button → update → view reflects new state" {
     try testing.expect(text_draws.items.len == 2);
 }
 
+// ── Virtual list: visible window holds work bounded ──────────────
+
+test "virtual list: only emits cmds for the visible window, container claims full size" {
+    const testing = std.testing;
+    const Msg = union(enum) { pick };
+    const allocator = testing.allocator;
+
+    var cb = teak.CmdBuffer(Msg).init(allocator);
+    defer cb.deinit();
+
+    // 10,000 logical rows, 24px each. App "scrolls" to rows 400..420.
+    const TOTAL: u32 = 10_000;
+    const ITEM_H: f32 = 24;
+    const VISIBLE_START: u32 = 400;
+    const VISIBLE_END: u32 = 420;
+
+    cb.pushScroll(.{ .direction = .vertical, .width = 400, .height = 480, .padding = 0, .gap = 0 });
+    cb.pushVirtualList(.{
+        .direction = .vertical,
+        .total_count = TOTAL,
+        .item_extent = ITEM_H,
+        .visible_start = VISIBLE_START,
+        .visible_end = VISIBLE_END,
+    });
+    var i: u32 = VISIBLE_START;
+    while (i < VISIBLE_END) : (i += 1) {
+        cb.button(.pick, "row");
+    }
+    cb.popVirtualList();
+    cb.popScroll();
+
+    // 4 wrapper cmds + (VISIBLE_END - VISIBLE_START) row buttons.
+    const visible_rows = VISIBLE_END - VISIBLE_START;
+    try testing.expectEqual(@as(usize, 4 + visible_rows), cb.cmds.items.len);
+
+    var rects: [128]teak.Rect = undefined;
+    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, teak.monoMeasurer());
+
+    // The virtual-list container's height is the logical total
+    // (TOTAL * ITEM_H), not just visible_rows * ITEM_H. That's how
+    // the parent scroll container learns the full scroll extent.
+    const list_idx: usize = 1; // [0]=push_scroll, [1]=push_virtual_list
+    try testing.expectEqual(@as(f32, TOTAL * ITEM_H), rects[list_idx].h);
+
+    // The first emitted row sits at y = VISIBLE_START * ITEM_H.
+    const first_row_idx: usize = 2; // first child after push_virtual_list
+    try testing.expectEqual(@as(f32, VISIBLE_START * ITEM_H), rects[first_row_idx].y);
+}
+
 // ── WASM canary: pipeline compiles without posix ─────────────────
 
 /// Exported so `wasm32-freestanding -fno-entry -rdynamic` keeps the
