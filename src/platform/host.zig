@@ -76,6 +76,11 @@ pub const FileDialogFilter = struct {
 /// toward higher y) and positive `wheel_dx` means scroll right. Hosts
 /// translate native wheel notches into pixels (typically 120 raw units
 /// = ~48 px on Win32). Zero when no wheel events arrived this frame.
+/// Host capability note: not every backend wires both axes today —
+/// e.g. the wasm host currently reports vertical wheel only and stubs
+/// `wheel_dx = 0`. Apps that care about horizontal wheel should be
+/// designed to tolerate a zero on hosts without it; treat the
+/// horizontal axis as best-effort across backends.
 pub const InputState = struct {
     mouse_x: f32,
     mouse_y: f32,

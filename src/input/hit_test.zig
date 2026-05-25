@@ -169,6 +169,19 @@ fn hoverTestLayer(
     var clip: ClipStack = .{};
     var overlay_depth: u32 = 0;
     var best: ?usize = null;
+
+    // Mirror `hitTestLayer`'s modal handling: track the innermost modal
+    // overlay containing the mouse during the .overlay pass so we can
+    // claim the hover even if no interactive leaf catches it. Hosts
+    // gate `hitTest` behind a press-target dance — they call
+    // `hoverTest` on mousedown to arm `press_target` and again on
+    // mouseup to gate `hitTest`. If hover returns null over a modal
+    // backdrop, press_target never arms and the modal-fallback path in
+    // `hitTest` is never reached. The index-equality check
+    // (`hover_under_mouse == press_target`) works fine here: press and
+    // release both yield the overlay's cmd index.
+    var modal_index: ?usize = null;
+
     for (cmds, 0..) |c, i| {
         const cur_clip = clip.top();
         const in_overlay = overlay_depth > 0;
@@ -179,9 +192,15 @@ fn hoverTestLayer(
         switch (c) {
             .push_scroll => clip.push(clipRect(rects[i], cur_clip)),
             .pop_scroll => clip.pop(),
-            .push_overlay => {
+            .push_overlay => |ov| {
                 overlay_depth += 1;
                 clip.push(clipRect(rects[i], cur_clip));
+                if (layer == .overlay and ov.modal and
+                    rectContains(rects[i], mouse_x, mouse_y) and
+                    rectContains(cur_clip, mouse_x, mouse_y))
+                {
+                    modal_index = i;
+                }
             },
             .pop_overlay => {
                 overlay_depth -= 1;
@@ -194,7 +213,13 @@ fn hoverTestLayer(
             },
         }
     }
-    return best;
+    if (best) |b| return b;
+    // No leaf claimed the hover. A modal overlay containing the mouse
+    // claims the empty backdrop area on its own behalf so the host's
+    // press-target gate arms on the overlay's cmd index — without this
+    // the press/release pair never fires `hitTest` and the modal's
+    // `backdrop_msg` would be unreachable in practice.
+    return modal_index;
 }
 
 /// Compute a slider's normalized value [0, 1] from an x position, given
@@ -607,6 +632,71 @@ test "hitTest: leaf inside modal overlay still wins over backdrop_msg" {
         button_rect.y + 4,
     );
     try testing.expect(hit != null);
+    try testing.expectEqual(@as(?Msg, Msg.close), hit.?.msg);
+}
+
+// Regression for the press/release host gate: `hoverTest` must claim
+// the modal-backdrop area so `press_target` arms on the overlay's cmd
+// index. Otherwise the host's `hover_under_mouse == press_target`
+// check fails on mouseup and `hitTest` is never invoked — making the
+// modal-fallback path in `hitTest` dead code at runtime even though
+// its unit tests pass.
+test "hover+hit integration: modal backdrop arms press_target and dispatches backdrop_msg" {
+    const testing = std.testing;
+    const Msg = union(enum) { base_click, close };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // Base-layer button that would fire if the modal didn't claim the
+    // empty backdrop area. We click in the empty space inside the
+    // modal — the base button must NOT be the hover/hit target.
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.button(.base_click, "Underneath"); // base-layer leaf
+    cb.pushOverlay(.{
+        .x = 0,
+        .y = 0,
+        .width = 400,
+        .height = 200,
+        .padding = 0,
+        .modal = true,
+        .backdrop_msg = .close,
+    });
+    // Intentionally no interactive leaf inside the overlay — the click
+    // point will land on the dim backdrop, not on any button.
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    const cmds = cb.cmds.items;
+    layout.LayoutEngine.doLayout(rects[0..cmds.len], cmds, 800, 600, text_mod.monoMeasurer());
+
+    // The cmd indices: 0=push_group, 1=button, 2=push_overlay, 3=pop_overlay, 4=pop_group.
+    const overlay_idx: usize = 2;
+    const click_x: f32 = 200;
+    const click_y: f32 = 100;
+
+    // mousedown — host calls hoverTest to arm press_target. Must point
+    // at the overlay's cmd index, NOT the base button (index 1) and
+    // NOT null.
+    const hover_at_press = hoverTest(cmds, rects[0..cmds.len], click_x, click_y);
+    try testing.expect(hover_at_press != null);
+    try testing.expectEqual(@as(?usize, overlay_idx), hover_at_press);
+
+    // Simulate the host's press_target arming.
+    const press_target: ?usize = hover_at_press;
+
+    // mouseup — host calls hoverTest again and gates hitTest on
+    // `hover_under_mouse == press_target`. Cursor hasn't moved, so the
+    // gate must pass.
+    const hover_at_release = hoverTest(cmds, rects[0..cmds.len], click_x, click_y);
+    try testing.expect(hover_at_release != null);
+    try testing.expectEqual(press_target, hover_at_release);
+
+    // Gate passed → host calls hitTest. The modal-fallback path in
+    // hitTestLayer fires and returns the backdrop_msg.
+    const hit = hitTest(cmds, rects[0..cmds.len], click_x, click_y);
+    try testing.expect(hit != null);
+    try testing.expectEqual(overlay_idx, hit.?.index);
     try testing.expectEqual(@as(?Msg, Msg.close), hit.?.msg);
 }
 
