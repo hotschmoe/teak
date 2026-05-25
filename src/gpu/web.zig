@@ -22,6 +22,32 @@ pub const TextDraw = teak.TextDraw;
 
 const SHADER_SOLID = @import("teak-shaders").quad_wgsl;
 const SHADER_TEXT = @import("teak-shaders").textured_quad_wgsl;
+const SHADER_IMAGE = @import("teak-shaders").image_wgsl;
+
+// ── Image cache (app-driven, no LRU; mirrors gpu/native.zig) ────────
+//
+// The app uploads an RGBA8 image once via `uploadImage`, stashes the
+// returned handle, and emits `cmd.image(handle, ...)` each frame.
+// Unlike the glyph cache there is no LRU — the app owns lifecycle. A
+// fixed 64-slot table keeps the memory budget bounded; `uploadImage`
+// returns TEXTURE_HANDLE_NONE once full and the renderer falls back
+// to the tinted-placeholder quad emitted by `render/build.zig`.
+
+const IMAGE_CACHE_CAPACITY: usize = 64;
+const IMAGE_VERT_BUF_CAPACITY: usize = IMAGE_CACHE_CAPACITY * 6;
+
+const ImageEntry = struct {
+    texture: zgpu.Texture,
+    view: zgpu.TextureView,
+    bind_group: zgpu.BindGroup,
+    width: u32,
+    height: u32,
+};
+
+const ImageDrawRecord = struct {
+    bind_group: zgpu.BindGroup,
+    vert_offset: u32,
+};
 
 // ── Text cache ─────────────────────────────────────────────────────
 //
@@ -75,6 +101,20 @@ pub const Gpu = struct {
     text_vert_buf: ?zgpu.Buffer,
     text_vert_buf_size: u32,
 
+    // Image pipeline. Shares `text_bgl` + `sampler` with the text path
+    // since both bind {uniform, texture, sampler}. Only the shader differs
+    // — `image.wgsl` modulates the texture by the tint (real RGBA), while
+    // `textured_quad.wgsl` modulates the alpha-only glyph by the color.
+    image_pipeline: zgpu.RenderPipeline,
+    image_cache: [IMAGE_CACHE_CAPACITY]ImageEntry,
+    image_cache_len: usize,
+    image_draws: [IMAGE_CACHE_CAPACITY]ImageDrawRecord,
+    image_draw_count: usize,
+    image_verts: [IMAGE_VERT_BUF_CAPACITY]Vertex,
+    image_vert_count: u32,
+    image_vert_buf: ?zgpu.Buffer,
+    image_vert_buf_size: u32,
+
     pub fn init(_: anytype, width: u32, height: u32) !Gpu {
         const shader = zgpu.createShaderModule(SHADER_SOLID);
 
@@ -121,6 +161,11 @@ pub const Gpu = struct {
             .address_w = .clamp_to_edge,
         });
 
+        // Image pipeline reuses text BGL + sampler; only the shader
+        // differs (texture * tint vs. alpha-from-texture * color).
+        const image_shader = zgpu.createShaderModule(SHADER_IMAGE);
+        const image_pipeline = zgpu.createRenderPipeline(text_pl, image_shader, "vs_main", "fs_main", &layouts);
+
         var self: Gpu = .{
             .pipeline = pipeline,
             .bind_group = bind_group,
@@ -140,6 +185,15 @@ pub const Gpu = struct {
             .text_vert_count = 0,
             .text_vert_buf = null,
             .text_vert_buf_size = 0,
+            .image_pipeline = image_pipeline,
+            .image_cache = undefined,
+            .image_cache_len = 0,
+            .image_draws = undefined,
+            .image_draw_count = 0,
+            .image_verts = undefined,
+            .image_vert_count = 0,
+            .image_vert_buf = null,
+            .image_vert_buf_size = 0,
         };
         self.writeScreenSize();
         return self;
@@ -150,7 +204,11 @@ pub const Gpu = struct {
         // `WebBackend.destroyEntry`; see the module-level comment for
         // why zunk doesn't destroy views / bind groups / pipelines.
         self.text_cache.clear();
+        for (self.image_cache[0..self.image_cache_len]) |e| {
+            zgpu.destroyTexture(e.texture);
+        }
         zgpu.destroySampler(self.sampler);
+        if (self.image_vert_buf) |ib| zgpu.bufferDestroy(ib);
         if (self.text_vert_buf) |tb| zgpu.bufferDestroy(tb);
         if (self.vert_buf) |vb| zgpu.bufferDestroy(vb);
         zgpu.bufferDestroy(self.uniform_buf);
@@ -189,6 +247,18 @@ pub const Gpu = struct {
             zgpu.renderPassSetBindGroup(pass, 0, self.bind_group);
             zgpu.renderPassSetVertexBuffer(pass, 0, self.vert_buf.?, 0, draw_bytes);
             zgpu.renderPassDraw(pass, self.vert_count, 1, 0, 0);
+        }
+
+        // Images before text so labels read on top of images. Matches
+        // gpu/native.zig's draw order.
+        if (self.image_draw_count > 0 and self.image_vert_buf != null) {
+            const image_bytes: u64 = @intCast(self.image_vert_count * @sizeOf(Vertex));
+            zgpu.renderPassSetPipeline(pass, self.image_pipeline);
+            zgpu.renderPassSetVertexBuffer(pass, 0, self.image_vert_buf.?, 0, image_bytes);
+            for (self.image_draws[0..self.image_draw_count]) |rec| {
+                zgpu.renderPassSetBindGroup(pass, 0, rec.bind_group);
+                zgpu.renderPassDraw(pass, 6, 1, rec.vert_offset, 0);
+            }
         }
 
         if (self.text_draw_count > 0 and self.text_vert_buf != null) {
@@ -334,19 +404,111 @@ pub const Gpu = struct {
         zgpu.bufferWriteTyped(Vertex, self.text_vert_buf.?, 0, self.text_verts[0..self.text_vert_count]);
     }
 
-    // ── Image surface (stub; web backend pending parity with native) ──
-    // Honest acknowledgment: native uploads RGBA textures + draws via a
-    // dedicated image pipeline; web still owes both. For now the renderer
-    // falls back to the tinted-placeholder quad emitted in render/build.zig
-    // when the handle is TEXTURE_HANDLE_NONE, so apps that depend on the
-    // surface contract still link and run — they just don't see textured
-    // images on the web target until this implements the zunk texture
-    // upload + a parallel pipeline.
-    pub fn uploadImage(_: *Gpu, _: []const u8, _: u32, _: u32) TextureHandle {
-        return teak.TEXTURE_HANDLE_NONE;
+    /// Upload an RGBA8 image. `bytes.len` must equal `width * height * 4`.
+    /// Returns an opaque handle (slot index + 1) the app stashes in
+    /// `ImageCmd.handle`. Returns `TEXTURE_HANDLE_NONE` on bad dims or
+    /// when the 64-slot cache is full — the renderer falls back to a
+    /// tinted-placeholder quad in either case so apps still render.
+    pub fn uploadImage(self: *Gpu, bytes: []const u8, width: u32, height: u32) TextureHandle {
+        if (width == 0 or height == 0) return teak.TEXTURE_HANDLE_NONE;
+        if (bytes.len < @as(usize, width) * @as(usize, height) * 4) return teak.TEXTURE_HANDLE_NONE;
+        if (self.image_cache_len >= self.image_cache.len) return teak.TEXTURE_HANDLE_NONE;
+
+        const texture = zgpu.createTexture(width, height, .rgba8unorm, zgpu.TextureUsage.TEXTURE_BINDING | zgpu.TextureUsage.COPY_DST);
+        zgpu.writeTexture(texture, bytes, width * 4, width, height);
+
+        const view = zgpu.createTextureView(texture);
+        const bind_group = zgpu.createBindGroup(self.text_bgl, &.{
+            zgpu.BindGroupEntry.initBufferFull(0, self.uniform_buf, 8),
+            zgpu.BindGroupEntry.initTextureView(1, view),
+            zgpu.BindGroupEntry.initSampler(2, self.sampler),
+        });
+
+        const slot = self.image_cache_len;
+        self.image_cache[slot] = .{
+            .texture = texture,
+            .view = view,
+            .bind_group = bind_group,
+            .width = width,
+            .height = height,
+        };
+        self.image_cache_len += 1;
+        return @intCast(slot + 1);
     }
 
-    pub fn uploadImages(_: *Gpu, _: []const teak.ImageDraw) void {}
+    /// Per-frame draw orchestration for images. Walks ImageDraws, clips
+    /// against the viewport, emits 6 textured vertices per visible draw,
+    /// records a draw entry for the image pass. Call after `uploadText`
+    /// and before `renderFrame`. Matches gpu/native.zig structurally so
+    /// the two backends produce identical per-frame draw lists.
+    pub fn uploadImages(self: *Gpu, draws: []const teak.ImageDraw) void {
+        self.image_draw_count = 0;
+        self.image_vert_count = 0;
+
+        for (draws) |draw| {
+            if (draw.handle == teak.TEXTURE_HANDLE_NONE) continue;
+            const slot = draw.handle - 1;
+            if (slot >= self.image_cache_len) continue;
+            const entry = self.image_cache[slot];
+
+            const r_x = draw.rect_x;
+            const r_y = draw.rect_y;
+            const r_w = draw.rect_w;
+            const r_h = draw.rect_h;
+
+            const c_x0 = draw.clip_x;
+            const c_y0 = draw.clip_y;
+            const c_x1 = draw.clip_x + draw.clip_w;
+            const c_y1 = draw.clip_y + draw.clip_h;
+
+            const vis_x0 = @max(r_x, c_x0);
+            const vis_y0 = @max(r_y, c_y0);
+            const vis_x1 = @min(r_x + r_w, c_x1);
+            const vis_y1 = @min(r_y + r_h, c_y1);
+            if (vis_x1 <= vis_x0 or vis_y1 <= vis_y0) continue;
+
+            const uv_u0 = (vis_x0 - r_x) / r_w;
+            const uv_v0 = (vis_y0 - r_y) / r_h;
+            const uv_u1 = (vis_x1 - r_x) / r_w;
+            const uv_v1 = (vis_y1 - r_y) / r_h;
+
+            const r = draw.tint[0];
+            const g = draw.tint[1];
+            const b = draw.tint[2];
+            const a = draw.tint[3];
+
+            const offset = self.image_vert_count;
+            if (offset + 6 > self.image_verts.len) break;
+
+            const v = &self.image_verts;
+            v[offset + 0] = .{ .x = vis_x0, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v0 };
+            v[offset + 1] = .{ .x = vis_x1, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
+            v[offset + 2] = .{ .x = vis_x0, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
+            v[offset + 3] = .{ .x = vis_x1, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
+            v[offset + 4] = .{ .x = vis_x1, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v1 };
+            v[offset + 5] = .{ .x = vis_x0, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
+
+            self.image_vert_count += 6;
+            self.image_draws[self.image_draw_count] = .{
+                .bind_group = entry.bind_group,
+                .vert_offset = offset,
+            };
+            self.image_draw_count += 1;
+        }
+
+        const byte_size: u32 = @intCast(self.image_vert_count * @sizeOf(Vertex));
+        if (byte_size == 0) return;
+
+        if (self.image_vert_buf == null or byte_size > self.image_vert_buf_size) {
+            if (self.image_vert_buf) |buf| zgpu.bufferDestroy(buf);
+            self.image_vert_buf_size = @max(byte_size, 4096);
+            self.image_vert_buf = zgpu.createBuffer(
+                self.image_vert_buf_size,
+                zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.COPY_DST,
+            );
+        }
+        zgpu.bufferWriteTyped(Vertex, self.image_vert_buf.?, 0, self.image_verts[0..self.image_vert_count]);
+    }
 };
 
 fn cssFontFamily(family: FontFamily) []const u8 {
