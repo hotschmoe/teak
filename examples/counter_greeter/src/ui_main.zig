@@ -327,17 +327,10 @@ pub fn main() !void {
         }
 
         if (stats_window_id) |wid| {
-            const stats_input = host.pollSecondaryInputs(wid);
             // Detect user-closed window: pollSecondaryInputs returns
             // null once WM_DESTROY has fired. Mirror that back into the
             // Model so the toolbar button label flips.
-            if (stats_input == null) {
-                gpu.closeSecondarySurface(wid);
-                host.closeSecondaryWindow(wid);
-                stats_window_id = null;
-                App.update(&model, .close_stats_window);
-            } else {
-                const si = stats_input.?;
+            if (host.pollSecondaryInputs(wid)) |si| {
                 if (si.resized) gpu.resizeWindow(wid, si.width, si.height);
                 const sw_f: f32 = @floatFromInt(si.width);
                 const sh_f: f32 = @floatFromInt(si.height);
@@ -371,6 +364,11 @@ pub fn main() !void {
                     gpu.uploadImages(stats_image_draws.items);
                     gpu.renderToWindow(wid, .{ 0.08, 0.08, 0.1, 1.0 });
                 }
+            } else {
+                gpu.closeSecondarySurface(wid);
+                host.closeSecondaryWindow(wid);
+                stats_window_id = null;
+                App.update(&model, .close_stats_window);
             }
         }
     }

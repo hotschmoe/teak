@@ -578,7 +578,7 @@ const SecondaryWindow = struct {
     closed: bool,
 };
 
-var g_secondaries: [MAX_SECONDARY_WINDOWS]?SecondaryWindow = .{ null, null, null, null };
+var g_secondaries: [MAX_SECONDARY_WINDOWS]?SecondaryWindow = @splat(null);
 var g_secondary_class_registered: bool = false;
 
 /// Walk the slot table for an hwnd match. Returns a pointer to the
@@ -720,15 +720,6 @@ fn pushKey(k: SpecialKey) void {
     }
 }
 
-/// Compare two optional u32 focus indices. Used by publishA11yTree to
-/// decide whether the tree shape changed enough to fire a UIA
-/// StructureChanged event.
-fn focusEq(a: ?u32, b: ?u32) bool {
-    if (a == null and b == null) return true;
-    if (a == null or b == null) return false;
-    return a.? == b.?;
-}
-
 /// Map a UTF-16 code-unit offset to a UTF-8 byte offset by walking the
 /// UTF-8 buffer's codepoints. Used to translate IME caret positions
 /// (delivered as UTF-16 offsets) onto our UTF-8 composition mirror.
@@ -825,7 +816,10 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             // committed codepoint), but we also clear our pre-commit
             // mirror so the renderer doesn't keep the stale composition
             // up between commit and ENDCOMPOSITION.
-            const flags: DWORD = @intCast(@as(usize, @bitCast(lp)) & 0xFFFFFFFF);
+            // WM_IME_COMPOSITION's lParam is a bitfield of GCS_* flags in
+            // its low 32 bits. Truncate the platform-width isize/usize to
+            // a 32-bit DWORD; @truncate is the canonical Zig narrow-conversion.
+            const flags: DWORD = @truncate(@as(usize, @bitCast(lp)));
             if ((flags & GCS_COMPSTR) != 0) {
                 const himc_opt = ImmGetContext(hwnd);
                 if (himc_opt) |himc| {
@@ -957,9 +951,7 @@ pub const Host = struct {
     /// time — apps polling more than one request id in flight must
     /// consume each `.ok` immediately. The 4-slot cap is generous; the
     /// pattern is "request → wait one frame → poll → consume".
-    file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = .{
-        .{}, .{}, .{}, .{},
-    },
+    file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = @splat(.{}),
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         g_running = true;
@@ -1029,7 +1021,7 @@ pub const Host = struct {
             .clipboard_len = 0,
             .dialog_path_buf = undefined,
             .dialog_path_len = 0,
-            .file_dialog_slots = .{ .{}, .{}, .{}, .{} },
+            .file_dialog_slots = @splat(.{}),
         };
     }
 
@@ -1221,7 +1213,7 @@ pub const Host = struct {
                 break;
             }
         }
-        const changed = nodes.len != g_last_tree_len or !focusEq(focus_idx, g_last_focus_index);
+        const changed = nodes.len != g_last_tree_len or focus_idx != g_last_focus_index;
         g_last_tree_len = nodes.len;
         g_last_focus_index = focus_idx;
 

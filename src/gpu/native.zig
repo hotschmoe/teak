@@ -285,6 +285,13 @@ pub const Gpu = struct {
     vert_count: u32,
     surf_format: c.WGPUTextureFormat,
 
+    /// Primary surface dimensions, updated by `resize`. Mirrored into
+    /// `uniform_buf` on every `renderToWindow(0, ...)` call so the
+    /// shader's screen_size matches what's on screen after a secondary
+    /// render rewrites the same uniform with its own dims.
+    width: u32,
+    height: u32,
+
     // ── Text pass ──────────────────────────────────────────────────
     text_pipeline: c.WGPURenderPipeline,
     text_bgl: c.WGPUBindGroupLayout,
@@ -613,6 +620,10 @@ pub const Gpu = struct {
             .vert_buf_size = 0,
             .vert_count = 0,
             .surf_format = surf_format,
+            // `gpu.resize(width, height)` below populates these for real;
+            // zero-init here keeps the field set strictly post-init.
+            .width = 0,
+            .height = 0,
             .text_pipeline = text_pipeline,
             .text_bgl = text_bgl,
             .sampler = sampler,
@@ -635,12 +646,12 @@ pub const Gpu = struct {
             .image_vert_count = 0,
             .image_vert_buf = null,
             .image_vert_buf_size = 0,
-            .secondary_surfaces = .{
-                .{ .surface = null, .width = 0, .height = 0, .active = false },
-                .{ .surface = null, .width = 0, .height = 0, .active = false },
-                .{ .surface = null, .width = 0, .height = 0, .active = false },
-                .{ .surface = null, .width = 0, .height = 0, .active = false },
-            },
+            .secondary_surfaces = @splat(.{
+                .surface = null,
+                .width = 0,
+                .height = 0,
+                .active = false,
+            }),
         };
         gpu.resize(width, height);
         return gpu;
@@ -695,7 +706,12 @@ pub const Gpu = struct {
         c.wgpuInstanceRelease(self.instance);
     }
 
-    pub fn resize(self: *Gpu, width: u32, height: u32) void {
+    /// Shared surface configuration. Primary + secondary surfaces all
+    /// take the same {format, usage, present mode, alpha mode} — only
+    /// the dimensions differ. Centralizing this keeps the three call
+    /// sites (`resize`, `openSecondarySurface`, `resizeWindow`) in
+    /// lock-step on swap-chain semantics.
+    fn configureSurface(self: *Gpu, surface: c.WGPUSurface, width: u32, height: u32) void {
         var surf_config = std.mem.zeroes(c.WGPUSurfaceConfiguration);
         surf_config.device = self.device;
         surf_config.format = self.surf_format;
@@ -704,7 +720,13 @@ pub const Gpu = struct {
         surf_config.height = height;
         surf_config.presentMode = c.WGPUPresentMode_Fifo;
         surf_config.alphaMode = c.WGPUCompositeAlphaMode_Auto;
-        c.wgpuSurfaceConfigure(self.surface, &surf_config);
+        c.wgpuSurfaceConfigure(surface, &surf_config);
+    }
+
+    pub fn resize(self: *Gpu, width: u32, height: u32) void {
+        self.width = width;
+        self.height = height;
+        self.configureSurface(self.surface, width, height);
 
         const screen_size = [2]f32{ @floatFromInt(width), @floatFromInt(height) };
         c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &screen_size, @sizeOf([2]f32));
@@ -867,15 +889,7 @@ pub const Gpu = struct {
         const surface = c.wgpuInstanceCreateSurface(self.instance, &surface_desc) orelse return null;
 
         // Configure the surface with the same format the primary uses.
-        var surf_config = std.mem.zeroes(c.WGPUSurfaceConfiguration);
-        surf_config.device = self.device;
-        surf_config.format = self.surf_format;
-        surf_config.usage = c.WGPUTextureUsage_RenderAttachment;
-        surf_config.width = w;
-        surf_config.height = h;
-        surf_config.presentMode = c.WGPUPresentMode_Fifo;
-        surf_config.alphaMode = c.WGPUCompositeAlphaMode_Auto;
-        c.wgpuSurfaceConfigure(surface, &surf_config);
+        self.configureSurface(surface, w, h);
 
         self.secondary_surfaces[slot_idx] = .{
             .surface = surface,
@@ -912,16 +926,7 @@ pub const Gpu = struct {
 
         slot.width = w;
         slot.height = h;
-
-        var surf_config = std.mem.zeroes(c.WGPUSurfaceConfiguration);
-        surf_config.device = self.device;
-        surf_config.format = self.surf_format;
-        surf_config.usage = c.WGPUTextureUsage_RenderAttachment;
-        surf_config.width = w;
-        surf_config.height = h;
-        surf_config.presentMode = c.WGPUPresentMode_Fifo;
-        surf_config.alphaMode = c.WGPUCompositeAlphaMode_Auto;
-        c.wgpuSurfaceConfigure(slot.surface, &surf_config);
+        self.configureSurface(slot.surface, w, h);
     }
 
     /// Rasterize `text_bytes` into a BGRA8Unorm texture `width × height`

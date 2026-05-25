@@ -101,7 +101,7 @@ pub const Host = struct {
     measure_cache: [MEASURE_CACHE_CAPACITY]MeasureCacheEntry = undefined,
     measure_cache_len: usize = 0,
     measure_tick: u64 = 0,
-    file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = .{ .{}, .{}, .{}, .{} },
+    file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = @splat(.{}),
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         zinput.init();
