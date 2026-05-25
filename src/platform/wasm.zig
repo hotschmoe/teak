@@ -24,6 +24,8 @@ pub const FontFamily = teak.FontFamily;
 pub const Clipboard = teak.Clipboard;
 pub const ImeState = teak.ImeState;
 pub const A11yNode = teak.A11yNode;
+pub const FileDialogResult = teak.FileDialogResult;
+pub const FileDialogFilter = teak.FileDialogFilter;
 
 pub const NativeHandle = struct {};
 
@@ -235,6 +237,24 @@ pub const Host = struct {
     /// hidden DOM elements with aria-* attributes, which is a
     /// non-trivial JS-side dance. Tracked as follow-up.
     pub fn publishA11yTree(_: *Host, _: []const A11yNode) void {}
+
+    // Browser file dialogs go through the showOpenFilePicker API which
+    // is async and gesture-gated — incompatible with this synchronous
+    // surface shape. Stubs return null; tracked as follow-up.
+    pub fn openFileDialog(_: *Host, _: FileDialogFilter) FileDialogResult {
+        return null;
+    }
+
+    pub fn saveFileDialog(_: *Host, _: FileDialogFilter) FileDialogResult {
+        return null;
+    }
+
+    /// Web has no concept of a second top-level window (popup blockers
+    /// killed window.open) — apps that want multi-pane on the web use
+    /// overlays. Stub returns null.
+    pub fn openSecondaryWindow(_: *Host, _: []const u8, _: u32, _: u32) ?u32 {
+        return null;
+    }
 
     fn stubRead(_: *anyopaque) []const u8 {
         return "";

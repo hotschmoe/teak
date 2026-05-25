@@ -17,6 +17,8 @@ pub const FontFamily = teak.FontFamily;
 pub const Clipboard = teak.Clipboard;
 pub const ImeState = teak.ImeState;
 pub const A11yNode = teak.A11yNode;
+pub const FileDialogResult = teak.FileDialogResult;
+pub const FileDialogFilter = teak.FileDialogFilter;
 
 // ── Win32 types + constants ────────────────────────────────────────
 
@@ -110,6 +112,43 @@ extern "kernel32" fn GlobalSize(HANDLE) callconv(WINAPI) usize;
 
 const CF_UNICODETEXT: UINT = 13;
 const GMEM_MOVEABLE: UINT = 0x0002;
+
+// Common file dialog — OPENFILENAMEW (W version, the only one supported
+// since Vista). Lots of fields; we use the minimum required for a
+// "pick one file" dialog.
+const OPENFILENAMEW = extern struct {
+    lStructSize: DWORD = @sizeOf(OPENFILENAMEW),
+    hwndOwner: ?HANDLE = null,
+    hInstance: ?HANDLE = null,
+    lpstrFilter: ?LPCWSTR = null,
+    lpstrCustomFilter: ?[*]u16 = null,
+    nMaxCustFilter: DWORD = 0,
+    nFilterIndex: DWORD = 0,
+    lpstrFile: [*]u16,
+    nMaxFile: DWORD,
+    lpstrFileTitle: ?[*]u16 = null,
+    nMaxFileTitle: DWORD = 0,
+    lpstrInitialDir: ?LPCWSTR = null,
+    lpstrTitle: ?LPCWSTR = null,
+    Flags: DWORD = 0,
+    nFileOffset: u16 = 0,
+    nFileExtension: u16 = 0,
+    lpstrDefExt: ?LPCWSTR = null,
+    lCustData: LPARAM = 0,
+    lpfnHook: ?*anyopaque = null,
+    lpTemplateName: ?LPCWSTR = null,
+    pvReserved: ?*anyopaque = null,
+    dwReserved: DWORD = 0,
+    FlagsEx: DWORD = 0,
+};
+
+const OFN_PATHMUSTEXIST: DWORD = 0x00000800;
+const OFN_FILEMUSTEXIST: DWORD = 0x00001000;
+const OFN_OVERWRITEPROMPT: DWORD = 0x00000002;
+const OFN_EXPLORER: DWORD = 0x00080000;
+
+extern "comdlg32" fn GetOpenFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
+extern "comdlg32" fn GetSaveFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
 const VK_SHIFT: c_int = 0x10;
 const VK_CONTROL: c_int = 0x11;
 const VK_A: WPARAM = 0x41;
@@ -347,6 +386,12 @@ pub const Host = struct {
     clipboard_buf: [65536]u8 = undefined,
     clipboard_len: usize = 0,
 
+    /// Persistent UTF-8 buffer for the most recent file dialog path.
+    /// Valid until the next file dialog call. MAX_PATH * 4 covers
+    /// any 3-byte UTF-8 expansion of Windows' 260-codepoint limit.
+    dialog_path_buf: [1024]u8 = undefined,
+    dialog_path_len: usize = 0,
+
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         g_running = true;
         g_width = width;
@@ -401,6 +446,8 @@ pub const Host = struct {
             .font_cache_len = 0,
             .clipboard_buf = undefined,
             .clipboard_len = 0,
+            .dialog_path_buf = undefined,
+            .dialog_path_len = 0,
         };
     }
 
@@ -554,6 +601,64 @@ pub const Host = struct {
     /// keeping the surface stable so apps can call it unconditionally.
     /// Future: register an IRawElementProviderSimple per node.
     pub fn publishA11yTree(_: *Host, _: []const A11yNode) void {}
+
+    /// Blocks until the user picks a file or cancels. Returns a UTF-8
+    /// slice into the Host's dialog buffer (valid until the next
+    /// dialog call) or null on cancel.
+    pub fn openFileDialog(self: *Host, filter: FileDialogFilter) FileDialogResult {
+        return runFileDialog(self, filter, false);
+    }
+
+    pub fn saveFileDialog(self: *Host, filter: FileDialogFilter) FileDialogResult {
+        return runFileDialog(self, filter, true);
+    }
+
+    /// Single-window for now — secondary windows would need extra wgpu
+    /// surface plumbing in the Gpu layer. Returns null to indicate
+    /// "not supported on this host"; callers should fall back.
+    pub fn openSecondaryWindow(_: *Host, _: []const u8, _: u32, _: u32) ?u32 {
+        return null;
+    }
+
+    fn runFileDialog(self: *Host, filter: FileDialogFilter, save: bool) FileDialogResult {
+        var file_buf: [260]u16 = [_]u16{0} ** 260;
+
+        // OFN filter format: "Name\0pattern\0Name2\0pattern2\0\0" — a
+        // double-null-terminated alternating list. Build it on the stack.
+        var filter_buf: [512]u16 = undefined;
+        var off: usize = 0;
+        const name_len = std.unicode.utf8ToUtf16Le(filter_buf[off..], filter.name) catch return null;
+        off += name_len;
+        if (off >= filter_buf.len - 1) return null;
+        filter_buf[off] = 0;
+        off += 1;
+        const pat_len = std.unicode.utf8ToUtf16Le(filter_buf[off..], filter.pattern) catch return null;
+        off += pat_len;
+        if (off >= filter_buf.len - 2) return null;
+        filter_buf[off] = 0;
+        off += 1;
+        filter_buf[off] = 0; // terminator
+        const filter_ptr: LPCWSTR = @ptrCast(&filter_buf);
+
+        var ofn = OPENFILENAMEW{
+            .hwndOwner = self.hwnd,
+            .lpstrFile = @ptrCast(&file_buf),
+            .nMaxFile = file_buf.len,
+            .lpstrFilter = filter_ptr,
+            .Flags = OFN_EXPLORER | (if (save) OFN_OVERWRITEPROMPT else (OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST)),
+        };
+
+        const ok = if (save) GetSaveFileNameW(&ofn) else GetOpenFileNameW(&ofn);
+        if (ok == 0) return null;
+
+        // Find UTF-16 length (null-terminated by OFN).
+        var u16_len: usize = 0;
+        while (u16_len < file_buf.len and file_buf[u16_len] != 0) : (u16_len += 1) {}
+
+        const written = std.unicode.utf16LeToUtf8(self.dialog_path_buf[0..], file_buf[0..u16_len]) catch return null;
+        self.dialog_path_len = written;
+        return self.dialog_path_buf[0..written];
+    }
 
     fn clipRead(ctx: *anyopaque) []const u8 {
         const self: *Host = @ptrCast(@alignCast(ctx));

@@ -48,6 +48,19 @@ pub const ImeState = struct {
 
 pub const A11yNode = @import("../input/a11y.zig").A11yNode;
 
+/// File dialog result. `path` is UTF-8; lives in the Host's internal
+/// buffer and is valid until the next dialog call. null when the user
+/// cancels.
+pub const FileDialogResult = ?[]const u8;
+
+/// File dialog filter — `name` is shown in the OS dialog, `pattern` is
+/// a `;`-separated list of `*.ext` globs (matches the Win32 convention;
+/// hosts that need different semantics translate at the call site).
+pub const FileDialogFilter = struct {
+    name: []const u8 = "All files",
+    pattern: []const u8 = "*.*",
+};
+
 /// Per-frame input snapshot returned by `Host.pollInputs`.
 ///
 /// `mouse_x` / `mouse_y` are the current cursor position (state, not an
@@ -77,6 +90,15 @@ pub const InputState = struct {
 /// - `publishA11yTree(nodes)` hands the accessibility tree to whatever
 ///   screen-reader API the platform exposes (UI Automation on Windows,
 ///   AT-SPI on Linux, mirrored DOM on web). No-op on hosts without one.
+/// - `openFileDialog(filter)` / `saveFileDialog(filter)` block until the
+///   user picks a path. Return `null` on cancel. Native hosts call the
+///   OS file picker; web stubs return `null` (browser file APIs need a
+///   completely different flow).
+/// - `openSecondaryWindow(title, w, h)` returns an opaque window handle
+///   for a second top-level window sharing this Host's event source.
+///   Tracked as a Host-internal id; the app holds it and renders into
+///   it via the GPU layer's `renderToWindow`. Stub-only for now;
+///   single-window hosts return `null`.
 pub fn validateHost(comptime T: type) void {
     const required = [_][]const u8{
         "deinit",
@@ -87,6 +109,9 @@ pub fn validateHost(comptime T: type) void {
         "clipboard",
         "imeState",
         "publishA11yTree",
+        "openFileDialog",
+        "saveFileDialog",
+        "openSecondaryWindow",
     };
     inline for (required) |name| {
         if (!@hasDecl(T, name)) {
@@ -116,6 +141,15 @@ test "validateHost accepts a minimal shape" {
             return .{};
         }
         pub fn publishA11yTree(_: *@This(), _: []const A11yNode) void {}
+        pub fn openFileDialog(_: *@This(), _: FileDialogFilter) FileDialogResult {
+            return null;
+        }
+        pub fn saveFileDialog(_: *@This(), _: FileDialogFilter) FileDialogResult {
+            return null;
+        }
+        pub fn openSecondaryWindow(_: *@This(), _: []const u8, _: u32, _: u32) ?u32 {
+            return null;
+        }
 
         fn stubMeasure(_: *anyopaque, _: []const u8, _: FontSpec) TextMetrics {
             return .{ .width = 0, .height = 0, .ascent = 0, .descent = 0 };
