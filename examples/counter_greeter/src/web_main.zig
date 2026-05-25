@@ -98,6 +98,10 @@ export fn frame(_: f32) void {
     current ^= 1;
     const cur = current;
     bufs[cur].reset();
+    // Theme is presentation context (per HARDLINE §1 it sits at the
+    // same layer as TransientState — view reads but doesn't mutate
+    // it). The app's `dark_mode` flag flips between the two presets.
+    bufs[cur].theme = if (model.dark_mode) teak.Theme.dark_default else teak.Theme.light_default;
     App.view(&model, &bufs[cur]);
 
     const cur_cmds = bufs[cur].cmds.items;

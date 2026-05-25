@@ -130,6 +130,12 @@ cb.textMono("42.0");       // uses theme.typography.mono
 explicit-override behavior. Switching dark↔light is a one-line theme
 assignment at the top of the per-frame view setup; no widget knows.
 
+The per-frame `cb.theme = ...` assignment must be replicated in every
+entry point (native, wasm). The framework deliberately does not pull
+theme from Model — see [HARDLINE §1](../HARDLINE.md). Drop the line
+from `web_main.zig` and dark/light silently sticks on the
+`init`-time default.
+
 ## 4. Form row → `cb.pushFormRow` / `cb.popFormRow`
 
 **Source**: `src/core/cmd.zig` (`FormRowOpts`, push/pop emitters).
