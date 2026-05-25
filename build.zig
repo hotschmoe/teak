@@ -40,6 +40,43 @@ pub fn build(b: *std.Build) void {
     const glyph_cache_tests = b.addTest(.{ .root_module = glyph_cache_mod });
     test_step.dependOn(&b.addRunArtifact(glyph_cache_tests).step);
 
+    // Platform-wasm serialization tests. wasm.zig is the host backend
+    // for the web target, but `serializeA11yTree` is a pure helper —
+    // testable on the build host as long as zunk's `extern "env"`
+    // declarations don't get linked. Tests reference only the helper,
+    // so the externs stay un-instantiated and `zig build test` covers
+    // the wire-format contract without needing a wasm runtime.
+    const zunk_host_dep = b.dependency("zunk", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const platform_wasm_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/wasm.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "teak", .module = mod },
+            .{ .name = "zunk", .module = zunk_host_dep.module("zunk") },
+        },
+    });
+    const platform_wasm_tests = b.addTest(.{ .root_module = platform_wasm_mod });
+    test_step.dependOn(&b.addRunArtifact(platform_wasm_tests).step);
+
+    // Win32 platform smoke tests (src/platform/win32.zig). Only
+    // wired when the host target is Windows because the file imports
+    // user32/oleaut32/kernel32/uiautomationcore. Covers the UIA
+    // per-node fragment provider wiring among other host helpers.
+    if (target.result.os.tag == .windows) {
+        const platform_win32_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/win32.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "teak", .module = mod }},
+        });
+        const platform_win32_tests = b.addTest(.{ .root_module = platform_win32_mod });
+        test_step.dependOn(&b.addRunArtifact(platform_win32_tests).step);
+    }
+
     // wasm32-freestanding compile canary. Run `zig build test-wasm` to
     // assert the framework core stays posix-dep-free. The artifact isn't
     // executed — successful compile is the signal.

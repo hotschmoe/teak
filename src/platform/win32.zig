@@ -17,6 +17,7 @@ pub const FontFamily = teak.FontFamily;
 pub const Clipboard = teak.Clipboard;
 pub const ImeState = teak.ImeState;
 pub const A11yNode = teak.A11yNode;
+pub const A11yRole = teak.A11yRole;
 pub const FileDialogResult = teak.FileDialogResult;
 pub const FileDialogPoll = teak.FileDialogPoll;
 pub const FileDialogFilter = teak.FileDialogFilter;
@@ -206,11 +207,12 @@ const VK_Z: WPARAM = 0x5A;
 
 // ── UIA (uiautomationcore.dll) ─────────────────────────────────────
 //
-// Minimal-viable UI Automation bridge. Goal: let Narrator and
-// Inspect.exe detect that the teak window is an automation provider at
-// all, and re-announce structure on every publishA11yTree call. Per-
-// A11yNode fragment providers are a follow-up (see the TODO near
-// `g_published_nodes` below).
+// UI Automation bridge: per-frame `publishA11yTree` snapshots the
+// flat A11yNode tree into module-scoped storage, and Narrator /
+// Inspect.exe walk it via three published interfaces on the singleton
+// root (Simple + Fragment + FragmentRoot) plus one Fragment provider
+// per node (see `NodeProvider` below). All access is serialized by
+// `g_a11y_lock` because UIA queries arrive on its own worker thread.
 //
 // HARDLINE: this is a Host §4(d) surface extension — same hatch
 // clipboard / file dialogs / a11y-publishing already use. No platform
@@ -249,9 +251,26 @@ const IID_IRawElementProviderSimple: GUID = .{
     .Data3 = 0x4332,
     .Data4 = .{ 0x86, 0x66, 0x9A, 0xBE, 0xDE, 0xA2, 0xD2, 0x4C },
 };
+const IID_IRawElementProviderFragment: GUID = .{
+    .Data1 = 0xF7063DA8,
+    .Data2 = 0x8359,
+    .Data3 = 0x439C,
+    .Data4 = .{ 0x92, 0x97, 0xBB, 0xC5, 0x29, 0x9A, 0x7D, 0x87 },
+};
+const IID_IRawElementProviderFragmentRoot: GUID = .{
+    .Data1 = 0x620CE2A5,
+    .Data2 = 0xAB8F,
+    .Data3 = 0x40A9,
+    .Data4 = .{ 0x86, 0xCB, 0xDE, 0x3C, 0x75, 0x59, 0x9B, 0x58 },
+};
 
 // Provider option bits (only ServerSideProvider matters for us).
 const ProviderOptions_ServerSideProvider: c_int = 0x01;
+
+/// Marker sentinel UIA expects as the first element of a runtime ID
+/// array. Tells UIA to prepend the host's runtime-id prefix; the second
+/// element is our caller-defined id (we use the node's cmd_index).
+const UiaAppendRuntimeId: c_int = 3;
 
 // UIA property + control type constants we need.
 const UIA_ControlTypePropertyId: c_long = 30003;
@@ -299,6 +318,50 @@ const VARIANT = extern struct {
     payload: [16]u8 = [_]u8{0} ** 16,
 };
 
+/// Win32 RECT — top-left/bottom-right pixel coordinates. Used by
+/// GetClientRect/ClientToScreen for the root's BoundingRectangle.
+const RECT = extern struct {
+    left: c_long,
+    top: c_long,
+    right: c_long,
+    bottom: c_long,
+};
+
+/// Win32 POINT — used by ClientToScreen to translate a client-area
+/// pixel into screen coordinates.
+const POINT = extern struct {
+    x: c_long,
+    y: c_long,
+};
+
+/// UIA BoundingRectangle payload — four doubles in screen pixels.
+/// Returned directly via `get_BoundingRectangle` (NOT via VARIANT/
+/// SAFEARRAY — the fragment-level getter is a thin out-param).
+const UiaRect = extern struct {
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+};
+
+/// UIA NavigateDirection — values match the UIA spec, do NOT reorder.
+const NavigateDirection = enum(c_int) {
+    parent = 0,
+    next_sibling = 1,
+    previous_sibling = 2,
+    first_child = 3,
+    last_child = 4,
+};
+
+/// Opaque SAFEARRAY handle. We never read its fields directly — only
+/// use SafeArrayCreateVector / Access / Unaccess and hand it to UIA.
+const SAFEARRAY = extern struct { _opaque: [0]u8 = .{} };
+
+/// CRITICAL_SECTION is 40 bytes on 64-bit Windows (RTL_CRITICAL_SECTION
+/// layout). We never touch the internals; treat as an opaque blob with
+/// 8-byte alignment so kernel32 sees it correctly.
+const CRITICAL_SECTION = extern struct { _opaque: [40]u8 align(8) = @splat(0) };
+
 extern "uiautomationcore" fn UiaReturnRawElementProvider(hwnd: HANDLE, wParam: WPARAM, lParam: LPARAM, el: *anyopaque) callconv(WINAPI) LRESULT;
 extern "uiautomationcore" fn UiaHostProviderFromHwnd(hwnd: HANDLE, ppProvider: *?*anyopaque) callconv(WINAPI) HRESULT;
 extern "uiautomationcore" fn UiaRaiseStructureChangedEvent(provider: *anyopaque, change_type: c_int, runtime_id: ?[*]const c_int, runtime_id_len: c_int) callconv(WINAPI) HRESULT;
@@ -306,56 +369,127 @@ extern "uiautomationcore" fn UiaDisconnectProvider(provider: *anyopaque) callcon
 
 extern "oleaut32" fn SysAllocString(psz: [*:0]const u16) callconv(WINAPI) BSTR;
 extern "oleaut32" fn SysFreeString(bstr: BSTR) callconv(WINAPI) void;
+extern "oleaut32" fn SafeArrayCreateVector(vt: c_short, lLbound: c_long, cElements: c_ulong) callconv(WINAPI) ?*SAFEARRAY;
+extern "oleaut32" fn SafeArrayAccessData(psa: *SAFEARRAY, ppvData: *?*anyopaque) callconv(WINAPI) HRESULT;
+extern "oleaut32" fn SafeArrayUnaccessData(psa: *SAFEARRAY) callconv(WINAPI) HRESULT;
+
+extern "user32" fn GetClientRect(hwnd: HANDLE, lpRect: *RECT) callconv(WINAPI) BOOL;
+extern "user32" fn ClientToScreen(hwnd: HANDLE, lpPoint: *POINT) callconv(WINAPI) BOOL;
+
+extern "kernel32" fn InitializeCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) void;
+extern "kernel32" fn DeleteCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) void;
+extern "kernel32" fn EnterCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) void;
+extern "kernel32" fn LeaveCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) void;
+
+// ── COM vtable layout for the three interfaces we publish ─────────
+//
+// Each vtable's "this" parameter is typed as `*VtblPtr` — i.e. a
+// pointer to the field inside the owning struct that holds the vtable
+// pointer. UIA passes us a pointer to the interface (which IS a
+// pointer to the vtable-pointer), so we can recover the owning
+// RootProvider / NodeProvider via `@fieldParentPtr` on the field name
+// that matches the vtable we're inside.
+//
+// Distinct typed pointers per vtable mean QueryInterface returns the
+// right `this` for each interface, and the method bodies don't have
+// to discriminate at runtime.
+
+const SimpleThis = *const IRawElementProviderSimple_Vtbl;
+const FragmentThis = *const IRawElementProviderFragment_Vtbl;
+const FragmentRootThis = *const IRawElementProviderFragmentRoot_Vtbl;
 
 const IRawElementProviderSimple_Vtbl = extern struct {
-    QueryInterface: *const fn (*RootProvider, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
-    AddRef: *const fn (*RootProvider) callconv(WINAPI) ULONG,
-    Release: *const fn (*RootProvider) callconv(WINAPI) ULONG,
-    get_ProviderOptions: *const fn (*RootProvider, *c_int) callconv(WINAPI) HRESULT,
-    GetPatternProvider: *const fn (*RootProvider, c_long, *?*anyopaque) callconv(WINAPI) HRESULT,
-    GetPropertyValue: *const fn (*RootProvider, c_long, *VARIANT) callconv(WINAPI) HRESULT,
-    get_HostRawElementProvider: *const fn (*RootProvider, *?*anyopaque) callconv(WINAPI) HRESULT,
+    QueryInterface: *const fn (*SimpleThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+    AddRef: *const fn (*SimpleThis) callconv(WINAPI) ULONG,
+    Release: *const fn (*SimpleThis) callconv(WINAPI) ULONG,
+    get_ProviderOptions: *const fn (*SimpleThis, *c_int) callconv(WINAPI) HRESULT,
+    GetPatternProvider: *const fn (*SimpleThis, c_long, *?*anyopaque) callconv(WINAPI) HRESULT,
+    GetPropertyValue: *const fn (*SimpleThis, c_long, *VARIANT) callconv(WINAPI) HRESULT,
+    get_HostRawElementProvider: *const fn (*SimpleThis, *?*anyopaque) callconv(WINAPI) HRESULT,
+};
+
+const IRawElementProviderFragment_Vtbl = extern struct {
+    // IUnknown
+    QueryInterface: *const fn (*FragmentThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+    AddRef: *const fn (*FragmentThis) callconv(WINAPI) ULONG,
+    Release: *const fn (*FragmentThis) callconv(WINAPI) ULONG,
+    // IRawElementProviderFragment
+    Navigate: *const fn (*FragmentThis, NavigateDirection, *?*anyopaque) callconv(WINAPI) HRESULT,
+    GetRuntimeId: *const fn (*FragmentThis, *?*SAFEARRAY) callconv(WINAPI) HRESULT,
+    get_BoundingRectangle: *const fn (*FragmentThis, *UiaRect) callconv(WINAPI) HRESULT,
+    GetEmbeddedFragmentRoots: *const fn (*FragmentThis, *?*SAFEARRAY) callconv(WINAPI) HRESULT,
+    SetFocus: *const fn (*FragmentThis) callconv(WINAPI) HRESULT,
+    get_FragmentRoot: *const fn (*FragmentThis, *?*anyopaque) callconv(WINAPI) HRESULT,
+};
+
+const IRawElementProviderFragmentRoot_Vtbl = extern struct {
+    // IUnknown
+    QueryInterface: *const fn (*FragmentRootThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+    AddRef: *const fn (*FragmentRootThis) callconv(WINAPI) ULONG,
+    Release: *const fn (*FragmentRootThis) callconv(WINAPI) ULONG,
+    // IRawElementProviderFragmentRoot
+    ElementProviderFromPoint: *const fn (*FragmentRootThis, f64, f64, *?*anyopaque) callconv(WINAPI) HRESULT,
+    GetFocus: *const fn (*FragmentRootThis, *?*anyopaque) callconv(WINAPI) HRESULT,
 };
 
 /// Module-singleton COM object. We only ever publish ONE root provider
 /// per window (single-window for now). Storage is module-scope so the
 /// vtable function pointers can reach the host title without a
 /// per-instance allocation.
+///
+/// Three vtable slots — one per published interface — sharing one
+/// `RootProvider` instance. QueryInterface returns the address of the
+/// requested vtable slot (Win32 / UIA aliases `*Interface` with
+/// `*VtblPtr`), and each vtable method recovers the owning provider
+/// via `@fieldParentPtr` on its slot name.
 const RootProvider = extern struct {
-    vtbl: *const IRawElementProviderSimple_Vtbl,
+    vtbl_simple: *const IRawElementProviderSimple_Vtbl,
+    vtbl_fragment: *const IRawElementProviderFragment_Vtbl,
+    vtbl_root: *const IRawElementProviderFragmentRoot_Vtbl,
 };
 
-fn rpQueryInterface(self: *RootProvider, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
-    if (guidEql(iid, &IID_IUnknown) or guidEql(iid, &IID_IRawElementProviderSimple)) {
-        ppv.* = @ptrCast(self);
-        return S_OK;
-    }
-    ppv.* = null;
-    return E_NOINTERFACE;
+/// Per-A11yNode COM object. Lives in a static pool indexed by tree
+/// position; the index is rewritten on every `publishA11yTree` so
+/// providers and their nodes stay 1:1. Two vtable slots: Simple +
+/// Fragment (no FragmentRoot — only the window root is a fragment root).
+const NodeProvider = extern struct {
+    vtbl_simple: *const IRawElementProviderSimple_Vtbl,
+    vtbl_fragment: *const IRawElementProviderFragment_Vtbl,
+    /// Slot index inside `g_node_providers` — equal to the position
+    /// in `g_published_nodes_buf` so siblings can be resolved by
+    /// ±1 arithmetic.
+    index: u32,
+};
+
+// ── RootProvider vtable methods (Simple) ───────────────────────────
+
+fn rpQueryInterface(this: *SimpleThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const self: *RootProvider = @fieldParentPtr("vtbl_simple", this);
+    return rootQueryInterface(self, iid, ppv);
 }
 
-fn rpAddRef(_: *RootProvider) callconv(WINAPI) ULONG {
+fn rpAddRef(_: *SimpleThis) callconv(WINAPI) ULONG {
     // Static singleton — module owns the lifetime, Win32 holds the
     // pointer for the process lifetime.
     return 1;
 }
 
-fn rpRelease(_: *RootProvider) callconv(WINAPI) ULONG {
+fn rpRelease(_: *SimpleThis) callconv(WINAPI) ULONG {
     return 1;
 }
 
-fn rpGetProviderOptions(_: *RootProvider, opts: *c_int) callconv(WINAPI) HRESULT {
+fn rpGetProviderOptions(_: *SimpleThis, opts: *c_int) callconv(WINAPI) HRESULT {
     opts.* = ProviderOptions_ServerSideProvider;
     return S_OK;
 }
 
-fn rpGetPatternProvider(_: *RootProvider, _: c_long, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+fn rpGetPatternProvider(_: *SimpleThis, _: c_long, out: *?*anyopaque) callconv(WINAPI) HRESULT {
     // No patterns implemented yet (Toggle/Value/Invoke are follow-up).
     out.* = null;
     return S_OK;
 }
 
-fn rpGetPropertyValue(_: *RootProvider, prop_id: c_long, var_out: *VARIANT) callconv(WINAPI) HRESULT {
+fn rpGetPropertyValue(_: *SimpleThis, prop_id: c_long, var_out: *VARIANT) callconv(WINAPI) HRESULT {
     switch (prop_id) {
         UIA_ControlTypePropertyId => {
             var_out.* = .{ .vt = VT_I4 };
@@ -382,12 +516,444 @@ fn rpGetPropertyValue(_: *RootProvider, prop_id: c_long, var_out: *VARIANT) call
     }
 }
 
-fn rpGetHostRawElementProvider(_: *RootProvider, pp: *?*anyopaque) callconv(WINAPI) HRESULT {
+fn rpGetHostRawElementProvider(_: *SimpleThis, pp: *?*anyopaque) callconv(WINAPI) HRESULT {
     if (g_hwnd_for_uia) |hwnd| {
         return UiaHostProviderFromHwnd(hwnd, pp);
     }
     pp.* = null;
     return E_FAIL;
+}
+
+/// Shared QueryInterface body — used by every vtable slot on the root
+/// provider. Hands back the matching vtable slot's address (Simple,
+/// Fragment, or FragmentRoot) so the caller's interface pointer is
+/// pre-aimed at the right "this".
+fn rootQueryInterface(self: *RootProvider, iid: *const GUID, ppv: *?*anyopaque) HRESULT {
+    if (guidEql(iid, &IID_IUnknown) or guidEql(iid, &IID_IRawElementProviderSimple)) {
+        ppv.* = @ptrCast(&self.vtbl_simple);
+        return S_OK;
+    }
+    if (guidEql(iid, &IID_IRawElementProviderFragment)) {
+        ppv.* = @ptrCast(&self.vtbl_fragment);
+        return S_OK;
+    }
+    if (guidEql(iid, &IID_IRawElementProviderFragmentRoot)) {
+        ppv.* = @ptrCast(&self.vtbl_root);
+        return S_OK;
+    }
+    ppv.* = null;
+    return E_NOINTERFACE;
+}
+
+// ── RootProvider vtable methods (Fragment) ─────────────────────────
+
+fn rpfQueryInterface(this: *FragmentThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const self: *RootProvider = @fieldParentPtr("vtbl_fragment", this);
+    return rootQueryInterface(self, iid, ppv);
+}
+
+fn rpfAddRef(_: *FragmentThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+
+fn rpfRelease(_: *FragmentThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+
+fn rpfNavigate(_: *FragmentThis, direction: NavigateDirection, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+    // Root has no parent and no siblings; FirstChild / LastChild return
+    // the corresponding ends of the published tree.
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+
+    switch (direction) {
+        .parent, .next_sibling, .previous_sibling => {
+            out.* = null;
+            return S_OK;
+        },
+        .first_child => {
+            if (g_published_count == 0) {
+                out.* = null;
+                return S_OK;
+            }
+            out.* = @ptrCast(&g_node_providers[0].vtbl_fragment);
+            return S_OK;
+        },
+        .last_child => {
+            if (g_published_count == 0) {
+                out.* = null;
+                return S_OK;
+            }
+            out.* = @ptrCast(&g_node_providers[g_published_count - 1].vtbl_fragment);
+            return S_OK;
+        },
+    }
+}
+
+fn rpfGetRuntimeId(_: *FragmentThis, out: *?*SAFEARRAY) callconv(WINAPI) HRESULT {
+    // The convention for the root's runtime id is just the
+    // UiaAppendRuntimeId marker followed by a 0 — the system fills in
+    // the host prefix.
+    const sa = SafeArrayCreateVector(@as(c_short, @intCast(VT_I4)), 0, 2) orelse {
+        out.* = null;
+        return E_FAIL;
+    };
+    var data_ptr: ?*anyopaque = null;
+    if (SafeArrayAccessData(sa, &data_ptr) != S_OK or data_ptr == null) {
+        out.* = null;
+        return E_FAIL;
+    }
+    const ids: [*]c_int = @ptrCast(@alignCast(data_ptr.?));
+    ids[0] = UiaAppendRuntimeId;
+    ids[1] = 0;
+    _ = SafeArrayUnaccessData(sa);
+    out.* = sa;
+    return S_OK;
+}
+
+fn rpfGetBoundingRectangle(_: *FragmentThis, rect: *UiaRect) callconv(WINAPI) HRESULT {
+    if (g_hwnd_for_uia) |hwnd| {
+        var client: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+        _ = GetClientRect(hwnd, &client);
+        var origin: POINT = .{ .x = client.left, .y = client.top };
+        _ = ClientToScreen(hwnd, &origin);
+        rect.* = .{
+            .left = @floatFromInt(origin.x),
+            .top = @floatFromInt(origin.y),
+            .width = @floatFromInt(client.right - client.left),
+            .height = @floatFromInt(client.bottom - client.top),
+        };
+        return S_OK;
+    }
+    rect.* = .{ .left = 0, .top = 0, .width = 0, .height = 0 };
+    return S_OK;
+}
+
+fn rpfGetEmbeddedFragmentRoots(_: *FragmentThis, out: *?*SAFEARRAY) callconv(WINAPI) HRESULT {
+    out.* = null;
+    return S_OK;
+}
+
+fn rpfSetFocus(_: *FragmentThis) callconv(WINAPI) HRESULT {
+    // No-op: focusing the root is meaningless for our model. Returning
+    // S_OK matches what most providers do.
+    return S_OK;
+}
+
+fn rpfGetFragmentRoot(this: *FragmentThis, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const self: *RootProvider = @fieldParentPtr("vtbl_fragment", this);
+    out.* = @ptrCast(&self.vtbl_fragment);
+    return S_OK;
+}
+
+// ── RootProvider vtable methods (FragmentRoot) ─────────────────────
+
+fn rprQueryInterface(this: *FragmentRootThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const self: *RootProvider = @fieldParentPtr("vtbl_root", this);
+    return rootQueryInterface(self, iid, ppv);
+}
+
+fn rprAddRef(_: *FragmentRootThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+
+fn rprRelease(_: *FragmentRootThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+
+fn rprElementProviderFromPoint(this: *FragmentRootThis, x: f64, y: f64, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const self: *RootProvider = @fieldParentPtr("vtbl_root", this);
+    // Translate from screen to client coords for comparison with the
+    // node bounds (which are window-coord). If we can't translate,
+    // fall back to self.
+    var origin: POINT = .{ .x = 0, .y = 0 };
+    if (g_hwnd_for_uia) |hwnd| {
+        _ = ClientToScreen(hwnd, &origin);
+    }
+    const cx: f32 = @floatCast(x - @as(f64, @floatFromInt(origin.x)));
+    const cy: f32 = @floatCast(y - @as(f64, @floatFromInt(origin.y)));
+
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+
+    // Walk back-to-front so the topmost hit wins (painter's order).
+    var i: usize = g_published_count;
+    while (i > 0) {
+        i -= 1;
+        const n = g_published_nodes_buf[i];
+        if (cx >= n.bounds.x and cx < n.bounds.x + n.bounds.w and
+            cy >= n.bounds.y and cy < n.bounds.y + n.bounds.h)
+        {
+            out.* = @ptrCast(&g_node_providers[i].vtbl_fragment);
+            return S_OK;
+        }
+    }
+    out.* = @ptrCast(&self.vtbl_fragment);
+    return S_OK;
+}
+
+fn rprGetFocus(_: *FragmentRootThis, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+
+    var i: usize = 0;
+    while (i < g_published_count) : (i += 1) {
+        if (g_published_nodes_buf[i].focused) {
+            out.* = @ptrCast(&g_node_providers[i].vtbl_fragment);
+            return S_OK;
+        }
+    }
+    out.* = null;
+    return S_OK;
+}
+
+// ── NodeProvider vtable methods (Simple) ───────────────────────────
+
+fn npQueryInterface(this: *SimpleThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_simple", this);
+    return nodeQueryInterface(self, iid, ppv);
+}
+
+fn npAddRef(_: *SimpleThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+
+fn npRelease(_: *SimpleThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+
+fn npGetProviderOptions(_: *SimpleThis, opts: *c_int) callconv(WINAPI) HRESULT {
+    opts.* = ProviderOptions_ServerSideProvider;
+    return S_OK;
+}
+
+fn npGetPatternProvider(_: *SimpleThis, _: c_long, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+    out.* = null;
+    return S_OK;
+}
+
+fn npGetPropertyValue(this: *SimpleThis, prop_id: c_long, var_out: *VARIANT) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_simple", this);
+    return nodeGetPropertyValue(self, prop_id, var_out);
+}
+
+fn npGetHostRawElementProvider(_: *SimpleThis, pp: *?*anyopaque) callconv(WINAPI) HRESULT {
+    // Only the root delegates to UiaHostProviderFromHwnd. Fragment
+    // children must return null per the UIA spec.
+    pp.* = null;
+    return S_OK;
+}
+
+// ── NodeProvider vtable methods (Fragment) ─────────────────────────
+
+fn npfQueryInterface(this: *FragmentThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_fragment", this);
+    return nodeQueryInterface(self, iid, ppv);
+}
+
+fn npfAddRef(_: *FragmentThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+
+fn npfRelease(_: *FragmentThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+
+fn npfNavigate(this: *FragmentThis, direction: NavigateDirection, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_fragment", this);
+
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+
+    switch (direction) {
+        .parent => {
+            out.* = @ptrCast(&g_root_provider.vtbl_fragment);
+            return S_OK;
+        },
+        .next_sibling => {
+            const next = self.index +| 1;
+            if (next < g_published_count) {
+                out.* = @ptrCast(&g_node_providers[next].vtbl_fragment);
+            } else {
+                out.* = null;
+            }
+            return S_OK;
+        },
+        .previous_sibling => {
+            if (self.index == 0) {
+                out.* = null;
+            } else {
+                out.* = @ptrCast(&g_node_providers[self.index - 1].vtbl_fragment);
+            }
+            return S_OK;
+        },
+        .first_child, .last_child => {
+            // Flat tree — no nesting in MVP.
+            out.* = null;
+            return S_OK;
+        },
+    }
+}
+
+fn npfGetRuntimeId(this: *FragmentThis, out: *?*SAFEARRAY) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_fragment", this);
+    EnterCriticalSection(&g_a11y_lock);
+    const cmd_idx: c_int = if (self.index < g_published_count)
+        @intCast(g_published_nodes_buf[self.index].cmd_index)
+    else
+        @intCast(self.index);
+    LeaveCriticalSection(&g_a11y_lock);
+
+    const sa = SafeArrayCreateVector(@as(c_short, @intCast(VT_I4)), 0, 2) orelse {
+        out.* = null;
+        return E_FAIL;
+    };
+    var data_ptr: ?*anyopaque = null;
+    if (SafeArrayAccessData(sa, &data_ptr) != S_OK or data_ptr == null) {
+        out.* = null;
+        return E_FAIL;
+    }
+    const ids: [*]c_int = @ptrCast(@alignCast(data_ptr.?));
+    ids[0] = UiaAppendRuntimeId;
+    ids[1] = cmd_idx;
+    _ = SafeArrayUnaccessData(sa);
+    out.* = sa;
+    return S_OK;
+}
+
+fn npfGetBoundingRectangle(this: *FragmentThis, rect: *UiaRect) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_fragment", this);
+
+    EnterCriticalSection(&g_a11y_lock);
+    if (self.index >= g_published_count) {
+        LeaveCriticalSection(&g_a11y_lock);
+        rect.* = .{ .left = 0, .top = 0, .width = 0, .height = 0 };
+        return S_OK;
+    }
+    const b = g_published_nodes_buf[self.index].bounds;
+    LeaveCriticalSection(&g_a11y_lock);
+
+    var origin: POINT = .{ .x = 0, .y = 0 };
+    if (g_hwnd_for_uia) |hwnd| {
+        _ = ClientToScreen(hwnd, &origin);
+    }
+    rect.* = .{
+        .left = @as(f64, @floatFromInt(origin.x)) + @as(f64, b.x),
+        .top = @as(f64, @floatFromInt(origin.y)) + @as(f64, b.y),
+        .width = @as(f64, b.w),
+        .height = @as(f64, b.h),
+    };
+    return S_OK;
+}
+
+fn npfGetEmbeddedFragmentRoots(_: *FragmentThis, out: *?*SAFEARRAY) callconv(WINAPI) HRESULT {
+    out.* = null;
+    return S_OK;
+}
+
+fn npfSetFocus(_: *FragmentThis) callconv(WINAPI) HRESULT {
+    // No-op for the MVP. Routing this back into a Msg would require a
+    // new Host §4 hatch — out of scope here.
+    return S_OK;
+}
+
+fn npfGetFragmentRoot(_: *FragmentThis, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+    out.* = @ptrCast(&g_root_provider.vtbl_fragment);
+    return S_OK;
+}
+
+// ── Shared NodeProvider helpers ────────────────────────────────────
+
+fn nodeQueryInterface(self: *NodeProvider, iid: *const GUID, ppv: *?*anyopaque) HRESULT {
+    if (guidEql(iid, &IID_IUnknown) or guidEql(iid, &IID_IRawElementProviderSimple)) {
+        ppv.* = @ptrCast(&self.vtbl_simple);
+        return S_OK;
+    }
+    if (guidEql(iid, &IID_IRawElementProviderFragment)) {
+        ppv.* = @ptrCast(&self.vtbl_fragment);
+        return S_OK;
+    }
+    ppv.* = null;
+    return E_NOINTERFACE;
+}
+
+/// Map an A11y role to the matching UIA control type id.
+fn controlTypeForRole(role: A11yRole) c_long {
+    return switch (role) {
+        .group => UIA_GroupControlTypeId,
+        .scroll => UIA_PaneControlTypeId,
+        .text => UIA_TextControlTypeId,
+        .rich_text => UIA_TextControlTypeId,
+        .button => UIA_ButtonControlTypeId,
+        .text_input => UIA_EditControlTypeId,
+        .checkbox => UIA_CheckBoxControlTypeId,
+        .radio => UIA_RadioButtonControlTypeId,
+        .slider => UIA_SliderControlTypeId,
+        .divider => UIA_SeparatorControlTypeId,
+        .image => UIA_ImageControlTypeId,
+        .overlay => UIA_PaneControlTypeId,
+    };
+}
+
+fn isFocusableRole(role: A11yRole) bool {
+    return switch (role) {
+        .button, .text_input, .checkbox, .radio, .slider => true,
+        else => false,
+    };
+}
+
+/// VARIANT_TRUE / VARIANT_FALSE are the Windows BOOL conventions for
+/// the VT_BOOL variant payload. Don't confuse with c_int 0/1.
+const VARIANT_TRUE: VARIANT_BOOL = -1;
+const VARIANT_FALSE: VARIANT_BOOL = 0;
+
+fn nodeGetPropertyValue(self: *NodeProvider, prop_id: c_long, var_out: *VARIANT) HRESULT {
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+
+    if (self.index >= g_published_count) {
+        var_out.* = .{ .vt = VT_EMPTY };
+        return S_OK;
+    }
+    const node = g_published_nodes_buf[self.index];
+
+    switch (prop_id) {
+        UIA_ControlTypePropertyId => {
+            var_out.* = .{ .vt = VT_I4 };
+            const v: c_long = controlTypeForRole(node.role);
+            @memcpy(var_out.payload[0..@sizeOf(c_long)], std.mem.asBytes(&v));
+            return S_OK;
+        },
+        UIA_NamePropertyId => {
+            // Convert UTF-8 label → UTF-16 on the stack; allocate the
+            // BSTR from the converted buffer. Labels capped at the
+            // heap slot length (see MAX_A11Y_LABEL_BYTES).
+            var utf16_buf: [512]u16 = undefined;
+            const utf16_len = std.unicode.utf8ToUtf16Le(&utf16_buf, node.label) catch 0;
+            const clamped: usize = @min(utf16_len, utf16_buf.len - 1);
+            utf16_buf[clamped] = 0;
+            const bstr = SysAllocString(@ptrCast(&utf16_buf));
+            var_out.* = .{ .vt = VT_BSTR };
+            @memcpy(var_out.payload[0..@sizeOf(BSTR)], std.mem.asBytes(&bstr));
+            return S_OK;
+        },
+        UIA_IsKeyboardFocusablePropertyId => {
+            var_out.* = .{ .vt = VT_BOOL };
+            const v: VARIANT_BOOL = if (isFocusableRole(node.role)) VARIANT_TRUE else VARIANT_FALSE;
+            @memcpy(var_out.payload[0..@sizeOf(VARIANT_BOOL)], std.mem.asBytes(&v));
+            return S_OK;
+        },
+        UIA_HasKeyboardFocusPropertyId => {
+            var_out.* = .{ .vt = VT_BOOL };
+            const v: VARIANT_BOOL = if (node.focused) VARIANT_TRUE else VARIANT_FALSE;
+            @memcpy(var_out.payload[0..@sizeOf(VARIANT_BOOL)], std.mem.asBytes(&v));
+            return S_OK;
+        },
+        else => {
+            var_out.* = .{ .vt = VT_EMPTY };
+            return S_OK;
+        },
+    }
 }
 
 fn guidEql(a: *const GUID, b: *const GUID) bool {
@@ -397,7 +963,7 @@ fn guidEql(a: *const GUID, b: *const GUID) bool {
     return std.mem.eql(u8, &a.Data4, &b.Data4);
 }
 
-var g_root_provider_vtbl: IRawElementProviderSimple_Vtbl = .{
+var g_root_provider_vtbl_simple: IRawElementProviderSimple_Vtbl = .{
     .QueryInterface = rpQueryInterface,
     .AddRef = rpAddRef,
     .Release = rpRelease,
@@ -407,7 +973,53 @@ var g_root_provider_vtbl: IRawElementProviderSimple_Vtbl = .{
     .get_HostRawElementProvider = rpGetHostRawElementProvider,
 };
 
-var g_root_provider: RootProvider = .{ .vtbl = &g_root_provider_vtbl };
+var g_root_provider_vtbl_fragment: IRawElementProviderFragment_Vtbl = .{
+    .QueryInterface = rpfQueryInterface,
+    .AddRef = rpfAddRef,
+    .Release = rpfRelease,
+    .Navigate = rpfNavigate,
+    .GetRuntimeId = rpfGetRuntimeId,
+    .get_BoundingRectangle = rpfGetBoundingRectangle,
+    .GetEmbeddedFragmentRoots = rpfGetEmbeddedFragmentRoots,
+    .SetFocus = rpfSetFocus,
+    .get_FragmentRoot = rpfGetFragmentRoot,
+};
+
+var g_root_provider_vtbl_root: IRawElementProviderFragmentRoot_Vtbl = .{
+    .QueryInterface = rprQueryInterface,
+    .AddRef = rprAddRef,
+    .Release = rprRelease,
+    .ElementProviderFromPoint = rprElementProviderFromPoint,
+    .GetFocus = rprGetFocus,
+};
+
+var g_root_provider: RootProvider = .{
+    .vtbl_simple = &g_root_provider_vtbl_simple,
+    .vtbl_fragment = &g_root_provider_vtbl_fragment,
+    .vtbl_root = &g_root_provider_vtbl_root,
+};
+
+var g_node_provider_vtbl_simple: IRawElementProviderSimple_Vtbl = .{
+    .QueryInterface = npQueryInterface,
+    .AddRef = npAddRef,
+    .Release = npRelease,
+    .get_ProviderOptions = npGetProviderOptions,
+    .GetPatternProvider = npGetPatternProvider,
+    .GetPropertyValue = npGetPropertyValue,
+    .get_HostRawElementProvider = npGetHostRawElementProvider,
+};
+
+var g_node_provider_vtbl_fragment: IRawElementProviderFragment_Vtbl = .{
+    .QueryInterface = npfQueryInterface,
+    .AddRef = npfAddRef,
+    .Release = npfRelease,
+    .Navigate = npfNavigate,
+    .GetRuntimeId = npfGetRuntimeId,
+    .get_BoundingRectangle = npfGetBoundingRectangle,
+    .GetEmbeddedFragmentRoots = npfGetEmbeddedFragmentRoots,
+    .SetFocus = npfSetFocus,
+    .get_FragmentRoot = npfGetFragmentRoot,
+};
 
 /// Window title in UTF-16, allocated once and reused across
 /// GetPropertyValue(NamePropertyId) calls. Updated by `Host.init`.
@@ -417,10 +1029,51 @@ var g_window_title_w: [256]u16 = [_]u16{0} ** 256;
 /// init / after deinit so the property getter can fail closed.
 var g_hwnd_for_uia: ?HANDLE = null;
 
-// TODO(uia): per-node IRawElementProviderFragment providers so Narrator
-// can iterate buttons/inputs/sliders. The tree is captured here; the
-// vtable + provider pool are the missing pieces.
-var g_published_nodes: []const A11yNode = &.{};
+// ── Stable a11y tree storage ───────────────────────────────────────
+//
+// `publishA11yTree`'s `nodes` slice points into the caller's per-
+// frame arena — invalid after the next publish call AND unsafe for
+// UIA queries (which may arrive on any thread, asynchronously). We
+// snapshot into a fixed-size pair of buffers (node array + label
+// string heap) under a critical section so UIA can read at will.
+//
+// MAX_A11Y_NODES bounds the published tree; oversize trees truncate
+// silently (debug log). 256 nodes covers any realistic single-window
+// app — large lists should be virtualized (cmd `push_virtual_list`)
+// which collapses to one a11y node regardless of row count.
+//
+// MAX_A11Y_LABEL_BYTES is a flat string heap shared by all labels.
+// Per-label cap is 512 (the SysAllocString stack buffer in
+// `nodeGetPropertyValue`).
+
+const MAX_A11Y_NODES: usize = 256;
+const MAX_A11Y_LABEL_BYTES: usize = 8192;
+
+var g_a11y_lock: CRITICAL_SECTION = .{};
+var g_a11y_lock_initialized: bool = false;
+
+var g_published_nodes_buf: [MAX_A11Y_NODES]A11yNode = undefined;
+var g_published_count: usize = 0;
+var g_label_heap: [MAX_A11Y_LABEL_BYTES]u8 = undefined;
+var g_label_heap_used: usize = 0;
+
+var g_node_providers: [MAX_A11Y_NODES]NodeProvider = undefined;
+var g_node_providers_initialized: bool = false;
+
+/// Initialize the static NodeProvider pool. Idempotent — safe to call
+/// more than once across Host.init / deinit cycles.
+fn initNodeProviderPool() void {
+    if (g_node_providers_initialized) return;
+    var i: u32 = 0;
+    while (i < MAX_A11Y_NODES) : (i += 1) {
+        g_node_providers[i] = .{
+            .vtbl_simple = &g_node_provider_vtbl_simple,
+            .vtbl_fragment = &g_node_provider_vtbl_fragment,
+            .index = i,
+        };
+    }
+    g_node_providers_initialized = true;
+}
 
 /// Coarse change detector — we only need to know whether the tree
 /// *shape* has changed since the last publish so we can fire a single
@@ -904,9 +1557,11 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             // other object id (MSAA, etc.) falls through to DefWindowProc
             // so the system can synthesize a default. UIA owns the AddRef
             // contract here; our static AddRef-returns-1 is safe because
-            // the provider lives in module storage.
+            // the provider lives in module storage. We hand the Simple
+            // vtable slot — UIA's QueryInterface will pivot to the
+            // Fragment / FragmentRoot vtables on demand.
             if (lp == UiaRootObjectId) {
-                return UiaReturnRawElementProvider(hwnd, wp, lp, @ptrCast(&g_root_provider));
+                return UiaReturnRawElementProvider(hwnd, wp, lp, @ptrCast(&g_root_provider.vtbl_simple));
             }
             return DefWindowProcW(hwnd, msg, wp, lp);
         },
@@ -958,6 +1613,17 @@ pub const Host = struct {
         g_width = width;
         g_height = height;
         g_resized = true; // force initial surface configure on first pollInputs
+
+        // UIA tree storage is shared between the (single-threaded) Win32
+        // message loop and the UIA worker thread; serialize all access
+        // through a critical section. Initialize once per Host.init —
+        // safe to re-init across Host.init / deinit cycles because
+        // `deinit` deletes the section first.
+        if (!g_a11y_lock_initialized) {
+            InitializeCriticalSection(&g_a11y_lock);
+            g_a11y_lock_initialized = true;
+        }
+        initNodeProviderPool();
 
         const hinstance = GetModuleHandleW(null) orelse return error.GetModuleHandleFailed;
 
@@ -1029,9 +1695,17 @@ pub const Host = struct {
         // Disconnect any lingering UIA listeners (Narrator, Inspect)
         // so they drop their references cleanly before we tear down
         // the underlying window/DC. Return value is ignored — there's
-        // nothing actionable if it fails.
-        _ = UiaDisconnectProvider(&g_root_provider);
+        // nothing actionable if it fails. Hand UIA the same Simple
+        // vtable slot we returned from WM_GETOBJECT.
+        _ = UiaDisconnectProvider(@ptrCast(&g_root_provider.vtbl_simple));
         g_hwnd_for_uia = null;
+
+        // Tear down the critical section last (after Uia listeners
+        // have been disconnected, so no async query is in flight).
+        if (g_a11y_lock_initialized) {
+            DeleteCriticalSection(&g_a11y_lock);
+            g_a11y_lock_initialized = false;
+        }
 
         for (self.font_cache[0..self.font_cache_len]) |entry| {
             _ = DeleteObject(entry.hfont);
@@ -1190,36 +1864,60 @@ pub const Host = struct {
         };
     }
 
-    /// Forward the a11y tree to the platform. We expose a single root
-    /// IRawElementProviderSimple (handled via WM_GETOBJECT) and fire a
+    /// Forward the a11y tree to the platform. We snapshot the nodes
+    /// (plus their labels) into module-scoped storage, then fire a
     /// StructureChanged event whenever the published tree differs from
-    /// the previous one — enough for Narrator / Inspect.exe to see the
-    /// window as a UIA provider and re-walk it. Per-node fragment
-    /// providers are a follow-up (see TODO(uia) above `g_published_nodes`).
+    /// the previous one. Narrator iterates the snapshot via the per-
+    /// node Fragment providers (see `NodeProvider` near the COM
+    /// vtables); Inspect.exe can also enumerate live properties.
     pub fn publishA11yTree(_: *Host, nodes: []const A11yNode) void {
-        // Capture the current tree so the upcoming per-node fragment
-        // provider work can consume it. Stored as a slice into the
-        // caller's arena memory; valid until the next publish call,
-        // which is exactly the lifetime UIA needs for a single frame.
-        g_published_nodes = nodes;
+        // Snapshot the caller's per-frame slice into module-scoped
+        // storage so UIA can read it at any time on a worker thread.
+        // The label heap is a flat bump arena; on overflow we drop the
+        // overflowing label (empty string) rather than fail the publish.
+        EnterCriticalSection(&g_a11y_lock);
+
+        const cap = @min(nodes.len, MAX_A11Y_NODES);
+        g_label_heap_used = 0;
+        var i: usize = 0;
+        while (i < cap) : (i += 1) {
+            var n = nodes[i];
+            // Copy the label into the heap and rewrite its slice to
+            // point at the stable copy. Empty label → empty slice.
+            if (n.label.len > 0) {
+                const remaining = MAX_A11Y_LABEL_BYTES - g_label_heap_used;
+                const take = @min(n.label.len, remaining);
+                if (take > 0) {
+                    @memcpy(g_label_heap[g_label_heap_used .. g_label_heap_used + take], n.label[0..take]);
+                    n.label = g_label_heap[g_label_heap_used .. g_label_heap_used + take];
+                    g_label_heap_used += take;
+                } else {
+                    n.label = &.{};
+                }
+            }
+            g_published_nodes_buf[i] = n;
+        }
+        g_published_count = cap;
+
+        LeaveCriticalSection(&g_a11y_lock);
 
         // Coarse change detection: tree length + focused-cmd index is
         // enough to catch every shape change the framework can produce
         // in one frame without paying for a structural diff.
         var focus_idx: ?u32 = null;
-        for (nodes) |n| {
+        for (g_published_nodes_buf[0..g_published_count]) |n| {
             if (n.focused) {
                 focus_idx = n.cmd_index;
                 break;
             }
         }
-        const changed = nodes.len != g_last_tree_len or focus_idx != g_last_focus_index;
-        g_last_tree_len = nodes.len;
+        const changed = g_published_count != g_last_tree_len or focus_idx != g_last_focus_index;
+        g_last_tree_len = g_published_count;
         g_last_focus_index = focus_idx;
 
         if (changed) {
             _ = UiaRaiseStructureChangedEvent(
-                &g_root_provider,
+                @ptrCast(&g_root_provider.vtbl_simple),
                 StructureChangeType_ChildrenInvalidated,
                 null,
                 0,
@@ -1541,4 +2239,91 @@ pub const Host = struct {
 
 comptime {
     teak.validateHost(Host);
+}
+
+// ── Tests ──────────────────────────────────────────────────────────
+//
+// Win32-only smoke tests. The root `zig build test` runs library
+// tests only (not this module), so these won't fire there; they
+// compile-check as part of `zig build ui`, and a dedicated win32
+// test target could pick them up.
+
+const builtin = @import("builtin");
+
+test "uia per-node providers: publishA11yTree copies labels into the heap" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    // Initialize the same statics Host.init would set up. We don't
+    // create a window — none of the per-node vtable methods exercised
+    // here touch the HWND (BoundingRectangle does, but we don't call it).
+    if (!g_a11y_lock_initialized) {
+        InitializeCriticalSection(&g_a11y_lock);
+        g_a11y_lock_initialized = true;
+    }
+    initNodeProviderPool();
+
+    // Construct fake A11yNodes pointing at labels in an arena. Once
+    // publishA11yTree returns, the labels in g_published_nodes_buf
+    // must NOT alias these.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const lbl_btn = try a.dupe(u8, "Save");
+    const lbl_input = try a.dupe(u8, "name");
+    const lbl_check = try a.dupe(u8, "agree");
+
+    const nodes = [_]A11yNode{
+        .{ .role = .button, .cmd_index = 1, .bounds = .{ .x = 0, .y = 0, .w = 80, .h = 30 }, .label = lbl_btn },
+        .{ .role = .text_input, .cmd_index = 2, .bounds = .{ .x = 0, .y = 40, .w = 200, .h = 30 }, .label = lbl_input, .focused = true },
+        .{ .role = .checkbox, .cmd_index = 3, .bounds = .{ .x = 0, .y = 80, .w = 100, .h = 20 }, .label = lbl_check, .state = 1 },
+    };
+
+    var dummy_host: Host = undefined;
+    dummy_host.publishA11yTree(&nodes);
+
+    try std.testing.expectEqual(@as(usize, 3), g_published_count);
+    // Labels should match by content but NOT by pointer (i.e. they
+    // were copied into the heap).
+    try std.testing.expectEqualStrings("Save", g_published_nodes_buf[0].label);
+    try std.testing.expectEqualStrings("name", g_published_nodes_buf[1].label);
+    try std.testing.expectEqualStrings("agree", g_published_nodes_buf[2].label);
+    try std.testing.expect(g_published_nodes_buf[0].label.ptr != lbl_btn.ptr);
+    try std.testing.expect(g_published_nodes_buf[1].label.ptr != lbl_input.ptr);
+    try std.testing.expect(g_published_nodes_buf[2].label.ptr != lbl_check.ptr);
+
+    // Root's Navigate(FirstChild) returns a non-null provider whose
+    // GetPropertyValue(ControlType) matches the first node's role.
+    var first_child: ?*anyopaque = null;
+    const fragment_this_ptr: *FragmentThis = @ptrCast(&g_root_provider.vtbl_fragment);
+    const nav_hr = g_root_provider_vtbl_fragment.Navigate(fragment_this_ptr, .first_child, &first_child);
+    try std.testing.expectEqual(S_OK, nav_hr);
+    try std.testing.expect(first_child != null);
+
+    // The returned pointer is the address of a NodeProvider's
+    // vtbl_fragment field — must be the first node in the pool.
+    const child_fragment_ptr: *FragmentThis = @ptrCast(@alignCast(first_child.?));
+    const child_node: *NodeProvider = @fieldParentPtr("vtbl_fragment", child_fragment_ptr);
+    try std.testing.expectEqual(@as(u32, 0), child_node.index);
+
+    // Read its ControlType via the Simple vtable.
+    const simple_this_ptr: *SimpleThis = @ptrCast(&child_node.vtbl_simple);
+    var v: VARIANT = .{ .vt = VT_EMPTY };
+    const prop_hr = g_node_provider_vtbl_simple.GetPropertyValue(simple_this_ptr, UIA_ControlTypePropertyId, &v);
+    try std.testing.expectEqual(S_OK, prop_hr);
+    try std.testing.expectEqual(VT_I4, v.vt);
+    var got_ct: c_long = 0;
+    @memcpy(std.mem.asBytes(&got_ct), v.payload[0..@sizeOf(c_long)]);
+    try std.testing.expectEqual(UIA_ButtonControlTypeId, got_ct);
+
+    // GetFocus on the root should pick out the focused text_input
+    // (node index 1).
+    var focused: ?*anyopaque = null;
+    const root_this_ptr: *FragmentRootThis = @ptrCast(&g_root_provider.vtbl_root);
+    const focus_hr = g_root_provider_vtbl_root.GetFocus(root_this_ptr, &focused);
+    try std.testing.expectEqual(S_OK, focus_hr);
+    try std.testing.expect(focused != null);
+    const focused_fragment_ptr: *FragmentThis = @ptrCast(@alignCast(focused.?));
+    const focused_node: *NodeProvider = @fieldParentPtr("vtbl_fragment", focused_fragment_ptr);
+    try std.testing.expectEqual(@as(u32, 1), focused_node.index);
 }

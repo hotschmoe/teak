@@ -69,10 +69,145 @@ const FileDialogSlot = struct {
 
 const MAX_FILE_DIALOG_SLOTS: usize = 4;
 
-/// JS-side imports (wired by zunk's resolver — see zunk issue #14).
-/// Stays in a sub-namespace so `@hasDecl` in submitFileDialog can short
-/// circuit cleanly when the symbol isn't resolved yet (browser builds
-/// where zunk's bridge hasn't shipped).
+// ── A11y DOM-mirror wire format ────────────────────────────────────
+//
+// `publishA11yTree` ships the per-frame a11y snapshot to the JS side
+// over two parallel buffers: a fixed-stride record array (one record
+// per node) and a UTF-8 string heap that holds every label back-to-
+// back. The JS shim deserializes both, diffs against last frame, and
+// updates a hidden DOM subtree so NVDA/JAWS/VoiceOver can announce
+// canvas-rendered widgets.
+//
+// Per-node record layout (little-endian, native Zig packing —
+// `A11yRecord` is `extern struct` so its layout is fixed):
+//
+//   offset  size  field
+//        0     4  cmd_index      u32  index into the source Cmd buffer
+//        4     4  role           u32  enum tag, 0..11 (see a11y.Role)
+//        8     4  label_offset   u32  byte offset into the string heap
+//       12     4  label_len      u32  label length in bytes
+//       16     4  bounds_x       i32  rounded pixel x
+//       20     4  bounds_y       i32  rounded pixel y
+//       24     4  bounds_w       i32  rounded pixel width
+//       28     4  bounds_h       i32  rounded pixel height
+//       32     4  state          f32  checkbox/radio checked (0/1),
+//                                       slider value [0, 1]
+//       36     4  flags          u32  bit 0 = focused
+//   total: 40 bytes
+//
+// Fixed-size buffers (rather than an arena/general-purpose allocator)
+// because wasm-freestanding has no default heap, the wasm side is
+// single-threaded, and JS reads the buffers synchronously inside the
+// extern call — the next publish-tree call can safely overwrite them.
+// Tunables are bounded to keep wasm size down: 256 nodes × 40 bytes
+// = 10 KB for records, 8 KB string heap. A 256-node frame already
+// exceeds anything a human screen-reader user would meaningfully
+// navigate; nodes past the cap are silently dropped.
+//
+// JS shim behavior (separate zunk issue tracks the bridge):
+//   * Maintain a single off-screen container element with ARIA
+//     mirrors for each record.
+//   * Map `role` → ARIA role + apply label / state attributes.
+//   * Diff against the previous frame; add/update/remove DOM nodes.
+//   * If the shim is absent from the build, the extern resolves
+//     away (see `@hasDecl` gate in `publishA11yTree`) and the call
+//     becomes a build-time no-op.
+//
+// Buffer lifetime: the byte ranges passed to the extern are stable
+// for the duration of that call only. JS must copy any bytes it
+// wants to retain — the buffers are overwritten on the next frame.
+
+const MAX_A11Y_NODES: usize = 256;
+const A11Y_STRING_HEAP_BYTES: usize = 8 * 1024;
+const A11Y_RECORD_BYTES: usize = 40;
+
+/// One serialized a11y node. `extern struct` pins the field layout so
+/// the JS side can decode by raw offsets without paying for any
+/// per-field marshalling.
+const A11yRecord = extern struct {
+    cmd_index: u32,
+    role: u32,
+    label_offset: u32,
+    label_len: u32,
+    bounds_x: i32,
+    bounds_y: i32,
+    bounds_w: i32,
+    bounds_h: i32,
+    state: f32,
+    flags: u32,
+
+    comptime {
+        if (@sizeOf(A11yRecord) != A11Y_RECORD_BYTES) {
+            @compileError("A11yRecord size drifted from documented wire format");
+        }
+    }
+};
+
+/// Bit positions for `A11yRecord.flags`. Keep the table in sync with
+/// the JS shim — adding a bit is a wire-format change.
+const A11Y_FLAG_FOCUSED: u32 = 1 << 0;
+
+// Module-scoped backing store for the two wire buffers. Single-host
+// wasm process — one publish-tree call at a time, single-threaded,
+// reused every frame. Zero per-frame allocation.
+var g_a11y_records: [MAX_A11Y_NODES * A11Y_RECORD_BYTES]u8 align(@alignOf(A11yRecord)) = undefined;
+var g_a11y_strings: [A11Y_STRING_HEAP_BYTES]u8 = undefined;
+
+/// Serialize an A11yNode slice into the module-scoped record + string
+/// buffers and return the byte lengths actually written. Pure helper —
+/// no zunk / JS calls — so tests can exercise it in isolation.
+///
+/// Truncation rules:
+///   * Drops nodes past `MAX_A11Y_NODES`.
+///   * Drops labels whose bytes wouldn't fit in the remaining string
+///     heap (record is still written with `label_len = 0` so the node
+///     itself stays announceable, just unlabeled).
+fn serializeA11yTree(nodes: []const A11yNode) struct { records_len: u32, strings_len: u32 } {
+    const count = @min(nodes.len, MAX_A11Y_NODES);
+    var strings_used: u32 = 0;
+
+    // Records and strings live in parallel buffers — write one record
+    // per node, append the label bytes to the heap, and record the
+    // offset+len so JS can slice them back out.
+    const records: [*]A11yRecord = @ptrCast(&g_a11y_records);
+    for (nodes[0..count], 0..) |node, i| {
+        const label_len_u32: u32 = @intCast(node.label.len);
+        const remaining: u32 = @intCast(A11Y_STRING_HEAP_BYTES - strings_used);
+        var label_offset: u32 = 0;
+        var label_len: u32 = 0;
+        if (label_len_u32 > 0 and label_len_u32 <= remaining) {
+            label_offset = strings_used;
+            label_len = label_len_u32;
+            @memcpy(g_a11y_strings[strings_used..][0..label_len_u32], node.label);
+            strings_used += label_len_u32;
+        }
+
+        var flags: u32 = 0;
+        if (node.focused) flags |= A11Y_FLAG_FOCUSED;
+
+        records[i] = .{
+            .cmd_index = node.cmd_index,
+            .role = @intFromEnum(node.role),
+            .label_offset = label_offset,
+            .label_len = label_len,
+            .bounds_x = @intFromFloat(@round(node.bounds.x)),
+            .bounds_y = @intFromFloat(@round(node.bounds.y)),
+            .bounds_w = @intFromFloat(@round(node.bounds.w)),
+            .bounds_h = @intFromFloat(@round(node.bounds.h)),
+            .state = node.state,
+            .flags = flags,
+        };
+    }
+
+    const records_bytes: u32 = @intCast(count * A11Y_RECORD_BYTES);
+    return .{ .records_len = records_bytes, .strings_len = strings_used };
+}
+
+/// JS-side imports (wired by zunk's resolver — see zunk issue #14 for
+/// the file-dialog shim and zunk issue #15 for the a11y DOM mirror).
+/// Stays in a sub-namespace so `@hasDecl` callers can short-circuit
+/// cleanly when a symbol isn't resolved yet (browser builds where
+/// zunk's bridge hasn't shipped).
 const externs = struct {
     extern "env" fn __zunk_request_file_dialog(
         id: u32,
@@ -81,6 +216,13 @@ const externs = struct {
         name_len: u32,
         pattern_ptr: [*]const u8,
         pattern_len: u32,
+    ) void;
+
+    extern "env" fn __zunk_publish_a11y_tree(
+        records_ptr: [*]const u8,
+        records_len: u32,
+        strings_ptr: [*]const u8,
+        strings_len: u32,
     ) void;
 };
 
@@ -290,10 +432,34 @@ pub const Host = struct {
         return .{};
     }
 
-    /// Stub — a real web a11y integration would mirror the tree as
-    /// hidden DOM elements with aria-* attributes, which is a
-    /// non-trivial JS-side dance. Tracked as follow-up.
-    pub fn publishA11yTree(_: *Host, _: []const A11yNode) void {}
+    /// Serialize the per-frame a11y tree into the module-scoped wire
+    /// buffers and hand the byte ranges to the JS shim. The shim
+    /// mirrors the tree as hidden DOM elements with ARIA roles so
+    /// NVDA/JAWS/VoiceOver can announce widgets rendered to the
+    /// `<canvas>` by wgpu. See the `A11yRecord` doc block above for
+    /// the wire format.
+    ///
+    /// When the JS shim isn't linked into the page (early consumers,
+    /// pre-bridge zunk builds), the `__zunk_publish_a11y_tree` symbol
+    /// resolves away at compile time and this becomes a serialize-
+    /// then-no-op — the canary `zig build test-wasm` still passes
+    /// without the JS half landing.
+    ///
+    /// Buffer lifetime: the records/strings byte ranges are stable
+    /// for the duration of the extern call only and are overwritten
+    /// on the next frame. The JS shim must copy anything it needs to
+    /// retain into the DOM synchronously before returning.
+    pub fn publishA11yTree(_: *Host, nodes: []const A11yNode) void {
+        const lens = serializeA11yTree(nodes);
+        if (comptime @hasDecl(externs, "__zunk_publish_a11y_tree")) {
+            externs.__zunk_publish_a11y_tree(
+                &g_a11y_records,
+                lens.records_len,
+                &g_a11y_strings,
+                lens.strings_len,
+            );
+        }
+    }
 
     // Browser file dialogs go through the showOpenFilePicker API which
     // is async and gesture-gated — incompatible with the synchronous
@@ -439,3 +605,110 @@ fn cssFontFamily(family: FontFamily) []const u8 {
 comptime {
     teak.validateHost(Host);
 }
+
+// ── Tests ──────────────────────────────────────────────────────────
+//
+// These tests exercise the pure serialization helper
+// (`serializeA11yTree`) without touching the JS bridge. wasm.zig as a
+// whole only gets compiled by the example's `web` step (it imports
+// zunk), so these tests don't auto-run under root `zig build test` —
+// they document the wire-format contract and run wherever wasm.zig is
+// pulled into a test module (the wasm canary keeps the file
+// compiling).
+
+test "serializeA11yTree: layout matches wire format" {
+    const testing = std.testing;
+
+    const nodes = [_]A11yNode{
+        .{
+            .role = .button,
+            .cmd_index = 7,
+            .bounds = .{ .x = 10, .y = 20, .w = 100, .h = 30 },
+            .label = "Save",
+            .focused = true,
+        },
+        .{
+            .role = .checkbox,
+            .cmd_index = 9,
+            .bounds = .{ .x = 0, .y = 50, .w = 80, .h = 20 },
+            .label = "Agree",
+            .state = 1.0,
+        },
+    };
+
+    const lens = serializeA11yTree(&nodes);
+
+    try testing.expectEqual(@as(u32, 2 * A11Y_RECORD_BYTES), lens.records_len);
+    try testing.expectEqual(@as(u32, "Save".len + "Agree".len), lens.strings_len);
+
+    const records: [*]const A11yRecord = @ptrCast(&g_a11y_records);
+
+    // Record 0: focused button.
+    try testing.expectEqual(@as(u32, 7), records[0].cmd_index);
+    try testing.expectEqual(@as(u32, @intFromEnum(teak.A11yRole.button)), records[0].role);
+    try testing.expectEqual(@as(u32, 0), records[0].label_offset);
+    try testing.expectEqual(@as(u32, 4), records[0].label_len);
+    try testing.expectEqual(@as(i32, 10), records[0].bounds_x);
+    try testing.expectEqual(@as(i32, 20), records[0].bounds_y);
+    try testing.expectEqual(@as(i32, 100), records[0].bounds_w);
+    try testing.expectEqual(@as(i32, 30), records[0].bounds_h);
+    try testing.expectEqual(A11Y_FLAG_FOCUSED, records[0].flags & A11Y_FLAG_FOCUSED);
+
+    // Record 1: checked, non-focused checkbox stacked after.
+    try testing.expectEqual(@as(u32, 9), records[1].cmd_index);
+    try testing.expectEqual(@as(u32, @intFromEnum(teak.A11yRole.checkbox)), records[1].role);
+    try testing.expectEqual(@as(u32, 4), records[1].label_offset);
+    try testing.expectEqual(@as(u32, 5), records[1].label_len);
+    try testing.expectEqual(@as(f32, 1.0), records[1].state);
+    try testing.expectEqual(@as(u32, 0), records[1].flags & A11Y_FLAG_FOCUSED);
+
+    // String heap holds the labels back-to-back at the recorded offsets.
+    try testing.expectEqualStrings("Save", g_a11y_strings[0..4]);
+    try testing.expectEqualStrings("Agree", g_a11y_strings[4..9]);
+}
+
+test "serializeA11yTree: drops nodes past MAX_A11Y_NODES" {
+    const testing = std.testing;
+
+    var nodes: [MAX_A11Y_NODES + 8]A11yNode = undefined;
+    for (&nodes, 0..) |*n, i| {
+        n.* = .{
+            .role = .text,
+            .cmd_index = @intCast(i),
+            .bounds = .{ .x = 0, .y = 0, .w = 1, .h = 1 },
+        };
+    }
+
+    const lens = serializeA11yTree(&nodes);
+
+    try testing.expectEqual(@as(u32, MAX_A11Y_NODES * A11Y_RECORD_BYTES), lens.records_len);
+    try testing.expectEqual(@as(u32, 0), lens.strings_len);
+
+    const records: [*]const A11yRecord = @ptrCast(&g_a11y_records);
+    try testing.expectEqual(@as(u32, MAX_A11Y_NODES - 1), records[MAX_A11Y_NODES - 1].cmd_index);
+}
+
+test "serializeA11yTree: oversized label is skipped, record still emitted" {
+    const testing = std.testing;
+
+    var huge: [A11Y_STRING_HEAP_BYTES + 1]u8 = undefined;
+    @memset(&huge, 'x');
+
+    const nodes = [_]A11yNode{
+        .{
+            .role = .text,
+            .cmd_index = 1,
+            .bounds = .{ .x = 0, .y = 0, .w = 10, .h = 10 },
+            .label = &huge,
+        },
+    };
+
+    const lens = serializeA11yTree(&nodes);
+    try testing.expectEqual(@as(u32, A11Y_RECORD_BYTES), lens.records_len);
+    try testing.expectEqual(@as(u32, 0), lens.strings_len);
+
+    const records: [*]const A11yRecord = @ptrCast(&g_a11y_records);
+    try testing.expectEqual(@as(u32, 1), records[0].cmd_index);
+    try testing.expectEqual(@as(u32, 0), records[0].label_len);
+}
+

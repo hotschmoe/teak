@@ -244,10 +244,30 @@ maintaining the same `layout.ClipStack` and `overlay_depth` counter:
   bounds and therefore does NOT occlude the base — same rule
   `hit_test` uses to decide whether the modal can claim a click.
 
-Win32 and wasm both implement `publishA11yTree` as a stable no-op —
-the surface is in place so apps call unconditionally. Real UIA
-(Windows) / aria-attribute DOM mirror (web) integrations are tracked
-as follow-up.
+Both backends ship real `publishA11yTree` implementations:
+
+- **Win32**: per-frame snapshot copied (under a `CRITICAL_SECTION`)
+  into a 256-node module-scoped buffer + 8 KB string heap so UIA
+  worker threads can read at any time. Each `A11yNode` is exposed as
+  an `IRawElementProviderFragment` from a pre-allocated provider
+  pool; the window itself implements
+  `IRawElementProviderFragmentRoot` (sibling navigation,
+  `ElementProviderFromPoint`, `GetFocus`). Properties surfaced:
+  `ControlType` (mapped from role), `Name` (BSTR of label),
+  `IsKeyboardFocusable`, `HasKeyboardFocus`, `BoundingRectangle`
+  (translated via `ClientToScreen`). Patterns
+  (Invoke/Value/Toggle) are deliberately deferred — adding them
+  needs a Msg-back path from `SetFocus` / `Invoke` into the TEA
+  loop, which is a future hatch.
+- **wasm**: serializes the tree into two parallel buffers — a
+  fixed-stride `A11yRecord` array (40 bytes per node, capped at 256
+  nodes) and an 8 KB UTF-8 string heap — and hands the byte ranges
+  to `__zunk_publish_a11y_tree`. The JS shim (tracked in
+  [zunk #15](https://github.com/hotschmoe/zunk/issues/15)) is
+  responsible for diffing against the previous frame and updating a
+  hidden ARIA-mirrored DOM subtree. The extern is `@hasDecl`-gated
+  so builds without the shim still link cleanly — `publishA11yTree`
+  becomes a serialize-then-no-op until the bridge ships.
 
 ## 8. Rich text rendering (via rich_zig)
 
@@ -321,16 +341,33 @@ items are:
   read on top. No zunk-side change was required for the image
   surface — the gap was entirely teak-side.
 - ~~**UIA on Win32**: full `IRawElementProviderSimple` per a11y node.~~ —
-  partially closed: the window now exposes a singleton
-  `IRawElementProviderSimple` root provider via `WM_GETOBJECT`
-  (ControlType = Window, Name = window title,
-  HostRawElementProvider from `UiaHostProviderFromHwnd`), and fires
-  `UiaRaiseStructureChangedEvent` on every `publishA11yTree` where
-  the tree shape changes. Narrator + Inspect.exe now detect the
-  window as a UIA provider. Per-A11yNode
-  `IRawElementProviderFragment` providers (so Narrator can iterate
-  buttons / inputs / sliders) are still tracked as a follow-up — see
-  the `TODO(uia)` near `g_published_nodes` in `src/platform/win32.zig`.
+  closed: the window exposes a singleton root provider implementing
+  `IRawElementProviderSimple` + `IRawElementProviderFragment` +
+  `IRawElementProviderFragmentRoot` via `WM_GETOBJECT`; per-node
+  `IRawElementProviderFragment` instances come from a pre-allocated
+  `[MAX_A11Y_NODES]NodeProvider` pool indexed by the published-tree
+  position. The published tree is snapshotted (labels copied into an
+  8 KB heap) under a `CRITICAL_SECTION` so UIA worker threads can
+  read safely. `UiaRaiseStructureChangedEvent` fires on tree-shape
+  changes. Narrator can now iterate buttons / inputs / sliders /
+  checkboxes rather than just announcing "window opened".
+- ~~**Web a11y**: mirrored DOM with `aria-*` attributes.~~ —
+  Zig-side closed: wasm `publishA11yTree` serializes the tree into
+  a fixed-stride 40-byte record array + UTF-8 string heap and ships
+  the bytes via `__zunk_publish_a11y_tree`. JS shim tracked in
+  [zunk issue #15](https://github.com/hotschmoe/zunk/issues/15);
+  the extern is `@hasDecl`-gated so builds without the shim link
+  cleanly.
+- ~~**Multi-window resize**: secondary windows track their size via
+  `gpu.resizeWindow(id, w, h)` but the Win32 secondary wndProc
+  doesn't yet send resize events back to the app.~~ — already
+  closed in the multi-window push: `secondaryWndProc`'s `WM_SIZE`
+  arm updates `sw.width/height` + `sw.resized`, and
+  `pollSecondaryInputs` snapshots the flag into `InputState` exactly
+  like the primary loop. Counter-greeter's stats-window glue calls
+  `gpu.resizeWindow(wid, si.width, si.height)` whenever
+  `si.resized` is true. (This bullet was stale doc rather than
+  missing code.)
 - ~~**Multi-window**: per-window wgpu surface in `src/gpu/native.zig`,
   Host-side window-id tracking.~~ — closed: Host gains additive
   `pollSecondaryInputs(id)`, `closeSecondaryWindow(id)`,
@@ -363,15 +400,10 @@ items are:
 
 Remaining follow-ups after this push:
 
-- **UIA per-node fragment providers**: see TODO(uia) in
-  `src/platform/win32.zig`. Lets Narrator iterate the widget tree
-  rather than just announcing "window opened".
 - **zunk #14**: the JS-side `showOpenFilePicker` bridge that resolves
   promised paths into `__zunk_file_dialog_result(id, path_ptr, len)`.
   Surface contract is in place; the runtime glue needs writing.
-- **Web a11y**: mirrored DOM with `aria-*` attributes — the
-  `publishA11yTree` Host surface is still a no-op on wasm.
-- **Multi-window resize**: secondary windows currently track their
-  size via `gpu.resizeWindow(id, w, h)` but the Win32 secondary
-  wndProc doesn't yet send resize events back to the app; tracked
-  alongside the multi-window primitives.
+- **zunk #15**: the JS-side a11y DOM mirror that consumes
+  `__zunk_publish_a11y_tree(records_ptr, records_len, strings_ptr,
+  strings_len)` and updates a hidden ARIA-mirrored subtree. Wire
+  format pinned in `src/platform/wasm.zig`.
