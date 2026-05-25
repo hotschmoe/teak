@@ -68,6 +68,17 @@ const GroupContext = struct {
     scroll_x: f32 = 0,
     scroll_y: f32 = 0,
     is_scroll: bool = false,
+    /// True if this entry was pushed by push_overlay. Overlays don't
+    /// contribute to their parent's measured size — see pop_overlay
+    /// arm in measurePass.
+    is_overlay: bool = false,
+    /// True if this entry was pushed by push_virtual_list. The
+    /// container's main-axis size is forced to total_count * item_extent
+    /// regardless of how many children were emitted in the visible window.
+    is_virtual: bool = false,
+    total_count: f32 = 0,
+    item_extent: f32 = 0,
+    visible_start: u32 = 0,
     fixed_main: f32 = 0,
     flex_total: f32 = 0,
     cross_axis_max: f32 = 0,
@@ -262,7 +273,143 @@ pub const LayoutEngine = struct {
                         .child_count = grp.child_count,
                     };
 
+                    if (grp.is_overlay) {
+                        // Forced sizes win over measured children.
+                        if (grp.fixed_w > 0) rects[grp.cmd_index].w = grp.fixed_w;
+                        if (grp.fixed_h > 0) rects[grp.cmd_index].h = grp.fixed_h;
+                        // Overlays do NOT contribute to their parent's
+                        // measured size — they hop the layout.
+                    } else if (grp.is_virtual) {
+                        // Virtual lists claim total_count * item_extent on
+                        // the main axis regardless of how many children
+                        // were emitted. Cross axis = inherited from
+                        // measured children.
+                        const total_main: f32 = grp.total_count * grp.item_extent + 2 * grp.padding;
+                        switch (grp.direction) {
+                            .horizontal => rects[grp.cmd_index].w = total_main,
+                            .vertical => rects[grp.cmd_index].h = total_main,
+                        }
+                        addLeafToTop(&stack, rects[grp.cmd_index].w, rects[grp.cmd_index].h, grp.group_flex);
+                    } else {
+                        addLeafToTop(&stack, w, h, grp.group_flex);
+                    }
+                },
+                .push_overlay => |ov| {
+                    stack.push(.{
+                        .cmd_index = i,
+                        .direction = ov.direction,
+                        .padding = ov.padding,
+                        .gap = ov.gap,
+                        .group_flex = 0,
+                        .is_overlay = true,
+                        .fixed_w = ov.width,
+                        .fixed_h = ov.height,
+                    });
+                },
+                .pop_overlay => {
+                    const grp = stack.pop();
+                    const gaps: f32 = if (grp.child_count > 1)
+                        @as(f32, @floatFromInt(grp.child_count - 1)) * grp.gap
+                    else
+                        0;
+                    const main_size = grp.fixed_main + gaps + 2 * grp.padding;
+                    const cross_size = grp.cross_axis_max + 2 * grp.padding;
+                    var w: f32 = switch (grp.direction) {
+                        .horizontal => main_size,
+                        .vertical => cross_size,
+                    };
+                    var h: f32 = switch (grp.direction) {
+                        .horizontal => cross_size,
+                        .vertical => main_size,
+                    };
+                    if (grp.fixed_w > 0) w = grp.fixed_w;
+                    if (grp.fixed_h > 0) h = grp.fixed_h;
+                    rects[grp.cmd_index] = .{
+                        .w = w,
+                        .h = h,
+                        .fixed_main = grp.fixed_main,
+                        .flex_total = grp.flex_total,
+                        .child_count = grp.child_count,
+                    };
+                    // Overlay does not call addLeafToTop — it doesn't
+                    // contribute to the parent's measured size.
+                },
+                .push_virtual_list => |vl| {
+                    stack.push(.{
+                        .cmd_index = i,
+                        .direction = vl.direction,
+                        .padding = vl.padding,
+                        .gap = vl.gap,
+                        .group_flex = 0,
+                        .is_virtual = true,
+                        .total_count = @floatFromInt(vl.total_count),
+                        .item_extent = vl.item_extent,
+                        .visible_start = vl.visible_start,
+                    });
+                },
+                .pop_virtual_list => {
+                    // Handled in the pop_group/pop_scroll arm above via
+                    // is_virtual branch — duplicated here for the
+                    // exhaustive switch.
+                    const grp = stack.pop();
+                    const total_main: f32 = grp.total_count * grp.item_extent + 2 * grp.padding;
+                    const w: f32 = switch (grp.direction) {
+                        .horizontal => total_main,
+                        .vertical => grp.cross_axis_max + 2 * grp.padding,
+                    };
+                    const h: f32 = switch (grp.direction) {
+                        .horizontal => grp.cross_axis_max + 2 * grp.padding,
+                        .vertical => total_main,
+                    };
+                    rects[grp.cmd_index] = .{
+                        .w = w,
+                        .h = h,
+                        .fixed_main = total_main - 2 * grp.padding,
+                        .flex_total = grp.flex_total,
+                        .child_count = grp.child_count,
+                    };
                     addLeafToTop(&stack, w, h, grp.group_flex);
+                },
+                .image => |img| {
+                    const w = img.style.width;
+                    const h = img.style.height;
+                    rects[i] = .{ .w = w, .h = h };
+                    addLeafToTop(&stack, w, h, img.style.flex);
+                },
+                .rich_text => |rt| {
+                    // Measure each span with its own font; fall back to
+                    // default_font for any byte not covered by a span.
+                    var max_h: f32 = 0;
+                    var total_w: f32 = 0;
+                    var cursor: u32 = 0;
+                    for (rt.spans) |sp| {
+                        if (sp.start > cursor) {
+                            const m = measurer.measure(
+                                rt.content[cursor..sp.start],
+                                rt.default_font,
+                            );
+                            total_w += m.width;
+                            max_h = @max(max_h, m.height);
+                        }
+                        const end = @min(sp.end, @as(u32, @intCast(rt.content.len)));
+                        if (end > sp.start) {
+                            const m = measurer.measure(rt.content[sp.start..end], sp.font);
+                            total_w += m.width;
+                            max_h = @max(max_h, m.height);
+                        }
+                        cursor = end;
+                    }
+                    if (cursor < rt.content.len) {
+                        const m = measurer.measure(
+                            rt.content[cursor..],
+                            rt.default_font,
+                        );
+                        total_w += m.width;
+                        max_h = @max(max_h, m.height);
+                    }
+                    if (max_h == 0) max_h = rt.default_font.size_px;
+                    rects[i] = .{ .w = total_w, .h = max_h };
+                    addLeafToTop(&stack, total_w, max_h, 0);
                 },
             }
         }
@@ -290,7 +437,7 @@ pub const LayoutEngine = struct {
                     .scroll_x = sc.scroll_x,
                     .scroll_y = sc.scroll_y,
                 }),
-                .text, .button, .checkbox, .radio => {
+                .text, .button, .checkbox, .radio, .image, .rich_text => {
                     const ctx = stack.top();
                     if (ctx.child_count > 0) advanceCursor(ctx, ctx.gap);
 
@@ -311,6 +458,50 @@ pub const LayoutEngine = struct {
                     placeFlexLeaf(rects, &stack, i, sl.style.flex);
                 },
                 .divider => placeFlexLeaf(rects, &stack, i, 0),
+                .push_overlay => |ov| {
+                    // Absolute placement; anchor fraction shifts by
+                    // (-w * frac_x, -h * frac_y).
+                    rects[i].x = ov.x - rects[i].w * ov.anchor_x_frac;
+                    rects[i].y = ov.y - rects[i].h * ov.anchor_y_frac;
+                    // Children get their own cursor context — overlays
+                    // do NOT advance the parent cursor (they're absolute).
+                    stack.push(.{
+                        .x = rects[i].x + ov.padding,
+                        .y = rects[i].y + ov.padding,
+                        .direction = ov.direction,
+                        .gap = ov.gap,
+                        .per_flex_unit = 0,
+                        .inner_cross = @max(0, switch (ov.direction) {
+                            .horizontal => rects[i].h - 2 * ov.padding,
+                            .vertical => rects[i].w - 2 * ov.padding,
+                        }),
+                    });
+                },
+                .pop_overlay => {
+                    _ = stack.pop();
+                },
+                .push_virtual_list => |vl| {
+                    // Children sit inside the parent (a scroll typically)
+                    // at offset `visible_start * item_extent` so they
+                    // land in the right "virtual" row.
+                    placeContainer(rects, &stack, i, .{
+                        .direction = vl.direction,
+                        .padding = vl.padding,
+                        .gap = vl.gap,
+                        .flex = 0,
+                    });
+                    // Now bump the cursor so the first emitted child
+                    // sits at row visible_start, not row 0.
+                    const ctx = stack.top();
+                    const offset: f32 = @as(f32, @floatFromInt(vl.visible_start)) * vl.item_extent;
+                    switch (vl.direction) {
+                        .horizontal => ctx.x += offset,
+                        .vertical => ctx.y += offset,
+                    }
+                },
+                .pop_virtual_list => {
+                    _ = stack.pop();
+                },
                 .pop_group, .pop_scroll => {
                     _ = stack.pop();
                 },

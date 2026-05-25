@@ -41,26 +41,62 @@ fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
 }
 
 /// Forward-walk cmds/rects maintaining a scroll-clip stack; keep the
-/// *last* hit so painter's order wins (a later draw is on top). A
-/// backward walk would be simpler for z-order but couldn't honor scroll
-/// clips that accumulate top-down.
+/// *last* hit so painter's order wins (a later draw is on top). Two
+/// passes — non-overlay first, then overlay — so the overlay layer
+/// (HARDLINE §2 escape hatch 5) wins z-order without per-cmd z fields.
+/// A backward walk would be simpler for z-order but couldn't honor
+/// scroll clips that accumulate top-down.
 pub fn hitTest(
     cmds: anytype,
     rects: []const Rect,
     mouse_x: f32,
     mouse_y: f32,
 ) ?HitResult(CmdMsg(@TypeOf(cmds))) {
+    // Overlay layer first (it wins): a hit there short-circuits.
+    if (hitTestLayer(cmds, rects, mouse_x, mouse_y, .overlay)) |h| return h;
+    return hitTestLayer(cmds, rects, mouse_x, mouse_y, .base);
+}
+
+const Layer = enum { base, overlay };
+
+fn hitTestLayer(
+    cmds: anytype,
+    rects: []const Rect,
+    mouse_x: f32,
+    mouse_y: f32,
+    layer: Layer,
+) ?HitResult(CmdMsg(@TypeOf(cmds))) {
     const Msg = CmdMsg(@TypeOf(cmds));
     var clip: ClipStack = .{};
+    var overlay_depth: u32 = 0;
     var best: ?HitResult(Msg) = null;
     for (cmds, 0..) |c, i| {
         const cur_clip = clip.top();
+        const in_overlay = overlay_depth > 0;
+        const visible_to_layer = switch (layer) {
+            .base => !in_overlay,
+            .overlay => in_overlay,
+        };
         switch (c) {
             .push_scroll => clip.push(clipRect(rects[i], cur_clip)),
             .pop_scroll => clip.pop(),
-            else => if (leafMsg(c)) |msg| {
-                if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
-                    best = .{ .index = i, .msg = msg };
+            .push_overlay => {
+                overlay_depth += 1;
+                // Overlay is its own clip so contents are bounded by
+                // the overlay rect (e.g. menu items past the menu's
+                // height shouldn't hit-test).
+                clip.push(clipRect(rects[i], cur_clip));
+            },
+            .pop_overlay => {
+                overlay_depth -= 1;
+                clip.pop();
+            },
+            .push_group, .pop_group, .push_virtual_list, .pop_virtual_list => {},
+            else => if (visible_to_layer) {
+                if (leafMsg(c)) |msg| {
+                    if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
+                        best = .{ .index = i, .msg = msg };
+                }
             },
         }
     }
@@ -68,21 +104,47 @@ pub fn hitTest(
 }
 
 /// Like hitTest but returns only the index (no msg). Also respects
-/// scroll clips.
+/// scroll clips and the overlay layer (overlay-layer hover wins).
 pub fn hoverTest(
     cmds: anytype,
     rects: []const Rect,
     mouse_x: f32,
     mouse_y: f32,
 ) ?usize {
+    if (hoverTestLayer(cmds, rects, mouse_x, mouse_y, .overlay)) |h| return h;
+    return hoverTestLayer(cmds, rects, mouse_x, mouse_y, .base);
+}
+
+fn hoverTestLayer(
+    cmds: anytype,
+    rects: []const Rect,
+    mouse_x: f32,
+    mouse_y: f32,
+    layer: Layer,
+) ?usize {
     var clip: ClipStack = .{};
+    var overlay_depth: u32 = 0;
     var best: ?usize = null;
     for (cmds, 0..) |c, i| {
         const cur_clip = clip.top();
+        const in_overlay = overlay_depth > 0;
+        const visible_to_layer = switch (layer) {
+            .base => !in_overlay,
+            .overlay => in_overlay,
+        };
         switch (c) {
             .push_scroll => clip.push(clipRect(rects[i], cur_clip)),
             .pop_scroll => clip.pop(),
-            else => if (leafMsg(c) != null) {
+            .push_overlay => {
+                overlay_depth += 1;
+                clip.push(clipRect(rects[i], cur_clip));
+            },
+            .pop_overlay => {
+                overlay_depth -= 1;
+                clip.pop();
+            },
+            .push_group, .pop_group, .push_virtual_list, .pop_virtual_list => {},
+            else => if (visible_to_layer and leafMsg(c) != null) {
                 if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
                     best = i;
             },

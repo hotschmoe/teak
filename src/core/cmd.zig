@@ -3,6 +3,7 @@ const text = @import("text.zig");
 
 pub const FontSpec = text.FontSpec;
 const DEFAULT_FONT = text.DEFAULT_FONT;
+const TextureHandle = text.TextureHandle;
 
 // ── Shared (Msg-independent) types ─────────────────────────────────
 
@@ -100,6 +101,130 @@ pub const ScrollStyle = struct {
     scroll_y: f32 = 0,
 };
 
+// ── Overlay (HARDLINE §2 escape hatch 5) ───────────────────────────
+//
+// Absolute-positioned floating region. Content between push_overlay /
+// pop_overlay draws above non-overlay content and hit-tests before it.
+// Position is explicit (app fills .x/.y from prev-frame anchor or mouse
+// coords — same pattern as the slider). Width/height = 0 means measured
+// from children; >0 = forced size.
+
+pub const OverlayStyle = struct {
+    /// Window-absolute top-left in pixels. The app typically computes
+    /// this from `prev_rects[anchor_idx]` or `mouse_x/y`.
+    x: f32 = 0,
+    y: f32 = 0,
+    /// 0 = measured from children, >0 = forced. Forced sizes are how
+    /// modals occupy the full window (set both to window size).
+    width: f32 = 0,
+    height: f32 = 0,
+    padding: f32 = 8,
+    gap: f32 = 4,
+    direction: Direction = .vertical,
+    /// Backdrop fill drawn behind the overlay's children. Alpha 0 means
+    /// no backdrop quad. Modals typically set this to a semi-opaque
+    /// black, tooltips/popups leave it at zero and put their own bg in
+    /// a child group/panel.
+    backdrop: [4]f32 = .{ 0, 0, 0, 0 },
+    /// Optical anchor side relative to (x, y) — the overlay shifts by
+    /// (-w*anchor_x_frac, -h*anchor_y_frac). For a tooltip below the
+    /// cursor, set anchor at top-left (0, 0). For a context menu
+    /// pinned to a button's bottom-right, set (1, 1). Saves the app
+    /// from re-measuring.
+    anchor_x_frac: f32 = 0,
+    anchor_y_frac: f32 = 0,
+};
+
+// ── Image rendering (functional gap #2) ─────────────────────────────
+//
+// Carries a TextureHandle that the Gpu backend resolves to a real
+// resource (wgpu texture, WebGPU texture, ...). The app uploads the
+// image via the Gpu surface's `uploadImage` (returns a TextureHandle),
+// stashes the handle in Model, and emits `image` with it each frame.
+
+pub const ImageStyle = struct {
+    /// Intrinsic size in pixels. The render pass scales the texture
+    /// to fit this rect. Width=0 or height=0 = the cmd takes no space
+    /// (useful for not-yet-loaded images that the app still wants in
+    /// the buffer for hit-testing).
+    width: f32 = 64,
+    height: f32 = 64,
+    /// Flex weight on the parent's main axis. 0 = intrinsic.
+    flex: f32 = 0,
+    /// Tint applied to the texture in the fragment shader.
+    /// `{1, 1, 1, 1}` = passthrough. Use for grayscale icons that
+    /// should pick up a theme color.
+    tint: [4]f32 = .{ 1, 1, 1, 1 },
+};
+
+pub const ImageCmd = struct {
+    /// Opaque GPU resource id from `Gpu.uploadImage(...)`. The
+    /// framework never unpacks this — render writes it into the
+    /// `ImageDraw` it hands to the Gpu backend.
+    handle: TextureHandle,
+    style: ImageStyle = .{},
+};
+
+// ── Virtual list (functional gap #6) ────────────────────────────────
+//
+// Container that *claims* `total_count * item_extent` of main-axis
+// space (for the scroll container to size correctly) but only contains
+// cmds for the visible window. The app computes visible_start /
+// visible_end from the parent scroll offset and only emits cmds for
+// rows in that range. push_virtual_list is intended to sit directly
+// inside a push_scroll.
+
+pub const VirtualListStyle = struct {
+    direction: Direction = .vertical,
+    /// Total number of rows the list logically contains.
+    total_count: u32 = 0,
+    /// Per-row main-axis extent in pixels. All rows must have the
+    /// same extent for layout to compute total size in O(1).
+    item_extent: f32 = 0,
+    /// Inclusive lower bound of rows present as children in the buffer.
+    visible_start: u32 = 0,
+    /// Exclusive upper bound. `visible_end - visible_start` = number
+    /// of child cmds the app emits between push_virtual_list and
+    /// pop_virtual_list (one row group per visible row).
+    visible_end: u32 = 0,
+    padding: f32 = 0,
+    gap: f32 = 0,
+};
+
+// ── Rich text (functional gap #8) ───────────────────────────────────
+//
+// Mixed-style text: a base content string carved into runs by `spans`.
+// Each span colors / weights / sizes a contiguous byte range. Layout
+// measures by walking the spans (so font-size changes affect total
+// width). Render emits one TextDraw per visible span. The spans slice
+// lives in the per-frame arena — typically built by walking a rich_zig
+// `Text` value into `RichTextSpan`s.
+
+pub const RichTextSpan = struct {
+    /// Byte start in the rich_text's content (UTF-8). Spans must be
+    /// non-overlapping and sorted by start.
+    start: u32,
+    /// Byte end (exclusive).
+    end: u32,
+    color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
+    font: FontSpec = DEFAULT_FONT,
+    /// Set on the rendered TextDraw so the text pass can pick a
+    /// bold/italic font face. The Host's text measurer is expected to
+    /// consult these — for now they're advisory (current GDI host
+    /// always picks Regular).
+    bold: bool = false,
+    italic: bool = false,
+};
+
+pub const RichTextCmd = struct {
+    /// Full UTF-8 string. Spans index into this. Anything not covered
+    /// by a span renders with `default_color` / `default_font`.
+    content: []const u8,
+    spans: []const RichTextSpan = &.{},
+    default_color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
+    default_font: FontSpec = DEFAULT_FONT,
+};
+
 // ── Generic Cmd + CmdBuffer over Msg ───────────────────────────────
 //
 // Per proto 2 Option A: CmdBuffer is generic over the composed AppMsg.
@@ -124,6 +249,11 @@ pub fn TextInputCmd(comptime Msg: type) type {
         focus_msg: Msg,
         content: []const u8,
         cursor: usize,
+        /// Selection range anchor. If non-null and != cursor, render
+        /// draws a selection highlight from min(anchor,cursor) to
+        /// max(anchor,cursor). Cursor stays at `cursor`; anchor is the
+        /// other end. Same byte semantics as `cursor`.
+        selection_anchor: ?usize = null,
         style: TextInputStyle = .{},
         font: FontSpec = DEFAULT_FONT,
     };
@@ -178,7 +308,13 @@ pub fn Cmd(comptime Msg: type) type {
         pop_group,
         push_scroll: ScrollStyle,
         pop_scroll,
+        push_overlay: OverlayStyle,
+        pop_overlay,
+        push_virtual_list: VirtualListStyle,
+        pop_virtual_list,
         text: TextCmd,
+        rich_text: RichTextCmd,
+        image: ImageCmd,
         button: ButtonCmd(Msg),
         text_input: TextInputCmd(Msg),
         checkbox: CheckboxCmd(Msg),
@@ -310,6 +446,63 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .grab_msg = grab_msg,
                 .value = value,
             } }) catch unreachable;
+        }
+
+        // ── Overlay / virtual list / image / rich text ─────────────
+
+        pub fn pushOverlay(self: *Self, style: OverlayStyle) void {
+            self.cmds.append(self.backing, .{ .push_overlay = style }) catch unreachable;
+        }
+
+        pub fn popOverlay(self: *Self) void {
+            self.cmds.append(self.backing, .pop_overlay) catch unreachable;
+        }
+
+        pub fn pushVirtualList(self: *Self, style: VirtualListStyle) void {
+            self.cmds.append(self.backing, .{ .push_virtual_list = style }) catch unreachable;
+        }
+
+        pub fn popVirtualList(self: *Self) void {
+            self.cmds.append(self.backing, .pop_virtual_list) catch unreachable;
+        }
+
+        pub fn image(self: *Self, handle: TextureHandle, style: ImageStyle) void {
+            self.cmds.append(self.backing, .{ .image = .{
+                .handle = handle,
+                .style = style,
+            } }) catch unreachable;
+        }
+
+        pub fn textInputSelected(
+            self: *Self,
+            focus_msg: Msg,
+            content: []const u8,
+            cursor: usize,
+            selection_anchor: ?usize,
+            style: TextInputStyle,
+        ) void {
+            self.cmds.append(self.backing, .{ .text_input = .{
+                .focus_msg = focus_msg,
+                .content = content,
+                .cursor = cursor,
+                .selection_anchor = selection_anchor,
+                .style = style,
+            } }) catch unreachable;
+        }
+
+        pub fn richText(
+            self: *Self,
+            content: []const u8,
+            spans: []const RichTextSpan,
+        ) void {
+            self.cmds.append(self.backing, .{ .rich_text = .{
+                .content = content,
+                .spans = spans,
+            } }) catch unreachable;
+        }
+
+        pub fn richTextStyled(self: *Self, c: RichTextCmd) void {
+            self.cmds.append(self.backing, .{ .rich_text = c }) catch unreachable;
         }
     };
 }

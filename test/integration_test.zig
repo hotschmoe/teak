@@ -75,7 +75,9 @@ test "round-trip: click button → update → view reflects new state" {
     defer verts.deinit(testing.allocator);
     var text_draws: std.ArrayList(teak.TextDraw) = .empty;
     defer text_draws.deinit(testing.allocator);
-    teak.buildVertices(&verts, &text_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, teak.monoMeasurer());
+    var image_draws: std.ArrayList(teak.ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    teak.buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, teak.monoMeasurer());
     // 2 button bg quads = 12 verts; labels go to text_draws.
     try testing.expect(verts.items.len >= 12);
     try testing.expect(text_draws.items.len == 2);
@@ -118,7 +120,9 @@ export fn teak_wasm_probe() u32 {
     defer verts.deinit(gpa);
     var text_draws: std.ArrayList(teak.TextDraw) = .empty;
     defer text_draws.deinit(gpa);
-    teak.buildVertices(&verts, &text_draws, gpa, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, teak.monoMeasurer());
+    var image_draws: std.ArrayList(teak.ImageDraw) = .empty;
+    defer image_draws.deinit(gpa);
+    teak.buildVertices(&verts, &text_draws, &image_draws, gpa, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, teak.monoMeasurer());
 
     return @intCast(verts.items.len);
 }

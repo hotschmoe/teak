@@ -47,6 +47,7 @@ fn cmdsEqual(a: []const teak.Cmd(App.Msg), b: []const teak.Cmd(App.Msg)) bool {
             .text_input => |tia| {
                 const tib = cb.text_input;
                 if (tia.cursor != tib.cursor) return false;
+                if (tia.selection_anchor != tib.selection_anchor) return false;
                 if (!std.mem.eql(u8, tia.content, tib.content)) return false;
             },
             .checkbox => |ka| {
@@ -63,6 +64,17 @@ fn cmdsEqual(a: []const teak.Cmd(App.Msg), b: []const teak.Cmd(App.Msg)) bool {
             },
             .slider => |sa| if (sa.value != cb.slider.value) return false,
             .divider => |da| if (!std.meta.eql(da, cb.divider)) return false,
+            .push_overlay => |oa| if (!std.meta.eql(oa, cb.push_overlay)) return false,
+            .pop_overlay => {},
+            .push_virtual_list => |va| if (!std.meta.eql(va, cb.push_virtual_list)) return false,
+            .pop_virtual_list => {},
+            .image => |ia| if (!std.meta.eql(ia, cb.image)) return false,
+            .rich_text => |ra| {
+                const rb = cb.rich_text;
+                if (!std.mem.eql(u8, ra.content, rb.content)) return false;
+                if (ra.spans.len != rb.spans.len) return false;
+                for (ra.spans, rb.spans) |sa, sb| if (!std.meta.eql(sa, sb)) return false;
+            },
         }
     }
     return true;
@@ -111,6 +123,8 @@ pub fn main() !void {
     defer verts.deinit(gpa);
     var text_draws: std.ArrayList(teak.TextDraw) = .empty;
     defer text_draws.deinit(gpa);
+    var image_draws: std.ArrayList(teak.ImageDraw) = .empty;
+    defer image_draws.deinit(gpa);
 
     var transient_state: teak.TransientState = .{};
     var prev_transient: teak.TransientState = .{};
@@ -185,7 +199,7 @@ pub fn main() !void {
         const need_rebuild = !cmds_same or !rects_same or !transient_same or blink_tick;
 
         if (need_rebuild) {
-            teak.buildVertices(&verts, &text_draws, gpa, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state, host.textMeasurer());
+            teak.buildVertices(&verts, &text_draws, &image_draws, gpa, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state, host.textMeasurer());
             gpu.uploadVertices(verts.items);
             gpu.uploadText(text_draws.items);
         } else {

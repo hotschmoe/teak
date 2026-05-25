@@ -8,9 +8,28 @@ const text_mod = @import("../core/text.zig");
 const TextDraw = text_mod.TextDraw;
 const TextMeasurer = text_mod.TextMeasurer;
 const FontSpec = text_mod.FontSpec;
+const TextureHandle = text_mod.TextureHandle;
+const TEXTURE_HANDLE_NONE = text_mod.TEXTURE_HANDLE_NONE;
 const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
+
+/// Image draw record. Parallel to TextDraw — the GPU backend consumes
+/// these in `uploadImages` and emits 6 textured vertices per draw using
+/// the tint as the vertex color (modulated against the texture alpha
+/// and rgb in the shader, like text).
+pub const ImageDraw = struct {
+    rect_x: f32,
+    rect_y: f32,
+    rect_w: f32,
+    rect_h: f32,
+    handle: TextureHandle,
+    tint: [4]f32,
+    clip_x: f32,
+    clip_y: f32,
+    clip_w: f32,
+    clip_h: f32,
+};
 
 const BORDER_WIDTH: f32 = 2;
 const CURSOR_WIDTH: f32 = 2;
@@ -56,12 +75,16 @@ fn emitText(
 }
 
 /// Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits
-/// solid-fill quads into `verts` + textured draw records into
-/// `text_draws`. Presentation state (hover, press, focus, blink) pulls
-/// from TransientState without touching Model.
+/// solid-fill quads into `verts`, textured glyph records into
+/// `text_draws`, and textured image records into `image_draws`.
+/// Presentation state (hover, press, focus, blink) pulls from
+/// TransientState without touching Model. Two passes — base layer
+/// (cmds outside any push_overlay), then overlay layer — so overlays
+/// (HARDLINE §2 escape hatch 5) draw on top.
 pub fn buildVertices(
     verts: *std.ArrayList(Vertex),
     text_draws: *std.ArrayList(TextDraw),
+    image_draws: *std.ArrayList(ImageDraw),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
@@ -70,16 +93,119 @@ pub fn buildVertices(
 ) void {
     verts.clearRetainingCapacity();
     text_draws.clearRetainingCapacity();
+    image_draws.clearRetainingCapacity();
 
+    buildLayer(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer, .base);
+    buildLayer(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer, .overlay);
+}
+
+const Layer = enum { base, overlay };
+
+fn buildLayer(
+    verts: *std.ArrayList(Vertex),
+    text_draws: *std.ArrayList(TextDraw),
+    image_draws: *std.ArrayList(ImageDraw),
+    alloc: std.mem.Allocator,
+    cmds: anytype,
+    rects: []const Rect,
+    transient: TransientState,
+    measurer: TextMeasurer,
+    layer: Layer,
+) void {
     var clip: ClipStack = .{};
+    var overlay_depth: u32 = 0;
 
     for (cmds, rects, 0..) |c, rect, i| {
         const cur_clip = clip.top();
+        const in_overlay = overlay_depth > 0;
+        const visible = switch (layer) {
+            .base => !in_overlay,
+            .overlay => in_overlay,
+        };
         switch (c) {
+            .push_overlay => |ov| {
+                overlay_depth += 1;
+                // Only the overlay layer draws the backdrop + clips to
+                // the overlay rect.
+                if (layer == .overlay) {
+                    if (ov.backdrop[3] > 0) emit(verts, alloc, rect, ov.backdrop, cur_clip);
+                    clip.push(clipRect(rect, cur_clip));
+                } else {
+                    // Base-layer must still push a clip so the
+                    // overlay's children are correctly skipped from
+                    // base-layer accumulation — but a no-effect clip
+                    // (the existing cur_clip) is wrong because then
+                    // contents would draw. We push a zero rect so
+                    // anything inside is clipped away (defensive — the
+                    // `visible` gate already drops them).
+                    clip.push(.{ .x = -1e9, .y = -1e9, .w = 0, .h = 0 });
+                }
+            },
+            .pop_overlay => {
+                overlay_depth -= 1;
+                clip.pop();
+            },
+            .push_scroll => clip.push(clipRect(rect, cur_clip)),
+            .pop_scroll => clip.pop(),
+            .push_group, .pop_group, .push_virtual_list, .pop_virtual_list => {},
             .text => |txt| {
-                emitText(text_draws, alloc, txt.content, txt.font, txt.color, rect, cur_clip);
+                if (visible) emitText(text_draws, alloc, txt.content, txt.font, txt.color, rect, cur_clip);
+            },
+            .rich_text => |rt| {
+                if (!visible) continue;
+                // Walk spans + uncovered ranges, emitting one TextDraw
+                // per run. Maintains an x cursor along the rect.
+                var x_cursor = rect.x;
+                var byte_cursor: u32 = 0;
+                for (rt.spans) |sp| {
+                    if (sp.start > byte_cursor) {
+                        const piece = rt.content[byte_cursor..sp.start];
+                        const m = measurer.measure(piece, rt.default_font);
+                        const r = Rect{ .x = x_cursor, .y = rect.y, .w = m.width, .h = rect.h };
+                        emitText(text_draws, alloc, piece, rt.default_font, rt.default_color, r, cur_clip);
+                        x_cursor += m.width;
+                    }
+                    const end = @min(sp.end, @as(u32, @intCast(rt.content.len)));
+                    if (end > sp.start) {
+                        const piece = rt.content[sp.start..end];
+                        const m = measurer.measure(piece, sp.font);
+                        const r = Rect{ .x = x_cursor, .y = rect.y, .w = m.width, .h = rect.h };
+                        emitText(text_draws, alloc, piece, sp.font, sp.color, r, cur_clip);
+                        x_cursor += m.width;
+                    }
+                    byte_cursor = end;
+                }
+                if (byte_cursor < rt.content.len) {
+                    const piece = rt.content[byte_cursor..];
+                    const m = measurer.measure(piece, rt.default_font);
+                    const r = Rect{ .x = x_cursor, .y = rect.y, .w = m.width, .h = rect.h };
+                    emitText(text_draws, alloc, piece, rt.default_font, rt.default_color, r, cur_clip);
+                }
+            },
+            .image => |img| {
+                if (!visible) continue;
+                if (rect.w <= 0 or rect.h <= 0) continue;
+                if (img.handle == TEXTURE_HANDLE_NONE) {
+                    // No texture loaded yet — draw a tinted placeholder
+                    // so the app sees where the image would go.
+                    emit(verts, alloc, rect, img.style.tint, cur_clip);
+                } else {
+                    image_draws.append(alloc, .{
+                        .rect_x = rect.x,
+                        .rect_y = rect.y,
+                        .rect_w = rect.w,
+                        .rect_h = rect.h,
+                        .handle = img.handle,
+                        .tint = img.style.tint,
+                        .clip_x = cur_clip.x,
+                        .clip_y = cur_clip.y,
+                        .clip_w = cur_clip.w,
+                        .clip_h = cur_clip.h,
+                    }) catch {};
+                }
             },
             .button => |btn| {
+                if (!visible) continue;
                 const pressed = if (transient.press_index) |pi| pi == i else false;
                 const hovered = if (transient.hover_index) |hi| hi == i else false;
                 const bg = if (pressed)
@@ -102,12 +228,32 @@ pub fn buildVertices(
                 }
             },
             .text_input => |ti| {
+                if (!visible) continue;
                 const focused = if (transient.focus_index) |fi| fi == i else false;
                 const border_color = if (focused) ti.style.focus_border else ti.style.border;
 
                 emit(verts, alloc, rect, border_color, cur_clip);
                 const inner = insetRect(rect, BORDER_WIDTH);
                 emit(verts, alloc, inner, ti.style.bg, cur_clip);
+
+                // Selection highlight before the text so text draws on top.
+                if (ti.selection_anchor) |anchor| {
+                    if (anchor != ti.cursor and ti.content.len > 0) {
+                        const lo = @min(anchor, ti.cursor);
+                        const hi = @max(anchor, ti.cursor);
+                        const lo_w = measurer.prefixWidth(ti.content, ti.font, lo);
+                        const hi_w = measurer.prefixWidth(ti.content, ti.font, hi);
+                        const sel_rect = Rect{
+                            .x = inner.x + INPUT_TEXT_PADDING + lo_w,
+                            .y = inner.y + INPUT_TEXT_PADDING,
+                            .w = @max(0, hi_w - lo_w),
+                            .h = @max(0, inner.h - 2 * INPUT_TEXT_PADDING),
+                        };
+                        // Subtle highlight; the host can theme this via
+                        // a new field on TextInputStyle if desired.
+                        emit(verts, alloc, sel_rect, .{ 0.25, 0.45, 0.95, 0.45 }, cur_clip);
+                    }
+                }
 
                 if (ti.content.len > 0 and inner.w > 2 * INPUT_TEXT_PADDING) {
                     const m = measurer.measure(ti.content, ti.font);
@@ -136,6 +282,7 @@ pub fn buildVertices(
                 }
             },
             .checkbox => |cb| {
+                if (!visible) continue;
                 const box_rect = Rect{
                     .x = rect.x,
                     .y = rect.y + @max(0, (rect.h - cb.style.size) * 0.5),
@@ -162,6 +309,7 @@ pub fn buildVertices(
                 }
             },
             .radio => |rd| {
+                if (!visible) continue;
                 // Quads-only renderer: a filled inner square stands in for
                 // the classic radio dot until we get a circle primitive.
                 const box_rect = Rect{
@@ -190,6 +338,7 @@ pub fn buildVertices(
                 }
             },
             .slider => |sl| {
+                if (!visible) continue;
                 const v = @min(@max(sl.value, 0), 1);
                 const track_h = sl.style.track_height;
                 const track = Rect{
@@ -218,11 +367,9 @@ pub fn buildVertices(
                 emit(verts, alloc, thumb, sl.style.thumb, cur_clip);
             },
             .divider => |dv| {
+                if (!visible) continue;
                 emit(verts, alloc, rect, dv.color, cur_clip);
             },
-            .push_scroll => clip.push(clipRect(rect, cur_clip)),
-            .pop_scroll => clip.pop(),
-            .push_group, .pop_group => {},
         }
     }
 }
@@ -257,7 +404,9 @@ test "buildVertices emits one bg quad per button and one TextDraw per label/text
     var text_draws = newTextDraws(testing.allocator);
     defer text_draws.deinit(testing.allocator);
 
-    buildVertices(&verts, &text_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
     // 1 button bg = 1 quad * 6 verts. Text and label go to text_draws.
     try testing.expectEqual(@as(usize, 6), verts.items.len);
     try testing.expectEqual(@as(usize, 2), text_draws.items.len); // "hello" + "+"
@@ -286,7 +435,9 @@ test "buildVertices clips child widgets to scroll container" {
     defer verts.deinit(testing.allocator);
     var text_draws = newTextDraws(testing.allocator);
     defer text_draws.deinit(testing.allocator);
-    buildVertices(&verts, &text_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
 
     // 3 visible button backgrounds = 3 * 6 verts. D fully clipped emits nothing.
     // C's bg still emits a (clipped) quad.
@@ -315,9 +466,11 @@ test "buildVertices draws border + bg + cursor for focused text input" {
     defer verts.deinit(testing.allocator);
     var text_draws = newTextDraws(testing.allocator);
     defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
 
     // Focused, blink-on frame (frame_counter 0 -> on).
-    buildVertices(&verts, &text_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{
         .focus_index = 1,
         .frame_counter = 0,
     }, text_mod.monoMeasurer());

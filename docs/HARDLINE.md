@@ -92,10 +92,10 @@ allowed and belong here.
   `src/gpu/*` directly. Dependency arrow points inward only.
 - (d) The Host and GPU validated surfaces may extend as new
   platform-owned concerns arise (text measurement, rasterization,
-  future: clipboard, file dialogs). Each extension adds one decl to
-  `validateHost` or `validateGpu` and is documented in the
-  corresponding feature doc. Surface extensions are not new escape
-  hatches — they remain bounded by (a)–(c).
+  clipboard, file dialogs, secondary windows, a11y tree publishing).
+  Each extension adds one decl to `validateHost` or `validateGpu` and
+  is documented in the corresponding feature doc. Surface extensions
+  are not new escape hatches — they remain bounded by (a)–(c).
 
 Cross-boundary interface values (e.g. `TextMeasurer` in
 `src/core/text.zig`, a `*anyopaque` + fn-pointer pair returned by
@@ -108,6 +108,48 @@ values are how core calls into the Host layer without importing it.
 The rAF / `frame(dt)` lifecycle lives at this layer. See
 `docs/journal/2026-04-16-zunk_teak_convo.md` for the audit that
 formalized this hatch.
+
+### Escape hatch 5: Overlay z-layer in flat Cmd buffer
+
+`push_overlay` / `pop_overlay` Cmd variants delimit a region of the
+flat buffer that draws above all non-overlay content and hit-tests
+before it. The region is positioned absolutely (no parent main-axis
+contribution) so popups, tooltips, dropdowns, modals, and context
+menus can render outside their declaring parent.
+
+**Bounded by**:
+- The flat buffer stays flat — overlays are still cmds in the same
+  `[]Cmd`, not a separate buffer. No tree, no z field on every cmd.
+- Exactly two priority levels: non-overlay (z=0) and overlay (z=1).
+  Each pass walks the buffer twice in the same forward order; within
+  a level, painter's order = doc order (unchanged from §1).
+- Overlay position comes from explicit `x`, `y` on `OverlayStyle`.
+  The app computes them (typically from the previous frame's anchor
+  rect or mouse coords). No anchor-by-cmd-index coupling.
+- Overlays do not contribute to their parent's measured size — they
+  hop the layout but stay in the buffer.
+
+### Escape hatch 6: Subscriptions
+
+A component may expose `pub fn subscribe(model: *const Model) []const Sub`
+(pure function of model) returning a slice of subs the runtime should
+service this frame. `Sub` is a data tagged union (e.g. `.tick_every(ms,
+msg)`, `.after(ms, msg)`). The Host iterates active subs each frame
+and posts the carried `Msg` into the normal `update` loop when the sub
+fires.
+
+**Bounded by**:
+- `subscribe` is pure: no I/O, no wall-clock, no allocation. Same
+  rules as `view`. Its job is to *declare* what should be watched;
+  the runtime does the watching.
+- `Sub` carries data only — same rule as `Cmd`. No function pointers,
+  no callbacks.
+- Time and frame-counter state lives on the Host (it owns `frame(dt)`
+  per §4 already). No globals in core.
+- A fired sub becomes a regular `Msg` going through `update`. There
+  is no second mutation path. This is why `Sub` is *not* a reactive
+  signal (which §3 forbids): observers are still the next frame's
+  `view`, not auto-recomputed expressions.
 
 ---
 

@@ -23,6 +23,12 @@ pub const Cmd = cmd.Cmd;
 pub const CmdBuffer = cmd.CmdBuffer;
 pub const GroupStyle = cmd.GroupStyle;
 pub const ScrollStyle = cmd.ScrollStyle;
+pub const OverlayStyle = cmd.OverlayStyle;
+pub const VirtualListStyle = cmd.VirtualListStyle;
+pub const ImageStyle = cmd.ImageStyle;
+pub const ImageCmd = cmd.ImageCmd;
+pub const RichTextSpan = cmd.RichTextSpan;
+pub const RichTextCmd = cmd.RichTextCmd;
 pub const ButtonCmd = cmd.ButtonCmd;
 pub const ButtonStyle = cmd.ButtonStyle;
 pub const TextCmd = cmd.TextCmd;
@@ -50,6 +56,7 @@ pub const SpecialKey = keys.SpecialKey;
 pub const Vertex = vertex.Vertex;
 pub const emitQuad = vertex.emitQuad;
 pub const buildVertices = render.buildVertices;
+pub const ImageDraw = render.ImageDraw;
 
 pub const TransientState = transient.TransientState;
 
