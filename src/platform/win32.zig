@@ -504,9 +504,7 @@ fn rpGetPropertyValue(_: *SimpleThis, prop_id: c_long, var_out: *VARIANT) callco
             return S_OK;
         },
         UIA_IsKeyboardFocusablePropertyId => {
-            var_out.* = .{ .vt = VT_BOOL };
-            const v: VARIANT_BOOL = 0;
-            @memcpy(var_out.payload[0..@sizeOf(VARIANT_BOOL)], std.mem.asBytes(&v));
+            setBoolVariant(var_out, false);
             return S_OK;
         },
         else => {
@@ -569,54 +567,33 @@ fn rpfNavigate(_: *FragmentThis, direction: NavigateDirection, out: *?*anyopaque
     switch (direction) {
         .parent, .next_sibling, .previous_sibling => {
             out.* = null;
-            return S_OK;
         },
-        .first_child => {
+        .first_child, .last_child => {
             if (g_published_count == 0) {
                 out.* = null;
-                return S_OK;
+            } else {
+                const idx = if (direction == .first_child) 0 else g_published_count - 1;
+                out.* = @ptrCast(&g_node_providers[idx].vtbl_fragment);
             }
-            out.* = @ptrCast(&g_node_providers[0].vtbl_fragment);
-            return S_OK;
-        },
-        .last_child => {
-            if (g_published_count == 0) {
-                out.* = null;
-                return S_OK;
-            }
-            out.* = @ptrCast(&g_node_providers[g_published_count - 1].vtbl_fragment);
-            return S_OK;
         },
     }
+    return S_OK;
 }
 
 fn rpfGetRuntimeId(_: *FragmentThis, out: *?*SAFEARRAY) callconv(WINAPI) HRESULT {
     // The convention for the root's runtime id is just the
     // UiaAppendRuntimeId marker followed by a 0 — the system fills in
     // the host prefix.
-    const sa = SafeArrayCreateVector(@as(c_short, @intCast(VT_I4)), 0, 2) orelse {
-        out.* = null;
-        return E_FAIL;
-    };
-    var data_ptr: ?*anyopaque = null;
-    if (SafeArrayAccessData(sa, &data_ptr) != S_OK or data_ptr == null) {
-        out.* = null;
-        return E_FAIL;
-    }
-    const ids: [*]c_int = @ptrCast(@alignCast(data_ptr.?));
-    ids[0] = UiaAppendRuntimeId;
-    ids[1] = 0;
-    _ = SafeArrayUnaccessData(sa);
-    out.* = sa;
-    return S_OK;
+    return makeRuntimeIdArray(0, out);
 }
 
 fn rpfGetBoundingRectangle(_: *FragmentThis, rect: *UiaRect) callconv(WINAPI) HRESULT {
     if (g_hwnd_for_uia) |hwnd| {
         var client: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
         _ = GetClientRect(hwnd, &client);
-        var origin: POINT = .{ .x = client.left, .y = client.top };
-        _ = ClientToScreen(hwnd, &origin);
+        // GetClientRect always returns (0,0)-origin client coords,
+        // so screenOrigin() gives the same screen-space top-left.
+        const origin = screenOrigin();
         rect.* = .{
             .left = @floatFromInt(origin.x),
             .top = @floatFromInt(origin.y),
@@ -642,7 +619,7 @@ fn rpfSetFocus(_: *FragmentThis) callconv(WINAPI) HRESULT {
 
 fn rpfGetFragmentRoot(this: *FragmentThis, out: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *RootProvider = @fieldParentPtr("vtbl_fragment", this);
-    out.* = @ptrCast(&self.vtbl_fragment);
+    out.* = @ptrCast(&self.vtbl_root);
     return S_OK;
 }
 
@@ -666,10 +643,7 @@ fn rprElementProviderFromPoint(this: *FragmentRootThis, x: f64, y: f64, out: *?*
     // Translate from screen to client coords for comparison with the
     // node bounds (which are window-coord). If we can't translate,
     // fall back to self.
-    var origin: POINT = .{ .x = 0, .y = 0 };
-    if (g_hwnd_for_uia) |hwnd| {
-        _ = ClientToScreen(hwnd, &origin);
-    }
+    const origin = screenOrigin();
     const cx: f32 = @floatCast(x - @as(f64, @floatFromInt(origin.x)));
     const cy: f32 = @floatCast(y - @as(f64, @floatFromInt(origin.y)));
 
@@ -804,21 +778,7 @@ fn npfGetRuntimeId(this: *FragmentThis, out: *?*SAFEARRAY) callconv(WINAPI) HRES
         @intCast(self.index);
     LeaveCriticalSection(&g_a11y_lock);
 
-    const sa = SafeArrayCreateVector(@as(c_short, @intCast(VT_I4)), 0, 2) orelse {
-        out.* = null;
-        return E_FAIL;
-    };
-    var data_ptr: ?*anyopaque = null;
-    if (SafeArrayAccessData(sa, &data_ptr) != S_OK or data_ptr == null) {
-        out.* = null;
-        return E_FAIL;
-    }
-    const ids: [*]c_int = @ptrCast(@alignCast(data_ptr.?));
-    ids[0] = UiaAppendRuntimeId;
-    ids[1] = cmd_idx;
-    _ = SafeArrayUnaccessData(sa);
-    out.* = sa;
-    return S_OK;
+    return makeRuntimeIdArray(cmd_idx, out);
 }
 
 fn npfGetBoundingRectangle(this: *FragmentThis, rect: *UiaRect) callconv(WINAPI) HRESULT {
@@ -833,10 +793,7 @@ fn npfGetBoundingRectangle(this: *FragmentThis, rect: *UiaRect) callconv(WINAPI)
     const b = g_published_nodes_buf[self.index].bounds;
     LeaveCriticalSection(&g_a11y_lock);
 
-    var origin: POINT = .{ .x = 0, .y = 0 };
-    if (g_hwnd_for_uia) |hwnd| {
-        _ = ClientToScreen(hwnd, &origin);
-    }
+    const origin = screenOrigin();
     rect.* = .{
         .left = @as(f64, @floatFromInt(origin.x)) + @as(f64, b.x),
         .top = @as(f64, @floatFromInt(origin.y)) + @as(f64, b.y),
@@ -858,11 +815,33 @@ fn npfSetFocus(_: *FragmentThis) callconv(WINAPI) HRESULT {
 }
 
 fn npfGetFragmentRoot(_: *FragmentThis, out: *?*anyopaque) callconv(WINAPI) HRESULT {
-    out.* = @ptrCast(&g_root_provider.vtbl_fragment);
+    out.* = @ptrCast(&g_root_provider.vtbl_root);
     return S_OK;
 }
 
 // ── Shared NodeProvider helpers ────────────────────────────────────
+
+/// Build the 2-element SAFEARRAY UIA expects from `GetRuntimeId` —
+/// `[UiaAppendRuntimeId, caller_id]`. `caller_id` is 0 for the root
+/// (UIA fills in a unique prefix) and the node's `cmd_index` for
+/// fragments.
+fn makeRuntimeIdArray(caller_id: c_int, out: *?*SAFEARRAY) HRESULT {
+    const sa = SafeArrayCreateVector(@as(c_short, @intCast(VT_I4)), 0, 2) orelse {
+        out.* = null;
+        return E_FAIL;
+    };
+    var data_ptr: ?*anyopaque = null;
+    if (SafeArrayAccessData(sa, &data_ptr) != S_OK or data_ptr == null) {
+        out.* = null;
+        return E_FAIL;
+    }
+    const ids: [*]c_int = @ptrCast(@alignCast(data_ptr.?));
+    ids[0] = UiaAppendRuntimeId;
+    ids[1] = caller_id;
+    _ = SafeArrayUnaccessData(sa);
+    out.* = sa;
+    return S_OK;
+}
 
 fn nodeQueryInterface(self: *NodeProvider, iid: *const GUID, ppv: *?*anyopaque) HRESULT {
     if (guidEql(iid, &IID_IUnknown) or guidEql(iid, &IID_IRawElementProviderSimple)) {
@@ -877,7 +856,6 @@ fn nodeQueryInterface(self: *NodeProvider, iid: *const GUID, ppv: *?*anyopaque) 
     return E_NOINTERFACE;
 }
 
-/// Map an A11y role to the matching UIA control type id.
 fn controlTypeForRole(role: A11yRole) c_long {
     return switch (role) {
         .group => UIA_GroupControlTypeId,
@@ -906,6 +884,24 @@ fn isFocusableRole(role: A11yRole) bool {
 /// the VT_BOOL variant payload. Don't confuse with c_int 0/1.
 const VARIANT_TRUE: VARIANT_BOOL = -1;
 const VARIANT_FALSE: VARIANT_BOOL = 0;
+
+fn setBoolVariant(var_out: *VARIANT, b: bool) void {
+    var_out.* = .{ .vt = VT_BOOL };
+    const v: VARIANT_BOOL = if (b) VARIANT_TRUE else VARIANT_FALSE;
+    @memcpy(var_out.payload[0..@sizeOf(VARIANT_BOOL)], std.mem.asBytes(&v));
+}
+
+/// Screen-coord origin of the window's client area. Zero if the HWND
+/// isn't registered yet — callers add per-node offsets on top, so a
+/// zero origin yields client-coord rectangles (still useful, just not
+/// truly screen-coord).
+fn screenOrigin() POINT {
+    var origin: POINT = .{ .x = 0, .y = 0 };
+    if (g_hwnd_for_uia) |hwnd| {
+        _ = ClientToScreen(hwnd, &origin);
+    }
+    return origin;
+}
 
 fn nodeGetPropertyValue(self: *NodeProvider, prop_id: c_long, var_out: *VARIANT) HRESULT {
     EnterCriticalSection(&g_a11y_lock);
@@ -938,15 +934,11 @@ fn nodeGetPropertyValue(self: *NodeProvider, prop_id: c_long, var_out: *VARIANT)
             return S_OK;
         },
         UIA_IsKeyboardFocusablePropertyId => {
-            var_out.* = .{ .vt = VT_BOOL };
-            const v: VARIANT_BOOL = if (isFocusableRole(node.role)) VARIANT_TRUE else VARIANT_FALSE;
-            @memcpy(var_out.payload[0..@sizeOf(VARIANT_BOOL)], std.mem.asBytes(&v));
+            setBoolVariant(var_out, isFocusableRole(node.role));
             return S_OK;
         },
         UIA_HasKeyboardFocusPropertyId => {
-            var_out.* = .{ .vt = VT_BOOL };
-            const v: VARIANT_BOOL = if (node.focused) VARIANT_TRUE else VARIANT_FALSE;
-            @memcpy(var_out.payload[0..@sizeOf(VARIANT_BOOL)], std.mem.asBytes(&v));
+            setBoolVariant(var_out, node.focused);
             return S_OK;
         },
         else => {
@@ -1038,9 +1030,9 @@ var g_hwnd_for_uia: ?HANDLE = null;
 // string heap) under a critical section so UIA can read at will.
 //
 // MAX_A11Y_NODES bounds the published tree; oversize trees truncate
-// silently (debug log). 256 nodes covers any realistic single-window
-// app — large lists should be virtualized (cmd `push_virtual_list`)
-// which collapses to one a11y node regardless of row count.
+// silently. 256 nodes covers any realistic single-window app — large
+// lists should be virtualized (cmd `push_virtual_list`) which
+// collapses to one a11y node regardless of row count.
 //
 // MAX_A11Y_LABEL_BYTES is a flat string heap shared by all labels.
 // Per-label cap is 512 (the SysAllocString stack buffer in
@@ -1879,21 +1871,20 @@ pub const Host = struct {
 
         const cap = @min(nodes.len, MAX_A11Y_NODES);
         g_label_heap_used = 0;
-        var i: usize = 0;
-        while (i < cap) : (i += 1) {
-            var n = nodes[i];
+        for (nodes[0..cap], 0..) |src, i| {
+            var n = src;
             // Copy the label into the heap and rewrite its slice to
-            // point at the stable copy. Empty label → empty slice.
-            if (n.label.len > 0) {
-                const remaining = MAX_A11Y_LABEL_BYTES - g_label_heap_used;
-                const take = @min(n.label.len, remaining);
-                if (take > 0) {
-                    @memcpy(g_label_heap[g_label_heap_used .. g_label_heap_used + take], n.label[0..take]);
-                    n.label = g_label_heap[g_label_heap_used .. g_label_heap_used + take];
-                    g_label_heap_used += take;
-                } else {
-                    n.label = &.{};
-                }
+            // point at the stable copy. On heap exhaustion the label
+            // is dropped (slice cleared) so we never alias arena
+            // memory across frames.
+            const remaining = MAX_A11Y_LABEL_BYTES - g_label_heap_used;
+            const take = @min(n.label.len, remaining);
+            if (take > 0) {
+                @memcpy(g_label_heap[g_label_heap_used..][0..take], n.label[0..take]);
+                n.label = g_label_heap[g_label_heap_used..][0..take];
+                g_label_heap_used += take;
+            } else {
+                n.label = &.{};
             }
             g_published_nodes_buf[i] = n;
         }
@@ -2243,10 +2234,10 @@ comptime {
 
 // ── Tests ──────────────────────────────────────────────────────────
 //
-// Win32-only smoke tests. The root `zig build test` runs library
-// tests only (not this module), so these won't fire there; they
-// compile-check as part of `zig build ui`, and a dedicated win32
-// test target could pick them up.
+// Win32-only smoke tests. Wired into `zig build test` via the
+// `platform-win32` test target (Windows hosts only — see build.zig).
+// Each test gates on `builtin.os.tag == .windows` so a cross-compiled
+// run skips cleanly.
 
 const builtin = @import("builtin");
 

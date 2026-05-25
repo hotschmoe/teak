@@ -609,12 +609,11 @@ comptime {
 // ── Tests ──────────────────────────────────────────────────────────
 //
 // These tests exercise the pure serialization helper
-// (`serializeA11yTree`) without touching the JS bridge. wasm.zig as a
-// whole only gets compiled by the example's `web` step (it imports
-// zunk), so these tests don't auto-run under root `zig build test` —
-// they document the wire-format contract and run wherever wasm.zig is
-// pulled into a test module (the wasm canary keeps the file
-// compiling).
+// (`serializeA11yTree`) without touching the JS bridge. Wired into
+// `zig build test` via the `platform-wasm` test target — the tests
+// reference only the helper, so zunk's `extern "env"` declarations
+// stay un-instantiated and the host-target compile links cleanly
+// without a wasm runtime.
 
 test "serializeA11yTree: layout matches wire format" {
     const testing = std.testing;
