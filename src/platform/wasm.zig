@@ -23,6 +23,7 @@ pub const FontSpec = teak.FontSpec;
 pub const FontFamily = teak.FontFamily;
 pub const Clipboard = teak.Clipboard;
 pub const ImeState = teak.ImeState;
+pub const A11yNode = teak.A11yNode;
 
 pub const NativeHandle = struct {};
 
@@ -229,6 +230,11 @@ pub const Host = struct {
     pub fn imeState(_: *const Host) ImeState {
         return .{};
     }
+
+    /// Stub — a real web a11y integration would mirror the tree as
+    /// hidden DOM elements with aria-* attributes, which is a
+    /// non-trivial JS-side dance. Tracked as follow-up.
+    pub fn publishA11yTree(_: *Host, _: []const A11yNode) void {}
 
     fn stubRead(_: *anyopaque) []const u8 {
         return "";

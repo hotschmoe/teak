@@ -16,6 +16,7 @@ pub const FontSpec = teak.FontSpec;
 pub const FontFamily = teak.FontFamily;
 pub const Clipboard = teak.Clipboard;
 pub const ImeState = teak.ImeState;
+pub const A11yNode = teak.A11yNode;
 
 // ── Win32 types + constants ────────────────────────────────────────
 
@@ -547,6 +548,12 @@ pub const Host = struct {
     pub fn imeState(_: *const Host) ImeState {
         return .{};
     }
+
+    /// Forward the a11y tree to the platform. UI Automation integration
+    /// is non-trivial — for now we accept the tree and discard it,
+    /// keeping the surface stable so apps can call it unconditionally.
+    /// Future: register an IRawElementProviderSimple per node.
+    pub fn publishA11yTree(_: *Host, _: []const A11yNode) void {}
 
     fn clipRead(ctx: *anyopaque) []const u8 {
         const self: *Host = @ptrCast(@alignCast(ctx));

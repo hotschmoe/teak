@@ -46,6 +46,8 @@ pub const ImeState = struct {
     cursor: usize = 0,
 };
 
+pub const A11yNode = @import("../input/a11y.zig").A11yNode;
+
 /// Per-frame input snapshot returned by `Host.pollInputs`.
 ///
 /// `mouse_x` / `mouse_y` are the current cursor position (state, not an
@@ -72,6 +74,9 @@ pub const InputState = struct {
 /// Surface extensions (HARDLINE §4(d)) — added in functional-gaps push:
 /// - `clipboard()` returns a `Clipboard` vtable for OS-level cut/copy/paste.
 /// - `imeState()` returns the current IME composition snapshot.
+/// - `publishA11yTree(nodes)` hands the accessibility tree to whatever
+///   screen-reader API the platform exposes (UI Automation on Windows,
+///   AT-SPI on Linux, mirrored DOM on web). No-op on hosts without one.
 pub fn validateHost(comptime T: type) void {
     const required = [_][]const u8{
         "deinit",
@@ -81,6 +86,7 @@ pub fn validateHost(comptime T: type) void {
         "textMeasurer",
         "clipboard",
         "imeState",
+        "publishA11yTree",
     };
     inline for (required) |name| {
         if (!@hasDecl(T, name)) {
@@ -109,6 +115,7 @@ test "validateHost accepts a minimal shape" {
         pub fn imeState(_: *const @This()) ImeState {
             return .{};
         }
+        pub fn publishA11yTree(_: *@This(), _: []const A11yNode) void {}
 
         fn stubMeasure(_: *anyopaque, _: []const u8, _: FontSpec) TextMetrics {
             return .{ .width = 0, .height = 0, .ascent = 0, .descent = 0 };

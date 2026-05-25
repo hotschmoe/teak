@@ -132,6 +132,33 @@ test "virtual list: only emits cmds for the visible window, container claims ful
     try testing.expectEqual(@as(f32, VISIBLE_START * ITEM_H), rects[first_row_idx].y);
 }
 
+test "a11y tree round-trip: build over a real frame's cmds + rects" {
+    const testing = std.testing;
+    const Msg = union(enum) { inc, reset };
+    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{});
+    cb.text("Counter");
+    cb.button(.inc, "+");
+    cb.button(.reset, "Reset");
+    cb.popGroup();
+
+    var rects: [16]teak.Rect = undefined;
+    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, teak.monoMeasurer());
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const tree = try teak.buildA11yTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], 2);
+
+    // group + text + button + button = 4 nodes.
+    try testing.expectEqual(@as(usize, 4), tree.len);
+    try testing.expectEqual(teak.A11yRole.button, tree[2].role);
+    try testing.expectEqualStrings("+", tree[2].label);
+    try testing.expect(tree[2].focused);
+}
+
 // ── WASM canary: pipeline compiles without posix ─────────────────
 
 /// Exported so `wasm32-freestanding -fno-entry -rdynamic` keeps the

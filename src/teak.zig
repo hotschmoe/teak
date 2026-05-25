@@ -14,6 +14,7 @@ pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
 pub const keys = @import("input/keys.zig");
+pub const a11y = @import("input/a11y.zig");
 pub const render = @import("render/build.zig");
 pub const vertex = @import("render/vertex.zig");
 pub const host = @import("platform/host.zig");
@@ -52,6 +53,9 @@ pub const sliderValueAt = hit_test.sliderValueAt;
 pub const nextFocusable = focus.nextFocusable;
 pub const prevFocusable = focus.prevFocusable;
 pub const SpecialKey = keys.SpecialKey;
+pub const A11yNode = a11y.A11yNode;
+pub const A11yRole = a11y.Role;
+pub const buildA11yTree = a11y.buildTree;
 
 pub const Vertex = vertex.Vertex;
 pub const emitQuad = vertex.emitQuad;
