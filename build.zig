@@ -76,6 +76,25 @@ pub fn build(b: *std.Build) void {
         const platform_win32_tests = b.addTest(.{ .root_module = platform_win32_mod });
         test_step.dependOn(&b.addRunArtifact(platform_win32_tests).step);
     }
+    // stb_truetype text backend (src/gpu/text_stbtt.zig) — the Linux
+    // rasterizer + measurer. Like glyph_cache it is gpu-adjacent and not
+    // reachable from src/teak.zig, so it gets its own test module. Links
+    // the vendored stb impl TU + libc; its tests rasterize/measure a real
+    // system font and skip cleanly when none is installed (headless CI).
+    const stbtt_mod = b.createModule(.{
+        .root_source_file = b.path("src/gpu/text_stbtt.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "teak", .module = mod }},
+    });
+    stbtt_mod.addIncludePath(b.path("src/gpu/vendor"));
+    stbtt_mod.addCSourceFile(.{
+        .file = b.path("src/gpu/vendor/stb_truetype_impl.c"),
+        .flags = &.{"-std=c99"},
+    });
+    const stbtt_tests = b.addTest(.{ .root_module = stbtt_mod });
+    test_step.dependOn(&b.addRunArtifact(stbtt_tests).step);
 
     // wasm32-freestanding compile canary. Run `zig build test-wasm` to
     // assert the framework core stays posix-dep-free. The artifact isn't
