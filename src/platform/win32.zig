@@ -1755,6 +1755,18 @@ pub const Host = struct {
         return .{ .hinstance = self.hinstance, .hwnd = self.hwnd };
     }
 
+    /// Update the window title from a UTF-8 string. Mirrors init's title
+    /// conversion: UTF-8 → stack UTF-16 (256 code units) → SetWindowTextW.
+    /// A title is cosmetic, so an over-long or invalid string is dropped
+    /// rather than erroring.
+    pub fn setTitle(self: *Host, title: []const u8) void {
+        var title_buf: [256]u16 = undefined;
+        const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title) catch return;
+        if (title_len >= title_buf.len) return;
+        title_buf[title_len] = 0;
+        _ = SetWindowTextW(self.hwnd, @ptrCast(&title_buf));
+    }
+
     /// Real GDI measurer. `GetTextExtentPoint32W` on the cached memory
     /// DC with an HFONT selected in. Caches HFONTs by (family, size_px)
     /// in an 8-entry fixed array — every in-tree example uses one or
