@@ -48,8 +48,9 @@ Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until
 ## Where to read next
 
 - [`docs/HARDLINE.md`](docs/HARDLINE.md) — the non-negotiable rules. Start here.
+- [`docs/consuming-teak.md`](docs/consuming-teak.md) — **build an app**: `build.zig.zon` → `teak.run` in a few steps.
 - [`CLAUDE.md`](CLAUDE.md) — orientation for LLMs and new contributors.
-- [`docs/features/`](docs/features/) — one contract per `pub` surface unit (`Components`, `TransientState`, `Host`, `Gpu`, hit-test, layout, focus).
+- [`docs/features/`](docs/features/) — one contract per `pub` surface unit (`teak.run`, widgets, `Components`, `TransientState`, `Host`, `Gpu`, hit-test, layout, focus).
 - [`docs/pitfalls.md`](docs/pitfalls.md) — real bugs we hit and how to recognise their shape next time.
 - [`docs/archive/zunk-roadmap.md`](docs/archive/zunk-roadmap.md) — what Teak needs from zunk next, in priority order.
 - [`spec.md`](spec.md) — full architecture spec.
@@ -59,15 +60,19 @@ Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until
 ```
 src/
 ├── teak.zig              public library root, re-exports
+├── run.zig               teak.run — canonical host-loop wrapper
 ├── core/
-│   ├── cmd.zig           Cmd union, CmdBuffer, arena management
+│   ├── cmd.zig           Cmd union, CmdBuffer, arena management (incl. disabled)
 │   ├── component.zig     Components(), validateComponent, buildMsgs
+│   ├── text_field.zig    TextField(cap) + key dispatch helpers
+│   ├── numeric_field.zig NumericField(config) — parse/validate/value
+│   ├── dropdown.zig      Dropdown(cap) — closed button + open overlay list
 │   └── transient.zig     hover/press/focus presentation state
 ├── layout/engine.zig     measure + position passes
 ├── input/
-│   ├── hit_test.zig      mouse → CmdIndex → Msg
-│   ├── focus.zig         next/prev focusable traversal
-│   └── keys.zig          SpecialKey enum
+│   ├── hit_test.zig      mouse → CmdIndex → Msg (disabled leaves inert)
+│   ├── focus.zig         traversal + indexOfFocusMsg / focusMsgAt
+│   └── keys.zig          SpecialKey enum (incl. tab / shift_tab)
 ├── render/
 │   ├── vertex.zig        Vertex struct, emitQuad
 │   └── build.zig         []Cmd + []Rect + TransientState → vertex buffer

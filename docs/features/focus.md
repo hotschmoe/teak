@@ -1,29 +1,47 @@
 # Focus traversal
 
-**Status**: `pub` in `src/teak.zig` as `nextFocusable`, `prevFocusable`.
+**Status**: `pub` in `src/teak.zig` as `nextFocusable`, `prevFocusable`,
+`indexOfFocusMsg`, `focusMsgAt`.
 **Source**: `src/input/focus.zig`
-**Tests**: colocated — forward wrap, backward wrap, empty buffer.
+**Tests**: colocated — forward/backward wrap, empty buffer, single-focusable
+self-wrap, `indexOfFocusMsg` mapping + conditional-drop stability,
+`focusMsgAt` round-trip, Tab-skips-disabled.
 
 ## Contract
 
 ```zig
 pub fn nextFocusable(cmds: anytype, current: ?usize) ?usize;
 pub fn prevFocusable(cmds: anytype, current: ?usize) ?usize;
+pub fn indexOfFocusMsg(cmds: anytype, msg: anytype) ?usize;
+pub fn focusMsgAt(cmds: anytype, index: usize) ?Msg;
 ```
 
-Walks `cmds` to find the next/previous **focusable** cmd index strictly after/before `current`. Wraps at the end. Returns `null` only if the buffer contains no focusables at all.
+`nextFocusable` / `prevFocusable` walk `cmds` to find the next/previous
+**focusable** cmd index strictly after/before `current`. Wrap at the end.
+Return `null` only if the buffer contains no focusables at all. If
+`current` is `null`: `next` starts at 0, `prev` starts at the last index.
 
-If `current` is `null`: `next` starts at 0, `prev` starts at the last index.
+A command is "focusable" if it accepts keyboard input. Today the predicate
+is an **enabled** `text_input` (a `disabled` one is skipped, mirroring how
+hit-test refuses to focus it on click). When a new keyboard-operable
+widget lands (e.g. an editable slider), extend `isFocusable`.
 
-A command is "focusable" if it accepts keyboard input. Today the predicate is:
+`indexOfFocusMsg(cmds, msg)` maps a `Msg` **value** back to the cmd index
+of the interactive leaf carrying it (button / text_input / checkbox /
+radio / slider), comparing with `std.meta.eql`. First match in buffer
+order, or `null`. This is the **stable** alternative to "the Nth
+text_input": an app keys focus off the `Msg` its focus click dispatches,
+which survives conditionally rendered or reordered widgets. Because Msgs
+are already data on the cmd (§3), this is not widget-identity hashing — it
+matches the value the cmd already carries.
 
-```zig
-fn isFocusable(c: anytype) bool {
-    return switch (c) { .text_input => true, else => false };
-}
-```
-
-When a new keyboard-operable widget lands (e.g. an editable slider), extend `isFocusable`.
+`focusMsgAt(cmds, index)` is the inverse: the focus `Msg` of the leaf at
+`index` (the same Msg a click there fires), or `null` if that cmd isn't an
+interactive leaf or `index` is out of range. `indexOfFocusMsg` and
+`focusMsgAt` round-trip. Together they let `teak.run` implement
+Tab/Shift+Tab: resolve the current focus index from the app's
+`focusedMsg`, step with `nextFocusable`/`prevFocusable`, and dispatch the
+landing leaf's `focusMsgAt`.
 
 ## Invariants
 
@@ -34,14 +52,28 @@ When a new keyboard-operable widget lands (e.g. an editable slider), extend `isF
 
 ## Non-goals / known limits
 
-- **No tab-order override.** Order is cmd-emission order. A widget that should be focus-skipped despite being keyboard-operable would need `isFocusable` to consult a flag — not currently supported.
+- **No tab-order override.** Order is cmd-emission order. A `disabled`
+  `text_input` *is* skipped; any other focus-skip rule would need
+  `isFocusable` to consult a flag.
 - **No focus trap.** `next` always returns *something* if focusables exist. Modal dialogs that want to trap focus implement the trap in the app's handler.
-- **Cmd-index-based, not widget-identity-based.** If `view` emits widgets in a different order between frames, "next after `prev_focused_index`" lands somewhere different. Apps should store focus as `Model.focused: ?FocusField` (a domain enum) and translate to/from cmd indices per frame.
+- **Cmd-index results are per-frame.** `nextFocusable`/`prevFocusable`
+  return cmd indices, which aren't stable across view calls — use them
+  within a frame. For focus that *persists* across frames, store it as a
+  `Msg`-valued field and resolve it with `indexOfFocusMsg` each frame
+  (what `teak.run` does via the app's `focusedMsg`). This is the stable
+  path the consumer asked for, replacing fragile "Nth text_input"
+  ordinals.
 
 ## Test coverage target
 
 - **Forward wrap** (covered): three focusables, `next` cycles all and returns to the first.
 - **Backward wrap** (covered): same for `prev`.
 - **No focusables** (covered): returns `null` rather than panicking.
-- **Single focusable** (missing): one-widget buffer; `next(..., 0)` should wrap back to 0.
+- **Single focusable** (covered): one-widget buffer; `next(..., 0)` wraps back to 0.
 - **Non-focusables interleaved** (covered via the wrap tests): text and button cmds in between text_inputs are correctly skipped.
+- **`indexOfFocusMsg` mapping + stability** (covered): resolves the right
+  index, and still resolves correctly after an earlier widget is
+  conditionally dropped (where an ordinal would mismatch).
+- **`focusMsgAt` round-trip** (covered): index → msg → index.
+- **Tab skips disabled** (covered): a disabled input between two enabled
+  ones is passed over by `nextFocusable`/`prevFocusable`.
