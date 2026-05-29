@@ -5,10 +5,16 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .teak = .{ .path = "../.." },
-        // rich_zig is a sibling repo; we use only its parser/style/text
+        // rich_zig: pinned to a tagged release so this example is
+        // self-contained — `zig build` fetches it into the global cache,
+        // no sibling checkout required. We use only its parser/style/text
         // modules (no terminal rendering) to build mixed-style runs for
-        // teak's rich_text Cmd.
-        .rich_zig = .{ .path = "../../../rich_zig" },
+        // teak's rich_text Cmd. Bump the tag + re-run `zig fetch --save`
+        // to update.
+        .rich_zig = .{
+            .url = "git+https://github.com/hotschmoe/rich_zig.git#768b5bfd4b542da849c0efda8b585e1f28560451",
+            .hash = "rich_zig-2.0.1-cZcAnJFZDAB_mhWB525wIbBMY95SNa3MdGAuDaok_vLk",
+        },
     },
     .paths = .{
         "build.zig",
