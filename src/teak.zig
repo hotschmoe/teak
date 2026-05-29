@@ -24,6 +24,7 @@ pub const render = @import("render/build.zig");
 pub const vertex = @import("render/vertex.zig");
 pub const host = @import("platform/host.zig");
 pub const gpu = @import("gpu/context.zig");
+pub const runtime = @import("run.zig");
 
 pub const Cmd = cmd.Cmd;
 pub const CmdBuffer = cmd.CmdBuffer;
@@ -104,6 +105,9 @@ pub const validateHost = host.validateHost;
 
 pub const ClearColor = gpu.ClearColor;
 pub const validateGpu = gpu.validateGpu;
+
+pub const run = runtime.run;
+pub const RunOptions = runtime.RunOptions;
 
 pub const FontFamily = text.FontFamily;
 pub const FontSpec = text.FontSpec;
