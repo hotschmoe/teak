@@ -1,10 +1,51 @@
 # Gpu interface
 
 **Status**: `pub` in `src/teak.zig` as `ClearColor`, `validateGpu`.
-**Source**: `src/gpu/context.zig`; concrete backends at `src/gpu/native.zig` (wgpu-native) and `src/gpu/web.zig` (zunk.web.gpu).
-**Tests**: `validateGpu` has a colocated stub-acceptance test. Backend behavior is exercised by running the example.
+**Source**: `src/gpu/context.zig`; the wgpu pipeline is `src/gpu/wgpu_core.zig`, bound to a concrete backend by `src/gpu/native.zig` (Windows) and `src/gpu/native_linux.zig` (Linux); the web backend is `src/gpu/web.zig` (zunk.web.gpu).
+**Tests**: `validateGpu` has a colocated stub-acceptance test (and each native stitch runs it in a `comptime` block). Backend behavior is exercised by running the example.
 
 Sibling of the [Host interface](host.md). The only layer allowed to import wgpu-native or `zunk.web.gpu` — everything above (`render/`, `layout/`, `input/`, `core/`) compiles `wasm32-freestanding`-clean, enforced by `zig build test-wasm`.
+
+## Provider decomposition (`wgpu_core.Gpu(Surface, Rasterizer)`)
+
+The two native backends share **one** wgpu pipeline. `wgpu_core.zig`
+exposes `pub fn Gpu(comptime Surface: type, comptime Rasterizer: type)
+type` — the full wgpu lifecycle (instance, adapter, device, the quad /
+text / image pipelines, the glyph cache) parameterized over two seams:
+
+- **`Surface`** — a *surface provider* exposing `Handle` + `createSurface(WGPUInstance, anytype) !WGPUSurface`. `surface_win32.zig` wraps an HWND pair; `surface_xlib.zig` wraps an X11 `Display*` + `Window` XID. `createSurface` takes the handle as `anytype`, so the Host's structurally-identical `NativeHandle` coerces without the platform layer importing the gpu layer.
+- **`Rasterizer`** — a *rasterizer provider* exposing `init(Allocator)` / `deinit` / `rasterize(bytes, FontSpec, [4]f32, w, h) ?Bitmap`, returning a **BGRA8, top-down** `Bitmap` (`[b, g, r, coverage]` per pixel) ready for a `BGRA8Unorm` texture upload. `raster_gdi.GdiRasterizer` uses Win32/GDI; `text_stbtt.StbttRasterizer` uses vendored stb_truetype.
+
+The OS stitch files bind the concrete pair and `validateGpu` it:
+
+```zig
+// native.zig (Windows)
+pub const Gpu = wgpu_core.Gpu(surface_win32, raster_gdi.GdiRasterizer);
+// native_linux.zig (Linux)
+pub const Gpu = wgpu_core.Gpu(surface_xlib, text.StbttRasterizer);
+```
+
+`build.zig`'s `linkNativeWgpu` selects the stitch by target OS and exposes
+it under the stable import name `teak-gpu-native`, so one `ui_main.zig`
+compiles on both.
+
+**Why parameterize instead of `switch (builtin.os.tag)`?** Each OS's
+`extern`s (GDI vs Xlib) only land in *that* OS's translation unit — the
+Linux build never sees the GDI externs and vice-versa, so there is no
+comptime platform gating inside the gpu layer (the same idiom as
+`glyph_cache.GlyphCache(Backend)`). `wgpu_core.zig` owns the **single**
+`@cImport` of the wgpu headers; both surface providers re-import it
+(`@import("wgpu_core.zig").c`) so `WGPUSurface` / `WGPUInstance` have one
+type identity across the seam — without that, each file's `@cImport` would
+mint a distinct `WGPUSurface` and the seam wouldn't typecheck.
+
+**Text differs per OS, layout doesn't.** On Windows the GDI rasterizer
+backs rendering and the Win32 Host's GDI measurer backs layout. On Linux
+the `teak-text` module (`text_stbtt.zig`) provides **both** the GPU
+rasterizer *and* the X11 Host's `TextMeasurer` from the **same** loaded
+font, so measure-vs-render metrics can't drift. v1 loads one monospace
+face (DejaVuSansMono by default; override with `TEAK_FONT`) and ignores
+`FontSpec.family`.
 
 ## Contract
 
@@ -45,8 +86,8 @@ Gpu 'MyGpu' is missing declaration 'uploadVertices'
 - **No depth / stencil.** Teak is 2D; painter's order gives us z-ordering.
 - **No multiple render passes.** Adding e.g. a post-process pass would expand the contract to `beginFrame` / `endFrame` pair — not planned.
 - **No query objects / timestamps.** Profiling happens externally.
-- **`init` signatures differ.** Native takes a Win32 `HWND` and window dimensions; web takes an empty placeholder (canvas is implicit to zunk). Example builds bind them explicitly.
-- **Multi-window: native only.** `renderToWindow(id)` works for both primary (id 0) and secondary windows on Win32 + native wgpu, with per-surface tables on both Host and Gpu layers. The shared uniform buffer holds the target window's dims and is rewritten at the start of every `renderToWindow` call so cross-window renders don't bleed each other's viewports. Wasm `openSecondaryWindow` returns null — no secondary surfaces on web.
+- **`init` signatures differ.** Native takes the Host's `nativeHandle()` (an HWND pair on Windows, a `Display*` + `Window` on Linux — duck-typed via `anytype`) and window dimensions; web takes an empty placeholder (canvas is implicit to zunk). Example builds bind them explicitly.
+- **Multi-window: Win32 only so far.** `renderToWindow(id)` works for both primary (id 0) and secondary windows on Win32 + native wgpu, with per-surface tables on both Host and Gpu layers. The shared uniform buffer holds the target window's dims and is rewritten at the start of every `renderToWindow` call so cross-window renders don't bleed each other's viewports. The Linux X11 backend currently exposes the primary surface only (secondary X11 windows are not yet wired). Wasm `openSecondaryWindow` returns null — no secondary surfaces on web.
 
 ## Test coverage target
 

@@ -1,8 +1,8 @@
 # Host interface
 
 **Status**: `pub` in `src/teak.zig` as `InputState`, `validateHost`, `SpecialKey`.
-**Source**: `src/platform/host.zig`; concrete backends at `src/platform/win32.zig`, `src/platform/wasm.zig`.
-**Tests**: `validateHost` has a colocated stub-acceptance test. Backend behavior is exercised through `examples/counter_greeter`.
+**Source**: `src/platform/host.zig`; three backends — `src/platform/win32.zig` (Win32), `src/platform/x11.zig` (X11/Linux), `src/platform/wasm.zig` (web).
+**Tests**: `validateHost` has a colocated stub-acceptance test (and `x11.zig` runs its keysym→`SpecialKey` mapping unit test). Backend behavior is exercised through `examples/counter_greeter`.
 
 Escape hatch 4 in [HARDLINE §2](../HARDLINE.md#escape-hatch-4-host-interface). Wires Teak to OS windowing and input — the only place outside `src/gpu/*` allowed to import platform-specific code.
 
@@ -16,7 +16,7 @@ A Host type must expose these declarations:
 | `deinit` | `fn(*Host) void` | Tear down the window. |
 | `pollInputs` | `fn(*Host) InputState` | Drain one frame's events. Called once per frame at the top of the main loop. |
 | `shouldClose` | `fn(*const Host) bool` | True when the user closed the window. The wasm host returns `false` unconditionally; the page lifecycle is zunk's problem. |
-| `nativeHandle` | `fn(*const Host) NativeHandleT` | Opaque handle the matching Gpu backend consumes. Shape is a private agreement between the Host and its Gpu. |
+| `nativeHandle` | `fn(*const Host) NativeHandleT` | Opaque handle the matching Gpu backend consumes. Shape is a private agreement between the Host and its Gpu. Win32: `{ hinstance, hwnd }`. X11: `{ display: *anyopaque, window: u64 }` (opaque `Display*` + `Window` XID). |
 | `textMeasurer` | `fn(*Host) TextMeasurer` | Return a glyph-accurate measurer vtable. Native hosts wrap their font system; headless / wasm hosts may return `monoMeasurer()`. |
 | `clipboard` | `fn(*Host) Clipboard` | Return a Clipboard vtable for OS-level cut / copy / paste. `read` returns a UTF-8 slice valid until the next `read`. No-op impls (empty read, discard write) are acceptable for headless / wasm. |
 | `imeState` | `fn(*const Host) ImeState` | Current IME composition snapshot. Hosts without IME return `.{ .active = false }`. |
@@ -60,7 +60,19 @@ pub const InputState = struct {
 
 **Edge vs state**: `mouse_down` / `mouse_up` are edges — the Host computes them by diffing against the previous poll. `mouse_x` / `mouse_y` are state. A widget that wants "is the button currently held?" must track it in `Model` based on edges.
 
-**Wheel sign convention**: `wheel_dx` / `wheel_dy` carry pixels of *intended* scroll accumulated since the previous `pollInputs`. Positive `wheel_dy` means the user wants the content to scroll **down** (visible viewport advances toward higher y); positive `wheel_dx` means scroll **right**. This matches the DOM `WheelEvent.deltaX` / `deltaY` convention. Backends translate native wheel notches into pixels — Win32 maps each `WHEEL_DELTA` (120 raw units) to ~48 px (the standard "3 lines"); the wasm host forwards zunk's already-pixel `mouse.wheel`. Zero when no wheel events arrived. Apps translate `wheel_dy` into a regular Msg (e.g. `.scroll_by`) and route it through `update`, same as any other input — there is no wheel-handler callback.
+**Wheel sign convention**: `wheel_dx` / `wheel_dy` carry pixels of *intended* scroll accumulated since the previous `pollInputs`. Positive `wheel_dy` means the user wants the content to scroll **down** (visible viewport advances toward higher y); positive `wheel_dx` means scroll **right**. This matches the DOM `WheelEvent.deltaX` / `deltaY` convention. Backends translate native wheel notches into pixels — Win32 maps each `WHEEL_DELTA` (120 raw units) to ~48 px (the standard "3 lines"); X11 maps each wheel notch (`Button4`/`5` vertical, `Button6`/`7` horizontal) to the same 48 px; the wasm host forwards zunk's already-pixel `mouse.wheel`. Zero when no wheel events arrived. Apps translate `wheel_dy` into a regular Msg (e.g. `.scroll_by`) and route it through `update`, same as any other input — there is no wheel-handler callback.
+
+## Backends
+
+Three Hosts implement the contract; all satisfy `validateHost`.
+
+- **Win32** (`win32.zig`) — `WNDPROC`-driven; buffers async messages and drains on `pollInputs`. GDI text measurer. Implements clipboard and file dialogs for real.
+- **X11** (`x11.zig`) — the Linux backend. libX11 is loaded at runtime via `std.DynLib("libX11.so.6")` (no `-lX11`, no X11 dev package needed to build; the module links libc for the dlopen path). Window create/map, synchronous `XNextEvent` pump (mouse, wheel via `Button4`/`5`+`6`/`7`, keys), `keysym`→`SpecialKey` mapping (arrows + shift variants, Tab/Shift-Tab, Enter, Home/End/PgUp/PgDn, Esc, Ctrl chords), ASCII text via `XLookupString`, `setTitle` via `XStoreName`, `nowMs`. The text measurer is the shared stb_truetype `teak-text` module — the *same* font the GPU rasterizer renders from, so layout and rendering agree. All state lives on the `Host` struct (no module-scope globals), since X11 delivers events synchronously. X11 runs under **XWayland** on Wayland desktops; there is no native Wayland backend.
+- **wasm** (`wasm.zig`) — the web backend over zunk shared memory; `shouldClose` returns `false` (page lifecycle is zunk's problem).
+
+**X11 v1 stubs** — present in the contract so apps call them unconditionally, but no-ops today: `clipboard` read returns `""` and write is a no-op (X11 selections need an async `XConvertSelection`/`SelectionNotify` round-trip); `openFileDialog` / `saveFileDialog` return `null` (need a portal/toolkit dependency); `publishA11yTree` is a no-op (no AT-SPI yet); `openSecondaryWindow` returns `null`; `imeState` is inactive (text entry is ASCII via `XLookupString`; wider Unicode needs `Xutf8LookupString` + an input method). Windows implements clipboard + file dialogs for real.
+
+> **Verification status (Linux).** The X11 host has been verified to compile, link, and start headlessly (the dlopen + Xlib FFI path is sound); pixels-on-screen verification on a real display is pending.
 
 ## Invariants
 

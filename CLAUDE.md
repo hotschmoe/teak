@@ -46,20 +46,28 @@ zig build test                              # Library tests (run from repo root)
 cd examples/counter_greeter
 zig build test                              # Example tests
 zig build run                               # CLI canary
-zig build ui -Dtarget=aarch64-windows-gnu   # wgpu + Win32 UI (ARM64 host)
-zig build ui                                # wgpu + Win32 UI (x86_64 host)
+zig build web                               # wasm + WebGPU (zunk) -> dist/
+
+# Native UI — teak.linkNativeWgpu dispatches on target OS:
+zig build ui                                # native host (Linux X11 / Windows) for the host OS
+zig build ui -Dtarget=aarch64-windows-gnu   # cross to Windows ARM64 (Win32 + wgpu)
+zig build ui -Dtarget=x86_64-linux-gnu       # cross to Linux x86_64 (X11 + wgpu)
 ```
 
-The `wgpu-native` dependency lives in the example's `build.zig.zon` and is fetched automatically on first build of a UI target. The root library has no external dependencies. The build targets Windows ARM64 (Snapdragon X Elite) with a workaround for Zig's missing `i8mm` CPU feature detection on aarch64.
+The native UI backend is chosen per target OS: **Windows** (Win32 window + GDI text) and **Linux** (X11 window + stb_truetype text); both render through wgpu-native. The `ui` step only exists when teak ships a native backend for the target (`teak.hasNativeBackend`), so `run`/`test`/`web` configure on every OS. On Linux, libX11 is loaded at runtime via `std.DynLib` — **no X11 dev package is needed to build** (only `libX11.so.6` + a Vulkan driver at runtime). A monospace TTF is located by path probe (override with the `TEAK_FONT` env var); DejaVuSansMono is the default. Wayland is not yet supported directly — X11 apps run under XWayland.
+
+The `wgpu-native` prebuilts live in teak's own `build.zig.zon` (one per OS × arch) and are fetched lazily on the first native/web UI build; pure-library consumers never pay for them. The build targets Windows ARM64 (Snapdragon X Elite) with a workaround for Zig's missing `i8mm` CPU feature detection on aarch64.
 
 ### Windows ARM64 toolchain workaround (Zig 0.16.0)
 
 Zig 0.16.0's native `aarch64-windows` compiler binary is broken upstream ([Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865)) — it segfaults on any compile. This machine runs the **x86_64-windows** `zig.exe` (installed at `C:\zig\`) under Windows-on-ARM (Prism) emulation and **cross-compiles** to aarch64-windows.
 
+This workaround is **Windows-specific** — building/running the Linux UI on a Linux host (including aarch64) needs no `-Dtarget` flag.
+
 Implications for building:
 - The native default target when running `zig build` is `x86_64-windows` (what Prism reports).
-- The example's `build.zig.zon` declares two wgpu-native deps (`wgpu-native-aarch64` and `wgpu-native-x86_64`); its `build.zig` selects the matching one by `target.result.cpu.arch` so no flags are needed on a native host.
-- **On this aarch64 host, pass `-Dtarget=aarch64-windows-gnu` to `zig build ui`** so the output binary runs natively instead of under Prism. Without it, the build still succeeds — you just get an x86_64 UI binary that runs emulated. (On a native x86_64 Windows host, no flag is needed.)
+- teak's `build.zig.zon` declares the wgpu-native prebuilts per OS × arch (`wgpu-native-windows-{aarch64,x86_64}`, `wgpu-native-linux-{aarch64,x86_64}`); `linkNativeWgpu` selects the matching one by `target.result.os.tag` + `cpu.arch`, so no flags are needed on a native host.
+- **On this aarch64 Windows host, pass `-Dtarget=aarch64-windows-gnu` to `zig build ui`** so the output binary runs natively instead of under Prism. Without it, the build still succeeds — you just get an x86_64 UI binary that runs emulated. (On a native x86_64 Windows host, no flag is needed.)
 - Library `zig build test` from the root works without the flag (it doesn't link wgpu).
 
 Full details: [`docs/zig-016-win-arm64-crash.md`](docs/zig-016-win-arm64-crash.md). When #31865 ships a fix, drop the emulation workaround and remove `-Dtarget=` from `zig build ui`.
@@ -151,14 +159,35 @@ src/                           -- the library, consumable as a Zig module
     vertex.zig                 -- Vertex struct + emitQuad
     build.zig                  -- []Cmd + []Rect + TransientState
                                --   -> vertex / text_draws / image_draws buffers
+  gpu/                         -- wgpu backends (outside core; pick one per target via build)
+    context.zig                -- validateGpu contract (the Gpu interface)
+    wgpu_core.zig              -- Gpu(comptime Surface, comptime Rasterizer): shared wgpu
+                               --   pipeline; owns the single @cImport(webgpu.h) so all
+                               --   providers share one WGPUSurface type
+    surface_win32.zig          -- HWND surface provider      } Windows stitch:
+    raster_gdi.zig             -- GDI glyph rasterizer        } native.zig
+    native.zig                 -- Gpu(surface_win32, GdiRasterizer) + validateGpu
+    surface_xlib.zig           -- Xlib Window surface provider } Linux stitch:
+    text_stbtt.zig             -- stb_truetype Font+measure+rasterizer (teak-text module;
+                               --   shared with the X11 Host so layout == render)
+    native_linux.zig           -- Gpu(surface_xlib, StbttRasterizer) + validateGpu
+    web.zig                    -- zunk WebGPU backend (wasm)
+    glyph_cache.zig            -- GlyphCache(Backend): shared LRU glyph-texture cache
+    vendor/stb_truetype.h(.c)  -- vendored public-domain rasterizer (Linux text)
+  platform/                    -- Host backends (window + input; outside core)
+    host.zig                   -- validateHost contract + InputState/Clipboard/etc.
+    win32.zig                  -- Win32 Host (GDI measurer)
+    x11.zig                    -- X11 Host via std.DynLib(libX11.so.6); stb measurer;
+                               --   keysym->SpecialKey; no -lX11 (dlopened at runtime)
+    wasm.zig                   -- zunk Host (web)
 
 examples/
   counter_greeter/             -- the proto-2 demo; consumes teak as a module
-    build.zig                  -- wires teak + rich_zig + Win32/web targets
+    build.zig                  -- wires teak + rich_zig + native (Win32/X11) + web targets
     build.zig.zon
     src/
       main.zig                 -- CLI canary entry
-      ui_main.zig              -- wgpu + Win32 entry
+      ui_main.zig              -- wgpu native entry (teak-platform-native: Win32 or X11)
       app.zig                  -- composed app (counter + greeter + help modal)
       counter.zig
       greeter.zig              -- text input w/ selection + clipboard editing
@@ -170,7 +199,7 @@ shaders/
   image.wgsl             -- texture * tint (RGBA images)
 ```
 
-The library has no external dependencies; `wgpu-native` is owned by whichever example wires up a GPU host. The `src/gpu/` and `src/platform/` split (backend-polymorphic GPU context + Host interface) is executed per [`docs/archive/tasks-file-struct.md`](docs/archive/tasks-file-struct.md); concrete backends live in `src/gpu/{native,web}.zig` and `src/platform/{win32,wasm}.zig`.
+The library has no external dependencies; `wgpu-native` is owned by teak's build helper (`linkNativeWgpu`/`linkWebWgpu`) and fetched lazily per target. The `src/gpu/` and `src/platform/` split (backend-polymorphic GPU context + Host interface) is executed per [`docs/archive/tasks-file-struct.md`](docs/archive/tasks-file-struct.md). Native backends are assembled by **comptime provider injection** — `wgpu_core.Gpu(Surface, Rasterizer)` is bound to `(surface_win32, GdiRasterizer)` by `native.zig` on Windows and `(surface_xlib, StbttRasterizer)` by `native_linux.zig` on Linux — so each OS's `extern`s only compile for that OS (no `switch (builtin.os.tag)` smuggling platform code into the other's translation unit). Host backends live in `src/platform/{win32,x11,wasm}.zig`; the build exposes the chosen native pair under the stable import names `teak-platform-native` / `teak-gpu-native` so one `ui_main.zig` compiles on every OS.
 
 **Functional gaps overview**: [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md) covers the 8 features added in the `functional_gaps_yolo` branch — overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs, virtual list, a11y tree, rich text via rich_zig.
 

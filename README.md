@@ -20,7 +20,7 @@ Every arrow is an explicit function call with typed inputs and outputs. No globa
 
 ## Status
 
-- **Proto-2 shipped** on Win32 + wgpu-native and on WebAssembly + WebGPU (via [zunk](https://github.com/hotschmoe/zunk)).
+- **Proto-2 shipped** on three hosts: **Windows** (Win32 + wgpu-native), **Linux** (X11 + wgpu-native), and **WebAssembly** (WebGPU via [zunk](https://github.com/hotschmoe/zunk)). One `linkNativeWgpu` call picks the native backend by target OS. *(Linux X11 runs under XWayland; a native Wayland backend is not yet implemented.)*
 - **Text rendering shipped.** Both backends rasterize glyph-accurate text into a texture atlas and draw via `uploadText` / `renderFrame`.
 - **Functional-gaps push landed** on `functional_gaps_yolo`: overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs surface, virtual list, a11y tree, rich text. See [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md).
 
@@ -36,10 +36,12 @@ zig build audit          # HARDLINE drift audit (depends on test-wasm)
 
 # From examples/counter_greeter or examples/todo
 zig build run            # CLI canary
-zig build ui             # wgpu + Win32 window
+zig build ui             # wgpu native window (Linux X11 / Windows, by target OS)
 zig build web            # wasm + WebGPU via zunk — writes dist/
 zig build web-run        # same, then serves dist/ on localhost:8080
 ```
+
+Building the Linux UI needs no X11 dev package (libX11 is `dlopen`ed at runtime); at runtime it needs `libX11.so.6`, a Vulkan driver, and a monospace TTF (DejaVuSansMono by default; override with `TEAK_FONT`).
 
 Three examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), and **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array).
 
@@ -76,8 +78,8 @@ src/
 ├── render/
 │   ├── vertex.zig        Vertex struct, emitQuad
 │   └── build.zig         []Cmd + []Rect + TransientState → vertex buffer
-├── platform/             Host interface + Win32 / wasm backends
-└── gpu/                  Gpu interface + wgpu-native / zunk backends
+├── platform/             Host interface + Win32 / X11 / wasm backends
+└── gpu/                  Gpu interface + wgpu-native (Win32+GDI / X11+stb_truetype) / zunk
 
 examples/counter_greeter/  proto-2 demo; composed Components + focus routing
 examples/todo/             dynamic-list demo; N rows, Msg-with-index, scroll

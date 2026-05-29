@@ -81,7 +81,9 @@ of the dependency arrow:
   `platform/*` nor `gpu/*` — only the pure passes (`core`, `layout`,
   `input`, `render`). The consumer's entry point picks the backends and
   hands them in; `run` only duck-types the `validateHost` / `validateGpu`
-  surfaces. Dependency arrow still points inward (§3).
+  surfaces. Dependency arrow still points inward (§3). Because it is
+  host-generic, `run` drives the **X11** host (Linux) and **wasm** host
+  exactly as it does Win32 — no per-OS code in `run.zig`.
 - It lives at `src/run.zig`, a sibling of the library root, **outside**
   the `src/{core,layout,input,render}/*` dirs the drift audit treats as
   framework core. It is not an escape hatch — it adds no new mutable
@@ -103,5 +105,8 @@ is unit-tested for label/disabled/length changes.
 
 The three in-repo examples (`counter_greeter`, `todo`, `tree`) still carry
 their original hand-rolled loops; migrating them to `teak.run` is tracked
-as a follow-up to be verified on a Windows host (the examples' UI build
-targets Windows/wasm and can't be compiled on a Linux dev box).
+as a follow-up. The examples' native UI now builds on **Linux (X11)** as
+well as **Windows** — `teak.linkNativeWgpu` picks the backend by target OS
+and the examples gate their `ui` step on `teak.hasNativeBackend`, so a
+Linux dev box can compile and link the UI (pixels-on-screen verification
+on a real display is still pending).

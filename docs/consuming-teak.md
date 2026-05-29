@@ -25,12 +25,18 @@ In your `build.zig.zon`, add Teak (pin a tag/commit + hash via
 
 A pure-library consumer pays for nothing else. The `wgpu-native`
 prebuilts are **lazy** deps of Teak — they're fetched only when you call
-`teak.linkWin32Wgpu` (the native UI path), never for `zig build test`.
+`teak.linkNativeWgpu` (the native UI path), never for `zig build test`.
 
 ## 2. Wire the build
 
 Teak ships build helpers so you don't assemble platform + GPU modules by
-hand. One call per target:
+hand. One call wires the native backend for whichever OS you target:
+`teak.linkNativeWgpu` dispatches on the resolved target OS — **Windows**
+(Win32 window + GDI text + `wgpu_native.dll`) or **Linux** (X11 window +
+stb_truetype text + `libwgpu_native.so`), both rendering through
+wgpu-native. The chosen pair is exposed under the stable import names
+`teak-platform-native` / `teak-gpu-native`, so the same `ui_main.zig`
+compiles on both.
 
 ```zig
 const std = @import("std");
@@ -42,19 +48,24 @@ pub fn build(b: *std.Build) void {
 
     const teak_dep = b.dependency("teak", .{ .target = target, .optimize = optimize });
 
-    // Native UI: Win32 + wgpu. Adds the teak / platform-win32 / gpu-native
-    // imports, links wgpu-native for the target arch, installs the DLL.
-    const ui = b.addExecutable(.{
-        .name = "myapp-ui",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ui_main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    teak.linkWin32Wgpu(b, ui, .{});
-    const ui_step = b.step("ui", "Run the UI");
-    ui_step.dependOn(&b.addRunArtifact(ui).step);
+    // Native UI: dispatches on target OS (Win32 or X11) + wgpu. Adds the
+    // teak / platform-native / gpu-native imports, links wgpu-native for the
+    // target os+arch, installs the DLL (.dll) / shared object (.so).
+    // Gate the `ui` step on hasNativeBackend so `zig build` configures on
+    // any OS — the step is simply absent where there's no native backend.
+    if (teak.hasNativeBackend(target.result.os.tag)) {
+        const ui = b.addExecutable(.{
+            .name = "myapp-ui",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/ui_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        teak.linkNativeWgpu(b, ui, .{});
+        const ui_step = b.step("ui", "Run the UI");
+        ui_step.dependOn(&b.addRunArtifact(ui).step);
+    }
 
     // Pure-logic tests (no window): just import the teak module.
     const exe = b.addExecutable(.{
@@ -75,10 +86,20 @@ pub fn build(b: *std.Build) void {
 `teak.linkWebWgpu(b, exe, .{})` is the wasm + WebGPU equivalent; it
 registers `web` / `web-run` steps.
 
-> **Note (build portability):** `linkWin32Wgpu` `@panic`s if the resolved
-> target isn't Windows. If you want `zig build test` to work on a
-> non-Windows dev box, keep the UI executable behind a Windows-target
-> check, or only add it when `target.result.os.tag == .windows`.
+> **Cross-platform note.** Native UI runs on **Win32** (Windows) and
+> **X11** (Linux); the **wasm + WebGPU** path covers the browser.
+> `linkNativeWgpu` `@panic`s for any other target OS, so gate the UI exe
+> behind `teak.hasNativeBackend(target.result.os.tag)` (true for
+> windows/linux) — then `zig build test` / `web` still configure on any
+> dev box. Building the Linux UI needs **no X11 dev package** (libX11 is
+> `dlopen`ed at runtime); at runtime it needs `libX11.so.6`, a Vulkan
+> driver, and a monospace TTF (DejaVuSansMono by default; override with
+> the `TEAK_FONT` env var). Wayland is not supported directly — X11 apps
+> run under XWayland.
+>
+> `teak.linkWin32Wgpu` still exists as a **deprecated** Windows-only alias
+> (it asserts a Windows target and forwards to `linkNativeWgpu`); migrate
+> to `linkNativeWgpu`.
 
 ## 3. Write the App
 
@@ -133,7 +154,7 @@ used to hand-copy:
 ```zig
 const std = @import("std");
 const teak = @import("teak");
-const platform = @import("teak-platform-win32");
+const platform = @import("teak-platform-native"); // Win32 or X11, per target OS
 const gpu_native = @import("teak-gpu-native");
 const App = @import("app.zig");
 
