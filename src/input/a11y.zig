@@ -91,6 +91,10 @@ pub const A11yNode = struct {
     /// For slider: normalized [0, 1] value packed in.
     /// Ignored for other roles.
     state: f32 = 0,
+    /// Whether the widget is disabled (greyed-out, non-interactive).
+    /// Only set for button / text_input; defaults false for all other
+    /// roles.
+    disabled: bool = false,
 };
 
 /// Build a flat list of A11yNodes for the given frame. Allocates the
@@ -247,6 +251,7 @@ fn collectLayer(
                 .bounds = b,
                 .label = btn.label,
                 .focused = if (focus_index) |fi| fi == i else false,
+                .disabled = btn.disabled,
             },
             .text_input => |ti| .{
                 .role = .text_input,
@@ -254,6 +259,7 @@ fn collectLayer(
                 .bounds = b,
                 .label = ti.content,
                 .focused = if (focus_index) |fi| fi == i else false,
+                .disabled = ti.disabled,
             },
             .checkbox => |cb| .{
                 .role = .checkbox,
@@ -328,6 +334,35 @@ test "buildTree: emits one node per interactive widget + container" {
     try testing.expectEqual(Role.checkbox, tree[4].role);
     try testing.expectEqualStrings("agree", tree[4].label);
     try testing.expectEqual(@as(f32, 1), tree[4].state);
+    // Enabled button/input default `.disabled` to false.
+    try testing.expect(!tree[2].disabled);
+    try testing.expect(!tree[3].disabled);
+}
+
+test "buildTree: disabled button/input produce nodes with .disabled true" {
+    const testing = std.testing;
+    const Msg = union(enum) { add, focus };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{});
+    cb.buttonDisabled(.add, "Add point load");
+    cb.textInputDisabled(.focus, "locked", 0);
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], null);
+    // group + button + text_input = 3 nodes.
+    try testing.expectEqual(@as(usize, 3), tree.len);
+    try testing.expectEqual(Role.button, tree[1].role);
+    try testing.expect(tree[1].disabled);
+    try testing.expectEqual(Role.text_input, tree[2].role);
+    try testing.expect(tree[2].disabled);
 }
 
 test "buildTree: overlay nodes appear with overlay role" {

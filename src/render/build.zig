@@ -212,14 +212,21 @@ fn buildLayer(
             },
             .button => |btn| {
                 if (!visible) continue;
-                const pressed = if (transient.press_index) |pi| pi == i else false;
-                const hovered = if (transient.hover_index) |hi| hi == i else false;
-                const bg = if (pressed)
-                    btn.style.press_bg
-                else if (hovered)
-                    btn.style.hover_bg
-                else
-                    btn.style.bg;
+                // Disabled buttons show no hover/press feedback: a flat
+                // greyed-out bg + greyed label, skipping the color ladder.
+                var bg = btn.style.disabled_bg;
+                var fg = btn.style.disabled_fg;
+                if (!btn.disabled) {
+                    const pressed = if (transient.press_index) |pi| pi == i else false;
+                    const hovered = if (transient.hover_index) |hi| hi == i else false;
+                    bg = if (pressed)
+                        btn.style.press_bg
+                    else if (hovered)
+                        btn.style.hover_bg
+                    else
+                        btn.style.bg;
+                    fg = btn.style.fg;
+                }
                 emit(verts, alloc, rect, bg, cur_clip);
 
                 if (btn.label.len > 0) {
@@ -230,34 +237,44 @@ fn buildLayer(
                         .w = @min(m.width, @max(0, rect.w - 16)),
                         .h = m.height,
                     };
-                    emitText(text_draws, alloc, btn.label, btn.font, btn.style.fg, label_rect, cur_clip);
+                    emitText(text_draws, alloc, btn.label, btn.font, fg, label_rect, cur_clip);
                 }
             },
             .text_input => |ti| {
                 if (!visible) continue;
-                const focused = if (transient.focus_index) |fi| fi == i else false;
-                const border_color = if (focused) ti.style.focus_border else ti.style.border;
+                // Disabled inputs are non-interactive: flat greyed border +
+                // bg + text, skipping focus border, selection, and cursor.
+                const focused = !ti.disabled and (if (transient.focus_index) |fi| fi == i else false);
+                const border_color = if (ti.disabled)
+                    ti.style.disabled_border
+                else if (focused)
+                    ti.style.focus_border
+                else
+                    ti.style.border;
 
                 emit(verts, alloc, rect, border_color, cur_clip);
                 const inner = insetRect(rect, BORDER_WIDTH);
-                emit(verts, alloc, inner, ti.style.bg, cur_clip);
+                emit(verts, alloc, inner, if (ti.disabled) ti.style.disabled_bg else ti.style.bg, cur_clip);
 
                 // Selection highlight before the text so text draws on top.
-                if (ti.selection_anchor) |anchor| {
-                    if (anchor != ti.cursor and ti.content.len > 0) {
-                        const lo = @min(anchor, ti.cursor);
-                        const hi = @max(anchor, ti.cursor);
-                        const lo_w = measurer.prefixWidth(ti.content, ti.font, lo);
-                        const hi_w = measurer.prefixWidth(ti.content, ti.font, hi);
-                        const sel_rect = Rect{
-                            .x = inner.x + INPUT_TEXT_PADDING + lo_w,
-                            .y = inner.y + INPUT_TEXT_PADDING,
-                            .w = @max(0, hi_w - lo_w),
-                            .h = @max(0, inner.h - 2 * INPUT_TEXT_PADDING),
-                        };
-                        // Subtle highlight; the host can theme this via
-                        // a new field on TextInputStyle if desired.
-                        emit(verts, alloc, sel_rect, .{ 0.25, 0.45, 0.95, 0.45 }, cur_clip);
+                // Disabled inputs never draw selection.
+                if (!ti.disabled) {
+                    if (ti.selection_anchor) |anchor| {
+                        if (anchor != ti.cursor and ti.content.len > 0) {
+                            const lo = @min(anchor, ti.cursor);
+                            const hi = @max(anchor, ti.cursor);
+                            const lo_w = measurer.prefixWidth(ti.content, ti.font, lo);
+                            const hi_w = measurer.prefixWidth(ti.content, ti.font, hi);
+                            const sel_rect = Rect{
+                                .x = inner.x + INPUT_TEXT_PADDING + lo_w,
+                                .y = inner.y + INPUT_TEXT_PADDING,
+                                .w = @max(0, hi_w - lo_w),
+                                .h = @max(0, inner.h - 2 * INPUT_TEXT_PADDING),
+                            };
+                            // Subtle highlight; the host can theme this via
+                            // a new field on TextInputStyle if desired.
+                            emit(verts, alloc, sel_rect, .{ 0.25, 0.45, 0.95, 0.45 }, cur_clip);
+                        }
                     }
                 }
 
@@ -270,7 +287,8 @@ fn buildLayer(
                         .w = @min(m.width, max_w),
                         .h = m.height,
                     };
-                    emitText(text_draws, alloc, ti.content, ti.font, ti.style.fg, text_rect, cur_clip);
+                    const text_color = if (ti.disabled) ti.style.disabled_fg else ti.style.fg;
+                    emitText(text_draws, alloc, ti.content, ti.font, text_color, text_rect, cur_clip);
                 }
 
                 // IME composition: when the focused input has an active

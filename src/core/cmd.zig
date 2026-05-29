@@ -40,6 +40,10 @@ pub const ButtonStyle = struct {
     hover_bg: [4]f32 = .{ 0.35, 0.35, 0.35, 1.0 },
     press_bg: [4]f32 = .{ 0.15, 0.15, 0.15, 1.0 },
     fg: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
+    /// Colors used when the button's `disabled` flag is set: a flat,
+    /// dimmed bg + greyed label. No hover/press feedback in this state.
+    disabled_bg: [4]f32 = .{ 0.18, 0.18, 0.18, 1.0 },
+    disabled_fg: [4]f32 = .{ 0.5, 0.5, 0.5, 1.0 },
     corner_radius: f32 = 4,
 };
 
@@ -49,6 +53,11 @@ pub const TextInputStyle = struct {
     border: [4]f32 = .{ 0.35, 0.35, 0.4, 1.0 },
     focus_border: [4]f32 = .{ 0.3, 0.5, 1.0, 1.0 },
     cursor: [4]f32 = .{ 0.9, 0.9, 1.0, 1.0 },
+    /// Colors used when the input's `disabled` flag is set: flat dimmed
+    /// border + bg + greyed text. No focus border, selection, or cursor.
+    disabled_bg: [4]f32 = .{ 0.10, 0.10, 0.11, 1.0 },
+    disabled_fg: [4]f32 = .{ 0.5, 0.5, 0.5, 1.0 },
+    disabled_border: [4]f32 = .{ 0.22, 0.22, 0.25, 1.0 },
     corner_radius: f32 = 4,
     /// Text inputs expand along the main axis by default.
     flex: f32 = 1,
@@ -285,6 +294,10 @@ pub fn ButtonCmd(comptime Msg: type) type {
         label: []const u8,
         style: ButtonStyle = .{},
         font: FontSpec = DEFAULT_FONT,
+        /// When true, the button renders greyed-out and is non-interactive
+        /// (hit-test/hover skip it). Layout is unaffected — same rect either
+        /// way, so a disabled button stays where it is without shifting.
+        disabled: bool = false,
     };
 }
 
@@ -304,6 +317,10 @@ pub fn TextInputCmd(comptime Msg: type) type {
         selection_anchor: ?usize = null,
         style: TextInputStyle = .{},
         font: FontSpec = DEFAULT_FONT,
+        /// When true, the input renders greyed-out and is non-interactive
+        /// (no focus, selection, or cursor; hit-test/hover skip it). Layout
+        /// is unaffected — same rect either way.
+        disabled: bool = false,
     };
 }
 
@@ -545,6 +562,20 @@ pub fn CmdBuffer(comptime Msg: type) type {
             } }) catch unreachable;
         }
 
+        /// Emit a greyed-out, non-interactive button. Same as `button`
+        /// but sets `.disabled = true` — the rect is identical, so the
+        /// button keeps its place instead of shifting the layout when it
+        /// would otherwise be conditionally omitted.
+        pub fn buttonDisabled(self: *Self, msg: Msg, label: []const u8) void {
+            self.cmds.append(self.backing, .{ .button = .{
+                .msg = msg,
+                .label = label,
+                .style = self.theme.button,
+                .font = self.theme.typography.body,
+                .disabled = true,
+            } }) catch unreachable;
+        }
+
         pub fn textInput(
             self: *Self,
             focus_msg: Msg,
@@ -572,6 +603,25 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .cursor = cursor,
                 .style = style,
+            } }) catch unreachable;
+        }
+
+        /// Emit a greyed-out, non-interactive text input. Same as
+        /// `textInput` but sets `.disabled = true` — the rect is identical,
+        /// so the input keeps its place instead of shifting the layout.
+        pub fn textInputDisabled(
+            self: *Self,
+            focus_msg: Msg,
+            content: []const u8,
+            cursor: usize,
+        ) void {
+            self.cmds.append(self.backing, .{ .text_input = .{
+                .focus_msg = focus_msg,
+                .content = content,
+                .cursor = cursor,
+                .style = self.theme.text_input,
+                .font = self.theme.typography.body,
+                .disabled = true,
             } }) catch unreachable;
         }
 
@@ -805,6 +855,24 @@ test "CmdBuffer emits correct sequence for simple counter view" {
     try testing.expectEqual(.push_group, std.meta.activeTag(cb.cmds.items[0]));
     try testing.expectEqual(Msg.inc, cb.cmds.items[3].button.msg);
     try testing.expectEqual(Msg.reset, cb.cmds.items[6].button.msg);
+    // Plain `button` leaves the button interactive.
+    try testing.expect(!cb.cmds.items[3].button.disabled);
+}
+
+test "CmdBuffer.buttonDisabled sets disabled, plain button leaves it false" {
+    const testing = std.testing;
+
+    const Msg = union(enum) { go };
+
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.button(.go, "Add");
+    cb.buttonDisabled(.go, "Add");
+
+    try testing.expect(!cb.cmds.items[0].button.disabled);
+    try testing.expect(cb.cmds.items[1].button.disabled);
+    try testing.expectEqualStrings("Add", cb.cmds.items[1].button.label);
 }
 
 test "CmdBuffer emits text_input command" {
@@ -822,6 +890,24 @@ test "CmdBuffer emits text_input command" {
     try testing.expectEqualStrings("hello", cb.cmds.items[0].text_input.content);
     try testing.expectEqual(@as(usize, 2), cb.cmds.items[0].text_input.cursor);
     try testing.expectEqual(Msg.focus, cb.cmds.items[0].text_input.focus_msg);
+    // Plain `textInput` leaves the input interactive.
+    try testing.expect(!cb.cmds.items[0].text_input.disabled);
+}
+
+test "CmdBuffer.textInputDisabled sets disabled, plain textInput leaves it false" {
+    const testing = std.testing;
+
+    const Msg = union(enum) { focus };
+
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.textInput(.focus, "hi", 2);
+    cb.textInputDisabled(.focus, "hi", 2);
+
+    try testing.expect(!cb.cmds.items[0].text_input.disabled);
+    try testing.expect(cb.cmds.items[1].text_input.disabled);
+    try testing.expectEqualStrings("hi", cb.cmds.items[1].text_input.content);
 }
 
 test "CmdBuffer reset clears commands" {

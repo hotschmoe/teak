@@ -41,8 +41,10 @@ fn rectContains(r: Rect, px: f32, py: f32) bool {
 /// interactive-leaf hoverTest arm share one predicate.
 fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
     return switch (c) {
-        .button => |b| b.msg,
-        .text_input => |t| t.focus_msg,
+        // Disabled buttons/inputs are non-interactive: returning null here
+        // makes both hitTest and hoverTest skip them (they share leafMsg).
+        .button => |b| if (b.disabled) null else b.msg,
+        .text_input => |t| if (t.disabled) null else t.focus_msg,
         .checkbox => |cb| cb.msg,
         .radio => |r| r.msg,
         .slider => |s| s.grab_msg,
@@ -308,6 +310,39 @@ test "hitTest finds button at point" {
 
     const miss = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], 300, 250);
     try testing.expect(miss == null);
+}
+
+test "hitTest skips a disabled button" {
+    const testing = std.testing;
+    const Msg = union(enum) { clicked };
+    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
+
+    // Enabled button at the center of its rect produces a hit.
+    var enabled = CmdBuffer.init(testing.allocator);
+    defer enabled.deinit();
+    enabled.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    enabled.button(.clicked, "Add");
+    enabled.popGroup();
+    var en_rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(en_rects[0..enabled.cmds.items.len], enabled.cmds.items, 400, 300, text_mod.monoMeasurer());
+    // Button is cmd index 1 (after push_group). Hit its center.
+    const er = en_rects[1];
+    const px = er.x + er.w * 0.5;
+    const py = er.y + er.h * 0.5;
+    const en_hit = hitTest(enabled.cmds.items, en_rects[0..enabled.cmds.items.len], px, py);
+    try testing.expect(en_hit != null);
+    try testing.expectEqual(@as(?Msg, Msg.clicked), en_hit.?.msg);
+
+    // Disabled button at the same point produces no hit.
+    var disabled = CmdBuffer.init(testing.allocator);
+    defer disabled.deinit();
+    disabled.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    disabled.buttonDisabled(.clicked, "Add");
+    disabled.popGroup();
+    var di_rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(di_rects[0..disabled.cmds.items.len], disabled.cmds.items, 400, 300, text_mod.monoMeasurer());
+    const dr = di_rects[1];
+    try testing.expect(hitTest(disabled.cmds.items, di_rects[0..disabled.cmds.items.len], dr.x + dr.w * 0.5, dr.y + dr.h * 0.5) == null);
 }
 
 test "hitTest clips descendants to scroll viewport" {
