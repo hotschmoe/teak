@@ -27,6 +27,19 @@ pub const CAPACITY: usize = 256;
 /// default so counter assertions hold.
 const track_stats = builtin.mode == .Debug;
 
+/// Runtime opt-in for the periodic stats line. **Off by default** so a
+/// consumer's stdout stays quiet — the 60-frame log was reported as
+/// noisy during development. A host that wants the numbers sets this to
+/// `true` once (e.g. behind its own debug flag or env-var check at the
+/// platform layer, where reading the environment is target-appropriate).
+/// Still Debug-only: `shouldReport` also gates on `track_stats`, so
+/// release builds never log regardless of this flag.
+///
+/// A module-scope `var` is fine here: glyph_cache lives in `src/gpu/*`,
+/// where platform-mutable state is allowed (HARDLINE §2 hatch 4). The
+/// drift audit's no-module-var rule scans framework core only.
+pub var report_stats: bool = false;
+
 /// Pure cache-key composition. Same XOR compose both backends used
 /// before factoring.
 pub fn textCacheKey(
@@ -169,11 +182,14 @@ pub fn GlyphCache(comptime Backend: type) type {
             self.evictions = 0;
         }
 
-        /// True once every 60 frames in Debug, never in Release.
-        /// Backends gate periodic stats logging on this without pulling
-        /// in a wall-clock.
+        /// True once every 60 frames — but only in Debug builds AND only
+        /// when a host opted in via `report_stats`. Off by default (and
+        /// always off in Release) so the periodic stats line never spams
+        /// a consumer's stdout unasked. Backends gate periodic stats
+        /// logging on this without pulling in a wall-clock.
         pub fn shouldReport(self: *const Self) bool {
-            return track_stats and self.frame_counter != 0 and self.frame_counter % 60 == 0;
+            return track_stats and report_stats and
+                self.frame_counter != 0 and self.frame_counter % 60 == 0;
         }
     };
 }
@@ -330,4 +346,25 @@ test "clear calls destroyEntry on every entry and resets len" {
     cache.clear();
     try std.testing.expectEqual(@as(usize, 0), cache.len);
     try std.testing.expectEqual(@as(u32, 5), TestBackend.destroy_count);
+}
+
+test "shouldReport is off by default, on only when report_stats is set" {
+    // Default: reporting is opt-in, so even on a 60-frame boundary in a
+    // Debug build the periodic stats line must not fire.
+    const saved = report_stats;
+    defer report_stats = saved;
+
+    report_stats = false;
+    var cache = GlyphCache(TestBackend){};
+    var frame: u32 = 0;
+    while (frame < 120) : (frame += 1) cache.tick();
+    try std.testing.expectEqual(@as(u64, 120), cache.frame_counter);
+    try std.testing.expect(!cache.shouldReport()); // off by default
+
+    // Flip the opt-in: now the 60-frame boundary reports (Debug builds,
+    // where track_stats is true — which is the case under `zig build test`).
+    report_stats = true;
+    if (track_stats) {
+        try std.testing.expect(cache.shouldReport()); // frame 120 % 60 == 0
+    }
 }
