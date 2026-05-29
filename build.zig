@@ -96,6 +96,25 @@ pub fn build(b: *std.Build) void {
     const stbtt_tests = b.addTest(.{ .root_module = stbtt_mod });
     test_step.dependOn(&b.addRunArtifact(stbtt_tests).step);
 
+    // X11 host (src/platform/x11.zig) — its keysym→SpecialKey mapping is
+    // the one piece of host logic worth unit-testing headlessly (no
+    // libX11 / display needed; the test calls only pure mapping fns).
+    // Imports the stb text module under `teak-text`, same as the build's
+    // linkLinux wiring. Built unconditionally on the host target; harmless
+    // on non-Linux since it never opens a display in tests.
+    const x11_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/x11.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = mod },
+            .{ .name = "teak-text", .module = stbtt_mod },
+        },
+    });
+    const x11_tests = b.addTest(.{ .root_module = x11_mod });
+    test_step.dependOn(&b.addRunArtifact(x11_tests).step);
+
     // wasm32-freestanding compile canary. Run `zig build test-wasm` to
     // assert the framework core stays posix-dep-free. The artifact isn't
     // executed — successful compile is the signal.
@@ -306,6 +325,25 @@ fn linkLinux(
         .optimize = optimize,
     });
 
+    // Shared stb_truetype text module — one font + scale math feeds both
+    // the Host's measurer and the GPU's rasterizer so layout and rendering
+    // can't drift. Owns the vendored stb impl TU (compiled once) and links
+    // libc (stb's malloc/free + the X11 host's std.DynLib dlopen path).
+    const text_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("src/gpu/text_stbtt.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+        },
+    });
+    text_mod.addIncludePath(teak_dep.path("src/gpu/vendor"));
+    text_mod.addCSourceFile(.{
+        .file = teak_dep.path("src/gpu/vendor/stb_truetype_impl.c"),
+        .flags = &.{"-std=c99"},
+    });
+
     // X11 host. libX11 is loaded at runtime via std.DynLib (no -lX11, no
     // X11 dev headers needed) — but std.DynLib must take its dlopen path,
     // which requires libc linked (without it the manual ELF loader can't
@@ -317,11 +355,10 @@ fn linkLinux(
         .link_libc = true,
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-text", .module = text_mod },
         },
     });
 
-    // stb_truetype rasterizes glyphs; its single-TU C impl + the wgpu
-    // prebuilt both need libc.
     const gpu_mod = b.createModule(.{
         .root_source_file = teak_dep.path("src/gpu/native_linux.zig"),
         .target = target,
@@ -330,17 +367,12 @@ fn linkLinux(
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
             .{ .name = "teak-shaders", .module = shaders_mod },
+            .{ .name = "teak-text", .module = text_mod },
         },
     });
     gpu_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
     gpu_mod.addLibraryPath(wgpu_dep.path("lib"));
     gpu_mod.linkSystemLibrary("wgpu_native", .{}); // libwgpu_native.so
-    // Vendored stb_truetype implementation translation unit.
-    gpu_mod.addIncludePath(teak_dep.path("src/gpu/vendor"));
-    gpu_mod.addCSourceFile(.{
-        .file = teak_dep.path("src/gpu/vendor/stb_truetype_impl.c"),
-        .flags = &.{"-std=c99"},
-    });
 
     const root = exe.root_module;
     // The exe itself must link libc so `builtin.link_libc` is true (picks
