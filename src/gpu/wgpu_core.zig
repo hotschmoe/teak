@@ -318,7 +318,13 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const pipeline_layout = c.wgpuDeviceCreatePipelineLayout(device, &pl_desc) orelse return error.PipelineLayoutFailed;
             defer c.wgpuPipelineLayoutRelease(pipeline_layout);
 
-            // Render pipeline.
+            // Render pipeline. Surface format is hardcoded to BGRA8Unorm —
+            // universal on D3D12 (Windows) and on essentially every desktop
+            // Vulkan swapchain (Linux/X11). If a Vulkan driver ever rejects
+            // it (blank/garbled window), query the surface's supported set
+            // with wgpuSurfaceGetCapabilities and pick from caps.formats
+            // here (the glyph/image textures stay BGRA8Unorm regardless —
+            // they're sampled independently of the swapchain format).
             const surf_format = c.WGPUTextureFormat_BGRA8Unorm;
 
             const vert_attrs = [_]c.WGPUVertexAttribute{

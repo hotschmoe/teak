@@ -229,6 +229,7 @@ pub const Host = struct {
     x: Xlib,
     display: *Display,
     window: Window,
+    wm_protocols: Atom,
     wm_delete: Atom,
     font: text.Font,
 
@@ -270,6 +271,10 @@ pub const Host = struct {
             ButtonReleaseMask | PointerMotionMask | StructureNotifyMask | ExposureMask);
 
         // Route the window-manager close button through ClientMessage.
+        // We keep both atoms so the ClientMessage handler can confirm the
+        // message is a WM_PROTOCOLS/WM_DELETE_WINDOW pair (not some other
+        // client message whose data happens to collide with the atom id).
+        const wm_protocols = x.XInternAtom(display, "WM_PROTOCOLS", 0);
         var wm_delete = x.XInternAtom(display, "WM_DELETE_WINDOW", 0);
         _ = x.XSetWMProtocols(display, window, &wm_delete, 1);
 
@@ -283,6 +288,7 @@ pub const Host = struct {
             .x = x,
             .display = display,
             .window = window,
+            .wm_protocols = wm_protocols,
             .wm_delete = wm_delete,
             .font = font,
             .width = width,
@@ -359,7 +365,9 @@ pub const Host = struct {
                     }
                 },
                 ClientMessage => {
-                    if (ev.xclient.data.l[0] == @as(c_long, @bitCast(self.wm_delete))) {
+                    if (ev.xclient.message_type == self.wm_protocols and
+                        ev.xclient.data.l[0] == @as(c_long, @bitCast(self.wm_delete)))
+                    {
                         self.running = false;
                     }
                 },
