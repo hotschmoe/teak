@@ -66,8 +66,6 @@ pub const NumericConfig = struct {
 
 pub fn NumericField(comptime config: NumericConfig) type {
     return struct {
-        const Self = @This();
-
         /// The wrapped text-field component, instantiated at the configured
         /// capacity. All character/cursor/selection editing lives here.
         pub const TF = teak_text_field.TextField(config.capacity);

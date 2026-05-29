@@ -390,7 +390,6 @@ const TestApp = struct {
 const StubHost = struct {
     frame: u32 = 0,
     closed: bool = false,
-    clicks_seen: u32 = 0,
 
     pub fn deinit(_: *StubHost) void {}
     pub fn shouldClose(self: *const StubHost) bool {
