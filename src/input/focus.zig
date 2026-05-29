@@ -10,7 +10,9 @@ const std = @import("std");
 
 fn isFocusable(c: anytype) bool {
     return switch (c) {
-        .text_input => true,
+        // A disabled input is skipped by Tab traversal, mirroring how
+        // hit-test refuses to focus it on click.
+        .text_input => |t| !t.disabled,
         else => false,
     };
 }
@@ -65,6 +67,16 @@ fn activationMsg(c: anytype) ?@TypeOf(c).MsgT {
         .slider => |s| s.grab_msg,
         else => null,
     };
+}
+
+/// The activation/focus Msg of the focusable leaf at `index`, or null if
+/// that cmd is not an interactive leaf. The inverse of `indexOfFocusMsg`:
+/// Tab traversal lands on an index via `nextFocusable`/`prevFocusable`,
+/// then asks this for the Msg to dispatch so the app moves its focus
+/// field (same Msg a click on that widget would fire).
+pub fn focusMsgAt(cmds: anytype, index: usize) ?std.meta.Elem(@TypeOf(cmds)).MsgT {
+    if (index >= cmds.len) return null;
+    return activationMsg(cmds[index]);
 }
 
 /// Find the cmd index whose interactive leaf carries `msg`, comparing by
@@ -198,4 +210,40 @@ test "indexOfFocusMsg returns null for a Msg no leaf carries" {
 
     cb.textInput(.focus, "", 0);
     try testing.expectEqual(@as(?usize, null), indexOfFocusMsg(cb.cmds.items, Msg.other));
+}
+
+test "focusMsgAt returns the leaf's focus Msg and round-trips with indexOfFocusMsg" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus_a, focus_b };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.textInput(.focus_a, "", 0); // idx 0
+    cb.text("between"); // idx 1 — not focusable
+    cb.textInput(.focus_b, "", 0); // idx 2
+
+    try testing.expectEqual(@as(?Msg, Msg.focus_a), focusMsgAt(cb.cmds.items, 0));
+    try testing.expectEqual(@as(?Msg, Msg.focus_b), focusMsgAt(cb.cmds.items, 2));
+    try testing.expectEqual(@as(?Msg, null), focusMsgAt(cb.cmds.items, 1)); // plain text
+    try testing.expectEqual(@as(?Msg, null), focusMsgAt(cb.cmds.items, 99)); // out of range
+
+    // Round-trip: index -> msg -> index.
+    const idx = indexOfFocusMsg(cb.cmds.items, Msg.focus_b).?;
+    try testing.expectEqual(@as(?Msg, Msg.focus_b), focusMsgAt(cb.cmds.items, idx));
+}
+
+test "Tab traversal skips a disabled input" {
+    const testing = std.testing;
+    const Msg = union(enum) { a, b, c };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.textInput(.a, "", 0); // idx 0 — focusable
+    cb.textInputDisabled(.b, "", 0); // idx 1 — disabled, skipped
+    cb.textInput(.c, "", 0); // idx 2 — focusable
+
+    // From the first input, next focusable jumps over the disabled one.
+    try testing.expectEqual(@as(?usize, 2), nextFocusable(cb.cmds.items, 0));
+    // And back-wraps the same way.
+    try testing.expectEqual(@as(?usize, 0), prevFocusable(cb.cmds.items, 2));
 }

@@ -31,6 +31,11 @@ pub const SpecialKey = enum {
     shift_down,
     shift_home,
     shift_end,
+    // Shift+Tab — backward focus traversal, the companion to plain `tab`.
+    // `teak.run` consumes it for Tab/Shift+Tab navigation. A host that
+    // hasn't been taught to emit it yet simply never delivers it; forward
+    // Tab still works.
+    shift_tab,
 
     // Ctrl chords for the text-input prose path. Apps that don't care
     // can ignore them — the Host still delivers them when the user
