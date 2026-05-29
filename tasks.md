@@ -1,7 +1,48 @@
 # Teak: Next-Phase Task List
 
-Working document. Current phase: **text rendering**. See §"Phase
+Working document. Current phase: **consumer DX**. See §"Phase
 history" at the bottom for what shipped before this phase.
+
+---
+
+## Current phase — Consumer DX (branch `teak-consumer-dx`)
+
+Driven by a consumer's honest audit after building the start of an
+engineering-calc app (Zenercalc) on Teak. Shipped:
+
+- **`teak.run`** (`src/run.zig`, [docs/features/run.md](docs/features/run.md))
+  — the canonical host-loop wrapper. Collapses the ~200-line hand-copied
+  `ui_main.zig` into a ~10-line `main`. Host/Gpu via `anytype`; optional
+  App behavior via `@hasDecl` hooks (keyCharMsg, keySpecialMsg, wheelMsg,
+  clipboard, focusedMsg, submitMsg, themeFor, windowTitle). Built-in
+  Tab/Shift+Tab + Enter-to-submit. Verified headless with stub backends.
+- **Stable focus** — `focus.indexOfFocusMsg` / `focus.focusMsgAt` key
+  focus off a Msg *value* instead of "the Nth text_input", surviving
+  conditional/reordered widgets.
+- **Disabled state** on button + text_input (layout-stable grey,
+  non-interactive, a11y-aware) + `buttonDisabled`/`textInputDisabled`.
+- **NumericField(config)** — TextField + float parse/validate/value.
+- **Dropdown(cap)** — closed button + open modal-overlay list.
+- **`Host.setTitle`** — dynamic window title (validateHost §2 hatch 4d).
+- **Glyph-cache stats opt-in** — `glyph_cache.report_stats` (default off)
+  silences the 60-frame stdout log.
+- **counter_greeter rich_zig** pinned to a tagged release (self-contained
+  example; no sibling-path dep).
+- **Docs** — [docs/consuming-teak.md](docs/consuming-teak.md) onboarding
+  guide; feature docs for run / widgets; focus/HARDLINE/README/CLAUDE/
+  AGENTS synced.
+
+Deferred (tracked): migrating the three in-repo examples' `ui_main.zig`
+to `teak.run` (their UI build targets Windows/wasm — verify on a Windows
+host); a line-chart / canvas widget (consumer issue #3); deeper
+ComponentList per-item focus (consumer issue #1); HiDPI/font-scaling
+audit; scrolling the Dropdown open list.
+
+---
+
+## Prior phase — Text rendering
+
+### Text rendering — status
 
 **Status (2026-04-19)**: **WS1 + WS2 + WS3 + WS4 + WS5 complete**.
 

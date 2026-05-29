@@ -117,9 +117,13 @@ Add a variant to the `Cmd` union + a case in each pass (layout, hit-test, render
 ```
 src/                           -- the library, consumable as a Zig module
   teak.zig                     -- public library root / re-exports
+  run.zig                      -- teak.run: canonical host-loop wrapper
+                               --   (Host/Gpu via anytype; optional App hooks via @hasDecl).
+                               --   Imports only the pure passes; outside framework core.
   core/
     cmd.zig                    -- Cmd union, CmdBuffer, arena management
                                --   (incl. overlay, image, virtual_list, rich_text variants;
+                               --    button/textInput disabled state + *Disabled emitters;
                                --    pushFormRow/popFormRow; mixedText; theme-aware emitters)
     component.zig              -- Components(), validateComponent, buildMsgs, MsgsStructFor
     component_list.zig         -- ComponentList(Child, cap) — dynamic homogeneous list
@@ -127,6 +131,8 @@ src/                           -- the library, consumable as a Zig module
     text_field.zig             -- TextField(cap) canonical text-input component +
                                --   textFieldChar/textFieldSpecial/textFieldReplaceSelection
                                --   key dispatch helpers
+    numeric_field.zig          -- NumericField(config) — TextField + float parse/validate/value
+    dropdown.zig               -- Dropdown(cap) — closed button + open overlay list
     theme.zig                  -- Theme, Palette, Typography, dark/light presets
     debug_overlay.zig          -- appendDebugOverlay — cmd+rect dump as overlay
     transient.zig              -- hover/press/focus state (TransientState)
@@ -136,9 +142,10 @@ src/                           -- the library, consumable as a Zig module
     engine.zig                 -- measure + position passes
   input/
     hit_test.zig               -- mouse -> CmdIndex -> Msg (two-layer: base + overlay);
-                               --   sliderDrag helper
-    focus.zig                  -- next/prev focusable traversal
-    keys.zig                   -- SpecialKey (incl. shift+arrows, ctrl chords)
+                               --   sliderDrag helper; disabled leaves are non-interactive
+    focus.zig                  -- next/prev focusable traversal; indexOfFocusMsg / focusMsgAt
+                               --   (Msg-keyed stable focus)
+    keys.zig                   -- SpecialKey (incl. shift+arrows, tab/shift_tab, ctrl chords)
     a11y.zig                   -- []Cmd + []Rect -> []A11yNode
   render/
     vertex.zig                 -- Vertex struct + emitQuad
@@ -168,6 +175,8 @@ The library has no external dependencies; `wgpu-native` is owned by whichever ex
 **Functional gaps overview**: [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md) covers the 8 features added in the `functional_gaps_yolo` branch — overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs, virtual list, a11y tree, rich text via rich_zig.
 
 **Ergonomic helpers**: [`docs/features/ergonomic-helpers.md`](docs/features/ergonomic-helpers.md) covers the 7 ergonomic helpers also added on `functional_gaps_yolo` — Theme system, mixed-font text builder, sliderDrag, TextField + key dispatch helpers, pushFormRow / popFormRow, ComponentList, and appendDebugOverlay.
+
+**Consumer DX**: [`docs/consuming-teak.md`](docs/consuming-teak.md) is the consumer onboarding guide (build.zig.zon → working app via `teak.run`). [`docs/features/run.md`](docs/features/run.md) documents the `teak.run` loop + optional App hooks; [`docs/features/widgets.md`](docs/features/widgets.md) covers disabled state, NumericField, Dropdown, and `Host.setTitle`.
 
 ## Implementation Status
 

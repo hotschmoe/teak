@@ -109,6 +109,17 @@ The rAF / `frame(dt)` lifecycle lives at this layer. See
 `docs/journal/2026-04-16-zunk_teak_convo.md` for the audit that
 formalized this hatch.
 
+The canonical application loop (`teak.run`, `src/run.zig`) is the
+host-loop *orchestrator* and sits just inside this boundary, not on it:
+it imports only the pure passes (`core`/`layout`/`input`/`render`) and
+takes the `Host` + `Gpu` as `anytype`, duck-typing the `validateHost` /
+`validateGpu` surfaces — it imports neither `platform/*` nor `gpu/*`. It
+lives at `src/run.zig` (outside the framework-core dirs the §5 audit
+scans) and is **not** a new escape hatch: it adds no retained mutable
+state and routes every transition through the app's `update`. The
+consumer's entry point picks the concrete backends and hands them in.
+See `docs/features/run.md`.
+
 ### Escape hatch 5: Overlay z-layer in flat Cmd buffer
 
 `push_overlay` / `pop_overlay` Cmd variants delimit a region of the
