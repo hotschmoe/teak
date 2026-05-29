@@ -1,11 +1,12 @@
-//! Native entry for the todo example. Win32 + wgpu-native via teak's
-//! Host / Gpu backends. The loop shape is the same as counter_greeter:
-//! double-buffered CmdBuffer + rects, hit-test against the previous
-//! frame, diff-skip vertex rebuild when nothing changed.
+//! Native entry for the todo example. wgpu-native via teak's Host / Gpu
+//! backends (Win32 / X11, picked by the build). The loop shape is the
+//! same as counter_greeter: double-buffered CmdBuffer + rects, hit-test
+//! against the previous frame, diff-skip vertex rebuild when nothing
+//! changed.
 
 const std = @import("std");
 const teak = @import("teak");
-const platform = @import("teak-platform-win32");
+const platform = @import("teak-platform-native");
 const gpu_native = @import("teak-gpu-native");
 const App = @import("app.zig");
 

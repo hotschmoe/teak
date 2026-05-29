@@ -4,17 +4,29 @@
     .fingerprint = 0x2d83032a9a6b7feb, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        // wgpu-native prebuilts — per-target, fetched only when a consumer
-        // calls `teak.linkWin32Wgpu` (lazy). Pure-library consumers never
-        // pay for these.
-        .@"wgpu-native-aarch64" = .{
+        // wgpu-native prebuilts — per-OS × per-arch, fetched lazily only
+        // when a consumer calls `teak.linkNativeWgpu` for that target.
+        // Pure-library consumers never pay for these. All four are
+        // gfx-rs/wgpu-native v25.0.2.2; the Windows zips ship
+        // `wgpu_native.dll`, the Linux zips ship `libwgpu_native.{so,a}`.
+        .@"wgpu-native-windows-aarch64" = .{
             .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-windows-aarch64-msvc-release.zip",
             .hash = "N-V-__8AABFHyAO2T8ZpcMlS-0UlZgx3vsCRtVx8IspCf6Ov",
             .lazy = true,
         },
-        .@"wgpu-native-x86_64" = .{
+        .@"wgpu-native-windows-x86_64" = .{
             .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-windows-x86_64-msvc-release.zip",
             .hash = "N-V-__8AAO0eBwSB7GxV-NB9TuztsaPlUh8rDiZ4-Kr-K_s8",
+            .lazy = true,
+        },
+        .@"wgpu-native-linux-aarch64" = .{
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-linux-aarch64-release.zip",
+            .hash = "N-V-__8AAE6bvQM9i14IEHy7OU1T9TbVb3h40nTIvswf_DRO",
+            .lazy = true,
+        },
+        .@"wgpu-native-linux-x86_64" = .{
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-linux-x86_64-release.zip",
+            .hash = "N-V-__8AAJLttgMT05WocIA-7lzJ0aXNv39ddKg-uX_jpWd6",
             .lazy = true,
         },
         // Path dep during zunk co-development. Switch to a

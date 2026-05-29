@@ -151,16 +151,29 @@ fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {
 // who want to skip the convenience path can still import the source
 // files directly and assemble modules by hand.
 
-pub const Win32WgpuOptions = struct {};
+pub const NativeWgpuOptions = struct {};
 
-/// Wire the Win32 + wgpu-native backend onto `exe`. Adds `teak`,
-/// `teak-platform-win32`, and `teak-gpu-native` imports; links the
-/// wgpu-native prebuilt for the resolved target arch; installs
-/// `wgpu_native.dll` alongside the binary.
-pub fn linkWin32Wgpu(
+/// True if teak ships a native (windowed) backend for `os`. Examples gate
+/// their `ui` step on this so a `zig build` configures on *any* target —
+/// the step is simply absent where there is no native backend. Today:
+/// Windows (Win32 + GDI) and Linux (X11 + stb_truetype).
+pub fn hasNativeBackend(os: std.Target.Os.Tag) bool {
+    return os == .windows or os == .linux;
+}
+
+/// Wire teak's native backend onto `exe`, dispatching on the resolved
+/// target OS. Adds `teak`, `teak-platform-native`, `teak-gpu-native`
+/// imports and the matching wgpu-native prebuilt:
+///   * Windows → Win32 host + GDI text + `wgpu_native.dll`.
+///   * Linux   → X11 host (libX11 dlopened, not linked) + stb_truetype
+///               text + `libwgpu_native.so` (installed beside the exe,
+///               rpath `$ORIGIN`); links libc.
+/// The platform/gpu source picked per OS lives behind the stable import
+/// names above, so a single `ui_main.zig` compiles on both.
+pub fn linkNativeWgpu(
     b: *std.Build,
     exe: *std.Build.Step.Compile,
-    _: Win32WgpuOptions,
+    _: NativeWgpuOptions,
 ) void {
     const root = exe.root_module;
     const target = root.resolved_target.?;
@@ -172,13 +185,41 @@ pub fn linkWin32Wgpu(
     });
     const teak_mod = teak_dep.module("teak");
 
-    if (target.result.os.tag != .windows) {
-        @panic("teak.linkWin32Wgpu: target must be Windows");
+    switch (target.result.os.tag) {
+        .windows => linkWindows(b, exe, teak_dep, teak_mod, target, optimize),
+        .linux => linkLinux(b, exe, teak_dep, teak_mod, target, optimize),
+        else => @panic("teak.linkNativeWgpu: no native backend for this OS (Windows or Linux)"),
     }
+}
+
+pub const Win32WgpuOptions = struct {};
+
+/// Deprecated alias for `linkNativeWgpu`, kept for consumers still calling
+/// the Windows-specific name. Asserts a Windows target — cross-OS
+/// consumers should switch to `linkNativeWgpu`.
+pub fn linkWin32Wgpu(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    _: Win32WgpuOptions,
+) void {
+    if (exe.root_module.resolved_target.?.result.os.tag != .windows) {
+        @panic("teak.linkWin32Wgpu: target must be Windows (use teak.linkNativeWgpu for cross-OS)");
+    }
+    linkNativeWgpu(b, exe, .{});
+}
+
+fn linkWindows(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    teak_dep: *std.Build.Dependency,
+    teak_mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) void {
     const wgpu_dep_name: []const u8 = switch (target.result.cpu.arch) {
-        .aarch64 => "wgpu-native-aarch64",
-        .x86_64 => "wgpu-native-x86_64",
-        else => @panic("teak.linkWin32Wgpu: unsupported Windows arch (aarch64 or x86_64 only)"),
+        .aarch64 => "wgpu-native-windows-aarch64",
+        .x86_64 => "wgpu-native-windows-x86_64",
+        else => @panic("teak.linkNativeWgpu: unsupported Windows arch (aarch64 or x86_64 only)"),
     };
     // Look up the lazy dep on teak's builder (where it's declared), not
     // the consumer's. Otherwise Zig panics that the consumer never
@@ -213,8 +254,9 @@ pub fn linkWin32Wgpu(
     gpu_mod.addLibraryPath(wgpu_dep.path("lib"));
     gpu_mod.linkSystemLibrary("wgpu_native.dll", .{});
 
+    const root = exe.root_module;
     root.addImport("teak", teak_mod);
-    root.addImport("teak-platform-win32", platform_mod);
+    root.addImport("teak-platform-native", platform_mod);
     root.addImport("teak-gpu-native", gpu_mod);
 
     // The exe needs wgpu_native.dll next to it at runtime. Tying the
@@ -222,6 +264,78 @@ pub fn linkWin32Wgpu(
     // places the DLL in zig-out/bin.
     const install_dll = b.addInstallBinFile(wgpu_dep.path("lib/wgpu_native.dll"), "wgpu_native.dll");
     exe.step.dependOn(&install_dll.step);
+}
+
+fn linkLinux(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    teak_dep: *std.Build.Dependency,
+    teak_mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) void {
+    const wgpu_dep_name: []const u8 = switch (target.result.cpu.arch) {
+        .aarch64 => "wgpu-native-linux-aarch64",
+        .x86_64 => "wgpu-native-linux-x86_64",
+        else => @panic("teak.linkNativeWgpu: unsupported Linux arch (aarch64 or x86_64 only)"),
+    };
+    const wgpu_dep = teak_dep.builder.lazyDependency(wgpu_dep_name, .{}) orelse return;
+
+    const shaders_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("shaders/shaders.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // X11 host. libX11 is loaded at runtime via std.DynLib (no -lX11, no
+    // X11 dev headers needed) — but std.DynLib must take its dlopen path,
+    // which requires libc linked (without it the manual ELF loader can't
+    // resolve libX11.so.6 and crashes on first call).
+    const platform_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("src/platform/x11.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+        },
+    });
+
+    // stb_truetype rasterizes glyphs; its single-TU C impl + the wgpu
+    // prebuilt both need libc.
+    const gpu_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("src/gpu/native_linux.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-shaders", .module = shaders_mod },
+        },
+    });
+    gpu_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
+    gpu_mod.addLibraryPath(wgpu_dep.path("lib"));
+    gpu_mod.linkSystemLibrary("wgpu_native", .{}); // libwgpu_native.so
+    // Vendored stb_truetype implementation translation unit.
+    gpu_mod.addIncludePath(teak_dep.path("src/gpu/vendor"));
+    gpu_mod.addCSourceFile(.{
+        .file = teak_dep.path("src/gpu/vendor/stb_truetype_impl.c"),
+        .flags = &.{"-std=c99"},
+    });
+
+    const root = exe.root_module;
+    // The exe itself must link libc so `builtin.link_libc` is true (picks
+    // std.DynLib's dlopen backend for the X11 host).
+    root.link_libc = true;
+    root.addImport("teak", teak_mod);
+    root.addImport("teak-platform-native", platform_mod);
+    root.addImport("teak-gpu-native", gpu_mod);
+    // Find libwgpu_native.so next to the exe at runtime (Linux analog of
+    // the Windows DLL-copy).
+    root.addRPathSpecial("$ORIGIN");
+
+    const install_so = b.addInstallBinFile(wgpu_dep.path("lib/libwgpu_native.so"), "libwgpu_native.so");
+    exe.step.dependOn(&install_so.step);
 }
 
 pub const WebWgpuOptions = struct {

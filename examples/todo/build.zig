@@ -42,25 +42,30 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run todo tests");
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
-    // --- Native UI (wgpu + Win32) ---
+    // --- Native UI (wgpu native: Win32 / X11) ---
+    //
+    // Gated on `hasNativeBackend` so non-native targets still configure
+    // `run`/`test`/`web`; `linkNativeWgpu` picks the backend per OS.
 
-    const ui_exe = b.addExecutable(.{
-        .name = "todo-ui",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ui_main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    teak.linkWin32Wgpu(b, ui_exe, .{});
+    if (teak.hasNativeBackend(target.result.os.tag)) {
+        const ui_exe = b.addExecutable(.{
+            .name = "todo-ui",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/ui_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        teak.linkNativeWgpu(b, ui_exe, .{});
 
-    const install_ui = b.addInstallArtifact(ui_exe, .{});
-    const ui_run = b.addRunArtifact(ui_exe);
-    ui_run.step.dependOn(&install_ui.step);
-    if (b.args) |args| ui_run.addArgs(args);
+        const install_ui = b.addInstallArtifact(ui_exe, .{});
+        const ui_run = b.addRunArtifact(ui_exe);
+        ui_run.step.dependOn(&install_ui.step);
+        if (b.args) |args| ui_run.addArgs(args);
 
-    const ui_step = b.step("ui", "Run Teak todo UI (wgpu + Win32)");
-    ui_step.dependOn(&ui_run.step);
+        const ui_step = b.step("ui", "Run Teak todo UI (wgpu native: Win32 / X11)");
+        ui_step.dependOn(&ui_run.step);
+    }
 
     // --- Web (wasm + zunk) ---
 

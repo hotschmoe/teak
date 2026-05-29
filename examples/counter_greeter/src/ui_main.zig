@@ -1,6 +1,6 @@
 const std = @import("std");
 const teak = @import("teak");
-const platform = @import("teak-platform-win32");
+const platform = @import("teak-platform-native");
 const gpu_native = @import("teak-gpu-native");
 const App = @import("app.zig");
 

@@ -52,27 +52,32 @@ pub fn build(b: *std.Build) void {
     // --- wgpu UI executable ---
     //
     // One helper call wires teak + platform + gpu modules, links
-    // wgpu-native, and installs wgpu_native.dll alongside the binary.
+    // wgpu-native, and installs the GPU runtime lib alongside the binary.
+    // `linkNativeWgpu` dispatches on target OS (Win32 / X11), so the `ui`
+    // step exists only where teak ships a native backend — keeping
+    // `zig build run/test/web` configurable on every target.
 
-    const ui_exe = b.addExecutable(.{
-        .name = "counter_greeter-ui",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ui_main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    teak.linkWin32Wgpu(b, ui_exe, .{});
-    ui_exe.root_module.addImport("rich_zig", rich_zig_mod);
+    if (teak.hasNativeBackend(target.result.os.tag)) {
+        const ui_exe = b.addExecutable(.{
+            .name = "counter_greeter-ui",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/ui_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        teak.linkNativeWgpu(b, ui_exe, .{});
+        ui_exe.root_module.addImport("rich_zig", rich_zig_mod);
 
-    const install_ui = b.addInstallArtifact(ui_exe, .{});
+        const install_ui = b.addInstallArtifact(ui_exe, .{});
 
-    const ui_run = b.addRunArtifact(ui_exe);
-    ui_run.step.dependOn(&install_ui.step);
-    if (b.args) |args| ui_run.addArgs(args);
+        const ui_run = b.addRunArtifact(ui_exe);
+        ui_run.step.dependOn(&install_ui.step);
+        if (b.args) |args| ui_run.addArgs(args);
 
-    const ui_step = b.step("ui", "Run Teak UI demo (wgpu + Win32)");
-    ui_step.dependOn(&ui_run.step);
+        const ui_step = b.step("ui", "Run Teak UI demo (wgpu native: Win32 / X11)");
+        ui_step.dependOn(&ui_run.step);
+    }
 
     // --- web executable (wasm + zunk) ---
     //
