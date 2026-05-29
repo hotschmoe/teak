@@ -108,6 +108,7 @@ extern "user32" fn GetDC(?HANDLE) callconv(WINAPI) ?HDC;
 extern "user32" fn ReleaseDC(?HANDLE, HDC) callconv(WINAPI) c_int;
 extern "user32" fn GetKeyState(c_int) callconv(WINAPI) i16;
 extern "user32" fn DestroyWindow(HANDLE) callconv(WINAPI) BOOL;
+extern "user32" fn SetWindowTextW(HANDLE, LPCWSTR) callconv(WINAPI) BOOL;
 extern "kernel32" fn GetModuleHandleW(?LPCWSTR) callconv(WINAPI) ?HANDLE;
 
 // Clipboard externs.

@@ -154,6 +154,11 @@ pub const InputState = struct {
 ///   `.cancelled` for the given request id. On a `.ok` / `.cancelled`
 ///   return the host MAY recycle the slot — apps must consume the path
 ///   immediately and not poll the same id again.
+/// - `setTitle(text)` updates the main window's title bar (UTF-8 in).
+///   Lets an app reflect dynamic state — e.g. a "* unsaved" marker or
+///   the current document name. Native hosts call the OS window-title
+///   API; the web host sets `document.title`. No-op is acceptable for
+///   headless hosts.
 pub fn validateHost(comptime T: type) void {
     const required = [_][]const u8{
         "deinit",
@@ -173,6 +178,10 @@ pub fn validateHost(comptime T: type) void {
         "pollSecondaryInputs",
         "closeSecondaryWindow",
         "secondaryWindowHandle",
+        // Update the window title bar from a UTF-8 string (e.g. an
+        // "* unsaved" marker or the open document's name). See the
+        // surface-extension note above.
+        "setTitle",
         // Monotonic millisecond timestamp on the host's clock. Used by
         // subscriptions (`Sub.at(deadline_ms, msg)`) and by anything
         // else that needs a host-side wall-clock without violating
@@ -232,6 +241,7 @@ test "validateHost accepts a minimal shape" {
         pub fn secondaryWindowHandle(_: *const @This(), _: u32) ?void {
             return null;
         }
+        pub fn setTitle(_: *@This(), _: []const u8) void {}
         pub fn nowMs(_: *const @This()) u64 {
             return 0;
         }

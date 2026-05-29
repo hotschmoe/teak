@@ -577,6 +577,12 @@ pub const Host = struct {
         return null;
     }
 
+    /// Update the browser tab title via zunk (sets `document.title`).
+    /// Same call `init` uses for the initial title.
+    pub fn setTitle(_: *Host, title: []const u8) void {
+        zapp.setTitle(title);
+    }
+
     /// Browser monotonic time. Goes through zunk which calls
     /// performance.now() under the hood; if that's not yet wired,
     /// falls back to 0 (subs degrade gracefully — `every` never fires).
