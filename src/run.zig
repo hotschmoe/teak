@@ -440,6 +440,22 @@ const StubHost = struct {
     pub fn openSecondaryWindow(_: *StubHost, _: []const u8, _: u32, _: u32) ?u32 {
         return null;
     }
+    pub fn pollSecondaryInputs(_: *StubHost, _: u32) ?InputState {
+        return null;
+    }
+    pub fn closeSecondaryWindow(_: *StubHost, _: u32) void {}
+    pub fn secondaryWindowHandle(_: *const StubHost, _: u32) ?void {
+        return null;
+    }
+    pub fn requestFileDialog(_: *StubHost, _: host_iface.FileDialogFilter) u32 {
+        return 0;
+    }
+    pub fn requestSaveFileDialog(_: *StubHost, _: host_iface.FileDialogFilter) u32 {
+        return 0;
+    }
+    pub fn pollFileDialogResult(_: *StubHost, _: u32) host_iface.FileDialogPoll {
+        return .{ .pending = {} };
+    }
     pub fn setTitle(_: *StubHost, _: []const u8) void {}
     pub fn nowMs(_: *const StubHost) u64 {
         return 0;

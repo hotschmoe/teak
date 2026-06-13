@@ -31,6 +31,7 @@ pub const ImeState = teak.ImeState;
 pub const A11yNode = teak.A11yNode;
 pub const FileDialogResult = teak.FileDialogResult;
 pub const FileDialogFilter = teak.FileDialogFilter;
+pub const FileDialogPoll = teak.FileDialogPoll;
 
 // ── Xlib types (hand-declared; 64-bit ABI) ─────────────────────────
 //
@@ -502,6 +503,33 @@ pub const Host = struct {
 
     pub fn openSecondaryWindow(_: *Host, _: []const u8, _: u32, _: u32) ?u32 {
         return null;
+    }
+
+    /// Secondary windows are not yet wired on X11 — the primary surface
+    /// is all this host exposes. The secondary id space stays empty.
+    pub fn pollSecondaryInputs(_: *Host, _: u32) ?InputState {
+        return null;
+    }
+
+    pub fn closeSecondaryWindow(_: *Host, _: u32) void {}
+
+    pub fn secondaryWindowHandle(_: *const Host, _: u32) ?NativeHandle {
+        return null;
+    }
+
+    /// Async file-dialog surface. Like the blocking `openFileDialog`
+    /// above, X11 has no native picker without a portal/toolkit dep, so
+    /// submission fails (id 0) and apps never enter the poll loop.
+    pub fn requestFileDialog(_: *Host, _: FileDialogFilter) u32 {
+        return 0;
+    }
+
+    pub fn requestSaveFileDialog(_: *Host, _: FileDialogFilter) u32 {
+        return 0;
+    }
+
+    pub fn pollFileDialogResult(_: *Host, _: u32) FileDialogPoll {
+        return .{ .pending = {} };
     }
 
     pub fn nowMs(_: *const Host) u64 {
