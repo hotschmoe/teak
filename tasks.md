@@ -1,11 +1,52 @@
 # Teak: Next-Phase Task List
 
-Working document. Current phase: **consumer DX**. See §"Phase
-history" at the bottom for what shipped before this phase.
+Working document. All phases through **Linux native support** have
+shipped; open items are under §"Next up". See §"Phase history" at the
+bottom for what shipped in earlier phases.
 
 ---
 
-## Current phase — Consumer DX (branch `teak-consumer-dx`)
+## Next up (open)
+
+- Migrate the three examples' hand-rolled `ui_main.zig` to `teak.run`
+  (all three build native UI on Windows/Linux now — verify on each OS;
+  `teak.run` currently has no in-repo consumer beyond its stub tests).
+- Line-chart / canvas widget (consumer issue #3).
+- Deeper ComponentList per-item focus (consumer issue #1).
+- HiDPI / font-scaling audit.
+- Scrolling for the Dropdown open list.
+- Merge `dev-hotschmoe` → `master` (27 commits ahead as of 2026-07-10).
+
+---
+
+## Prior phase — Linux native support (shipped 2026-05-29 → 2026-06-13)
+
+Linux joins Windows and web as a first-class target. Native backends
+are assembled by comptime provider injection so neither OS's `extern`s
+compile into the other's translation unit.
+
+- **Per-OS GPU refactor** (`515d5e5`) — `native.zig` split into
+  `wgpu_core.Gpu(comptime Surface, comptime Rasterizer)` + provider
+  modules; Windows stitch `native.zig` = (surface_win32, GdiRasterizer),
+  Linux stitch `native_linux.zig` = (surface_xlib, StbttRasterizer).
+- **Build dispatch** (`b5cd357`) — `linkNativeWgpu` picks the
+  wgpu-native prebuilt + backend by target OS × arch; the `ui` step is
+  gated on `teak.hasNativeBackend`; all three examples build on Linux.
+- **stb_truetype text** (`87942c4`) — vendored public-domain
+  rasterizer; `src/gpu/text_stbtt.zig` font + measure + raster, shared
+  with the X11 Host so layout metrics == rendered glyphs.
+- **X11 Host + surface** (`9782777`) — `src/platform/x11.zig` loads
+  `libX11.so.6` via `std.DynLib` at runtime (no X11 dev package needed
+  to build); keysym → SpecialKey mapping; `src/gpu/surface_xlib.zig`.
+- **Hardening** (`7f05520`, `e8fde01`) — WM_PROTOCOLS confirm on close
+  ClientMessage; surface-format risk documented; async file-dialog +
+  secondary-window contract satisfied on x11/StubHost.
+- **Docs sync** (`cadd0e3`) — CLAUDE/AGENTS/README/consuming-teak +
+  gpu/host/run feature docs updated for per-OS backends.
+
+---
+
+## Prior phase — Consumer DX (branch `teak-consumer-dx`, shipped 2026-05-29)
 
 Driven by a consumer's honest audit after building the start of an
 engineering-calc app (Zenercalc) on Teak. Shipped:
@@ -32,11 +73,9 @@ engineering-calc app (Zenercalc) on Teak. Shipped:
   guide; feature docs for run / widgets; focus/HARDLINE/README/CLAUDE/
   AGENTS synced.
 
-Deferred (tracked): migrating the three in-repo examples' `ui_main.zig`
-to `teak.run` (their UI build targets Windows/wasm — verify on a Windows
-host); a line-chart / canvas widget (consumer issue #3); deeper
-ComponentList per-item focus (consumer issue #1); HiDPI/font-scaling
-audit; scrolling the Dropdown open list.
+Deferred items from this phase are tracked in §"Next up" at the top
+(example migration to `teak.run`, line-chart widget, ComponentList
+per-item focus, HiDPI audit, Dropdown scrolling).
 
 ---
 
@@ -76,7 +115,7 @@ Next up: open — text rendering phase is shipped.
 
 ---
 
-## Current phase — Text rendering
+## Prior phase — Text rendering (archive: motivation + workstream detail)
 
 ### Motivation
 

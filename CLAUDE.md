@@ -209,15 +209,9 @@ The library has no external dependencies; `wgpu-native` is owned by teak's build
 
 ## Implementation Status
 
-The project is in **design-complete, implementation-starting** phase. The prototype goal is a clickable counter demonstrating the full closed loop. Implementation follows six sequential phases (see `docs/archive/init_convo/first_proto.md` for details and checkpoints):
+The framework is **implemented and shipping**: the full loop (Model → view → layout → render → hit-test → update) runs on native Windows (Win32 + wgpu), native Linux (X11 + wgpu), and web (wasm + WebGPU via zunk), with real text rendering on all three. Three examples (`counter_greeter`, `todo`, `tree`) exercise the loop end-to-end.
 
-1. Model/Msg/update (pure Zig, no wgpu)
-2. CmdBuffer + view function
-3. Layout pass (measure + position)
-4. Render pass (wgpu colored quads)
-5. Hit-test pass
-6. Close the loop (wire main.zig)
-7. Stretch: TransientState + hover
+Shipped phases, in order: prototype core loop → cleanup/abstraction hardening (`zig build audit`, CI) → text rendering (Host `TextMeasurer` + glyph caches) → functional gaps (overlay, images, selection/clipboard, subscriptions, multi-window, virtual list, a11y, rich text) → ergonomic helpers → consumer DX (`teak.run`, widgets, onboarding docs) → Linux native support. The current working task list is `tasks.md`; the original phase-by-phase prototype guide survives at `docs/archive/init_convo/first_proto.md`.
 
 ## Key Documentation
 
@@ -232,4 +226,4 @@ The project is in **design-complete, implementation-starting** phase. The protot
 - Types: `PascalCase`. Functions: `snake_case`. Enum variants: lowercase with underscores.
 - Explicit allocators everywhere. Arena allocators for per-frame data.
 - Convenience emitters on `CmdBuffer` use `catch unreachable` (arena OOM is unrecoverable).
-- Text measurement uses monospace approximation (`content.len * CHAR_WIDTH`) for the prototype.
+- Text measurement flows through the Host's `TextMeasurer` (real platform metrics at layout time). `teak.monoMeasurer()` is the stateless stub for CLI canaries and tests. `CHAR_WIDTH` is gone — `zig build audit` forbids reintroducing it.

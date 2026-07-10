@@ -174,7 +174,7 @@ Walk backwards through `[]Cmd` and `[]Rect` (painter's order for z-ordering). Ch
 
 ### Render Pass
 
-Takes `[]Cmd`, `[]Rect`, and `TransientState`. Emits wgpu draw calls. For the prototype: colored rectangles only. Text rendered as placeholder rects with actual text logged to stderr.
+Takes `[]Cmd`, `[]Rect`, and `TransientState`. Builds flat vertex/draw buffers that the GPU backend turns into wgpu draw calls: solid colored quads (`quad.wgsl`), textured glyph quads for text (`textured_quad.wgsl` — platform rasterizer + shared LRU glyph cache), and tinted image quads (`image.wgsl`). Text is measured at layout time through the Host's `TextMeasurer`, so layout metrics and rendered glyphs come from the same source.
 
 ### Arena Double Buffering
 
@@ -184,7 +184,7 @@ Two arenas alternate each frame. Frame N's commands live in arena A; frame N+1 i
 
 ## Escape Hatches from Pure TEA
 
-Three deliberate, bounded deviations:
+The three original deviations are below. The authoritative, current list — six hatches, each with explicit bounds — is [`docs/HARDLINE.md`](docs/HARDLINE.md) §2 (the later three: Host layer, overlay z-layer, subscriptions).
 
 ### 1. Comptime Component Composition
 
@@ -289,6 +289,8 @@ Platform differences are below the wgpu line. Everything above is identical acro
 ---
 
 ## Implementation Phases
+
+*(Historical — all phases including the stretch goal shipped; retained as a record of the original plan. Current work is tracked in `tasks.md`.)*
 
 ### Phase 1: Model, Msg, Update
 Define `Model`, `Msg`, `update` in `model.zig`. Write tests. Pure Zig, no wgpu needed.
