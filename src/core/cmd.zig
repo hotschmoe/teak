@@ -389,6 +389,193 @@ pub fn Cmd(comptime Msg: type) type {
     };
 }
 
+// ── Cmd-buffer balance validation ──────────────────────────────────
+//
+// Every push_* Cmd (push_group / push_scroll / push_overlay /
+// push_virtual_list) must be closed by the matching pop_*. A missing
+// pop, a stray pop, or a *crossed* pair (push_group … pop_overlay) is
+// otherwise a silent bug: LayoutEngine's FixedStack only panics on
+// overflow/underflow, and a balanced-but-crossed buffer doesn't even
+// trip that — it just produces wrong rects. `validateBalance` walks the
+// flat buffer once and names the first imbalance so it surfaces as an
+// actionable message instead of a mystery layout glitch.
+//
+// Pure, O(n), zero allocation. Intended for debug builds / tests / the
+// host loop's per-frame guard (see docs/features/layout.md).
+
+/// The four container kinds that bracket a region of the flat buffer.
+/// `pushFormRow` / `popFormRow` are sugar over `push_group` / `pop_group`
+/// (they emit exactly those Cmds), so a form row shows up here as
+/// `.group` — no separate kind, matching what the buffer actually
+/// records.
+pub const BalanceKind = enum {
+    group,
+    scroll,
+    overlay,
+    virtual_list,
+
+    /// Name of the opening cmd, e.g. `"push_group"`.
+    pub fn pushName(self: BalanceKind) []const u8 {
+        return switch (self) {
+            .group => "push_group",
+            .scroll => "push_scroll",
+            .overlay => "push_overlay",
+            .virtual_list => "push_virtual_list",
+        };
+    }
+
+    /// Name of the closing cmd, e.g. `"pop_group"`.
+    pub fn popName(self: BalanceKind) []const u8 {
+        return switch (self) {
+            .group => "pop_group",
+            .scroll => "pop_scroll",
+            .overlay => "pop_overlay",
+            .virtual_list => "pop_virtual_list",
+        };
+    }
+};
+
+/// First balance fault found by `validateBalance`. A small POD struct so
+/// callers can format a precise message (see `formatBalanceError`) or
+/// branch on `tag` without any allocation.
+pub const BalanceError = struct {
+    pub const Tag = enum {
+        /// A push_* had no matching pop_* before the buffer ended.
+        /// `open_kind` / `open_index` name the dangling push.
+        unclosed_push,
+        /// A pop_* appeared with no open push_* to close.
+        /// `close_kind` / `close_index` name the stray pop.
+        stray_pop,
+        /// A pop_* closed a push_* of a different kind (a crossed pair).
+        /// `open_*` name the still-open push, `close_*` the wrong pop.
+        mismatched_pop,
+        /// Container nesting exceeded the validator's fixed depth
+        /// (`MAX_BALANCE_DEPTH`, mirroring LayoutEngine's
+        /// `FixedStack(_, 32)`); deeper input would also overflow the
+        /// layout stack. Reported instead of panicked so the caller gets
+        /// a named error. `open_kind` / `open_index` name the push that
+        /// overflowed.
+        depth_overflow,
+    };
+
+    tag: Tag,
+    /// Kind of the relevant open push. Valid for `unclosed_push`,
+    /// `mismatched_pop`, and `depth_overflow`; unused for `stray_pop`.
+    open_kind: BalanceKind = .group,
+    /// cmd index of that open push (or the overflowing push). Valid
+    /// wherever `open_kind` is.
+    open_index: usize = 0,
+    /// Kind named by the offending pop. Valid for `stray_pop` and
+    /// `mismatched_pop`; unused otherwise.
+    close_kind: BalanceKind = .group,
+    /// cmd index of the offending pop. Valid wherever `close_kind` is.
+    close_index: usize = 0,
+};
+
+/// Validator depth cap. Mirrors LayoutEngine's `FixedStack(_, 32)` — a
+/// buffer nesting deeper than this would overflow the layout stack
+/// anyway, so the validator flags it as `depth_overflow` rather than
+/// silently accepting it.
+pub const MAX_BALANCE_DEPTH = 32;
+
+/// `.group` / `.scroll` / … if `c` opens a container, else `null`.
+/// `anytype` so it works for any `Cmd(Msg)` instantiation (the tag set
+/// is Msg-independent).
+fn pushKindOf(c: anytype) ?BalanceKind {
+    return switch (c) {
+        .push_group => .group,
+        .push_scroll => .scroll,
+        .push_overlay => .overlay,
+        .push_virtual_list => .virtual_list,
+        else => null,
+    };
+}
+
+/// `.group` / `.scroll` / … if `c` closes a container, else `null`.
+fn popKindOf(c: anytype) ?BalanceKind {
+    return switch (c) {
+        .pop_group => .group,
+        .pop_scroll => .scroll,
+        .pop_overlay => .overlay,
+        .pop_virtual_list => .virtual_list,
+        else => null,
+    };
+}
+
+/// Walk `cmds` once (O(n), zero allocation) and return the first
+/// push/pop imbalance, or `null` if every container is balanced. `cmds`
+/// is any slice of `Cmd(Msg)` — only Msg-independent tags are read, so
+/// it takes `anytype` the same way the layout passes do.
+///
+/// Detects: unclosed push, stray pop, crossed pair (`mismatched_pop`),
+/// and nesting past `MAX_BALANCE_DEPTH` (`depth_overflow`). Leaves
+/// (text, button, …) are ignored.
+pub fn validateBalance(cmds: anytype) ?BalanceError {
+    const StackEntry = struct { kind: BalanceKind, index: usize };
+    var stack: [MAX_BALANCE_DEPTH]StackEntry = undefined;
+    var depth: usize = 0;
+
+    for (cmds, 0..) |c, i| {
+        if (pushKindOf(c)) |kind| {
+            if (depth >= MAX_BALANCE_DEPTH) {
+                return .{ .tag = .depth_overflow, .open_kind = kind, .open_index = i };
+            }
+            stack[depth] = .{ .kind = kind, .index = i };
+            depth += 1;
+        } else if (popKindOf(c)) |kind| {
+            if (depth == 0) {
+                return .{ .tag = .stray_pop, .close_kind = kind, .close_index = i };
+            }
+            const open = stack[depth - 1];
+            if (open.kind != kind) {
+                return .{
+                    .tag = .mismatched_pop,
+                    .open_kind = open.kind,
+                    .open_index = open.index,
+                    .close_kind = kind,
+                    .close_index = i,
+                };
+            }
+            depth -= 1;
+        }
+    }
+
+    if (depth > 0) {
+        const open = stack[depth - 1];
+        return .{ .tag = .unclosed_push, .open_kind = open.kind, .open_index = open.index };
+    }
+    return null;
+}
+
+/// Render a `BalanceError` as one human/LLM-actionable line into `buf`,
+/// returning the written slice. Zero allocation — the caller owns the
+/// buffer; 128 bytes is always enough. If `buf` is too small the result
+/// is an empty slice rather than a partial line.
+pub fn formatBalanceError(err: BalanceError, buf: []u8) []const u8 {
+    return switch (err.tag) {
+        .unclosed_push => std.fmt.bufPrint(
+            buf,
+            "{s} at cmd #{d} was never popped",
+            .{ err.open_kind.pushName(), err.open_index },
+        ),
+        .stray_pop => std.fmt.bufPrint(
+            buf,
+            "{s} at cmd #{d} has no matching push",
+            .{ err.close_kind.popName(), err.close_index },
+        ),
+        .mismatched_pop => std.fmt.bufPrint(
+            buf,
+            "{s} at cmd #{d} was closed by {s} at cmd #{d}",
+            .{ err.open_kind.pushName(), err.open_index, err.close_kind.popName(), err.close_index },
+        ),
+        .depth_overflow => std.fmt.bufPrint(
+            buf,
+            "{s} at cmd #{d} exceeds the max container nesting depth ({d})",
+            .{ err.open_kind.pushName(), err.open_index, MAX_BALANCE_DEPTH },
+        ),
+    } catch buf[0..0];
+}
+
 // ── Form row (ergonomic gap 4) ─────────────────────────────────────
 //
 // Composite [label, content, units] horizontal layout with an optional
@@ -1112,6 +1299,187 @@ test "CmdBuffer.mixedText: empty parts list still emits a (zero-content) rich_te
     const rt = cb.cmds.items[0].rich_text;
     try testing.expectEqual(@as(usize, 0), rt.content.len);
     try testing.expectEqual(@as(usize, 0), rt.spans.len);
+}
+
+test "validateBalance: balanced buffer returns null" {
+    const testing = std.testing;
+    const Msg = union(enum) { inc };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{});
+    cb.text("hi");
+    cb.pushGroup(.{ .direction = .horizontal });
+    cb.button(.inc, "+");
+    cb.popGroup();
+    cb.popGroup();
+
+    try testing.expectEqual(@as(?BalanceError, null), validateBalance(cb.cmds.items));
+}
+
+test "validateBalance: every container kind, nested + balanced, returns null" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{});
+    cb.pushScroll(.{});
+    cb.pushVirtualList(.{ .total_count = 3, .item_extent = 10, .visible_end = 3 });
+    cb.text("row");
+    cb.popVirtualList();
+    cb.popScroll();
+    cb.pushOverlay(.{ .x = 10, .y = 10 });
+    cb.text("tip");
+    cb.popOverlay();
+    cb.popGroup();
+
+    try testing.expectEqual(@as(?BalanceError, null), validateBalance(cb.cmds.items));
+}
+
+test "validateBalance: unclosed push reports kind + index of the push" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{}); // 0
+    cb.text("x"); // 1
+    cb.pushOverlay(.{}); // 2 — never popped (innermost still-open push)
+    cb.text("y"); // 3
+    // No pops: both the group (0) and overlay (2) stay open; the
+    // innermost open push (the overlay at 2) is the one reported.
+
+    const err = validateBalance(cb.cmds.items).?;
+    try testing.expectEqual(BalanceError.Tag.unclosed_push, err.tag);
+    try testing.expectEqual(BalanceKind.overlay, err.open_kind);
+    try testing.expectEqual(@as(usize, 2), err.open_index);
+}
+
+test "validateBalance: stray pop reports kind + index of the pop" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{}); // 0
+    cb.popGroup(); // 1
+    cb.popScroll(); // 2 — stray, nothing open
+
+    const err = validateBalance(cb.cmds.items).?;
+    try testing.expectEqual(BalanceError.Tag.stray_pop, err.tag);
+    try testing.expectEqual(BalanceKind.scroll, err.close_kind);
+    try testing.expectEqual(@as(usize, 2), err.close_index);
+}
+
+test "validateBalance: crossed pair reports both open push and wrong pop" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{}); // 0
+    cb.pushGroup(.{}); // 1
+    cb.popOverlay(); // 2 — closes a group with the wrong pop
+
+    const err = validateBalance(cb.cmds.items).?;
+    try testing.expectEqual(BalanceError.Tag.mismatched_pop, err.tag);
+    try testing.expectEqual(BalanceKind.group, err.open_kind);
+    try testing.expectEqual(@as(usize, 1), err.open_index);
+    try testing.expectEqual(BalanceKind.overlay, err.close_kind);
+    try testing.expectEqual(@as(usize, 2), err.close_index);
+}
+
+test "validateBalance: reports the FIRST imbalance, innermost unclosed" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // Two unclosed pushes; the innermost (last opened) is reported.
+    cb.pushGroup(.{}); // 0
+    cb.pushScroll(.{}); // 1 — innermost open at end
+    cb.text("x"); // 2
+
+    const err = validateBalance(cb.cmds.items).?;
+    try testing.expectEqual(BalanceError.Tag.unclosed_push, err.tag);
+    try testing.expectEqual(BalanceKind.scroll, err.open_kind);
+    try testing.expectEqual(@as(usize, 1), err.open_index);
+}
+
+test "validateBalance: balanced form row (sugar over push/pop_group) returns null" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushFormRow(.{ .label = "Mass", .units = "kg", .validation = "bad" });
+    cb.textInput(.focus, "10", 2);
+    cb.popFormRow();
+
+    try testing.expectEqual(@as(?BalanceError, null), validateBalance(cb.cmds.items));
+}
+
+test "validateBalance: form row missing its pop is caught as unclosed group" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // pushFormRow emits push_group (outer, idx 0) + push_group (inner,
+    // idx 1) + label text. Without popFormRow both groups stay open; the
+    // innermost (idx 1) is reported.
+    cb.pushFormRow(.{ .label = "Mass" });
+    cb.textInput(.focus, "10", 2);
+
+    const err = validateBalance(cb.cmds.items).?;
+    try testing.expectEqual(BalanceError.Tag.unclosed_push, err.tag);
+    try testing.expectEqual(BalanceKind.group, err.open_kind);
+    try testing.expectEqual(@as(usize, 1), err.open_index);
+}
+
+test "validateBalance: nesting past MAX_BALANCE_DEPTH is depth_overflow" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // One more push than the validator's stack can hold. No pops, so the
+    // (MAX+1)-th push overflows at index MAX_BALANCE_DEPTH.
+    var i: usize = 0;
+    while (i < MAX_BALANCE_DEPTH + 1) : (i += 1) cb.pushGroup(.{});
+
+    const err = validateBalance(cb.cmds.items).?;
+    try testing.expectEqual(BalanceError.Tag.depth_overflow, err.tag);
+    try testing.expectEqual(@as(usize, MAX_BALANCE_DEPTH), err.open_index);
+}
+
+test "formatBalanceError: each tag renders an actionable line" {
+    const testing = std.testing;
+    var buf: [128]u8 = undefined;
+
+    try testing.expectEqualStrings(
+        "push_overlay at cmd #17 was never popped",
+        formatBalanceError(.{ .tag = .unclosed_push, .open_kind = .overlay, .open_index = 17 }, &buf),
+    );
+    try testing.expectEqualStrings(
+        "pop_group at cmd #9 has no matching push",
+        formatBalanceError(.{ .tag = .stray_pop, .close_kind = .group, .close_index = 9 }, &buf),
+    );
+    try testing.expectEqualStrings(
+        "push_group at cmd #4 was closed by pop_overlay at cmd #12",
+        formatBalanceError(.{
+            .tag = .mismatched_pop,
+            .open_kind = .group,
+            .open_index = 4,
+            .close_kind = .overlay,
+            .close_index = 12,
+        }, &buf),
+    );
+    try testing.expectEqualStrings(
+        "push_scroll at cmd #33 exceeds the max container nesting depth (32)",
+        formatBalanceError(.{ .tag = .depth_overflow, .open_kind = .scroll, .open_index = 33 }, &buf),
+    );
 }
 
 test "CmdBuffer.pushFormRow: documented depth of 8 is reachable without tripping the assert" {

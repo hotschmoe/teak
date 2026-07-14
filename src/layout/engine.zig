@@ -179,6 +179,7 @@ pub const LayoutEngine = struct {
         for (cmds, 0..) |c, i| {
             switch (c) {
                 .push_group => |grp| {
+                    assertPushable(stack.len, stack.buffer.len, i);
                     stack.push(.{
                         .cmd_index = i,
                         .direction = grp.direction,
@@ -188,6 +189,7 @@ pub const LayoutEngine = struct {
                     });
                 },
                 .push_scroll => |sc| {
+                    assertPushable(stack.len, stack.buffer.len, i);
                     stack.push(.{
                         .cmd_index = i,
                         .direction = sc.direction,
@@ -256,6 +258,7 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, w, h, 0);
                 },
                 .pop_group, .pop_scroll => {
+                    assertPoppable(stack.len, i);
                     const grp = stack.pop();
                     const gaps: f32 = if (grp.child_count > 1)
                         @as(f32, @floatFromInt(grp.child_count - 1)) * grp.gap
@@ -310,6 +313,7 @@ pub const LayoutEngine = struct {
                     }
                 },
                 .push_overlay => |ov| {
+                    assertPushable(stack.len, stack.buffer.len, i);
                     stack.push(.{
                         .cmd_index = i,
                         .direction = ov.direction,
@@ -322,6 +326,7 @@ pub const LayoutEngine = struct {
                     });
                 },
                 .pop_overlay => {
+                    assertPoppable(stack.len, i);
                     const grp = stack.pop();
                     const gaps: f32 = if (grp.child_count > 1)
                         @as(f32, @floatFromInt(grp.child_count - 1)) * grp.gap
@@ -350,6 +355,7 @@ pub const LayoutEngine = struct {
                     // contribute to the parent's measured size.
                 },
                 .push_virtual_list => |vl| {
+                    assertPushable(stack.len, stack.buffer.len, i);
                     stack.push(.{
                         .cmd_index = i,
                         .direction = vl.direction,
@@ -366,6 +372,7 @@ pub const LayoutEngine = struct {
                     // Handled in the pop_group/pop_scroll arm above via
                     // is_virtual branch — duplicated here for the
                     // exhaustive switch.
+                    assertPoppable(stack.len, i);
                     const grp = stack.pop();
                     const total_main: f32 = grp.total_count * grp.item_extent + 2 * grp.padding;
                     const w: f32 = switch (grp.direction) {
@@ -480,6 +487,7 @@ pub const LayoutEngine = struct {
                     rects[i].y = ov.y - rects[i].h * ov.anchor_y_frac;
                     // Children get their own cursor context — overlays
                     // do NOT advance the parent cursor (they're absolute).
+                    assertPushable(stack.len, stack.buffer.len, i);
                     stack.push(.{
                         .x = rects[i].x + ov.padding,
                         .y = rects[i].y + ov.padding,
@@ -493,6 +501,7 @@ pub const LayoutEngine = struct {
                     });
                 },
                 .pop_overlay => {
+                    assertPoppable(stack.len, i);
                     _ = stack.pop();
                 },
                 .push_virtual_list => |vl| {
@@ -515,9 +524,11 @@ pub const LayoutEngine = struct {
                     }
                 },
                 .pop_virtual_list => {
+                    assertPoppable(stack.len, i);
                     _ = stack.pop();
                 },
                 .pop_group, .pop_scroll => {
+                    assertPoppable(stack.len, i);
                     _ = stack.pop();
                 },
             }
@@ -584,6 +595,7 @@ pub const LayoutEngine = struct {
         const extra = @max(0, inner_main - rects[i].fixed_main - gaps);
         const per_flex_unit: f32 = if (rects[i].flex_total > 0) extra / rects[i].flex_total else 0;
 
+        assertPushable(stack.len, stack.buffer.len, i);
         stack.push(.{
             .x = rects[i].x + spec.padding - spec.scroll_x,
             .y = rects[i].y + spec.padding - spec.scroll_y,
@@ -630,6 +642,34 @@ pub const LayoutEngine = struct {
             .horizontal => ctx.x += delta,
             .vertical => ctx.y += delta,
         }
+    }
+
+    // ── Stack-balance diagnostics ──────────────────────────────────
+    //
+    // The FixedStack push/pop already `std.debug.assert` the depth
+    // invariant, but a bare assert names no cmd — so an unbalanced or
+    // too-deep buffer panics without pointing at the offending command.
+    // These guards run at the pass call sites (where the cmd index `i`
+    // is in scope) and panic with that index before the assert would
+    // fire. They sit purely on the error path: for balanced, in-bounds
+    // input the condition is never true, so layout behavior is
+    // unchanged. For a diagnostic that reports *without* panicking (and
+    // also catches crossed pairs), run `cmd.validateBalance` first.
+
+    fn assertPushable(len: usize, cap: usize, cmd_index: usize) void {
+        if (len >= cap) std.debug.panic(
+            "teak layout: push_* at cmd #{d} exceeds container nesting depth {d} " ++
+                "(unbalanced or too-deeply-nested buffer; run cmd.validateBalance)",
+            .{ cmd_index, cap },
+        );
+    }
+
+    fn assertPoppable(len: usize, cmd_index: usize) void {
+        if (len == 0) std.debug.panic(
+            "teak layout: pop_* at cmd #{d} underflows the container stack " ++
+                "(stray pop_* or crossed push/pop; run cmd.validateBalance)",
+            .{cmd_index},
+        );
     }
 
     fn addLeafToTop(stack: *FixedStack(GroupContext, 32), child_w: f32, child_h: f32, child_flex: f32) void {

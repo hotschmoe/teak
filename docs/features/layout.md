@@ -10,8 +10,8 @@ Escape hatch 3 in [HARDLINE §2](../HARDLINE.md#escape-hatch-3-flat-buffer-with-
 
 ```zig
 pub const LayoutEngine = struct {
-    pub fn doLayout(rects: []Rect, cmds: anytype, window_w: f32, window_h: f32) void;
-    pub fn measurePass(rects: []Rect, cmds: anytype) void;
+    pub fn doLayout(rects: []Rect, cmds: anytype, window_w: f32, window_h: f32, measurer: TextMeasurer) void;
+    pub fn measurePass(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void;
     pub fn positionPass(rects: []Rect, cmds: anytype) void;
 };
 
@@ -98,6 +98,47 @@ cb.popOverlay();
 ```
 
 `Theme.panel_bg` (derived from `Palette.bg_panel`) is sized to sit one layer above the scene `bg` so it reads as elevated. Apps that want a flat-toned panel can override `bg` per-call rather than going through the theme.
+
+## Cmd-buffer balance validation
+
+**Status**: `pub` in `src/teak.zig` as `validateBalance`, `formatBalanceError`, `BalanceError`, `BalanceKind`, `MAX_BALANCE_DEPTH`.
+**Source**: `src/core/cmd.zig`
+**Tests**: colocated in `src/core/cmd.zig` — balanced → `null`; each imbalance kind with its index; nested/crossed cases; form-row cases; depth overflow; formatter output.
+
+Every `push_*` Cmd (`push_group` / `push_scroll` / `push_overlay` / `push_virtual_list`) must be closed by the matching `pop_*`. A missing pop, a stray pop, or a **crossed pair** (`push_group … pop_overlay`) is otherwise a silent bug: the layout `FixedStack` only `assert`s on overflow/underflow, and a *balanced-but-crossed* buffer doesn't even trip that — it just produces wrong rects. `validateBalance` turns the whole class into a named, immediate error.
+
+```zig
+pub fn validateBalance(cmds: anytype) ?BalanceError;         // null == balanced
+pub fn formatBalanceError(err: BalanceError, buf: []u8) []const u8;
+```
+
+- **Pure, O(n), zero allocation.** Walks the flat `[]Cmd` once against a fixed 32-deep stack (mirrors the layout `FixedStack`). `cmds` is any `[]const Cmd(Msg)` — only Msg-independent tags are read, so it takes `anytype` the way the layout passes do.
+- **Reports the first fault only**, as a small POD `BalanceError { tag, open_kind, open_index, close_kind, close_index }`:
+  - `unclosed_push` — a `push_*` with no matching pop (`open_*` name it; the innermost still-open push is reported).
+  - `stray_pop` — a `pop_*` with nothing open (`close_*` name it).
+  - `mismatched_pop` — a crossed pair (`open_*` = the still-open push, `close_*` = the wrong pop).
+  - `depth_overflow` — nesting past `MAX_BALANCE_DEPTH` (32); such a buffer would also overflow the layout stack, so it's flagged rather than accepted.
+- **Form rows are handled correctly, not specially.** `pushFormRow` / `popFormRow` are sugar that emit `push_group` / `pop_group`, so an unbalanced form row surfaces as an unclosed/stray `.group` — matching what the buffer actually records (no invented distinction).
+- **`formatBalanceError`** renders one actionable line into a caller buffer (128 bytes always suffice), e.g. `"push_overlay at cmd #17 was never popped"` or `"push_group at cmd #4 was closed by pop_overlay at cmd #12"`.
+
+### When to run it
+
+`view()` builds the buffer; run the validator between `view()` and `doLayout()`, in **debug builds and tests**, before the layout passes consume the buffer:
+
+```zig
+if (@import("builtin").mode == .Debug) {
+    if (teak.validateBalance(cb.cmds.items)) |err| {
+        var buf: [128]u8 = undefined;
+        std.debug.panic("teak: unbalanced cmd buffer — {s}", .{teak.formatBalanceError(err, &buf)});
+    }
+}
+```
+
+The recommended integration point is the host loop (`src/run.zig`), guarded on debug mode, so any app's malformed `view()` fails loudly at the exact cmd index instead of producing mystery rects. (The `builtin` import lives at the host-loop layer, outside framework core — HARDLINE §3's no-conditional-compilation rule applies to `src/{core,layout,input,render}/*` only.)
+
+### Layout-engine diagnostics
+
+Independently, `LayoutEngine.measurePass` / `positionPass` now name the cmd index when their container stack over/underflows: `assertPushable` / `assertPoppable` guards sit at each push/pop site and `std.debug.panic` with the offending index (e.g. `"teak layout: pop_* at cmd #12 underflows the container stack …"`) before the bare `FixedStack` assert would fire. These are pure error-path guards — for balanced, in-bounds input the condition is never true, so layout behavior is unchanged. They complement `validateBalance` (which also catches crossed pairs, and *without* panicking): run the validator first for a recoverable diagnostic; the engine guards are the last-line backstop.
 
 ## Test coverage target
 
