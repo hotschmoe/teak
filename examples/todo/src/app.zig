@@ -177,6 +177,14 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     };
 }
 
+/// The focus Msg of the add-input when it's focused, so `teak.run` can
+/// draw its focus ring + blink the cursor (and, incidentally, Tab-focus
+/// it — there's only the one focusable widget). The input's `focus_msg`
+/// is `.input_focus`, so `run` maps this back to its cmd index by value.
+pub fn focusedMsg(m: *const Model) ?Msg {
+    return if (m.input_focused) Msg.input_focus else null;
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 test "add_item copies input into items and clears input" {

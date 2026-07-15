@@ -238,10 +238,75 @@ pub fn keyNeedsClipboard(key: teak.SpecialKey) bool {
     return key == .ctrl_c or key == .ctrl_x or key == .ctrl_v;
 }
 
-/// Currently selected greeter text, or "" if none. Used by the host
-/// when handling ctrl_c / ctrl_x.
+/// Currently selected greeter text, or "" if none. Used by
+/// `handleClipboard` for ctrl_c / ctrl_x.
 pub fn greeterSelection(m: *const Model) []const u8 {
     return greeter.selectionText(&m.greeter);
+}
+
+// ── teak.run hooks ─────────────────────────────────────────────────
+//
+// The optional decls `teak.run` detects with `@hasDecl`. They move the
+// per-app variance (theme, focus, clipboard policy, the secondary Stats
+// window) out of a hand-rolled loop and into data/Msg-shaped functions.
+
+/// Per-frame theme. `dark_mode` flips between the two presets — the same
+/// choice the old `ui_main.zig` made when assigning `cb.theme`.
+pub fn themeFor(m: *const Model) teak.Theme {
+    return if (m.dark_mode) teak.Theme.dark_default else teak.Theme.light_default;
+}
+
+/// The greeter input's focus Msg when focused, so `teak.run` draws its
+/// focus ring + blinks the cursor. The input's `focus_msg` is
+/// `focus_set = .greeter`, which `run` maps back to a cmd index by value.
+pub fn focusedMsg(m: *const Model) ?Msg {
+    if (m.focused == null) return null;
+    return Msg{ .focus_set = .greeter };
+}
+
+/// OS clipboard policy for cut/copy/paste. `teak.run` calls this (with the
+/// Host's clipboard vtable) for keys where `keyNeedsClipboard` is true;
+/// the app owns whether a chord copies the selection, cuts it, or pastes.
+pub fn handleClipboard(m: *Model, key: teak.SpecialKey, clip: teak.Clipboard) void {
+    switch (key) {
+        .ctrl_c => {
+            const sel = greeterSelection(m);
+            if (sel.len > 0) clip.write(sel);
+        },
+        .ctrl_x => {
+            const sel = greeterSelection(m);
+            if (sel.len > 0) {
+                clip.write(sel);
+                update(m, .{ .greeter = .name_backspace });
+            }
+        },
+        .ctrl_v => {
+            const bytes = clip.read();
+            if (bytes.len > 0) update(m, .{ .greeter = .{ .name_replace_selection = bytes } });
+        },
+        else => {},
+    }
+}
+
+/// Declares the secondary "Stats" window when the user has toggled it on.
+/// `teak.run` owns the platform + GPU window lifecycle keyed off this
+/// data-shaped spec (HARDLINE §4(c) — the app never touches
+/// `Host.openSecondaryWindow`).
+pub fn secondaryWindow(m: *const Model) ?teak.SecondaryWindowSpec {
+    return if (m.show_stats_window)
+        .{ .title = "Teak — Stats", .width = 360, .height = 200 }
+    else
+        null;
+}
+
+/// The secondary window's view. Same Cmd type as the primary; `run` hands
+/// it a different CmdBuffer bound to a different surface.
+pub const secondaryView = statsView;
+
+/// Dispatched when the user closes the Stats window from the OS, so the
+/// `show_stats_window` flag flips back and the toolbar button re-labels.
+pub fn secondaryClosedMsg(_: *const Model) ?Msg {
+    return .close_stats_window;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
