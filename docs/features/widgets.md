@@ -120,24 +120,55 @@ still compose via `Components` normally.)
 `msgs` carries the composed AppMsgs: `.toggle`, `.close`, and
 `selectMsg` — a **comptime `fn(usize) AppMsg`** the app supplies to build
 the per-index select message. `DropdownViewOpts` positions the open list
-(`list_x`, `list_y`, `list_width`, `list_max_height`).
+(`list_x`, `list_y`, `list_width`, `list_max_height`) and caps its visible
+height (`max_visible`, see below).
 
 Behavior: **closed** = a button showing the selected option's label
 (placeholder when the slice is empty / index out of range); **open** =
 that button plus a `modal` overlay holding one button per option, with
 click-outside-to-close for free via the overlay's `backdrop_msg`.
 
+### Scrolling the open list
+
+Long option sets no longer overflow the window. Set
+`DropdownViewOpts.max_visible = N` and, when `options.len > N`, the open
+list is wrapped in a `push_scroll` whose viewport is `N * ITEM_HEIGHT`
+tall (`ITEM_HEIGHT = 36`, matching the option-button height) and scrolled
+by `Model.scroll_offset`. `max_visible = 0` (the default) keeps the old
+draw-everything behavior, so existing call sites are unchanged.
+
+- **Scroll-in-overlay is the idiomatic path, no new mechanism.**
+  `push_scroll` already composes inside `push_overlay`: layout gives the
+  scroll a normal child cursor, and hit-test + render each keep an
+  independent clip stack intersected with the overlay clip, so rows past
+  the viewport are clipped in both passes. Feature 1 added no
+  layout/hit-test/render code — it just nests the two existing hatches.
+- **Scroll state is explicit Model state** (HARDLINE §1):
+  `scroll_offset: f32` and `highlighted: usize` live on the Dropdown
+  `Model` and are mutated *only* through `update`. `viewWith` clamps the
+  offset to `[0, maxScroll]` for display; it never mutates Model.
+- **Wheel**: `scrollByMsg(delta, options_len, opts)` builds a `.scroll_by`
+  Msg carrying the delta plus the clamp ceiling (so `update` clamps
+  without knowing the option count). Wire it from the app's `wheelMsg`.
+- **Keyboard**: `moveHighlightMsg(.prev/.next/.first/.last, options_len,
+  opts)` builds a `.highlight` Msg. `update` moves the highlight and
+  scroll-to-reveals it — the revealed offset is self-bounding, so it never
+  needs the option count for the vertical clamp. The highlighted row draws
+  with a distinct background; hit-test still resolves each visible row to
+  its true option index regardless of scroll offset or highlight (each
+  button carries `selectMsg(i)`).
+
+Helpers `maxScroll(options_len, max_visible)` and `scrolls(options_len,
+opts)` are exposed for apps that size the anchor rect themselves.
+
 ### HARDLINE
 
-No new `Cmd` variant — it's `button` + `pushOverlay` + `pushGroup`. The
-per-index select Msg is produced by a comptime function that returns a Msg
-*value*; nothing function-typed is stored on a `Cmd` (§3). The open list
-reuses the overlay layer (§2 hatch 5) and its modal backdrop semantics.
-
-### Follow-up
-
-v1 does not scroll the open list — a list taller than `list_max_height`
-draws past it. Wrapping the list in a `push_scroll` is a future addition.
+No new `Cmd` variant — it's `button` + `pushOverlay` + `pushGroup` /
+`pushScroll`. The per-index select Msg is produced by a comptime function
+that returns a Msg *value*; nothing function-typed is stored on a `Cmd`
+(§3). The open list reuses the overlay layer (§2 hatch 5), its modal
+backdrop semantics, and the scroll container — all existing hatches, no
+new escape hatch and no per-widget retained state.
 
 ---
 

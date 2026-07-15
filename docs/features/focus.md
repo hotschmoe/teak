@@ -64,6 +64,53 @@ landing leaf's `focusMsgAt`.
   path the consumer asked for, replacing fragile "Nth text_input"
   ordinals.
 
+## Per-item focus in a `ComponentList` (consumer issue #1)
+
+**Source**: `src/core/component_list.zig`
+**Tests**: colocated — helper round-trip + Tab order, and focus survival
+across remove-before, insert-before, and swap.
+
+A `ComponentList(Child, cap)` manages a dynamic homogeneous list. Its
+child Msgs route by a **stable per-item key**, not the item's current
+index, so a focused widget inside an item stays focused as items are
+inserted / removed / reordered around it.
+
+- **The key is an explicit `Model` field, not a hash.** Each item gets a
+  monotonic `u64` at `append` / `insert_at` time (a `next_key` counter on
+  `Model`); the key travels with the item through `remove_at`, `insert_at`,
+  and `swap`. HARDLINE §3 bans hashing ancestors+labels for identity but
+  explicitly sanctions "persistent widget identity … on `Model` as an
+  explicit field" — this is that field.
+- **Why it fixes focus.** Focus is keyed off the `Msg` value a leaf
+  carries (see `indexOfFocusMsg` above). `view` emits each item's child
+  Msgs wrapped around the item's *key*, so the focus Msg a text input
+  carries is stable across reordering. A bare index would shift when items
+  move, silently moving focus to the wrong item (or losing it).
+
+### Wiring helpers
+
+```zig
+pub fn keyAt(model, i) ?u64;                 // visual index → stable key
+pub fn indexOfKey(model, key) ?usize;        // stable key → visual index
+pub fn childMsg(key, child_msg) Msg;         // .child by key
+pub fn childAt(model, i, child_msg) ?Msg;    // .child by visual index
+pub fn focusedMsgForKey(key, child_msg, comptime AppMsg) AppMsg;
+pub fn focusedMsgFor(model, i, child_msg, comptime AppMsg) ?AppMsg;
+```
+
+`focusedMsgFor` / `focusedMsgForKey` build the composed AppMsg an item's
+focusable child carries — byte-identical to what `view` emits — so an app
+can implement `focusedMsg(model)` without hand-assembling wrapped Msgs.
+Store the focused item's *key* (+ which child field) in your Model, then
+return `Fields.focusedMsgForKey(key, .focus, AppMsg)`. `run`'s built-in
+Tab/Shift+Tab traversal resolves it via `indexOfFocusMsg` every frame, so
+focus survives the list changing. `view` emits items in visual order, so
+Tab walks into the list top-to-bottom and out the far side.
+
+New `ComponentList.Msg` variants supporting reorder: `insert_at { idx,
+model }` (insert before a visual index, fresh key) and `swap { a, b }`
+(exchange two items and their keys).
+
 ## Test coverage target
 
 - **Forward wrap** (covered): three focusables, `next` cycles all and returns to the first.

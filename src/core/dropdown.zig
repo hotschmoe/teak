@@ -41,6 +41,14 @@ const component = @import("component.zig");
 //     the overlay list. Same hand-call pattern counter_greeter uses to
 //     drive greeter.view with a bespoke msgs struct.
 
+/// Height of a single open-list option row, in pixels. Matches
+/// `LayoutEngine.BUTTON_HEIGHT` (the option buttons are plain buttons, so
+/// every row is exactly this tall regardless of label font). Scroll math
+/// — viewport sizing, `maxScroll`, and scroll-to-reveal — is expressed in
+/// multiples of this constant so it stays in lock-step with the rects the
+/// layout pass actually produces.
+pub const ITEM_HEIGHT: f32 = 36;
+
 /// Anchor + sizing for the open list overlay.
 pub const DropdownViewOpts = struct {
     /// Window-absolute top-left where the open list should appear. The app
@@ -50,10 +58,19 @@ pub const DropdownViewOpts = struct {
     list_x: f32 = 0,
     list_y: f32 = 0,
     list_width: f32 = 200,
-    /// Advisory cap on the open list's height before it would overflow.
-    /// v1 does NOT clip or scroll: a very long list simply draws past this
-    /// height. A scroll wrapper around the option group is a follow-up.
+    /// Advisory cap on the open list's height when it does NOT scroll
+    /// (i.e. `max_visible == 0`, or the option count fits). A very long
+    /// unscrolled list still draws past this — set `max_visible` to make
+    /// it scroll instead.
     list_max_height: f32 = 320,
+    /// Max option rows visible before the open list scrolls. `0` =
+    /// unlimited (the pre-scroll behavior: the whole list draws in one
+    /// group). When `options.len > max_visible`, the open list is wrapped
+    /// in a `push_scroll` whose viewport is `max_visible * ITEM_HEIGHT`
+    /// tall and scrolled by `Model.scroll_offset`. Wheel + keyboard
+    /// (`scrollByMsg` / `moveHighlightMsg`) drive the offset; the
+    /// highlighted row is kept revealed on keyboard moves.
+    max_visible: usize = 0,
 };
 
 /// Placeholder shown when there is no valid selection (empty options or a
@@ -76,6 +93,41 @@ pub fn Dropdown(comptime cap: usize) type {
             open: bool = false,
             /// Index into the options slice the app passes to `viewWith`.
             selected: usize = 0,
+            /// Vertical scroll offset (px) of the open list. Only
+            /// meaningful when the list scrolls (`options.len >
+            /// opts.max_visible`). All widget scroll state lives here on
+            /// Model per HARDLINE §1 — it is mutated ONLY through
+            /// `.scroll_by` / `.highlight` in `update`, and clamped for
+            /// display in `viewWith`.
+            scroll_offset: f32 = 0,
+            /// Keyboard-highlighted option index (the arrow-key cursor).
+            /// Rendered with a highlight background; `.select` /click
+            /// commits it. Reset to `selected` when the list opens.
+            highlighted: usize = 0,
+        };
+
+        /// Direction of a keyboard highlight move.
+        pub const Move = enum { prev, next, first, last };
+
+        /// Payload for `.scroll_by`: a wheel delta plus the maximum valid
+        /// offset (so `update` can clamp without knowing the option
+        /// count). Build it with `scrollByMsg`.
+        pub const ScrollBy = struct {
+            delta: f32,
+            max: f32,
+        };
+
+        /// Payload for `.highlight`: which way to move the keyboard cursor
+        /// plus the geometry `update` needs to clamp + scroll-to-reveal
+        /// (the option count and the viewport row cap). Build it with
+        /// `moveHighlightMsg`.
+        pub const HighlightMove = struct {
+            move: Move,
+            /// `options.len` — upper clamp for `.next` / `.last`.
+            count: usize,
+            /// `opts.max_visible` — viewport rows for scroll-to-reveal
+            /// (`0` = the list does not scroll, so reveal is a no-op).
+            max_visible: usize,
         };
 
         pub const Msg = union(enum) {
@@ -86,17 +138,107 @@ pub fn Dropdown(comptime cap: usize) type {
             close,
             /// Choose option `i` — fired by an open-list item button.
             select: usize,
+            /// Wheel the open list. Build with `scrollByMsg` so `.max` is
+            /// filled from the option count.
+            scroll_by: ScrollBy,
+            /// Move the keyboard highlight, keeping it revealed. Build with
+            /// `moveHighlightMsg`.
+            highlight: HighlightMove,
         };
 
         pub fn update(model: *Model, msg: Msg) void {
             switch (msg) {
-                .toggle => model.open = !model.open,
+                .toggle => {
+                    model.open = !model.open;
+                    // Opening parks the keyboard cursor on the current
+                    // selection. Reveal is deferred to the first keyboard
+                    // move (`.toggle` carries no viewport geometry); the
+                    // display clamp in `viewWith` keeps the offset valid.
+                    if (model.open) model.highlighted = model.selected;
+                },
                 .close => model.open = false,
                 .select => |i| {
                     model.selected = i;
+                    model.highlighted = i;
                     model.open = false;
                 },
+                .scroll_by => |s| {
+                    model.scroll_offset = std.math.clamp(
+                        model.scroll_offset + s.delta,
+                        0,
+                        @max(0, s.max),
+                    );
+                },
+                .highlight => |h| {
+                    model.highlighted = moveIndex(model.highlighted, h.move, h.count);
+                    model.scroll_offset = revealOffset(
+                        model.scroll_offset,
+                        model.highlighted,
+                        h.max_visible,
+                    );
+                },
             }
+        }
+
+        // ── Scroll helpers (pure) ──────────────────────────────────────
+
+        /// New highlight index after `move`, clamped to `[0, count)`.
+        fn moveIndex(cur: usize, move: Move, count: usize) usize {
+            if (count == 0) return 0;
+            return switch (move) {
+                .prev => if (cur == 0) 0 else cur - 1,
+                .next => if (cur + 1 >= count) count - 1 else cur + 1,
+                .first => 0,
+                .last => count - 1,
+            };
+        }
+
+        /// The largest valid scroll offset for `options_len` rows given a
+        /// `max_visible`-row viewport. `0` when the list doesn't scroll.
+        pub fn maxScroll(options_len: usize, max_visible: usize) f32 {
+            if (max_visible == 0 or options_len <= max_visible) return 0;
+            return @as(f32, @floatFromInt(options_len - max_visible)) * ITEM_HEIGHT;
+        }
+
+        /// Smallest adjustment to `scroll` that brings row `i` fully inside
+        /// a `max_visible`-row viewport. Self-bounding: for any in-range
+        /// `i` the result stays within `[0, maxScroll]`, so scroll-to-
+        /// reveal never needs the option count.
+        fn revealOffset(scroll: f32, i: usize, max_visible: usize) f32 {
+            if (max_visible == 0) return scroll;
+            const viewport = @as(f32, @floatFromInt(max_visible)) * ITEM_HEIGHT;
+            const top = @as(f32, @floatFromInt(i)) * ITEM_HEIGHT;
+            const bottom = top + ITEM_HEIGHT;
+            var new = scroll;
+            if (top < new) new = top;
+            if (bottom > new + viewport) new = bottom - viewport;
+            return @max(0, new);
+        }
+
+        /// True when the open list scrolls for this option count + opts.
+        pub fn scrolls(options_len: usize, opts: DropdownViewOpts) bool {
+            return opts.max_visible > 0 and options_len > opts.max_visible;
+        }
+
+        /// Build a `.scroll_by` Msg for a wheel delta. The app calls this
+        /// from its `wheelMsg` hook (it owns the options slice, so it can
+        /// pass `options.len`) and wraps the result into its AppMsg, the
+        /// same way it wraps `selectMsg`.
+        pub fn scrollByMsg(delta: f32, options_len: usize, opts: DropdownViewOpts) Msg {
+            return .{ .scroll_by = .{
+                .delta = delta,
+                .max = maxScroll(options_len, opts.max_visible),
+            } };
+        }
+
+        /// Build a `.highlight` Msg for a keyboard move. The app calls this
+        /// from its `keySpecialMsg` hook and wraps the result into AppMsg.
+        pub fn moveHighlightMsg(move: Move, options_len: usize, opts: DropdownViewOpts) Msg {
+            return .{ .highlight = .{
+                .move = move,
+                .count = options_len,
+                .max_visible = opts.max_visible,
+            } };
         }
 
         /// Canonical 3-arg view satisfying the component contract + the
@@ -142,28 +284,87 @@ pub fn Dropdown(comptime cap: usize) type {
 
             if (!model.open) return;
 
-            // Open list: the modal-overlay pattern (see help dialog in
-            // counter_greeter). modal + backdrop_msg => click-outside closes.
-            cb.pushOverlay(.{
-                .x = opts.list_x,
-                .y = opts.list_y,
-                .width = opts.list_width,
-                .height = opts.list_max_height,
-                .modal = true,
-                .backdrop_msg = msgs.close,
-                .padding = 4,
-                .gap = 2,
-            });
-            cb.pushGroup(.{
-                .direction = .vertical,
-                .bg = cb.theme.panel_bg,
-                .gap = 2,
-            });
-            for (options, 0..) |opt, i| {
-                cb.button(msgs.selectMsg(i), opt);
+            if (scrolls(options.len, opts)) {
+                // Scrolling list: the option buttons live inside a
+                // push_scroll nested in the modal overlay. push_scroll
+                // works unchanged inside push_overlay — layout gives the
+                // scroll a normal child cursor, and hit-test/render keep
+                // an independent clip stack intersected with the overlay
+                // clip, so rows past the viewport are clipped in both
+                // passes. No new mechanism, just the existing scroll +
+                // overlay hatches composed.
+                const viewport_h = @as(f32, @floatFromInt(opts.max_visible)) * ITEM_HEIGHT;
+                const scroll_y = std.math.clamp(
+                    model.scroll_offset,
+                    0,
+                    maxScroll(options.len, opts.max_visible),
+                );
+                cb.pushOverlay(.{
+                    .x = opts.list_x,
+                    .y = opts.list_y,
+                    .width = opts.list_width,
+                    .height = viewport_h,
+                    .modal = true,
+                    .backdrop_msg = msgs.close,
+                    .padding = 0,
+                    .gap = 0,
+                });
+                cb.pushScroll(.{
+                    .direction = .vertical,
+                    .width = opts.list_width,
+                    .height = viewport_h,
+                    .padding = 0,
+                    .gap = 0,
+                    .scroll_y = scroll_y,
+                });
+                emitOptions(model, cb, options, msgs);
+                cb.popScroll();
+                cb.popOverlay();
+            } else {
+                // Non-scrolling list: the modal-overlay pattern (see help
+                // dialog in counter_greeter). modal + backdrop_msg =>
+                // click-outside closes.
+                cb.pushOverlay(.{
+                    .x = opts.list_x,
+                    .y = opts.list_y,
+                    .width = opts.list_width,
+                    .height = opts.list_max_height,
+                    .modal = true,
+                    .backdrop_msg = msgs.close,
+                    .padding = 4,
+                    .gap = 2,
+                });
+                cb.pushGroup(.{
+                    .direction = .vertical,
+                    .bg = cb.theme.panel_bg,
+                    .gap = 2,
+                });
+                emitOptions(model, cb, options, msgs);
+                cb.popGroup();
+                cb.popOverlay();
             }
-            cb.popGroup();
-            cb.popOverlay();
+        }
+
+        /// Emit one button per option, giving the keyboard-highlighted row
+        /// a distinct background so the arrow-key cursor is visible. The
+        /// highlight is presentation derived from `model.highlighted` — the
+        /// button still carries `selectMsg(i)`, so hit-test resolves to the
+        /// true option index regardless of scroll offset or highlight.
+        fn emitOptions(
+            model: *const Model,
+            cb: anytype,
+            options: []const []const u8,
+            msgs: anytype,
+        ) void {
+            for (options, 0..) |opt, i| {
+                if (i == model.highlighted) {
+                    var style = cb.theme.button;
+                    style.bg = cb.theme.button.hover_bg;
+                    cb.buttonStyled(msgs.selectMsg(i), opt, style);
+                } else {
+                    cb.button(msgs.selectMsg(i), opt);
+                }
+            }
         }
     };
 }
@@ -315,6 +516,166 @@ test "compose: Dropdown routes through Components and select closes" {
     // the composed select.
     try testing.expectEqual(App.Msg{ .picker = .toggle }, cb.cmds.items[0].button.msg);
     try testing.expectEqual(App.Msg{ .picker = .{ .select = 1 } }, cb.cmds.items[4].button.msg);
+}
+
+// ── Scrolling open list ─────────────────────────────────────────────
+
+const layout = @import("../layout/engine.zig");
+const hit_test = @import("../input/hit_test.zig");
+const text_mod = @import("text.zig");
+
+const long_options = [_][]const u8{
+    "o0", "o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8", "o9",
+};
+
+test "viewWith (scrolling): long list wraps options in a push_scroll" {
+    const testing = std.testing;
+    const D = Dropdown(64);
+
+    var cb = cmd.CmdBuffer(TestApp.Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    var model: D.Model = .{ .open = true, .selected = 0 };
+    D.viewWith(&model, &cb, &long_options, TestApp.msgs, .{
+        .list_x = 10,
+        .list_y = 40,
+        .list_width = 200,
+        .max_visible = 4,
+    });
+
+    const items = cb.cmds.items;
+    // closed button + push_overlay + push_scroll + 10 buttons + pop_scroll
+    //   + pop_overlay = 15.
+    try testing.expectEqual(@as(usize, 15), items.len);
+    try testing.expect(items[1] == .push_overlay);
+    try testing.expect(items[2] == .push_scroll);
+    // Viewport height = max_visible * ITEM_HEIGHT.
+    try testing.expectEqual(@as(f32, 4 * ITEM_HEIGHT), items[2].push_scroll.height);
+    try testing.expectEqual(@as(f32, 4 * ITEM_HEIGHT), items[1].push_overlay.height);
+    try testing.expect(items[13] == .pop_scroll);
+    try testing.expect(items[14] == .pop_overlay);
+    // Each option still carries its own select msg.
+    inline for (0..10) |i| {
+        try testing.expect(items[3 + i] == .button);
+        try testing.expectEqual(TestApp.pick(i), items[3 + i].button.msg);
+    }
+}
+
+test "viewWith (short list): does not scroll even with max_visible set" {
+    const testing = std.testing;
+    const D = Dropdown(64);
+
+    var cb = cmd.CmdBuffer(TestApp.Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    var model: D.Model = .{ .open = true, .selected = 0 };
+    // 4 options, room for 8 → the non-scroll group path.
+    D.viewWith(&model, &cb, &test_options, TestApp.msgs, .{ .max_visible = 8 });
+
+    const items = cb.cmds.items;
+    try testing.expectEqual(@as(usize, 9), items.len);
+    try testing.expect(items[2] == .push_group);
+    for (items) |c| try testing.expect(c != .push_scroll);
+}
+
+test "scroll math: maxScroll + scroll_by clamps to [0, max]" {
+    const testing = std.testing;
+    const D = Dropdown(64);
+    const opts: DropdownViewOpts = .{ .max_visible = 4 };
+
+    // 10 rows, 4 visible → 6 rows of overflow.
+    try testing.expectEqual(@as(f32, 6 * ITEM_HEIGHT), D.maxScroll(10, 4));
+    // Short list never scrolls.
+    try testing.expectEqual(@as(f32, 0), D.maxScroll(3, 4));
+    try testing.expectEqual(@as(f32, 0), D.maxScroll(10, 0));
+
+    var model: D.Model = .{ .open = true };
+    // Wheel far past the end clamps to maxScroll.
+    D.update(&model, D.scrollByMsg(10_000, long_options.len, opts));
+    try testing.expectEqual(@as(f32, 6 * ITEM_HEIGHT), model.scroll_offset);
+    // Wheel far past the start clamps to 0.
+    D.update(&model, D.scrollByMsg(-10_000, long_options.len, opts));
+    try testing.expectEqual(@as(f32, 0), model.scroll_offset);
+}
+
+test "scroll-to-reveal: keyboard moves keep the highlighted row visible" {
+    const testing = std.testing;
+    const D = Dropdown(64);
+    const opts: DropdownViewOpts = .{ .max_visible = 4 };
+
+    var model: D.Model = .{ .open = true };
+    try testing.expectEqual(@as(usize, 0), model.highlighted);
+
+    // Jump to the last row: viewport must scroll so row 9 is at the bottom.
+    D.update(&model, D.moveHighlightMsg(.last, long_options.len, opts));
+    try testing.expectEqual(@as(usize, 9), model.highlighted);
+    // bottom(=10*ITEM_HEIGHT) - viewport(=4*ITEM_HEIGHT) = 6*ITEM_HEIGHT.
+    try testing.expectEqual(@as(f32, 6 * ITEM_HEIGHT), model.scroll_offset);
+
+    // Back to the first row: scroll snaps to the top.
+    D.update(&model, D.moveHighlightMsg(.first, long_options.len, opts));
+    try testing.expectEqual(@as(usize, 0), model.highlighted);
+    try testing.expectEqual(@as(f32, 0), model.scroll_offset);
+
+    // Step down past the viewport bottom (rows 0..3 fit; row 4 needs a nudge).
+    inline for (0..4) |_| {
+        D.update(&model, D.moveHighlightMsg(.next, long_options.len, opts));
+    }
+    try testing.expectEqual(@as(usize, 4), model.highlighted);
+    // Row 4 bottom (5*ITEM_HEIGHT) - viewport (4*ITEM_HEIGHT) = 1 row.
+    try testing.expectEqual(@as(f32, ITEM_HEIGHT), model.scroll_offset);
+
+    // `.next` at the end saturates (no runaway index).
+    D.update(&model, D.moveHighlightMsg(.last, long_options.len, opts));
+    D.update(&model, D.moveHighlightMsg(.next, long_options.len, opts));
+    try testing.expectEqual(@as(usize, 9), model.highlighted);
+}
+
+test "hit-test lands on the correct option while the list is scrolled" {
+    const testing = std.testing;
+    const D = Dropdown(64);
+    const opts: DropdownViewOpts = .{
+        .list_x = 10,
+        .list_y = 40,
+        .list_width = 200,
+        .max_visible = 4,
+    };
+
+    var cb = cmd.CmdBuffer(TestApp.Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // Scrolled to the bottom: rows 6..9 are the visible window.
+    var model: D.Model = .{ .open = true, .selected = 0, .highlighted = 0 };
+    model.scroll_offset = D.maxScroll(long_options.len, opts.max_visible); // 216
+
+    // A root container so positionPass has a parent for the closed button
+    // (apps always call viewWith inside their own root group).
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    D.viewWith(&model, &cb, &long_options, TestApp.msgs, opts);
+    cb.popGroup();
+
+    const items = cb.cmds.items;
+    var rects: [32]layout.Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..items.len], items, 800, 600, text_mod.monoMeasurer());
+
+    // Viewport spans y ∈ [40, 184]; with scroll 216, row i sits at
+    // y = 40 - 216 + i*36, so the first visible row is 6 (y ∈ [40, 76]).
+    const hit_top = hit_test.hitTest(items, rects[0..items.len], 15, 45);
+    try testing.expect(hit_top != null);
+    try testing.expectEqual(@as(?TestApp.Msg, TestApp.Msg{ .select = 6 }), hit_top.?.msg);
+
+    // A point deeper in the viewport lands on a later row (row 8, y ∈ [112,148]).
+    const hit_mid = hit_test.hitTest(items, rects[0..items.len], 15, 120);
+    try testing.expectEqual(@as(?TestApp.Msg, TestApp.Msg{ .select = 8 }), hit_mid.?.msg);
+
+    // A point above the viewport (over the closed button row, y=40 boundary
+    // handled) that maps to a row scrolled out of view is clipped — a
+    // click just below the viewport bottom hits nothing selectable.
+    const hit_below = hit_test.hitTest(items, rects[0..items.len], 15, 300);
+    // 300 is outside the overlay entirely → no overlay hit; base layer has
+    // only the closed button near the top, so this misses it too.
+    try testing.expect(hit_below == null or hit_below.?.msg == null or
+        std.meta.activeTag(hit_below.?.msg.?) != .select);
 }
 
 test "viewWith: empty / out-of-range selection shows placeholder, no crash" {
