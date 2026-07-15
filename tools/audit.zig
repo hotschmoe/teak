@@ -89,6 +89,18 @@ const VIEW_SIG_RULE = Rule{
     .forbid_any = &.{},
 };
 
+// llms.txt sync: every `pub const NAME` re-export in src/teak.zig must be
+// mentioned somewhere in the hand-curated llms.txt, so the one-read context
+// pack can't silently fall behind the public API.
+const LLMS_TXT_RULE = Rule{
+    .name = "llms.txt lists every src/teak.zig re-export",
+    .reason = "llms.txt is hand-curated + audit-enforced — a new/renamed pub const must be documented there.",
+    .forbid_any = &.{},
+};
+
+const TEAK_ROOT_FILE = "src/teak.zig";
+const LLMS_TXT_FILE = "llms.txt";
+
 // ── Main ───────────────────────────────────────────────────────────
 
 pub fn main(init: std.process.Init) !void {
@@ -110,6 +122,10 @@ pub fn main(init: std.process.Init) !void {
     const var_hits = try auditModuleVars(gpa, io, NO_MODULE_VARS_RULE.dirs);
     defer freeHits(gpa, var_hits);
     total_violations += reportRule(NO_MODULE_VARS_RULE, var_hits);
+
+    const llms_hits = try auditLlmsTxt(gpa, io);
+    defer freeHits(gpa, llms_hits);
+    total_violations += reportLlmsTxt(llms_hits);
 
     if (total_violations > 0) {
         std.debug.print("\nHARDLINE audit FAILED with {d} violation(s).\n", .{total_violations});
@@ -434,4 +450,99 @@ fn scanFileForViewSig(
             });
         }
     }
+}
+
+// ── Dedicated: llms.txt ↔ src/teak.zig re-export sync ──────────────
+//
+// Extract every column-zero `pub const NAME` from src/teak.zig (the file
+// that defines what "public" means) and flag any NAME that is absent from
+// llms.txt. Substring match is deliberately lenient: the goal is to catch a
+// brand-new export that was never documented, not to police phrasing. A
+// missing llms.txt is itself a single violation.
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or c == '_';
+}
+
+/// Identifier following `pub const ` at the start of `line`, or null if the
+/// line is not a column-zero `pub const` declaration.
+fn reExportName(line: []const u8) ?[]const u8 {
+    const prefix = "pub const ";
+    if (!std.mem.startsWith(u8, line, prefix)) return null;
+    const rest = line[prefix.len..];
+    var end: usize = 0;
+    while (end < rest.len and isIdentChar(rest[end])) : (end += 1) {}
+    if (end == 0) return null;
+    return rest[0..end];
+}
+
+fn auditLlmsTxt(gpa: std.mem.Allocator, io: Io) ![]Hit {
+    var hits: std.ArrayList(Hit) = .empty;
+    errdefer {
+        for (hits.items) |h| {
+            gpa.free(h.path);
+            gpa.free(h.text);
+        }
+        hits.deinit(gpa);
+    }
+
+    const cwd = Dir.cwd();
+
+    // A missing llms.txt is a single, loud violation.
+    const llms = cwd.readFileAlloc(io, LLMS_TXT_FILE, gpa, .unlimited) catch |err| switch (err) {
+        error.FileNotFound => {
+            try hits.append(gpa, .{
+                .path = try gpa.dupe(u8, LLMS_TXT_FILE),
+                .line = 0,
+                .pattern = "file missing",
+                .text = try gpa.dupe(u8, "<llms.txt not found — create it per its header comment>"),
+            });
+            return hits.toOwnedSlice(gpa);
+        },
+        else => return err,
+    };
+    defer gpa.free(llms);
+
+    const teak_src = cwd.readFileAlloc(io, TEAK_ROOT_FILE, gpa, .unlimited) catch |err| switch (err) {
+        error.FileNotFound => return hits.toOwnedSlice(gpa),
+        else => return err,
+    };
+    defer gpa.free(teak_src);
+
+    var line_no: usize = 0;
+    var it = std.mem.splitScalar(u8, teak_src, '\n');
+    while (it.next()) |line| {
+        line_no += 1;
+        const name = reExportName(line) orelse continue;
+        if (std.mem.indexOf(u8, llms, name) == null) {
+            try hits.append(gpa, .{
+                .path = try gpa.dupe(u8, LLMS_TXT_FILE),
+                .line = line_no,
+                .pattern = "missing re-export",
+                .text = try gpa.dupe(u8, name),
+            });
+        }
+    }
+
+    return hits.toOwnedSlice(gpa);
+}
+
+/// Custom reporter so a stale llms.txt fails with the missing names on one
+/// line (matching llms.txt's own "regenerate per its header comment" note).
+fn reportLlmsTxt(hits: []const Hit) usize {
+    if (hits.len == 0) {
+        std.debug.print("  PASS  {s}\n", .{LLMS_TXT_RULE.name});
+        return 0;
+    }
+    std.debug.print("  FAIL  {s}\n", .{LLMS_TXT_RULE.name});
+    std.debug.print("        ({s})\n", .{LLMS_TXT_RULE.reason});
+    std.debug.print("        llms.txt is stale — missing: ", .{});
+    for (hits, 0..) |h, i| {
+        if (i > 0) std.debug.print(", ", .{});
+        std.debug.print("{s}", .{h.text});
+    }
+    std.debug.print("\n        Regenerate per llms.txt's header comment " ++
+        "(add each missing name to the \"Public API reference\" section).\n", .{});
+    return hits.len;
 }
