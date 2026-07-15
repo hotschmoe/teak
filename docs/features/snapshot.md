@@ -162,10 +162,88 @@ context.
 To "see" the current GUI while iterating: lay the view out and print
 `snapshotAlloc` — the text tells you what's on screen and where.
 
-**Planned follow-up (live `TEAK_SNAPSHOT` streaming).** A host-side hook
-that, when an env var is set, writes a fresh snapshot each frame (or on
-each dispatched `Msg`) to a file/stdout so an agent driving a *running*
-app can observe live state transitions. Not yet implemented — the format
-and the pure serializer here are the foundation it will build on. Until
-then, the headless golden loop above is the supported workflow.
+**Live `TEAK_SNAPSHOT` streaming (implemented).** `teak.run` mirrors the
+current frame's snapshot to a file so an agent driving a *running* app can
+observe live state transitions — click a button in the app, the file
+changes, the agent greps the diff. Data out, not pixels. The pure
+serializer above is the foundation; `run` just drives it each changed
+frame.
+
+### Enabling it
+
+Two ways, env wins:
+
+```zig
+// Explicit, in code:
+try teak.run(App, gpa, &host, &gpu, .{ .snapshot_path = "/tmp/app.snap" });
+```
+
+```sh
+# Or from the environment — overrides the option, read once at run() start:
+TEAK_SNAPSHOT=/tmp/app.snap zig build ui
+```
+
+Then, from anywhere, read the live GUI as text:
+
+```sh
+cat /tmp/app.snap        # the whole screen, right now
+grep 'button (' /tmp/app.snap   # every button and where it sits
+```
+
+The file is the exact `snapshot.write` output — the same grep-able,
+one-line-per-widget format documented above, with a header line
+(`window=WxH frame=N last_msg=<tag>`). `last_msg` is the `@tagName` of the
+last `Msg` `run` dispatched, so a diff tells you both *what changed* and
+*which transition caused it*.
+
+### Guarantees
+
+- **Atomic.** Each frame is written to `<path>.tmp` then renamed over
+  `<path>`, so a reader never observes a torn or half-written file.
+- **Change-gated.** The file is rewritten only when the frame content
+  actually changes — `run` reuses the same primary frame-diff signal
+  (`cmds` / `rects` / transient hover-press-focus) that gates its vertex
+  rebuild, minus the cosmetic cursor-blink tick (which the snapshot
+  doesn't show). Idle frames never touch disk. The very first frame and
+  any secondary-window open/close transition also force a write. (You can
+  confirm no idle rewrite happened by reading `frame=N` in the header: it
+  stamps the frame of the *last content change*, not the latest idle
+  frame.)
+- **No per-frame allocation.** The serialization buffer is reused across
+  frames, bulk-managed like the vertex/text upload lists.
+- **Fail-safe.** If the path can't be opened or written, `run` logs one
+  `std.log.warn` and disables the sink for the rest of the run. A broken
+  snapshot sink never crashes or slows the app.
+
+### Secondary windows
+
+If the app has a secondary window open (`secondaryWindow` / `secondaryView`),
+its snapshot is appended below the primary's under a marker line:
+
+```
+window=800x600 frame=12 last_msg=open_stats
+group (0,0,800,600) vertical
+  ...primary widgets...
+=== secondary "Stats" ===
+group (0,0,360,200) vertical
+  ...secondary widgets...
+```
+
+### wasm / freestanding
+
+The sink is gated on the target having a host filesystem, so a
+`wasm32-freestanding` build compiles it out entirely (the web backend
+hand-rolls its own loop and never calls `teak.run` anyway). The pure
+serializer in `src/core/snapshot.zig` stays available on every target for
+the headless golden loop above.
+
+### How `run` writes without libc or a threaded `Io`
+
+`run` is generic host-loop glue with a fixed signature — it has no `Io`
+handle threaded in and cannot assume the consumer links libc. So the sink
+routes its file writes and its `TEAK_SNAPSHOT` read through
+`std.Options.debug_io` / `std.Options.debug_threaded_io`, the
+globally-available diagnostic `Io` std itself uses. This keeps the feature
+working in every build that reaches `run` — including the library test
+runner, which links no libc — with no change to the `teak.run` signature.
 ```

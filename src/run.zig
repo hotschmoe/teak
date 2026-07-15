@@ -61,8 +61,10 @@
 //! just `Model` / `Msg` / `update` / `view`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const cmd = @import("core/cmd.zig");
+const snapshot = @import("core/snapshot.zig");
 const transient = @import("core/transient.zig");
 const text = @import("core/text.zig");
 const theme_mod = @import("core/theme.zig");
@@ -84,6 +86,139 @@ pub const RunOptions = struct {
     /// (apps with no text input pay nothing). The renderer toggles the
     /// cursor on a 30-frame phase, so 30 matches it.
     blink_period: u32 = 30,
+    /// Live-snapshot sink. When non-null (or the `TEAK_SNAPSHOT` env var is
+    /// set — env wins), `run` mirrors the current frame's snapshot text to
+    /// this file every time the frame content changes, so an LLM agent
+    /// driving the running app can read the GUI as data instead of pixels.
+    /// The env var is read once at `run` start (never per frame). The write
+    /// is atomic (`<path>.tmp` then rename) so a reader never sees a torn
+    /// file. A path that can't be written disables the sink for the rest of
+    /// the run after one `std.log.warn` — it never crashes or slows the app.
+    /// See `docs/features/snapshot.md`. On a target with no host filesystem
+    /// (wasm/freestanding) the whole sink compiles out.
+    snapshot_path: ?[]const u8 = null,
+};
+
+/// The target has a host filesystem to mirror snapshots into. Freestanding
+/// (wasm) has none — and never instantiates `run` anyway — so gating the
+/// sink on this compiles the file/env machinery out there entirely. run.zig
+/// sits outside the framework-core dirs, so the `builtin` reference is
+/// allowed here (HARDLINE §3 scopes the conditional-compilation ban to core).
+const snapshot_fs_capable = builtin.os.tag != .freestanding;
+
+/// Live-snapshot sink: mirrors each changed frame's `snapshot.write` text to
+/// a file for an out-of-band agent to read. Loop-orchestration state only
+/// (like `press_target` / the title buffer) — it holds no *application*
+/// state and only reflects what the pure passes already produced.
+///
+/// File I/O goes through `std.Options.debug_io` (the globally-available `Io`
+/// std itself uses for diagnostics) and `std.Io.Dir` rather than libc, so the
+/// sink works in every build that reaches `run` — including the library test
+/// runner, which links no libc. The `TEAK_SNAPSHOT` override is read from the
+/// process environment the same globally-available handle exposes. Both are
+/// compiled out on `!snapshot_fs_capable`.
+const SnapshotSink = struct {
+    /// Actively mirroring. Flips to false permanently on the first write
+    /// failure (a broken sink must never crash or throttle the app).
+    enabled: bool = false,
+    /// One-shot latch so the disable-warning is logged at most once.
+    failed: bool = false,
+    gpa: std.mem.Allocator = undefined,
+    /// Destination path and its `<dest>.tmp` sibling (both owned; non-empty
+    /// exactly when the sink allocated its resources).
+    dest: []const u8 = &.{},
+    tmp: []const u8 = &.{},
+    /// Reused serialization buffer — bulk-managed like verts/text_draws, so
+    /// steady-state frames allocate nothing.
+    buf: std.Io.Writer.Allocating = undefined,
+
+    /// Resolve the destination (env `TEAK_SNAPSHOT` wins over `opt_path`,
+    /// read exactly once here) and allocate the reusable buffers. Any failure
+    /// yields a disabled no-op sink rather than an error.
+    fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8) SnapshotSink {
+        if (comptime !snapshot_fs_capable) return .{};
+
+        const env_owned = envSnapshotPath(gpa);
+        defer if (env_owned) |e| gpa.free(e);
+
+        const chosen = env_owned orelse opt_path orelse return .{};
+        if (chosen.len == 0) return .{};
+
+        const dest = gpa.dupe(u8, chosen) catch return .{};
+        const tmp = std.fmt.allocPrint(gpa, "{s}.tmp", .{chosen}) catch {
+            gpa.free(dest);
+            return .{};
+        };
+        return .{
+            .enabled = true,
+            .gpa = gpa,
+            .dest = dest,
+            .tmp = tmp,
+            .buf = std.Io.Writer.Allocating.init(gpa),
+        };
+    }
+
+    fn deinit(self: *SnapshotSink) void {
+        if (comptime !snapshot_fs_capable) return;
+        if (self.dest.len == 0) return; // never activated — nothing allocated
+        self.buf.deinit();
+        self.gpa.free(self.dest);
+        self.gpa.free(self.tmp);
+    }
+
+    /// Owned dupe of `TEAK_SNAPSHOT` if set and non-empty, else null. Read
+    /// from the process environment via the same globally-available `Io`
+    /// handle std uses for diagnostics — no libc, no `Io` threaded into
+    /// `main` (this fork's bare `main()` gets neither).
+    fn envSnapshotPath(gpa: std.mem.Allocator) ?[]u8 {
+        if (comptime !snapshot_fs_capable) return null;
+        const threaded = std.Options.debug_threaded_io orelse return null;
+        var map = threaded.environ.process_environ.createMap(gpa) catch return null;
+        defer map.deinit();
+        const v = map.get("TEAK_SNAPSHOT") orelse return null;
+        if (v.len == 0) return null;
+        return gpa.dupe(u8, v) catch null;
+    }
+
+    /// Serialize the primary frame (and, when open, the secondary window
+    /// below a marker line) and mirror it atomically. Called only when the
+    /// loop's frame-diff signals the content changed, so idle frames never
+    /// reach here.
+    fn writeFrame(
+        self: *SnapshotSink,
+        header: snapshot.Header,
+        cmds: anytype,
+        rects: []const Rect,
+        ts: *const TransientState,
+        sec_title: ?[]const u8,
+        sec_cmds: anytype,
+        sec_rects: []const Rect,
+    ) void {
+        if (comptime !snapshot_fs_capable) return;
+        if (!self.enabled) return;
+
+        self.buf.clearRetainingCapacity();
+        const w = &self.buf.writer;
+        snapshot.write(w, cmds, rects, .{ .header = header, .transient = ts }) catch return self.fail();
+        if (sec_title) |title| {
+            w.print("=== secondary \"{s}\" ===\n", .{title}) catch return self.fail();
+            snapshot.write(w, sec_cmds, sec_rects, .{}) catch return self.fail();
+        }
+
+        // Atomic swap: write the temp sibling, then rename over the target so
+        // a reader mid-write never observes a partial file.
+        const io = std.Options.debug_io;
+        const dir = std.Io.Dir.cwd();
+        dir.writeFile(io, .{ .sub_path = self.tmp, .data = self.buf.written() }) catch return self.fail();
+        dir.rename(self.tmp, dir, self.dest, io) catch return self.fail();
+    }
+
+    fn fail(self: *SnapshotSink) void {
+        self.enabled = false;
+        if (self.failed) return;
+        self.failed = true;
+        std.log.warn("teak: snapshot sink disabled — could not write \"{s}\"", .{self.dest});
+    }
 };
 
 /// Declares a second top-level window the app wants open this frame.
@@ -138,6 +273,25 @@ pub fn run(
     const CmdBufT = cmd.CmdBuffer(Msg);
 
     var model: App.Model = if (@hasDecl(App.Model, "init")) App.Model.init() else .{};
+
+    // Every Msg is routed through `dispatch` so the live snapshot's header
+    // can name the last transition (`@tagName`). `dispatch` adds nothing to
+    // the TEA loop — it is `App.update` plus one string assignment.
+    var last_msg: []const u8 = "";
+    const Router = struct {
+        fn dispatch(m: *App.Model, msg: Msg, last: *[]const u8) void {
+            last.* = @tagName(std.meta.activeTag(msg));
+            App.update(m, msg);
+        }
+    };
+
+    // Live-snapshot sink (opt-in via RunOptions.snapshot_path / TEAK_SNAPSHOT).
+    var snap = SnapshotSink.init(gpa, opts.snapshot_path);
+    defer snap.deinit();
+    // Force a first write even if the opening frame happens to match the empty
+    // previous buffer, and detect secondary open/close transitions.
+    var snap_first = true;
+    var prev_secondary_open = false;
 
     // Double-buffered command buffers: build into one while hit-testing
     // against the other (one-frame input latency, imperceptible).
@@ -204,7 +358,7 @@ pub fn run(
                     // `hit.msg` is null when a modal overlay consumed the
                     // click but asked for no Msg (HARDLINE §2 hatch 5) —
                     // swallow it, don't fall through.
-                    if (hit.msg) |m| App.update(&model, m);
+                    if (hit.msg) |m| Router.dispatch(&model, m, &last_msg);
                 }
             }
             press_target = null;
@@ -216,7 +370,7 @@ pub fn run(
         //    clipboard vtable (the app owns cut/copy/paste policy).
         if (@hasDecl(App, "keyCharMsg")) {
             for (input.chars) |ch| {
-                if (App.keyCharMsg(&model, ch)) |m| App.update(&model, m);
+                if (App.keyCharMsg(&model, ch)) |m| Router.dispatch(&model, m, &last_msg);
             }
         }
         for (input.keys) |k| {
@@ -236,7 +390,7 @@ pub fn run(
                     else
                         focus.prevFocusable(prev_cmds, cur_idx);
                     if (target) |ti| {
-                        if (focus.focusMsgAt(prev_cmds, ti)) |fm| App.update(&model, fm);
+                        if (focus.focusMsgAt(prev_cmds, ti)) |fm| Router.dispatch(&model, fm, &last_msg);
                     }
                     continue;
                 }
@@ -245,7 +399,7 @@ pub fn run(
             // precedence over `keySpecialMsg` for the Enter key only.
             if (@hasDecl(App, "submitMsg")) {
                 if (k == .enter) {
-                    if (App.submitMsg(&model)) |m| App.update(&model, m);
+                    if (App.submitMsg(&model)) |m| Router.dispatch(&model, m, &last_msg);
                     continue;
                 }
             }
@@ -253,14 +407,14 @@ pub fn run(
             if (handled_by_clipboard and App.keyNeedsClipboard(k)) {
                 App.handleClipboard(&model, k, host.clipboard());
             } else if (@hasDecl(App, "keySpecialMsg")) {
-                if (App.keySpecialMsg(&model, k)) |m| App.update(&model, m);
+                if (App.keySpecialMsg(&model, k)) |m| Router.dispatch(&model, m, &last_msg);
             }
         }
 
         // 5. Wheel.
         if (@hasDecl(App, "wheelMsg")) {
             if (input.wheel_dy != 0 or input.wheel_dx != 0) {
-                if (App.wheelMsg(&model, input.wheel_dy)) |m| App.update(&model, m);
+                if (App.wheelMsg(&model, input.wheel_dy)) |m| Router.dispatch(&model, m, &last_msg);
             }
         }
 
@@ -340,6 +494,10 @@ pub fn run(
         // 11. Present.
         gpu.renderFrame(opts.clear_color);
 
+        // Set to the secondary window's title on the frames it actually
+        // renders, so the live snapshot can append its body below a marker.
+        var sec_snap_title: ?[]const u8 = null;
+
         // 12. Secondary window: open / close / render. The Model drives
         //     intent via `secondaryWindow`; `run` owns the Host + Gpu
         //     resources keyed off `secondary.window_id`. Lock-step ids —
@@ -403,16 +561,40 @@ pub fn run(
                         gpu.uploadText(text_draws.items);
                         gpu.uploadImages(image_draws.items);
                         gpu.renderToWindow(wid, opts.clear_color);
+                        sec_snap_title = if (spec) |s| s.title else "secondary";
                     }
                 } else {
                     gpu.closeSecondarySurface(wid);
                     host.closeSecondaryWindow(wid);
                     secondary.window_id = null;
                     if (@hasDecl(App, "secondaryClosedMsg")) {
-                        if (App.secondaryClosedMsg(&model)) |m| App.update(&model, m);
+                        if (App.secondaryClosedMsg(&model)) |m| Router.dispatch(&model, m, &last_msg);
                     }
                 }
             }
+        }
+
+        // 13. Live snapshot: mirror the frame to disk only when its content
+        //     actually changed (the same primary frame-diff signal that
+        //     gates the vertex rebuild, minus the cosmetic blink tick which
+        //     the snapshot doesn't show) — so idle frames never touch disk.
+        //     A secondary open/close transition also counts, and the very
+        //     first frame is always written. Placed after the secondary
+        //     render so its body is available to append.
+        if (snap.enabled) {
+            const sec_open_now = sec_snap_title != null;
+            const changed = snap_first or !cmds_same or !rects_same or !ts_same or
+                (sec_open_now != prev_secondary_open);
+            if (changed) {
+                snap.writeFrame(.{
+                    .window_w = @floatFromInt(input.width),
+                    .window_h = @floatFromInt(input.height),
+                    .frame = ts.frame_counter,
+                    .last_msg = last_msg,
+                }, cur_cmds, rects[cur].items, &ts, sec_snap_title, secondary.buf.cmds.items, secondary.rects.items);
+            }
+            snap_first = false;
+            prev_secondary_open = sec_open_now;
         }
     }
 
@@ -969,6 +1151,150 @@ test "cmdsEqual: detects label, disabled, and length changes" {
     y.button(.a, "Go");
     y.button(.a, "Go");
     try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+}
+
+// ── Live-snapshot sink test ─────────────────────────────────────────
+//
+// Drives the loop with the snapshot sink pointed at a tmpDir file, scripts
+// a click, and asserts the mirrored file reflects post-click state — and,
+// via the header's frame counter, that idle frames after the last change
+// did NOT rewrite it.
+
+/// Scripts 7 frames, mouse parked over the button at (5,5) throughout:
+/// 1 idle (first write), 2 idle (no write), 3 mousedown, 4 mouseup (fires
+/// .click), 5-6 idle (no write), 7 close. The last content change is frame
+/// 4, so a correct sink stamps `frame=4` in the file — higher would mean an
+/// idle frame rewrote it.
+const SnapHost = struct {
+    frame: u32 = 0,
+    closed: bool = false,
+
+    pub fn deinit(_: *SnapHost) void {}
+    pub fn shouldClose(self: *const SnapHost) bool {
+        return self.closed;
+    }
+    pub fn pollInputs(self: *SnapHost) InputState {
+        self.frame += 1;
+        var in = std.mem.zeroes(InputState);
+        in.width = 200;
+        in.height = 100;
+        in.mouse_x = 5;
+        in.mouse_y = 5;
+        switch (self.frame) {
+            1 => in.resized = true,
+            2 => {}, // idle
+            3 => in.mouse_down = true,
+            4 => in.mouse_up = true,
+            5, 6 => {}, // idle
+            else => self.closed = true,
+        }
+        in.chars = &.{};
+        in.keys = &.{};
+        return in;
+    }
+    pub fn nativeHandle(_: *const SnapHost) void {}
+    pub fn textMeasurer(_: *SnapHost) text.TextMeasurer {
+        return text.monoMeasurer();
+    }
+    pub fn clipboard(_: *SnapHost) Clipboard {
+        return .{ .ctx = undefined, .read_fn = StubHost.stubRead, .write_fn = StubHost.stubWrite };
+    }
+    pub fn imeState(_: *const SnapHost) host_iface.ImeState {
+        return .{};
+    }
+    pub fn publishA11yTree(_: *SnapHost, _: []const host_iface.A11yNode) void {}
+    pub fn openFileDialog(_: *SnapHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn saveFileDialog(_: *SnapHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn openSecondaryWindow(_: *SnapHost, _: []const u8, _: u32, _: u32) ?u32 {
+        return null;
+    }
+    pub fn setTitle(_: *SnapHost, _: []const u8) void {}
+    pub fn nowMs(_: *const SnapHost) u64 {
+        return 0;
+    }
+};
+
+/// Button "X" over a live count label; the label changes on click so the
+/// snapshot diff is observable.
+const SnapApp = struct {
+    pub const Model = struct {
+        count: i32 = 0,
+        buf: [16]u8 = undefined,
+        len: usize = 0,
+
+        pub fn init() Model {
+            var m = Model{};
+            m.format();
+            return m;
+        }
+        fn format(m: *Model) void {
+            const s = std.fmt.bufPrint(&m.buf, "count: {d}", .{m.count}) catch "count: ?";
+            m.len = s.len;
+        }
+        fn label(m: *const Model) []const u8 {
+            return m.buf[0..m.len];
+        }
+    };
+    pub const Msg = union(enum) { click };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .click => {
+                m.count += 1;
+                m.format();
+            },
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+        cb.button(.click, "X");
+        cb.text(m.label());
+        cb.popGroup();
+    }
+};
+
+test "run: live snapshot mirrors the frame and skips idle rewrites" {
+    const gpa = std.testing.allocator;
+    const io = std.Options.debug_io;
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    // A cwd-relative path into the tmpDir (the sink writes via cwd()); read
+    // it back through the tmpDir handle.
+    const path = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/app.snap", .{td.sub_path});
+    defer gpa.free(path);
+
+    var host: SnapHost = .{};
+    var gpu: StubGpu = .{};
+    try run(SnapApp, gpa, &host, &gpu, .{ .snapshot_path = path });
+
+    const contents = try td.dir.readFileAlloc(io, "app.snap", gpa, .limited(1 << 20));
+    defer gpa.free(contents);
+
+    // Header present and well-formed.
+    try std.testing.expect(std.mem.startsWith(u8, contents, "window="));
+    // The known widget line and post-click state are both present…
+    try std.testing.expect(std.mem.indexOf(u8, contents, "button") != null);
+    try std.testing.expect(std.mem.indexOf(u8, contents, "\"X\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, contents, "\"count: 1\"") != null);
+    // …and the pre-click label is gone (the file holds only the latest frame).
+    try std.testing.expect(std.mem.indexOf(u8, contents, "\"count: 0\"") == null);
+    // last_msg names the last dispatched transition.
+    try std.testing.expect(std.mem.indexOf(u8, contents, "last_msg=click") != null);
+
+    // The header frame counter proves idle frames 5-6 did NOT rewrite: the
+    // last content change was frame 4, so the mirrored file must stamp
+    // frame=4 (a later number would mean an idle frame overwrote it).
+    const marker = "frame=";
+    const fi = std.mem.indexOf(u8, contents, marker).?;
+    const after = contents[fi + marker.len ..];
+    const end = std.mem.indexOfScalar(u8, after, ' ') orelse after.len;
+    const frame_val = try std.fmt.parseInt(u32, after[0..end], 10);
+    try std.testing.expectEqual(@as(u32, 4), frame_val);
 }
 
 // ── Secondary-window tests ──────────────────────────────────────────
