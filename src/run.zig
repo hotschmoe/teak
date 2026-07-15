@@ -52,6 +52,11 @@
 //!   - `secondaryClosedMsg(*const Model) ?Msg`        — dispatched when the
 //!     user closes the secondary window from the OS, so the app can clear
 //!     its own "is it open" state. Optional even within the secondary set.
+//!   - `subscribe(*const Model) []const Sub(Msg)`     — declarative timers
+//!     (HARDLINE §2 hatch 6). Pure: the app *declares* what to watch; `run`
+//!     services the returned subs each frame via `runSubs` on the host's
+//!     monotonic clock (`Host.nowMs`) and dispatches any fired `Msg`
+//!     through the normal `update` loop. See `docs/features/subscriptions.md`.
 //!
 //! IME composition state (`Host.imeState`) is folded into `TransientState`
 //! every frame with no opt-in — hosts without IME report inactive and it
@@ -65,6 +70,7 @@ const builtin = @import("builtin");
 
 const cmd = @import("core/cmd.zig");
 const snapshot = @import("core/snapshot.zig");
+const sub_mod = @import("core/sub.zig");
 const transient = @import("core/transient.zig");
 const text = @import("core/text.zig");
 const theme_mod = @import("core/theme.zig");
@@ -285,6 +291,26 @@ pub fn run(
         }
     };
 
+    // Subscriptions (HARDLINE §2 hatch 6). If the app declares `subscribe`,
+    // `run` services its declared subs once per frame: it calls the pure
+    // `subscribe(model)` (the app only *declares* what to watch), then feeds
+    // the returned slice through `runSubs` on the host's monotonic clock. A
+    // fired sub is routed through `Router.dispatch` exactly like an input Msg
+    // — it mutates `Model` through `update` (no second mutation path) and
+    // updates `last_msg` for the snapshot sink. `runSubs` invokes
+    // `dispatch(msg)` with a single argument, so the model + last_msg pointers
+    // the router needs ride on this per-App dispatcher's static fields, bound
+    // once below. Loop-orchestration plumbing (like `press_target`), not
+    // application state; time itself lives on the Host (`nowMs`), never core.
+    const has_subscribe = @hasDecl(App, "subscribe");
+    const SubDispatch = struct {
+        var model_ptr: *App.Model = undefined;
+        var last_ptr: *[]const u8 = undefined;
+        fn dispatch(msg: Msg) void {
+            Router.dispatch(model_ptr, msg, last_ptr);
+        }
+    };
+
     // Live-snapshot sink (opt-in via RunOptions.snapshot_path / TEAK_SNAPSHOT).
     var snap = SnapshotSink.init(gpa, opts.snapshot_path);
     defer snap.deinit();
@@ -317,6 +343,17 @@ pub fn run(
     // the click only if mouseup lands on the same widget; drag-off
     // cancels without firing.
     var press_target: ?usize = null;
+
+    // Subscription timer state: the previous frame's `nowMs`. `runSubs` is
+    // stateless — it decides fire/skip purely from (last_sub_ms, now_ms, sub
+    // data) — so this single timestamp is all the bookkeeping `run` holds.
+    // `null` until the first frame binds it, so no sub fires on the opening
+    // tick (it has no window to compare against).
+    var last_sub_ms: ?u64 = null;
+    if (has_subscribe) {
+        SubDispatch.model_ptr = &model;
+        SubDispatch.last_ptr = &last_msg;
+    }
 
     // Optional secondary window. `has_secondary` is comptime, so the whole
     // machinery (including the Gpu methods outside `validateGpu`) is only
@@ -416,6 +453,19 @@ pub fn run(
             if (input.wheel_dy != 0 or input.wheel_dx != 0) {
                 if (App.wheelMsg(&model, input.wheel_dy)) |m| Router.dispatch(&model, m, &last_msg);
             }
+        }
+
+        // 5.5. Subscriptions: fire the app's declared timers before building
+        //      this frame's view, so a sub-driven Model change is reflected
+        //      in the frame we're about to emit (and mirrored to the snapshot
+        //      sink through the normal frame-diff). Pure `subscribe` declares;
+        //      `runSubs` watches on the host clock; fired subs dispatch as
+        //      ordinary Msgs through `update`.
+        if (has_subscribe) {
+            const now_ms = host.nowMs();
+            const since = last_sub_ms orelse now_ms; // first frame: no window, no fire
+            sub_mod.runSubs(Msg, App.subscribe(&model), since, now_ms, SubDispatch.dispatch);
+            last_sub_ms = now_ms;
         }
 
         // 6. Build this frame into the other buffer.
@@ -1462,4 +1512,137 @@ test "run: drives the secondary window open -> render -> user-close lifecycle" {
     try std.testing.expectEqual(@as(u32, 2), gpu.rendered_to_window);
     try std.testing.expectEqual(@as(u32, 1), gpu.closed_surface);
     try std.testing.expect(Sink.closed_msg);
+}
+
+// ── Subscription (timer) test ───────────────────────────────────────
+//
+// Drives the loop with an app that declares a `.every` sub and a Host whose
+// `nowMs` advances across frames. Asserts the fired Msg reaches `update`
+// (Model changes) and — the bonus — the live snapshot mirrors the post-fire
+// frame with `last_msg` set to the sub's Msg tag.
+
+/// Advancing-clock stub Host. `nowMs` reads a clock that `pollInputs` steps
+/// per frame (nowMs' receiver is `*const`, so the step happens on poll):
+/// frame 1 → 50 ms (idle, populates prev), frame 2 → 250 ms (crosses the
+/// 100 & 200 boundaries → two `.every` fires), frame 3 → close.
+const TimerHost = struct {
+    frame: u32 = 0,
+    closed: bool = false,
+    clock_ms: u64 = 0,
+
+    pub fn deinit(_: *TimerHost) void {}
+    pub fn shouldClose(self: *const TimerHost) bool {
+        return self.closed;
+    }
+    pub fn pollInputs(self: *TimerHost) InputState {
+        self.frame += 1;
+        var in = std.mem.zeroes(InputState);
+        in.width = 200;
+        in.height = 100;
+        in.mouse_x = -10;
+        in.mouse_y = -10;
+        in.chars = &.{};
+        in.keys = &.{};
+        switch (self.frame) {
+            1 => {
+                self.clock_ms = 50;
+                in.resized = true;
+            },
+            2 => self.clock_ms = 250,
+            else => self.closed = true,
+        }
+        return in;
+    }
+    pub fn nativeHandle(_: *const TimerHost) void {}
+    pub fn textMeasurer(_: *TimerHost) text.TextMeasurer {
+        return text.monoMeasurer();
+    }
+    pub fn clipboard(_: *TimerHost) Clipboard {
+        return .{ .ctx = undefined, .read_fn = StubHost.stubRead, .write_fn = StubHost.stubWrite };
+    }
+    pub fn imeState(_: *const TimerHost) host_iface.ImeState {
+        return .{};
+    }
+    pub fn publishA11yTree(_: *TimerHost, _: []const host_iface.A11yNode) void {}
+    pub fn openFileDialog(_: *TimerHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn saveFileDialog(_: *TimerHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn requestFileDialog(_: *TimerHost, _: host_iface.FileDialogFilter) u32 {
+        return 0;
+    }
+    pub fn requestSaveFileDialog(_: *TimerHost, _: host_iface.FileDialogFilter) u32 {
+        return 0;
+    }
+    pub fn pollFileDialogResult(_: *TimerHost, _: u32) host_iface.FileDialogPoll {
+        return .{ .pending = {} };
+    }
+    pub fn openSecondaryWindow(_: *TimerHost, _: []const u8, _: u32, _: u32) ?u32 {
+        return null;
+    }
+    pub fn pollSecondaryInputs(_: *TimerHost, _: u32) ?InputState {
+        return null;
+    }
+    pub fn closeSecondaryWindow(_: *TimerHost, _: u32) void {}
+    pub fn secondaryWindowHandle(_: *const TimerHost, _: u32) ?void {
+        return null;
+    }
+    pub fn setTitle(_: *TimerHost, _: []const u8) void {}
+    pub fn nowMs(self: *const TimerHost) u64 {
+        return self.clock_ms;
+    }
+};
+
+/// A tick counter driven purely by a `.every` subscription — no input. The
+/// label is formatted into the per-frame cmd arena (not aliased from Model),
+/// so the two frame buffers hold distinct copies and the frame-diff can see
+/// the count change with no accompanying transient-state change.
+const TimerApp = struct {
+    pub const Model = struct { ticks: i32 = 0 };
+    pub const Msg = union(enum) { tick };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .tick => m.ticks += 1,
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+        cb.text(std.fmt.allocPrint(cb.arena.allocator(), "ticks: {d}", .{m.ticks}) catch "ticks: ?");
+        cb.popGroup();
+    }
+    pub fn subscribe(_: *const Model) []const sub_mod.Sub(Msg) {
+        // Fire `.tick` on every crossed 100 ms boundary.
+        return &.{.{ .every = .{ .interval_ms = 100, .msg = .tick } }};
+    }
+};
+
+test "run: services a .every subscription and mirrors the fired Msg to the snapshot" {
+    comptime host_iface.validateHost(TimerHost);
+
+    const gpa = std.testing.allocator;
+    const io = std.Options.debug_io;
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const path = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/timer.snap", .{td.sub_path});
+    defer gpa.free(path);
+
+    var host: TimerHost = .{};
+    var gpu: StubGpu = .{};
+    try run(TimerApp, gpa, &host, &gpu, .{ .snapshot_path = path });
+
+    // Frame 1 (50 ms) is the first frame — no window to compare, no fire.
+    // Frame 2 (250 ms) crosses the 100 & 200 ms boundaries → two `.tick`s.
+    const contents = try td.dir.readFileAlloc(io, "timer.snap", gpa, .limited(1 << 20));
+    defer gpa.free(contents);
+
+    // The Model changed twice through `update` (the snapshot is the only
+    // channel — `run` owns the Model — and it holds the latest frame).
+    try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 2\"") != null);
+    // …and a sub-fired Msg drives `last_msg` exactly like an input Msg.
+    try std.testing.expect(std.mem.indexOf(u8, contents, "last_msg=tick") != null);
+    // The pre-fire label is gone — the file holds only the latest frame.
+    try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 0\"") == null);
 }

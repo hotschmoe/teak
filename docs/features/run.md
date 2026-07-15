@@ -40,7 +40,26 @@ Optional App decls, each detected with `@hasDecl` — present only what you
 need (full table in [consuming-teak.md §5](../consuming-teak.md)):
 `keyCharMsg`, `keySpecialMsg`, `keyNeedsClipboard` + `handleClipboard`,
 `wheelMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
-`secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`).
+`secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`),
+`subscribe`.
+
+### Subscriptions
+
+An app that wants a timer / periodic Msg exposes one pure decl:
+
+| Decl | Signature | Role |
+|------|-----------|------|
+| `subscribe` | `(*const Model) []const Sub(Msg)` | declares the timers to watch this frame — `.every(interval_ms, msg)` (periodic) or `.at(deadline_ms, msg)` (one-shot). Pure, like `view`. |
+
+Each frame, immediately before it builds the view, `run` calls
+`subscribe(model)` and feeds the returned subs through `teak.runSubs` on
+the host's monotonic clock (`Host.nowMs()`). A fired sub is dispatched
+through the same router as an input Msg, so it mutates `Model` through
+`update` (no second mutation path), reflects in the frame emitted this
+tick, and updates `last_msg` for the live snapshot. The only loop state is
+`last_sub_ms` (the previous frame's timestamp — `runSubs` itself is
+stateless); no sub fires on the opening frame. Full contract, bounds, and
+the `.at`-must-be-dropped rule: [subscriptions.md](subscriptions.md).
 
 ### Secondary window
 
@@ -89,12 +108,14 @@ minimal stub Gpu still satisfies `run`.
    exposes the relevant hooks), then clipboard chords via
    `handleClipboard`, else `keySpecialMsg`.
 4. Wheel via `wheelMsg`.
-5. Build this frame's view into the alternate buffer (theme from
+5. Subscriptions: `runSubs(subscribe(model))` on `Host.nowMs()`; fired subs
+   dispatch as ordinary Msgs before the view builds (if `subscribe` present).
+6. Build this frame's view into the alternate buffer (theme from
    `themeFor` if present), layout into a grown rect slice.
-6. Update `TransientState` (hover/press/focus/frame counter); focus index
+7. Update `TransientState` (hover/press/focus/frame counter); focus index
    resolved from `focusedMsg` via `indexOfFocusMsg`.
-7. Push `windowTitle` to the host on change.
-8. Frame diff (`cmdsEqual` + `rectsEqual` + transient compare, plus the
+8. Push `windowTitle` to the host on change.
+9. Frame diff (`cmdsEqual` + `rectsEqual` + transient compare, plus the
    blink tick): skip `buildVertices` + uploads when nothing observable
    changed. Always `renderFrame`.
 

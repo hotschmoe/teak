@@ -496,45 +496,52 @@ panics. Size it to the cmd count (or use a generous fixed cap and slice).
 
 ## 9. Watch a running app
 
-<!-- sync-check: TEAK_SNAPSHOT -->
-
 **Goal:** as an agent driving a *running* app, observe live state
 transitions as text instead of pixels.
 
-**Status (verify before relying on it):** the pure serializer
-(`teak.snapshot`, recipe 8) has landed; the **live `TEAK_SNAPSHOT`
-streaming hook in `teak.run` is a planned follow-up** and was not present
-in `src/run.zig` at the time this recipe was written. This section is
-written from the contract in
-[snapshot.md § "Planned follow-up"](features/snapshot.md#how-an-agent-should-use-this);
-re-read `src/run.zig` + `snapshot.md` to confirm the exact env-var name and
-sink before depending on it.
+**This is implemented.** `teak.run` mirrors each *changed* frame's snapshot
+to a file — the same `tag (x,y,w,h) payload` format as recipe 8, with a
+header line. Enable it two ways (env wins, read once at `run` start):
 
-**Intended usage (per contract):** set an env var (e.g. `TEAK_SNAPSHOT`)
-before launching; `teak.run` writes a fresh snapshot each frame (or on each
-dispatched `Msg`) — the same `tag (x,y,w,h) payload` format as recipe 8,
-with a header line — to a file/stdout. You then `grep`/diff the stream to
-"see" the GUI and confirm each `Msg` did what you expected:
+```zig
+// In code, via RunOptions:
+try teak.run(App, gpa, &host, &gpu, .{ .snapshot_path = "/tmp/teak.snap" });
+```
 
 ```sh
+# Or from the environment — overrides the option:
 TEAK_SNAPSHOT=/tmp/teak.snap zig build ui &
-# each frame appends a block like:
+```
+
+Then read the live GUI as text from anywhere:
+
+```sh
+cat /tmp/teak.snap              # the whole screen, right now
+grep 'button (' /tmp/teak.snap  # every button and where it sits
+# the file is one block, rewritten in place — e.g.
 #   window=900x500 frame=42 last_msg=inc
 #   group (0,0,900,500) vertical
 #     text (16,16,80,20) "Count: 1"
 #     ...
-tail -f /tmp/teak.snap        # watch state transitions live
 ```
 
-**Works today (the supported fallback):** the headless golden loop from
-recipe 8. Drive the app in a test — `update(&m, msg)` then re-`view` +
-`snapshotAlloc` — and read the returned text between transitions. That path
-needs no Host and is already stable.
+**Guarantees:**
+- **Atomic** — each frame is written to `<path>.tmp` then renamed over
+  `<path>`, so a reader never sees a torn file.
+- **Change-gated** — rewritten only when the frame content actually changes
+  (the same frame-diff that gates the vertex rebuild, minus the cosmetic
+  cursor blink). Idle frames never touch disk; `frame=N` in the header
+  stamps the *last content change*, so a stale `N` proves no idle rewrite.
+- **`last_msg`** in the header is the `@tagName` of the last dispatched
+  `Msg` — including a sub-fired timer Msg — so a diff tells you *what*
+  changed and *which transition* caused it.
+- **Fail-safe** — an unwritable path disables the sink after one
+  `std.log.warn`; it never crashes or slows the app.
 
-**Common mistake:** assuming the live stream exists because `teak.snapshot`
-does. The serializer is the *foundation*; the host-side streaming hook is
-separate. If `tail` shows nothing, the hook hasn't landed — fall back to
-the headless loop.
+**Also works (no Host):** the headless golden loop from recipe 8. Drive the
+app in a test — `update(&m, msg)` then re-`view` + `snapshotAlloc` — and
+read the returned text between transitions. Depth:
+[snapshot.md](features/snapshot.md).
 
 ---
 
@@ -592,43 +599,35 @@ returns a spec); `run` diffs it against the live window to open/close/resize.
 **Goal:** fire a `Msg` on a periodic timer (autosave tick, clock, poll)
 without reading a clock inside `view` (HARDLINE §3 bans that).
 
-**You will touch:** `src/app.zig`. Uses `teak.Sub(Msg)` (data-only) +
-`teak.runSubs` + `Host.nowMs()`. Escape hatch 6 in [HARDLINE §2](HARDLINE.md).
+**You will touch:** `src/app.zig` — one optional decl. Uses `teak.Sub(Msg)`
+(data-only) + `Host.nowMs()`. Escape hatch 6 in [HARDLINE §2](HARDLINE.md);
+depth: [subscriptions.md](features/subscriptions.md).
 
-1. Declare subscriptions as a **pure function of Model** returning
-   data-only `Sub` values — same purity rules as `view`. The variants are
-   `.every` (periodic) and `.at` (one-shot deadline):
+Expose `subscribe` as a **pure function of Model** returning data-only
+`Sub` values — same purity rules as `view`. The variants are `.every`
+(periodic) and `.at` (one-shot deadline):
 
-   ```zig
-   pub fn subscribe(m: *const Model) []const teak.Sub(Msg) {
-       _ = m;
-       // Fire .tick roughly every 1000 ms.
-       return &.{ .{ .every = .{ .interval_ms = 1000, .msg = .tick } } };
-   }
-   // Msg: tick,   update: .tick => m.seconds += 1,
-   ```
+```zig
+pub fn subscribe(m: *const Model) []const teak.Sub(Msg) {
+    _ = m;
+    // Fire .tick on every crossed 1000 ms boundary.
+    return &.{.{ .every = .{ .interval_ms = 1000, .msg = .tick } }};
+}
+// Msg: tick,   update: .tick => m.seconds += 1,
+```
 
-2. `runSubs` decides which subs fire this frame from
-   `(last_frame_ms, now_ms, sub data)` and calls your dispatcher — a fired
-   sub becomes a normal `Msg` through `update` (no second mutation path):
+That's the whole app-side change. **`teak.run` auto-services it:** each
+frame, immediately before it builds the view, `run` calls `subscribe(model)`
+and feeds the result through `teak.runSubs` on `Host.nowMs()`; a fired sub
+is dispatched as a normal `Msg` through `update` (no second mutation path),
+reflected in the frame emitted this tick, and its tag lands in the live
+snapshot's `last_msg`. You do **not** call `runSubs` yourself — `run` owns
+the `nowMs` read and the `last_frame_ms` bookkeeping.
 
-   ```zig
-   const Dispatch = struct {
-       m: *Model,
-       fn call(self: @This(), msg: Msg) void { update(self.m, msg); }
-   };
-   // once per frame, on the host's monotonic clock:
-   const now = host.nowMs();
-   teak.runSubs(Msg, subscribe(&model), last_frame_ms, now, Dispatch{ .m = &model });
-   last_frame_ms = now;
-   ```
-
-**Heads-up / DX gap:** `teak.run` does **not** yet auto-service
-`subscribe` — at the time of writing it never calls `runSubs`. The
-primitives (`Sub`, `runSubs`, `Host.nowMs`) are the building blocks, but to
-actually fire subs today you drive `runSubs` yourself in a loop that also
-calls the passes, rather than through `teak.run(App, …)`. Confirm against
-`src/run.zig` before wiring this into a `teak.run` app.
+(If you hand-roll a loop instead of `teak.run`, call `runSubs` yourself:
+`teak.runSubs(Msg, subscribe(&model), last_frame_ms, host.nowMs(), dispatch)`
+where `dispatch` is a bare `fn(msg)` bound to your model via a small static
+struct — see [subscriptions.md § "Standalone use"](features/subscriptions.md).)
 
 **Common mistake:** expecting `.at` to auto-stop. `.at` fires on every
 frame-transition past its deadline; the app must *drop the sub from

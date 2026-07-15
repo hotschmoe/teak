@@ -116,6 +116,8 @@ pub fn windowTitle(*const Model) ?[]const u8          // dynamic title bar; setT
 pub fn secondaryWindow(*const Model) ?SecondaryWindowSpec  // 2nd top-level window, open when non-null
 pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view (pairs with above)
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
+pub fn subscribe(*const Model) []const Sub(Msg)       // declarative timers; run services them each
+                                                      //   frame via runSubs on Host.nowMs() (§2 hatch 6)
 ```
 IME composition (`Host.imeState`) is folded into `TransientState` every
 frame with no opt-in. A static read-only app is just Model/Msg/update/view.
@@ -272,8 +274,10 @@ buildA11yTree(arena, cmds, rects: []const Rect, focus_index: ?usize) ![]A11yNode
 Sub(Msg) = union(enum) { every: {interval_ms: u32, msg}, at: {deadline_ms: u64, msg} }
 runSubs(Msg, subs: []const Sub(Msg), last_frame_ms, now_ms: u64, dispatch: anytype) void
 ```
-App declares `pub fn subscribe(*const Model) []const Sub` (pure). Time comes
-from `Host.nowMs()`. A fired sub becomes a normal `Msg` through `update`.
+App declares `pub fn subscribe(*const Model) []const Sub` (pure). `teak.run`
+services it each frame — `runSubs(subscribe(model))` on `Host.nowMs()` — and
+dispatches any fired sub as a normal `Msg` through `update` (no second
+mutation path). See docs/features/subscriptions.md.
 
 ### Theme (`teak.theme` → core/theme.zig)
 ```zig
@@ -433,9 +437,13 @@ More worked examples and idioms: **docs/cookbook.md**.
   deterministic and grep-able (one line per cmd, `tag (x,y,w,h) payload`).
 - **`validateBalance(cmds)`** guards push/pop balance; `teak.run` calls it in
   Debug builds and panics with a named cmd index on an unbalanced buffer.
-- **Live `TEAK_SNAPSHOT` streaming is a planned follow-up, NOT yet
-  implemented** (see docs/features/snapshot.md). Until it lands, the headless
-  golden loop above is the supported way to "see" the GUI as data.
+- **Live `TEAK_SNAPSHOT` streaming (implemented).** `teak.run` mirrors each
+  changed frame's snapshot to a file — set `RunOptions.snapshot_path` or the
+  `TEAK_SNAPSHOT` env var (env wins, read once at `run` start). Writes are
+  atomic (`<path>.tmp` then rename) and change-gated (idle frames never touch
+  disk); the header's `last_msg` names the transition that caused the change,
+  including sub-fired Msgs. An agent driving a running app greps/diffs the
+  file to "see" the GUI as data. See docs/features/snapshot.md.
 - `zig build test` runs library tests from the repo root (no wgpu link).
 - `zig build audit` runs the HARDLINE drift audit + wasm canary — including
   the rule that keeps THIS file in sync with `src/teak.zig` re-exports.
@@ -449,6 +457,7 @@ More worked examples and idioms: **docs/cookbook.md**.
 - `docs/cookbook.md` — worked recipes/idioms for building on Teak.
 - `docs/pitfalls.md` — common traps.
 - `docs/features/run.md` — `teak.run` loop + optional App hooks + secondary window.
+- `docs/features/subscriptions.md` — declarative timers (`Sub`/`subscribe`); `run` wiring.
 - `docs/features/widgets.md` — disabled state, NumericField, Dropdown, setTitle.
 - `docs/features/components.md` — comptime component composition.
 - `docs/features/canvas.md` — charts & custom 2D drawing.
@@ -459,7 +468,7 @@ More worked examples and idioms: **docs/cookbook.md**.
 - `docs/features/text.md` — TextMeasurer + FontSpec.
 - `docs/features/host.md` — Host interface (window + input; DPI/scaling notes).
 - `docs/features/gpu.md` — Gpu interface (vertex upload + present).
-- `docs/features/snapshot.md` — golden snapshot tests + planned streaming.
+- `docs/features/snapshot.md` — golden snapshot tests + live TEAK_SNAPSHOT streaming.
 - `docs/features/functional-gaps.md` — overlay, image, selection/clipboard,
   subs, multi-window/dialogs, virtual list, a11y, rich text.
 - `docs/features/ergonomic-helpers.md` — Theme, mixedText, sliderDrag, TextField
