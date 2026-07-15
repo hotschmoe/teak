@@ -39,7 +39,37 @@ initial state if present, else `.{}`.
 Optional App decls, each detected with `@hasDecl` — present only what you
 need (full table in [consuming-teak.md §5](../consuming-teak.md)):
 `keyCharMsg`, `keySpecialMsg`, `keyNeedsClipboard` + `handleClipboard`,
-`wheelMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`.
+`wheelMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
+`secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`).
+
+### Secondary window
+
+An app that wants a second top-level window (e.g. a detached stats/inspector
+panel) exposes:
+
+| Decl | Signature | Role |
+|------|-----------|------|
+| `secondaryWindow` | `(*const Model) ?SecondaryWindowSpec` | data-shaped intent: `{ title, width, height }` when the window should be open, `null` when closed |
+| `secondaryView` | `(*const Model, *CmdBuffer(Msg)) void` | the second window's view (same Cmd type as the primary) |
+| `secondaryClosedMsg` | `(*const Model) ?Msg` | optional — dispatched through `update` when the user closes the window from the OS, so the Model's own flag flips |
+
+`run` diffs the spec against the live window each frame and owns the whole
+lifecycle: `host.openSecondaryWindow` + `gpu.openSecondarySurface` on open,
+`host.pollSecondaryInputs` + resize + `secondaryView` layout/build +
+`gpu.renderToWindow` while alive, and teardown (`closeSecondarySurface` +
+`closeSecondaryWindow`) on close, user-close, or shutdown. The app never
+touches a platform handle — `run` passes the Host's `NativeHandle` straight
+into `gpu.openSecondarySurface(handle, w, h)`, which the Gpu backend's
+injected `Surface` provider duck-types (HARDLINE §4(c)). While a secondary
+window is open the primary is force-rebuilt each frame (the secondary render
+re-uploads into the shared Gpu scratch buffers after the primary present).
+
+The whole path is comptime-gated on `@hasDecl(App, "secondaryWindow")`, so
+`gpu.openSecondarySurface` / `renderToWindow` (which are surface extensions
+*outside* `validateGpu`) are never analyzed for apps that don't opt in — a
+minimal stub Gpu still satisfies `run`.
+
+`SecondaryWindowSpec` is re-exported as `teak.SecondaryWindowSpec`.
 
 `RunOptions`:
 - `clear_color: [4]f32` — scene clear color (default dark).
@@ -101,12 +131,25 @@ mutation; scripted keyboard runs exercise `keyCharMsg`/`keySpecialMsg`/
 `themeFor`, Tab-advances-focus, and Enter-fires-`submitMsg`. `cmdsEqual`
 is unit-tested for label/disabled/length changes.
 
-## Status / follow-up
+## Status
 
-The three in-repo examples (`counter_greeter`, `todo`, `tree`) still carry
-their original hand-rolled loops; migrating them to `teak.run` is tracked
-as a follow-up. The examples' native UI now builds on **Linux (X11)** as
-well as **Windows** — `teak.linkNativeWgpu` picks the backend by target OS
-and the examples gate their `ui` step on `teak.hasNativeBackend`, so a
-Linux dev box can compile and link the UI (pixels-on-screen verification
-on a real display is still pending).
+All three in-repo examples (`counter_greeter`, `todo`, `tree`) now run on
+`teak.run` — each `ui_main.zig` is a ~20-line `Host.init` / `Gpu.init` /
+`teak.run` shell, with the per-app variance living in the app module as
+optional `@hasDecl` hooks. This migration was `run`'s first real exercise;
+it surfaced two gaps that are now closed:
+
+- **Secondary window** (counter_greeter's "Stats" window) — added the
+  `secondaryWindow` / `secondaryView` / `secondaryClosedMsg` hook set (see
+  above). The old hand-rolled loop bridged the GPU surface with
+  `gpu.openSecondarySurface(nh.hinstance, nh.hwnd, …)`, i.e. Win32-only
+  field access that **failed to compile on Linux**; routing surface
+  creation through the Gpu backend's `Surface` provider (`openSecondarySurface(handle, w, h)`)
+  makes it platform-generic and unbreaks the Linux `ui` build.
+- **IME composition** — `run` now folds `Host.imeState()` into
+  `TransientState` every frame (previously only counter_greeter's loop did).
+
+The examples' native UI builds on **Linux (X11)** and **Windows**;
+`teak.linkNativeWgpu` picks the backend by target OS and the examples gate
+their `ui` step on `teak.hasNativeBackend`. Pixels-on-screen verification on
+a real display is still pending (the CI host is headless + cross-arch).

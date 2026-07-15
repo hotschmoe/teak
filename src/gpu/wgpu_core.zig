@@ -767,11 +767,15 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         }
 
         /// Create a wgpu surface bound to an additional native window.
-        /// `hinstance`/`hwnd` are opaque pointers (HARDLINE §4(c) — the
-        /// GPU layer never imports platform types). Returns a 1-based slot
-        /// id matching the Host's secondary id space, or `null` on
+        /// `handle` is the platform `NativeHandle` (the same value
+        /// `host.secondaryWindowHandle` returns and that `init` consumed
+        /// for the primary) — surface construction is delegated to the
+        /// injected `Surface` provider so this path is platform-generic
+        /// (HARDLINE §4(c) — the GPU layer never imports platform types;
+        /// the handle is duck-typed by the provider). Returns a 1-based
+        /// slot id matching the Host's secondary id space, or `null` on
         /// full-table / surface-create failure.
-        pub fn openSecondarySurface(self: *Self, hinstance: *anyopaque, hwnd: *anyopaque, w: u32, h: u32) ?u32 {
+        pub fn openSecondarySurface(self: *Self, handle: anytype, w: u32, h: u32) ?u32 {
             var slot_idx: usize = MAX_SECONDARY_SURFACES;
             for (self.secondary_surfaces, 0..) |slot, i| {
                 if (!slot.active) {
@@ -781,15 +785,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             }
             if (slot_idx == MAX_SECONDARY_SURFACES) return null;
 
-            var hwnd_source = std.mem.zeroes(c.WGPUSurfaceSourceWindowsHWND);
-            hwnd_source.chain.sType = c.WGPUSType_SurfaceSourceWindowsHWND;
-            hwnd_source.hinstance = @ptrCast(hinstance);
-            hwnd_source.hwnd = @ptrCast(hwnd);
-
-            var surface_desc = std.mem.zeroes(c.WGPUSurfaceDescriptor);
-            surface_desc.nextInChain = @ptrCast(&hwnd_source.chain);
-            surface_desc.label = wgpuStr("teak-secondary-surface");
-            const surface = c.wgpuInstanceCreateSurface(self.instance, &surface_desc) orelse return null;
+            const surface = Surface.createSurface(self.instance, handle) catch return null;
 
             // Configure the surface with the same format the primary uses.
             self.configureSurface(surface, w, h);

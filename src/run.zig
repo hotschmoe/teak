@@ -43,6 +43,19 @@
 //!     Enter key (takes precedence over `keySpecialMsg` for Enter)
 //!   - `themeFor(*const Model) Theme`                 — per-frame theme
 //!   - `windowTitle(*const Model) ?[]const u8`        — dynamic title bar
+//!   - `secondaryWindow(*const Model) ?SecondaryWindowSpec` — declares a
+//!     second top-level window (title + size) that should be open this
+//!     frame, or `null` to keep it closed. `run` owns the create/destroy
+//!     lifecycle; the app only flips the data-shaped spec. Requires…
+//!   - `secondaryView(*const Model, *CmdBuffer(Msg)) void` — the second
+//!     window's view (same Cmd type as the primary; a different surface).
+//!   - `secondaryClosedMsg(*const Model) ?Msg`        — dispatched when the
+//!     user closes the secondary window from the OS, so the app can clear
+//!     its own "is it open" state. Optional even within the secondary set.
+//!
+//! IME composition state (`Host.imeState`) is folded into `TransientState`
+//! every frame with no opt-in — hosts without IME report inactive and it
+//! costs nothing.
 //!
 //! Anything the app omits is simply skipped — a static read-only view is
 //! just `Model` / `Msg` / `update` / `view`.
@@ -72,6 +85,41 @@ pub const RunOptions = struct {
     /// cursor on a 30-frame phase, so 30 matches it.
     blink_period: u32 = 30,
 };
+
+/// Declares a second top-level window the app wants open this frame.
+/// Data-only (HARDLINE §3): `secondaryWindow(*const Model)` returns this
+/// or `null`; `run` diffs it against the live window to open / close /
+/// resize the OS window + its GPU surface. The app never touches
+/// `Host.openSecondaryWindow` / `Gpu.openSecondarySurface` itself.
+pub const SecondaryWindowSpec = struct {
+    title: []const u8,
+    width: u32,
+    height: u32,
+};
+
+/// Per-frame lifecycle + render state for the optional secondary window.
+/// Loop-orchestration state only (like `press_target` / the title buffer)
+/// — it holds no *application* state and routes user-close back through
+/// `update`. Always instantiated; the `run` loop only drives it when the
+/// App exposes the secondary hooks (comptime-gated), so a stub Gpu without
+/// `openSecondarySurface` still compiles.
+fn SecondaryDriver(comptime CmdBufT: type) type {
+    return struct {
+        buf: CmdBufT,
+        rects: std.ArrayList(Rect),
+        /// Host + Gpu id of the live secondary window (lock-step: the
+        /// same id keys the Host window slot and the Gpu surface slot).
+        window_id: ?u32 = null,
+
+        fn init(gpa: std.mem.Allocator) @This() {
+            return .{ .buf = CmdBufT.init(gpa), .rects = .empty };
+        }
+        fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
+            self.buf.deinit();
+            self.rects.deinit(gpa);
+        }
+    };
+}
 
 /// Run the application against `host` + `gpu` until the host signals
 /// close. `gpa` backs the per-frame command buffers, the rect store,
@@ -115,6 +163,13 @@ pub fn run(
     // the click only if mouseup lands on the same widget; drag-off
     // cancels without firing.
     var press_target: ?usize = null;
+
+    // Optional secondary window. `has_secondary` is comptime, so the whole
+    // machinery (including the Gpu methods outside `validateGpu`) is only
+    // analyzed for apps that opt in.
+    const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView");
+    var secondary = SecondaryDriver(CmdBufT).init(gpa);
+    defer secondary.deinit(gpa);
 
     const measurer = host.textMeasurer();
 
@@ -216,6 +271,7 @@ pub fn run(
         if (@hasDecl(App, "themeFor")) bufs[cur].theme = App.themeFor(&model);
         App.view(&model, &bufs[cur]);
         const cur_cmds = bufs[cur].cmds.items;
+        debugCheckBalance(cur_cmds, "view");
 
         // 7. Layout into the matching rect slice (grown to fit).
         try rects[cur].resize(gpa, cur_cmds.len);
@@ -235,6 +291,13 @@ pub fn run(
         ts.mouse_y = input.mouse_y;
         ts.frame_counter +%= 1;
 
+        // IME composition snapshot — presentation-only, host-owned, folded
+        // in unconditionally (inactive/empty on hosts without IME).
+        const ime = host.imeState();
+        ts.ime_active = ime.active;
+        ts.ime_text = ime.text;
+        ts.ime_cursor = ime.cursor;
+
         // 9. Dynamic window title (only on change).
         if (@hasDecl(App, "windowTitle")) {
             if (App.windowTitle(&model)) |t| {
@@ -253,11 +316,19 @@ pub fn run(
         const rects_same = rectsEqual(rects[cur].items, rects[prev].items);
         const ts_same = ts.hover_index == prev_ts.hover_index and
             ts.press_index == prev_ts.press_index and
-            ts.focus_index == prev_ts.focus_index;
+            ts.focus_index == prev_ts.focus_index and
+            ts.ime_active == prev_ts.ime_active and
+            ts.ime_cursor == prev_ts.ime_cursor and
+            std.mem.eql(u8, ts.ime_text, prev_ts.ime_text);
         const blink_tick = opts.blink_period > 0 and ts.focus_index != null and
             (ts.frame_counter % opts.blink_period == 0);
 
-        if (!cmds_same or !rects_same or !ts_same or blink_tick) {
+        // A live secondary window re-uploads into the shared Gpu scratch
+        // buffers after the primary present, so the primary must rebuild
+        // its own vertices every frame while it's open.
+        const secondary_open = has_secondary and App.secondaryWindow(&model) != null;
+
+        if (!cmds_same or !rects_same or !ts_same or blink_tick or secondary_open) {
             render.buildVertices(&verts, &text_draws, &image_draws, gpa, cur_cmds, rects[cur].items, ts, measurer);
             gpu.uploadVertices(verts.items);
             gpu.uploadText(text_draws.items);
@@ -268,12 +339,111 @@ pub fn run(
 
         // 11. Present.
         gpu.renderFrame(opts.clear_color);
+
+        // 12. Secondary window: open / close / render. The Model drives
+        //     intent via `secondaryWindow`; `run` owns the Host + Gpu
+        //     resources keyed off `secondary.window_id`. Lock-step ids —
+        //     the same id covers the Host window slot and the Gpu surface
+        //     slot. Whole block is comptime-gated so a stub Gpu lacking
+        //     `openSecondarySurface` never analyzes it.
+        if (has_secondary) {
+            const spec = App.secondaryWindow(&model);
+
+            if (spec != null and secondary.window_id == null) {
+                // Open: create the OS window, then its GPU surface. Back
+                // out cleanly if either half fails so we never leak a
+                // window with no renderer (or vice versa).
+                const s = spec.?;
+                if (host.openSecondaryWindow(s.title, s.width, s.height)) |wid| {
+                    if (host.secondaryWindowHandle(wid)) |nh| {
+                        if (gpu.openSecondarySurface(nh, s.width, s.height)) |_| {
+                            secondary.window_id = wid;
+                        } else {
+                            host.closeSecondaryWindow(wid);
+                        }
+                    } else {
+                        host.closeSecondaryWindow(wid);
+                    }
+                }
+            } else if (spec == null and secondary.window_id != null) {
+                // Close: the app cleared its intent.
+                const wid = secondary.window_id.?;
+                gpu.closeSecondarySurface(wid);
+                host.closeSecondaryWindow(wid);
+                secondary.window_id = null;
+            }
+
+            if (secondary.window_id) |wid| {
+                // A null poll means the user closed the window from the OS
+                // — tear down and mirror it back into the Model via the
+                // app's close Msg so its own flag flips.
+                if (host.pollSecondaryInputs(wid)) |si| {
+                    if (si.resized) gpu.resizeWindow(wid, si.width, si.height);
+
+                    secondary.buf.reset();
+                    if (@hasDecl(App, "themeFor")) secondary.buf.theme = App.themeFor(&model);
+                    App.secondaryView(&model, &secondary.buf);
+
+                    const sec_cmds = secondary.buf.cmds.items;
+                    debugCheckBalance(sec_cmds, "secondaryView");
+                    secondary.rects.resize(gpa, sec_cmds.len) catch {};
+                    if (secondary.rects.items.len == sec_cmds.len) {
+                        layout.LayoutEngine.doLayout(
+                            secondary.rects.items,
+                            sec_cmds,
+                            @floatFromInt(si.width),
+                            @floatFromInt(si.height),
+                            measurer,
+                        );
+                        // The secondary window has no interactive/transient
+                        // state of its own — a fresh default is correct.
+                        const sec_ts: TransientState = .{};
+                        render.buildVertices(&verts, &text_draws, &image_draws, gpa, sec_cmds, secondary.rects.items, sec_ts, measurer);
+                        gpu.uploadVertices(verts.items);
+                        gpu.uploadText(text_draws.items);
+                        gpu.uploadImages(image_draws.items);
+                        gpu.renderToWindow(wid, opts.clear_color);
+                    }
+                } else {
+                    gpu.closeSecondarySurface(wid);
+                    host.closeSecondaryWindow(wid);
+                    secondary.window_id = null;
+                    if (@hasDecl(App, "secondaryClosedMsg")) {
+                        if (App.secondaryClosedMsg(&model)) |m| App.update(&model, m);
+                    }
+                }
+            }
+        }
+    }
+
+    // Release any secondary resources still open at shutdown.
+    if (has_secondary) {
+        if (secondary.window_id) |wid| {
+            gpu.closeSecondarySurface(wid);
+            host.closeSecondaryWindow(wid);
+        }
     }
 }
 
 /// Resolve the focused widget's cmd index for this frame. Apps that
 /// expose `focusedMsg` get stable, Msg-keyed focus (survives
 /// conditional/reordered widgets); apps without it have no focus ring.
+/// Debug-only cmd-buffer balance check. A missed pop_group (or friends)
+/// is otherwise a silent layout bug; in Debug builds this panics naming
+/// the offending cmd index before the layout passes consume the buffer.
+/// Compiled out entirely in release modes. run.zig sits outside the
+/// framework-core dirs, so the builtin.mode gate is allowed here
+/// (HARDLINE §3 scopes the conditional-compilation ban to core).
+fn debugCheckBalance(cmds: anytype, view_name: []const u8) void {
+    if (@import("builtin").mode != .Debug) return;
+    if (cmd.validateBalance(cmds)) |bal_err| {
+        var buf: [128]u8 = undefined;
+        std.debug.panic("teak: unbalanced cmd buffer from {s}() — {s}", .{
+            view_name, cmd.formatBalanceError(bal_err, &buf),
+        });
+    }
+}
+
 fn focusIndex(comptime App: type, model: *const App.Model, cmds: anytype) ?usize {
     if (!@hasDecl(App, "focusedMsg")) return null;
     const fm = App.focusedMsg(model) orelse return null;
@@ -777,4 +947,171 @@ test "cmdsEqual: detects label, disabled, and length changes" {
     y.button(.a, "Go");
     y.button(.a, "Go");
     try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+}
+
+// ── Secondary-window tests ──────────────────────────────────────────
+//
+// Drives the optional secondary-window hooks headlessly: a stub Host
+// that hands out a window id + native handle then reports a user-close,
+// and a stub Gpu that records the secondary surface/render/teardown
+// calls `run` makes.
+
+/// Stub Host with a scripted secondary window. The primary loop runs 5
+/// frames; the secondary poll returns input twice, then `null` (user
+/// closed the window from the OS) so the close path + `secondaryClosedMsg`
+/// are exercised.
+const SecHost = struct {
+    frame: u32 = 0,
+    closed: bool = false,
+    sec_polls: u32 = 0,
+
+    /// Structurally arbitrary — the Gpu's `openSecondarySurface` takes the
+    /// handle as `anytype`, so any shape flows through unread.
+    pub const NativeHandle = struct { tag: u32 = 7 };
+
+    pub fn deinit(_: *SecHost) void {}
+    pub fn shouldClose(self: *const SecHost) bool {
+        return self.closed;
+    }
+    pub fn pollInputs(self: *SecHost) InputState {
+        self.frame += 1;
+        var in = std.mem.zeroes(InputState);
+        in.width = 400;
+        in.height = 300;
+        in.mouse_x = -10;
+        in.mouse_y = -10;
+        in.chars = &.{};
+        in.keys = &.{};
+        if (self.frame == 1) in.resized = true;
+        if (self.frame >= 5) self.closed = true;
+        return in;
+    }
+    pub fn nativeHandle(_: *const SecHost) void {}
+    pub fn textMeasurer(_: *SecHost) text.TextMeasurer {
+        return text.monoMeasurer();
+    }
+    pub fn clipboard(_: *SecHost) Clipboard {
+        return .{ .ctx = undefined, .read_fn = StubHost.stubRead, .write_fn = StubHost.stubWrite };
+    }
+    pub fn imeState(_: *const SecHost) host_iface.ImeState {
+        return .{};
+    }
+    pub fn publishA11yTree(_: *SecHost, _: []const host_iface.A11yNode) void {}
+    pub fn openFileDialog(_: *SecHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn saveFileDialog(_: *SecHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn requestFileDialog(_: *SecHost, _: host_iface.FileDialogFilter) u32 {
+        return 0;
+    }
+    pub fn requestSaveFileDialog(_: *SecHost, _: host_iface.FileDialogFilter) u32 {
+        return 0;
+    }
+    pub fn pollFileDialogResult(_: *SecHost, _: u32) host_iface.FileDialogPoll {
+        return .{ .pending = {} };
+    }
+    pub fn openSecondaryWindow(_: *SecHost, _: []const u8, _: u32, _: u32) ?u32 {
+        return 1;
+    }
+    pub fn secondaryWindowHandle(_: *const SecHost, _: u32) ?NativeHandle {
+        return .{};
+    }
+    pub fn pollSecondaryInputs(self: *SecHost, _: u32) ?InputState {
+        self.sec_polls += 1;
+        if (self.sec_polls > 2) return null; // user closed after 2 frames
+        var in = std.mem.zeroes(InputState);
+        in.width = 360;
+        in.height = 200;
+        in.chars = &.{};
+        in.keys = &.{};
+        return in;
+    }
+    pub fn closeSecondaryWindow(_: *SecHost, _: u32) void {}
+    pub fn setTitle(_: *SecHost, _: []const u8) void {}
+    pub fn nowMs(_: *const SecHost) u64 {
+        return 0;
+    }
+};
+
+/// Stub Gpu with the secondary-surface surface-extension methods (which
+/// are outside `validateGpu`), recording each call for assertions.
+const SecGpu = struct {
+    opened: u32 = 0,
+    rendered_to_window: u32 = 0,
+    closed_surface: u32 = 0,
+
+    pub fn deinit(_: *SecGpu) void {}
+    pub fn resize(_: *SecGpu, _: u32, _: u32) void {}
+    pub fn uploadVertices(_: *SecGpu, _: []const vertex.Vertex) void {}
+    pub fn uploadText(_: *SecGpu, _: []const text.TextDraw) void {}
+    pub fn uploadImages(_: *SecGpu, _: []const render.ImageDraw) void {}
+    pub fn renderFrame(_: *SecGpu, _: [4]f32) void {}
+    pub fn rasterizeText(_: *SecGpu, _: []const u8, _: text.FontSpec, _: [4]f32, _: u32, _: u32) text.TextureHandle {
+        return text.TEXTURE_HANDLE_NONE;
+    }
+    pub fn uploadImage(_: *SecGpu, _: []const u8, _: u32, _: u32) text.TextureHandle {
+        return text.TEXTURE_HANDLE_NONE;
+    }
+    // Surface extensions (not in validateGpu) — only reachable when the
+    // App opts into the secondary hooks.
+    pub fn openSecondarySurface(self: *SecGpu, _: anytype, _: u32, _: u32) ?u32 {
+        self.opened += 1;
+        return 1;
+    }
+    pub fn closeSecondarySurface(self: *SecGpu, _: u32) void {
+        self.closed_surface += 1;
+    }
+    pub fn resizeWindow(_: *SecGpu, _: u32, _: u32, _: u32) void {}
+    pub fn renderToWindow(self: *SecGpu, _: u32, _: [4]f32) void {
+        self.rendered_to_window += 1;
+    }
+};
+
+test "run: drives the secondary window open -> render -> user-close lifecycle" {
+    const Sink = struct {
+        var closed_msg: bool = false;
+    };
+    const App = struct {
+        pub const Model = struct { stats_open: bool = true };
+        pub const Msg = union(enum) { close_stats };
+        pub fn update(m: *Model, msg: Msg) void {
+            switch (msg) {
+                .close_stats => {
+                    m.stats_open = false;
+                    Sink.closed_msg = true;
+                },
+            }
+        }
+        pub fn view(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{ .padding = 0, .gap = 0 });
+            cb.text("main");
+            cb.popGroup();
+        }
+        pub fn secondaryWindow(m: *const Model) ?SecondaryWindowSpec {
+            return if (m.stats_open) .{ .title = "Stats", .width = 360, .height = 200 } else null;
+        }
+        pub fn secondaryView(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{ .padding = 0, .gap = 0 });
+            cb.text("stats");
+            cb.popGroup();
+        }
+        pub fn secondaryClosedMsg(_: *const Model) ?Msg {
+            return Msg.close_stats;
+        }
+    };
+
+    Sink.closed_msg = false;
+    var host: SecHost = .{};
+    var gpu: SecGpu = .{};
+    try run(App, std.testing.allocator, &host, &gpu, .{});
+
+    // Opened exactly one secondary surface, rendered into it while the
+    // OS window was alive (2 polls returned input), then tore it down on
+    // the user-close poll and mirrored the close back through `update`.
+    try std.testing.expectEqual(@as(u32, 1), gpu.opened);
+    try std.testing.expectEqual(@as(u32, 2), gpu.rendered_to_window);
+    try std.testing.expectEqual(@as(u32, 1), gpu.closed_surface);
+    try std.testing.expect(Sink.closed_msg);
 }

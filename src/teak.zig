@@ -119,6 +119,7 @@ pub const validateGpu = gpu.validateGpu;
 
 pub const run = runtime.run;
 pub const RunOptions = runtime.RunOptions;
+pub const SecondaryWindowSpec = runtime.SecondaryWindowSpec;
 
 pub const FontFamily = text.FontFamily;
 pub const FontSpec = text.FontSpec;

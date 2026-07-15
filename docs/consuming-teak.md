@@ -192,7 +192,17 @@ are required; an app without them just doesn't get that behavior.
 | `submitMsg` | `(*const Model) ?Msg` | Enter-to-submit |
 | `themeFor` | `(*const Model) Theme` | per-frame theme (e.g. dark/light toggle) |
 | `windowTitle` | `(*const Model) ?[]const u8` | dynamic title bar ("* unsaved") |
+| `secondaryWindow` | `(*const Model) ?SecondaryWindowSpec` | a second top-level window (title + size), open when non-null |
+| `secondaryView` | `(*const Model, *CmdBuffer(Msg)) void` | the secondary window's view (pairs with `secondaryWindow`) |
+| `secondaryClosedMsg` | `(*const Model) ?Msg` | Msg dispatched when the user OS-closes the secondary window |
 | `Model.init` | `() Model` | non-default initial state |
+
+`teak.run` also folds the Host's IME composition snapshot into the render
+pass' transient state automatically — no opt-in decl. The
+`secondaryWindow` trio lets `run` own a detached window's full lifecycle
+(open / render / close) from data + Msgs; see
+[features/run.md](features/run.md#secondary-window). The canonical example
+is `counter_greeter`'s "Stats" window.
 
 `focusedMsg` returns the focus `Msg` of the currently-focused widget (the
 same Msg that widget's focus click dispatches). Teak maps it to a cmd
