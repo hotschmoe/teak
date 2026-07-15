@@ -29,9 +29,11 @@
 //! not" purely from (`now_ms`, `last_frame_ms`, sub data). This means
 //! - `every` can skip a tick if the frame was slow, or fire twice in
 //!   one frame if it was very slow (both fires go through update).
-//! - `at` fires once per frame-transition past the deadline; the app
-//!   must drop the sub from `subscribe()` to stop further fires
-//!   (e.g., set `model.deadline = null` in the handler).
+//! - `at` fires exactly once, on the crossing frame where
+//!   `last_frame_ms < deadline_ms <= now_ms`, then auto-stops: once
+//!   `last_frame_ms` advances past the deadline the window never re-opens,
+//!   so no cleanup is needed. To fire again, re-arm with a new, later
+//!   `deadline_ms` in `subscribe()`.
 //!
 //! See `docs/features/subscriptions.md` for the design rationale.
 
@@ -49,10 +51,13 @@ pub fn Sub(comptime Msg: type) type {
 /// clock; on the first frame, pass `last_frame_ms = now_ms` (no subs
 /// fire on the very first tick — they need a window to compare).
 ///
-/// `dispatch` is an `anytype` so apps can pass a closure-shaped struct
-/// or a function pointer with bound context. It's NOT a Cmd-borne fn
-/// pointer (§3 forbids those) — this is a runtime helper, not part of
-/// the Cmd protocol.
+/// `dispatch` is an `anytype` carrying a `call(msg)` method — a value (or
+/// pointer to one) whose bound context travels *inside* it, not through
+/// module-level statics. `runSubs` invokes `dispatch.call(msg)` for each
+/// fired sub. It's NOT a Cmd-borne fn pointer (§3 forbids those) — this is
+/// a runtime helper, not part of the Cmd protocol. Passing the context by
+/// value keeps `runSubs` (and its caller `run`) free of retained mutable
+/// state, so two concurrent `run` calls can't cross-wire their models.
 pub fn runSubs(
     comptime Msg: type,
     subs: []const Sub(Msg),
@@ -72,13 +77,13 @@ pub fn runSubs(
                     // be more if the frame was slow).
                     var i: u64 = 0;
                     while (i < (now_tick - last_tick)) : (i += 1) {
-                        dispatch(e.msg);
+                        dispatch.call(e.msg);
                     }
                 }
             },
             .at => |a| {
                 if (last_frame_ms < a.deadline_ms and a.deadline_ms <= now_ms) {
-                    dispatch(a.msg);
+                    dispatch.call(a.msg);
                 }
             },
         }
@@ -92,24 +97,26 @@ test "runSubs: .every fires once per crossed interval" {
     const subs = [_]Sub(Msg){ .{ .every = .{ .interval_ms = 100, .msg = .tick } } };
 
     var fire_count: u32 = 0;
+    // The dispatcher carries its context (the counter pointer) as a field —
+    // no module-level statics — and exposes it through `call(msg)`.
     const Counter = struct {
-        var count: *u32 = undefined;
-        fn dispatch(_: Msg) void {
-            count.* += 1;
+        count: *u32,
+        fn call(self: @This(), _: Msg) void {
+            self.count.* += 1;
         }
     };
-    Counter.count = &fire_count;
+    const counter = Counter{ .count = &fire_count };
 
     // 50 → 90: no crossing of 100.
-    runSubs(Msg, &subs, 50, 90, Counter.dispatch);
+    runSubs(Msg, &subs, 50, 90, counter);
     try std.testing.expectEqual(@as(u32, 0), fire_count);
 
     // 90 → 110: crosses 100 once.
-    runSubs(Msg, &subs, 90, 110, Counter.dispatch);
+    runSubs(Msg, &subs, 90, 110, counter);
     try std.testing.expectEqual(@as(u32, 1), fire_count);
 
     // 110 → 320: crosses 200 and 300 → 2 fires.
-    runSubs(Msg, &subs, 110, 320, Counter.dispatch);
+    runSubs(Msg, &subs, 110, 320, counter);
     try std.testing.expectEqual(@as(u32, 3), fire_count);
 }
 
@@ -119,25 +126,25 @@ test "runSubs: .at fires exactly once when deadline is crossed" {
 
     var fire_count: u32 = 0;
     const Counter = struct {
-        var count: *u32 = undefined;
-        fn dispatch(_: Msg) void {
-            count.* += 1;
+        count: *u32,
+        fn call(self: @This(), _: Msg) void {
+            self.count.* += 1;
         }
     };
-    Counter.count = &fire_count;
+    const counter = Counter{ .count = &fire_count };
 
     // 0 → 400: no fire.
-    runSubs(Msg, &subs, 0, 400, Counter.dispatch);
+    runSubs(Msg, &subs, 0, 400, counter);
     try std.testing.expectEqual(@as(u32, 0), fire_count);
 
     // 400 → 500: crosses to exactly the deadline — fires.
-    runSubs(Msg, &subs, 400, 500, Counter.dispatch);
+    runSubs(Msg, &subs, 400, 500, counter);
     try std.testing.expectEqual(@as(u32, 1), fire_count);
 
     // 500 → 600: deadline already passed, doesn't fire again. The app
     // is responsible for removing the sub from subscribe() to prevent
     // a re-fire when the same deadline is re-emitted.
-    runSubs(Msg, &subs, 500, 600, Counter.dispatch);
+    runSubs(Msg, &subs, 500, 600, counter);
     try std.testing.expectEqual(@as(u32, 1), fire_count);
 }
 
@@ -147,13 +154,13 @@ test "runSubs: zero interval is a no-op (avoid div-by-zero)" {
 
     var fire_count: u32 = 0;
     const Counter = struct {
-        var count: *u32 = undefined;
-        fn dispatch(_: Msg) void {
-            count.* += 1;
+        count: *u32,
+        fn call(self: @This(), _: Msg) void {
+            self.count.* += 1;
         }
     };
-    Counter.count = &fire_count;
+    const counter = Counter{ .count = &fire_count };
 
-    runSubs(Msg, &subs, 0, 1000, Counter.dispatch);
+    runSubs(Msg, &subs, 0, 1000, counter);
     try std.testing.expectEqual(@as(u32, 0), fire_count);
 }

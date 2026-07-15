@@ -118,7 +118,27 @@ The compiler enforces exhaustive switching -- missing a `Msg` arm won't compile.
 
 ### Adding Widgets
 
-Add a variant to the `Cmd` union + a case in each pass (layout, hit-test, render) + a convenience method on `CmdBuffer`.
+A genuinely new `Cmd` variant touches every pass over the flat buffer — miss
+one and you get a silent wrong-rects bug or an un-clickable widget, not a
+compile error (the passes take `anytype`). Full checklist:
+
+1. **`Cmd` variant + style/cmd struct** in `src/core/cmd.zig` (data only, no
+   fn-pointers) + a convenience **emitter** method on `CmdBuffer`.
+2. **Layout** (`layout/engine.zig`): arms in `measurePass` + `positionPass`.
+3. **Hit-test** (`input/hit_test.zig`): return its click `Msg` (or `null`).
+4. **Render** (`render/build.zig`; + `render/vertex.zig` for a new quad shape).
+5. **Snapshot** (`core/snapshot.zig`): a `writeCmd` arm (`tag (x,y,w,h) …`).
+6. **A11y** (`input/a11y.zig`): a `Role` member + mapping arm.
+7. **Frame-diff** (`src/run.zig`): a `cmdsEqual` arm comparing observable
+   content (the arena hands out fresh addresses each frame).
+8. **Win32 UIA** (`platform/win32.zig`): map the `Role` in
+   `controlTypeForRole` (+ `isFocusableRole` / `input/focus.zig`'s
+   `isFocusable` if keyboard-focusable).
+9. **Re-export** in `src/teak.zig` **and** document in `llms.txt` — the
+   `zig build audit` `LLMS_TXT_RULE` fails the build otherwise.
+
+Prefer composing from existing primitives (that's how `Dropdown` works — zero
+new variants). Worked example: [`docs/cookbook.md`](docs/cookbook.md) recipe 12.
 
 ## Module Structure
 
@@ -126,13 +146,16 @@ Add a variant to the `Cmd` union + a case in each pass (layout, hit-test, render
 src/                           -- the library, consumable as a Zig module
   teak.zig                     -- public library root / re-exports
   run.zig                      -- teak.run: canonical host-loop wrapper
-                               --   (Host/Gpu via anytype; optional App hooks via @hasDecl).
+                               --   (Host/Gpu via anytype; optional App hooks via @hasDecl;
+                               --    services `subscribe` via runSubs on Host.nowMs();
+                               --    mirrors changed frames to the TEAK_SNAPSHOT sink).
                                --   Imports only the pure passes; outside framework core.
   core/
     cmd.zig                    -- Cmd union, CmdBuffer, arena management
-                               --   (incl. overlay, image, virtual_list, rich_text variants;
-                               --    button/textInput disabled state + *Disabled emitters;
-                               --    pushFormRow/popFormRow; mixedText; theme-aware emitters)
+                               --   (incl. overlay, image, virtual_list, rich_text, canvas
+                               --    variants; button/textInput disabled state + *Disabled
+                               --    emitters; pushFormRow/popFormRow; mixedText;
+                               --    theme-aware emitters; validateBalance push/pop check)
     component.zig              -- Components(), validateComponent, buildMsgs, MsgsStructFor
     component_list.zig         -- ComponentList(Child, cap) — dynamic homogeneous list
                                --   (HARDLINE §2 hatch 1)
@@ -146,6 +169,8 @@ src/                           -- the library, consumable as a Zig module
     transient.zig              -- hover/press/focus state (TransientState)
     text.zig                   -- TextMeasurer interface + FontSpec + TextureHandle
     sub.zig                    -- Sub(Msg) declarative timers (HARDLINE §2 hatch 6)
+    chart.zig                  -- lineChartPrimitives — canvas line-chart helper
+    snapshot.zig               -- []Cmd+[]Rect -> text; golden tests + TEAK_SNAPSHOT
   layout/
     engine.zig                 -- measure + position passes
   input/
@@ -211,11 +236,13 @@ The library has no external dependencies; `wgpu-native` is owned by teak's build
 
 The framework is **implemented and shipping**: the full loop (Model → view → layout → render → hit-test → update) runs on native Windows (Win32 + wgpu), native Linux (X11 + wgpu), and web (wasm + WebGPU via zunk), with real text rendering on all three. Three examples (`counter_greeter`, `todo`, `tree`) exercise the loop end-to-end.
 
-Shipped phases, in order: prototype core loop → cleanup/abstraction hardening (`zig build audit`, CI) → text rendering (Host `TextMeasurer` + glyph caches) → functional gaps (overlay, images, selection/clipboard, subscriptions, multi-window, virtual list, a11y, rich text) → ergonomic helpers → consumer DX (`teak.run`, widgets, onboarding docs) → Linux native support. The current working task list is `tasks.md`; the original phase-by-phase prototype guide survives at `docs/archive/init_convo/first_proto.md`.
+Shipped phases, in order: prototype core loop → cleanup/abstraction hardening (`zig build audit`, CI) → text rendering (Host `TextMeasurer` + glyph caches) → functional gaps (overlay, images, selection/clipboard, subscriptions, multi-window, virtual list, a11y, rich text) → ergonomic helpers → consumer DX (`teak.run`, widgets, onboarding docs) → Linux native support → agent DX + consumer gaps (validateBalance, examples on `teak.run`, `teak.snapshot` + `TEAK_SNAPSHOT`, canvas/chart, dropdown scrolling, per-item focus, subscriptions serviced by `run`, `llms.txt` + cookbook). The current working task list is `tasks.md`; the original phase-by-phase prototype guide survives at `docs/archive/init_convo/first_proto.md`.
 
 ## Key Documentation
 
 - `docs/HARDLINE.md` -- **the non-negotiable rules**. Read before any design-touching change. See the "Read this first: HARDLINE" section above.
+- `llms.txt` -- the whole public API in one read (audit-enforced to stay in sync with `src/teak.zig`)
+- `docs/cookbook.md` -- intent-oriented recipes ("add X to my app"), verified against `src/`
 - `spec.md` -- full architecture specification
 - `docs/archive/init_convo/first_proto.md` -- phase-by-phase prototype guide with checkpoints
 - `docs/archive/init_convo/ui-framework-diagrams.md` -- 15 architecture diagrams

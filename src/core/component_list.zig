@@ -210,6 +210,11 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
             comptime AppMsg: type,
         ) AppMsg {
             const list_msg: Msg = .{ .child = .{ .key = key, .child_msg = child_msg } };
+            // `@unionInit`'s field-name argument is already a comptime slot, so
+            // `listTagName(AppMsg)` is forced to evaluate at comptime here —
+            // no explicit `comptime` needed (and this toolchain rejects it as
+            // redundant). The `view` call site, in a runtime scope, keeps its
+            // explicit `comptime`.
             return @unionInit(AppMsg, listTagName(AppMsg), list_msg);
         }
 
@@ -230,8 +235,8 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
         /// by `view` and the `focusedMsg*` helpers so both wrap identically.
         fn listTagName(comptime AppMsg: type) []const u8 {
             const app_info = @typeInfo(AppMsg).@"union";
-            comptime var name: []const u8 = "";
-            comptime var match_count: usize = 0;
+            var name: []const u8 = "";
+            var match_count: usize = 0;
             inline for (app_info.fields) |f| {
                 if (f.type == Msg) {
                     name = f.name;

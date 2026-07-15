@@ -210,7 +210,7 @@ pub const LayoutEngine = struct {
                 },
                 .button => |btn| {
                     const label_w = measurer.measure(btn.label, btn.font).width + BUTTON_H_PADDING;
-                    const w = @max(label_w, BUTTON_MIN_WIDTH);
+                    const w = @max(@max(label_w, BUTTON_MIN_WIDTH), btn.style.min_width);
                     const h = BUTTON_HEIGHT;
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, 0);

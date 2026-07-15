@@ -176,16 +176,24 @@ const Cards = teak.ComponentList(BeamCard, 64);
 const App = teak.Components(.{ .cards = Cards }, AppLevel);
 
 App.update(&model, .{ .cards = .{ .append = .{ /* fresh card */ } } });
-App.update(&model, .{ .cards = .{ .child = .{ .idx = 3, .child_msg = .increment } } });
+// Route a child Msg by stable key (or by visual index via the helper):
+App.update(&model, .{ .cards = Cards.childAt(&model.cards, 3, .increment).? });
 App.update(&model, .{ .cards = .{ .remove_at = 1 } });
 App.update(&model, .{ .cards = .clear });
 ```
 
 `Cards.Msg` is `{ clear, append: ChildModel, remove_at: usize,
-child: {idx, child_msg} }`. Update dispatches `.child` to
-`items[idx].update`. View loops over live items and constructs
-per-index msgs that wrap each child variant as
-`AppMsg{ .<list_name> = .{ .child = .{ .idx, .child_msg } } }`.
+insert_at: {idx, model}, swap: {a, b}, child: {key: u64, child_msg} }`.
+Each item is assigned a monotonic `u64` **key** at append time — the
+`.child` variant routes by that stable key, not the shifting index, so a
+focused child survives inserts / removes / reorders. Update resolves the
+key to the current visual index with `indexOfKey` and dispatches to
+`items[i].update`; an unknown key (item removed) is a no-op. Helpers
+`keyAt` / `indexOfKey` / `childMsg(key, msg)` / `childAt(model, i, msg)` /
+`focusedMsgForKey` / `focusedMsgFor` build the wrapped Msgs so callers
+never hand-construct a key. View loops over live items and constructs
+per-key msgs that wrap each child variant as
+`AppMsg{ .<list_name> = .{ .child = .{ .key = keys[i], .child_msg } } }`.
 
 Magic detail: ComponentList's view recovers `AppMsg` from
 `@TypeOf(msgs.clear)` and finds the composed field name by walking

@@ -58,8 +58,9 @@ through the same router as an input Msg, so it mutates `Model` through
 `update` (no second mutation path), reflects in the frame emitted this
 tick, and updates `last_msg` for the live snapshot. The only loop state is
 `last_sub_ms` (the previous frame's timestamp — `runSubs` itself is
-stateless); no sub fires on the opening frame. Full contract, bounds, and
-the `.at`-must-be-dropped rule: [subscriptions.md](subscriptions.md).
+stateless); no sub fires on the opening frame. `.at` fires exactly once on
+its deadline crossing and then auto-stops. Full contract and bounds:
+[subscriptions.md](subscriptions.md).
 
 ### Secondary window
 
@@ -71,6 +72,13 @@ panel) exposes:
 | `secondaryWindow` | `(*const Model) ?SecondaryWindowSpec` | data-shaped intent: `{ title, width, height }` when the window should be open, `null` when closed |
 | `secondaryView` | `(*const Model, *CmdBuffer(Msg)) void` | the second window's view (same Cmd type as the primary) |
 | `secondaryClosedMsg` | `(*const Model) ?Msg` | optional — dispatched through `update` when the user closes the window from the OS, so the Model's own flag flips |
+
+If the app omits `secondaryClosedMsg`, a user-closed window stays closed:
+`run` remembers the spec that was open at close time and suppresses reopen
+until `secondaryWindow` returns a *different* spec (or `null`). Secondary
+content is double-buffered and frame-diffed like the primary, so a change
+that only affects the secondary view still triggers a `TEAK_SNAPSHOT`
+rewrite.
 
 `run` diffs the spec against the live window each frame and owns the whole
 lifecycle: `host.openSecondaryWindow` + `gpu.openSecondarySurface` on open,
@@ -90,11 +98,29 @@ minimal stub Gpu still satisfies `run`.
 
 `SecondaryWindowSpec` is re-exported as `teak.SecondaryWindowSpec`.
 
+**Platform support:** secondary windows are **Win32-only** today. The X11
+and wasm hosts' `openSecondaryWindow` return `null`, so the hooks compile
+and run everywhere but the second window only actually opens on Windows;
+the primary window is unaffected on the other backends.
+
 `RunOptions`:
 - `clear_color: [4]f32` — scene clear color (default dark).
 - `blink_period: u32` — frames between forced rebuilds while a widget is
   focused, so the text cursor blinks (default 30; matches the renderer's
   cursor phase). Apps with no text input pay nothing.
+- `snapshot_path: ?[]const u8` — live-snapshot sink (default `null`).
+
+### Live snapshot sink (`TEAK_SNAPSHOT`)
+
+When `snapshot_path` is non-null — or the `TEAK_SNAPSHOT` env var is set
+(env wins, read once at `run` start) — `run` mirrors each *changed* frame's
+snapshot text to that file, so an agent driving the running app can read
+the GUI as data instead of pixels. The write is atomic (`<path>.tmp` then
+rename, so a reader never sees a torn file) and change-gated (idle frames
+never touch disk); an unwritable path disables the sink after one
+`std.log.warn` and never crashes or slows the app. On a target with no host
+filesystem (wasm/freestanding) the sink compiles out. Depth:
+[snapshot.md](snapshot.md).
 
 ### What the loop does each frame
 

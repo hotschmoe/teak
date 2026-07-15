@@ -45,6 +45,12 @@ pub const ButtonStyle = struct {
     disabled_bg: [4]f32 = .{ 0.18, 0.18, 0.18, 1.0 },
     disabled_fg: [4]f32 = .{ 0.5, 0.5, 0.5, 1.0 },
     corner_radius: f32 = 4,
+    /// Minimum intrinsic width in pixels. `0` = no floor (the button
+    /// measures to `max(label + padding, BUTTON_MIN_WIDTH)` as before).
+    /// A non-zero value forces the button at least this wide in the
+    /// measure pass — used e.g. by the dropdown so every open-list option
+    /// row spans the full list width and is clickable edge to edge.
+    min_width: f32 = 0,
 };
 
 pub const TextInputStyle = struct {

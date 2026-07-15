@@ -103,19 +103,30 @@ categories).
 
 ### Shape
 
-`Dropdown(cap)` returns a component whose `Model` holds only
-`{ open: bool, selected: usize }` and whose `Msg` is
-`{ toggle, close, select: usize }`. The **option labels stay owned by the
-app** and are passed to an explicit view call:
+`Dropdown(cap)` returns a component whose `Model` holds
+`{ open: bool, selected: usize, scroll_offset: f32, highlighted: usize }`
+(the last two only matter once the open list scrolls — see below) and whose
+`Msg` is `{ toggle, close, select: usize, scroll_by, highlight }`. The
+**option labels stay owned by the app** and are passed to an explicit view
+call:
 
 ```zig
-Dropdown(8).view(model, cb, options, msgs, opts);
+Dropdown(8).viewWith(model, cb, options, msgs, opts);
 ```
 
-(The standard generated `view(model, cb, msgs)` can't carry the options +
-anchor geometry, so the app hand-calls this richer `view` — the same
-pattern `counter_greeter` uses for `greeter.view`. `Model`/`Msg`/`update`
-still compose via `Components` normally.)
+(`viewWith` is the real 5-arg view the app calls explicitly. The 3-arg
+`view(model, cb, msgs)` that `validateComponent` requires — the one the
+generated composed view invokes — has no slot for the `options` slice or
+anchor geometry, so it can only draw a **placeholder** closed button. The
+app must call `viewWith` to draw the real selection + open list, the same
+hand-call pattern `counter_greeter` uses for `greeter.view`.
+`Model`/`Msg`/`update` still compose via `Components` normally.)
+
+> **Trap:** composing a Dropdown through `Components` and letting the
+> generated app `view` drive it renders **only the placeholder button** —
+> the generated path calls the 3-arg `view`, which has no options. You
+> must hand-write the app `view` and call `Picker.viewWith(...)` yourself
+> (see [cookbook recipe 5](../cookbook.md#5-dropdown-with-a-scrolling-list)).
 
 `msgs` carries the composed AppMsgs: `.toggle`, `.close`, and
 `selectMsg` — a **comptime `fn(usize) AppMsg`** the app supplies to build
@@ -127,6 +138,10 @@ Behavior: **closed** = a button showing the selected option's label
 (placeholder when the slice is empty / index out of range); **open** =
 that button plus a `modal` overlay holding one button per option, with
 click-outside-to-close for free via the overlay's `backdrop_msg`.
+Option rows span the full `list_width` (each carries
+`ButtonStyle.min_width = list_width`, honored by the measure pass) and
+the scrolled viewport is backed by an opaque `panel_bg`, so a click
+anywhere on a row selects — there is no dead zone that dismisses.
 
 ### Scrolling the open list
 
@@ -174,7 +189,8 @@ new escape hatch and no per-widget retained state.
 
 ## Dynamic window title — `Host.setTitle`
 
-`src/platform/host.zig` (contract), `win32.zig` / `wasm.zig` (backends).
+`src/platform/host.zig` (contract), `win32.zig` / `x11.zig` / `wasm.zig`
+(backends).
 
 ### Why
 
@@ -185,8 +201,9 @@ open document's name. `Host.init` was one-shot.
 
 `setTitle(self, title: []const u8) void` — added to the `validateHost`
 required set. Win32 calls `SetWindowTextW` (reusing init's stack
-UTF-8→UTF-16 conversion); wasm sets `document.title` via zunk. `teak.run`
-calls it once per change when the app exposes `windowTitle`.
+UTF-8→UTF-16 conversion); X11 calls `XStoreName`; wasm sets
+`document.title` via zunk. `teak.run` calls it once per change when the app
+exposes `windowTitle`.
 
 ### HARDLINE
 

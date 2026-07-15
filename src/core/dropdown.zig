@@ -58,10 +58,12 @@ pub const DropdownViewOpts = struct {
     list_x: f32 = 0,
     list_y: f32 = 0,
     list_width: f32 = 200,
-    /// Advisory cap on the open list's height when it does NOT scroll
-    /// (i.e. `max_visible == 0`, or the option count fits). A very long
-    /// unscrolled list still draws past this — set `max_visible` to make
-    /// it scroll instead.
+    /// Forced height of the open list overlay when it does NOT scroll
+    /// (i.e. `max_visible == 0`, or the option count fits). This is the
+    /// overlay's `height`, which is a forced size — render and hit-test
+    /// both clip to it, so option rows past `list_max_height` are
+    /// invisible AND unclickable. Set `max_visible` for a taller list
+    /// that scrolls its overflow into view instead of clipping it.
     list_max_height: f32 = 320,
     /// Max option rows visible before the open list scrolls. `0` =
     /// unlimited (the pre-scroll behavior: the whole list draws in one
@@ -185,9 +187,14 @@ pub fn Dropdown(comptime cap: usize) type {
         /// New highlight index after `move`, clamped to `[0, count)`.
         fn moveIndex(cur: usize, move: Move, count: usize) usize {
             if (count == 0) return 0;
+            // Clamp a stale / out-of-range cursor into `[0, count)` before
+            // moving, so a shrunken option list can't leave `.prev` one past
+            // the (now smaller) end — which would blow `revealOffset` past
+            // `maxScroll`.
+            const c = @min(cur, count - 1);
             return switch (move) {
-                .prev => if (cur == 0) 0 else cur - 1,
-                .next => if (cur + 1 >= count) count - 1 else cur + 1,
+                .prev => if (c == 0) 0 else c - 1,
+                .next => if (c + 1 >= count) count - 1 else c + 1,
                 .first => 0,
                 .last => count - 1,
             };
@@ -306,6 +313,11 @@ pub fn Dropdown(comptime cap: usize) type {
                     .height = viewport_h,
                     .modal = true,
                     .backdrop_msg = msgs.close,
+                    // Fill the whole viewport rect so the scrolled list is
+                    // opaque — otherwise a click landing in the (transparent)
+                    // dead zone right of a short row would fall through to the
+                    // modal backdrop and close instead of select.
+                    .backdrop = cb.theme.panel_bg,
                     .padding = 0,
                     .gap = 0,
                 });
@@ -317,7 +329,7 @@ pub fn Dropdown(comptime cap: usize) type {
                     .gap = 0,
                     .scroll_y = scroll_y,
                 });
-                emitOptions(model, cb, options, msgs);
+                emitOptions(model, cb, options, msgs, opts.list_width);
                 cb.popScroll();
                 cb.popOverlay();
             } else {
@@ -331,15 +343,20 @@ pub fn Dropdown(comptime cap: usize) type {
                     .height = opts.list_max_height,
                     .modal = true,
                     .backdrop_msg = msgs.close,
-                    .padding = 4,
-                    .gap = 2,
+                    .padding = 0,
+                    .gap = 0,
                 });
+                // Zero padding/gap on the panel so each option row can span
+                // the full list width — a click anywhere across a row (not
+                // just over the label text) lands on the option button, never
+                // on the modal backdrop behind it.
                 cb.pushGroup(.{
                     .direction = .vertical,
                     .bg = cb.theme.panel_bg,
-                    .gap = 2,
+                    .padding = 0,
+                    .gap = 0,
                 });
-                emitOptions(model, cb, options, msgs);
+                emitOptions(model, cb, options, msgs, opts.list_width);
                 cb.popGroup();
                 cb.popOverlay();
             }
@@ -355,15 +372,15 @@ pub fn Dropdown(comptime cap: usize) type {
             cb: anytype,
             options: []const []const u8,
             msgs: anytype,
+            row_width: f32,
         ) void {
             for (options, 0..) |opt, i| {
-                if (i == model.highlighted) {
-                    var style = cb.theme.button;
-                    style.bg = cb.theme.button.hover_bg;
-                    cb.buttonStyled(msgs.selectMsg(i), opt, style);
-                } else {
-                    cb.button(msgs.selectMsg(i), opt);
-                }
+                // Force every row to the full list width so the whole row is
+                // a clickable target (see `ButtonStyle.min_width`).
+                var style = cb.theme.button;
+                style.min_width = row_width;
+                if (i == model.highlighted) style.bg = cb.theme.button.hover_bg;
+                cb.buttonStyled(msgs.selectMsg(i), opt, style);
             }
         }
     };
@@ -668,6 +685,12 @@ test "hit-test lands on the correct option while the list is scrolled" {
     const hit_mid = hit_test.hitTest(items, rects[0..items.len], 15, 120);
     try testing.expectEqual(@as(?TestApp.Msg, TestApp.Msg{ .select = 8 }), hit_mid.?.msg);
 
+    // A far-right click on a visible row (list spans x ∈ [10, 210]) still lands
+    // on the option button — rows are full-width, so there is no transparent
+    // dead zone that would fall through to the modal backdrop (F4).
+    const hit_right = hit_test.hitTest(items, rects[0..items.len], 195, 45);
+    try testing.expectEqual(@as(?TestApp.Msg, TestApp.Msg{ .select = 6 }), hit_right.?.msg);
+
     // A point above the viewport (over the closed button row, y=40 boundary
     // handled) that maps to a row scrolled out of view is clipped — a
     // click just below the viewport bottom hits nothing selectable.
@@ -676,6 +699,51 @@ test "hit-test lands on the correct option while the list is scrolled" {
     // only the closed button near the top, so this misses it too.
     try testing.expect(hit_below == null or hit_below.?.msg == null or
         std.meta.activeTag(hit_below.?.msg.?) != .select);
+}
+
+test "highlight move clamps a stale out-of-range cursor (F8)" {
+    const testing = std.testing;
+    const D = Dropdown(8);
+
+    // A highlight left over from a longer list (99) with only 5 options now.
+    // moveIndex must clamp to `count-1` (4) BEFORE moving, so `.prev` yields 3
+    // — not 98, which would push revealOffset past maxScroll.
+    var model: D.Model = .{ .open = true, .highlighted = 99, .scroll_offset = 0 };
+    D.update(&model, .{ .highlight = .{ .move = .prev, .count = 5, .max_visible = 0 } });
+    try testing.expectEqual(@as(usize, 3), model.highlighted);
+    // With max_visible = 0 (no scrolling) the offset stays put and valid.
+    try testing.expectEqual(@as(f32, 0), model.scroll_offset);
+
+    // `.next` from the same stale cursor saturates at the clamped end.
+    model.highlighted = 99;
+    D.update(&model, .{ .highlight = .{ .move = .next, .count = 5, .max_visible = 0 } });
+    try testing.expectEqual(@as(usize, 4), model.highlighted);
+}
+
+test "hit-test: full-width option row is clickable edge to edge (F4)" {
+    const testing = std.testing;
+    const D = Dropdown(8);
+    const opts: DropdownViewOpts = .{ .list_x = 0, .list_y = 40, .list_width = 200 };
+
+    var cb = cmd.CmdBuffer(TestApp.Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    var model: D.Model = .{ .open = true, .selected = 0 };
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    D.viewWith(&model, &cb, &test_options, TestApp.msgs, opts);
+    cb.popGroup();
+
+    const items = cb.cmds.items;
+    var rects: [32]layout.Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..items.len], items, 800, 600, text_mod.monoMeasurer());
+
+    // Row 0 of the (non-scrolling) open list spans y ∈ [40, 76). A click near
+    // the right edge (x = 150) — well past the short "Alpha" label — must land
+    // on the option button, NOT the modal backdrop (which fires .close). This
+    // is the exact probe from the finding: (150,50) → .select, not .close.
+    const hit = hit_test.hitTest(items, rects[0..items.len], 150, 50);
+    try testing.expect(hit != null);
+    try testing.expectEqual(@as(?TestApp.Msg, TestApp.Msg{ .select = 0 }), hit.?.msg);
 }
 
 test "viewWith: empty / out-of-range selection shows placeholder, no crash" {

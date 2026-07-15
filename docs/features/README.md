@@ -44,6 +44,7 @@ tests; names the gaps.
 |---|---|
 | **Consuming Teak (start here)** | [../consuming-teak.md](../consuming-teak.md) |
 | Application loop (`teak.run`) | [run.md](run.md) |
+| Subscriptions (declarative timers `Sub` / `subscribe`) | [subscriptions.md](subscriptions.md) |
 | Widgets: disabled / NumericField / Dropdown / setTitle | [widgets.md](widgets.md) |
 | Canvas: charts & custom 2D drawing | [canvas.md](canvas.md) |
 | Comptime component composition | [components.md](components.md) |
@@ -53,6 +54,9 @@ tests; names the gaps.
 | Hit-test + hover-test | [hit-test.md](hit-test.md) |
 | Layout engine | [layout.md](layout.md) |
 | Focus traversal | [focus.md](focus.md) |
+| Text measurement (`TextMeasurer` / `FontSpec`) | [text.md](text.md) |
+| Golden snapshot tests + live `TEAK_SNAPSHOT` | [snapshot.md](snapshot.md) |
+| Ergonomic helpers (Theme, mixedText, ComponentList, …) | [ergonomic-helpers.md](ergonomic-helpers.md) |
 | Functional gaps (8 features) — yolo push | [functional-gaps.md](functional-gaps.md) |
 
 ## Not yet documented

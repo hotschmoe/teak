@@ -54,9 +54,13 @@ Sub(comptime Msg: type) = union(enum) {
   `.at(model.deadline, msg)` until it fires.
 
 Both variants are **stateless at the framework level** — no sub-key
-dedup, no last-fired tracking. `.at` fires on *every* frame past its
-deadline, so the app must **drop the sub from `subscribe()`** once it
-fires (e.g. clear the deadline field in the handler) or it re-fires.
+dedup, no last-fired tracking. Even so, `.at` fires **exactly once** and
+then **auto-stops**: after the crossing frame, `last_frame_ms` has
+advanced past `deadline_ms`, so the `last_frame_ms < deadline_ms <= now_ms`
+window never opens again. You do **not** need to drop the sub from
+`subscribe()` — leaving it returned is harmless. The one thing that fires
+`.at` again is **re-arming** it: storing a *new*, later `deadline_ms` in
+`Model` opens a fresh window and counts as a new one-shot.
 
 ## How `teak.run` services it
 
@@ -93,19 +97,18 @@ if (has_subscribe) {
 ## Standalone use (no `teak.run`)
 
 The primitives are usable directly if you hand-roll a loop. `runSubs`
-takes `dispatch` as `anytype` and calls it as `dispatch(msg)` — a bare
-function; bind context via the small-static-struct idiom the in-file
-tests use:
+takes `dispatch` as `anytype` and invokes `dispatch.call(msg)` — a
+value carrying its own context (no statics, so two loops can't
+cross-wire):
 
 ```zig
 const Sink = struct {
-    var model: *Model = undefined;
-    fn dispatch(msg: Msg) void { update(model, msg); }
+    model: *Model,
+    fn call(self: @This(), msg: Msg) void { update(self.model, msg); }
 };
-Sink.model = &model;
 
 const now = host.nowMs();
-runSubs(Msg, subscribe(&model), last_frame_ms, now, Sink.dispatch);
+runSubs(Msg, subscribe(&model), last_frame_ms, now, Sink{ .model = &model });
 last_frame_ms = now;
 ```
 

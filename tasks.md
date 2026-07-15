@@ -1,21 +1,73 @@
 # Teak: Next-Phase Task List
 
-Working document. All phases through **Linux native support** have
-shipped; open items are under §"Next up". See §"Phase history" at the
-bottom for what shipped in earlier phases.
+Working document. All phases through **Agent DX + consumer gaps** have
+shipped; open items are under §"Next up". See §"Phase history" and the
+per-phase sections below for what shipped earlier.
 
 ---
 
 ## Next up (open)
 
-- Migrate the three examples' hand-rolled `ui_main.zig` to `teak.run`
-  (all three build native UI on Windows/Linux now — verify on each OS;
-  `teak.run` currently has no in-repo consumer beyond its stub tests).
-- Line-chart / canvas widget (consumer issue #3).
-- Deeper ComponentList per-item focus (consumer issue #1).
-- HiDPI / font-scaling audit.
-- Scrolling for the Dropdown open list.
-- Merge `dev-hotschmoe` → `master` (27 commits ahead as of 2026-07-10).
+The previous "Next up" list is now 5-of-6 done — see §"Prior phase —
+Agent DX + consumer gaps" below. Only one item carries over:
+
+- **Merge `dev-hotschmoe` → `master`** — in progress (41+ commits ahead).
+
+Known follow-ups deferred out of the Agent-DX wave:
+
+- **Win32 DPI awareness + render-at-scale** — deliberately deferred; the
+  design and the scaleFactor truth table are recorded in
+  [docs/features/host.md](docs/features/host.md).
+- **Secondary windows on X11 / wasm** — Win32-only today
+  (`openSecondaryWindow` returns `null` on the other hosts).
+- **Dropdown open-scroll-to-reveal on toggle** — opening parks the
+  highlight on the selection but defers the reveal to the first keyboard
+  move (`.toggle` carries no viewport geometry).
+
+---
+
+## Prior phase — Agent DX + consumer gaps (shipped 2026-07-15)
+
+Closed 5 of the 6 prior "Next up" items plus a wave of agent-facing DX.
+
+- **Cmd-buffer balance validation** — `validateBalance` + `BalanceError` /
+  `formatBalanceError`; `teak.run` calls it in Debug builds and panics with
+  a named cmd index on an unbalanced push/pop. Layout diagnostics hardened.
+- **Examples → `teak.run` migration** (`f807ea0`) — all three examples'
+  hand-rolled `ui_main.zig` collapsed onto `teak.run`. Surfaced + closed
+  the **secondary-window** hook set (`secondaryWindow` / `secondaryView` /
+  `secondaryClosedMsg`) and the **IME** composition fold-in; the Linux
+  secondary-surface path was un-broken by routing surface creation through
+  the Gpu backend's `Surface` provider.
+- **`teak.snapshot` + golden tests** — `writeSnapshot` / `snapshotAlloc` /
+  `expectSnapshot` render a `[]Cmd`+`[]Rect`(+`TransientState`) frame to one
+  grep-able text block; the whole-screen golden assertion needs no Host/GPU.
+- **Validator hardening** — `validateComponent` / `validateHost` /
+  `validateGpu` contract checks tightened.
+- **Dropdown scrolling** (`bce55cd`) — `max_visible` wraps the open list in
+  a `push_scroll`; wheel (`scrollByMsg`) + keyboard (`moveHighlightMsg`)
+  drive `Model.scroll_offset` / `highlighted` (consumer issue #2 depth).
+- **ComponentList stable-key per-item focus** (`bce55cd`) — items carry a
+  monotonic `u64` key; focus survives insert / remove / swap
+  (consumer issue #1).
+- **Canvas widget + chart helper** (`400f417`) — `canvas` Cmd variant drawn
+  through the solid-quad pipeline; `chart.lineChartPrimitives` +
+  `canvasLabeled` (consumer issue #3 **closed**).
+- **scaleFactor / DPI audit** (`344e52e`, `400f417`) — `scaleFactor`
+  optional on `validateHost`; truth table in
+  [host.md](docs/features/host.md). Win32 DPI awareness + render-at-scale
+  **deliberately deferred**, with the design recorded there.
+- **`TEAK_SNAPSHOT` live stream** — `teak.run` mirrors each changed frame's
+  snapshot to a file (`RunOptions.snapshot_path` or the env var) so an agent
+  drives the running app and reads the GUI as data.
+- **Subscriptions serviced by `teak.run`** (`73ac240`) — `run` now calls
+  `subscribe(model)` + `runSubs` on `Host.nowMs()` each frame; a fired sub
+  dispatches as a normal Msg through `update`.
+- **`llms.txt`** — audit-enforced one-read context pack (`LLMS_TXT_RULE`
+  fails the build if a `src/teak.zig` re-export goes undocumented) +
+  **`docs/cookbook.md`** intent-oriented recipes.
+- **Doc fix** — the stack-buffer / use-after-return footgun scrubbed from
+  the onboarding docs (borrow from `Model` or `cb.arena`, never a local).
 
 ---
 

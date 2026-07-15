@@ -6,7 +6,8 @@
 **Source**: `src/core/cmd.zig` (variant + emitters), `src/core/chart.zig`
 (chart helper), `src/layout/engine.zig`, `src/input/hit_test.zig`,
 `src/render/{vertex,build}.zig`, `src/input/a11y.zig`,
-`src/core/snapshot.zig`
+`src/core/snapshot.zig`, `src/run.zig` (`cmdsEqual` frame-diff arm),
+`src/platform/win32.zig` (UIA role map), `src/teak.zig` (re-exports)
 **Tests**: colocated `test` blocks in each of the above.
 
 A `canvas` is a fixed-size leaf widget that draws a list of pure-data 2D

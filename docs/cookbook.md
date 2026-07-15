@@ -99,6 +99,13 @@ entry point). See [consuming-teak.md](consuming-teak.md) for `build.zig`.
 treats `cmds[0]` as the root and `positionPass` expects every leaf to have
 a parent on the stack — the first cmd must be `pushGroup`/`pushScroll`.
 
+**Also:** any slice stored on a Cmd (a `text` label, an option list, chart
+primitives) must borrow from `Model` or from `cb.arena.allocator()` —
+**never a stack buffer**. The layout and render passes read those slices
+*after* `view` returns; a `std.fmt.bufPrint(&buf, …)` into a local is a
+use-after-return. That is why recipe 1 formats the count with
+`allocPrint(cb.arena.allocator(), …)`.
+
 ---
 
 ## 2. Add a feature, the four-step way
@@ -470,17 +477,19 @@ test "counter view golden" {
 
     try teak.expectSnapshot(cb.cmds.items, rects[0..cb.cmds.items.len], .{},
         \\group (0,0,800,600) vertical
-        \\  text (8,8,80,20) "Count: 3"
-        \\  group (8,36,128,36) horizontal
-        \\    button (8,36,60,36) "+"
-        \\    button (76,36,60,36) "-"
+        \\  text (16,16,80,20) "Count: 3"
+        \\  group (16,44,128,36) horizontal
+        \\    button (16,44,60,36) "+"
+        \\    button (84,44,60,36) "-"
         \\
     );
 }
 ```
 
 (The literal above is the verified output of the recipe-1 view at
-`count = 3`, laid out at 800×600 with 16px/8gap padding.) Pass
+`count = 3`, laid out at 800×600 with the recipe-1 padding — outer group
+`padding = 16`, `gap = 8`; inner row `padding = 0`, `gap = 8` — and the
+`monoMeasurer` stub, 10px/byte × 20px line.) Pass
 `.{ .transient = &ts }` to also assert `[hover]`/`[press]`/`[focus]`
 markers, and `.{ .header = .{ … } }` to pin window size / frame / last-msg.
 
@@ -553,6 +562,10 @@ read the returned text between transitions. Depth:
 **You will touch:** `src/app.zig` — three optional decls. `teak.run` owns
 the Host + GPU window lifecycle; the app never calls
 `Host.openSecondaryWindow`. Depth: [run.md](features/run.md#secondary-window).
+
+> **Platform note:** secondary windows are **Win32-only** today. On X11 and
+> wasm `Host.openSecondaryWindow` returns `null`, so the decls compile and
+> the primary window is unaffected — the second window just never opens.
 
 1. A bool on `Model` gates the window; `secondaryWindow` returns a
    data-only spec when it should be open, `null` when closed:
@@ -629,10 +642,13 @@ the `nowMs` read and the `last_frame_ms` bookkeeping.
 where `dispatch` is a bare `fn(msg)` bound to your model via a small static
 struct — see [subscriptions.md § "Standalone use"](features/subscriptions.md).)
 
-**Common mistake:** expecting `.at` to auto-stop. `.at` fires on every
-frame-transition past its deadline; the app must *drop the sub from
-`subscribe()`* (e.g. set the deadline field to `null`) in the handler, or
-it re-fires. `.every` is stateless too — a slow frame can skip or
+**Common mistake:** expecting `.at` to *re-fire* every frame past its
+deadline. It does not — `.at` fires **exactly once** on the crossing frame
+(`last_frame_ms < deadline_ms <= now_ms`) and then auto-stops, because
+`last_frame_ms` advances past the deadline; you need not drop the sub from
+`subscribe()`. The real gotcha is the reverse: a **re-armed** deadline (a
+new, later `deadline_ms` stored in `Model`) opens a fresh window and is a
+new one-shot fire. `.every` is stateless too — a slow frame can skip or
 double-fire a tick (both go through `update`).
 
 ---
@@ -644,10 +660,13 @@ from existing widgets). Every pass over the flat buffer must learn the new
 tag — miss one and you get a silent wrong-rects bug or a crash.
 
 **You will touch:** `src/core/cmd.zig`, `src/layout/engine.zig`,
-`src/input/hit_test.zig`, `src/render/build.zig`, `src/input/a11y.zig`,
-`src/core/snapshot.zig`, `src/run.zig`, `src/platform/win32.zig`. Model it
-on how `canvas` was added ([canvas.md](features/canvas.md) lists the same
-spots).
+`src/input/hit_test.zig`, `src/render/build.zig` (+ `src/render/vertex.zig`
+if you need a new quad shape), `src/input/a11y.zig`, `src/input/focus.zig`
+(if the widget is keyboard-focusable), `src/core/snapshot.zig`,
+`src/run.zig`, `src/platform/win32.zig`, `src/teak.zig` (re-export), and
+`llms.txt` (the audit **fails the build** if a new `pub const` re-export is
+absent — `tools/audit.zig`'s `LLMS_TXT_RULE`). Model it on how `canvas` was
+added ([canvas.md](features/canvas.md) lists the same spots).
 
 1. **Define the payload + variant** in `cmd.zig`: a `FooStyle`/`FooCmd(Msg)`
    struct (data only — no `fn` pointers, HARDLINE §3) and a line in the
@@ -683,6 +702,17 @@ compile error, because these switches take `anytype`:
 8. **Win32 UIA** (`platform/win32.zig`): map the new `Role` in
    `controlTypeForRole` (and `isFocusableRole` if it's interactive) — e.g.
    `.foo => UIA_ImageControlTypeId`.
+
+9. **Keyboard focus** (`input/focus.zig`): if the widget is Tab-focusable,
+   add its tag to `isFocusable` — otherwise Tab traversal skips it. (Skip
+   this for a purely-mouse or display-only widget, like `canvas`.)
+
+10. **Re-export + llms.txt** (`src/teak.zig`, `llms.txt`): if the new
+    payload/emitter is part of the public API, add the `pub const`
+    re-export in `teak.zig` **and** document the name in `llms.txt` — the
+    `zig build audit` `LLMS_TXT_RULE` **fails the build** when a
+    `src/teak.zig` re-export is missing from `llms.txt`
+    (`tools/audit.zig`).
 
 **Common mistake:** the switches in steps 2–8 are `anytype` and many use a
 combined leaf arm, so forgetting a tag *compiles* and then misbehaves

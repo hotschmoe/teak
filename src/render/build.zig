@@ -556,6 +556,14 @@ fn emitSegmentQuad(
 /// endpoints to the visible sub-segment and returns true if any part is
 /// visible; returns false (endpoints untouched-but-ignored) if fully out.
 fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
+    // Reject a segment with any NaN endpoint outright. Every Liang–Barsky
+    // t-comparison against a NaN is false, so a NaN segment would otherwise
+    // sail through "accepted" and `emitSegmentQuad`'s `len <= 0` guard is also
+    // false for a NaN length — the net result being six NaN vertices in the
+    // buffer. Drop it here instead.
+    if (std.math.isNan(x0.*) or std.math.isNan(y0.*) or
+        std.math.isNan(x1.*) or std.math.isNan(y1.*)) return false;
+
     const dx = x1.* - x0.*;
     const dy = y1.* - y0.*;
     const xmin = clip.x;
@@ -870,6 +878,69 @@ test "buildVertices: canvas axis-aligned prims each emit one quad" {
     buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
 
     try testing.expectEqual(@as(usize, 30), verts.items.len);
+}
+
+test "clipSegment rejects NaN endpoints (F10)" {
+    const testing = std.testing;
+    const clip = Rect{ .x = 0, .y = 0, .w = 100, .h = 100 };
+
+    // A NaN in any endpoint must reject: every Liang–Barsky t-test against NaN
+    // is false, so without the guard the segment would be "accepted" with a
+    // NaN length and emit six NaN vertices.
+    inline for (0..4) |which| {
+        var x0: f32 = 10;
+        var y0: f32 = 10;
+        var x1: f32 = 50;
+        var y1: f32 = 50;
+        const ptrs = [_]*f32{ &x0, &y0, &x1, &y1 };
+        ptrs[which].* = std.math.nan(f32);
+        try testing.expect(!clipSegment(&x0, &y0, &x1, &y1, clip));
+    }
+
+    // A finite, in-bounds segment is still accepted (no false negatives).
+    var x0: f32 = 10;
+    var y0: f32 = 10;
+    var x1: f32 = 50;
+    var y1: f32 = 50;
+    try testing.expect(clipSegment(&x0, &y0, &x1, &y1, clip));
+}
+
+test "buildVertices: canvas polyline with a NaN point emits no NaN vertices (F10)" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    const nan = std.math.nan(f32);
+    const prims = [_]CanvasPrimitive{
+        .{ .polyline = .{
+            .points = &.{ .{ .x = 0, .y = 0 }, .{ .x = nan, .y = nan }, .{ .x = 50, .y = 50 } },
+            .thickness = 2,
+        } },
+    };
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.canvas(.{ .width = 100, .height = 100 }, &prims);
+    cb.popGroup();
+
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 100, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    // Both segments touch a NaN endpoint, so both are dropped — no vertices,
+    // and definitely no NaN ones.
+    for (verts.items) |v| {
+        try testing.expect(!std.math.isNan(v.x));
+        try testing.expect(!std.math.isNan(v.y));
+    }
+    try testing.expectEqual(@as(usize, 0), verts.items.len);
 }
 
 test "buildVertices: canvas polyline diagonal segment emits a rotated quad with expected corners" {

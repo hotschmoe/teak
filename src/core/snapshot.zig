@@ -239,8 +239,18 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
 
 /// Round a float to the nearest integer for stable, diff-friendly output.
 /// Sub-pixel jitter never changes the serialized bytes.
+///
+/// Hardened against non-finite / out-of-range inputs: a NaN or ±inf rect
+/// coordinate (e.g. from a degenerate layout) must NOT panic here —
+/// snapshot is a diagnostic sink and `run` advertises it as
+/// never-crashing. `@intFromFloat` is UB / a checked panic for ±inf, NaN,
+/// or magnitudes past the i64 range, so guard both before converting.
 fn ri(v: f32) i64 {
-    return @intFromFloat(@round(v));
+    if (!std.math.isFinite(v)) return 0;
+    // 2^62 is exactly representable and keeps @round(clamped) safely inside
+    // the i64 range; real pixel coordinates never approach it.
+    const limit: f32 = 0x1p62;
+    return @intFromFloat(@round(std.math.clamp(v, -limit, limit)));
 }
 
 fn writeRect(writer: anytype, r: Rect) !void {
@@ -634,6 +644,37 @@ test "snapshot: short rects slice yields zero-rects for the tail (no error)" {
         \\text (0,0,0,0) "y"
         \\
     );
+}
+
+test "snapshot: non-finite / huge rect coords never panic (F3)" {
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+    cb.text("x");
+
+    // A rect carrying every value that would trip `@intFromFloat(@round(v))`:
+    // +inf, -inf, NaN, and a magnitude past the i64 range. `ri` must fold all
+    // of these to finite integers rather than aborting (snapshot is a
+    // never-crash diagnostic sink).
+    const bad = [_]Rect{.{
+        .x = std.math.inf(f32),
+        .y = -std.math.inf(f32),
+        .w = std.math.nan(f32),
+        .h = 1e300,
+    }};
+    const out = try snapshotAlloc(std.testing.allocator, cb.cmds.items, &bad, .{});
+    defer std.testing.allocator.free(out);
+    // inf/-inf/NaN collapse to 0; the huge finite value clamps — the point is
+    // that we produced bytes at all. x, y, w all render as 0.
+    try std.testing.expect(std.mem.startsWith(u8, out, "text (0,0,0,"));
+
+    // The header path runs `ri` on window_w/h too — feed it a NaN + inf there.
+    const out2 = try snapshotAlloc(std.testing.allocator, cb.cmds.items, &bad, .{ .header = .{
+        .window_w = std.math.nan(f32),
+        .window_h = std.math.inf(f32),
+    } });
+    defer std.testing.allocator.free(out2);
+    try std.testing.expect(std.mem.startsWith(u8, out2, "window=0x0 "));
 }
 
 test "snapshot: realistic composed view golden" {

@@ -127,6 +127,7 @@ frame with no opt-in. A static read-only app is just Model/Msg/update/view.
 pub const RunOptions = struct {
     clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },  // scene clear each frame
     blink_period: u32 = 30,   // frames/forced rebuild while focused (cursor blink); 0 disables
+    snapshot_path: ?[]const u8 = null,   // live snapshot sink; TEAK_SNAPSHOT env wins (see below)
 };
 pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: u32 };
 ```
@@ -148,6 +149,11 @@ Cmd(comptime Msg: type) type          // tagged union: push_group/pop_group, pus
 CmdBuffer(comptime Msg: type) type     // arena-backed cmd list + emitter methods + .theme field.
 Direction = enum { vertical, horizontal }
 ```
+Any slice stored on a Cmd (a text label, an option list, chart primitives)
+must borrow from `Model` or from `cb.arena.allocator()` — NEVER a stack
+buffer. Layout/render read it after `view` returns, so a `bufPrint(&buf,…)`
+into a local is a use-after-return.
+
 `CmdBuffer(Msg)` fields: `.theme: Theme` (assign before view; drives un-styled
 emitters), `.arena` (per-frame allocator), `.cmds`. Methods:
 `init(backing)`, `deinit()`, `reset()`, `setTheme(t) Theme`.
@@ -181,7 +187,7 @@ VirtualListStyle = struct { direction, total_count: u32, item_extent: f32,
 ImageStyle = struct { width = 64, height = 64, flex: f32 = 0, tint: [4]f32 = {1,1,1,1} }
 ImageCmd = struct { handle: TextureHandle, style: ImageStyle }
 ButtonStyle = struct { bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg: [4]f32,
-                       corner_radius: f32 = 4 }
+                       corner_radius: f32 = 4, min_width: f32 = 0 }
 ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false }
 TextCmd = struct { content: []const u8, font: FontSpec, color: [4]f32 }
 TextInputStyle = struct { bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg,
@@ -424,6 +430,10 @@ SecondaryWindowSpec // see above
 2. Add a case in each pass: layout (measure+position), hit-test, render.
 3. Add a convenience emitter method on `CmdBuffer`.
 4. Extend `snapshot.zig`, `a11y.zig`, and `run.zig`'s `cmdsEqual` for it.
+5. Map the new a11y `Role` in `platform/win32.zig` (`controlTypeForRole`,
+   + `isFocusableRole` if interactive); `input/focus.zig`'s `isFocusable`
+   if Tab-focusable; re-export in `src/teak.zig` + add to THIS file (the
+   audit fails the build otherwise).
 
 More worked examples and idioms: **docs/cookbook.md**.
 

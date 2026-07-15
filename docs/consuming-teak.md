@@ -124,8 +124,7 @@ pub fn update(m: *Model, msg: Msg) void {
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .vertical, .padding = 16, .gap = 8 });
-    var buf: [32]u8 = undefined;
-    cb.text(std.fmt.bufPrint(&buf, "Count: {d}", .{m.count}) catch "Count: ?");
+    cb.text(std.fmt.allocPrint(cb.arena.allocator(), "Count: {d}", .{m.count}) catch "Count: ?");
     cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 0 });
     cb.button(.inc, "+");
     cb.button(.dec, "-");
@@ -139,6 +138,13 @@ That's the whole app loop's worth of logic. `update` is the only place
 `Model` changes; `view` is a pure function of `Model` that emits commands.
 A `view` should start with a container (`pushGroup` / `pushScroll`) — the
 layout treats the first command as the root.
+
+> **Footgun:** dynamic strings must be built into `cb.arena` (as above),
+> never a stack buffer. `std.fmt.bufPrint(&buf, …)` returns a slice into a
+> local `buf` that is freed when `view` returns; the Cmd stores that slice
+> and the layout / render passes read it *after* the return — a
+> use-after-return. Any slice you store on a Cmd must borrow from `Model`
+> or from `cb.arena.allocator()`.
 
 ### Adding a feature is mechanical
 
@@ -195,6 +201,7 @@ are required; an app without them just doesn't get that behavior.
 | `secondaryWindow` | `(*const Model) ?SecondaryWindowSpec` | a second top-level window (title + size), open when non-null |
 | `secondaryView` | `(*const Model, *CmdBuffer(Msg)) void` | the secondary window's view (pairs with `secondaryWindow`) |
 | `secondaryClosedMsg` | `(*const Model) ?Msg` | Msg dispatched when the user OS-closes the secondary window |
+| `subscribe` | `(*const Model) []const Sub(Msg)` | declarative timers — `run` services them each frame via `runSubs` on `Host.nowMs()` |
 | `Model.init` | `() Model` | non-default initial state |
 
 `teak.run` also folds the Host's IME composition snapshot into the render
@@ -222,7 +229,7 @@ and the API on `CmdBuffer`):
   `pushOverlay`/`popOverlay`, `pushVirtualList`/`popVirtualList`,
   `pushFormRow`/`popFormRow`
 
-Composable components (compose via `teak.Components(.{...})`):
+Composable components (compose via `teak.Components(.{...}, null)`):
 `TextField(cap)`, `NumericField(config)`, `Dropdown(cap)`,
 `ComponentList(Child, cap)`.
 

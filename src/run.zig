@@ -246,20 +246,36 @@ pub const SecondaryWindowSpec = struct {
 /// `openSecondarySurface` still compiles.
 fn SecondaryDriver(comptime CmdBufT: type) type {
     return struct {
-        buf: CmdBufT,
-        rects: std.ArrayList(Rect),
+        /// Double-buffered like the primary loop, so the snapshot gate can
+        /// diff this window's content across frames: the just-built frame is
+        /// `bufs[cur]`, the previous one `bufs[cur ^ 1]`. Without the diff a
+        /// sub- or input-driven change confined to the secondary view would
+        /// never re-mirror the snapshot file.
+        bufs: [2]CmdBufT,
+        rects: [2]std.ArrayList(Rect),
+        cur: u1 = 0,
         /// Host + Gpu id of the live secondary window (lock-step: the
         /// same id keys the Host window slot and the Gpu surface slot).
         window_id: ?u32 = null,
 
         fn init(gpa: std.mem.Allocator) @This() {
-            return .{ .buf = CmdBufT.init(gpa), .rects = .empty };
+            return .{
+                .bufs = .{ CmdBufT.init(gpa), CmdBufT.init(gpa) },
+                .rects = .{ .empty, .empty },
+            };
         }
         fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
-            self.buf.deinit();
-            self.rects.deinit(gpa);
+            for (&self.bufs) |*b| b.deinit();
+            for (&self.rects) |*r| r.deinit(gpa);
         }
     };
+}
+
+/// True when two secondary-window specs are identical. Used to suppress an
+/// immediate reopen after the user closes the OS window when the app leaves
+/// its intent spec unchanged (it omits `secondaryClosedMsg`).
+fn secondarySpecEql(a: SecondaryWindowSpec, b: SecondaryWindowSpec) bool {
+    return a.width == b.width and a.height == b.height and std.mem.eql(u8, a.title, b.title);
 }
 
 /// Run the application against `host` + `gpu` until the host signals
@@ -298,16 +314,19 @@ pub fn run(
     // fired sub is routed through `Router.dispatch` exactly like an input Msg
     // — it mutates `Model` through `update` (no second mutation path) and
     // updates `last_msg` for the snapshot sink. `runSubs` invokes
-    // `dispatch(msg)` with a single argument, so the model + last_msg pointers
-    // the router needs ride on this per-App dispatcher's static fields, bound
-    // once below. Loop-orchestration plumbing (like `press_target`), not
-    // application state; time itself lives on the Host (`nowMs`), never core.
+    // `dispatch.call(msg)`, so the model + last_msg pointers the router needs
+    // ride *inside* a per-frame dispatcher VALUE (built at the call site
+    // below), not on module-level statics — HARDLINE hatch 4 says `run` adds
+    // no retained mutable state, and statics would also cross-wire two
+    // concurrent `run` calls sharing the same (App, Host, Gpu). Time itself
+    // lives on the Host (`nowMs`), never core.
     const has_subscribe = @hasDecl(App, "subscribe");
     const SubDispatch = struct {
-        var model_ptr: *App.Model = undefined;
-        var last_ptr: *[]const u8 = undefined;
-        fn dispatch(msg: Msg) void {
-            Router.dispatch(model_ptr, msg, last_ptr);
+        model: *App.Model,
+        last: *[]const u8,
+        // `pub` so `sub_mod.runSubs` (a different module) can invoke it.
+        pub fn call(self: @This(), msg: Msg) void {
+            Router.dispatch(self.model, msg, self.last);
         }
     };
 
@@ -350,10 +369,6 @@ pub fn run(
     // `null` until the first frame binds it, so no sub fires on the opening
     // tick (it has no window to compare against).
     var last_sub_ms: ?u64 = null;
-    if (has_subscribe) {
-        SubDispatch.model_ptr = &model;
-        SubDispatch.last_ptr = &last_msg;
-    }
 
     // Optional secondary window. `has_secondary` is comptime, so the whole
     // machinery (including the Gpu methods outside `validateGpu`) is only
@@ -361,12 +376,26 @@ pub fn run(
     const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView");
     var secondary = SecondaryDriver(CmdBufT).init(gpa);
     defer secondary.deinit(gpa);
+    // After the user closes the OS window, remember the spec that was open so
+    // we DON'T immediately reopen it while the app still reports the same
+    // spec (which it will if it omits `secondaryClosedMsg`). Cleared once the
+    // spec changes (or goes null), so a later reopen with a different spec —
+    // or the same one after an explicit close — works.
+    var suppressed_spec: ?SecondaryWindowSpec = null;
 
     const measurer = host.textMeasurer();
 
     // Last title pushed to the host, so we only call setTitle on change.
     var title_buf: [256]u8 = undefined;
     var title_len: usize = 0;
+
+    // Run-owned IME composition buffers. `Host.imeState().text` aliases the
+    // Host's single mutable global, so both `ts.ime_text` and (after the copy
+    // at end of frame) `prev_ts.ime_text` would point at the SAME memory —
+    // making a same-length composition edit compare equal and render stale.
+    // Copy each frame's composition into the buffer keyed by `current` (the
+    // frame parity) so `ts` and `prev_ts` reference distinct storage.
+    var ime_bufs: [2][128]u8 = undefined;
 
     var current: u1 = 0;
 
@@ -464,7 +493,7 @@ pub fn run(
         if (has_subscribe) {
             const now_ms = host.nowMs();
             const since = last_sub_ms orelse now_ms; // first frame: no window, no fire
-            sub_mod.runSubs(Msg, App.subscribe(&model), since, now_ms, SubDispatch.dispatch);
+            sub_mod.runSubs(Msg, App.subscribe(&model), since, now_ms, SubDispatch{ .model = &model, .last = &last_msg });
             last_sub_ms = now_ms;
         }
 
@@ -499,16 +528,24 @@ pub fn run(
         // in unconditionally (inactive/empty on hosts without IME).
         const ime = host.imeState();
         ts.ime_active = ime.active;
-        ts.ime_text = ime.text;
+        const ime_n = @min(ime.text.len, ime_bufs[cur].len);
+        @memcpy(ime_bufs[cur][0..ime_n], ime.text[0..ime_n]);
+        ts.ime_text = ime_bufs[cur][0..ime_n];
         ts.ime_cursor = ime.cursor;
 
         // 9. Dynamic window title (only on change).
         if (@hasDecl(App, "windowTitle")) {
             if (App.windowTitle(&model)) |t| {
-                if (!std.mem.eql(u8, t, title_buf[0..title_len])) {
+                // Compare against the (possibly truncated) prefix we actually
+                // stored — a title longer than `title_buf` would otherwise
+                // never match the stored copy and re-fire `setTitle` every
+                // frame. `eql` on differing lengths already returns false, so
+                // this also detects a length change.
+                const n = @min(t.len, title_buf.len);
+                if (!std.mem.eql(u8, t[0..n], title_buf[0..title_len])) {
                     host.setTitle(t);
-                    title_len = @min(t.len, title_buf.len);
-                    @memcpy(title_buf[0..title_len], t[0..title_len]);
+                    @memcpy(title_buf[0..n], t[0..n]);
+                    title_len = n;
                 }
             }
         }
@@ -547,6 +584,9 @@ pub fn run(
         // Set to the secondary window's title on the frames it actually
         // renders, so the live snapshot can append its body below a marker.
         var sec_snap_title: ?[]const u8 = null;
+        // True when the secondary view's content changed this frame — feeds
+        // the snapshot gate so a secondary-only change still re-mirrors.
+        var sec_content_changed = false;
 
         // 12. Secondary window: open / close / render. The Model drives
         //     intent via `secondaryWindow`; `run` owns the Host + Gpu
@@ -557,7 +597,15 @@ pub fn run(
         if (has_secondary) {
             const spec = App.secondaryWindow(&model);
 
-            if (spec != null and secondary.window_id == null) {
+            // Clear a stale reopen-suppression once the app's intent moves
+            // off the spec that was open when the user closed the window.
+            if (suppressed_spec) |sup| {
+                const still_same = if (spec) |s| secondarySpecEql(sup, s) else false;
+                if (!still_same) suppressed_spec = null;
+            }
+            const reopen_suppressed = suppressed_spec != null;
+
+            if (spec != null and secondary.window_id == null and !reopen_suppressed) {
                 // Open: create the OS window, then its GPU surface. Back
                 // out cleanly if either half fails so we never leak a
                 // window with no renderer (or vice versa).
@@ -588,16 +636,19 @@ pub fn run(
                 if (host.pollSecondaryInputs(wid)) |si| {
                     if (si.resized) gpu.resizeWindow(wid, si.width, si.height);
 
-                    secondary.buf.reset();
-                    if (@hasDecl(App, "themeFor")) secondary.buf.theme = App.themeFor(&model);
-                    App.secondaryView(&model, &secondary.buf);
+                    const sprev = secondary.cur;
+                    secondary.cur ^= 1;
+                    const scur = secondary.cur;
+                    secondary.bufs[scur].reset();
+                    if (@hasDecl(App, "themeFor")) secondary.bufs[scur].theme = App.themeFor(&model);
+                    App.secondaryView(&model, &secondary.bufs[scur]);
 
-                    const sec_cmds = secondary.buf.cmds.items;
+                    const sec_cmds = secondary.bufs[scur].cmds.items;
                     debugCheckBalance(sec_cmds, "secondaryView");
-                    secondary.rects.resize(gpa, sec_cmds.len) catch {};
-                    if (secondary.rects.items.len == sec_cmds.len) {
+                    secondary.rects[scur].resize(gpa, sec_cmds.len) catch {};
+                    if (secondary.rects[scur].items.len == sec_cmds.len) {
                         layout.LayoutEngine.doLayout(
-                            secondary.rects.items,
+                            secondary.rects[scur].items,
                             sec_cmds,
                             @floatFromInt(si.width),
                             @floatFromInt(si.height),
@@ -606,17 +657,27 @@ pub fn run(
                         // The secondary window has no interactive/transient
                         // state of its own — a fresh default is correct.
                         const sec_ts: TransientState = .{};
-                        render.buildVertices(&verts, &text_draws, &image_draws, gpa, sec_cmds, secondary.rects.items, sec_ts, measurer);
+                        render.buildVertices(&verts, &text_draws, &image_draws, gpa, sec_cmds, secondary.rects[scur].items, sec_ts, measurer);
                         gpu.uploadVertices(verts.items);
                         gpu.uploadText(text_draws.items);
                         gpu.uploadImages(image_draws.items);
                         gpu.renderToWindow(wid, opts.clear_color);
                         sec_snap_title = if (spec) |s| s.title else "secondary";
+                        // Diff against the previous secondary frame so a
+                        // secondary-only change (e.g. a `.every` sub updating
+                        // just this view) re-mirrors the snapshot file.
+                        sec_content_changed = !cmdsEqual(Msg, sec_cmds, secondary.bufs[sprev].cmds.items) or
+                            !rectsEqual(secondary.rects[scur].items, secondary.rects[sprev].items);
                     }
                 } else {
                     gpu.closeSecondarySurface(wid);
                     host.closeSecondaryWindow(wid);
                     secondary.window_id = null;
+                    // Remember what was open so we don't reopen it next frame
+                    // when the app leaves the same spec in place (it omits
+                    // `secondaryClosedMsg`). Apps that DO handle the close
+                    // clear their spec, which clears this above.
+                    suppressed_spec = spec;
                     if (@hasDecl(App, "secondaryClosedMsg")) {
                         if (App.secondaryClosedMsg(&model)) |m| Router.dispatch(&model, m, &last_msg);
                     }
@@ -634,14 +695,14 @@ pub fn run(
         if (snap.enabled) {
             const sec_open_now = sec_snap_title != null;
             const changed = snap_first or !cmds_same or !rects_same or !ts_same or
-                (sec_open_now != prev_secondary_open);
+                (sec_open_now != prev_secondary_open) or sec_content_changed;
             if (changed) {
                 snap.writeFrame(.{
                     .window_w = @floatFromInt(input.width),
                     .window_h = @floatFromInt(input.height),
                     .frame = ts.frame_counter,
                     .last_msg = last_msg,
-                }, cur_cmds, rects[cur].items, &ts, sec_snap_title, secondary.buf.cmds.items, secondary.rects.items);
+                }, cur_cmds, rects[cur].items, &ts, sec_snap_title, secondary.bufs[secondary.cur].cmds.items, secondary.rects[secondary.cur].items);
             }
             snap_first = false;
             prev_secondary_open = sec_open_now;
@@ -709,9 +770,16 @@ pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd
                 if (!std.meta.eql(t.font, o.font) or !std.meta.eql(t.color, o.color)) return false;
             },
             .button => |x| {
+                // Compare the FULL payload: label (slice) by content, then
+                // msg / style / font / disabled. Omitting style or font makes
+                // a theme flip or a per-widget restyle (e.g. a danger-colored
+                // button) skip the vertex rebuild AND the snapshot write —
+                // stale pixels.
                 const o = cb.button;
                 if (!std.mem.eql(u8, x.label, o.label)) return false;
                 if (!std.meta.eql(x.msg, o.msg)) return false;
+                if (!std.meta.eql(x.style, o.style)) return false;
+                if (!std.meta.eql(x.font, o.font)) return false;
                 if (x.disabled != o.disabled) return false;
             },
             .text_input => |x| {
@@ -719,25 +787,39 @@ pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd
                 if (x.cursor != o.cursor or x.selection_anchor != o.selection_anchor) return false;
                 if (x.disabled != o.disabled) return false;
                 if (!std.mem.eql(u8, x.content, o.content)) return false;
+                if (!std.meta.eql(x.focus_msg, o.focus_msg)) return false;
+                if (!std.meta.eql(x.style, o.style)) return false;
+                if (!std.meta.eql(x.font, o.font)) return false;
             },
             .checkbox => |x| {
                 const o = cb.checkbox;
                 if (x.checked != o.checked) return false;
                 if (!std.mem.eql(u8, x.label, o.label)) return false;
                 if (!std.meta.eql(x.msg, o.msg)) return false;
+                if (!std.meta.eql(x.style, o.style)) return false;
+                if (!std.meta.eql(x.font, o.font)) return false;
             },
             .radio => |x| {
                 const o = cb.radio;
                 if (x.selected != o.selected) return false;
                 if (!std.mem.eql(u8, x.label, o.label)) return false;
                 if (!std.meta.eql(x.msg, o.msg)) return false;
+                if (!std.meta.eql(x.style, o.style)) return false;
+                if (!std.meta.eql(x.font, o.font)) return false;
             },
-            .slider => |x| if (x.value != cb.slider.value) return false,
+            .slider => |x| {
+                const o = cb.slider;
+                if (x.value != o.value) return false;
+                if (!std.meta.eql(x.grab_msg, o.grab_msg)) return false;
+                if (!std.meta.eql(x.style, o.style)) return false;
+            },
             .divider => |d| if (!std.meta.eql(d, cb.divider)) return false,
             .image => |im| if (!std.meta.eql(im, cb.image)) return false,
             .rich_text => |rt| {
                 const o = cb.rich_text;
                 if (!std.mem.eql(u8, rt.content, o.content)) return false;
+                if (!std.meta.eql(rt.default_color, o.default_color)) return false;
+                if (!std.meta.eql(rt.default_font, o.default_font)) return false;
                 if (rt.spans.len != o.spans.len) return false;
                 for (rt.spans, o.spans) |sa, sb| if (!std.meta.eql(sa, sb)) return false;
             },
@@ -1175,6 +1257,137 @@ test "run: Tab advances focus across inputs and Enter fires submitMsg" {
     try std.testing.expect(Sink.submitted);
 }
 
+// ── IME-aliasing (F6) + title-syscall (F7) tests ────────────────────
+//
+// One host serves both: it reports a per-frame IME composition (so a
+// same-length composition edit can be observed) and counts `setTitle`
+// calls (so a title longer than the run's 256-byte cache can be shown NOT
+// to re-fire every frame).
+
+const ImeTitleHost = struct {
+    frame: u32 = 0,
+    closed: bool = false,
+    set_title_calls: u32 = 0,
+    // A SINGLE mutable composition buffer that `imeState` hands out slices
+    // into — exactly the Host-owned global the finding describes. `run` must
+    // copy out of it, or prev/cur will alias the same (overwritten) bytes.
+    ime_buf: [8]u8 = undefined,
+    ime_len: usize = 0,
+    ime_on: bool = false,
+
+    pub fn deinit(_: *ImeTitleHost) void {}
+    pub fn shouldClose(self: *const ImeTitleHost) bool {
+        return self.closed;
+    }
+    pub fn pollInputs(self: *ImeTitleHost) InputState {
+        self.frame += 1;
+        var in = std.mem.zeroes(InputState);
+        in.width = 200;
+        in.height = 100;
+        in.mouse_x = -10; // parked off-widget: no hover/press churn
+        in.mouse_y = -10;
+        in.chars = &.{};
+        in.keys = &.{};
+        // Two DIFFERENT compositions of the SAME length on consecutive frames,
+        // written IN PLACE into the one shared buffer — the exact case the
+        // aliasing bug reported as "equal".
+        switch (self.frame) {
+            1 => in.resized = true,
+            2 => {
+                @memcpy(self.ime_buf[0..2], "ab");
+                self.ime_len = 2;
+                self.ime_on = true;
+            },
+            3 => {
+                @memcpy(self.ime_buf[0..2], "cd"); // overwrites "ab" in place
+                self.ime_len = 2;
+                self.ime_on = true;
+            },
+            else => self.closed = true,
+        }
+        return in;
+    }
+    pub fn nativeHandle(_: *const ImeTitleHost) void {}
+    pub fn textMeasurer(_: *ImeTitleHost) text.TextMeasurer {
+        return text.monoMeasurer();
+    }
+    pub fn clipboard(_: *ImeTitleHost) Clipboard {
+        return .{ .ctx = undefined, .read_fn = StubHost.stubRead, .write_fn = StubHost.stubWrite };
+    }
+    pub fn imeState(self: *const ImeTitleHost) host_iface.ImeState {
+        return .{ .active = self.ime_on, .text = self.ime_buf[0..self.ime_len], .cursor = 2 };
+    }
+    pub fn publishA11yTree(_: *ImeTitleHost, _: []const host_iface.A11yNode) void {}
+    pub fn openFileDialog(_: *ImeTitleHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn saveFileDialog(_: *ImeTitleHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn openSecondaryWindow(_: *ImeTitleHost, _: []const u8, _: u32, _: u32) ?u32 {
+        return null;
+    }
+    pub fn setTitle(self: *ImeTitleHost, _: []const u8) void {
+        self.set_title_calls += 1;
+    }
+    pub fn nowMs(_: *const ImeTitleHost) u64 {
+        return 0;
+    }
+};
+
+test "run: a same-length IME composition change forces a rebuild (F6)" {
+    const App = struct {
+        pub const Model = struct {};
+        pub const Msg = union(enum) { noop };
+        pub fn update(_: *Model, _: Msg) void {}
+        pub fn view(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{ .padding = 0, .gap = 0 });
+            cb.button(.noop, "X");
+            cb.popGroup();
+        }
+    };
+
+    var host: ImeTitleHost = .{};
+    var gpu: StubGpu = .{};
+    // Blink disabled so the ONLY rebuild triggers are content/transient
+    // changes — the IME composition edit must be one of them.
+    try run(App, std.testing.allocator, &host, &gpu, .{ .blink_period = 0 });
+
+    // Frame 1: first content → rebuild. Frame 2: IME activates ("ab") →
+    // rebuild. Frame 3: composition changes to a same-length "cd" → rebuild
+    // ONLY if run-owned buffers keep prev/cur distinct (the fix). A buggy
+    // alias would make frame 3 compare equal → 2 rebuilds total.
+    try std.testing.expectEqual(@as(u32, 3), gpu.upload_vert_calls);
+}
+
+test "run: an over-long window title fires setTitle once, not every frame (F7)" {
+    const App = struct {
+        pub const Model = struct {};
+        pub const Msg = union(enum) { noop };
+        // 300 bytes — longer than run's 256-byte title cache.
+        const long_title = "T" ** 300;
+        pub fn update(_: *Model, _: Msg) void {}
+        pub fn view(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{ .padding = 0, .gap = 0 });
+            cb.text("hi");
+            cb.popGroup();
+        }
+        pub fn windowTitle(_: *const Model) ?[]const u8 {
+            return long_title;
+        }
+    };
+
+    var host: ImeTitleHost = .{};
+    var gpu: StubGpu = .{};
+    try run(App, std.testing.allocator, &host, &gpu, .{});
+
+    // The title never changes, so after the first push it must compare equal
+    // to the stored (truncated) prefix and never re-fire. A prior bug compared
+    // the full 300-byte title against the 256-byte cache — always unequal —
+    // and re-issued the syscall every frame.
+    try std.testing.expectEqual(@as(u32, 1), host.set_title_calls);
+}
+
 test "cmdsEqual: detects label, disabled, and length changes" {
     const Msg = union(enum) { a };
     var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
@@ -1201,6 +1414,29 @@ test "cmdsEqual: detects label, disabled, and length changes" {
     y.button(.a, "Go");
     y.button(.a, "Go");
     try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+}
+
+test "cmdsEqual: a style-only change (button bg) compares unequal (F1)" {
+    const Msg = union(enum) { a };
+    var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer x.deinit();
+    var y = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer y.deinit();
+
+    // Same label + msg, but a different background color — the kind of
+    // difference a themeFor flip or a `buttonStyled` danger color produces.
+    // If cmdsEqual ignores style, the vertex rebuild + snapshot write are
+    // skipped and the screen keeps stale pixels.
+    var danger = cmd.ButtonStyle{};
+    danger.bg = .{ 0.8, 0.1, 0.1, 1.0 };
+    x.buttonStyled(.a, "Go", .{});
+    y.buttonStyled(.a, "Go", danger);
+    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+
+    // Identical styles still compare equal.
+    y.reset();
+    y.buttonStyled(.a, "Go", .{});
+    try std.testing.expect(cmdsEqual(Msg, x.cmds.items, y.cmds.items));
 }
 
 // ── Live-snapshot sink test ─────────────────────────────────────────
@@ -1514,6 +1750,40 @@ test "run: drives the secondary window open -> render -> user-close lifecycle" {
     try std.testing.expect(Sink.closed_msg);
 }
 
+test "run: user-close without secondaryClosedMsg does not immediately reopen (F9)" {
+    // The app keeps requesting the window open every frame but omits
+    // `secondaryClosedMsg`, so after the user closes it (SecHost's 3rd
+    // secondary poll returns null) the loop must NOT reopen it while the spec
+    // is unchanged — otherwise the window flickers back every frame and the
+    // optional hook isn't really optional.
+    const App = struct {
+        pub const Model = struct {};
+        pub const Msg = union(enum) { noop };
+        pub fn update(_: *Model, _: Msg) void {}
+        pub fn view(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{ .padding = 0, .gap = 0 });
+            cb.text("main");
+            cb.popGroup();
+        }
+        pub fn secondaryWindow(_: *const Model) ?SecondaryWindowSpec {
+            return .{ .title = "Stats", .width = 360, .height = 200 };
+        }
+        pub fn secondaryView(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{ .padding = 0, .gap = 0 });
+            cb.text("stats");
+            cb.popGroup();
+        }
+    };
+
+    var host: SecHost = .{};
+    var gpu: SecGpu = .{};
+    try run(App, std.testing.allocator, &host, &gpu, .{});
+
+    // Opened exactly once for the whole run (a missing suppression would
+    // reopen it on every frame after the user-close).
+    try std.testing.expectEqual(@as(u32, 1), gpu.opened);
+}
+
 // ── Subscription (timer) test ───────────────────────────────────────
 //
 // Drives the loop with an app that declares a `.every` sub and a Host whose
@@ -1644,5 +1914,149 @@ test "run: services a .every subscription and mirrors the fired Msg to the snaps
     // …and a sub-fired Msg drives `last_msg` exactly like an input Msg.
     try std.testing.expect(std.mem.indexOf(u8, contents, "last_msg=tick") != null);
     // The pre-fire label is gone — the file holds only the latest frame.
+    try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 0\"") == null);
+}
+
+// ── Secondary-content snapshot diff (F2) ────────────────────────────
+//
+// A `.every` sub changes ONLY the secondary view; the primary stays static.
+// Without a secondary-content term in the snapshot gate the mirror file stays
+// frozen at the opening frame (probe: "ticks: 0" while the screen showed
+// "ticks: 2"). Assert the file reflects the latest secondary content.
+
+/// Advancing-clock stub Host with a secondary window that stays open for the
+/// whole run (the secondary poll never returns null). Clock: frame 1 → 50 ms,
+/// 2 → 150 ms, 3 → 250 ms, 4 → close.
+const SecSnapHost = struct {
+    frame: u32 = 0,
+    closed: bool = false,
+    clock_ms: u64 = 0,
+
+    pub const NativeHandle = struct { tag: u32 = 7 };
+
+    pub fn deinit(_: *SecSnapHost) void {}
+    pub fn shouldClose(self: *const SecSnapHost) bool {
+        return self.closed;
+    }
+    pub fn pollInputs(self: *SecSnapHost) InputState {
+        self.frame += 1;
+        var in = std.mem.zeroes(InputState);
+        in.width = 200;
+        in.height = 100;
+        in.mouse_x = -10;
+        in.mouse_y = -10;
+        in.chars = &.{};
+        in.keys = &.{};
+        switch (self.frame) {
+            1 => {
+                self.clock_ms = 50;
+                in.resized = true;
+            },
+            2 => self.clock_ms = 150,
+            3 => self.clock_ms = 250,
+            else => self.closed = true,
+        }
+        return in;
+    }
+    pub fn nativeHandle(_: *const SecSnapHost) void {}
+    pub fn textMeasurer(_: *SecSnapHost) text.TextMeasurer {
+        return text.monoMeasurer();
+    }
+    pub fn clipboard(_: *SecSnapHost) Clipboard {
+        return .{ .ctx = undefined, .read_fn = StubHost.stubRead, .write_fn = StubHost.stubWrite };
+    }
+    pub fn imeState(_: *const SecSnapHost) host_iface.ImeState {
+        return .{};
+    }
+    pub fn publishA11yTree(_: *SecSnapHost, _: []const host_iface.A11yNode) void {}
+    pub fn openFileDialog(_: *SecSnapHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn saveFileDialog(_: *SecSnapHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn requestFileDialog(_: *SecSnapHost, _: host_iface.FileDialogFilter) u32 {
+        return 0;
+    }
+    pub fn requestSaveFileDialog(_: *SecSnapHost, _: host_iface.FileDialogFilter) u32 {
+        return 0;
+    }
+    pub fn pollFileDialogResult(_: *SecSnapHost, _: u32) host_iface.FileDialogPoll {
+        return .{ .pending = {} };
+    }
+    pub fn openSecondaryWindow(_: *SecSnapHost, _: []const u8, _: u32, _: u32) ?u32 {
+        return 1;
+    }
+    pub fn secondaryWindowHandle(_: *const SecSnapHost, _: u32) ?NativeHandle {
+        return .{};
+    }
+    pub fn pollSecondaryInputs(_: *SecSnapHost, _: u32) ?InputState {
+        // Never a user-close: the window stays open every frame.
+        var in = std.mem.zeroes(InputState);
+        in.width = 360;
+        in.height = 200;
+        in.chars = &.{};
+        in.keys = &.{};
+        return in;
+    }
+    pub fn closeSecondaryWindow(_: *SecSnapHost, _: u32) void {}
+    pub fn setTitle(_: *SecSnapHost, _: []const u8) void {}
+    pub fn nowMs(self: *const SecSnapHost) u64 {
+        return self.clock_ms;
+    }
+};
+
+/// Primary view is static; a `.every` sub increments a counter shown ONLY in
+/// the secondary window's view.
+const SecSnapApp = struct {
+    pub const Model = struct { ticks: i32 = 0 };
+    pub const Msg = union(enum) { tick };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .tick => m.ticks += 1,
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+        cb.text("main"); // static — never changes across frames
+        cb.popGroup();
+    }
+    pub fn secondaryWindow(_: *const Model) ?SecondaryWindowSpec {
+        return .{ .title = "Stats", .width = 360, .height = 200 };
+    }
+    pub fn secondaryView(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+        cb.text(std.fmt.allocPrint(cb.arena.allocator(), "ticks: {d}", .{m.ticks}) catch "ticks: ?");
+        cb.popGroup();
+    }
+    pub fn subscribe(_: *const Model) []const sub_mod.Sub(Msg) {
+        return &.{.{ .every = .{ .interval_ms = 100, .msg = .tick } }};
+    }
+};
+
+test "run: a secondary-content-only change re-mirrors the snapshot (F2)" {
+    comptime host_iface.validateHost(SecSnapHost);
+
+    const gpa = std.testing.allocator;
+    const io = std.Options.debug_io;
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const path = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/sec.snap", .{td.sub_path});
+    defer gpa.free(path);
+
+    var host: SecSnapHost = .{};
+    var gpu: SecGpu = .{};
+    try run(SecSnapApp, gpa, &host, &gpu, .{ .snapshot_path = path });
+
+    const contents = try td.dir.readFileAlloc(io, "sec.snap", gpa, .limited(1 << 20));
+    defer gpa.free(contents);
+
+    // The primary never changed; only the secondary view did (two `.tick`s
+    // over frames 2 & 3). The gate must have re-mirrored on the
+    // secondary-content diff, so the file holds the latest secondary body.
+    try std.testing.expect(std.mem.indexOf(u8, contents, "=== secondary \"Stats\" ===") != null);
+    try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 2\"") != null);
+    // A frozen mirror (the bug) would still show the opening "ticks: 0".
     try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 0\"") == null);
 }

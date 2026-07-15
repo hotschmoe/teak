@@ -23,6 +23,7 @@ Every arrow is an explicit function call with typed inputs and outputs. No globa
 - **Proto-2 shipped** on three hosts: **Windows** (Win32 + wgpu-native), **Linux** (X11 + wgpu-native), and **WebAssembly** (WebGPU via [zunk](https://github.com/hotschmoe/zunk)). One `linkNativeWgpu` call picks the native backend by target OS. *(Linux X11 runs under XWayland; a native Wayland backend is not yet implemented.)*
 - **Text rendering shipped.** Both backends rasterize glyph-accurate text into a texture atlas and draw via `uploadText` / `renderFrame`.
 - **Functional-gaps push landed** on `functional_gaps_yolo`: overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs surface, virtual list, a11y tree, rich text. See [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md).
+- **Agent DX + consumer gaps landed:** `canvas` widget + line-chart helper, declarative subscriptions (`Sub` / `subscribe`, serviced by `teak.run`), golden snapshot tests + live `TEAK_SNAPSHOT` streaming, ComponentList stable-key per-item focus, Dropdown open-list scrolling, and the audit-enforced [`llms.txt`](llms.txt) + [`docs/cookbook.md`](docs/cookbook.md).
 
 ## Build commands
 
@@ -58,6 +59,18 @@ Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until
 - [`docs/archive/zunk-roadmap.md`](docs/archive/zunk-roadmap.md) — what Teak needs from zunk next, in priority order.
 - [`spec.md`](spec.md) — full architecture spec.
 
+## For AI agents
+
+- [`llms.txt`](llms.txt) — the whole public API in **one read** (types,
+  signatures, HARDLINE rules, the App contract). Audit-enforced to stay in
+  sync with `src/teak.zig`, so it never silently drifts.
+- **`TEAK_SNAPSHOT`** — run any app with `TEAK_SNAPSHOT=/tmp/teak.snap` and
+  `teak.run` mirrors each changed frame to that file as `tag (x,y,w,h)
+  payload` text, so an agent driving the app reads the **GUI as data**
+  instead of pixels. See [`docs/features/snapshot.md`](docs/features/snapshot.md).
+- [`docs/cookbook.md`](docs/cookbook.md) — intent-oriented recipes
+  ("add X to my app"), each verified against `src/`.
+
 ## Module layout
 
 ```
@@ -65,11 +78,16 @@ src/
 ├── teak.zig              public library root, re-exports
 ├── run.zig               teak.run — canonical host-loop wrapper
 ├── core/
-│   ├── cmd.zig           Cmd union, CmdBuffer, arena management (incl. disabled)
+│   ├── cmd.zig           Cmd union, CmdBuffer, arena mgmt (incl. disabled, canvas, validateBalance)
 │   ├── component.zig     Components(), validateComponent, buildMsgs
+│   ├── component_list.zig ComponentList(Child, cap) — dynamic list, stable per-item keys
 │   ├── text_field.zig    TextField(cap) + key dispatch helpers
 │   ├── numeric_field.zig NumericField(config) — parse/validate/value
-│   ├── dropdown.zig      Dropdown(cap) — closed button + open overlay list
+│   ├── dropdown.zig      Dropdown(cap) — closed button + open (scrollable) overlay list
+│   ├── theme.zig         Theme / Palette / Typography (dark + light presets)
+│   ├── sub.zig           Sub(Msg) declarative timers + runSubs
+│   ├── chart.zig         lineChartPrimitives — canvas chart helper
+│   ├── snapshot.zig      []Cmd+[]Rect → text; golden tests + TEAK_SNAPSHOT
 │   └── transient.zig     hover/press/focus presentation state
 ├── layout/engine.zig     measure + position passes
 ├── input/
@@ -88,6 +106,8 @@ examples/tree/             recursive tree with expand/collapse over flat Model
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)
+shaders/textured_quad.wgsl alpha-from-texture shader (text glyphs)
+shaders/image.wgsl         texture * tint shader (RGBA images)
 ```
 
 The library has no external dependencies. Concrete Host and GPU backends pull in wgpu-native (native) or zunk (web); each example wires the backends it needs in its own `build.zig`.

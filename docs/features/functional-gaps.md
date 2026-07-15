@@ -148,18 +148,27 @@ Sub(Msg) = union(enum) {
 `runSubs(comptime Msg, subs, last_frame_ms, now_ms, dispatch)` does
 the firing — stateless at the framework level, no per-sub key
 tracking. `.every` fires once per crossed `interval_ms` boundary;
-`.at` fires once on the frame transition past `deadline_ms`. App
+`.at` fires **exactly once** on the crossing frame where
+`last_frame_ms < deadline_ms <= now_ms`, then auto-stops (the window
+never re-opens once `last_frame_ms` passes the deadline). App
 responsibility:
 
 - Re-emit `.every` subs each frame (subscribe is recomputed; no
   identity tracking).
-- Drop `.at` subs from `subscribe()` after they fire to prevent re-firing
-  on subsequent transitions (typically by clearing the deadline field
-  in the handler).
+- `.at` needs no cleanup — it auto-stops after one fire. To fire it
+  *again*, re-arm it: store a new, later `deadline_ms` in `Model`.
 
 Fired Msgs flow through normal `update`. **This is NOT a reactive
 signal** (HARDLINE §3 forbids those) — observers are still the next
 frame's `view`, not auto-recomputed expressions.
+
+`teak.run` now services `subscribe` for you (`73ac240`): each frame, before
+building the view, it calls `subscribe(model)` and feeds the result through
+`runSubs` on `Host.nowMs()`, dispatching any fired sub as an ordinary Msg
+through `update`. The primitives above stay generic — an app hand-rolling a
+loop still calls `runSubs` itself; `run` just owns the `nowMs` read and the
+`last_frame_ms` bookkeeping. Depth:
+[subscriptions.md](subscriptions.md).
 
 ## 5. Multi-window + platform file dialogs
 
