@@ -5,9 +5,10 @@ anything marked `pub` in `src/teak.zig` needs a feature doc before it
 can be blessed for 1.0.
 
 A feature doc is a *contract*, not a tutorial. Tutorials live in
-`examples/`; deep architecture notes live in `spec.md`. Docs here answer
-four questions in the same order every time — so a reader skimming ten
-of them builds the same mental map for each.
+`examples/`; task-oriented recipes ("add X to my app") live in the
+[cookbook](../cookbook.md); deep architecture notes live in `spec.md`. Docs
+here answer four questions in the same order every time — so a reader
+skimming ten of them builds the same mental map for each.
 
 ## Template
 

@@ -51,6 +51,7 @@ Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until
 
 - [`docs/HARDLINE.md`](docs/HARDLINE.md) — the non-negotiable rules. Start here.
 - [`docs/consuming-teak.md`](docs/consuming-teak.md) — **build an app**: `build.zig.zon` → `teak.run` in a few steps.
+- [`docs/cookbook.md`](docs/cookbook.md) — **add X to my app**: ~12 intent-oriented recipes (modal, dropdown, chart, golden test, second window, new widget…).
 - [`CLAUDE.md`](CLAUDE.md) — orientation for LLMs and new contributors.
 - [`docs/features/`](docs/features/) — one contract per `pub` surface unit (`teak.run`, widgets, `Components`, `TransientState`, `Host`, `Gpu`, hit-test, layout, focus).
 - [`docs/pitfalls.md`](docs/pitfalls.md) — real bugs we hit and how to recognise their shape next time.
