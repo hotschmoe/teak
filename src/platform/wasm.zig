@@ -593,6 +593,20 @@ pub const Host = struct {
         return 0;
     }
 
+    /// Physical pixels per logical unit. Teak's web coordinate space is
+    /// CSS pixels end-to-end (zunk v0.5.2+): pointer coords, viewport
+    /// size, layout, and the shader's `screen_size` uniform all share it.
+    /// Zunk sizes the canvas backing store at CSS×devicePixelRatio and
+    /// rasterizes glyphs at that resolution *internally*, so text stays
+    /// crisp on HiDPI without teak ever seeing a physical pixel — the DPR
+    /// lives entirely inside zunk's swap-chain. From teak's coordinate
+    /// space the scale is therefore 1.0. (This is why the pre-v0.5.2
+    /// `mouse * inv_dpr` shim was removed: teak and zunk now agree on CSS
+    /// pixels, and dividing again halved coords on HiDPI.)
+    pub fn scaleFactor(_: *const Host) f32 {
+        return 1.0;
+    }
+
     fn stubRead(_: *anyopaque) []const u8 {
         return "";
     }

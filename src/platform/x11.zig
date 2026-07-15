@@ -204,6 +204,10 @@ const Xlib = struct {
     XInternAtom: *const fn (*Display, [*:0]const u8, c_int) callconv(.c) Atom,
     XSetWMProtocols: *const fn (*Display, Window, *Atom, c_int) callconv(.c) c_int,
     XFlush: *const fn (*Display) callconv(.c) c_int,
+    /// Returns the root window's RESOURCE_MANAGER property (the `xrdb`
+    /// database) as a NUL-terminated string, or null when unset. We read
+    /// `Xft.dpi` out of it to derive the desktop scale factor.
+    XResourceManagerString: *const fn (*Display) callconv(.c) ?[*:0]const u8,
 
     fn load(lib: *std.DynLib) !Xlib {
         var x: Xlib = undefined;
@@ -236,6 +240,13 @@ pub const Host = struct {
 
     width: u32,
     height: u32,
+    /// Physical-pixels-per-logical-unit derived from `Xft.dpi` at init
+    /// (X11 delivers geometry + pointer coords in device pixels and has
+    /// no automatic scaling, so this is the de-facto desktop scale). Read
+    /// once — desktops rarely change DPI mid-session, and re-reading the
+    /// resource DB per frame would be wasteful. Reported via
+    /// `scaleFactor`; nothing in the framework consumes it yet.
+    scale: f32,
     running: bool,
     /// Frame-1 forces a resize so the Gpu configures its surface before
     /// the first present (X11 may not deliver ConfigureNotify first).
@@ -284,6 +295,12 @@ pub const Host = struct {
 
         const font = try text.Font.load(std.heap.page_allocator);
 
+        // Desktop scale from Xft.dpi (xrdb). Absent / unparsable → 1.0.
+        const scale = if (x.XResourceManagerString(display)) |rm|
+            scaleFromXrm(std.mem.span(rm))
+        else
+            1.0;
+
         return .{
             .lib = lib,
             .x = x,
@@ -294,6 +311,7 @@ pub const Host = struct {
             .font = font,
             .width = width,
             .height = height,
+            .scale = scale,
             .running = true,
             .first_resize = true,
             .resized_pending = false,
@@ -535,7 +553,46 @@ pub const Host = struct {
     pub fn nowMs(_: *const Host) u64 {
         return @intCast(std.time.milliTimestamp());
     }
+
+    /// Physical device pixels per logical unit, from `Xft.dpi` read at
+    /// init. X11 reports window geometry and pointer coordinates in device
+    /// pixels with no automatic scaling, so on a HiDPI desktop the UI is
+    /// crisp but renders undersized until a consumer scales fonts + layout
+    /// by this factor. Nothing in the framework does so yet — see
+    /// docs/features/host.md "DPI and scaling". Defaults to 1.0 when
+    /// `Xft.dpi` is unset.
+    pub fn scaleFactor(self: *const Host) f32 {
+        return self.scale;
+    }
 };
+
+/// Parse the `Xft.dpi` value out of an X resource-manager string — the
+/// newline-separated `key:\tvalue` dump from `XResourceManagerString`.
+/// Returns the DPI (e.g. 192) or null when the key is absent/malformed.
+/// Pure + allocation-free so it unit-tests headlessly.
+fn parseXftDpi(xrm: []const u8) ?f32 {
+    var it = std.mem.splitScalar(u8, xrm, '\n');
+    while (it.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const key = std.mem.trim(u8, line[0..colon], " \t\r");
+        if (!std.mem.eql(u8, key, "Xft.dpi")) continue;
+        const val = std.mem.trim(u8, line[colon + 1 ..], " \t\r");
+        var end: usize = 0;
+        while (end < val.len and (std.ascii.isDigit(val[end]) or val[end] == '.')) : (end += 1) {}
+        if (end == 0) return null;
+        return std.fmt.parseFloat(f32, val[0..end]) catch null;
+    }
+    return null;
+}
+
+/// Derive a device-pixels-per-logical-unit scale from an X resource
+/// string: `Xft.dpi / 96`, clamped to a sane [0.5, 8] range. 1.0 when
+/// `Xft.dpi` is unset or non-positive.
+fn scaleFromXrm(xrm: []const u8) f32 {
+    const dpi = parseXftDpi(xrm) orelse return 1.0;
+    if (!(dpi > 0)) return 1.0;
+    return std.math.clamp(dpi / 96.0, 0.5, 8.0);
+}
 
 fn setWindowTitle(x: *const Xlib, display: *Display, window: Window, title: []const u8) void {
     var buf: [256]u8 = undefined;
@@ -592,4 +649,27 @@ test "mapSpecial covers navigation, shift variants, and chords path" {
     try std.testing.expectEqual(SpecialKey.ctrl_c, mapCtrlChord(0x63).?); // 'c'
     try std.testing.expectEqual(SpecialKey.ctrl_c, mapCtrlChord(0x43).?); // 'C'
     try std.testing.expect(mapCtrlChord(0x31) == null); // '1'
+}
+
+test "parseXftDpi extracts the value from a resource-manager dump" {
+    // Tab-separated (xrdb's default) and space-separated forms, with the
+    // key surrounded by unrelated resources.
+    try std.testing.expectEqual(@as(f32, 192), parseXftDpi("Xft.antialias:\t1\nXft.dpi:\t192\nXft.hinting:\t1\n").?);
+    try std.testing.expectEqual(@as(f32, 96), parseXftDpi("*customization:\t-color\nXft.dpi:  96").?);
+    try std.testing.expectEqual(@as(f32, 120.5), parseXftDpi("Xft.dpi:\t120.5\n").?);
+    // Absent / empty / non-numeric → null.
+    try std.testing.expect(parseXftDpi("Xft.antialias:\t1\n") == null);
+    try std.testing.expect(parseXftDpi("") == null);
+    try std.testing.expect(parseXftDpi("Xft.dpi:\tauto\n") == null);
+    // Must not match a differently-named key that merely contains the text.
+    try std.testing.expect(parseXftDpi("Xft.dpimode:\t7\n") == null);
+}
+
+test "scaleFromXrm derives a clamped scale, defaulting to 1.0" {
+    try std.testing.expectEqual(@as(f32, 2.0), scaleFromXrm("Xft.dpi:\t192\n"));
+    try std.testing.expectEqual(@as(f32, 1.0), scaleFromXrm("Xft.dpi:\t96\n"));
+    try std.testing.expectEqual(@as(f32, 1.0), scaleFromXrm("")); // unset
+    try std.testing.expectEqual(@as(f32, 1.0), scaleFromXrm("Xft.dpi:\t0\n")); // non-positive guard
+    // Absurd values clamp into range rather than producing a giant scale.
+    try std.testing.expectEqual(@as(f32, 8.0), scaleFromXrm("Xft.dpi:\t9999\n"));
 }

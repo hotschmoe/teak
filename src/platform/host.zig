@@ -159,6 +159,18 @@ pub const InputState = struct {
 ///   the current document name. Native hosts call the OS window-title
 ///   API; the web host sets `document.title`. No-op is acceptable for
 ///   headless hosts.
+/// - `scaleFactor()` reports the number of physical device pixels per
+///   logical UI unit at the window's current DPI (1.0 = no scaling).
+///   HARDLINE §4(d) surface extension, but kept **optional** in
+///   `validateHost` (existence-checked only when present) so Hosts that
+///   predate it — and `run.zig`'s test stubs — still satisfy the
+///   contract. Per-host truth: Win32 returns `GetDpiForWindow/96` (which
+///   is 1.0 while the process is DPI-*unaware*, the default today); X11
+///   returns `Xft.dpi/96` from the X resource manager; wasm returns 1.0
+///   (teak's web coordinate space is CSS pixels — zunk owns the
+///   devicePixelRatio backing store internally). Nothing in the
+///   framework consumes it yet; see docs/features/host.md "DPI and
+///   scaling" for the end-to-end render-at-scale follow-up.
 /// One required Host declaration + the signature the error message
 /// quotes when it's missing or not a function. Receiver types and a
 /// handful of return types (e.g. `nativeHandle`) are platform-specific,
@@ -204,6 +216,21 @@ pub fn validateHost(comptime T: type) void {
         if (@typeInfo(@TypeOf(@field(T, d.name))) != .@"fn")
             @compileError("Host '" ++ tn ++ "'." ++ d.name ++ " must be a function " ++
                 "(expected " ++ d.sig ++ ")");
+    }
+
+    // Optional surface extensions — checked for callability only when the
+    // Host declares them, so their absence is not a contract violation. A
+    // Host may omit `scaleFactor` (defaults to a 1.0 assumption at the
+    // orchestrator once it consumes the decl); if present it must be a fn.
+    const optional = [_]HostDecl{
+        .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
+    };
+    inline for (optional) |d| {
+        if (@hasDecl(T, d.name)) {
+            if (@typeInfo(@TypeOf(@field(T, d.name))) != .@"fn")
+                @compileError("Host '" ++ tn ++ "'." ++ d.name ++ " must be a function " ++
+                    "(expected " ++ d.sig ++ ")");
+        }
     }
 }
 
@@ -257,6 +284,9 @@ test "validateHost accepts a minimal shape" {
         pub fn nowMs(_: *const @This()) u64 {
             return 0;
         }
+        pub fn scaleFactor(_: *const @This()) f32 {
+            return 1.0;
+        }
 
         fn stubMeasure(_: *anyopaque, _: []const u8, _: FontSpec) TextMetrics {
             return .{ .width = 0, .height = 0, .ascent = 0, .descent = 0 };
@@ -267,6 +297,69 @@ test "validateHost accepts a minimal shape" {
         fn stubWrite(_: *anyopaque, _: []const u8) void {}
     };
     comptime validateHost(Stub);
+}
+
+test "validateHost accepts a Host omitting the optional scaleFactor" {
+    // The optional surface extension must not be a contract requirement:
+    // a Host that predates it (no `scaleFactor` decl) still validates.
+    const NoScale = struct {
+        pub fn init() void {}
+        pub fn deinit(_: *@This()) void {}
+        pub fn pollInputs(_: *@This()) InputState {
+            return std.mem.zeroes(InputState);
+        }
+        pub fn shouldClose(_: *const @This()) bool {
+            return true;
+        }
+        pub fn nativeHandle(_: *@This()) void {}
+        pub fn textMeasurer(_: *@This()) TextMeasurer {
+            return .{ .ctx = undefined, .measure_fn = m };
+        }
+        pub fn clipboard(_: *@This()) Clipboard {
+            return .{ .ctx = undefined, .read_fn = r, .write_fn = w };
+        }
+        pub fn imeState(_: *const @This()) ImeState {
+            return .{};
+        }
+        pub fn publishA11yTree(_: *@This(), _: []const A11yNode) void {}
+        pub fn openFileDialog(_: *@This(), _: FileDialogFilter) FileDialogResult {
+            return null;
+        }
+        pub fn saveFileDialog(_: *@This(), _: FileDialogFilter) FileDialogResult {
+            return null;
+        }
+        pub fn requestFileDialog(_: *@This(), _: FileDialogFilter) u32 {
+            return 0;
+        }
+        pub fn requestSaveFileDialog(_: *@This(), _: FileDialogFilter) u32 {
+            return 0;
+        }
+        pub fn pollFileDialogResult(_: *@This(), _: u32) FileDialogPoll {
+            return .{ .cancelled = {} };
+        }
+        pub fn openSecondaryWindow(_: *@This(), _: []const u8, _: u32, _: u32) ?u32 {
+            return null;
+        }
+        pub fn pollSecondaryInputs(_: *@This(), _: u32) ?InputState {
+            return null;
+        }
+        pub fn closeSecondaryWindow(_: *@This(), _: u32) void {}
+        pub fn secondaryWindowHandle(_: *const @This(), _: u32) ?void {
+            return null;
+        }
+        pub fn setTitle(_: *@This(), _: []const u8) void {}
+        pub fn nowMs(_: *const @This()) u64 {
+            return 0;
+        }
+        fn m(_: *anyopaque, _: []const u8, _: FontSpec) TextMetrics {
+            return .{ .width = 0, .height = 0, .ascent = 0, .descent = 0 };
+        }
+        fn r(_: *anyopaque) []const u8 {
+            return "";
+        }
+        fn w(_: *anyopaque, _: []const u8) void {}
+    };
+    comptime validateHost(NoScale);
 }
 
 test "InputState wheel_d{x,y} zero-default through std.mem.zeroes" {

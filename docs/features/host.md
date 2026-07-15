@@ -31,8 +31,9 @@ A Host type must expose these declarations:
 | `closeSecondaryWindow` | `fn(*Host, u32) void` | Destroy a secondary window and free its slot. No-op on invalid ids. |
 | `secondaryWindowHandle` | `fn(*const Host, u32) ?NativeHandle` | Return the native handle of a secondary window so the app can hand it to `gpu.openSecondarySurface`. |
 | `nowMs` | `fn(*const Host) u64` | Monotonic millisecond timestamp on the host's clock. Used by `Sub.at(deadline_ms, msg)` and anything else needing a host-side wall clock without violating HARDLINE §3's "no wall-clock in `view`". |
+| `scaleFactor` *(optional)* | `fn(*const Host) f32` | Physical device pixels per logical UI unit at the window's current DPI (1.0 = no scaling). **Optional** — `validateHost` checks it for callability only when present, so Hosts (and `run.zig`'s test stubs) that predate it still validate. Nothing in the framework consumes it yet; see [DPI and scaling](#dpi-and-scaling). |
 
-`validateHost` comptime-asserts every non-`init` decl above. The clipboard / IME / a11y / dialog / secondary-window / `nowMs` decls landed during the `functional_gaps_yolo` push as HARDLINE §4(d) surface extensions. Compile-error format:
+`validateHost` comptime-asserts every non-`init` **required** decl above, and checks the optional `scaleFactor` only when a Host declares it. The clipboard / IME / a11y / dialog / secondary-window / `nowMs` decls landed during the `functional_gaps_yolo` push as HARDLINE §4(d) surface extensions. Compile-error format:
 
 ```
 Host 'MyHost' is missing declaration 'pollInputs'
@@ -73,6 +74,70 @@ Three Hosts implement the contract; all satisfy `validateHost`.
 **X11 v1 stubs** — present in the contract so apps call them unconditionally, but no-ops today: `clipboard` read returns `""` and write is a no-op (X11 selections need an async `XConvertSelection`/`SelectionNotify` round-trip); `openFileDialog` / `saveFileDialog` return `null` (need a portal/toolkit dependency); `publishA11yTree` is a no-op (no AT-SPI yet); `openSecondaryWindow` returns `null`; `imeState` is inactive (text entry is ASCII via `XLookupString`; wider Unicode needs `Xutf8LookupString` + an input method). Windows implements clipboard + file dialogs for real.
 
 > **Verification status (Linux).** The X11 host has been verified to compile, link, and start headlessly (the dlopen + Xlib FFI path is sound); pixels-on-screen verification on a real display is pending.
+
+## DPI and scaling
+
+Teak's layout, hit-test, and render passes are **unit-agnostic** — they
+operate on whatever coordinate space the Host reports in `InputState`
+(mouse + `width`/`height`) and whatever `size_px` a `FontSpec` carries.
+Correct HiDPI rendering therefore hinges entirely on the Host/GPU
+boundary: input coords, the value fed to `doLayout`, and the GPU surface
+size at `configure`/`resize` must all agree, and glyph rasterization must
+happen at the *physical* framebuffer resolution to stay crisp.
+
+Today the three backends sit in three different places on that spectrum.
+`scaleFactor()` reports each backend's true factor so a future
+orchestrator can close the loop; **no framework code consumes it yet, so
+current rendering behavior is unchanged.**
+
+### Per-host truth table
+
+| Host | Input + `width`/`height` units | GPU surface configured at | `scaleFactor()` today | Result at scale ≠ 1 |
+|---|---|---|---|---|
+| **Win32** | Virtualized logical px (process is DPI-*unaware*) | Same virtualized px (DXGI swap-chain = client rect) | `GetDpiForWindow/96` → **1.0** while unaware | **Blurry** — Windows renders at logical res then bitmap-stretches the whole window to physical. Self-consistent coords, upscaled output. |
+| **X11** | Device (physical) px — no automatic scaling | Same physical px (Vulkan swap-chain) | `Xft.dpi/96` (e.g. 2.0 on a 192-DPI desktop) | **Crisp but undersized** — fonts rasterize at logical `size_px`, so on a 200 % desktop the UI is ~half the intended physical size. No blur. |
+| **wasm/zunk** | CSS px (zunk v0.5.2+) | zunk owns the canvas; backing store sized at CSS×`devicePixelRatio` internally | **1.0** (teak never sees physical px) | **Crisp and correctly sized** — zunk rasterizes glyphs at DPR into its backing store; teak works purely in CSS px. |
+
+The web path is the only one crisp *and* correctly sized today, and it is
+so because the DPR handling lives inside zunk, invisible to teak (this is
+the mechanism behind the "browser-verified at HiDPI" note in `tasks.md` —
+verified, but owned by zunk's swap-chain, not by `src/gpu/web.zig`, which
+configures no surface). The pixel-snapping in `render/build.zig` +
+`wgpu_core.uploadText` (`@floor`/`@ceil` on rect coords to derive texture
+extent and UVs) assumes 1 layout unit = 1 texture texel = 1 framebuffer
+pixel — i.e. **scale == 1** — which is why the native paths cannot yet
+render at scale without the follow-up below.
+
+### Follow-up: render-at-scale (not yet landed)
+
+The coherent end-to-end fix spans the orchestrator (`run.zig`) and the
+render pass (framework core), which are out of scope for the platform/GPU
+layer that owns `scaleFactor`. Design:
+
+1. **Win32 must declare awareness first.** Call
+   `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` in `Host.init`
+   (or ship an application manifest) and handle `WM_DPICHANGED`
+   (re-layout + accept the suggested window rect). Only then does
+   `GetDpiForWindow` report the real factor — landing awareness *without*
+   also scaling content would trade the blur for X11-style undersizing,
+   so the two must ship together. (Proposed diff lives in the audit
+   report, deliberately unlanded because it can't be validated headless.)
+2. **Keep layout logical, upscale the framebuffer.** The orchestrator
+   reads `host.scaleFactor()` and (a) multiplies each `FontSpec.size_px`
+   handed to rasterization by the factor so glyph textures are baked at
+   physical resolution, while (b) keeping layout math and the shader's
+   `screen_size` uniform in logical units so vertex coordinates still map
+   to the full physical swap-chain. Measure and raster **must** apply the
+   factor identically — on Linux they already share one `teak-text`
+   module, so scaling `size_px` in one place keeps them honest; splitting
+   them would reintroduce the measure-vs-render cursor drift the shared
+   module was built to prevent.
+3. **Snapping stays valid** because it operates in framebuffer pixels once
+   the factor is folded into the rasterization extent.
+
+Until that lands, `scaleFactor` is honest, inert plumbing: it exposes the
+factor per host so the orchestrator change is a localized follow-up, not a
+cross-cutting rewrite.
 
 ## Invariants
 
