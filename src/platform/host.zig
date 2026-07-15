@@ -159,39 +159,51 @@ pub const InputState = struct {
 ///   the current document name. Native hosts call the OS window-title
 ///   API; the web host sets `document.title`. No-op is acceptable for
 ///   headless hosts.
+/// One required Host declaration + the signature the error message
+/// quotes when it's missing or not a function. Receiver types and a
+/// handful of return types (e.g. `nativeHandle`) are platform-specific,
+/// so the validator checks *presence + callability* and names the
+/// expected shape — it does not pin exact parameter types (that would
+/// over-constrain the per-backend handle types).
+const HostDecl = struct { name: []const u8, sig: []const u8 };
+
 pub fn validateHost(comptime T: type) void {
-    const required = [_][]const u8{
-        "deinit",
-        "pollInputs",
-        "shouldClose",
-        "nativeHandle",
-        "textMeasurer",
-        "clipboard",
-        "imeState",
-        "publishA11yTree",
-        "openFileDialog",
-        "saveFileDialog",
-        "requestFileDialog",
-        "requestSaveFileDialog",
-        "pollFileDialogResult",
-        "openSecondaryWindow",
-        "pollSecondaryInputs",
-        "closeSecondaryWindow",
-        "secondaryWindowHandle",
+    const tn = @typeName(T);
+    const required = [_]HostDecl{
+        .{ .name = "deinit", .sig = "fn(*Host) void" },
+        .{ .name = "pollInputs", .sig = "fn(*Host) InputState" },
+        .{ .name = "shouldClose", .sig = "fn(*const Host) bool" },
+        .{ .name = "nativeHandle", .sig = "fn(*Host) NativeHandle" },
+        .{ .name = "textMeasurer", .sig = "fn(*Host) TextMeasurer" },
+        .{ .name = "clipboard", .sig = "fn(*Host) Clipboard" },
+        .{ .name = "imeState", .sig = "fn(*const Host) ImeState" },
+        .{ .name = "publishA11yTree", .sig = "fn(*Host, []const A11yNode) void" },
+        .{ .name = "openFileDialog", .sig = "fn(*Host, FileDialogFilter) FileDialogResult" },
+        .{ .name = "saveFileDialog", .sig = "fn(*Host, FileDialogFilter) FileDialogResult" },
+        .{ .name = "requestFileDialog", .sig = "fn(*Host, FileDialogFilter) u32" },
+        .{ .name = "requestSaveFileDialog", .sig = "fn(*Host, FileDialogFilter) u32" },
+        .{ .name = "pollFileDialogResult", .sig = "fn(*Host, u32) FileDialogPoll" },
+        .{ .name = "openSecondaryWindow", .sig = "fn(*Host, []const u8, u32, u32) ?WindowId" },
+        .{ .name = "pollSecondaryInputs", .sig = "fn(*Host, u32) ?InputState" },
+        .{ .name = "closeSecondaryWindow", .sig = "fn(*Host, u32) void" },
+        .{ .name = "secondaryWindowHandle", .sig = "fn(*const Host, u32) ?NativeHandle" },
         // Update the window title bar from a UTF-8 string (e.g. an
         // "* unsaved" marker or the open document's name). See the
         // surface-extension note above.
-        "setTitle",
+        .{ .name = "setTitle", .sig = "fn(*Host, []const u8) void" },
         // Monotonic millisecond timestamp on the host's clock. Used by
         // subscriptions (`Sub.at(deadline_ms, msg)`) and by anything
         // else that needs a host-side wall-clock without violating
         // HARDLINE §3's "no wall-clock in view".
-        "nowMs",
+        .{ .name = "nowMs", .sig = "fn(*const Host) u64" },
     };
-    inline for (required) |name| {
-        if (!@hasDecl(T, name)) {
-            @compileError("Host '" ++ @typeName(T) ++ "' is missing declaration '" ++ name ++ "'");
-        }
+    inline for (required) |d| {
+        if (!@hasDecl(T, d.name))
+            @compileError("Host '" ++ tn ++ "' is missing declaration '" ++ d.name ++
+                "' (expected " ++ d.sig ++ ")");
+        if (@typeInfo(@TypeOf(@field(T, d.name))) != .@"fn")
+            @compileError("Host '" ++ tn ++ "'." ++ d.name ++ " must be a function " ++
+                "(expected " ++ d.sig ++ ")");
     }
 }
 

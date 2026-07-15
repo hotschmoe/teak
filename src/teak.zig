@@ -17,6 +17,7 @@ pub const numeric_field = @import("core/numeric_field.zig");
 pub const dropdown = @import("core/dropdown.zig");
 pub const component_list = @import("core/component_list.zig");
 pub const debug_overlay = @import("core/debug_overlay.zig");
+pub const snapshot = @import("core/snapshot.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
@@ -69,6 +70,8 @@ pub const sliderDrag = hit_test.sliderDrag;
 pub const SliderDrag = hit_test.SliderDrag;
 pub const nextFocusable = focus.nextFocusable;
 pub const prevFocusable = focus.prevFocusable;
+pub const indexOfFocusMsg = focus.indexOfFocusMsg;
+pub const focusMsgAt = focus.focusMsgAt;
 pub const SpecialKey = keys.SpecialKey;
 pub const A11yNode = a11y.A11yNode;
 pub const A11yRole = a11y.Role;
@@ -107,11 +110,18 @@ pub const ComponentList = component_list.ComponentList;
 pub const DebugOverlayOpts = debug_overlay.DebugOverlayOpts;
 pub const appendDebugOverlay = debug_overlay.appendDebugOverlay;
 
+pub const SnapshotOptions = snapshot.SnapshotOptions;
+pub const SnapshotHeader = snapshot.Header;
+pub const writeSnapshot = snapshot.write;
+pub const snapshotAlloc = snapshot.snapshotAlloc;
+pub const expectSnapshot = snapshot.expectSnapshot;
+
 pub const InputState = host.InputState;
 pub const Clipboard = host.Clipboard;
 pub const ImeState = host.ImeState;
 pub const FileDialogResult = host.FileDialogResult;
 pub const FileDialogFilter = host.FileDialogFilter;
+pub const FileDialogPoll = host.FileDialogPoll;
 pub const validateHost = host.validateHost;
 
 pub const ClearColor = gpu.ClearColor;

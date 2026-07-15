@@ -26,21 +26,31 @@ pub const TextDraw = text.TextDraw;
 /// type but are interpreted by the *image* cache, not the text cache —
 /// no per-handle discriminator needed because dispatch happens at the
 /// uploadText / uploadImages call site.
+/// One required Gpu declaration + the signature the error quotes when it
+/// is missing or not a function. Like `validateHost`, this checks
+/// presence + callability and names the expected shape; exact parameter
+/// types are left unpinned because the handle shapes are backend-specific.
+const GpuDecl = struct { name: []const u8, sig: []const u8 };
+
 pub fn validateGpu(comptime T: type) void {
-    const required = [_][]const u8{
-        "deinit",
-        "resize",
-        "uploadVertices",
-        "renderFrame",
-        "rasterizeText",
-        "uploadText",
-        "uploadImage",
-        "uploadImages",
+    const tn = @typeName(T);
+    const required = [_]GpuDecl{
+        .{ .name = "deinit", .sig = "fn(*Gpu) void" },
+        .{ .name = "resize", .sig = "fn(*Gpu, u32, u32) void" },
+        .{ .name = "uploadVertices", .sig = "fn(*Gpu, []const Vertex) void" },
+        .{ .name = "renderFrame", .sig = "fn(*Gpu, ClearColor) void" },
+        .{ .name = "rasterizeText", .sig = "fn(*Gpu, []const u8, FontSpec, [4]f32, u32, u32) TextureHandle" },
+        .{ .name = "uploadText", .sig = "fn(*Gpu, []const TextDraw) void" },
+        .{ .name = "uploadImage", .sig = "fn(*Gpu, []const u8, u32, u32) TextureHandle" },
+        .{ .name = "uploadImages", .sig = "fn(*Gpu, []const ImageDraw) void" },
     };
-    inline for (required) |name| {
-        if (!@hasDecl(T, name)) {
-            @compileError("Gpu '" ++ @typeName(T) ++ "' is missing declaration '" ++ name ++ "'");
-        }
+    inline for (required) |d| {
+        if (!@hasDecl(T, d.name))
+            @compileError("Gpu '" ++ tn ++ "' is missing declaration '" ++ d.name ++
+                "' (expected " ++ d.sig ++ ")");
+        if (@typeInfo(@TypeOf(@field(T, d.name))) != .@"fn")
+            @compileError("Gpu '" ++ tn ++ "'." ++ d.name ++ " must be a function " ++
+                "(expected " ++ d.sig ++ ")");
     }
 }
 

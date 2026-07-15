@@ -15,31 +15,84 @@ const std = @import("std");
 
 pub fn validateComponent(comptime T: type) void {
     const name = @typeName(T);
+
+    // ── Model: present, a struct, default-initialisable ────────────
     if (!@hasDecl(T, "Model"))
-        @compileError("Component '" ++ name ++ "' is missing a 'Model' type");
+        @compileError("Component '" ++ name ++ "' is missing a 'Model' type " ++
+            "(expected `pub const Model = struct { ... }`)");
+    if (@typeInfo(T.Model) != .@"struct")
+        @compileError("Component '" ++ name ++ "'.Model must be a struct " ++
+            "(default-initialisable via `.{}`)");
+    // GenerateModel builds the composed Model with `T.Model{}` as each
+    // field's default, so every field of a component Model must itself
+    // carry a default. Enforce it here with a message that names the
+    // offending field instead of failing cryptically inside GenerateModel.
+    inline for (@typeInfo(T.Model).@"struct".fields) |f| {
+        if (f.default_value_ptr == null)
+            @compileError("Component '" ++ name ++ "'.Model field '" ++ f.name ++
+                "' has no default value; Model must be default-initialisable " ++
+                "(every field defaulted) so composition can build `.{}`");
+    }
+
+    // ── Msg: present, a tagged union ───────────────────────────────
     if (!@hasDecl(T, "Msg"))
-        @compileError("Component '" ++ name ++ "' is missing a 'Msg' type");
+        @compileError("Component '" ++ name ++ "' is missing a 'Msg' type " ++
+            "(expected `pub const Msg = union(enum) { ... }`)");
     if (@typeInfo(T.Msg) != .@"union")
         @compileError("Component '" ++ name ++ "'.Msg must be a union(enum)");
     const msg_info = @typeInfo(T.Msg).@"union";
     if (msg_info.tag_type == null)
         @compileError("Component '" ++ name ++ "'.Msg must be a TAGGED union, i.e. union(enum)");
-    if (!@hasDecl(T, "update"))
-        @compileError("Component '" ++ name ++ "' is missing an 'update' function");
-    if (!@hasDecl(T, "view"))
-        @compileError("Component '" ++ name ++ "' is missing a 'view' function");
 
+    // ── update: `fn(*Model, Msg) void` ─────────────────────────────
+    if (!@hasDecl(T, "update"))
+        @compileError("Component '" ++ name ++ "' is missing an 'update' function " ++
+            "(expected `pub fn update(model: *Model, msg: Msg) void`)");
     const update_info = @typeInfo(@TypeOf(T.update));
     if (update_info != .@"fn")
-        @compileError("Component '" ++ name ++ "'.update must be a function");
-    if (update_info.@"fn".params.len != 2)
-        @compileError("Component '" ++ name ++ "'.update must take (*Model, Msg)");
+        @compileError("Component '" ++ name ++ "'.update must be a function " ++
+            "with signature `fn(*Model, Msg) void`");
+    const update_fn = update_info.@"fn";
+    const expected_update = "Component '" ++ name ++ "'.update must be `fn(*Model, Msg) void`";
+    if (update_fn.params.len != 2)
+        @compileError(expected_update ++ " — it takes " ++ paramCountStr(update_fn.params.len) ++
+            ", expected 2 (*Model, Msg)");
+    if (update_fn.params[0].type == null or update_fn.params[0].type.? != *T.Model)
+        @compileError(expected_update ++ " — first parameter must be *Model");
+    if (update_fn.params[1].type == null or update_fn.params[1].type.? != T.Msg)
+        @compileError(expected_update ++ " — second parameter must be Msg");
+    if (update_fn.return_type == null or update_fn.return_type.? != void)
+        @compileError(expected_update ++ " — it must return void");
 
+    // ── view: `fn(*const Model, cb: anytype, msgs: anytype) void` ──
+    // `cb` / `msgs` are anytype (the composed CmdBuffer + a generated
+    // msgs struct), so only the model param and the return type are
+    // concrete enough to verify — but those two pin the contract.
+    if (!@hasDecl(T, "view"))
+        @compileError("Component '" ++ name ++ "' is missing a 'view' function " ++
+            "(expected `pub fn view(model: *const Model, cb: anytype, msgs: anytype) void`)");
     const view_info = @typeInfo(@TypeOf(T.view));
     if (view_info != .@"fn")
-        @compileError("Component '" ++ name ++ "'.view must be a function");
-    if (view_info.@"fn".params.len != 3)
-        @compileError("Component '" ++ name ++ "'.view must take (*const Model, cb: anytype, msgs: anytype)");
+        @compileError("Component '" ++ name ++ "'.view must be a function " ++
+            "with signature `fn(*const Model, cb: anytype, msgs: anytype) void`");
+    const view_fn = view_info.@"fn";
+    const expected_view = "Component '" ++ name ++
+        "'.view must be `fn(*const Model, cb: anytype, msgs: anytype) void`";
+    if (view_fn.params.len != 3)
+        @compileError(expected_view ++ " — it takes " ++ paramCountStr(view_fn.params.len) ++
+            ", expected 3 (*const Model, cb, msgs)");
+    if (view_fn.params[0].type == null or view_fn.params[0].type.? != *const T.Model)
+        @compileError(expected_view ++ " — first parameter must be *const Model");
+    if (view_fn.return_type) |rt| {
+        if (rt != void)
+            @compileError(expected_view ++ " — it must return void");
+    }
+}
+
+/// Small comptime helper: render a parameter count as English for the
+/// arity-mismatch messages ("1 parameter" vs "3 parameters").
+fn paramCountStr(comptime n: usize) []const u8 {
+    return std.fmt.comptimePrint("{d} parameter{s}", .{ n, if (n == 1) "" else "s" });
 }
 
 /// Build an anonymous struct type with one field per payloadless variant

@@ -311,6 +311,44 @@ pub fn secondaryClosedMsg(_: *const Model) ?Msg {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
+test "app: snapshot golden — real view at a fixed Model (LLM dev loop)" {
+    // Proves the headless view→layout→snapshot loop on real app code:
+    // an agent can assert the entire GUI as one diffable text block with
+    // no Host, no GPU, no screenshot. Change the view and this golden
+    // updates as a small, readable diff.
+    const testing = std.testing;
+    var cb = teak.cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    var m: Model = .{};
+    update(&m, .{ .counter = .increment });
+    update(&m, .{ .greeter = .{ .name_char = 'A' } });
+    view(&m, &cb);
+
+    var rects: [128]teak.Rect = undefined;
+    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, teak.monoMeasurer());
+
+    try teak.expectSnapshot(cb.cmds.items, rects[0..cb.cmds.items.len], .{},
+        \\group (0,0,800,600) vertical
+        \\  group (0,0,324,52) horizontal
+        \\    button (8,8,60,36) "Help"
+        \\    button (76,8,116,36) "Light mode"
+        \\    button (200,8,116,36) "Open stats"
+        \\  group (0,52,376,188) horizontal
+        \\    group (16,68,176,156) vertical
+        \\      text (32,84,80,20) "Count: 1"
+        \\      group (32,112,144,52) horizontal
+        \\        button (40,120,60,36) "+"
+        \\        button (108,120,60,36) "-"
+        \\      button (32,172,66,36) "Reset"
+        \\    group (208,68,152,88) vertical
+        \\      group (208,68,152,88) vertical
+        \\        text_input (224,84,120,28) "A" cursor=1
+        \\        text (224,120,90,20) "Hello, A!"
+        \\
+    );
+}
+
 test "app: composed Model carries both components + focus" {
     const m: Model = .{};
     try std.testing.expectEqual(@as(i32, 0), m.counter.count);
