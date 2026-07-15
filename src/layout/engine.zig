@@ -398,6 +398,16 @@ pub const LayoutEngine = struct {
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, img.style.flex);
                 },
+                .canvas => |cv| {
+                    // Fixed-size leaf: intrinsic w/h come straight from the
+                    // style. Flex weight is counted for sibling distribution
+                    // (same convention as `image`); the canvas itself keeps
+                    // its declared box in the position pass.
+                    const w = cv.style.width;
+                    const h = cv.style.height;
+                    rects[i] = .{ .w = w, .h = h };
+                    addLeafToTop(&stack, w, h, cv.style.flex);
+                },
                 .rich_text => |rt| {
                     // Measure each span with its own font; fall back to
                     // default_font for any byte not covered by a span.
@@ -459,7 +469,7 @@ pub const LayoutEngine = struct {
                     .scroll_x = sc.scroll_x,
                     .scroll_y = sc.scroll_y,
                 }),
-                .text, .button, .checkbox, .radio, .image, .rich_text => {
+                .text, .button, .checkbox, .radio, .image, .rich_text, .canvas => {
                     const ctx = stack.top();
                     if (ctx.child_count > 0) advanceCursor(ctx, ctx.gap);
 
@@ -1035,6 +1045,28 @@ test "text_input cross-axis stretches in vertical parent" {
 
     // Parent inner width = 400 - 20 = 380.
     try testing.expectEqual(@as(f32, 380), rects[1].w);
+}
+
+test "canvas is a fixed-size leaf sized from its style" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 10, .gap = 0 });
+    cb.text("Title"); // 5*10 = 50 wide, 20 tall
+    cb.canvas(.{ .width = 300, .height = 120 }, &.{});
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
+
+    // Canvas keeps its declared box regardless of parent size.
+    try testing.expectEqual(@as(f32, 300), rects[2].w);
+    try testing.expectEqual(@as(f32, 120), rects[2].h);
+    // Placed under the title (y = padding 10 + title height 20 = 30) at x=10.
+    try testing.expectEqual(@as(f32, 10), rects[2].x);
+    try testing.expectEqual(@as(f32, 30), rects[2].y);
 }
 
 test "ClipStack: round-trip up to capacity without tripping bounds" {

@@ -509,6 +509,28 @@ pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd
                 if (rt.spans.len != o.spans.len) return false;
                 for (rt.spans, o.spans) |sa, sb| if (!std.meta.eql(sa, sb)) return false;
             },
+            .canvas => |x| {
+                const o = cb.canvas;
+                if (!std.meta.eql(x.style, o.style)) return false;
+                if (!std.meta.eql(x.msg, o.msg)) return false;
+                if (!std.mem.eql(u8, x.label, o.label)) return false;
+                if (x.primitives.len != o.primitives.len) return false;
+                // Compare by content, not slice identity — the arena hands
+                // out fresh addresses each frame. Polyline carries a nested
+                // points slice, so it needs a content walk of its own.
+                for (x.primitives, o.primitives) |pa, pb| {
+                    if (std.meta.activeTag(pa) != std.meta.activeTag(pb)) return false;
+                    switch (pa) {
+                        .polyline => |pl| {
+                            const ob = pb.polyline;
+                            if (!std.meta.eql(pl.color, ob.color) or pl.thickness != ob.thickness) return false;
+                            if (pl.points.len != ob.points.len) return false;
+                            for (pl.points, ob.points) |qa, qb| if (!std.meta.eql(qa, qb)) return false;
+                        },
+                        else => if (!std.meta.eql(pa, pb)) return false,
+                    }
+                }
+            },
         }
     }
     return true;

@@ -221,6 +221,15 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writer.writeAll("divider ");
             try writeRect(writer, r);
         },
+        .canvas => |cv| {
+            try writer.writeAll("canvas ");
+            try writeRect(writer, r);
+            try writer.print(" prims={d}", .{cv.primitives.len});
+            if (cv.label.len > 0) {
+                try writer.writeByte(' ');
+                try writeQuoted(writer, cv.label);
+            }
+        },
         // Pop cmds are handled before writeCmd is ever called.
         .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => unreachable,
     }
@@ -484,6 +493,31 @@ test "snapshot: scroll shows offsets; virtual_list shows totals" {
         \\  virtual_list (0,-24,50,24000) total=1000 extent=24 visible=[1,3)
         \\    text (0,0,50,20) "row 1"
         \\    text (0,20,50,20) "row 2"
+        \\
+    );
+}
+
+test "snapshot: canvas shows rect + primitive count + label" {
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+
+    const prims = [_]cmd.CanvasPrimitive{
+        .{ .hline = .{ .y = 10 } },
+        .{ .hline = .{ .y = 60 } },
+        .{ .polyline = .{ .points = &.{ .{ .x = 0, .y = 0 }, .{ .x = 300, .y = 100 } } } },
+    };
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 8, .gap = 0 });
+    cb.canvasLabeled(.{ .width = 300, .height = 120 }, &prims, "count history");
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    const rs = layoutInto(&rects, cb.cmds.items, 400, 300);
+
+    try expectSnapshot(cb.cmds.items, rs, .{},
+        \\group (0,0,400,300) vertical
+        \\  canvas (8,8,300,120) prims=3 "count history"
         \\
     );
 }

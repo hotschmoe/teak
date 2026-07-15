@@ -65,6 +65,9 @@ pub const Role = enum {
     divider,
     /// Image, possibly decorative.
     image,
+    /// Custom 2D drawing surface (chart / plot). Announced by its label;
+    /// its primitives are not individually exposed.
+    canvas,
     /// Modal/popup overlay. Screen readers should announce focus
     /// trapping here when present.
     overlay,
@@ -284,6 +287,12 @@ fn collectLayer(
             },
             .divider => .{ .role = .divider, .cmd_index = @intCast(i), .bounds = b },
             .image => .{ .role = .image, .cmd_index = @intCast(i), .bounds = b },
+            .canvas => |cv| .{
+                .role = .canvas,
+                .cmd_index = @intCast(i),
+                .bounds = b,
+                .label = cv.label,
+            },
             // Containers handled above; pop_* + virtual_list never
             // emit leaves.
             else => null,

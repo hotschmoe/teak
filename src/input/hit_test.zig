@@ -48,6 +48,10 @@ fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
         .checkbox => |cb| cb.msg,
         .radio => |r| r.msg,
         .slider => |s| s.grab_msg,
+        // A canvas is interactive only when it carries a click Msg; a
+        // null msg (the default) leaves it non-interactive, like a plain
+        // decorative leaf.
+        .canvas => |cv| cv.msg,
         else => null,
     };
 }
@@ -235,6 +239,18 @@ pub fn sliderValueAt(rect: Rect, mouse_x: f32) f32 {
     return @min(@max(t, 0), 1);
 }
 
+/// Convert a window-space mouse position into canvas-LOCAL coordinates
+/// (origin at the canvas rect's top-left), given the canvas's rect.
+/// Returns null when the point is outside the rect. Mirrors
+/// `sliderValueAt`'s shape: after `hitTest` returns a canvas's click Msg
+/// + index, the app reads `rects[index]` and calls this to recover the
+/// data coordinate that was clicked (then maps it to its own value-space
+/// via a Msg it owns — fn-pointer-free per HARDLINE §3).
+pub fn canvasLocalPoint(rect: Rect, mouse_x: f32, mouse_y: f32) ?struct { x: f32, y: f32 } {
+    if (!rectContains(rect, mouse_x, mouse_y)) return null;
+    return .{ .x = mouse_x - rect.x, .y = mouse_y - rect.y };
+}
+
 /// Drag state for a slider currently being held. The host computes this
 /// each frame while `press_target` points at a slider; the app reads
 /// `.value` and dispatches its own value-carrying Msg (typically a
@@ -405,6 +421,50 @@ test "sliderValueAt maps mouse_x to [0, 1]" {
     try testing.expectEqual(@as(f32, 1), sliderValueAt(r, 300));
     try testing.expectEqual(@as(f32, 0), sliderValueAt(r, 50)); // clamp low
     try testing.expectEqual(@as(f32, 1), sliderValueAt(r, 500)); // clamp high
+}
+
+test "canvasLocalPoint converts a hit to canvas-local coords, else null" {
+    const testing = std.testing;
+    const r: Rect = .{ .x = 100, .y = 50, .w = 300, .h = 120 };
+
+    // Inside → local offset from the rect's top-left.
+    const p = canvasLocalPoint(r, 130, 80).?;
+    try testing.expectEqual(@as(f32, 30), p.x);
+    try testing.expectEqual(@as(f32, 30), p.y);
+
+    // Top-left corner maps to (0, 0).
+    const corner = canvasLocalPoint(r, 100, 50).?;
+    try testing.expectEqual(@as(f32, 0), corner.x);
+    try testing.expectEqual(@as(f32, 0), corner.y);
+
+    // Outside → null.
+    try testing.expect(canvasLocalPoint(r, 50, 80) == null);
+    try testing.expect(canvasLocalPoint(r, 130, 200) == null);
+}
+
+test "hitTest: canvas is interactive only with a click msg" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.canvas(.{ .width = 200, .height = 100 }, &.{}); // index 1 — no msg
+    cb.canvasClickable(.poke, .{ .width = 200, .height = 100 }, &.{}, "plot"); // index 2
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 400, text_mod.monoMeasurer());
+
+    // Non-interactive canvas: click passes through (no hit).
+    const r1 = rects[1];
+    try testing.expect(hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], r1.x + 5, r1.y + 5) == null);
+
+    // Clickable canvas: returns its msg.
+    const r2 = rects[2];
+    const hit = hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], r2.x + 5, r2.y + 5);
+    try testing.expect(hit != null);
+    try testing.expectEqual(@as(?Msg, Msg.poke), hit.?.msg);
 }
 
 test "hitTest intersects nested scroll clips" {

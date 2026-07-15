@@ -44,6 +44,7 @@ tests; names the gaps.
 | **Consuming Teak (start here)** | [../consuming-teak.md](../consuming-teak.md) |
 | Application loop (`teak.run`) | [run.md](run.md) |
 | Widgets: disabled / NumericField / Dropdown / setTitle | [widgets.md](widgets.md) |
+| Canvas: charts & custom 2D drawing | [canvas.md](canvas.md) |
 | Comptime component composition | [components.md](components.md) |
 | Transient (presentation-only) state | [transient-state.md](transient-state.md) |
 | Host interface (window + input) | [host.md](host.md) |

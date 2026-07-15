@@ -10,9 +10,12 @@ const TextMeasurer = text_mod.TextMeasurer;
 const FontSpec = text_mod.FontSpec;
 const TextureHandle = text_mod.TextureHandle;
 const TEXTURE_HANDLE_NONE = text_mod.TEXTURE_HANDLE_NONE;
+const cmd_types = @import("../core/cmd.zig");
+const CanvasPrimitive = cmd_types.CanvasPrimitive;
 const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
+const emitQuadCorners = vertex.emitQuadCorners;
 
 /// Image draw record. Parallel to TextDraw — the GPU backend consumes
 /// these in `uploadImages` and emits 6 textured vertices per draw using
@@ -428,8 +431,168 @@ fn buildLayer(
                 if (!visible) continue;
                 emit(verts, alloc, rect, dv.color, cur_clip);
             },
+            .canvas => |cv| {
+                if (!visible) continue;
+                if (rect.w <= 0 or rect.h <= 0) continue;
+                // Primitives clip to the canvas rect intersected with the
+                // surrounding scroll/overlay clip — same rect-intersection
+                // mechanism the rest of the pass uses, extended in data
+                // space (Liang–Barsky) for the rotated polyline quads that
+                // a plain rect clip can't express.
+                const canvas_clip = clipRect(rect, cur_clip);
+                if (canvas_clip.w <= 0 or canvas_clip.h <= 0) continue;
+                if (cv.style.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+                for (cv.primitives) |prim| {
+                    emitCanvasPrimitive(verts, alloc, rect, prim, canvas_clip);
+                }
+            },
         }
     }
+}
+
+// ── Canvas primitive emission ──────────────────────────────────────
+
+/// Translate one canvas-local primitive to window space and emit it.
+/// Axis-aligned prims go through `emit` (rect-clipped). Polyline segments
+/// are clipped in data space then drawn as rotated quads via
+/// `emitQuadCorners`.
+fn emitCanvasPrimitive(
+    verts: *std.ArrayList(Vertex),
+    alloc: std.mem.Allocator,
+    canvas: Rect,
+    prim: CanvasPrimitive,
+    clip: Rect,
+) void {
+    switch (prim) {
+        .filled_rect => |fr| {
+            emit(verts, alloc, .{
+                .x = canvas.x + fr.x,
+                .y = canvas.y + fr.y,
+                .w = fr.w,
+                .h = fr.h,
+            }, fr.color, clip);
+        },
+        .hline => |h| {
+            const half = h.thickness * 0.5;
+            emit(verts, alloc, .{
+                .x = canvas.x,
+                .y = canvas.y + h.y - half,
+                .w = canvas.w,
+                .h = h.thickness,
+            }, h.color, clip);
+        },
+        .vline => |v| {
+            const half = v.thickness * 0.5;
+            emit(verts, alloc, .{
+                .x = canvas.x + v.x - half,
+                .y = canvas.y,
+                .w = v.thickness,
+                .h = canvas.h,
+            }, v.color, clip);
+        },
+        .marker => |mk| {
+            const half = mk.size * 0.5;
+            emit(verts, alloc, .{
+                .x = canvas.x + mk.x - half,
+                .y = canvas.y + mk.y - half,
+                .w = mk.size,
+                .h = mk.size,
+            }, mk.color, clip);
+        },
+        .polyline => |pl| {
+            if (pl.points.len < 2) return;
+            var i: usize = 1;
+            while (i < pl.points.len) : (i += 1) {
+                const a = pl.points[i - 1];
+                const b = pl.points[i];
+                var x0 = canvas.x + a.x;
+                var y0 = canvas.y + a.y;
+                var x1 = canvas.x + b.x;
+                var y1 = canvas.y + b.y;
+                // Fully-outside segments are rejected; partially-outside
+                // ones are trimmed to the clip rect at the data level. The
+                // thick quad may still bulge by up to thickness/2 past the
+                // boundary at a trimmed endpoint — negligible and bounded.
+                if (clipSegment(&x0, &y0, &x1, &y1, clip)) {
+                    emitSegmentQuad(verts, alloc, x0, y0, x1, y1, pl.thickness, pl.color);
+                }
+            }
+        },
+    }
+}
+
+/// Build the 4 corners of a `thickness`-wide quad along segment
+/// (x0,y0)→(x1,y1) and emit it. Zero-length segments draw nothing.
+fn emitSegmentQuad(
+    verts: *std.ArrayList(Vertex),
+    alloc: std.mem.Allocator,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    thickness: f32,
+    color: [4]f32,
+) void {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const len = @sqrt(dx * dx + dy * dy);
+    if (len <= 0) return;
+    const half = thickness * 0.5;
+    // Unit normal (perpendicular to the segment) scaled by half-thickness.
+    const nx = -dy / len * half;
+    const ny = dx / len * half;
+    emitQuadCorners(
+        verts,
+        alloc,
+        .{ x0 + nx, y0 + ny },
+        .{ x1 + nx, y1 + ny },
+        .{ x1 - nx, y1 - ny },
+        .{ x0 - nx, y0 - ny },
+        color,
+    );
+}
+
+/// Liang–Barsky segment clip against an axis-aligned rect. Mutates the
+/// endpoints to the visible sub-segment and returns true if any part is
+/// visible; returns false (endpoints untouched-but-ignored) if fully out.
+fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
+    const dx = x1.* - x0.*;
+    const dy = y1.* - y0.*;
+    const xmin = clip.x;
+    const xmax = clip.x + clip.w;
+    const ymin = clip.y;
+    const ymax = clip.y + clip.h;
+
+    const p = [_]f32{ -dx, dx, -dy, dy };
+    const q = [_]f32{ x0.* - xmin, xmax - x0.*, y0.* - ymin, ymax - y0.* };
+
+    var t0: f32 = 0;
+    var t1: f32 = 1;
+    for (p, q) |pk, qk| {
+        if (pk == 0) {
+            // Segment parallel to this edge: reject if it starts outside.
+            if (qk < 0) return false;
+        } else {
+            const t = qk / pk;
+            if (pk < 0) {
+                if (t > t1) return false;
+                if (t > t0) t0 = t;
+            } else {
+                if (t < t0) return false;
+                if (t < t1) t1 = t;
+            }
+        }
+    }
+
+    const nx0 = x0.* + t0 * dx;
+    const ny0 = y0.* + t0 * dy;
+    const nx1 = x0.* + t1 * dx;
+    const ny1 = y0.* + t1 * dy;
+    x0.* = nx0;
+    y0.* = ny0;
+    x1.* = nx1;
+    y1.* = ny1;
+    return true;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -675,6 +838,116 @@ test "buildVertices: GroupStyle.bg = null emits no panel quad (regression)" {
     // Null bg → no quad at all. Text still flows to text_draws.
     try testing.expectEqual(@as(usize, 0), verts.items.len);
     try testing.expectEqual(@as(usize, 1), text_draws.items.len);
+}
+
+test "buildVertices: canvas axis-aligned prims each emit one quad" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    const prims = [_]CanvasPrimitive{
+        .{ .filled_rect = .{ .x = 0, .y = 0, .w = 10, .h = 10 } },
+        .{ .hline = .{ .y = 20 } },
+        .{ .vline = .{ .x = 30 } },
+        .{ .marker = .{ .x = 40, .y = 40 } },
+    };
+    // bg + 4 axis-aligned prims = 5 quads = 30 verts.
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.canvas(.{ .width = 100, .height = 100, .bg = .{ 0.1, 0.1, 0.1, 1 } }, &prims);
+    cb.popGroup();
+
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 100, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    try testing.expectEqual(@as(usize, 30), verts.items.len);
+}
+
+test "buildVertices: canvas polyline diagonal segment emits a rotated quad with expected corners" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // Diagonal (0,0)->(50,50). thickness = 2√2 → half-width √2 → the
+    // perpendicular offset is exactly (∓1, ±1). Canvas sits at the origin.
+    const thick = 2.0 * @sqrt(2.0);
+    const prims = [_]CanvasPrimitive{
+        .{ .polyline = .{
+            .points = &.{ .{ .x = 0, .y = 0 }, .{ .x = 50, .y = 50 } },
+            .thickness = thick,
+        } },
+    };
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.canvas(.{ .width = 100, .height = 100 }, &prims); // no bg
+    cb.popGroup();
+
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 100, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    // One segment → one quad → 6 verts.
+    try testing.expectEqual(@as(usize, 6), verts.items.len);
+    // Triangle 1 corners: c0=(-1,1), c1=(49,51), c2=(51,49).
+    try testing.expectApproxEqAbs(@as(f32, -1), verts.items[0].x, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 1), verts.items[0].y, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 49), verts.items[1].x, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 51), verts.items[1].y, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 51), verts.items[2].x, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 49), verts.items[2].y, 0.001);
+    // Triangle 2 ends at c3=(1,-1).
+    try testing.expectApproxEqAbs(@as(f32, 1), verts.items[5].x, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, -1), verts.items[5].y, 0.001);
+}
+
+test "buildVertices: canvas polyline fully outside the canvas is clipped away" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // Segment lives entirely past the canvas's 100x100 bounds → Liang–
+    // Barsky rejects it → no geometry emitted.
+    const prims = [_]CanvasPrimitive{
+        .{ .polyline = .{
+            .points = &.{ .{ .x = 200, .y = 200 }, .{ .x = 300, .y = 300 } },
+            .thickness = 4,
+        } },
+    };
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.canvas(.{ .width = 100, .height = 100 }, &prims);
+    cb.popGroup();
+
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 100, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    try testing.expectEqual(@as(usize, 0), verts.items.len);
 }
 
 test "buildVertices: nested groups with bg render outer first, then inner" {

@@ -5,8 +5,16 @@ const std = @import("std");
 // The msgs parameter carries AppMsg-typed values pre-wrapped by the
 // composition layer so this component stays ignorant of the composed shape.
 
+/// Rolling window of recent count values, for the Stats-window chart.
+pub const HISTORY_CAP = 32;
+
 pub const Model = struct {
     count: i32 = 0,
+    /// Recent count values, oldest first. `history[0..history_len]` is the
+    /// live window; once full it slides (drop-oldest). Plain Model state,
+    /// mutated only in `update` — the chart in `app.statsView` reads it.
+    history: [HISTORY_CAP]f32 = [_]f32{0} ** HISTORY_CAP,
+    history_len: usize = 0,
 };
 
 pub const Msg = union(enum) {
@@ -21,6 +29,26 @@ pub fn update(model: *Model, msg: Msg) void {
         .decrement => model.count -= 1,
         .reset => model.count = 0,
     }
+    recordHistory(model);
+}
+
+/// Append the current count to the rolling history window, sliding the
+/// window when it is full. Pure Model mutation — no allocation.
+fn recordHistory(model: *Model) void {
+    const v: f32 = @floatFromInt(model.count);
+    if (model.history_len < HISTORY_CAP) {
+        model.history[model.history_len] = v;
+        model.history_len += 1;
+    } else {
+        var i: usize = 1;
+        while (i < HISTORY_CAP) : (i += 1) model.history[i - 1] = model.history[i];
+        model.history[HISTORY_CAP - 1] = v;
+    }
+}
+
+/// Live history window (oldest first).
+pub fn history(model: *const Model) []const f32 {
+    return model.history[0..model.history_len];
 }
 
 pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {

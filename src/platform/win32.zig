@@ -109,7 +109,14 @@ extern "user32" fn ReleaseDC(?HANDLE, HDC) callconv(WINAPI) c_int;
 extern "user32" fn GetKeyState(c_int) callconv(WINAPI) i16;
 extern "user32" fn DestroyWindow(HANDLE) callconv(WINAPI) BOOL;
 extern "user32" fn SetWindowTextW(HANDLE, LPCWSTR) callconv(WINAPI) BOOL;
+/// Per-window DPI (Windows 10 1607+). Returns USER_DEFAULT_SCREEN_DPI
+/// (96) while the process is DPI-*unaware*, and the true monitor DPI
+/// once Per-Monitor(-v2) awareness is declared. See `Host.scaleFactor`.
+extern "user32" fn GetDpiForWindow(HANDLE) callconv(WINAPI) UINT;
 extern "kernel32" fn GetModuleHandleW(?LPCWSTR) callconv(WINAPI) ?HANDLE;
+
+/// Standard screen DPI Windows treats as the 1.0 baseline.
+const USER_DEFAULT_SCREEN_DPI: f32 = 96;
 
 // Clipboard externs.
 extern "user32" fn OpenClipboard(?HANDLE) callconv(WINAPI) BOOL;
@@ -870,6 +877,10 @@ fn controlTypeForRole(role: A11yRole) c_long {
         .slider => UIA_SliderControlTypeId,
         .divider => UIA_SeparatorControlTypeId,
         .image => UIA_ImageControlTypeId,
+        // A canvas (chart / plot) is a custom-drawn graphic announced by
+        // its label — Image is the closest UIA control type, matching
+        // `.image` above (its primitives aren't individually exposed).
+        .canvas => UIA_ImageControlTypeId,
         .overlay => UIA_PaneControlTypeId,
     };
 }
@@ -2125,6 +2136,24 @@ pub const Host = struct {
     /// — subs compare deltas, not absolute values.
     pub fn nowMs(_: *const Host) u64 {
         return @intCast(std.time.milliTimestamp());
+    }
+
+    /// Physical device pixels per logical unit at the window's current
+    /// DPI. **Important:** this returns 1.0 today because the process is
+    /// DPI-*unaware* (no `SetProcessDpiAwarenessContext` / manifest) — in
+    /// that mode Windows virtualizes the window's coordinate space and
+    /// bitmap-stretches the framebuffer to the physical resolution, so
+    /// `WM_SIZE` / mouse coords are already in the same 1.0 space the
+    /// renderer draws into (self-consistent, but blurry at scale != 1).
+    /// `GetDpiForWindow` only reports the true monitor factor once
+    /// Per-Monitor(-v2) awareness is declared; that, plus consuming the
+    /// factor to scale fonts + layout, is the render-at-scale follow-up
+    /// documented in docs/features/host.md. Reporting the real ratio here
+    /// keeps this decl honest the moment awareness lands.
+    pub fn scaleFactor(self: *const Host) f32 {
+        const dpi = GetDpiForWindow(self.hwnd);
+        if (dpi == 0) return 1.0; // pre-1607 or invalid HWND
+        return @as(f32, @floatFromInt(dpi)) / USER_DEFAULT_SCREEN_DPI;
     }
 
     /// Submit a request-style file dialog: find a free slot, run the

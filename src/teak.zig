@@ -18,6 +18,7 @@ pub const dropdown = @import("core/dropdown.zig");
 pub const component_list = @import("core/component_list.zig");
 pub const debug_overlay = @import("core/debug_overlay.zig");
 pub const snapshot = @import("core/snapshot.zig");
+pub const chart = @import("core/chart.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
@@ -58,13 +59,21 @@ pub const RadioStyle = cmd.RadioStyle;
 pub const SliderCmd = cmd.SliderCmd;
 pub const SliderStyle = cmd.SliderStyle;
 pub const DividerStyle = cmd.DividerStyle;
+pub const CanvasCmd = cmd.CanvasCmd;
+pub const CanvasStyle = cmd.CanvasStyle;
+pub const CanvasPrimitive = cmd.CanvasPrimitive;
+pub const CanvasPoint = cmd.CanvasPoint;
 pub const Direction = cmd.Direction;
+
+pub const LineChartOpts = chart.LineChartOpts;
+pub const lineChartPrimitives = chart.lineChartPrimitives;
 
 pub const Rect = layout.Rect;
 pub const LayoutEngine = layout.LayoutEngine;
 
 pub const hitTest = hit_test.hitTest;
 pub const hoverTest = hit_test.hoverTest;
+pub const canvasLocalPoint = hit_test.canvasLocalPoint;
 pub const sliderValueAt = hit_test.sliderValueAt;
 pub const sliderDrag = hit_test.sliderDrag;
 pub const SliderDrag = hit_test.SliderDrag;
@@ -98,6 +107,7 @@ pub const keyNeedsClipboard = text_field.keyNeedsClipboard;
 
 pub const Vertex = vertex.Vertex;
 pub const emitQuad = vertex.emitQuad;
+pub const emitQuadCorners = vertex.emitQuadCorners;
 pub const buildVertices = render.buildVertices;
 pub const ImageDraw = render.ImageDraw;
 

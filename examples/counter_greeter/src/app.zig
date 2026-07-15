@@ -197,6 +197,32 @@ pub fn statsView(m: *const Model, cb: anytype) void {
         .{if (m.greeter.name_len > 0) m.greeter.name[0..m.greeter.name_len] else "(unset)"},
     ) catch "Name: ?";
     cb.text(name_buf);
+
+    // Count-history line chart. The chart helper turns the counter's
+    // rolling history window (plain Model state, updated in counter.update)
+    // into gridlines + a polyline; the canvas cmd renders them through the
+    // solid-quad pipeline. ~3 lines of view code for a full line chart.
+    const series = counter.history(&m.counter);
+    if (series.len >= 1) {
+        var lo: f32 = series[0];
+        var hi: f32 = series[0];
+        for (series) |v| {
+            lo = @min(lo, v);
+            hi = @max(hi, v);
+        }
+        // Pad the range a touch so a flat series isn't pinned to an edge.
+        if (hi == lo) {
+            hi += 1;
+            lo -= 1;
+        }
+        const prims = teak.chart.lineChartPrimitives(
+            cb.arena.allocator(),
+            series,
+            .{ .width = 320, .height = 100, .min = lo, .max = hi, .grid_lines = 4 },
+        );
+        cb.canvasLabeled(.{ .width = 320, .height = 100, .bg = cb.theme.panel_bg }, prims, "count history");
+    }
+
     cb.popGroup();
 }
 
@@ -347,6 +373,39 @@ test "app: snapshot golden — real view at a fixed Model (LLM dev loop)" {
         \\        text (224,120,90,20) "Hello, A!"
         \\
     );
+}
+
+test "app: statsView renders a count-history canvas line" {
+    // After a few counter clicks the Stats window's chart appears: 4
+    // gridlines + 1 polyline = 5 primitives, labeled "count history".
+    const testing = std.testing;
+    var cb = teak.cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    var m: Model = .{};
+    update(&m, .{ .counter = .increment });
+    update(&m, .{ .counter = .increment });
+    update(&m, .{ .counter = .increment });
+    statsView(&m, &cb);
+
+    // The buffer contains exactly one canvas cmd with the chart's prims.
+    var canvas_seen = false;
+    for (cb.cmds.items) |c| {
+        if (c == .canvas) {
+            canvas_seen = true;
+            try testing.expectEqualStrings("count history", c.canvas.label);
+            try testing.expectEqual(@as(usize, 5), c.canvas.primitives.len);
+        }
+    }
+    try testing.expect(canvas_seen);
+
+    // And it serializes to a grep-able one-line canvas entry.
+    var rects: [64]teak.Rect = undefined;
+    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 360, 200, teak.monoMeasurer());
+    const snap = try teak.snapshotAlloc(testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{});
+    defer testing.allocator.free(snap);
+    try testing.expect(std.mem.indexOf(u8, snap, "canvas ") != null);
+    try testing.expect(std.mem.indexOf(u8, snap, "prims=5 \"count history\"") != null);
 }
 
 test "app: composed Model carries both components + focus" {

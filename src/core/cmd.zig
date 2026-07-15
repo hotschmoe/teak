@@ -282,6 +282,101 @@ pub const MixedPart = struct {
     italic: bool = false,
 };
 
+// ── Canvas (charts + custom 2D drawing, consumer issue #3) ─────────
+//
+// A fixed-size leaf that draws a list of pure-data 2D primitives through
+// the EXISTING solid-quad pipeline — no shader / GPU-backend changes.
+// Axis-aligned prims are plain quads; polyline segments are emitted as
+// 4-corner quads (see render/vertex.zig `emitQuadCorners`). Coordinates
+// on every primitive are canvas-LOCAL logical pixels (f32), origin at the
+// canvas rect's top-left; the render pass translates them to window
+// space and clips to the canvas rect. No callbacks, no closures, no
+// text-in-canvas in v1 — apps compose regular `text` cmds around it.
+//
+// HARDLINE: `CanvasPrimitive` is a data tagged union (like `Cmd` itself);
+// it carries no function pointers. The `primitives` slice is built by
+// `view` into the per-frame arena (typically via `core/chart.zig`).
+
+/// A point in canvas-local logical pixels.
+pub const CanvasPoint = struct {
+    x: f32,
+    y: f32,
+};
+
+/// One 2D draw op inside a canvas. All coordinates are canvas-local.
+pub const CanvasPrimitive = union(enum) {
+    /// Connected line through `points` (>= 2 to draw). Each segment is a
+    /// `thickness`-wide quad; arbitrary angles allowed.
+    polyline: Polyline,
+    /// Solid axis-aligned rectangle.
+    filled_rect: FilledRect,
+    /// Full-width horizontal rule at `y` (gridline / axis).
+    hline: HLine,
+    /// Full-height vertical rule at `x` (gridline / axis).
+    vline: VLine,
+    /// A small square point marker centered on (`x`, `y`).
+    marker: Marker,
+
+    pub const Polyline = struct {
+        points: []const CanvasPoint,
+        color: [4]f32 = .{ 0.3, 0.7, 1.0, 1.0 },
+        thickness: f32 = 2,
+    };
+    pub const FilledRect = struct {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [4]f32 = .{ 0.3, 0.3, 0.35, 1.0 },
+    };
+    pub const HLine = struct {
+        y: f32,
+        color: [4]f32 = .{ 0.3, 0.3, 0.35, 1.0 },
+        thickness: f32 = 1,
+    };
+    pub const VLine = struct {
+        x: f32,
+        color: [4]f32 = .{ 0.3, 0.3, 0.35, 1.0 },
+        thickness: f32 = 1,
+    };
+    pub const Marker = struct {
+        x: f32,
+        y: f32,
+        size: f32 = 4,
+        color: [4]f32 = .{ 0.85, 0.85, 0.9, 1.0 },
+    };
+};
+
+pub const CanvasStyle = struct {
+    /// Intrinsic size in canvas-local pixels. The primitives' coordinate
+    /// space is [0, width] × [0, height].
+    width: f32 = 200,
+    height: f32 = 120,
+    /// Flex weight on the parent's main axis. 0 = intrinsic (matches the
+    /// image widget's sizing convention: the weight still counts toward
+    /// siblings' distribution, but the canvas keeps its intrinsic box).
+    flex: f32 = 0,
+    /// Optional solid background fill drawn before the primitives.
+    bg: ?[4]f32 = null,
+};
+
+pub fn CanvasCmd(comptime Msg: type) type {
+    return struct {
+        style: CanvasStyle = .{},
+        /// Arena-allocated, pure data. Painter's order = slice order.
+        primitives: []const CanvasPrimitive = &.{},
+        /// A canvas is non-interactive by default. When non-null this Msg
+        /// is dispatched on click (hit-test treats the canvas as an
+        /// interactive leaf). The app pairs it with
+        /// `hit_test.canvasLocalPoint` to turn the click into data
+        /// coordinates — the Msg carries no value itself (HARDLINE §3
+        /// bans fn-pointer callbacks on Cmd variants).
+        msg: ?Msg = null,
+        /// Accessible label / name for the a11y tree.
+        label: []const u8 = "",
+    };
+}
+
 // ── Generic Cmd + CmdBuffer over Msg ───────────────────────────────
 //
 // Per proto 2 Option A: CmdBuffer is generic over the composed AppMsg.
@@ -386,6 +481,7 @@ pub fn Cmd(comptime Msg: type) type {
         radio: RadioCmd(Msg),
         slider: SliderCmd(Msg),
         divider: DividerStyle,
+        canvas: CanvasCmd(Msg),
     };
 }
 
@@ -870,6 +966,49 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .image = .{
                 .handle = handle,
                 .style = style,
+            } }) catch unreachable;
+        }
+
+        /// Emit a non-interactive canvas. `style` carries size + optional
+        /// bg; `primitives` are arena-owned pure-data draw ops (build them
+        /// with `teak.chart.lineChartPrimitives` or by hand).
+        pub fn canvas(self: *Self, style: CanvasStyle, primitives: []const CanvasPrimitive) void {
+            self.cmds.append(self.backing, .{ .canvas = .{
+                .style = style,
+                .primitives = primitives,
+            } }) catch unreachable;
+        }
+
+        /// Canvas with an accessibility label (announced by the a11y tree)
+        /// but still non-interactive.
+        pub fn canvasLabeled(
+            self: *Self,
+            style: CanvasStyle,
+            primitives: []const CanvasPrimitive,
+            label: []const u8,
+        ) void {
+            self.cmds.append(self.backing, .{ .canvas = .{
+                .style = style,
+                .primitives = primitives,
+                .label = label,
+            } }) catch unreachable;
+        }
+
+        /// Clickable canvas: `msg` fires on click. The app pairs it with
+        /// `hit_test.canvasLocalPoint` to recover the data coordinate that
+        /// was clicked (the Msg carries no value — HARDLINE §3).
+        pub fn canvasClickable(
+            self: *Self,
+            msg: Msg,
+            style: CanvasStyle,
+            primitives: []const CanvasPrimitive,
+            label: []const u8,
+        ) void {
+            self.cmds.append(self.backing, .{ .canvas = .{
+                .style = style,
+                .primitives = primitives,
+                .msg = msg,
+                .label = label,
             } }) catch unreachable;
         }
 
@@ -1480,6 +1619,42 @@ test "formatBalanceError: each tag renders an actionable line" {
         "push_scroll at cmd #33 exceeds the max container nesting depth (32)",
         formatBalanceError(.{ .tag = .depth_overflow, .open_kind = .scroll, .open_index = 33 }, &buf),
     );
+}
+
+test "CmdBuffer.canvas emits a canvas cmd carrying its primitives" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    const prims = [_]CanvasPrimitive{
+        .{ .hline = .{ .y = 10 } },
+        .{ .polyline = .{ .points = &.{ .{ .x = 0, .y = 0 }, .{ .x = 10, .y = 10 } } } },
+    };
+    cb.canvas(.{ .width = 300, .height = 120 }, &prims);
+
+    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
+    const cv = cb.cmds.items[0].canvas;
+    try testing.expectEqual(@as(f32, 300), cv.style.width);
+    try testing.expectEqual(@as(usize, 2), cv.primitives.len);
+    // Plain `canvas` is non-interactive (no click msg) and unlabeled.
+    try testing.expectEqual(@as(?Msg, null), cv.msg);
+    try testing.expectEqual(@as(usize, 0), cv.label.len);
+}
+
+test "CmdBuffer.canvasClickable / canvasLabeled set msg + label" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.canvasLabeled(.{}, &.{}, "history");
+    cb.canvasClickable(.poke, .{}, &.{}, "plot");
+
+    try testing.expectEqualStrings("history", cb.cmds.items[0].canvas.label);
+    try testing.expectEqual(@as(?Msg, null), cb.cmds.items[0].canvas.msg);
+    try testing.expectEqual(@as(?Msg, Msg.poke), cb.cmds.items[1].canvas.msg);
+    try testing.expectEqualStrings("plot", cb.cmds.items[1].canvas.label);
 }
 
 test "CmdBuffer.pushFormRow: documented depth of 8 is reachable without tripping the assert" {
