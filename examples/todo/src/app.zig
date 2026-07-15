@@ -150,8 +150,9 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     // Footer: item count + clear-completed button.
     cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 0 });
-    var buf: [32]u8 = undefined;
-    const count_str = std.fmt.bufPrint(&buf, "{d} items", .{m.items_len}) catch "? items";
+    // Allocate from the frame arena — a stack buffer's slice would escape
+    // into the cmd buffer and be clobbered before layout reads it.
+    const count_str = std.fmt.allocPrint(cb.arena.allocator(), "{d} items", .{m.items_len}) catch "? items";
     cb.text(count_str);
     cb.pushGroup(.{ .direction = .vertical, .flex = 1, .padding = 0, .gap = 0 });
     cb.popGroup();
