@@ -257,6 +257,17 @@ pub const LayoutEngine = struct {
                                 r.h = 0;
                             },
                         }
+                        // The same holds along the scroll's own axis whatever
+                        // the parent's direction (a vertical scroll inside a
+                        // horizontal row must not size the row to its content).
+                        switch (grp.direction) {
+                            .horizontal => if (grp.fixed_w <= 0) {
+                                r.w = 0;
+                            },
+                            .vertical => if (grp.fixed_h <= 0) {
+                                r.h = 0;
+                            },
+                        }
                     }
                     rects[grp.cmd_index] = r;
                     addLeafToTop(&stack, r.w, r.h, grp.flex);
