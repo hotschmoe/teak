@@ -29,6 +29,7 @@ pub const a11y = @import("input/a11y.zig");
 pub const render = @import("render/build.zig");
 pub const vertex = @import("render/vertex.zig");
 pub const host = @import("platform/host.zig");
+pub const input_queue = @import("platform/input_queue.zig");
 pub const gpu = @import("gpu/context.zig");
 pub const runtime = @import("run.zig");
 
@@ -144,6 +145,9 @@ pub const snapshotAlloc = snapshot.snapshotAlloc;
 pub const expectSnapshot = snapshot.expectSnapshot;
 
 pub const InputState = host.InputState;
+pub const InputQueue = input_queue.InputQueue;
+pub const NavKey = input_queue.NavKey;
+pub const resolveKey = input_queue.resolveKey;
 pub const Clipboard = host.Clipboard;
 pub const ImeState = host.ImeState;
 pub const FileDialogResult = host.FileDialogResult;

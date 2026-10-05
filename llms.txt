@@ -414,8 +414,21 @@ monoMeasurer() TextMeasurer    // stateless 10px/byte, 20px line — for headles
 Backends live in `platform/{win32,x11,wasm}.zig` — NOT re-exported; the build
 picks one under the import name `teak-platform-native`.
 ```zig
-InputState = struct { mouse_x, mouse_y: f32, mouse_down, mouse_up: bool, wheel_dx, wheel_dy: f32,
-                      chars: []const u8, keys: []const SpecialKey, resized: bool, width, height: u32 }
+InputState = struct { mouse_x, mouse_y: f32,
+                      buttons: Buttons,                       // held now (left/middle/right)
+                      button_down, button_up: Buttons,        // edges this frame (a fast click sets both)
+                      mouse_down, mouse_up: bool,             // left-button edges (== button_down.left / button_up.left)
+                      mods: Modifiers,                        // shift/ctrl/alt/meta at the latest event
+                      wheel_dx, wheel_dy: f32,                // CSS-style px, + = down/right; web pinch = wheel + mods.ctrl
+                      chars: []const u8,                      // UTF-8 text typed this frame (whole code points)
+                      keys: []const SpecialKey,               // arrows, Delete/Home/End, Shift+motion, Ctrl+A/C/X/V/Y/Z, Tab, ...
+                      resized: bool, width, height: u32 }
+InputQueue          // per-window accumulator shared by event-driven hosts: beginFrame(), pointerMoved(x,y),
+                    //   buttonDown/buttonUp(Button), wheel(dx,dy), pushNav(NavKey), pushKey(SpecialKey),
+                    //   pushCodepoint(u21), pushText(utf8), pushUtf16Unit(u16), finish(resized,w,h) InputState
+NavKey = enum { backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, a, c, x, v, y, z }
+resolveKey(NavKey, Modifiers) ?SpecialKey   // the one Shift/Ctrl policy every host shares (plain letters -> null)
+input_queue         // module: platform/input_queue.zig
 Clipboard = struct { ctx, read_fn, write_fn; pub fn read() []const u8; pub fn write(t) void }
 ImeState = struct { active: bool = false, text: []const u8 = "", cursor: usize = 0 }
 FileDialogResult = ?[]const u8

@@ -54,7 +54,7 @@ regressions automatically.
 
 **Root cause**: Zunk reports Backspace / Enter / Tab on both channels: as a `SpecialKey` **and** as a codepoint in `typed_chars`. The greeter handled both — inserting the control char, then acting on the special key.
 
-**Fix**: `src/platform/wasm.zig` filters `c < 0x20 || c == 0x7f` out of `typed_chars` before returning. Upstream issue filed (tracked in `docs/zunk-handoff.md`).
+**Fix**: zunk's generated JS now only queues printable code points as typed text (UTF-8, never control codes or Ctrl/Cmd chords), and `InputQueue.pushCodepoint` drops `c < 0x20 || c == 0x7f` again on the teak side, so no host can reintroduce the double channel.
 
 **Related audit rule**: when a Host backend reports the same user action on two channels, exactly one channel owns it. Which one is a backend decision; the app shouldn't see duplicates.
 
