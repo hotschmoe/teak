@@ -173,6 +173,41 @@ fires.
   signal (which §3 forbids): observers are still the next frame's
   `view`, not auto-recomputed expressions.
 
+### Escape hatch 7: Declarative effects
+
+A component may expose `pub fn effects(model: *const Model) []const Effect`
+(pure function of model) naming the outside-world requests the app wants
+serviced right now — an HTTP call, a download, a file picker, storage
+reads/writes, the clock, the clipboard, a startup parameter — and
+`pub fn effectMsg(model: *const Model, result: EffectResult) ?Msg` turning
+the answers into `Msg`s. `Effect` is a data tagged union; every request
+carries an app-chosen `id` (a counter kept in `Model`). The runtime hands an
+id to the Host the first time it is listed, leaves it alone while it stays
+listed, and forgets it once it is no longer listed. Unsolicited input from
+the outside (an image pasted or dropped on the window, pasted text) arrives
+through the same `effectMsg`.
+
+**Bounded by**:
+- `effects` is pure: no I/O, no wall-clock, no allocation outside the
+  per-frame arena. It *declares*; the runtime and Host perform. This is the
+  whole reason `update` never talks to the network.
+- `Effect` / `EffectResult` carry data only — no function pointers, no
+  callbacks, no platform types (§3), same rule as `Cmd` and `Sub`.
+- The in-flight bookkeeping (the table of issued ids) lives in the runtime,
+  fixed-size, and holds no application state; request payloads live in
+  `Model`. Platform machinery (threads, `fetch`, file handles) lives behind
+  the optional Host pair `submit` / `pollEffectResults` (§4(d)); the
+  framework core never touches it.
+- A result is a regular `Msg` through `update` (`last_msg` names it). There
+  is no second mutation path and no completion callback: delisting an
+  effect cancels interest in its answer (a late result for an unlisted id is
+  dropped).
+- Result slices are valid only until the `update` they trigger returns; the
+  app copies what it keeps. Effect slices are valid only for the Host's
+  `submit` call; the Host copies what an async request needs.
+
+See `docs/features/effects.md`.
+
 ---
 
 ## 3. Forbidden patterns

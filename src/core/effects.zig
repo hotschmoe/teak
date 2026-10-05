@@ -12,18 +12,25 @@
 //! pub fn effectMsg(m: *const Model, r: teak.EffectResult) ?Msg;
 //! ```
 //!
-//! `teak.run` services the list every frame: each effect carries an
-//! app-chosen `id` (a counter kept in `Model`); `run` executes an id the
-//! first time it sees it and never again while it stays listed (it keeps a
-//! small table of issued ids and forgets one after its result has been
-//! delivered AND the app stopped listing it). Results come back through
-//! `effectMsg` -> `update`, i.e. through the one and only mutation path.
+//! `teak.run` services the list every frame. Each effect carries an
+//! app-chosen `id` (a counter kept in `Model`, unique per request): `run`
+//! hands an id to the host the first time it sees it listed, does nothing
+//! while it stays listed, and forgets it the first frame it is no longer
+//! listed. Results come back through `effectMsg` -> `update`, i.e. through
+//! the one and only mutation path. A result whose id is not currently
+//! listed is dropped, so delisting an effect cancels interest in its
+//! answer.
 //!
-//! All slices inside an `Effect` must borrow from `Model` or the frame
-//! arena; all slices inside an `EffectResult` are valid only until the
-//! `update` call they trigger returns — the app copies what it keeps.
+//! All slices inside an `Effect` must borrow from `Model` (or the frame
+//! arena) and are valid only for the duration of the host's `submit` call —
+//! the host copies what an async request needs. All slices inside an
+//! `EffectResult` are valid only until the `update` call they trigger
+//! returns — the app copies what it keeps.
 //!
-//! Pure data — no platform types, no callbacks (HARDLINE §3).
+//! Pure data — no platform types, no callbacks (HARDLINE §3). See
+//! `docs/features/effects.md`.
+
+const std = @import("std");
 
 pub const Header = struct {
     name: []const u8,
@@ -91,6 +98,14 @@ pub const StorageGet = struct {
 /// a result Msg.
 pub const ClockRequest = struct { id: u32 };
 
+/// Read a startup parameter: the URL query string value `?name=...` on the
+/// web, a `--name=value` argv entry or the env var `TEAK_<NAME_UPPER>` on
+/// native. Answered once with `EffectResult.query_value`.
+pub const QueryParam = struct {
+    id: u32,
+    name: []const u8,
+};
+
 pub const Effect = union(enum) {
     http: HttpRequest,
     download: Download,
@@ -99,6 +114,37 @@ pub const Effect = union(enum) {
     storage_set: StorageSet,
     storage_get: StorageGet,
     clock: ClockRequest,
+    query_param: QueryParam,
+
+    /// The app-chosen request id.
+    pub fn id(self: Effect) u32 {
+        return switch (self) {
+            inline else => |e| e.id,
+        };
+    }
+
+    /// Fire-and-forget effects (`storage_set`, `write_clipboard`) produce no
+    /// result; every other effect is answered exactly once.
+    pub fn wantsResult(self: Effect) bool {
+        return switch (self) {
+            .storage_set, .write_clipboard => false,
+            else => true,
+        };
+    }
+};
+
+/// What `Host.submit` did with an effect.
+pub const EffectSubmit = enum {
+    /// The host took it (and will answer through `pollEffectResults` when
+    /// the effect has a result).
+    accepted,
+    /// The host cannot take it right now (its request table is full): the
+    /// runtime retries on the next frame while the effect stays listed.
+    busy,
+    /// This host can never service this kind of effect. The runtime answers
+    /// with the effect's "failed" result (see `unsupportedResult`) so the
+    /// app never waits forever.
+    unsupported,
 };
 
 pub const DropKind = enum { file, image, text };
@@ -112,7 +158,17 @@ pub const Drop = struct {
     name: []const u8 = "",
     /// MIME type ("image/png", "text/plain", "application/json" ...).
     mime: []const u8 = "",
+    /// The file bytes. For `kind == .image` they are an encoded PNG or JPEG
+    /// whose long side the host has already limited (web: <= 1568 px).
     bytes: []const u8,
+    /// Images: pixel size of the encoded `bytes`; 0 otherwise.
+    width: u32 = 0,
+    height: u32 = 0,
+    /// Images: a small preview, tightly packed RGBA8, `thumb_w * thumb_h * 4`
+    /// bytes (long side <= 64 px), ready for `uploadImage`. Empty otherwise.
+    thumb_rgba: []const u8 = "",
+    thumb_w: u32 = 0,
+    thumb_h: u32 = 0,
 };
 
 pub const EffectResult = union(enum) {
@@ -123,9 +179,174 @@ pub const EffectResult = union(enum) {
     downloaded: struct { id: u32, ok: bool },
     /// `value == null` -> key absent.
     storage_value: struct { id: u32, value: ?[]const u8 },
+    /// `value == null` -> the parameter is absent.
+    query_value: struct { id: u32, value: ?[]const u8 },
     clock: struct { id: u32, unix_ms: i64, utc_offset_min: i32 },
     dropped: Drop,
     /// Text pasted with Ctrl/Cmd+V into a page that has no focused text
     /// input (web) — complements `dropped` image pastes.
     pasted_text: struct { text: []const u8 },
 };
+
+/// Result of an effect, as the app's `effectMsg` sees it.
+pub fn resultId(r: EffectResult) ?u32 {
+    return switch (r) {
+        .dropped, .pasted_text => null,
+        inline else => |v| v.id,
+    };
+}
+
+/// The "failed" answer for an effect the host cannot service, so an app
+/// never waits forever: HTTP status 0, a cancelled picker, an absent key.
+/// Null for fire-and-forget effects.
+pub fn unsupportedResult(e: Effect) ?EffectResult {
+    return switch (e) {
+        .http => |r| .{ .http = .{ .id = r.id, .status = 0, .err = "effects are not supported by this host" } },
+        .download => |r| .{ .downloaded = .{ .id = r.id, .ok = false } },
+        .open_file => |r| .{ .file_cancelled = .{ .id = r.id } },
+        .storage_get => |r| .{ .storage_value = .{ .id = r.id, .value = null } },
+        .clock => |r| .{ .clock = .{ .id = r.id, .unix_ms = 0, .utc_offset_min = 0 } },
+        .query_param => |r| .{ .query_value = .{ .id = r.id, .value = null } },
+        .storage_set, .write_clipboard => null,
+    };
+}
+
+/// The runtime's table of effect ids it has handed to the host. Fixed size
+/// (no allocation); loop bookkeeping, not application state.
+///
+/// Per frame: `beginFrame`, then `listed(id)` for every effect in the app's
+/// list (true = already issued, so skip it), `issue(id)` after the host took
+/// a new one, and `sweep` to forget ids that were not listed this frame.
+pub fn IssuedTable(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+        ids: [capacity]u32 = undefined,
+        seen: [capacity]bool = undefined,
+        len: usize = 0,
+
+        fn find(self: *const Self, id: u32) ?usize {
+            for (self.ids[0..self.len], 0..) |have, i| {
+                if (have == id) return i;
+            }
+            return null;
+        }
+
+        /// True if `id` was issued and is still remembered.
+        pub fn contains(self: *const Self, id: u32) bool {
+            return self.find(id) != null;
+        }
+
+        pub fn isFull(self: *const Self) bool {
+            return self.len == capacity;
+        }
+
+        pub fn beginFrame(self: *Self) void {
+            @memset(self.seen[0..self.len], false);
+        }
+
+        /// Mark `id` as listed this frame; true if it had been issued.
+        pub fn listed(self: *Self, id: u32) bool {
+            const i = self.find(id) orelse return false;
+            self.seen[i] = true;
+            return true;
+        }
+
+        /// Remember a freshly issued id (counts as listed). False if full.
+        pub fn issue(self: *Self, id: u32) bool {
+            if (self.find(id) != null) return true;
+            if (self.len == capacity) return false;
+            self.ids[self.len] = id;
+            self.seen[self.len] = true;
+            self.len += 1;
+            return true;
+        }
+
+        /// Forget every id that `listed` / `issue` did not touch since
+        /// `beginFrame`.
+        pub fn sweep(self: *Self) void {
+            var keep: usize = 0;
+            for (0..self.len) |i| {
+                if (!self.seen[i]) continue;
+                self.ids[keep] = self.ids[i];
+                self.seen[keep] = true;
+                keep += 1;
+            }
+            self.len = keep;
+        }
+    };
+}
+
+// ── Tests ──────────────────────────────────────────────────────────
+
+test "Effect.id and wantsResult cover every variant" {
+    const effs = [_]Effect{
+        .{ .http = .{ .id = 1, .url = "u" } },
+        .{ .download = .{ .id = 2, .name = "n", .bytes = "" } },
+        .{ .open_file = .{ .id = 3 } },
+        .{ .write_clipboard = .{ .id = 4, .text = "" } },
+        .{ .storage_set = .{ .id = 5, .key = "k", .value = "v" } },
+        .{ .storage_get = .{ .id = 6, .key = "k" } },
+        .{ .clock = .{ .id = 7 } },
+        .{ .query_param = .{ .id = 8, .name = "q" } },
+    };
+    for (effs, 1..) |e, want| {
+        try std.testing.expectEqual(@as(u32, @intCast(want)), e.id());
+        // The fire-and-forget kinds are exactly the ones with no failed result.
+        try std.testing.expectEqual(e.wantsResult(), unsupportedResult(e) != null);
+    }
+    try std.testing.expect(!effs[3].wantsResult());
+    try std.testing.expect(!effs[4].wantsResult());
+}
+
+test "unsupportedResult answers with the effect's own id" {
+    const r = unsupportedResult(.{ .http = .{ .id = 9, .url = "u" } }).?;
+    try std.testing.expectEqual(@as(u32, 9), resultId(r).?);
+    try std.testing.expectEqual(@as(u16, 0), r.http.status);
+    try std.testing.expect(r.http.err.len > 0);
+    try std.testing.expect(unsupportedResult(.{ .open_file = .{ .id = 3 } }).? == .file_cancelled);
+}
+
+test "resultId is null for unsolicited results" {
+    try std.testing.expect(resultId(.{ .pasted_text = .{ .text = "x" } }) == null);
+    try std.testing.expect(resultId(.{ .dropped = .{ .kind = .file, .bytes = "" } }) == null);
+    try std.testing.expectEqual(@as(u32, 4), resultId(.{ .query_value = .{ .id = 4, .value = null } }).?);
+}
+
+test "IssuedTable: issued once, remembered while listed, forgotten after" {
+    var t: IssuedTable(4) = .{};
+
+    t.beginFrame();
+    try std.testing.expect(!t.listed(10)); // new: caller issues it
+    try std.testing.expect(t.issue(10));
+    t.sweep();
+    try std.testing.expect(t.contains(10));
+
+    t.beginFrame();
+    try std.testing.expect(t.listed(10)); // still listed: not new
+    t.sweep();
+    try std.testing.expect(t.contains(10));
+
+    t.beginFrame(); // delisted
+    t.sweep();
+    try std.testing.expect(!t.contains(10));
+
+    t.beginFrame(); // relisting counts as new again
+    try std.testing.expect(!t.listed(10));
+}
+
+test "IssuedTable: full table refuses new ids until one is forgotten" {
+    var t: IssuedTable(2) = .{};
+    t.beginFrame();
+    try std.testing.expect(t.issue(1));
+    try std.testing.expect(t.issue(2));
+    try std.testing.expect(t.isFull());
+    try std.testing.expect(!t.issue(3));
+    t.sweep();
+
+    t.beginFrame();
+    _ = t.listed(2); // 1 delisted
+    t.sweep();
+    try std.testing.expect(!t.isFull());
+    try std.testing.expect(t.issue(3));
+    try std.testing.expect(t.contains(2) and t.contains(3) and !t.contains(1));
+}

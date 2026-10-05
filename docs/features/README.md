@@ -45,6 +45,7 @@ tests; names the gaps.
 | **Consuming Teak (start here)** | [../consuming-teak.md](../consuming-teak.md) |
 | Application loop (`teak.run`) | [run.md](run.md) |
 | Subscriptions (declarative timers `Sub` / `subscribe`) | [subscriptions.md](subscriptions.md) |
+| Declarative effects (`Effect` / `effects` / `effectMsg`: HTTP, files, storage, paste/drop) | [effects.md](effects.md) |
 | Widgets: disabled / NumericField / Dropdown / setTitle | [widgets.md](widgets.md) |
 | Canvas: charts & custom 2D drawing | [canvas.md](canvas.md) |
 | Fixed-column monospace tables (`teak.table`) | [tables.md](tables.md) |

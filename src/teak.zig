@@ -88,6 +88,7 @@ pub const HttpMethod = effects.HttpMethod;
 pub const Header = effects.Header;
 pub const Drop = effects.Drop;
 pub const DropKind = effects.DropKind;
+pub const EffectSubmit = effects.EffectSubmit;
 
 pub const Table = table.Table;
 pub const TableColumn = table.Column;

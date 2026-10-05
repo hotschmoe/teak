@@ -209,6 +209,8 @@ are required; an app without them just doesn't get that behavior.
 | `secondaryView` | `(*const Model, *CmdBuffer(Msg)) void` | the secondary window's view (pairs with `secondaryWindow`) |
 | `secondaryClosedMsg` | `(*const Model) ?Msg` | Msg dispatched when the user OS-closes the secondary window |
 | `subscribe` | `(*const Model) []const Sub(Msg)` | declarative timers — `run` services them each frame via `runSubs` on `Host.nowMs()` |
+| `effects` | `(*const Model) []const Effect` | declarative effects (HTTP, files, storage, clock, clipboard, query params) — see [effects.md](features/effects.md) |
+| `effectMsg` | `(*const Model, EffectResult) ?Msg` | answers to effects and unsolicited drops / pastes become Msgs |
 | `Model.init` | `() Model` | non-default initial state |
 
 `teak.run` also folds the Host's IME composition snapshot into the render
