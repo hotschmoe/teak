@@ -21,6 +21,7 @@ pub const snapshot = @import("core/snapshot.zig");
 pub const chart = @import("core/chart.zig");
 pub const pointer = @import("core/pointer.zig");
 pub const effects = @import("core/effects.zig");
+pub const scene = @import("core/scene.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
@@ -72,6 +73,14 @@ pub const Modifiers = pointer.Modifiers;
 pub const Button = pointer.Button;
 pub const CanvasEvent = pointer.CanvasEvent;
 pub const CanvasEventKind = pointer.CanvasEventKind;
+
+pub const MeshHandle = scene.MeshHandle;
+pub const MESH_HANDLE_NONE = scene.MESH_HANDLE_NONE;
+pub const MeshVertex = scene.MeshVertex;
+pub const LineVertex = scene.LineVertex;
+pub const MeshData = scene.MeshData;
+pub const Camera = scene.Camera;
+pub const SceneDraw = scene.SceneDraw;
 
 pub const Effect = effects.Effect;
 pub const EffectResult = effects.EffectResult;

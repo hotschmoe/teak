@@ -40,6 +40,19 @@ pub fn build(b: *std.Build) void {
     const glyph_cache_tests = b.addTest(.{ .root_module = glyph_cache_mod });
     test_step.dependOn(&b.addRunArtifact(glyph_cache_tests).step);
 
+    // Pure GPU-side helpers (slot table, scene uniform packing / target
+    // sizing / change signature). Not reachable from src/teak.zig for the
+    // same reason as glyph_cache; each is a root file with its own tests.
+    for ([_][]const u8{ "src/gpu/slot_table.zig", "src/gpu/scene_common.zig" }) |path| {
+        const m = b.createModule(.{
+            .root_source_file = b.path(path),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "teak", .module = mod }},
+        });
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
+    }
+
     // Platform-wasm serialization tests. wasm.zig is the host backend
     // for the web target, but `serializeA11yTree` is a pure helper —
     // testable on the build host as long as zunk's `extern "env"`
@@ -114,6 +127,43 @@ pub fn build(b: *std.Build) void {
     });
     const x11_tests = b.addTest(.{ .root_module = x11_mod });
     test_step.dependOn(&b.addRunArtifact(x11_tests).step);
+
+    // Headless native GPU tests (wgpu-native scene renderer: render offscreen,
+    // read pixels back). Needs the wgpu-native prebuilt (fetched lazily) and a
+    // Vulkan driver; the tests skip when no adapter opens. Linux only (the
+    // Windows stitch has no headless path).
+    if (target.result.os.tag == .linux) {
+        const wgpu_dep_name: ?[]const u8 = switch (target.result.cpu.arch) {
+            .aarch64 => "wgpu-native-linux-aarch64",
+            .x86_64 => "wgpu-native-linux-x86_64",
+            else => null,
+        };
+        const gpu_step = b.step("test-gpu", "Headless native GPU tests (needs wgpu-native + Vulkan)");
+        if (wgpu_dep_name) |name| if (b.lazyDependency(name, .{})) |wgpu_dep| {
+            const shaders_mod = b.createModule(.{
+                .root_source_file = b.path("shaders/shaders.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            for ([_][]const u8{ "src/gpu/wgpu_scene_test.zig", "src/gpu/wgpu_core_test.zig" }) |path| {
+                const gpu_test_mod = b.createModule(.{
+                    .root_source_file = b.path(path),
+                    .target = target,
+                    .optimize = optimize,
+                    .link_libc = true,
+                    .imports = &.{
+                        .{ .name = "teak", .module = mod },
+                        .{ .name = "teak-shaders", .module = shaders_mod },
+                    },
+                });
+                gpu_test_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
+                gpu_test_mod.addLibraryPath(wgpu_dep.path("lib"));
+                gpu_test_mod.addRPath(wgpu_dep.path("lib"));
+                gpu_test_mod.linkSystemLibrary("wgpu_native", .{});
+                gpu_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = gpu_test_mod })).step);
+            }
+        };
+    }
 
     // wasm32-freestanding compile canary. Run `zig build test-wasm` to
     // assert the framework core stays posix-dep-free. The artifact isn't

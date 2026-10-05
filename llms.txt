@@ -396,6 +396,23 @@ emitQuad(verts, alloc, rect: Rect, color: [4]f32) void
 emitQuadCorners(verts, alloc, c0, c1, c2, c3: [2]f32, color: [4]f32) void   // rotated quads
 ```
 
+### 3D scenes (`teak.scene` → core/scene.zig; see docs/features/scene3d.md)
+```zig
+MeshHandle = u32;  MESH_HANDLE_NONE: MeshHandle = 0
+MeshVertex = extern struct { pos: [3]f32, normal: [3]f32, color: [4]f32 }   // 40 B
+LineVertex = extern struct { pos: [3]f32, color: [4]f32 }                   // 28 B
+MeshData = struct { vertices: []const MeshVertex = &.{}, indices: []const u32 = &.{},
+                    lines: []const LineVertex = &.{} /* consecutive pairs = segments */;
+                    pub fn validate(self) error{IndexOutOfRange,PartialTriangle}!void }
+Camera = struct { view_proj: [16]f32 /* column-major, WebGPU clip: z 0..1 */ = identity,
+                  eye: [3]f32 = .{0,0,0}, light_dir: [3]f32 /* travel dir; zero = headlight */ }
+SceneDraw = struct { mesh: MeshHandle, rect_x, rect_y, rect_w, rect_h: f32, clip_x, clip_y, clip_w, clip_h: f32,
+                     camera: Camera, clear: [4]f32, edge_color: [4]f32, edge_px: f32 }
+```
+Flat-shaded two-sided lighting (one directional light + ambient), depth-tested, feature lines
+as camera-facing pixel-width quads (colour = vertex colour * `edge_color`). The Gpu renders each
+`SceneDraw` offscreen, then composites it like an image.
+
 ### Text measurement (`teak.text` → core/text.zig)
 ```zig
 FontFamily = enum { sans, serif, mono }
@@ -432,8 +449,14 @@ Backends live in `gpu/{native,native_linux,web}.zig` — picked by the build und
 `teak-gpu-native`.
 ```zig
 ClearColor = [4]f32
+InitOptions = struct { msaa: bool = false /* 4x main UI pass */, scene_msaa: bool = true }
+                                       // backends: Gpu.init(handle, w, h) | Gpu.initWithOptions(handle, w, h, InitOptions)
 validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uploadVertices,
                                        //   renderFrame, rasterizeText, uploadText, uploadImage, uploadImages
+// Optional extension (checked only when present; the scene trio is all-or-none):
+//   uploadMesh(*Gpu, MeshData) MeshHandle      releaseMesh(*Gpu, MeshHandle) void
+//   renderScenes(*Gpu, []const SceneDraw) void  // before renderFrame; offscreen 3D -> composite quads
+//   releaseImage(*Gpu, TextureHandle) void
 ```
 
 ### Application loop (`teak.run` / `teak.runtime` → run.zig)
