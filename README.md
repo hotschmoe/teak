@@ -26,6 +26,8 @@ Every arrow is an explicit function call with typed inputs and outputs. No globa
 - **Declarative effects:** `effects` / `effectMsg` (HARDLINE hatch 7) — HTTP, downloads, file open, storage, clock, clipboard, query params, plus pasted / dropped images and files; see [`docs/features/effects.md`](docs/features/effects.md).
 - **Agent DX + consumer gaps landed:** `canvas` widget + line-chart helper, declarative subscriptions (`Sub` / `subscribe`, serviced by `teak.run`), golden snapshot tests + live `TEAK_SNAPSHOT` streaming, ComponentList stable-key per-item focus, Dropdown open-list scrolling, and the audit-enforced [`llms.txt`](llms.txt) + [`docs/cookbook.md`](docs/cookbook.md).
 
+- **Kerf push (branch `kerf`)** — driven by a real CAD app ([kerf](https://github.com/hotschmoe/kerf) `apps/teak`): `Runtime` (one frame at a time, so the web shares `teak.run`), pointer/scroll routing (`canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `windowMsg`), a real layout model (fixed sizes, align/justify, spacer), chrome styling (borders, hover inversion, underline fields, hard shadows, font weight/tracking), `core/table`, canvas triangle/line batches, `scene3d` + declarative `resources()` (depth-tested meshes), MSAA, declarative **effects** (HTTP, files, storage, clock, clipboard, paste/drop; web + Linux), web/native font registration (IBM Plex Mono), overlay layering, and a **headless native screenshot path** (`zig build shot`).
+
 ## Build commands
 
 Requires **Zig 0.16.0+**.
