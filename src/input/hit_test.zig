@@ -37,36 +37,42 @@ fn rectContains(r: Rect, px: f32, py: f32) bool {
         py >= r.y and py <= r.y + r.h;
 }
 
-/// Msg carried by an interactive leaf, if any. Lets hit-test and the
-/// interactive-leaf hoverTest arm share one predicate.
-fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
+/// An interactive leaf as hit-testing sees it. `msg` is the click Msg; it is
+/// null for a pointer-only canvas, which still claims the point (so widgets
+/// behind it are not hit) but dispatches nothing on click — its input goes
+/// through `canvasMsg` instead.
+fn Leaf(comptime Msg: type) type {
+    return struct { msg: ?Msg };
+}
+
+/// The interactive-leaf probe shared by hit-testing and hovering, or null for
+/// a non-interactive cmd.
+fn interactiveLeaf(c: anytype) ?Leaf(@TypeOf(c).MsgT) {
     return switch (c) {
-        // Disabled buttons/inputs are non-interactive: returning null here
-        // makes both hitTest and hoverTest skip them (they share leafMsg).
-        .button => |b| if (b.disabled) null else b.msg,
-        .text_input => |t| if (t.disabled) null else t.focus_msg,
-        .checkbox => |cb| cb.msg,
-        .radio => |r| r.msg,
-        .slider => |s| s.grab_msg,
-        // A canvas is interactive only when it carries a click Msg; a
-        // null msg (the default) leaves it non-interactive, like a plain
-        // decorative leaf.
-        .canvas => |cv| cv.msg,
+        // Disabled buttons/inputs are non-interactive.
+        .button => |b| if (b.disabled) null else .{ .msg = b.msg },
+        .text_input => |t| if (t.disabled) null else .{ .msg = t.focus_msg },
+        .checkbox => |cb| .{ .msg = cb.msg },
+        .radio => |r| .{ .msg = r.msg },
+        .slider => |s| .{ .msg = s.grab_msg },
+        // A canvas is interactive with a click Msg, a pointer surface, or
+        // both; otherwise it is a decorative leaf that clicks pass through.
+        .canvas => |cv| if (cv.msg != null or cv.pointer) .{ .msg = cv.msg } else null,
         else => null,
     };
 }
 
 /// Forward-walk cmds/rects maintaining a scroll-clip stack; keep the
 /// *last* hit so painter's order wins (a later draw is on top). Two
-/// passes — non-overlay first, then overlay — so the overlay layer
+/// passes — overlay first, then base — so the overlay layer
 /// (HARDLINE §2 escape hatch 5) wins z-order without per-cmd z fields.
 /// A backward walk would be simpler for z-order but couldn't honor
 /// scroll clips that accumulate top-down.
 ///
 /// `HitResult.msg` is `?Msg`: a `null` msg means a modal overlay
-/// consumed the click but the app didn't supply a `backdrop_msg`. The
-/// host must NOT fall through to widgets behind the modal in that
-/// case — see the doc on `HitResult.msg`.
+/// consumed the click but the app didn't supply a `backdrop_msg` (or the
+/// hit was a pointer-only canvas). The host must NOT fall through to
+/// widgets behind the modal in that case — see the doc on `HitResult.msg`.
 pub fn hitTest(
     cmds: anytype,
     rects: []const Rect,
@@ -80,6 +86,19 @@ pub fn hitTest(
     // backdrop, regardless of `backdrop_msg`.
     if (hitTestLayer(cmds, rects, mouse_x, mouse_y, .overlay)) |h| return h;
     return hitTestLayer(cmds, rects, mouse_x, mouse_y, .base);
+}
+
+/// Like hitTest but returns only the cmd index (no msg). Hosts arm their
+/// press target on it: a modal backdrop reports the overlay's index, so
+/// press and release over it compare equal and its `backdrop_msg` is
+/// reachable.
+pub fn hoverTest(
+    cmds: anytype,
+    rects: []const Rect,
+    mouse_x: f32,
+    mouse_y: f32,
+) ?usize {
+    return if (hitTest(cmds, rects, mouse_x, mouse_y)) |h| h.index else null;
 }
 
 const Layer = enum { base, overlay };
@@ -138,9 +157,9 @@ fn hitTestLayer(
             },
             .push_group, .pop_group, .push_virtual_list, .pop_virtual_list => {},
             else => if (visible_to_layer) {
-                if (leafMsg(c)) |msg| {
+                if (interactiveLeaf(c)) |leaf| {
                     if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
-                        best = .{ .index = i, .msg = msg };
+                        best = .{ .index = i, .msg = leaf.msg };
                 }
             },
         }
@@ -153,79 +172,105 @@ fn hitTestLayer(
     return null;
 }
 
-/// Like hitTest but returns only the index (no msg). Also respects
-/// scroll clips and the overlay layer (overlay-layer hover wins).
-pub fn hoverTest(
-    cmds: anytype,
-    rects: []const Rect,
-    mouse_x: f32,
-    mouse_y: f32,
-) ?usize {
-    if (hoverTestLayer(cmds, rects, mouse_x, mouse_y, .overlay)) |h| return h;
-    return hoverTestLayer(cmds, rects, mouse_x, mouse_y, .base);
+// ── Pointer / wheel targets ────────────────────────────────────────
+
+/// The pointer canvas (`CanvasCmd.pointer`) under the cursor.
+pub const PointerTarget = struct {
+    /// Cmd index of the canvas.
+    index: usize,
+    /// Its `CanvasCmd.id`.
+    id: u32,
+};
+
+/// The pointer canvas a press / hover at (x, y) lands on, or null. Uses the
+/// exact `hitTest` rules, so a later widget, an overlay leaf, or a modal
+/// backdrop in front of the canvas wins and the canvas gets nothing.
+pub fn pointerTarget(cmds: anytype, rects: []const Rect, x: f32, y: f32) ?PointerTarget {
+    const hit = hitTest(cmds, rects, x, y) orelse return null;
+    return pointerSurface(cmds, hit.index);
 }
 
-fn hoverTestLayer(
-    cmds: anytype,
-    rects: []const Rect,
-    mouse_x: f32,
-    mouse_y: f32,
-    layer: Layer,
-) ?usize {
+/// `index` as a pointer target, or null when that cmd is not a pointer canvas.
+/// The one place that knows which cmd kinds are pointer surfaces.
+pub fn pointerSurface(cmds: anytype, index: usize) ?PointerTarget {
+    if (index >= cmds.len) return null;
+    return switch (cmds[index]) {
+        .canvas => |cv| if (cv.pointer) .{ .index = index, .id = cv.id } else null,
+        else => null,
+    };
+}
+
+/// Where a wheel event at (x, y) goes.
+pub const WheelTarget = union(enum) {
+    /// A pointer canvas: delivered as a `wheel` `CanvasEvent`.
+    canvas: PointerTarget,
+    /// An id-bearing scroll region (`ScrollStyle.id != 0`): delivered to `scrollMsg`.
+    scroll: struct { index: usize, id: u32 },
+};
+
+/// The innermost wheel consumer under (x, y): a pointer canvas or a scroll
+/// region with `id != 0`, whichever is last in document order among those
+/// containing the point (children follow their container, so last = innermost
+/// = topmost). Overlay-layer candidates win over base ones, and a modal
+/// overlay under the point blocks everything behind it — the same layering
+/// as `hitTest`.
+pub fn wheelTarget(cmds: anytype, rects: []const Rect, x: f32, y: f32) ?WheelTarget {
+    switch (wheelTargetLayer(cmds, rects, x, y, .overlay)) {
+        .target => |t| return t,
+        .blocked => return null,
+        .none => {},
+    }
+    return switch (wheelTargetLayer(cmds, rects, x, y, .base)) {
+        .target => |t| t,
+        .blocked, .none => null,
+    };
+}
+
+const LayerWheel = union(enum) {
+    /// No consumer in this layer; fall through to the next.
+    none,
+    /// A modal overlay covers the point with no consumer in it: the wheel is
+    /// swallowed, nothing behind the modal may scroll.
+    blocked,
+    target: WheelTarget,
+};
+
+fn wheelTargetLayer(cmds: anytype, rects: []const Rect, x: f32, y: f32, layer: Layer) LayerWheel {
     var clip: ClipStack = .{};
     var overlay_depth: u32 = 0;
-    var best: ?usize = null;
-
-    // Mirror `hitTestLayer`'s modal handling: track the innermost modal
-    // overlay containing the mouse during the .overlay pass so we can
-    // claim the hover even if no interactive leaf catches it. Hosts
-    // gate `hitTest` behind a press-target dance — they call
-    // `hoverTest` on mousedown to arm `press_target` and again on
-    // mouseup to gate `hitTest`. If hover returns null over a modal
-    // backdrop, press_target never arms and the modal-fallback path in
-    // `hitTest` is never reached. The index-equality check
-    // (`hover_under_mouse == press_target`) works fine here: press and
-    // release both yield the overlay's cmd index.
-    var modal_index: ?usize = null;
+    var best: ?WheelTarget = null;
+    var modal_under_point = false;
 
     for (cmds, 0..) |c, i| {
         const cur_clip = clip.top();
-        const in_overlay = overlay_depth > 0;
-        const visible_to_layer = switch (layer) {
-            .base => !in_overlay,
-            .overlay => in_overlay,
+        const visible = switch (layer) {
+            .base => overlay_depth == 0,
+            .overlay => overlay_depth > 0,
         };
+        const inside = rectContains(rects[i], x, y) and rectContains(cur_clip, x, y);
         switch (c) {
-            .push_scroll => clip.push(clipRect(rects[i], cur_clip)),
+            .push_scroll => |sc| {
+                if (visible and sc.id != 0 and inside) best = .{ .scroll = .{ .index = i, .id = sc.id } };
+                clip.push(clipRect(rects[i], cur_clip));
+            },
             .pop_scroll => clip.pop(),
             .push_overlay => |ov| {
                 overlay_depth += 1;
                 clip.push(clipRect(rects[i], cur_clip));
-                if (layer == .overlay and ov.modal and
-                    rectContains(rects[i], mouse_x, mouse_y) and
-                    rectContains(cur_clip, mouse_x, mouse_y))
-                {
-                    modal_index = i;
-                }
+                if (layer == .overlay and ov.modal and inside) modal_under_point = true;
             },
             .pop_overlay => {
                 overlay_depth -= 1;
                 clip.pop();
             },
-            .push_group, .pop_group, .push_virtual_list, .pop_virtual_list => {},
-            else => if (visible_to_layer and leafMsg(c) != null) {
-                if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
-                    best = i;
+            .canvas => if (visible and inside) {
+                if (pointerSurface(cmds, i)) |t| best = .{ .canvas = t };
             },
+            else => {},
         }
     }
-    if (best) |b| return b;
-    // No leaf claimed the hover. A modal overlay containing the mouse
-    // claims the empty backdrop area on its own behalf so the host's
-    // press-target gate arms on the overlay's cmd index — without this
-    // the press/release pair never fires `hitTest` and the modal's
-    // `backdrop_msg` would be unreachable in practice.
-    return modal_index;
+    if (best) |t| return .{ .target = t };
+    return if (modal_under_point) .blocked else .none;
 }
 
 /// Compute a slider's normalized value [0, 1] from an x position, given
@@ -831,4 +876,154 @@ test "hitTest: non-modal overlay backdrop click falls through to base" {
     );
     try testing.expect(hit != null);
     try testing.expectEqual(@as(?Msg, Msg.base_click), hit.?.msg);
+}
+
+// ── Pointer canvas + wheel target tests ────────────────────────────
+
+fn testLayout(rects: []Rect, cb: anytype, w: f32, h: f32) []const Rect {
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, w, h, text_mod.monoMeasurer());
+    return rects[0..cb.cmds.items.len];
+}
+
+test "pointer canvas is a hit-testable leaf with no click msg" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.canvasInteractive(.{ .width = 200, .height = 100 }, &.{}, 5, "view"); // index 1
+    cb.button(.poke, "B"); // index 2, below the canvas
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    const rs = testLayout(&rects, &cb, 400, 400);
+
+    const r = rs[1];
+    const hit = hitTest(cb.cmds.items, rs, r.x + 5, r.y + 5).?;
+    try testing.expectEqual(@as(usize, 1), hit.index);
+    try testing.expectEqual(@as(?Msg, null), hit.msg); // claims the point, dispatches nothing
+    try testing.expectEqual(@as(?usize, 1), hoverTest(cb.cmds.items, rs, r.x + 5, r.y + 5));
+
+    const t = pointerTarget(cb.cmds.items, rs, r.x + 5, r.y + 5).?;
+    try testing.expectEqual(@as(usize, 1), t.index);
+    try testing.expectEqual(@as(u32, 5), t.id);
+
+    // The button below is a hit but not a pointer target.
+    const b = rs[2];
+    try testing.expect(pointerTarget(cb.cmds.items, rs, b.x + 5, b.y + 5) == null);
+    try testing.expectEqual(@as(?Msg, Msg.poke), hitTest(cb.cmds.items, rs, b.x + 5, b.y + 5).?.msg);
+    // Outside everything: no target.
+    try testing.expect(pointerTarget(cb.cmds.items, rs, 390, 390) == null);
+}
+
+test "overlay leaf and modal backdrop win over a pointer canvas" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke, close };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.canvasInteractive(.{ .width = 300, .height = 300 }, &.{}, 1, "");
+    cb.popGroup();
+    // Non-modal popup with a button overlapping the canvas, then a modal.
+    cb.pushOverlay(.{ .x = 10, .y = 10 });
+    cb.button(.poke, "Menu");
+    cb.popOverlay();
+
+    var rects: [8]Rect = undefined;
+    const rs = testLayout(&rects, &cb, 400, 400);
+    const btn = rs[4];
+
+    // Over the popup button: the button wins, the canvas gets nothing.
+    try testing.expect(pointerTarget(cb.cmds.items, rs, btn.x + 4, btn.y + 4) == null);
+    // Elsewhere on the canvas: still the canvas (a non-modal overlay passes through).
+    try testing.expectEqual(@as(u32, 1), pointerTarget(cb.cmds.items, rs, 250, 250).?.id);
+
+    var cm = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cm.deinit();
+    cm.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cm.canvasInteractive(.{ .width = 300, .height = 300 }, &.{}, 1, "");
+    cm.popGroup();
+    cm.pushOverlay(.{ .x = 0, .y = 0, .width = 400, .height = 400, .modal = true });
+    cm.popOverlay();
+    var mrects: [8]Rect = undefined;
+    const ms = testLayout(&mrects, &cm, 400, 400);
+    // A modal backdrop consumes the point: the canvas below is not a target.
+    try testing.expect(pointerTarget(cm.cmds.items, ms, 100, 100) == null);
+    try testing.expect(wheelTarget(cm.cmds.items, ms, 100, 100) == null);
+}
+
+test "pointer canvas is clipped by its scroll viewport" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushScroll(.{ .width = 100, .height = 100, .padding = 0 });
+    cb.canvasInteractive(.{ .width = 100, .height = 400 }, &.{}, 2, "");
+    cb.popScroll();
+
+    var rects: [8]Rect = undefined;
+    const rs = testLayout(&rects, &cb, 400, 400);
+    try testing.expectEqual(@as(u32, 2), pointerTarget(cb.cmds.items, rs, 50, 50).?.id);
+    // The canvas extends to y=400 but the 100x100 viewport clips it.
+    try testing.expect(pointerTarget(cb.cmds.items, rs, 50, 250) == null);
+}
+
+test "wheelTarget: innermost id-bearing scroll, canvas wins when innermost" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    // outer(id 1) { inner(id 0) { text } , inner2(id 3) { canvas(id 9) } , plain }
+    cb.pushScroll(.{ .id = 1, .width = 300, .height = 300, .padding = 0, .direction = .vertical });
+    cb.pushScroll(.{ .id = 0, .width = 300, .height = 100, .padding = 0 }); // index 1
+    cb.text("hello");
+    cb.popScroll();
+    cb.pushScroll(.{ .id = 3, .width = 300, .height = 100, .padding = 0 }); // index 4
+    cb.canvasInteractive(.{ .width = 300, .height = 100 }, &.{}, 9, ""); // index 5
+    cb.popScroll();
+    cb.pushScroll(.{ .id = 4, .width = 300, .height = 100, .padding = 0 }); // index 7
+    cb.text("plain");
+    cb.popScroll();
+    cb.popScroll();
+
+    var rects: [16]Rect = undefined;
+    const rs = testLayout(&rects, &cb, 400, 400);
+
+    // Over the id-0 inner region: falls to the outer id-1 region.
+    const t0 = wheelTarget(cb.cmds.items, rs, 50, 50).?;
+    try testing.expectEqual(@as(u32, 1), t0.scroll.id);
+    // Over the id-3 region holding the pointer canvas: the canvas is innermost.
+    const t1 = wheelTarget(cb.cmds.items, rs, 50, 150).?;
+    try testing.expectEqual(@as(u32, 9), t1.canvas.id);
+    // Over the id-4 region: its own id.
+    const t2 = wheelTarget(cb.cmds.items, rs, 50, 250).?;
+    try testing.expectEqual(@as(u32, 4), t2.scroll.id);
+    try testing.expectEqual(@as(usize, 7), t2.scroll.index);
+    // Outside everything.
+    try testing.expect(wheelTarget(cb.cmds.items, rs, 390, 390) == null);
+}
+
+test "wheelTarget: an overlay scroll region wins over the base, a modal blocks it" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushScroll(.{ .id = 1, .width = 400, .height = 400, .padding = 0 }); // 0
+    cb.text("base");
+    cb.popScroll();
+    cb.pushOverlay(.{ .x = 50, .y = 50, .width = 100, .height = 100 }); // 3
+    cb.pushScroll(.{ .id = 2, .width = 100, .height = 100, .padding = 0 }); // 4
+    cb.text("menu");
+    cb.popScroll();
+    cb.popOverlay();
+
+    var rects: [16]Rect = undefined;
+    const rs = testLayout(&rects, &cb, 400, 400);
+    try testing.expectEqual(@as(u32, 2), wheelTarget(cb.cmds.items, rs, 70, 70).?.scroll.id);
+    try testing.expectEqual(@as(u32, 1), wheelTarget(cb.cmds.items, rs, 300, 300).?.scroll.id);
 }

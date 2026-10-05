@@ -23,6 +23,7 @@ pub const table = @import("core/table.zig");
 pub const pointer = @import("core/pointer.zig");
 pub const effects = @import("core/effects.zig");
 pub const layout = @import("layout/engine.zig");
+pub const scroll_extent = @import("layout/scroll_extent.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
 pub const keys = @import("input/keys.zig");
@@ -30,6 +31,7 @@ pub const a11y = @import("input/a11y.zig");
 pub const render = @import("render/build.zig");
 pub const vertex = @import("render/vertex.zig");
 pub const host = @import("platform/host.zig");
+pub const input_queue = @import("platform/input_queue.zig");
 pub const gpu = @import("gpu/context.zig");
 pub const runtime = @import("run.zig");
 
@@ -98,6 +100,8 @@ pub const lineChartPrimitives = chart.lineChartPrimitives;
 
 pub const Rect = layout.Rect;
 pub const LayoutEngine = layout.LayoutEngine;
+pub const ScrollExtent = scroll_extent.Extent;
+pub const scrollExtent = scroll_extent.scrollExtent;
 
 pub const hitTest = hit_test.hitTest;
 pub const hoverTest = hit_test.hoverTest;
@@ -155,6 +159,9 @@ pub const snapshotAlloc = snapshot.snapshotAlloc;
 pub const expectSnapshot = snapshot.expectSnapshot;
 
 pub const InputState = host.InputState;
+pub const InputQueue = input_queue.InputQueue;
+pub const NavKey = input_queue.NavKey;
+pub const resolveKey = input_queue.resolveKey;
 pub const Clipboard = host.Clipboard;
 pub const ImeState = host.ImeState;
 pub const FileDialogResult = host.FileDialogResult;
@@ -166,6 +173,7 @@ pub const ClearColor = gpu.ClearColor;
 pub const validateGpu = gpu.validateGpu;
 
 pub const run = runtime.run;
+pub const Runtime = runtime.Runtime;
 pub const RunOptions = runtime.RunOptions;
 pub const SecondaryWindowSpec = runtime.SecondaryWindowSpec;
 

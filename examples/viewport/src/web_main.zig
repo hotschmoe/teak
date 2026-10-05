@@ -1,4 +1,4 @@
-//! Wasm entry for counter_greeter. Zunk inverts control: it owns the rAF loop and
+//! Wasm entry for the viewport example. Zunk inverts control: it owns the rAF loop and
 //! calls the exported `init` / `frame` / `resize`. All the loop logic lives
 //! in `teak.Runtime` — the same code `teak.run` drives on native hosts —
 //! so this file only builds the Host, Gpu and Runtime once and forwards
@@ -25,9 +25,9 @@ var gpu: Gpu = undefined;
 var runtime: Runtime = undefined;
 
 export fn init() void {
-    host = Host.init("Teak — Counter + Greeter", 900, 500) catch @panic("host init failed");
+    host = Host.init("Teak — Viewport", 900, 520) catch @panic("host init failed");
     host.activate();
-    gpu = Gpu.init(host.nativeHandle(), 900, 500) catch @panic("gpu init failed");
+    gpu = Gpu.init(host.nativeHandle(), 900, 520) catch @panic("gpu init failed");
     runtime = Runtime.init(std.heap.wasm_allocator, &host, &gpu, .{}) catch @panic("runtime init failed");
 }
 

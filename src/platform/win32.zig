@@ -10,6 +10,8 @@ const teak = @import("teak");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
+pub const InputQueue = teak.InputQueue;
+const NavKey = teak.NavKey;
 pub const TextMeasurer = teak.TextMeasurer;
 pub const TextMetrics = teak.TextMetrics;
 pub const FontSpec = teak.FontSpec;
@@ -73,6 +75,10 @@ const WM_KEYDOWN: UINT = 0x0100;
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
+const WM_RBUTTONDOWN: UINT = 0x0204;
+const WM_RBUTTONUP: UINT = 0x0205;
+const WM_MBUTTONDOWN: UINT = 0x0207;
+const WM_MBUTTONUP: UINT = 0x0208;
 const WM_MOUSEWHEEL: UINT = 0x020A;
 const WM_MOUSEHWHEEL: UINT = 0x020E;
 const WHEEL_DELTA: f32 = 120;
@@ -107,6 +113,8 @@ extern "user32" fn LoadCursorW(?HANDLE, LPCWSTR) callconv(WINAPI) ?HANDLE;
 extern "user32" fn GetDC(?HANDLE) callconv(WINAPI) ?HDC;
 extern "user32" fn ReleaseDC(?HANDLE, HDC) callconv(WINAPI) c_int;
 extern "user32" fn GetKeyState(c_int) callconv(WINAPI) i16;
+extern "user32" fn SetCapture(HANDLE) callconv(WINAPI) ?HANDLE;
+extern "user32" fn ReleaseCapture() callconv(WINAPI) BOOL;
 extern "user32" fn DestroyWindow(HANDLE) callconv(WINAPI) BOOL;
 extern "user32" fn SetWindowTextW(HANDLE, LPCWSTR) callconv(WINAPI) BOOL;
 /// Per-window DPI (Windows 10 1607+). Returns USER_DEFAULT_SCREEN_DPI
@@ -206,6 +214,9 @@ extern "imm32" fn ImmGetCompositionStringW(HIMC, DWORD, ?*anyopaque, DWORD) call
 
 const VK_SHIFT: c_int = 0x10;
 const VK_CONTROL: c_int = 0x11;
+const VK_MENU: c_int = 0x12; // Alt
+const VK_LWIN: c_int = 0x5B;
+const VK_RWIN: c_int = 0x5C;
 const VK_A: WPARAM = 0x41;
 const VK_C: WPARAM = 0x43;
 const VK_V: WPARAM = 0x56;
@@ -1173,29 +1184,16 @@ const FontCacheEntry = struct {
 
 // ── Module-scoped state (written by wndProc, drained by pollInputs) ──
 
-var g_mouse_x: f32 = 0;
-var g_mouse_y: f32 = 0;
 var g_running: bool = true;
 var g_width: u32 = 0;
 var g_height: u32 = 0;
 var g_resized: bool = false;
 
-var g_mouse_down_pending: bool = false;
-var g_mouse_up_pending: bool = false;
-
-// Wheel accumulators — pixels of intended scroll since the last
-// pollInputs drain. Sign convention matches the InputState doc:
-// positive wheel_dy = scroll down. Win32's WM_MOUSEWHEEL reports the
-// opposite (positive = away from user = scroll up) so we negate. The
-// horizontal axis already matches (positive = scroll right).
-var g_wheel_dx: f32 = 0;
-var g_wheel_dy: f32 = 0;
-
-var g_chars: [64]u8 = undefined;
-var g_chars_count: usize = 0;
-
-var g_keys: [32]SpecialKey = undefined;
-var g_keys_count: usize = 0;
+/// Pointer, buttons, wheel, text and key queues for the primary window
+/// (written by `wndProc`, drained by `pollInputs`). Wheel pixels follow the
+/// `InputState` convention: positive dy = scroll down — Win32's
+/// `WM_MOUSEWHEEL` reports the opposite, so `handleInputMessage` negates it.
+var g_input: InputQueue = .{};
 
 // IME composition mirror — populated from WM_IME_* messages and read by
 // `imeState()`. The UTF-8 buffer is 256 bytes (≈85 CJK glyphs); longer
@@ -1222,16 +1220,7 @@ const SecondaryWindow = struct {
     width: u32,
     height: u32,
     resized: bool,
-    mouse_x: f32,
-    mouse_y: f32,
-    mouse_down_pending: bool,
-    mouse_up_pending: bool,
-    wheel_dx: f32,
-    wheel_dy: f32,
-    chars: [64]u8,
-    chars_count: usize,
-    keys: [32]SpecialKey,
-    keys_count: usize,
+    input: InputQueue,
     closed: bool,
 };
 
@@ -1252,20 +1241,6 @@ fn findSecondaryByHwnd(hwnd: HANDLE) ?*SecondaryWindow {
     return null;
 }
 
-fn secondaryPushChar(sw: *SecondaryWindow, ch: u8) void {
-    if (sw.chars_count < sw.chars.len) {
-        sw.chars[sw.chars_count] = ch;
-        sw.chars_count += 1;
-    }
-}
-
-fn secondaryPushKey(sw: *SecondaryWindow, k: SpecialKey) void {
-    if (sw.keys_count < sw.keys.len) {
-        sw.keys[sw.keys_count] = k;
-        sw.keys_count += 1;
-    }
-}
-
 fn secondaryWndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
     const sw_opt = findSecondaryByHwnd(hwnd);
     const sw = sw_opt orelse return DefWindowProcW(hwnd, msg, wp, lp);
@@ -1284,69 +1259,10 @@ fn secondaryWndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WI
             }
             return 0;
         },
-        WM_MOUSEMOVE => {
-            sw.mouse_x = @floatFromInt(lowordSigned(lp));
-            sw.mouse_y = @floatFromInt(hiwordSigned(lp));
-            return 0;
+        else => {
+            if (handleInputMessage(&sw.input, hwnd, msg, wp, lp)) return 0;
+            return DefWindowProcW(hwnd, msg, wp, lp);
         },
-        WM_LBUTTONDOWN => {
-            sw.mouse_x = @floatFromInt(lowordSigned(lp));
-            sw.mouse_y = @floatFromInt(hiwordSigned(lp));
-            sw.mouse_down_pending = true;
-            return 0;
-        },
-        WM_LBUTTONUP => {
-            sw.mouse_x = @floatFromInt(lowordSigned(lp));
-            sw.mouse_y = @floatFromInt(hiwordSigned(lp));
-            sw.mouse_up_pending = true;
-            return 0;
-        },
-        WM_MOUSEWHEEL => {
-            const raw_delta: i16 = @bitCast(@as(u16, @truncate(wp >> 16)));
-            const delta: f32 = @floatFromInt(raw_delta);
-            sw.wheel_dy += -(delta / WHEEL_DELTA) * WHEEL_PIXELS_PER_NOTCH;
-            return 0;
-        },
-        WM_MOUSEHWHEEL => {
-            const raw_delta: i16 = @bitCast(@as(u16, @truncate(wp >> 16)));
-            const delta: f32 = @floatFromInt(raw_delta);
-            sw.wheel_dx += (delta / WHEEL_DELTA) * WHEEL_PIXELS_PER_NOTCH;
-            return 0;
-        },
-        WM_CHAR => {
-            if (wp >= 0x20 and wp < 0x7F) {
-                secondaryPushChar(sw, @intCast(wp));
-            }
-            return 0;
-        },
-        WM_KEYDOWN => {
-            const shift_down = GetKeyState(VK_SHIFT) < 0;
-            const ctrl_down = GetKeyState(VK_CONTROL) < 0;
-            switch (wp) {
-                VK_BACK => secondaryPushKey(sw, .backspace),
-                VK_DELETE => secondaryPushKey(sw, .delete),
-                VK_LEFT => secondaryPushKey(sw, if (shift_down) .shift_left else .left),
-                VK_RIGHT => secondaryPushKey(sw, if (shift_down) .shift_right else .right),
-                VK_UP => secondaryPushKey(sw, if (shift_down) .shift_up else .up),
-                VK_DOWN => secondaryPushKey(sw, if (shift_down) .shift_down else .down),
-                VK_HOME => secondaryPushKey(sw, if (shift_down) .shift_home else .home),
-                VK_END => secondaryPushKey(sw, if (shift_down) .shift_end else .end),
-                VK_PRIOR => secondaryPushKey(sw, .page_up),
-                VK_NEXT => secondaryPushKey(sw, .page_down),
-                VK_RETURN => secondaryPushKey(sw, .enter),
-                VK_TAB => secondaryPushKey(sw, .tab),
-                VK_ESCAPE => secondaryPushKey(sw, .escape),
-                VK_A => if (ctrl_down) secondaryPushKey(sw, .ctrl_a),
-                VK_C => if (ctrl_down) secondaryPushKey(sw, .ctrl_c),
-                VK_V => if (ctrl_down) secondaryPushKey(sw, .ctrl_v),
-                VK_X => if (ctrl_down) secondaryPushKey(sw, .ctrl_x),
-                VK_Y => if (ctrl_down) secondaryPushKey(sw, .ctrl_y),
-                VK_Z => if (ctrl_down) secondaryPushKey(sw, .ctrl_z),
-                else => {},
-            }
-            return 0;
-        },
-        else => return DefWindowProcW(hwnd, msg, wp, lp),
     }
 }
 
@@ -1363,18 +1279,83 @@ fn hiwordSigned(lp: LPARAM) i16 {
     return @bitCast(hiword(lp));
 }
 
-fn pushChar(ch: u8) void {
-    if (g_chars_count < g_chars.len) {
-        g_chars[g_chars_count] = ch;
-        g_chars_count += 1;
-    }
+/// Modifier state right now (`GetKeyState` high bit = held). Sampled per
+/// message so it reflects the same instant as the event it accompanies.
+fn currentMods() teak.Modifiers {
+    return .{
+        .shift = GetKeyState(VK_SHIFT) < 0,
+        .ctrl = GetKeyState(VK_CONTROL) < 0,
+        .alt = GetKeyState(VK_MENU) < 0,
+        .meta = GetKeyState(VK_LWIN) < 0 or GetKeyState(VK_RWIN) < 0,
+    };
 }
 
-fn pushKey(k: SpecialKey) void {
-    if (g_keys_count < g_keys.len) {
-        g_keys[g_keys_count] = k;
-        g_keys_count += 1;
+fn navFromVk(vk: WPARAM) ?NavKey {
+    return switch (vk) {
+        VK_BACK => .backspace,
+        VK_DELETE => .delete,
+        VK_LEFT => .left,
+        VK_RIGHT => .right,
+        VK_UP => .up,
+        VK_DOWN => .down,
+        VK_HOME => .home,
+        VK_END => .end,
+        VK_PRIOR => .page_up,
+        VK_NEXT => .page_down,
+        VK_RETURN => .enter,
+        VK_TAB => .tab,
+        VK_ESCAPE => .escape,
+        VK_A => .a,
+        VK_C => .c,
+        VK_X => .x,
+        VK_V => .v,
+        VK_Y => .y,
+        VK_Z => .z,
+        else => null,
+    };
+}
+
+/// Pointer / wheel / text / key messages, shared by the primary and
+/// secondary window procedures. Returns true when `msg` was one of them.
+/// Button presses capture the mouse so a drag that leaves the window still
+/// delivers its release.
+fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) bool {
+    switch (msg) {
+        WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP => {
+            q.mods = currentMods();
+            q.pointerMoved(@floatFromInt(lowordSigned(lp)), @floatFromInt(hiwordSigned(lp)));
+            switch (msg) {
+                WM_LBUTTONDOWN => q.buttonDown(.left),
+                WM_RBUTTONDOWN => q.buttonDown(.right),
+                WM_MBUTTONDOWN => q.buttonDown(.middle),
+                WM_LBUTTONUP => q.buttonUp(.left),
+                WM_RBUTTONUP => q.buttonUp(.right),
+                WM_MBUTTONUP => q.buttonUp(.middle),
+                else => {},
+            }
+            if (q.buttons.any()) _ = SetCapture(hwnd) else _ = ReleaseCapture();
+        },
+        WM_MOUSEWHEEL, WM_MOUSEHWHEEL => {
+            // GET_WHEEL_DELTA_WPARAM: HIWORD of wparam, signed. Vertical:
+            // positive = wheel turned away from the user (content scrolls
+            // up), InputState wants positive = down, so negate. Horizontal:
+            // positive = tilted right, which already matches.
+            const raw_delta: i16 = @bitCast(@as(u16, @truncate(wp >> 16)));
+            const px = (@as(f32, @floatFromInt(raw_delta)) / WHEEL_DELTA) * WHEEL_PIXELS_PER_NOTCH;
+            q.mods = currentMods();
+            if (msg == WM_MOUSEWHEEL) q.wheel(0, -px) else q.wheel(px, 0);
+        },
+        // WM_CHAR delivers UTF-16 code units, including control codes
+        // (backspace etc.) which the queue drops — special keys route
+        // through WM_KEYDOWN.
+        WM_CHAR => q.pushUtf16Unit(@truncate(wp)),
+        WM_KEYDOWN => {
+            q.mods = currentMods();
+            if (navFromVk(wp)) |nk| q.pushNav(nk);
+        },
+        else => return false,
     }
+    return true;
 }
 
 /// Map a UTF-16 code-unit offset to a UTF-8 byte offset by walking the
@@ -1409,50 +1390,6 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
                 g_width = w;
                 g_height = h;
                 g_resized = true;
-            }
-            return 0;
-        },
-        WM_MOUSEMOVE => {
-            g_mouse_x = @floatFromInt(lowordSigned(lp));
-            g_mouse_y = @floatFromInt(hiwordSigned(lp));
-            return 0;
-        },
-        WM_LBUTTONDOWN => {
-            g_mouse_x = @floatFromInt(lowordSigned(lp));
-            g_mouse_y = @floatFromInt(hiwordSigned(lp));
-            g_mouse_down_pending = true;
-            return 0;
-        },
-        WM_LBUTTONUP => {
-            g_mouse_x = @floatFromInt(lowordSigned(lp));
-            g_mouse_y = @floatFromInt(hiwordSigned(lp));
-            g_mouse_up_pending = true;
-            return 0;
-        },
-        WM_MOUSEWHEEL => {
-            // GET_WHEEL_DELTA_WPARAM: HIWORD of wparam, signed. Win32
-            // sends positive when the wheel turns away from the user
-            // (= content should scroll up); we want the InputState
-            // convention "positive = scroll down" so negate.
-            const raw_delta: i16 = @bitCast(@as(u16, @truncate(wp >> 16)));
-            const delta: f32 = @floatFromInt(raw_delta);
-            g_wheel_dy += -(delta / WHEEL_DELTA) * WHEEL_PIXELS_PER_NOTCH;
-            return 0;
-        },
-        WM_MOUSEHWHEEL => {
-            // Horizontal wheel: Win32 reports positive when tilted
-            // right (= content should scroll right), which already
-            // matches our "positive = scroll right" convention.
-            const raw_delta: i16 = @bitCast(@as(u16, @truncate(wp >> 16)));
-            const delta: f32 = @floatFromInt(raw_delta);
-            g_wheel_dx += (delta / WHEEL_DELTA) * WHEEL_PIXELS_PER_NOTCH;
-            return 0;
-        },
-        WM_CHAR => {
-            // 0x08 (backspace) and other control chars arrive here too —
-            // ignore them; special keys route through WM_KEYDOWN.
-            if (wp >= 0x20 and wp < 0x7F) {
-                pushChar(@intCast(wp));
             }
             return 0;
         },
@@ -1524,38 +1461,6 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             g_ime_cursor = 0;
             return 0;
         },
-        WM_KEYDOWN => {
-            // High bit of GetKeyState = held. GetKeyState returns SHORT
-            // (i16); checking `< 0` is equivalent to "high bit set" and
-            // avoids the C idiom `& 0x8000` which Zig rejects (32768
-            // doesn't fit in i16). Read once per WM_KEYDOWN so shift /
-            // ctrl reflect the same instant as the key event.
-            const shift_down = GetKeyState(VK_SHIFT) < 0;
-            const ctrl_down = GetKeyState(VK_CONTROL) < 0;
-            switch (wp) {
-                VK_BACK => pushKey(.backspace),
-                VK_DELETE => pushKey(.delete),
-                VK_LEFT => pushKey(if (shift_down) .shift_left else .left),
-                VK_RIGHT => pushKey(if (shift_down) .shift_right else .right),
-                VK_UP => pushKey(if (shift_down) .shift_up else .up),
-                VK_DOWN => pushKey(if (shift_down) .shift_down else .down),
-                VK_HOME => pushKey(if (shift_down) .shift_home else .home),
-                VK_END => pushKey(if (shift_down) .shift_end else .end),
-                VK_PRIOR => pushKey(.page_up),
-                VK_NEXT => pushKey(.page_down),
-                VK_RETURN => pushKey(.enter),
-                VK_TAB => pushKey(.tab),
-                VK_ESCAPE => pushKey(.escape),
-                VK_A => if (ctrl_down) pushKey(.ctrl_a),
-                VK_C => if (ctrl_down) pushKey(.ctrl_c),
-                VK_V => if (ctrl_down) pushKey(.ctrl_v),
-                VK_X => if (ctrl_down) pushKey(.ctrl_x),
-                VK_Y => if (ctrl_down) pushKey(.ctrl_y),
-                VK_Z => if (ctrl_down) pushKey(.ctrl_z),
-                else => {},
-            }
-            return 0;
-        },
         WM_GETOBJECT => {
             // UIA root request — hand back our singleton provider. Any
             // other object id (MSAA, etc.) falls through to DefWindowProc
@@ -1569,7 +1474,10 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             }
             return DefWindowProcW(hwnd, msg, wp, lp);
         },
-        else => return DefWindowProcW(hwnd, msg, wp, lp),
+        else => {
+            if (handleInputMessage(&g_input, hwnd, msg, wp, lp)) return 0;
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        },
     }
 }
 
@@ -1720,11 +1628,10 @@ pub const Host = struct {
     }
 
     pub fn pollInputs(_: *Host) InputState {
-        // Queues reset before pumping; edge flags latched after. Edges
-        // must survive across the pump so Host.init's initial resized=true
-        // flag (set before the first pump) is returned on frame 1.
-        g_chars_count = 0;
-        g_keys_count = 0;
+        // Queues reset before pumping; edges are latched until `finish`.
+        // They must survive across the pump so Host.init's initial
+        // resized=true flag (set before the first pump) is returned on frame 1.
+        g_input.beginFrame();
 
         var msg: MSG = undefined;
         while (PeekMessageW(&msg, null, 0, 0, PM_REMOVE) != 0) {
@@ -1732,30 +1639,9 @@ pub const Host = struct {
             _ = DispatchMessageW(&msg);
         }
 
-        const mouse_down = g_mouse_down_pending;
-        const mouse_up = g_mouse_up_pending;
         const resized = g_resized;
-        const wheel_dx = g_wheel_dx;
-        const wheel_dy = g_wheel_dy;
-        g_mouse_down_pending = false;
-        g_mouse_up_pending = false;
         g_resized = false;
-        g_wheel_dx = 0;
-        g_wheel_dy = 0;
-
-        return .{
-            .mouse_x = g_mouse_x,
-            .mouse_y = g_mouse_y,
-            .mouse_down = mouse_down,
-            .mouse_up = mouse_up,
-            .wheel_dx = wheel_dx,
-            .wheel_dy = wheel_dy,
-            .chars = g_chars[0..g_chars_count],
-            .keys = g_keys[0..g_keys_count],
-            .resized = resized,
-            .width = g_width,
-            .height = g_height,
-        };
+        return g_input.finish(resized, g_width, g_height);
     }
 
     pub fn shouldClose(_: *const Host) bool {
@@ -2041,16 +1927,7 @@ pub const Host = struct {
             .width = w,
             .height = h,
             .resized = true, // first poll should publish dimensions
-            .mouse_x = 0,
-            .mouse_y = 0,
-            .mouse_down_pending = false,
-            .mouse_up_pending = false,
-            .wheel_dx = 0,
-            .wheel_dy = 0,
-            .chars = undefined,
-            .chars_count = 0,
-            .keys = undefined,
-            .keys_count = 0,
+            .input = .{},
             .closed = false,
         };
 
@@ -2070,38 +1947,16 @@ pub const Host = struct {
         const sw: *SecondaryWindow = &slot_opt.*.?;
         if (sw.closed) return null;
 
-        const mouse_down = sw.mouse_down_pending;
-        const mouse_up = sw.mouse_up_pending;
+        // Messages for this window were already pumped by the primary
+        // `pollInputs`. Slices in the returned state alias `sw.input`: reset
+        // the queue lengths only AFTER building them, so the next frame's
+        // messages start at index 0 (valid until the next poll, as for the
+        // primary window).
         const resized = sw.resized;
-        const wheel_dx = sw.wheel_dx;
-        const wheel_dy = sw.wheel_dy;
-        sw.mouse_down_pending = false;
-        sw.mouse_up_pending = false;
         sw.resized = false;
-        sw.wheel_dx = 0;
-        sw.wheel_dy = 0;
-
-        const input: InputState = .{
-            .mouse_x = sw.mouse_x,
-            .mouse_y = sw.mouse_y,
-            .mouse_down = mouse_down,
-            .mouse_up = mouse_up,
-            .wheel_dx = wheel_dx,
-            .wheel_dy = wheel_dy,
-            .chars = sw.chars[0..sw.chars_count],
-            .keys = sw.keys[0..sw.keys_count],
-            .resized = resized,
-            .width = sw.width,
-            .height = sw.height,
-        };
-
-        // Reset queues for the next frame. Slices we returned point
-        // into the same buffers; caller must consume before the next
-        // poll. Same lifetime contract as the primary pollInputs.
-        sw.chars_count = 0;
-        sw.keys_count = 0;
-
-        return input;
+        const state = sw.input.finish(resized, sw.width, sw.height);
+        sw.input.beginFrame();
+        return state;
     }
 
     /// Destroy a secondary window and free its slot. No-op on invalid

@@ -145,8 +145,11 @@ new variants). Worked example: [`docs/cookbook.md`](docs/cookbook.md) recipe 12.
 ```
 src/                           -- the library, consumable as a Zig module
   teak.zig                     -- public library root / re-exports
-  run.zig                      -- teak.run: canonical host-loop wrapper
-                               --   (Host/Gpu via anytype; optional App hooks via @hasDecl;
+  run.zig                      -- teak.run + Runtime(App, Host, Gpu): canonical host loop, one
+                               --   `frame()` per iteration (web calls it per rAF tick); routes
+                               --   mouse/keys/wheel, interactive canvases (canvasMsg), scroll
+                               --   regions (scrollMsg / scrollLayoutMsg)
+                               --   (Host/Gpu duck-typed; optional App hooks via @hasDecl;
                                --    services `subscribe` via runSubs on Host.nowMs();
                                --    mirrors changed frames to the TEAK_SNAPSHOT sink).
                                --   Imports only the pure passes; outside framework core.
@@ -173,9 +176,11 @@ src/                           -- the library, consumable as a Zig module
     snapshot.zig               -- []Cmd+[]Rect -> text; golden tests + TEAK_SNAPSHOT
   layout/
     engine.zig                 -- measure + position passes
+    scroll_extent.zig          -- viewport + content size of a scroll region, from rects
   input/
     hit_test.zig               -- mouse -> CmdIndex -> Msg (two-layer: base + overlay);
-                               --   sliderDrag helper; disabled leaves are non-interactive
+                               --   sliderDrag helper; disabled leaves are non-interactive;
+                               --   pointerTarget / wheelTarget for canvases + scroll regions
     focus.zig                  -- next/prev focusable traversal; indexOfFocusMsg / focusMsgAt
                                --   (Msg-keyed stable focus)
     keys.zig                   -- SpecialKey (incl. shift+arrows, tab/shift_tab, ctrl chords)
@@ -201,6 +206,8 @@ src/                           -- the library, consumable as a Zig module
     vendor/stb_truetype.h(.c)  -- vendored public-domain rasterizer (Linux text)
   platform/                    -- Host backends (window + input; outside core)
     host.zig                   -- validateHost contract + InputState/Clipboard/etc.
+    input_queue.zig            -- InputQueue (events -> InputState for Win32/X11), NavKey +
+                               --   resolveKey (the one Shift/Ctrl key policy), UTF-8 text queue
     win32.zig                  -- Win32 Host (GDI measurer)
     x11.zig                    -- X11 Host via std.DynLib(libX11.so.6); stb measurer;
                                --   keysym->SpecialKey; no -lX11 (dlopened at runtime)
@@ -232,7 +239,7 @@ The library has no external dependencies; `wgpu-native` is owned by teak's build
 
 ## Implementation Status
 
-The framework is **implemented and shipping**: the full loop (Model → view → layout → render → hit-test → update) runs on native Windows (Win32 + wgpu), native Linux (X11 + wgpu), and web (wasm + WebGPU via zunk), with real text rendering on all three. Three examples (`counter_greeter`, `todo`, `tree`) exercise the loop end-to-end.
+The framework is **implemented and shipping**: the full loop (Model → view → layout → render → hit-test → update) runs on native Windows (Win32 + wgpu), native Linux (X11 + wgpu), and web (wasm + WebGPU via zunk), with real text rendering on all three. Four examples (`counter_greeter`, `todo`, `tree`, `viewport` — pan/zoom canvas + scroll list) exercise the loop end-to-end.
 
 Shipped phases, in order: prototype core loop → cleanup/abstraction hardening (`zig build audit`, CI) → text rendering (Host `TextMeasurer` + glyph caches) → functional gaps (overlay, images, selection/clipboard, subscriptions, multi-window, virtual list, a11y, rich text) → ergonomic helpers → consumer DX (`teak.run`, widgets, onboarding docs) → Linux native support → agent DX + consumer gaps (validateBalance, examples on `teak.run`, `teak.snapshot` + `TEAK_SNAPSHOT`, canvas/chart, dropdown scrolling, per-item focus, subscriptions serviced by `run`, `llms.txt` + cookbook). The current working task list is `tasks.md`; the original phase-by-phase prototype guide survives at `docs/archive/init_convo/first_proto.md`.
 

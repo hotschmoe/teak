@@ -218,6 +218,13 @@ pub const ScrollStyle = struct {
     /// Msgs that update the Model fields feeding this value back in.
     scroll_x: f32 = 0,
     scroll_y: f32 = 0,
+    /// Non-zero opts this region into wheel routing and layout reports:
+    /// `teak.run` hands wheel events over its innermost hovered `id != 0`
+    /// scroll region to the App's `scrollMsg(model, id, dx, dy)`, and
+    /// reports its viewport + content size through `scrollLayoutMsg` on
+    /// first layout and whenever either changes. Apps give each such
+    /// region a distinct id.
+    id: u32 = 0,
 };
 
 // ── Overlay (HARDLINE §2 escape hatch 5) ───────────────────────────
@@ -487,6 +494,14 @@ pub fn CanvasCmd(comptime Msg: type) type {
         msg: ?Msg = null,
         /// Accessible label / name for the a11y tree.
         label: []const u8 = "",
+        /// Interactive canvas: when true, `teak.run` turns pointer input over
+        /// this canvas into `CanvasEvent`s for the App's `canvasMsg` hook
+        /// (see `core/pointer.zig`). Wheel events over it go to `canvasMsg`
+        /// instead of `wheelMsg` / `scrollMsg`.
+        pointer: bool = false,
+        /// Identifies the canvas in `CanvasEvent.id`. Non-zero and distinct
+        /// per interactive canvas.
+        id: u32 = 0,
     };
 }
 
@@ -1136,6 +1151,27 @@ pub fn CmdBuffer(comptime Msg: type) type {
             } }) catch unreachable;
         }
 
+        /// Interactive canvas: pointer input over it (down/move/up/wheel/
+        /// leave, plus `layout` on first layout and resize) reaches the
+        /// App's `canvasMsg(model, CanvasEvent)` hook tagged with `id`.
+        /// That is how an app implements pan / zoom / drag over a canvas —
+        /// the primitives are still pure data built from the Model.
+        pub fn canvasInteractive(
+            self: *Self,
+            style: CanvasStyle,
+            primitives: []const CanvasPrimitive,
+            id: u32,
+            label: []const u8,
+        ) void {
+            self.cmds.append(self.backing, .{ .canvas = .{
+                .style = style,
+                .primitives = primitives,
+                .label = label,
+                .pointer = true,
+                .id = id,
+            } }) catch unreachable;
+        }
+
         pub fn textInputSelected(
             self: *Self,
             focus_msg: Msg,
@@ -1765,6 +1801,27 @@ test "CmdBuffer.canvas emits a canvas cmd carrying its primitives" {
     // Plain `canvas` is non-interactive (no click msg) and unlabeled.
     try testing.expectEqual(@as(?Msg, null), cv.msg);
     try testing.expectEqual(@as(usize, 0), cv.label.len);
+}
+
+test "CmdBuffer.canvasInteractive sets pointer + id; other emitters leave them off" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.canvas(.{}, &.{});
+    cb.canvasInteractive(.{ .width = 300, .height = 200 }, &.{}, 7, "viewport");
+    cb.pushScroll(.{ .id = 3 });
+    cb.popScroll();
+
+    try testing.expect(!cb.cmds.items[0].canvas.pointer);
+    try testing.expectEqual(@as(u32, 0), cb.cmds.items[0].canvas.id);
+    const cv = cb.cmds.items[1].canvas;
+    try testing.expect(cv.pointer);
+    try testing.expectEqual(@as(u32, 7), cv.id);
+    try testing.expectEqualStrings("viewport", cv.label);
+    try testing.expectEqual(@as(?Msg, null), cv.msg);
+    try testing.expectEqual(@as(u32, 3), cb.cmds.items[2].push_scroll.id);
 }
 
 test "CmdBuffer.canvasClickable / canvasLabeled set msg + label" {
