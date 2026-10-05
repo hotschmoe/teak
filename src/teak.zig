@@ -156,6 +156,11 @@ pub const emitQuadCorners = vertex.emitQuadCorners;
 pub const buildVertices = render.buildVertices;
 pub const ImageDraw = render.ImageDraw;
 pub const buildFrame = render.buildFrame;
+/// Run-loop resource bookkeeping for hand-written host loops (web): `sync`
+/// the table with `App.resources(model)`, then `stageDraws` instead of
+/// `uploadImages`. `teak.run` does both for you.
+pub const ResourceTable = @import("resources.zig").Table;
+pub const stageDraws = @import("resources.zig").stageDraws;
 
 pub const TransientState = transient.TransientState;
 

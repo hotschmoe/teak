@@ -431,6 +431,9 @@ TransientState = struct { hover_index, press_index, focus_index: ?usize = null,
 buildFrame(verts, text_draws, image_draws, scene_draws: *std.ArrayList(...), alloc, cmds, rects,
            transient: TransientState, measurer: TextMeasurer) void      // what teak.run uses
 buildVertices(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer) void  // = buildFrame, scenes skipped
+ResourceTable = struct { sync(self, gpu, []const Resource) bool /*changed*/, deinit(self, gpu), handleOf(kind, key) u32 }
+stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw) void  // remap keys, uploadImages, renderScenes
+                                      // (hand-written web loops call these; teak.run does it for you)
 ImageDraw = struct { rect_x, rect_y, rect_w, rect_h: f32, handle: TextureHandle,
                      tint: [4]f32, clip_x, clip_y, clip_w, clip_h: f32 }
 Vertex = extern struct { x, y, r, g, b, a, u, v: f32 }

@@ -186,9 +186,16 @@ test "images upload, draw and release (slot reuse)" {
     try std.testing.expect(img != teak.TEXTURE_HANDLE_NONE);
 
     h.gpu.uploadImages(&.{.{
-        .rect_x = 8, .rect_y = 8, .rect_w = 16, .rect_h = 16,
-        .handle = img, .tint = .{ 1, 1, 1, 1 },
-        .clip_x = 0, .clip_y = 0, .clip_w = 64, .clip_h = 64,
+        .rect_x = 8,
+        .rect_y = 8,
+        .rect_w = 16,
+        .rect_h = 16,
+        .handle = img,
+        .tint = .{ 1, 1, 1, 1 },
+        .clip_x = 0,
+        .clip_y = 0,
+        .clip_w = 64,
+        .clip_h = 64,
     }});
     const pixels = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(pixels);

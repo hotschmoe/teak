@@ -100,7 +100,7 @@ test "depth test, lighting, clear colour and line quads render correctly" {
     // that covers only the left half: with a working depth test red wins on
     // the left even though blue is drawn later.
     const verts = [_]teak.MeshVertex{
-        vert(-1, -1, 0.2, red), vert(0, -1, 0.2, red), vert(0, 1, 0.2, red), vert(-1, 1, 0.2, red),
+        vert(-1, -1, 0.2, red),  vert(0, -1, 0.2, red),  vert(0, 1, 0.2, red),  vert(-1, 1, 0.2, red),
         vert(-1, -1, 0.8, blue), vert(1, -1, 0.8, blue), vert(1, 1, 0.8, blue), vert(-1, 1, 0.8, blue),
     };
     const indices = [_]u32{ 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };

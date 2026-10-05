@@ -4,6 +4,8 @@
 **Source**: `src/core/scene.zig` (data), `src/core/cmd.zig` (`SceneCmd`), `src/render/build.zig` (`SceneDraw` emission), `src/core/resources.zig` + `src/resources.zig` (declarative resources), `shaders/scene.wgsl`, backends `src/gpu/wgpu_scene.zig` + `src/gpu/web_scene.zig`, shared `src/gpu/scene_common.zig`.
 **Tests**: `zig build test` (data, layout, hit-test, snapshot, a11y, render, resource table, run loop with a recording Gpu, `scene_common`); `zig build test-gpu` (real rendering + pixel readback on a Vulkan device); the `examples/scene3d` app on web and native.
 
+Worked example: `examples/scene3d` (stud-wall mesh with edges + grid, orbiting camera driven by a `Sub` tick, a vector canvas of alpha-feathered triangles over a batched hatch, mesh declared through `resources()`; native via `teak.run` with MSAA on, web via a hand loop using `teak.ResourceTable` / `teak.stageDraws`).
+
 A `scene3d` Cmd is a fixed-size leaf the Gpu fills with a **flat-shaded, lit, depth-tested triangle mesh plus constant-pixel-width feature lines**. It exists so a CAD-style app can show a 3D model beside regular teak widgets (and 2D vector linework via [canvas](canvas.md) triangles) without leaving the TEA loop: the app keeps a `Camera` in its `Model`, a `Msg` orbits it, `view` emits the Cmd.
 
 ## Contract
