@@ -20,9 +20,11 @@ const glyph_cache = @import("glyph_cache.zig");
 const web_scene = @import("web_scene.zig");
 const scene_common = @import("scene_common.zig");
 const SlotTable = @import("slot_table.zig").SlotTable;
+const overlay = @import("overlay.zig");
 
 const zgpu = zunk.web.gpu;
 const Vertex = teak.Vertex;
+const OverlaySplit = teak.OverlaySplit;
 
 pub const ClearColor = teak.ClearColor;
 pub const TextureHandle = teak.TextureHandle;
@@ -147,6 +149,15 @@ pub const Gpu = struct {
     scene_vert_buf: ?zgpu.Buffer,
     scene_vert_buf_size: u32,
 
+    // Overlay layering: `setOverlayStart` records where the overlay layer
+    // begins in each input list; the upload loops translate that into
+    // staged-record indices (`*_ov`) so the main pass draws all base content
+    // before the overlay's. null = no split (draw by kind).
+    overlay_split: ?OverlaySplit,
+    text_ov: usize,
+    image_ov: usize,
+    scene_ov: usize,
+
     /// The multisampled colour target of the main pass; always the canvas's
     /// pixel size, recreated when the canvas is resized.
     const MsaaTarget = struct {
@@ -245,6 +256,10 @@ pub const Gpu = struct {
             .scene_vert_count = 0,
             .scene_vert_buf = null,
             .scene_vert_buf_size = 0,
+            .overlay_split = null,
+            .text_ov = 0,
+            .image_ov = 0,
+            .scene_ov = 0,
         };
         self.writeScreenSize();
         return self;
@@ -308,6 +323,18 @@ pub const Gpu = struct {
         zgpu.bufferWriteTyped(Vertex, buf.*.?, 0, verts);
     }
 
+    /// Where the overlay layer starts in this frame's lists (from
+    /// `render.buildFrame`). Call before `uploadVertices` / `uploadText` /
+    /// `uploadImages` / `renderScenes`; the main pass then draws all base
+    /// content (solids, images, scenes, text) before the overlay's.
+    pub fn setOverlayStart(self: *Gpu, split: OverlaySplit) void {
+        self.overlay_split = split;
+    }
+
+    fn splitOf(self: *const Gpu, comptime field: []const u8, len: usize) usize {
+        return if (self.overlay_split) |o| @as(usize, @field(o, field)) else len;
+    }
+
     pub fn uploadVertices(self: *Gpu, verts: []const Vertex) void {
         self.vert_count = @intCast(verts.len);
         writeVerts(&self.vert_buf, &self.vert_buf_size, verts);
@@ -356,32 +383,48 @@ pub const Gpu = struct {
         else
             zgpu.beginRenderPassDesc(.{ .clear = clear_color });
 
-        if (self.vert_count > 0 and self.vert_buf != null) {
-            const draw_bytes: u64 = @intCast(self.vert_count * @sizeOf(Vertex));
-            zgpu.renderPassSetPipeline(pass, self.pipeline);
-            zgpu.renderPassSetBindGroup(pass, 0, self.bind_group);
-            zgpu.renderPassSetVertexBuffer(pass, 0, self.vert_buf.?, 0, draw_bytes);
-            zgpu.renderPassDraw(pass, self.vert_count, 1, 0, 0);
+        // Base layer first, then the overlay: within a layer, solids,
+        // images, scene composites (same pipeline: a scene is an image the
+        // GPU rendered this frame), then text on top. Drawing the overlay's
+        // solids after the base's TEXT is what lets an opaque popup hide the
+        // text beneath it. Matches gpu/wgpu_core.zig's draw order.
+        const solid = overlay.Range.of(self.splitOf("verts", self.vert_count), self.vert_count);
+        const imgs = overlay.Range.of(self.image_ov, self.image_draw_count);
+        const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
+        const txts = overlay.Range.of(self.text_ov, self.text_draw_count);
+        inline for (.{ "base", "overlay" }) |layer| {
+            self.drawSolids(pass, @field(overlay.Range, layer)(solid));
+            drawQuads(pass, self.image_pipeline, self.image_vert_buf, self.image_vert_count, self.image_draws[0..self.image_draw_count], @field(overlay.Range, layer)(imgs));
+            drawQuads(pass, self.image_pipeline, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count], @field(overlay.Range, layer)(scns));
+            drawQuads(pass, self.text_pipeline, self.text_vert_buf, self.text_vert_count, self.text_draws[0..self.text_draw_count], @field(overlay.Range, layer)(txts));
         }
-
-        // Images, then scene composites (same pipeline: a scene is just an
-        // image the GPU rendered this frame), then text on top so labels
-        // read over both. Matches gpu/wgpu_core.zig's draw order.
-        drawQuads(pass, self.image_pipeline, self.image_vert_buf, self.image_vert_count, self.image_draws[0..self.image_draw_count]);
-        drawQuads(pass, self.image_pipeline, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count]);
-        drawQuads(pass, self.text_pipeline, self.text_vert_buf, self.text_vert_count, self.text_draws[0..self.text_draw_count]);
 
         zgpu.renderPassEnd(pass);
         zgpu.present();
     }
 
+    /// Solid quads `[from, to)` (vertex indices).
+    fn drawSolids(self: *Gpu, pass: zgpu.RenderPassEncoder, range: struct { usize, usize }) void {
+        const from, const to = range;
+        if (to <= from or self.vert_buf == null) return;
+        const draw_bytes: u64 = @as(u64, self.vert_count) * @sizeOf(Vertex);
+        zgpu.renderPassSetPipeline(pass, self.pipeline);
+        zgpu.renderPassSetBindGroup(pass, 0, self.bind_group);
+        zgpu.renderPassSetVertexBuffer(pass, 0, self.vert_buf.?, 0, draw_bytes);
+        zgpu.renderPassDraw(pass, @intCast(to - from), 1, @intCast(from), 0);
+    }
+
+    /// The staged textured-quad `all[from..to]`, vertices in `vert_buf`.
     fn drawQuads(
         pass: zgpu.RenderPassEncoder,
         pipeline: zgpu.RenderPipeline,
         vert_buf: ?zgpu.Buffer,
         vert_count: u32,
-        draws: []const QuadDraw,
+        all: []const QuadDraw,
+        range: struct { usize, usize },
     ) void {
+        const from, const to = range;
+        const draws = all[from..to];
         if (draws.len == 0 or vert_buf == null) return;
         const bytes: u64 = @as(u64, vert_count) * @sizeOf(Vertex);
         zgpu.renderPassSetPipeline(pass, pipeline);
@@ -458,8 +501,11 @@ pub const Gpu = struct {
         self.text_cache.tick();
         self.text_draw_count = 0;
         self.text_vert_count = 0;
+        var mark: overlay.Marker = .{ .start = self.splitOf("text", draws.len) };
+        defer self.text_ov = mark.finish(self.text_draw_count);
 
-        for (draws) |draw| {
+        for (draws, 0..) |draw, di| {
+            mark.visit(di, self.text_draw_count);
             // Snap rect + clip to integer pixel boundaries FIRST, then
             // derive visibility + UVs from the snapped coordinates (see
             // native.zig for the full rationale — edge-repeat bleed on
@@ -555,8 +601,11 @@ pub const Gpu = struct {
     pub fn uploadImages(self: *Gpu, draws: []const teak.ImageDraw) void {
         self.image_draw_count = 0;
         self.image_vert_count = 0;
+        var mark: overlay.Marker = .{ .start = self.splitOf("images", draws.len) };
+        defer self.image_ov = mark.finish(self.image_draw_count);
 
-        for (draws) |draw| {
+        for (draws, 0..) |draw, di| {
+            mark.visit(di, self.image_draw_count);
             const entry = self.images.get(draw.handle) orelse continue;
             const quad = teak.vertex.clippedTexturedQuad(
                 .{ .x = draw.rect_x, .y = draw.rect_y, .w = draw.rect_w, .h = draw.rect_h },
@@ -596,6 +645,8 @@ pub const Gpu = struct {
     pub fn renderScenes(self: *Gpu, draws: []const teak.SceneDraw) void {
         self.scene_draw_count = 0;
         self.scene_vert_count = 0;
+        var mark: overlay.Marker = .{ .start = self.splitOf("scenes", draws.len) };
+        defer self.scene_ov = mark.finish(self.scene_draw_count);
         if (draws.len == 0) return;
 
         // Logical (CSS) pixels -> device pixels of the canvas.
@@ -607,6 +658,7 @@ pub const Gpu = struct {
         const scale = self.scene_scale;
 
         for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
+            mark.visit(i, self.scene_draw_count);
             const size = self.scene.renderInto(i, draw, scale) orelse continue;
             const quad = scene_common.compositeQuad(draw, size, scale) orelse continue;
             const bind_group = self.sceneBindGroup(i) orelse continue;

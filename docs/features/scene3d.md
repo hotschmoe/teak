@@ -82,7 +82,7 @@ The loop uploads on a new `key`, re-uploads when `rev` changes, releases vanishe
 
 ## Non-goals / known limits
 
-- Composites draw with the images: above solid quads (including overlay backdrops), below text.
+- Composites draw with the images: within a layer above the solid quads and below the text; an opaque overlay hides base-layer scenes (overlay layering, see [gpu.md](gpu.md)).
 - No transparency, no textures, no PBR, no picking against geometry (pick in app code from the camera + your own data), no per-object transforms, no shadows, no stencil.
 - Release meshes between frames on web (a mesh destroyed while an unpresented recorded frame uses it invalidates the submit); `teak.run` releases during resource sync, before the frame is recorded.
 - wgpu-native cannot open Chromium's SwiftShader ICD; `zig build test-gpu` needs a real Vulkan driver (it skips otherwise).

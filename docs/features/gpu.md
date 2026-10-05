@@ -53,6 +53,8 @@ face (DejaVuSansMono by default; override with `TEAK_FONT`) and ignores
 2. `renderScenes` (optional extension) renders each 3D scene into an offscreen colour + depth (+4x MSAA) target of the scene's pixel size and stages one composite quad per scene. Native submits its own command buffer; web records into zunk's frame encoder, so the scene is complete before the main pass samples it.
 3. `renderFrame` / `renderToWindow`: the main pass draws, in this order, solid quads, images, scene composites, text. Scene composites reuse the image pipeline and the image clip rules (`render/vertex.zig: clippedTexturedQuad`), and are snapped to the device pixel grid so the target maps 1:1 onto screen pixels.
 
+**Overlay layering.** The render pass builds two layers (base z=0, overlay z=1; HARDLINE §2 hatch 5) into the same lists and `buildFrame` returns an `OverlaySplit` (how many vertices / text / image / scene draws the base layer produced). A Gpu with the optional `setOverlayStart(*Gpu, OverlaySplit)` extension (both backends; `teak.run` calls it before each frame's uploads) draws in this order: base solids, base images, base scene composites, base text, THEN overlay solids, images, composites, text. That is what lets an opaque popup (an overlay with an opaque backdrop) hide the base layer's text, images and scenes beneath it; drawing all text last would show base text through the panel. The staging loops translate the split from input-draw indices to staged-record indices (`gpu/overlay.zig`, `Marker`) because skipped draws shift them. Backends or loops without it draw by kind, as before. Tested natively by `zig build test-gpu` (opaque overlay vs base text and image, overlay text stays on top) and on web by the chrome example.
+
 A scene slot is only re-rendered when its `scene_common.signature` (camera, clear colour, edge style, mesh version, target size) changes; a scene next to an animating widget costs nothing per frame.
 
 ## Init options (MSAA)
@@ -81,6 +83,7 @@ A Gpu type must expose these declarations:
 | `uploadText` | `fn(*Gpu, []const TextDraw) void` | Per-frame: ingest the renderer's `TextDraw` list and build the textured-quad buffer that `renderFrame` will draw. |
 | `uploadImage` | `fn(*Gpu, []const u8, u32, u32) TextureHandle` | Upload an RGBA8 image (`width * height * 4` bytes) and return an opaque handle the app stashes in `ImageCmd.handle`. App-driven cache; cached for the lifetime of the Gpu. Implemented on both native and web (web wires zunk v0.6.0+ texture upload). |
 | `uploadImages` | `fn(*Gpu, []const ImageDraw) void` | Per-frame counterpart to `uploadText` for images. Walks `ImageDraw`s and records a draw entry per visible image. |
+| `setOverlayStart` | `fn(*Gpu, OverlaySplit) void` | *Optional.* Where the overlay layer starts in each staged list; call before `uploadVertices` / `uploadText` / `uploadImages` / `renderScenes` each frame (see "Overlay layering"). |
 | `releaseImage` | `fn(*Gpu, TextureHandle) void` | *Optional.* Free an `uploadImage` texture; the slot is reused by the next upload. The handle is dead afterwards (no generation counter). |
 | `uploadMesh` | `fn(*Gpu, MeshData) MeshHandle` | *Optional scene block.* Copy mesh geometry to GPU buffers (128-slot table). `MESH_HANDLE_NONE` on invalid data (`MeshData.validate`) or a full table. |
 | `releaseMesh` | `fn(*Gpu, MeshHandle) void` | *Optional scene block.* Free a mesh. On web, call between frames (a mesh destroyed while a recorded-but-unpresented frame still uses it invalidates the submit). |
@@ -108,7 +111,7 @@ Gpu 'MyGpu' is missing declaration 'uploadVertices'
 ## Non-goals / known limits
 
 - **No depth in the main pass.** The UI is 2D; painter's order gives z-ordering. Depth exists only inside scene targets (32-bit float, `less`).
-- **Scenes composite with the images**, i.e. above solid quads (including overlay backdrops) and below text. Same limitation as images.
+- **Scenes composite with the images**: within a layer (base or overlay) above the solid quads and below the text. An overlay with an opaque backdrop hides base-layer scenes, images and text.
 - **At most 16 scenes per frame**, 128 meshes, 64 images; extras are dropped / refused.
 - **No post-process passes.** Adding one would expand the contract to a `beginFrame` / `endFrame` pair — not planned.
 - **No query objects / timestamps.** Profiling happens externally.
