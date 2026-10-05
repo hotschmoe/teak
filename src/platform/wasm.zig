@@ -821,7 +821,6 @@ test "serializeA11yTree: oversized label is skipped, record still emitted" {
     try testing.expectEqual(@as(u32, 0), records[0].label_len);
 }
 
-
 test "wasm key table reaches every SpecialKey through the shared policy" {
     var seen = std.EnumSet(SpecialKey).initEmpty();
     const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true } };
@@ -832,7 +831,6 @@ test "wasm key table reaches every SpecialKey through the shared policy" {
     }
     for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
 }
-
 
 test "effectResult maps every completion kind to the contract type" {
     const blobs: [4][]const u8 = .{ "b0", "b1", "b2", "" };

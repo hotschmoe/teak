@@ -412,7 +412,7 @@ fn describeError(e: anyerror) []const u8 {
 /// Null for an empty key or when no config dir can be found.
 fn storagePath(buf: []u8, app_name: []const u8, key: []const u8) ?[]const u8 {
     if (key.len == 0) return null;
-    const base = configDir(buf[0..std.fs.max_path_bytes / 2]) orelse return null;
+    const base = configDir(buf[0 .. std.fs.max_path_bytes / 2]) orelse return null;
     var w: Io.Writer = .fixed(buf[base.len..]);
     w.print("/teak/{f}/{f}", .{ EscapedName{ .name = app_name }, EscapedName{ .name = key } }) catch return null;
     return buf[0 .. base.len + w.buffered().len];

@@ -243,9 +243,9 @@ pub fn update(m: *Model, msg: Msg) void {
             const md = ymd.calculateMonthDay();
             const ds = day.getDaySeconds();
             m.clock.set("{d}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC, offset {d} min (unix ms {d})", .{
-                ymd.year,                       @intFromEnum(md.month),         md.day_index + 1,
-                ds.getHoursIntoDay(),           ds.getMinutesIntoHour(),        ds.getSecondsIntoMinute(),
-                c.utc_offset_min,               c.unix_ms,
+                ymd.year,             @intFromEnum(md.month),  md.day_index + 1,
+                ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
+                c.utc_offset_min,     c.unix_ms,
             });
         },
         .dropped => |d| {
