@@ -117,7 +117,6 @@ pub const Theme = struct {
                 .hover_bg = p.bg_hover,
                 .press_bg = p.bg_press,
                 .fg = p.fg,
-                .corner_radius = 4,
             },
             .text_input = .{
                 .bg = p.bg_sunken,
@@ -125,7 +124,6 @@ pub const Theme = struct {
                 .border = p.border,
                 .focus_border = p.accent,
                 .cursor = p.fg,
-                .corner_radius = 4,
                 .flex = 1,
                 .min_width = 120,
             },

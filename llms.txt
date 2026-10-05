@@ -148,6 +148,8 @@ Cmd(comptime Msg: type) type          // tagged union: push_group/pop_group, pus
                                        //   radio, slider, divider, canvas. Exposes .MsgT.
 CmdBuffer(comptime Msg: type) type     // arena-backed cmd list + emitter methods + .theme field.
 Direction = enum { vertical, horizontal }
+Align = enum { start, center, end, stretch }      // cross-axis placement of a container's children
+Justify = enum { start, center, end, space_between }   // main-axis leftover (no flex children)
 ```
 Any slice stored on a Cmd (a text label, an option list, chart primitives)
 must borrow from `Model` or from `cb.arena.allocator()` — NEVER a stack
@@ -165,6 +167,7 @@ Emitters (all `catch unreachable` on arena OOM):
 - `textInput(focus_msg, content, cursor)`, `textInputStyled(...)`, `textInputDisabled(...)`,
   `textInputSelected(focus_msg, content, cursor, ?selection_anchor, TextInputStyle)`
 - `checkbox(msg, checked, label)`, `radio(msg, selected, label)`, `slider(grab_msg, value)`
+- `spacer(flex)` — invisible flex filler (empty zero-padding group)
 - containers: `pushGroup(GroupStyle)`/`popGroup()`, `pushScroll(ScrollStyle)`/`popScroll()`,
   `pushOverlay(OverlayStyle(Msg))`/`popOverlay()`, `pushVirtualList(VirtualListStyle)`/`popVirtualList()`,
   `pushFormRow(FormRowOpts)`/`popFormRow()`
@@ -173,12 +176,19 @@ Emitters (all `catch unreachable` on arena OOM):
 
 Style / option structs an app constructs:
 ```zig
-GroupStyle = struct { direction: Direction = .vertical, padding: f32 = 8, gap: f32 = 8,
-                      flex: f32 = 0, bg: ?[4]f32 = null }   // flex 0 = intrinsic, >0 = weight
+GroupStyle = struct { direction: Direction = .vertical, padding: f32 = 8,
+                      pad_x, pad_y: ?f32 = null,           // per-axis override of padding
+                      gap: f32 = 8, flex: f32 = 0,         // flex 0 = no growth, >0 = weight (on top of own size)
+                      width, height: f32 = 0,              // fixed OUTER size on that axis; 0 = measured
+                      min_width, min_height: f32 = 0,      // floor (beats fixed + stretch)
+                      align_cross: Align = .start,         // .stretch: every child fills the inner cross extent
+                      justify: Justify = .start,           // leftover main-axis space when no child has flex
+                      bg: ?[4]f32 = null }
 ScrollStyle = struct { direction = .vertical, padding, gap, flex, width, height,
-                       scroll_x, scroll_y: f32 = 0 }        // width/height 0 = measured
+                       align_cross: Align = .start,
+                       scroll_x, scroll_y: f32 = 0 }        // width/height 0 = measured; flex scroll has zero basis
 OverlayStyle(Msg) = struct { x, y, width, height, padding = 8, gap = 4,
-                       direction = .vertical, backdrop: [4]f32 = {0,0,0,0},
+                       direction = .vertical, align_cross: Align = .start, backdrop: [4]f32 = {0,0,0,0},
                        anchor_x_frac, anchor_y_frac: f32 = 0, modal: bool = false,
                        backdrop_msg: ?Msg = null }          // modal swallows click-through;
                                                             //   backdrop_msg = click-outside-to-close
@@ -187,12 +197,13 @@ VirtualListStyle = struct { direction, total_count: u32, item_extent: f32,
 ImageStyle = struct { width = 64, height = 64, flex: f32 = 0, tint: [4]f32 = {1,1,1,1} }
 ImageCmd = struct { handle: TextureHandle, style: ImageStyle }
 ButtonStyle = struct { bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg: [4]f32,
-                       corner_radius: f32 = 4, min_width: f32 = 0 }
+                       h_padding: f32 = 8, min_width: f32 = 60, height: f32 = 36, flex: f32 = 0 }
+                       // corners are square (no corner_radius: the quad renderer has no rounding)
 ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false }
 TextCmd = struct { content: []const u8, font: FontSpec, color: [4]f32 }
 TextInputStyle = struct { bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg,
-                       disabled_border: [4]f32, corner_radius: f32 = 4, flex: f32 = 1,
-                       min_width: f32 = 120 }
+                       disabled_border: [4]f32, flex: f32 = 1,
+                       min_width: f32 = 120, height: f32 = 28 }  
 TextInputCmd(Msg) = struct { focus_msg, content, cursor, selection_anchor: ?usize,
                        style, font, disabled: bool }
 CheckboxStyle = struct { box_bg, box_border, check, fg: [4]f32, size = 18, label_gap = 8 }

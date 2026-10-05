@@ -388,8 +388,8 @@ test "snapshot: text_input with cursor, selection, disabled, focus marker" {
 
     try expectSnapshot(cb.cmds.items, rs, .{ .transient = &ts },
         \\group (0,0,400,300) vertical
-        \\  text_input (0,0,400,150) "hello" cursor=5 sel=[1,5) [focus]
-        \\  text_input (0,150,400,150) "off" cursor=0 [disabled]
+        \\  text_input (0,0,400,28) "hello" cursor=5 sel=[1,5) [focus]
+        \\  text_input (0,28,400,28) "off" cursor=0 [disabled]
         \\
     );
 }
@@ -708,7 +708,7 @@ test "snapshot: realistic composed view golden" {
         \\    button (76,8,60,36) "+"
         \\    button (144,8,60,36) "-"
         \\  text (8,52,80,20) "Count: 0"
-        \\  text_input (8,80,784,512) "name" cursor=4
+        \\  text_input (8,80,784,28) "name" cursor=4
         \\
     );
 }
