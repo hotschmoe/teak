@@ -439,6 +439,12 @@ validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uplo
 ### Application loop (`teak.run` / `teak.runtime` → run.zig)
 ```zig
 run(comptime App: type, gpa, host: anytype, gpu: anytype, opts: RunOptions) !void
+Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
+    // the loop body `run` is built on, for hosts that own the loop (web rAF):
+    //   Runtime.init(gpa, *Host, *Gpu, RunOptions) !Runtime   (keep it in one place; don't move it)
+    //   rt.frame() !void   // ONE iteration: poll, route, subs, view, layout, render
+    //   rt.deinit()
+    // run == init + `while (!host.shouldClose()) try rt.frame()` + deinit.
 RunOptions          // see "The App contract" above
 SecondaryWindowSpec // see above
 ```

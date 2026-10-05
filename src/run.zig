@@ -5,7 +5,8 @@
 //! mousedown/up dance, keyboard + wheel routing, clipboard glue, the
 //! frame-diff vertex-rebuild skip, layout, transient-state update,
 //! `buildVertices` + upload, and `renderFrame`. ~80% of that is
-//! identical across apps. `run` ships it once.
+//! identical across apps. `Runtime` ships it once (one `frame` per loop
+//! iteration) and `run` is the native `while (!shouldClose())` wrapper.
 //!
 //! ## Where this sits (HARDLINE)
 //!
@@ -282,8 +283,12 @@ fn secondarySpecEql(a: SecondaryWindowSpec, b: SecondaryWindowSpec) bool {
 /// close. `gpa` backs the per-frame command buffers, the rect store,
 /// and the vertex/text/image upload lists (all bulk-managed, never
 /// per-widget). `host` must satisfy `validateHost`, `gpu`
-/// `validateGpu`; both are taken as `anytype` so `run` never imports a
-/// backend.
+/// `validateGpu`; both are taken as `anytype` pointers so `run` never
+/// imports a backend.
+///
+/// This is `Runtime` driven in a `while (!host.shouldClose())` loop. Hosts
+/// that own the loop themselves (the web: the browser calls an exported
+/// `frame` once per rAF tick) build a `Runtime` and call `frame` directly.
 pub fn run(
     comptime App: type,
     gpa: std.mem.Allocator,
@@ -291,436 +296,483 @@ pub fn run(
     gpu: anytype,
     opts: RunOptions,
 ) !void {
-    const Msg = App.Msg;
-    const CmdBufT = cmd.CmdBuffer(Msg);
+    var rt = try Runtime(App, @TypeOf(host.*), @TypeOf(gpu.*)).init(gpa, host, gpu, opts);
+    defer rt.deinit();
+    while (!host.shouldClose()) try rt.frame();
+}
 
-    var model: App.Model = if (@hasDecl(App.Model, "init")) App.Model.init() else .{};
+/// The canonical loop body, one `frame` call per iteration, parameterized on
+/// the App and the concrete Host/Gpu types (duck-typed against
+/// `validateHost` / `validateGpu`; this file imports neither backend).
+///
+/// `init` builds the retained loop-orchestration state — double-buffered
+/// cmd + rect storage, the Model, the press target, the snapshot sink — and
+/// `frame` runs exactly one iteration: poll input, route it against the
+/// PREVIOUS frame's layout, service subscriptions, build + lay out the
+/// view, fold transient state, rebuild/upload vertices when something
+/// changed, present, then the secondary window and the snapshot mirror.
+///
+/// The value must not move after `init` returns anything that points into
+/// it; none does today, but keep it in one place (a local or a module-level
+/// `var`, as the web entry does).
+pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type {
+    return struct {
+        const Self = @This();
+        const Msg = App.Msg;
+        const CmdBufT = cmd.CmdBuffer(Msg);
+        /// The Host's per-frame input snapshot type (`platform/host.zig`'s
+        /// `InputState`), recovered from `pollInputs` so this file imports no
+        /// platform module.
+        const Input = @typeInfo(@TypeOf(Host.pollInputs)).@"fn".return_type.?;
+        /// Optional secondary window. Comptime, so the machinery (including
+        /// the Gpu surface extensions outside `validateGpu`) is only analyzed
+        /// for apps that opt in AND a Gpu that supports secondary surfaces —
+        /// the web Gpu has none (and its Host never opens a second window),
+        /// so the hooks compile away there.
+        const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView") and
+            @hasDecl(Gpu, "openSecondarySurface");
 
-    // Every Msg is routed through `dispatch` so the live snapshot's header
-    // can name the last transition (`@tagName`). `dispatch` adds nothing to
-    // the TEA loop — it is `App.update` plus one string assignment.
-    var last_msg: []const u8 = "";
-    const Router = struct {
-        fn dispatch(m: *App.Model, msg: Msg, last: *[]const u8) void {
-            last.* = @tagName(std.meta.activeTag(msg));
-            App.update(m, msg);
+        gpa: std.mem.Allocator,
+        host: *Host,
+        gpu: *Gpu,
+        opts: RunOptions,
+        measurer: text.TextMeasurer,
+
+        model: App.Model,
+        /// `@tagName` of the last dispatched Msg, for the live snapshot header.
+        last_msg: []const u8 = "",
+
+        /// Double-buffered command buffers + parallel rect store: build into
+        /// one while input is routed against the other (one-frame input
+        /// latency, imperceptible). `current` indexes the newest frame.
+        /// Rects grow to fit the frame — there is no fixed cap.
+        bufs: [2]CmdBufT,
+        rects: [2]std.ArrayList(Rect) = .{ .empty, .empty },
+        current: u1 = 0,
+
+        verts: std.ArrayList(vertex.Vertex) = .empty,
+        text_draws: std.ArrayList(text.TextDraw) = .empty,
+        image_draws: std.ArrayList(render.ImageDraw) = .empty,
+
+        ts: TransientState = .{},
+        prev_ts: TransientState = .{},
+
+        /// Press model: arm on mousedown over a widget, fire the click only
+        /// if mouseup lands on the same widget; drag-off cancels.
+        press_target: ?usize = null,
+
+        /// The previous frame's `nowMs`. `runSubs` is stateless — it decides
+        /// fire/skip from (last_sub_ms, now_ms, sub data) — so this single
+        /// timestamp is all the bookkeeping the loop holds. `null` until the
+        /// first frame binds it: no sub fires on the opening tick.
+        last_sub_ms: ?u64 = null,
+
+        secondary: SecondaryDriver(CmdBufT),
+        /// After the user closes the OS window, the spec that was open, so
+        /// we don't immediately reopen it while the app still reports the
+        /// same spec (it omits `secondaryClosedMsg`). Cleared once the spec
+        /// changes (or goes null).
+        suppressed_spec: ?SecondaryWindowSpec = null,
+
+        snap: SnapshotSink,
+        /// Force a first snapshot write even if the opening frame happens to
+        /// match the empty previous buffer.
+        snap_first: bool = true,
+        prev_secondary_open: bool = false,
+
+        /// Last title pushed to the host, so `setTitle` fires only on change.
+        title_buf: [256]u8 = undefined,
+        title_len: usize = 0,
+
+        /// Loop-owned IME composition buffers. `Host.imeState().text`
+        /// aliases the Host's single mutable global, so `ts.ime_text` and
+        /// `prev_ts.ime_text` would point at the SAME memory — a same-length
+        /// composition edit would compare equal and render stale. Each
+        /// frame's composition is copied into the buffer keyed by `current`
+        /// so the two reference distinct storage.
+        ime_bufs: [2][128]u8 = undefined,
+
+        pub fn init(gpa: std.mem.Allocator, host: *Host, gpu: *Gpu, opts: RunOptions) !Self {
+            return .{
+                .gpa = gpa,
+                .host = host,
+                .gpu = gpu,
+                .opts = opts,
+                .measurer = host.textMeasurer(),
+                .model = if (@hasDecl(App.Model, "init")) App.Model.init() else .{},
+                .bufs = .{ CmdBufT.init(gpa), CmdBufT.init(gpa) },
+                .secondary = SecondaryDriver(CmdBufT).init(gpa),
+                .snap = SnapshotSink.init(gpa, opts.snapshot_path),
+            };
         }
-    };
 
-    // Subscriptions (HARDLINE §2 hatch 6). If the app declares `subscribe`,
-    // `run` services its declared subs once per frame: it calls the pure
-    // `subscribe(model)` (the app only *declares* what to watch), then feeds
-    // the returned slice through `runSubs` on the host's monotonic clock. A
-    // fired sub is routed through `Router.dispatch` exactly like an input Msg
-    // — it mutates `Model` through `update` (no second mutation path) and
-    // updates `last_msg` for the snapshot sink. `runSubs` invokes
-    // `dispatch.call(msg)`, so the model + last_msg pointers the router needs
-    // ride *inside* a per-frame dispatcher VALUE (built at the call site
-    // below), not on module-level statics — HARDLINE hatch 4 says `run` adds
-    // no retained mutable state, and statics would also cross-wire two
-    // concurrent `run` calls sharing the same (App, Host, Gpu). Time itself
-    // lives on the Host (`nowMs`), never core.
-    const has_subscribe = @hasDecl(App, "subscribe");
-    const SubDispatch = struct {
-        model: *App.Model,
-        last: *[]const u8,
-        // `pub` so `sub_mod.runSubs` (a different module) can invoke it.
-        pub fn call(self: @This(), msg: Msg) void {
-            Router.dispatch(self.model, msg, self.last);
-        }
-    };
-
-    // Live-snapshot sink (opt-in via RunOptions.snapshot_path / TEAK_SNAPSHOT).
-    var snap = SnapshotSink.init(gpa, opts.snapshot_path);
-    defer snap.deinit();
-    // Force a first write even if the opening frame happens to match the empty
-    // previous buffer, and detect secondary open/close transitions.
-    var snap_first = true;
-    var prev_secondary_open = false;
-
-    // Double-buffered command buffers: build into one while hit-testing
-    // against the other (one-frame input latency, imperceptible).
-    var bufs = [2]CmdBufT{ CmdBufT.init(gpa), CmdBufT.init(gpa) };
-    defer for (&bufs) |*b| b.deinit();
-
-    // Parallel rect store, one slice per buffer, grown to fit the frame
-    // (no fixed MAX_RECTS cap — the examples panicked past theirs).
-    var rects = [2]std.ArrayList(Rect){ .empty, .empty };
-    defer for (&rects) |*r| r.deinit(gpa);
-
-    var verts: std.ArrayList(vertex.Vertex) = .empty;
-    defer verts.deinit(gpa);
-    var text_draws: std.ArrayList(text.TextDraw) = .empty;
-    defer text_draws.deinit(gpa);
-    var image_draws: std.ArrayList(render.ImageDraw) = .empty;
-    defer image_draws.deinit(gpa);
-
-    var ts: TransientState = .{};
-    var prev_ts: TransientState = .{};
-
-    // Press model: arm `press_target` on mousedown over a widget; fire
-    // the click only if mouseup lands on the same widget; drag-off
-    // cancels without firing.
-    var press_target: ?usize = null;
-
-    // Subscription timer state: the previous frame's `nowMs`. `runSubs` is
-    // stateless — it decides fire/skip purely from (last_sub_ms, now_ms, sub
-    // data) — so this single timestamp is all the bookkeeping `run` holds.
-    // `null` until the first frame binds it, so no sub fires on the opening
-    // tick (it has no window to compare against).
-    var last_sub_ms: ?u64 = null;
-
-    // Optional secondary window. `has_secondary` is comptime, so the whole
-    // machinery (including the Gpu methods outside `validateGpu`) is only
-    // analyzed for apps that opt in.
-    const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView");
-    var secondary = SecondaryDriver(CmdBufT).init(gpa);
-    defer secondary.deinit(gpa);
-    // After the user closes the OS window, remember the spec that was open so
-    // we DON'T immediately reopen it while the app still reports the same
-    // spec (which it will if it omits `secondaryClosedMsg`). Cleared once the
-    // spec changes (or goes null), so a later reopen with a different spec —
-    // or the same one after an explicit close — works.
-    var suppressed_spec: ?SecondaryWindowSpec = null;
-
-    const measurer = host.textMeasurer();
-
-    // Last title pushed to the host, so we only call setTitle on change.
-    var title_buf: [256]u8 = undefined;
-    var title_len: usize = 0;
-
-    // Run-owned IME composition buffers. `Host.imeState().text` aliases the
-    // Host's single mutable global, so both `ts.ime_text` and (after the copy
-    // at end of frame) `prev_ts.ime_text` would point at the SAME memory —
-    // making a same-length composition edit compare equal and render stale.
-    // Copy each frame's composition into the buffer keyed by `current` (the
-    // frame parity) so `ts` and `prev_ts` reference distinct storage.
-    var ime_bufs: [2][128]u8 = undefined;
-
-    var current: u1 = 0;
-
-    while (!host.shouldClose()) {
-        // 1. Drain input.
-        const input = host.pollInputs();
-        if (host.shouldClose()) break;
-
-        // 2. Resize.
-        if (input.resized) gpu.resize(input.width, input.height);
-
-        // 3. Input against the PREVIOUS frame's layout (`prev` captured
-        //    before the swap below).
-        const prev = current;
-        const prev_cmds = bufs[prev].cmds.items;
-        const prev_rects = rects[prev].items;
-        const hover: ?usize = if (prev_cmds.len > 0)
-            hit_test.hoverTest(prev_cmds, prev_rects, input.mouse_x, input.mouse_y)
-        else
-            null;
-
-        if (input.mouse_down) press_target = hover;
-        if (input.mouse_up) {
-            if (press_target != null and hover == press_target) {
-                if (hit_test.hitTest(prev_cmds, prev_rects, input.mouse_x, input.mouse_y)) |hit| {
-                    // `hit.msg` is null when a modal overlay consumed the
-                    // click but asked for no Msg (HARDLINE §2 hatch 5) —
-                    // swallow it, don't fall through.
-                    if (hit.msg) |m| Router.dispatch(&model, m, &last_msg);
+        pub fn deinit(self: *Self) void {
+            if (has_secondary) {
+                if (self.secondary.window_id) |wid| {
+                    self.gpu.closeSecondarySurface(wid);
+                    self.host.closeSecondaryWindow(wid);
                 }
             }
-            press_target = null;
+            self.snap.deinit();
+            self.secondary.deinit(self.gpa);
+            self.image_draws.deinit(self.gpa);
+            self.text_draws.deinit(self.gpa);
+            self.verts.deinit(self.gpa);
+            for (&self.rects) |*r| r.deinit(self.gpa);
+            for (&self.bufs) |*b| b.deinit();
         }
-        if (press_target != null and hover != press_target) press_target = null;
 
-        // 4. Keyboard. Characters first, then special keys; clipboard
-        //    chords route to the app's own handler with the Host
-        //    clipboard vtable (the app owns cut/copy/paste policy).
-        if (@hasDecl(App, "keyCharMsg")) {
-            for (input.chars) |ch| {
-                if (App.keyCharMsg(&model, ch)) |m| Router.dispatch(&model, m, &last_msg);
+        /// One loop iteration. Returns early, before presenting, when the
+        /// host reports close during the input poll.
+        pub fn frame(self: *Self) !void {
+            const input = self.host.pollInputs();
+            if (self.host.shouldClose()) return;
+            if (input.resized) self.gpu.resize(input.width, input.height);
+
+            // Input is routed against the PREVIOUS frame's layout — the one
+            // the user is looking at — so `prev` is captured before the swap.
+            const prev = self.current;
+            self.routeMouse(input, prev);
+            self.routeKeys(input, prev);
+            self.routeWheel(input);
+            self.fireSubs();
+
+            const cur = try self.buildView(input);
+            const cur_cmds = self.bufs[cur].cmds.items;
+            const cur_rects = self.rects[cur].items;
+            self.updateTransient(input, cur);
+            self.pushTitle();
+
+            // Frame diff: skip the vertex rebuild + upload when nothing
+            // observable changed. The blink tick forces a rebuild on a phase
+            // boundary so a focused cursor animates.
+            const diff = FrameDiff{
+                .cmds_same = cmdsEqual(Msg, cur_cmds, self.bufs[prev].cmds.items),
+                .rects_same = rectsEqual(cur_rects, self.rects[prev].items),
+                .ts_same = transientSame(self.ts, self.prev_ts),
+            };
+            const blink_tick = self.opts.blink_period > 0 and self.ts.focus_index != null and
+                (self.ts.frame_counter % self.opts.blink_period == 0);
+            // A live secondary window re-uploads into the shared Gpu scratch
+            // buffers after the primary present, so the primary must rebuild
+            // its own vertices every frame while it's open.
+            const secondary_open = has_secondary and App.secondaryWindow(&self.model) != null;
+            if (diff.changed() or blink_tick or secondary_open) {
+                self.uploadFrame(cur_cmds, cur_rects, self.ts);
+            }
+            self.prev_ts = self.ts;
+
+            self.gpu.renderFrame(self.opts.clear_color);
+
+            const sec = if (has_secondary) try self.driveSecondary() else SecondaryFrame{};
+
+            // Live snapshot: mirror only when the content changed (the same
+            // signal that gates the vertex rebuild, minus the cosmetic blink
+            // tick) so idle frames never touch disk. A secondary open/close
+            // transition also counts, and the very first frame always writes.
+            if (self.snap.enabled) {
+                const sec_open_now = sec.title != null;
+                if (self.snap_first or diff.changed() or sec_open_now != self.prev_secondary_open or sec.content_changed) {
+                    self.snap.writeFrame(.{
+                        .window_w = @floatFromInt(input.width),
+                        .window_h = @floatFromInt(input.height),
+                        .frame = self.ts.frame_counter,
+                        .last_msg = self.last_msg,
+                    }, cur_cmds, cur_rects, &self.ts, sec.title, self.secondary.bufs[self.secondary.cur].cmds.items, self.secondary.rects[self.secondary.cur].items);
+                }
+                self.snap_first = false;
+                self.prev_secondary_open = sec_open_now;
             }
         }
-        for (input.keys) |k| {
-            // Built-in Tab / Shift+Tab focus traversal — only for apps
-            // that expose `focusedMsg` (so `run` knows the current focus
-            // and how to move it). Walk the PREVIOUS frame's focusables
-            // (the layout the user sees), then dispatch the landing
-            // widget's focus Msg so the app advances its focus field.
-            if (@hasDecl(App, "focusedMsg")) {
-                if (k == .tab or k == .shift_tab) {
-                    const cur_idx = if (App.focusedMsg(&model)) |fm|
-                        focus.indexOfFocusMsg(prev_cmds, fm)
-                    else
-                        null;
-                    const target = if (k == .tab)
-                        focus.nextFocusable(prev_cmds, cur_idx)
-                    else
-                        focus.prevFocusable(prev_cmds, cur_idx);
-                    if (target) |ti| {
-                        if (focus.focusMsgAt(prev_cmds, ti)) |fm| Router.dispatch(&model, fm, &last_msg);
+
+        /// Every Msg is routed through here so the live snapshot's header can
+        /// name the last transition. Adds nothing to the TEA loop — it is
+        /// `App.update` plus one string assignment.
+        fn dispatch(self: *Self, msg: Msg) void {
+            self.last_msg = @tagName(std.meta.activeTag(msg));
+            App.update(&self.model, msg);
+        }
+
+        /// Press target + click dispatch against the previous frame.
+        fn routeMouse(self: *Self, input: Input, prev: u1) void {
+            const prev_cmds = self.bufs[prev].cmds.items;
+            const prev_rects = self.rects[prev].items;
+            const hover: ?usize = if (prev_cmds.len > 0)
+                hit_test.hoverTest(prev_cmds, prev_rects, input.mouse_x, input.mouse_y)
+            else
+                null;
+
+            if (input.mouse_down) self.press_target = hover;
+            if (input.mouse_up) {
+                if (self.press_target != null and hover == self.press_target) {
+                    if (hit_test.hitTest(prev_cmds, prev_rects, input.mouse_x, input.mouse_y)) |hit| {
+                        // `hit.msg` is null when a modal overlay consumed the
+                        // click but asked for no Msg (HARDLINE §2 hatch 5) —
+                        // swallow it, don't fall through.
+                        if (hit.msg) |m| self.dispatch(m);
                     }
-                    continue;
+                }
+                self.press_target = null;
+            }
+            if (self.press_target != null and hover != self.press_target) self.press_target = null;
+        }
+
+        /// Characters first, then special keys; clipboard chords route to the
+        /// app's own handler with the Host clipboard vtable (the app owns
+        /// cut/copy/paste policy).
+        fn routeKeys(self: *Self, input: Input, prev: u1) void {
+            const prev_cmds = self.bufs[prev].cmds.items;
+            if (@hasDecl(App, "keyCharMsg")) {
+                for (input.chars) |ch| {
+                    if (App.keyCharMsg(&self.model, ch)) |m| self.dispatch(m);
                 }
             }
-            // Enter-to-submit — apps opt in with `submitMsg`. Takes
-            // precedence over `keySpecialMsg` for the Enter key only.
-            if (@hasDecl(App, "submitMsg")) {
-                if (k == .enter) {
-                    if (App.submitMsg(&model)) |m| Router.dispatch(&model, m, &last_msg);
-                    continue;
+            for (input.keys) |k| {
+                // Built-in Tab / Shift+Tab focus traversal — only for apps
+                // that expose `focusedMsg` (so the loop knows the current
+                // focus and how to move it). Walk the PREVIOUS frame's
+                // focusables, then dispatch the landing widget's focus Msg
+                // so the app advances its focus field.
+                if (@hasDecl(App, "focusedMsg")) {
+                    if (k == .tab or k == .shift_tab) {
+                        const cur_idx = if (App.focusedMsg(&self.model)) |fm|
+                            focus.indexOfFocusMsg(prev_cmds, fm)
+                        else
+                            null;
+                        const target = if (k == .tab)
+                            focus.nextFocusable(prev_cmds, cur_idx)
+                        else
+                            focus.prevFocusable(prev_cmds, cur_idx);
+                        if (target) |ti| {
+                            if (focus.focusMsgAt(prev_cmds, ti)) |fm| self.dispatch(fm);
+                        }
+                        continue;
+                    }
                 }
-            }
-            const handled_by_clipboard = comptime (@hasDecl(App, "keyNeedsClipboard") and @hasDecl(App, "handleClipboard"));
-            if (handled_by_clipboard and App.keyNeedsClipboard(k)) {
-                App.handleClipboard(&model, k, host.clipboard());
-            } else if (@hasDecl(App, "keySpecialMsg")) {
-                if (App.keySpecialMsg(&model, k)) |m| Router.dispatch(&model, m, &last_msg);
-            }
-        }
-
-        // 5. Wheel.
-        if (@hasDecl(App, "wheelMsg")) {
-            if (input.wheel_dy != 0 or input.wheel_dx != 0) {
-                if (App.wheelMsg(&model, input.wheel_dy)) |m| Router.dispatch(&model, m, &last_msg);
-            }
-        }
-
-        // 5.5. Subscriptions: fire the app's declared timers before building
-        //      this frame's view, so a sub-driven Model change is reflected
-        //      in the frame we're about to emit (and mirrored to the snapshot
-        //      sink through the normal frame-diff). Pure `subscribe` declares;
-        //      `runSubs` watches on the host clock; fired subs dispatch as
-        //      ordinary Msgs through `update`.
-        if (has_subscribe) {
-            const now_ms = host.nowMs();
-            const since = last_sub_ms orelse now_ms; // first frame: no window, no fire
-            sub_mod.runSubs(Msg, App.subscribe(&model), since, now_ms, SubDispatch{ .model = &model, .last = &last_msg });
-            last_sub_ms = now_ms;
-        }
-
-        // 6. Build this frame into the other buffer.
-        current ^= 1;
-        const cur = current;
-        bufs[cur].reset();
-        if (@hasDecl(App, "themeFor")) bufs[cur].theme = App.themeFor(&model);
-        App.view(&model, &bufs[cur]);
-        const cur_cmds = bufs[cur].cmds.items;
-        debugCheckBalance(cur_cmds, "view");
-
-        // 7. Layout into the matching rect slice (grown to fit).
-        try rects[cur].resize(gpa, cur_cmds.len);
-        layout.LayoutEngine.doLayout(
-            rects[cur].items,
-            cur_cmds,
-            @floatFromInt(input.width),
-            @floatFromInt(input.height),
-            measurer,
-        );
-
-        // 8. Transient state against THIS frame's layout.
-        ts.hover_index = hit_test.hoverTest(cur_cmds, rects[cur].items, input.mouse_x, input.mouse_y);
-        ts.press_index = press_target;
-        ts.focus_index = focusIndex(App, &model, cur_cmds);
-        ts.mouse_x = input.mouse_x;
-        ts.mouse_y = input.mouse_y;
-        ts.frame_counter +%= 1;
-
-        // IME composition snapshot — presentation-only, host-owned, folded
-        // in unconditionally (inactive/empty on hosts without IME).
-        const ime = host.imeState();
-        ts.ime_active = ime.active;
-        const ime_n = @min(ime.text.len, ime_bufs[cur].len);
-        @memcpy(ime_bufs[cur][0..ime_n], ime.text[0..ime_n]);
-        ts.ime_text = ime_bufs[cur][0..ime_n];
-        ts.ime_cursor = ime.cursor;
-
-        // 9. Dynamic window title (only on change).
-        if (@hasDecl(App, "windowTitle")) {
-            if (App.windowTitle(&model)) |t| {
-                // Compare against the (possibly truncated) prefix we actually
-                // stored — a title longer than `title_buf` would otherwise
-                // never match the stored copy and re-fire `setTitle` every
-                // frame. `eql` on differing lengths already returns false, so
-                // this also detects a length change.
-                const n = @min(t.len, title_buf.len);
-                if (!std.mem.eql(u8, t[0..n], title_buf[0..title_len])) {
-                    host.setTitle(t);
-                    @memcpy(title_buf[0..n], t[0..n]);
-                    title_len = n;
+                // Enter-to-submit — apps opt in with `submitMsg`. Takes
+                // precedence over `keySpecialMsg` for the Enter key only.
+                if (@hasDecl(App, "submitMsg")) {
+                    if (k == .enter) {
+                        if (App.submitMsg(&self.model)) |m| self.dispatch(m);
+                        continue;
+                    }
+                }
+                const clipboard_capable = comptime (@hasDecl(App, "keyNeedsClipboard") and @hasDecl(App, "handleClipboard"));
+                if (clipboard_capable and App.keyNeedsClipboard(k)) {
+                    App.handleClipboard(&self.model, k, self.host.clipboard());
+                } else if (@hasDecl(App, "keySpecialMsg")) {
+                    if (App.keySpecialMsg(&self.model, k)) |m| self.dispatch(m);
                 }
             }
         }
 
-        // 10. Frame diff — skip the vertex rebuild + upload when nothing
-        //     observable changed. The blink tick forces a rebuild on a
-        //     phase boundary so a focused cursor animates.
-        const cmds_same = cmdsEqual(Msg, cur_cmds, bufs[prev].cmds.items);
-        const rects_same = rectsEqual(rects[cur].items, rects[prev].items);
-        const ts_same = ts.hover_index == prev_ts.hover_index and
-            ts.press_index == prev_ts.press_index and
-            ts.focus_index == prev_ts.focus_index and
-            ts.ime_active == prev_ts.ime_active and
-            ts.ime_cursor == prev_ts.ime_cursor and
-            std.mem.eql(u8, ts.ime_text, prev_ts.ime_text);
-        const blink_tick = opts.blink_period > 0 and ts.focus_index != null and
-            (ts.frame_counter % opts.blink_period == 0);
-
-        // A live secondary window re-uploads into the shared Gpu scratch
-        // buffers after the primary present, so the primary must rebuild
-        // its own vertices every frame while it's open.
-        const secondary_open = has_secondary and App.secondaryWindow(&model) != null;
-
-        if (!cmds_same or !rects_same or !ts_same or blink_tick or secondary_open) {
-            render.buildVertices(&verts, &text_draws, &image_draws, gpa, cur_cmds, rects[cur].items, ts, measurer);
-            gpu.uploadVertices(verts.items);
-            gpu.uploadText(text_draws.items);
-            gpu.uploadImages(image_draws.items);
+        fn routeWheel(self: *Self, input: Input) void {
+            if (!@hasDecl(App, "wheelMsg")) return;
+            if (input.wheel_dy == 0 and input.wheel_dx == 0) return;
+            if (App.wheelMsg(&self.model, input.wheel_dy)) |m| self.dispatch(m);
         }
 
-        prev_ts = ts;
+        /// Fire the app's declared timers before building this frame's view,
+        /// so a sub-driven Model change is reflected in the frame we're about
+        /// to emit (and mirrored to the snapshot through the normal
+        /// frame-diff). Pure `subscribe` declares; `runSubs` watches on the
+        /// host clock; fired subs dispatch as ordinary Msgs through `update`.
+        fn fireSubs(self: *Self) void {
+            if (!@hasDecl(App, "subscribe")) return;
+            // `runSubs` invokes `dispatch.call(msg)`; the loop pointer rides
+            // inside a per-call value, never a module-level static (two
+            // concurrent runtimes over the same types must not cross-wire).
+            const Dispatch = struct {
+                rt: *Self,
+                pub fn call(d: @This(), msg: Msg) void {
+                    d.rt.dispatch(msg);
+                }
+            };
+            const now_ms = self.host.nowMs();
+            const since = self.last_sub_ms orelse now_ms; // first frame: no window, no fire
+            sub_mod.runSubs(Msg, App.subscribe(&self.model), since, now_ms, Dispatch{ .rt = self });
+            self.last_sub_ms = now_ms;
+        }
 
-        // 11. Present.
-        gpu.renderFrame(opts.clear_color);
+        /// Build this frame's view into the other buffer and lay it out.
+        /// Returns the index of the new frame.
+        fn buildView(self: *Self, input: Input) !u1 {
+            self.current ^= 1;
+            const cur = self.current;
+            self.bufs[cur].reset();
+            if (@hasDecl(App, "themeFor")) self.bufs[cur].theme = App.themeFor(&self.model);
+            App.view(&self.model, &self.bufs[cur]);
+            const cmds = self.bufs[cur].cmds.items;
+            debugCheckBalance(cmds, "view");
 
-        // Set to the secondary window's title on the frames it actually
-        // renders, so the live snapshot can append its body below a marker.
-        var sec_snap_title: ?[]const u8 = null;
-        // True when the secondary view's content changed this frame — feeds
-        // the snapshot gate so a secondary-only change still re-mirrors.
-        var sec_content_changed = false;
+            try self.rects[cur].resize(self.gpa, cmds.len);
+            layout.LayoutEngine.doLayout(
+                self.rects[cur].items,
+                cmds,
+                @floatFromInt(input.width),
+                @floatFromInt(input.height),
+                self.measurer,
+            );
+            return cur;
+        }
 
-        // 12. Secondary window: open / close / render. The Model drives
-        //     intent via `secondaryWindow`; `run` owns the Host + Gpu
-        //     resources keyed off `secondary.window_id`. Lock-step ids —
-        //     the same id covers the Host window slot and the Gpu surface
-        //     slot. Whole block is comptime-gated so a stub Gpu lacking
-        //     `openSecondarySurface` never analyzes it.
-        if (has_secondary) {
-            const spec = App.secondaryWindow(&model);
+        /// Fold hover/press/focus/IME into `TransientState` against THIS
+        /// frame's layout. Presentation only — nothing here reaches `update`.
+        fn updateTransient(self: *Self, input: Input, cur: u1) void {
+            const cmds = self.bufs[cur].cmds.items;
+            self.ts.hover_index = hit_test.hoverTest(cmds, self.rects[cur].items, input.mouse_x, input.mouse_y);
+            self.ts.press_index = self.press_target;
+            self.ts.focus_index = focusIndex(App, &self.model, cmds);
+            self.ts.mouse_x = input.mouse_x;
+            self.ts.mouse_y = input.mouse_y;
+            self.ts.frame_counter +%= 1;
+
+            // Folded in unconditionally: inactive/empty on hosts without IME.
+            const ime = self.host.imeState();
+            self.ts.ime_active = ime.active;
+            const n = @min(ime.text.len, self.ime_bufs[cur].len);
+            @memcpy(self.ime_bufs[cur][0..n], ime.text[0..n]);
+            self.ts.ime_text = self.ime_bufs[cur][0..n];
+            self.ts.ime_cursor = ime.cursor;
+        }
+
+        /// Push the app's dynamic window title, only on change.
+        fn pushTitle(self: *Self) void {
+            if (!@hasDecl(App, "windowTitle")) return;
+            const t = App.windowTitle(&self.model) orelse return;
+            // Compare against the (possibly truncated) prefix we actually
+            // stored — a title longer than `title_buf` would otherwise never
+            // match its stored copy and re-fire `setTitle` every frame.
+            const n = @min(t.len, self.title_buf.len);
+            if (std.mem.eql(u8, t[0..n], self.title_buf[0..self.title_len])) return;
+            self.host.setTitle(t);
+            @memcpy(self.title_buf[0..n], t[0..n]);
+            self.title_len = n;
+        }
+
+        fn uploadFrame(self: *Self, cmds: []const cmd.Cmd(Msg), rects: []const Rect, ts: TransientState) void {
+            render.buildVertices(&self.verts, &self.text_draws, &self.image_draws, self.gpa, cmds, rects, ts, self.measurer);
+            self.gpu.uploadVertices(self.verts.items);
+            self.gpu.uploadText(self.text_draws.items);
+            self.gpu.uploadImages(self.image_draws.items);
+        }
+
+        /// What the secondary window did this frame, for the snapshot gate.
+        const SecondaryFrame = struct {
+            /// Set on the frames the window actually rendered, so the
+            /// snapshot can append its body below a marker.
+            title: ?[]const u8 = null,
+            /// The secondary view's content changed — lets a secondary-only
+            /// change (e.g. a `.every` sub updating just that view) re-mirror.
+            content_changed: bool = false,
+        };
+
+        /// Open / close / render the secondary window. The Model drives
+        /// intent via `secondaryWindow`; the loop owns the Host + Gpu
+        /// resources keyed off `secondary.window_id` (one id covers the Host
+        /// window slot and the Gpu surface slot).
+        fn driveSecondary(self: *Self) !SecondaryFrame {
+            const spec = App.secondaryWindow(&self.model);
 
             // Clear a stale reopen-suppression once the app's intent moves
             // off the spec that was open when the user closed the window.
-            if (suppressed_spec) |sup| {
+            if (self.suppressed_spec) |sup| {
                 const still_same = if (spec) |s| secondarySpecEql(sup, s) else false;
-                if (!still_same) suppressed_spec = null;
+                if (!still_same) self.suppressed_spec = null;
             }
-            const reopen_suppressed = suppressed_spec != null;
 
-            if (spec != null and secondary.window_id == null and !reopen_suppressed) {
-                // Open: create the OS window, then its GPU surface. Back
-                // out cleanly if either half fails so we never leak a
-                // window with no renderer (or vice versa).
-                const s = spec.?;
-                if (host.openSecondaryWindow(s.title, s.width, s.height)) |wid| {
-                    if (host.secondaryWindowHandle(wid)) |nh| {
-                        if (gpu.openSecondarySurface(nh, s.width, s.height)) |_| {
-                            secondary.window_id = wid;
-                        } else {
-                            host.closeSecondaryWindow(wid);
-                        }
-                    } else {
-                        host.closeSecondaryWindow(wid);
-                    }
+            if (spec != null and self.secondary.window_id == null and self.suppressed_spec == null) {
+                self.openSecondary(spec.?);
+            } else if (spec == null and self.secondary.window_id != null) {
+                // The app cleared its intent.
+                self.closeSecondary(self.secondary.window_id.?);
+            }
+
+            const wid = self.secondary.window_id orelse return .{};
+            const si = self.host.pollSecondaryInputs(wid) orelse {
+                // A null poll means the user closed the window from the OS:
+                // tear down and mirror it back into the Model via the app's
+                // close Msg so its own flag flips. Remember the spec so it is
+                // not reopened next frame if the app leaves it in place.
+                self.closeSecondary(wid);
+                self.suppressed_spec = spec;
+                if (@hasDecl(App, "secondaryClosedMsg")) {
+                    if (App.secondaryClosedMsg(&self.model)) |m| self.dispatch(m);
                 }
-            } else if (spec == null and secondary.window_id != null) {
-                // Close: the app cleared its intent.
-                const wid = secondary.window_id.?;
-                gpu.closeSecondarySurface(wid);
-                host.closeSecondaryWindow(wid);
-                secondary.window_id = null;
-            }
+                return .{};
+            };
+            if (si.resized) self.gpu.resizeWindow(wid, si.width, si.height);
 
-            if (secondary.window_id) |wid| {
-                // A null poll means the user closed the window from the OS
-                // — tear down and mirror it back into the Model via the
-                // app's close Msg so its own flag flips.
-                if (host.pollSecondaryInputs(wid)) |si| {
-                    if (si.resized) gpu.resizeWindow(wid, si.width, si.height);
+            const sec = &self.secondary;
+            const sprev = sec.cur;
+            sec.cur ^= 1;
+            const scur = sec.cur;
+            sec.bufs[scur].reset();
+            if (@hasDecl(App, "themeFor")) sec.bufs[scur].theme = App.themeFor(&self.model);
+            App.secondaryView(&self.model, &sec.bufs[scur]);
 
-                    const sprev = secondary.cur;
-                    secondary.cur ^= 1;
-                    const scur = secondary.cur;
-                    secondary.bufs[scur].reset();
-                    if (@hasDecl(App, "themeFor")) secondary.bufs[scur].theme = App.themeFor(&model);
-                    App.secondaryView(&model, &secondary.bufs[scur]);
-
-                    const sec_cmds = secondary.bufs[scur].cmds.items;
-                    debugCheckBalance(sec_cmds, "secondaryView");
-                    secondary.rects[scur].resize(gpa, sec_cmds.len) catch {};
-                    if (secondary.rects[scur].items.len == sec_cmds.len) {
-                        layout.LayoutEngine.doLayout(
-                            secondary.rects[scur].items,
-                            sec_cmds,
-                            @floatFromInt(si.width),
-                            @floatFromInt(si.height),
-                            measurer,
-                        );
-                        // The secondary window has no interactive/transient
-                        // state of its own — a fresh default is correct.
-                        const sec_ts: TransientState = .{};
-                        render.buildVertices(&verts, &text_draws, &image_draws, gpa, sec_cmds, secondary.rects[scur].items, sec_ts, measurer);
-                        gpu.uploadVertices(verts.items);
-                        gpu.uploadText(text_draws.items);
-                        gpu.uploadImages(image_draws.items);
-                        gpu.renderToWindow(wid, opts.clear_color);
-                        sec_snap_title = if (spec) |s| s.title else "secondary";
-                        // Diff against the previous secondary frame so a
-                        // secondary-only change (e.g. a `.every` sub updating
-                        // just this view) re-mirrors the snapshot file.
-                        sec_content_changed = !cmdsEqual(Msg, sec_cmds, secondary.bufs[sprev].cmds.items) or
-                            !rectsEqual(secondary.rects[scur].items, secondary.rects[sprev].items);
-                    }
-                } else {
-                    gpu.closeSecondarySurface(wid);
-                    host.closeSecondaryWindow(wid);
-                    secondary.window_id = null;
-                    // Remember what was open so we don't reopen it next frame
-                    // when the app leaves the same spec in place (it omits
-                    // `secondaryClosedMsg`). Apps that DO handle the close
-                    // clear their spec, which clears this above.
-                    suppressed_spec = spec;
-                    if (@hasDecl(App, "secondaryClosedMsg")) {
-                        if (App.secondaryClosedMsg(&model)) |m| Router.dispatch(&model, m, &last_msg);
-                    }
-                }
-            }
+            const cmds = sec.bufs[scur].cmds.items;
+            debugCheckBalance(cmds, "secondaryView");
+            try sec.rects[scur].resize(self.gpa, cmds.len);
+            layout.LayoutEngine.doLayout(
+                sec.rects[scur].items,
+                cmds,
+                @floatFromInt(si.width),
+                @floatFromInt(si.height),
+                self.measurer,
+            );
+            // The secondary window has no interactive/transient state of its
+            // own — a fresh default is correct.
+            self.uploadFrame(cmds, sec.rects[scur].items, .{});
+            self.gpu.renderToWindow(wid, self.opts.clear_color);
+            return .{
+                .title = if (spec) |s| s.title else "secondary",
+                .content_changed = !cmdsEqual(Msg, cmds, sec.bufs[sprev].cmds.items) or
+                    !rectsEqual(sec.rects[scur].items, sec.rects[sprev].items),
+            };
         }
 
-        // 13. Live snapshot: mirror the frame to disk only when its content
-        //     actually changed (the same primary frame-diff signal that
-        //     gates the vertex rebuild, minus the cosmetic blink tick which
-        //     the snapshot doesn't show) — so idle frames never touch disk.
-        //     A secondary open/close transition also counts, and the very
-        //     first frame is always written. Placed after the secondary
-        //     render so its body is available to append.
-        if (snap.enabled) {
-            const sec_open_now = sec_snap_title != null;
-            const changed = snap_first or !cmds_same or !rects_same or !ts_same or
-                (sec_open_now != prev_secondary_open) or sec_content_changed;
-            if (changed) {
-                snap.writeFrame(.{
-                    .window_w = @floatFromInt(input.width),
-                    .window_h = @floatFromInt(input.height),
-                    .frame = ts.frame_counter,
-                    .last_msg = last_msg,
-                }, cur_cmds, rects[cur].items, &ts, sec_snap_title, secondary.bufs[secondary.cur].cmds.items, secondary.rects[secondary.cur].items);
-            }
-            snap_first = false;
-            prev_secondary_open = sec_open_now;
+        /// Create the OS window, then its GPU surface. Back out cleanly if
+        /// either half fails so we never leak a window with no renderer.
+        fn openSecondary(self: *Self, s: SecondaryWindowSpec) void {
+            const wid = self.host.openSecondaryWindow(s.title, s.width, s.height) orelse return;
+            const handle = self.host.secondaryWindowHandle(wid) orelse return self.host.closeSecondaryWindow(wid);
+            if (self.gpu.openSecondarySurface(handle, s.width, s.height) == null) return self.host.closeSecondaryWindow(wid);
+            self.secondary.window_id = wid;
         }
-    }
 
-    // Release any secondary resources still open at shutdown.
-    if (has_secondary) {
-        if (secondary.window_id) |wid| {
-            gpu.closeSecondarySurface(wid);
-            host.closeSecondaryWindow(wid);
+        fn closeSecondary(self: *Self, wid: u32) void {
+            self.gpu.closeSecondarySurface(wid);
+            self.host.closeSecondaryWindow(wid);
+            self.secondary.window_id = null;
         }
-    }
+    };
 }
 
-/// Resolve the focused widget's cmd index for this frame. Apps that
-/// expose `focusedMsg` get stable, Msg-keyed focus (survives
-/// conditional/reordered widgets); apps without it have no focus ring.
+/// Which of the primary frame's observable inputs changed against the
+/// previous frame.
+const FrameDiff = struct {
+    cmds_same: bool,
+    rects_same: bool,
+    ts_same: bool,
+
+    fn changed(self: FrameDiff) bool {
+        return !self.cmds_same or !self.rects_same or !self.ts_same;
+    }
+};
+
+/// Transient fields whose change must trigger a vertex rebuild. Mouse
+/// position and the frame counter are deliberately absent: the renderer
+/// reads them only through hover/press/focus/IME, which are compared.
+fn transientSame(a: TransientState, b: TransientState) bool {
+    return a.hover_index == b.hover_index and
+        a.press_index == b.press_index and
+        a.focus_index == b.focus_index and
+        a.ime_active == b.ime_active and
+        a.ime_cursor == b.ime_cursor and
+        std.mem.eql(u8, a.ime_text, b.ime_text);
+}
+
 /// Debug-only cmd-buffer balance check. A missed pop_group (or friends)
 /// is otherwise a silent layout bug; in Debug builds this panics naming
 /// the offending cmd index before the layout passes consume the buffer.
@@ -737,6 +789,9 @@ fn debugCheckBalance(cmds: anytype, view_name: []const u8) void {
     }
 }
 
+/// Resolve the focused widget's cmd index for this frame. Apps that
+/// expose `focusedMsg` get stable, Msg-keyed focus (survives
+/// conditional/reordered widgets); apps without it have no focus ring.
 fn focusIndex(comptime App: type, model: *const App.Model, cmds: anytype) ?usize {
     if (!@hasDecl(App, "focusedMsg")) return null;
     const fm = App.focusedMsg(model) orelse return null;

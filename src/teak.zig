@@ -155,6 +155,7 @@ pub const ClearColor = gpu.ClearColor;
 pub const validateGpu = gpu.validateGpu;
 
 pub const run = runtime.run;
+pub const Runtime = runtime.Runtime;
 pub const RunOptions = runtime.RunOptions;
 pub const SecondaryWindowSpec = runtime.SecondaryWindowSpec;
 

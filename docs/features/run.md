@@ -1,7 +1,7 @@
-# Application loop (`teak.run`)
+# Application loop (`teak.run` / `teak.Runtime`)
 
 `src/run.zig` — the canonical host-loop wrapper. Re-exported as
-`teak.run` (+ `teak.RunOptions`).
+`teak.run`, `teak.Runtime` (+ `teak.RunOptions`).
 
 ## Why
 
@@ -25,6 +25,36 @@ pub fn main() !void {
     try teak.run(App, gpa, &host, &gpu, .{});
 }
 ```
+
+## `Runtime` — the loop body, one frame at a time
+
+`run` is `Runtime` driven in a `while (!host.shouldClose())` loop. Hosts that
+do not own the loop — the web, where the browser calls an exported `frame`
+once per rAF tick — build a `Runtime` and call `frame` themselves:
+
+```zig
+const Runtime = teak.Runtime(App, Host, Gpu);   // comptime App + concrete backend types
+var runtime: Runtime = undefined;               // module-level: exports can't close over a struct
+
+export fn init() void {
+    host = Host.init("My App", 900, 500) catch @panic("host init failed");
+    gpu = Gpu.init(host.nativeHandle(), 900, 500) catch @panic("gpu init failed");
+    runtime = Runtime.init(std.heap.wasm_allocator, &host, &gpu, .{}) catch @panic("runtime init failed");
+}
+export fn frame(_: f32) void { runtime.frame() catch @panic("frame failed"); }
+export fn resize(w: u32, h: u32) void { gpu.resize(w, h); }
+```
+
+`init(gpa, *Host, *Gpu, RunOptions) !Runtime`, `frame(*Runtime) !void` (one
+iteration; returns early without presenting if the host reports close during the
+input poll), `deinit()`. The value holds the Model, the double-buffered cmd/rect
+storage and all loop bookkeeping — create it once and don't move it. `frame`
+errors are allocation failures only. All three examples' `web_main.zig` are this
+shape; there are no hand-copied pipelines, fixed allocators or rect caps.
+
+The secondary-window path compiles away when the Gpu has no
+`openSecondarySurface` (the web Gpu), so apps with a "Stats" window still build
+for the web; the window simply never opens there.
 
 ## Shape
 
