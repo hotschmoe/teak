@@ -225,6 +225,7 @@ pub const StubGpu = struct {
     last_scene_mesh: u32 = 0,
     last_scene_count: usize = 0,
     last_image_handle: u32 = 0,
+    last_split: ?render.OverlaySplit = null,
 
     pub fn deinit(_: *StubGpu) void {}
     pub fn resize(self: *StubGpu, _: u32, _: u32) void {
@@ -236,6 +237,9 @@ pub const StubGpu = struct {
     pub fn uploadText(_: *StubGpu, _: []const text.TextDraw) void {}
     pub fn uploadImages(self: *StubGpu, d: []const render.ImageDraw) void {
         if (d.len > 0) self.last_image_handle = d[0].handle;
+    }
+    pub fn setOverlayStart(self: *StubGpu, split: render.OverlaySplit) void {
+        self.last_split = split;
     }
     pub fn uploadMesh(self: *StubGpu, _: scene.MeshData) u32 {
         self.mesh_uploads += 1;
@@ -1422,4 +1426,61 @@ test "cmdsEqual: scene3d fields and keyed canvas batches" {
     b[0].scene3d.pointer = true;
     b[1].canvas.primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 10 } }};
     try std.testing.expect(!cmdsEqual(Msg, &a, &b));
+}
+
+test "overlay layering: the loop hands the Gpu the overlay split; a Gpu without the hook still runs" {
+    const OverlayLayerApp = struct {
+        pub const Model = struct {};
+        pub const Msg = union(enum) { x };
+        pub fn update(_: *Model, _: Msg) void {}
+        pub fn view(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{ .padding = 0, .gap = 0 });
+            cb.text("under");
+            cb.pushOverlay(.{ .x = 0, .y = 0, .width = 100, .height = 40, .backdrop = .{ 1, 1, 1, 1 } });
+            cb.text("over");
+            cb.popOverlay();
+            cb.popGroup();
+        }
+    };
+    const t = try play(OverlayLayerApp, &.{ .{}, .{} });
+    defer t.destroy();
+    const split = t.gpu.last_split.?;
+    try std.testing.expectEqual(@as(u32, 1), split.text); // "under" is base, "over" starts the overlay
+    try std.testing.expectEqual(@as(u32, 0), split.verts); // the backdrop quad is overlay
+
+    // PlainGpu has no setOverlayStart: the loop must not require it.
+    var host: ScriptHost = .{ .script = &.{ .{}, .{} } };
+    var gpu: PlainGpu = .{};
+    var rt = try Runtime(OverlayLayerApp, ScriptHost, PlainGpu).init(std.testing.allocator, &host, &gpu, .{});
+    defer rt.deinit();
+    while (!host.shouldClose()) try rt.frame();
+}
+
+const WindowApp = struct {
+    pub const Model = struct { w: f32 = 0, h: f32 = 0, calls: u32 = 0 };
+    pub const Msg = union(enum) { size: [2]f32 };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .size => |s| {
+                m.w = s[0];
+                m.h = s[1];
+                m.calls += 1;
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.popGroup();
+    }
+    pub fn windowMsg(_: *const Model, w: f32, h: f32) ?Msg {
+        return .{ .size = .{ w, h } };
+    }
+};
+
+test "run: windowMsg reports the window size on the first frame" {
+    const t = try play(WindowApp, &.{ .{}, .{}, .{} });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(f32, 400), t.rt.model.w);
+    try std.testing.expectEqual(@as(f32, 300), t.rt.model.h);
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls); // only the first frame resized
 }

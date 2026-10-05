@@ -334,8 +334,10 @@ fn statusLine(cb: anytype) void {
 /// 4px offset shadow, non-modal so the sheet underneath stays live.
 fn helpPopover(cb: anytype) void {
     cb.pushOverlay(.{
-        .x = 700,
-        .y = 100,
+        // Overlaps the left column's parts table on purpose: the opaque
+        // backdrop must hide the table text beneath it.
+        .x = 150,
+        .y = 120,
         .width = 300,
         .padding = 12,
         .gap = 6,

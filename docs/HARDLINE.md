@@ -131,7 +131,11 @@ menus can render outside their declaring parent.
 **Bounded by**:
 - The flat buffer stays flat — overlays are still cmds in the same
   `[]Cmd`, not a separate buffer. No tree, no z field on every cmd.
-- Exactly two priority levels: non-overlay (z=0) and overlay (z=1).
+- Exactly two priority levels: non-overlay (z=0) and overlay (z=1). The
+  GPU backends honour them across *all* draw kinds: the render pass reports
+  an `OverlaySplit` and a layering-aware Gpu draws base solids, images,
+  scene composites and text before the overlay's, so an opaque overlay hides
+  base text (docs/features/gpu.md, "Overlay layering").
   Each pass walks the buffer twice in the same forward order; within
   a level, painter's order = doc order (unchanged from §1).
 - Overlay position comes from explicit `x`, `y` on `OverlayStyle(Msg)`.

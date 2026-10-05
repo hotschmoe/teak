@@ -33,9 +33,11 @@ const wgpu_c = @import("wgpu_c.zig");
 const wgpu_scene = @import("wgpu_scene.zig");
 const scene_common = @import("scene_common.zig");
 const SlotTable = @import("slot_table.zig").SlotTable;
+const overlay = @import("overlay.zig");
 
 const Vertex = teak.Vertex;
 const ImageDraw = teak.ImageDraw;
+const OverlaySplit = teak.OverlaySplit;
 
 pub const c = wgpu_c.c;
 pub const wgpuStr = wgpu_c.wgpuStr;
@@ -210,6 +212,17 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         scene_vert_count: u32,
         scene_vert_buf: c.WGPUBuffer,
         scene_vert_buf_size: u64,
+
+        // ── Overlay layering ───────────────────────────────────────
+        //
+        // `setOverlayStart` records where the overlay layer begins in each
+        // input list; the upload loops translate that into staged-record
+        // indices (`*_ov`) so the main pass can draw base content first and
+        // overlay content after it. null = no split (draw by kind).
+        overlay_split: ?OverlaySplit,
+        text_ov: usize,
+        image_ov: usize,
+        scene_ov: usize,
 
         // ── Secondary surfaces ─────────────────────────────────────
         //
@@ -452,6 +465,10 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .scene_vert_count = 0,
                 .scene_vert_buf = null,
                 .scene_vert_buf_size = 0,
+                .overlay_split = null,
+                .text_ov = 0,
+                .image_ov = 0,
+                .scene_ov = 0,
                 .secondary_surfaces = @splat(.{
                     .surface = null,
                     .width = 0,
@@ -541,6 +558,18 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             if (byte_size == 0) return;
             wgpu_c.ensureBuffer(self.device, label, c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, buf, size, byte_size);
             c.wgpuQueueWriteBuffer(self.queue, buf.*, 0, verts.ptr, byte_size);
+        }
+
+        /// Where the overlay layer starts in this frame's lists (from
+        /// `render.buildFrame`). Call before `uploadVertices` / `uploadText` /
+        /// `uploadImages` / `renderScenes`; the main pass then draws all base
+        /// content (solids, images, scenes, text) before the overlay's.
+        pub fn setOverlayStart(self: *Self, split: OverlaySplit) void {
+            self.overlay_split = split;
+        }
+
+        fn splitOf(self: *const Self, comptime field: []const u8, len: usize) usize {
+            return if (self.overlay_split) |o| @as(usize, @field(o, field)) else len;
         }
 
         pub fn uploadVertices(self: *Self, verts: []const Vertex) void {
@@ -679,20 +708,21 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             const pass = c.wgpuCommandEncoderBeginRenderPass(encoder, &rp_desc);
 
-            if (self.vert_count > 0 and self.vert_buf != null) {
-                const draw_byte_size: u64 = @intCast(self.vert_count * @sizeOf(Vertex));
-                c.wgpuRenderPassEncoderSetPipeline(pass, self.pipeline);
-                c.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.bind_group, 0, null);
-                c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.vert_buf, 0, draw_byte_size);
-                c.wgpuRenderPassEncoderDraw(pass, self.vert_count, 1, 0, 0);
+            // Base layer first, then the overlay: within a layer, solids,
+            // images, scene composites (same pipeline: a scene is an image
+            // the GPU rendered this frame), then text on top. Drawing the
+            // overlay's solids after the base's TEXT is what lets an opaque
+            // popup hide the text beneath it.
+            const solid = overlay.Range.of(self.splitOf("verts", self.vert_count), self.vert_count);
+            const imgs = overlay.Range.of(self.image_ov, self.image_draw_count);
+            const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
+            const txts = overlay.Range.of(self.text_ov, self.text_draw_count);
+            inline for (.{ "base", "overlay" }) |layer| {
+                self.drawSolids(pass, @field(overlay.Range, layer)(solid));
+                drawQuads(pass, self.image_pipeline, self.image_vert_buf, self.image_vert_count, self.image_draws[0..self.image_draw_count], @field(overlay.Range, layer)(imgs));
+                drawQuads(pass, self.image_pipeline, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count], @field(overlay.Range, layer)(scns));
+                drawQuads(pass, self.text_pipeline, self.text_vert_buf, self.text_vert_count, self.text_draws[0..self.text_draw_count], @field(overlay.Range, layer)(txts));
             }
-
-            // Images, then scene composites (same pipeline: a scene is just
-            // an image the GPU rendered this frame), then text on top so
-            // glyphs stay readable over both.
-            drawQuads(pass, self.image_pipeline, self.image_vert_buf, self.image_vert_count, self.image_draws[0..self.image_draw_count]);
-            drawQuads(pass, self.image_pipeline, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count]);
-            drawQuads(pass, self.text_pipeline, self.text_vert_buf, self.text_vert_count, self.text_draws[0..self.text_draw_count]);
 
             c.wgpuRenderPassEncoderEnd(pass);
             c.wgpuRenderPassEncoderRelease(pass);
@@ -706,13 +736,28 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             c.wgpuCommandBufferRelease(command_buffer);
         }
 
+        /// Solid quads `[from, to)` (vertex indices).
+        fn drawSolids(self: *Self, pass: c.WGPURenderPassEncoder, range: struct { usize, usize }) void {
+            const from, const to = range;
+            if (to <= from or self.vert_buf == null) return;
+            const draw_byte_size: u64 = @as(u64, self.vert_count) * @sizeOf(Vertex);
+            c.wgpuRenderPassEncoderSetPipeline(pass, self.pipeline);
+            c.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.bind_group, 0, null);
+            c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.vert_buf, 0, draw_byte_size);
+            c.wgpuRenderPassEncoderDraw(pass, @intCast(to - from), 1, @intCast(from), 0);
+        }
+
+        /// The staged textured-quad `draws[from..to]`, vertices in `vert_buf`.
         fn drawQuads(
             pass: c.WGPURenderPassEncoder,
             pipeline: c.WGPURenderPipeline,
             vert_buf: c.WGPUBuffer,
             vert_count: u32,
-            draws: []const QuadDraw,
+            all: []const QuadDraw,
+            range: struct { usize, usize },
         ) void {
+            const from, const to = range;
+            const draws = all[from..to];
             if (draws.len == 0 or vert_buf == null) return;
             const byte_size: u64 = @as(u64, vert_count) * @sizeOf(Vertex);
             c.wgpuRenderPassEncoderSetPipeline(pass, pipeline);
@@ -828,6 +873,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             self.text_cache.tick();
             self.text_draw_count = 0;
             self.text_vert_count = 0;
+            var mark: overlay.Marker = .{ .start = self.splitOf("text", draws.len) };
+            defer self.text_ov = mark.finish(self.text_draw_count);
 
             if (self.text_cache.shouldReport()) {
                 const s = self.text_cache.stats();
@@ -838,7 +885,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 self.text_cache.resetStats();
             }
 
-            for (draws) |draw| {
+            for (draws, 0..) |draw, di| {
+                mark.visit(di, self.text_draw_count);
                 // Snap rect + clip to integer pixel boundaries FIRST, then
                 // derive visibility + UVs from the snapped coordinates. This
                 // keeps texture size == rect size (in pixels) and ensures
@@ -999,8 +1047,11 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         pub fn uploadImages(self: *Self, draws: []const ImageDraw) void {
             self.image_draw_count = 0;
             self.image_vert_count = 0;
+            var mark: overlay.Marker = .{ .start = self.splitOf("images", draws.len) };
+            defer self.image_ov = mark.finish(self.image_draw_count);
 
-            for (draws) |draw| {
+            for (draws, 0..) |draw, di| {
+                mark.visit(di, self.image_draw_count);
                 const entry = self.images.get(draw.handle) orelse continue;
                 const quad = teak.vertex.clippedTexturedQuad(
                     .{ .x = draw.rect_x, .y = draw.rect_y, .w = draw.rect_w, .h = draw.rect_h },
@@ -1039,6 +1090,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         pub fn renderScenes(self: *Self, draws: []const teak.SceneDraw) void {
             self.scene_draw_count = 0;
             self.scene_vert_count = 0;
+            var mark: overlay.Marker = .{ .start = self.splitOf("scenes", draws.len) };
+            defer self.scene_ov = mark.finish(self.scene_draw_count);
             if (draws.len == 0) return;
 
             var enc_desc = std.mem.zeroes(c.WGPUCommandEncoderDescriptor);
@@ -1048,6 +1101,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             // Native logical pixels are device pixels.
             const scale: f32 = 1;
             for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
+                mark.visit(i, self.scene_draw_count);
                 const size = self.scene.renderInto(encoder, i, draw, scale) orelse continue;
                 const quad = scene_common.compositeQuad(draw, size, scale) orelse continue;
                 const bind_group = self.sceneBindGroup(i) orelse continue;

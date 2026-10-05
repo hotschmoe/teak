@@ -116,6 +116,7 @@ pub fn focusedMsg(*const Model) ?Msg                  // focus Msg of focused wi
                                                       //   + built-in Tab/Shift+Tab traversal
 pub fn submitMsg(*const Model) ?Msg                   // Enter key (precedes keySpecialMsg for Enter)
 pub fn themeFor(*const Model) Theme                   // per-frame theme (dark/light toggle)
+pub fn windowMsg(*const Model, f32, f32) ?Msg          // window size in logical px: first frame + every resize
 pub fn windowTitle(*const Model) ?[]const u8          // dynamic title bar; setTitle only on change
 pub fn secondaryWindow(*const Model) ?SecondaryWindowSpec  // 2nd top-level window, open when non-null
 pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view (pairs with above)
@@ -473,7 +474,8 @@ TransientState = struct { hover_index, press_index, focus_index: ?usize = null,
 ### Render (`teak.render`, `teak.vertex`)
 ```zig
 buildFrame(verts, text_draws, image_draws, scene_draws: *std.ArrayList(...), alloc, cmds, rects,
-           transient: TransientState, measurer: TextMeasurer) void      // what teak.run uses
+           transient: TransientState, measurer: TextMeasurer) OverlaySplit   // what teak.run uses
+OverlaySplit = struct { verts, text, images, scenes: u32 }   // counts the BASE layer produced = where the overlay starts
 buildVertices(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer) void  // = buildFrame, scenes skipped
 ResourceTable = struct { sync(self, gpu, []const Resource) bool /*changed*/, deinit(self, gpu), handleOf(kind, key) u32 }
 stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw) void  // remap keys, uploadImages, renderScenes
@@ -568,6 +570,8 @@ validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uplo
 //   uploadMesh(*Gpu, MeshData) MeshHandle      releaseMesh(*Gpu, MeshHandle) void
 //   renderScenes(*Gpu, []const SceneDraw) void  // before renderFrame; offscreen 3D -> composite quads
 //   releaseImage(*Gpu, TextureHandle) void
+//   setOverlayStart(*Gpu, OverlaySplit) void    // before the uploads: draw base solids/images/scenes/text, THEN
+//                                              //   the overlay's, so an opaque overlay hides base text (hatch 5)
 ```
 
 ### Application loop (`teak.run` / `teak.runtime` → run.zig)

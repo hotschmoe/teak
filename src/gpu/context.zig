@@ -15,6 +15,7 @@ const scene = @import("../core/scene.zig");
 const MeshData = scene.MeshData;
 const MeshHandle = scene.MeshHandle;
 const SceneDraw = scene.SceneDraw;
+const OverlaySplit = @import("../render/build.zig").OverlaySplit;
 
 pub const ClearColor = [4]f32;
 pub const FontSpec = text.FontSpec;
@@ -41,6 +42,11 @@ pub const InitOptions = struct {
 /// type but are interpreted by the *image* cache, not the text cache —
 /// no per-handle discriminator needed because dispatch happens at the
 /// uploadText / uploadImages call site.
+/// Surface extension (HARDLINE §4(d)): `setOverlayStart(*Gpu, OverlaySplit)`
+/// — optional; a backend that has it draws the overlay layer's solids,
+/// images, scene composites and text after the base layer's (so an opaque
+/// overlay hides base text). Backends without it draw by kind, as before.
+///
 /// Surface extension (HARDLINE §4(d)): the 3D scene block —
 /// `uploadMesh` / `releaseMesh` / `renderScenes` — plus `releaseImage`.
 /// All optional and checked only when declared; the three scene decls
@@ -92,6 +98,11 @@ pub fn validateGpu(comptime T: type) void {
     if (present != 0 and present != scene_block.len)
         @compileError("Gpu '" ++ tn ++ "' declares part of the scene extension; " ++
             "uploadMesh, releaseMesh and renderScenes come together");
+    // Optional overlay layering: where the overlay layer starts in each
+    // staged list. Called before the uploads of a frame.
+    if (@hasDecl(T, "setOverlayStart") and @typeInfo(@TypeOf(T.setOverlayStart)) != .@"fn")
+        @compileError("Gpu '" ++ tn ++ "'.setOverlayStart must be a function " ++
+            "(expected fn(*Gpu, OverlaySplit) void)");
     if (@hasDecl(T, "releaseImage") and @typeInfo(@TypeOf(T.releaseImage)) != .@"fn")
         @compileError("Gpu '" ++ tn ++ "'.releaseImage must be a function " ++
             "(expected fn(*Gpu, TextureHandle) void)");
@@ -144,6 +155,7 @@ test "validateGpu accepts the full scene extension" {
         }
         pub fn uploadImages(_: *@This(), _: []const ImageDraw) void {}
         pub fn releaseImage(_: *@This(), _: TextureHandle) void {}
+        pub fn setOverlayStart(_: *@This(), _: OverlaySplit) void {}
         pub fn uploadMesh(_: *@This(), _: MeshData) MeshHandle {
             return scene.MESH_HANDLE_NONE;
         }

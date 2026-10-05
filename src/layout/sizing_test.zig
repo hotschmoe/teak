@@ -399,3 +399,24 @@ test "overlay: fixed size, anchor fraction, nested stretch + flex, no parent con
     try std.testing.expectEqual(@as(f32, 180), rs[4].w);
     try std.testing.expectEqual(@as(f32, 80), rs[4].h);
 }
+
+test "a flex vertical scroll inside a row does not size the row to its content" {
+    var cb = Buf.init(std.testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+    cb.text("HEAD"); // 20 px
+    // Row: [scroll | bar], the row takes the leftover height.
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .flex = 1, .align_cross = .stretch });
+    cb.pushScroll(.{ .padding = 0, .gap = 0, .flex = 1, .align_cross = .stretch });
+    for (0..50) |_| cb.text("a long list of rows"); // 1000 px of content
+    cb.popScroll();
+    cb.pushGroup(.{ .width = 6, .padding = 0, .gap = 0 });
+    cb.popGroup();
+    cb.popGroup();
+    cb.popGroup();
+    var rects: [128]Rect = undefined;
+    const rs = layoutOf(&cb, &rects, 300, 400);
+    try std.testing.expectEqual(@as(f32, 400), rs[0].h); // root = window
+    try std.testing.expectEqual(@as(f32, 380), rs[2].h); // the row: window - head
+    try std.testing.expectEqual(@as(f32, 380), rs[3].h); // the scroll viewport fills the row
+}
