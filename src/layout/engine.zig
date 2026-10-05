@@ -14,8 +14,9 @@ pub const Rect = struct {
     w: f32 = 0,
     h: f32 = 0,
 
-    // Meaningful only for push_group entries after the measure pass.
-    // Carried into the position pass so flex distribution has the totals
+    // Meaningful only for container entries (push_group / push_scroll /
+    // push_overlay / push_virtual_list) after the measure pass. Carried
+    // into the position pass so flex / justify distribution has the totals
     // without rescanning children.
     fixed_main: f32 = 0,
     flex_total: f32 = 0,
