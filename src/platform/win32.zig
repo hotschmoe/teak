@@ -1987,10 +1987,12 @@ pub const Host = struct {
     }
 
     /// Monotonic milliseconds since some arbitrary epoch. Uses Zig's
-    /// `std.time.milliTimestamp` which is fine for sub-driven cadence
+    /// the `std.Io` awake clock, which is fine for sub-driven cadence
     /// — subs compare deltas, not absolute values.
     pub fn nowMs(_: *const Host) u64 {
-        return @intCast(std.time.milliTimestamp());
+        // Monotonic milliseconds (Zig 0.16: clocks live behind `std.Io`).
+        const now = std.Io.Clock.awake.now(std.Options.debug_io);
+        return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms));
     }
 
     /// Physical device pixels per logical unit at the window's current

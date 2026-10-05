@@ -509,7 +509,9 @@ pub const Host = struct {
     }
 
     pub fn nowMs(_: *const Host) u64 {
-        return @intCast(std.time.milliTimestamp());
+        // Monotonic milliseconds (Zig 0.16: clocks live behind `std.Io`).
+        const now = std.Io.Clock.awake.now(std.Options.debug_io);
+        return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms));
     }
 
     /// Physical device pixels per logical unit, from `Xft.dpi` read at
