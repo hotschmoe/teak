@@ -88,5 +88,9 @@ pub fn build(b: *std.Build) void {
             .optimize = web_optimize,
         }),
     });
-    teak.linkWebWgpu(b, web_exe, .{});
+    teak.linkWebWgpu(b, web_exe, .{ .fonts = &.{
+        .{ .family = "IBM Plex Mono", .weight = 400, .path = b.path("assets/IBMPlexMono-Regular.ttf") },
+        .{ .family = "IBM Plex Mono", .weight = 500, .path = b.path("assets/IBMPlexMono-Medium.ttf") },
+        .{ .family = "IBM Plex Mono", .weight = 700, .path = b.path("assets/IBMPlexMono-Bold.ttf") },
+    } });
 }

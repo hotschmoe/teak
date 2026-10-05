@@ -16,6 +16,7 @@ const zinput = zunk.web.input;
 const zapp = zunk.web.app;
 const zgpu = zunk.web.gpu;
 const fx = zunk.web.fx;
+const web_font = @import("teak-web-font");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -39,8 +40,7 @@ const MEASURE_CACHE_CAPACITY: usize = 128;
 const MeasureCacheEntry = struct {
     content_hash: u64,
     content_len: u32,
-    size_px: u16,
-    family: FontFamily,
+    font: FontSpec,
     metrics: TextMetrics,
     last_used: u64,
 };
@@ -358,27 +358,22 @@ pub const Host = struct {
     fn zunkMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
         const self: *Host = @ptrCast(@alignCast(ctx));
         self.measure_tick += 1;
-        const size_px: u16 = @intFromFloat(font.size_px);
         const content_hash = std.hash.Wyhash.hash(0, text_bytes);
 
         for (self.measure_cache[0..self.measure_cache_len]) |*e| {
             if (e.content_hash == content_hash and
                 e.content_len == text_bytes.len and
-                e.size_px == size_px and
-                e.family == font.family)
+                std.meta.eql(e.font, font))
             {
                 e.last_used = self.measure_tick;
                 return e.metrics;
             }
         }
 
-        var font_buf: [32]u8 = undefined;
-        const css = std.fmt.bufPrint(&font_buf, "{d}px {s}", .{
-            size_px,
-            cssFontFamily(font.family),
-        }) catch return fallbackMetrics(font);
+        var font_buf: [web_font.css_buf_len]u8 = undefined;
+        const css = web_font.css(&font_buf, font);
 
-        const raw = zgpu.measureText(text_bytes, css);
+        const raw = zgpu.measureText(text_bytes, css, font.letter_spacing);
         // Canvas `measureText` returns glyph-tight height
         // (actualBoundingBoxAscent + Descent), which varies per string —
         // "hello" is shorter than "helloy". Native returns font-scope
@@ -413,8 +408,7 @@ pub const Host = struct {
         self.measure_cache[slot] = .{
             .content_hash = content_hash,
             .content_len = @intCast(text_bytes.len),
-            .size_px = size_px,
-            .family = font.family,
+            .font = font,
             .metrics = metrics,
             .last_used = self.measure_tick,
         };
@@ -715,14 +709,6 @@ fn dropOf(c: fx.Completion) teak.Drop {
         .thumb_rgba = if (thumb_h > 0) thumb else "",
         .thumb_w = if (thumb_h > 0) thumb_w else 0,
         .thumb_h = thumb_h,
-    };
-}
-
-fn cssFontFamily(family: FontFamily) []const u8 {
-    return switch (family) {
-        .sans => "sans-serif",
-        .serif => "serif",
-        .mono => "monospace",
     };
 }
 

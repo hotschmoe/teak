@@ -16,6 +16,7 @@
 const std = @import("std");
 const teak = @import("teak");
 const zunk = @import("zunk");
+const web_font = @import("teak-web-font");
 const glyph_cache = @import("glyph_cache.zig");
 const web_scene = @import("web_scene.zig");
 const scene_common = @import("scene_common.zig");
@@ -432,14 +433,10 @@ pub const Gpu = struct {
 
         self.text_cache.evictLRU();
 
-        var font_buf: [32]u8 = undefined;
-        const size_px: u16 = @intFromFloat(font.size_px);
-        const css = std.fmt.bufPrint(&font_buf, "{d}px {s}", .{
-            size_px,
-            cssFontFamily(font.family),
-        }) catch return teak.TEXTURE_HANDLE_NONE;
+        var font_buf: [web_font.css_buf_len]u8 = undefined;
+        const css = web_font.css(&font_buf, font);
 
-        const sampled = self.sampledFrom(zgpu.rasterizeText(text_bytes, css, color, width, height));
+        const sampled = self.sampledFrom(zgpu.rasterizeText(text_bytes, css, font.letter_spacing, color, width, height));
         return self.text_cache.insert(
             key,
             @intCast(text_bytes.len),
@@ -635,14 +632,6 @@ pub const Gpu = struct {
         return bg;
     }
 };
-
-fn cssFontFamily(family: FontFamily) []const u8 {
-    return switch (family) {
-        .sans => "sans-serif",
-        .serif => "serif",
-        .mono => "monospace",
-    };
-}
 
 comptime {
     teak.validateGpu(Gpu);
