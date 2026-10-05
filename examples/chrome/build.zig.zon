@@ -1,0 +1,14 @@
+.{
+    .name = .chrome,
+    .version = "0.0.0",
+    .fingerprint = 0xf9d684ecf3f91f4c,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .teak = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

@@ -36,10 +36,16 @@ pub const ImageDraw = struct {
     clip_h: f32,
 };
 
+/// Fixed outline of checkbox / radio boxes.
 const BORDER_WIDTH: f32 = 2;
 const CURSOR_WIDTH: f32 = 2;
 const INPUT_TEXT_PADDING: f32 = 6;
 const SLIDER_TRACK_PADDING: f32 = 2;
+/// Underline-variant text input: label inset and rule thickness.
+const UNDERLINE_PADDING_X: f32 = 2;
+const UNDERLINE_PADDING_Y: f32 = 4;
+const UNDERLINE_RULE: f32 = 1;
+const UNDERLINE_RULE_FOCUSED: f32 = 2;
 
 fn insetRect(r: Rect, amount: f32) Rect {
     const w = @max(0, r.w - 2 * amount);
@@ -77,6 +83,18 @@ fn emitText(
         .clip_w = clip.w,
         .clip_h = clip.h,
     }) catch {};
+}
+
+/// A `width`-thick frame INSIDE `r`: four non-overlapping edge quads (so a
+/// translucent border doesn't double-blend at the corners). `width` is
+/// clamped to half the smaller side.
+fn emitBorder(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, r: Rect, width: f32, color: [4]f32, clip: Rect) void {
+    const t = @min(width, @min(r.w, r.h) * 0.5);
+    if (t <= 0) return;
+    emit(verts, alloc, .{ .x = r.x, .y = r.y, .w = r.w, .h = t }, color, clip);
+    emit(verts, alloc, .{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t }, color, clip);
+    emit(verts, alloc, .{ .x = r.x, .y = r.y + t, .w = t, .h = r.h - 2 * t }, color, clip);
+    emit(verts, alloc, .{ .x = r.x + r.w - t, .y = r.y + t, .w = t, .h = r.h - 2 * t }, color, clip);
 }
 
 /// Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits
@@ -154,7 +172,12 @@ fn buildLayer(
                 // Only the overlay layer draws the backdrop + clips to
                 // the overlay rect.
                 if (layer == .overlay) {
+                    if (ov.shadow) |sh| {
+                        const shadow_rect = Rect{ .x = rect.x + ov.shadow_offset[0], .y = rect.y + ov.shadow_offset[1], .w = rect.w, .h = rect.h };
+                        emit(verts, alloc, shadow_rect, sh, cur_clip);
+                    }
                     if (ov.backdrop[3] > 0) emit(verts, alloc, rect, ov.backdrop, cur_clip);
+                    if (ov.border) |bc| emitBorder(verts, alloc, rect, ov.border_width, bc, cur_clip);
                     clip.push(clipRect(rect, cur_clip));
                 } else {
                     // Base-layer must still push a clip so the
@@ -177,7 +200,10 @@ fn buildLayer(
                 // Optional panel/card fill. Drawn BEFORE children so they
                 // paint on top. Layout already gives us the group's full
                 // (padded) rect; no inset.
-                if (visible) if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+                if (visible) {
+                    if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+                    if (grp.border) |bc| emitBorder(verts, alloc, rect, grp.border_width, bc, cur_clip);
+                }
             },
             .pop_group, .push_virtual_list, .pop_virtual_list => {},
             .text => |txt| {
@@ -261,25 +287,38 @@ fn buildLayer(
                 // greyed-out bg + greyed label, skipping the color ladder.
                 var bg = btn.style.disabled_bg;
                 var fg = btn.style.disabled_fg;
+                var label_dy: f32 = 0;
                 if (!btn.disabled) {
                     const pressed = if (transient.press_index) |pi| pi == i else false;
                     const hovered = if (transient.hover_index) |hi| hi == i else false;
-                    bg = if (pressed)
-                        btn.style.press_bg
-                    else if (hovered)
-                        btn.style.hover_bg
-                    else
-                        btn.style.bg;
-                    fg = btn.style.fg;
+                    if (pressed) {
+                        bg = btn.style.press_bg;
+                        fg = btn.style.press_fg orelse btn.style.fg;
+                        label_dy = btn.style.press_offset_y;
+                    } else if (hovered) {
+                        bg = btn.style.hover_bg;
+                        fg = btn.style.hover_fg orelse btn.style.fg;
+                    } else {
+                        bg = btn.style.bg;
+                        fg = btn.style.fg;
+                    }
                 }
                 emit(verts, alloc, rect, bg, cur_clip);
+                if (btn.style.border) |bc| emitBorder(verts, alloc, rect, btn.style.border_width, bc, cur_clip);
 
                 if (btn.label.len > 0) {
                     const m = measurer.measure(btn.label, btn.font);
+                    const avail = @max(0, rect.w - 2 * btn.style.h_padding);
+                    const label_w = @min(m.width, avail);
+                    const label_dx: f32 = switch (btn.style.label_align) {
+                        .start => 0,
+                        .center => (avail - label_w) * 0.5,
+                        .end => avail - label_w,
+                    };
                     const label_rect = Rect{
-                        .x = rect.x + 8,
-                        .y = rect.y + @max(0, (rect.h - m.height) * 0.5),
-                        .w = @min(m.width, @max(0, rect.w - 16)),
+                        .x = rect.x + btn.style.h_padding + label_dx,
+                        .y = rect.y + @max(0, (rect.h - m.height) * 0.5) + label_dy,
+                        .w = label_w,
                         .h = m.height,
                     };
                     emitText(text_draws, alloc, btn.label, btn.font, fg, label_rect, cur_clip);
@@ -297,9 +336,21 @@ fn buildLayer(
                 else
                     ti.style.border;
 
-                emit(verts, alloc, rect, border_color, cur_clip);
-                const inner = insetRect(rect, BORDER_WIDTH);
-                emit(verts, alloc, inner, if (ti.disabled) ti.style.disabled_bg else ti.style.bg, cur_clip);
+                // Boxed: border-colored rect with the bg inset inside it.
+                // Underline: no box, just a rule along the bottom edge.
+                const underline = ti.style.variant == .underline;
+                const pad_x = if (underline) UNDERLINE_PADDING_X else INPUT_TEXT_PADDING;
+                const pad_y = if (underline) UNDERLINE_PADDING_Y else INPUT_TEXT_PADDING;
+                var inner = rect;
+                if (underline) {
+                    const rule = if (focused) UNDERLINE_RULE_FOCUSED else UNDERLINE_RULE;
+                    emit(verts, alloc, .{ .x = rect.x, .y = rect.y + rect.h - rule, .w = rect.w, .h = rule }, border_color, cur_clip);
+                    inner.h = @max(0, rect.h - rule);
+                } else {
+                    emit(verts, alloc, rect, border_color, cur_clip);
+                    inner = insetRect(rect, ti.style.border_width);
+                    emit(verts, alloc, inner, if (ti.disabled) ti.style.disabled_bg else ti.style.bg, cur_clip);
+                }
 
                 // Selection highlight before the text so text draws on top.
                 // Disabled inputs never draw selection.
@@ -311,23 +362,21 @@ fn buildLayer(
                             const lo_w = measurer.prefixWidth(ti.content, ti.font, lo);
                             const hi_w = measurer.prefixWidth(ti.content, ti.font, hi);
                             const sel_rect = Rect{
-                                .x = inner.x + INPUT_TEXT_PADDING + lo_w,
-                                .y = inner.y + INPUT_TEXT_PADDING,
+                                .x = inner.x + pad_x + lo_w,
+                                .y = inner.y + pad_y,
                                 .w = @max(0, hi_w - lo_w),
-                                .h = @max(0, inner.h - 2 * INPUT_TEXT_PADDING),
+                                .h = @max(0, inner.h - 2 * pad_y),
                             };
-                            // Subtle highlight; the host can theme this via
-                            // a new field on TextInputStyle if desired.
-                            emit(verts, alloc, sel_rect, .{ 0.25, 0.45, 0.95, 0.45 }, cur_clip);
+                            emit(verts, alloc, sel_rect, ti.style.selection_bg, cur_clip);
                         }
                     }
                 }
 
-                if (ti.content.len > 0 and inner.w > 2 * INPUT_TEXT_PADDING) {
+                if (ti.content.len > 0 and inner.w > 2 * pad_x) {
                     const m = measurer.measure(ti.content, ti.font);
-                    const max_w = @max(0, inner.w - 2 * INPUT_TEXT_PADDING);
+                    const max_w = @max(0, inner.w - 2 * pad_x);
                     const text_rect = Rect{
-                        .x = inner.x + INPUT_TEXT_PADDING,
+                        .x = inner.x + pad_x,
                         .y = inner.y + @max(0, (inner.h - m.height) * 0.5),
                         .w = @min(m.width, max_w),
                         .h = m.height,
@@ -347,7 +396,7 @@ fn buildLayer(
                     const prefix_w = measurer.prefixWidth(ti.content, ti.font, ti.cursor);
                     const m = measurer.measure(transient.ime_text, ti.font);
                     const text_rect = Rect{
-                        .x = inner.x + INPUT_TEXT_PADDING + prefix_w,
+                        .x = inner.x + pad_x + prefix_w,
                         .y = inner.y + @max(0, (inner.h - m.height) * 0.5),
                         .w = m.width,
                         .h = m.height,
@@ -373,11 +422,11 @@ fn buildLayer(
                         measurer.prefixWidth(transient.ime_text, ti.font, transient.ime_cursor)
                     else
                         0;
-                    const cursor_x = inner.x + INPUT_TEXT_PADDING + base_prefix + ime_offset;
-                    const cursor_h = @max(0, inner.h - 2 * INPUT_TEXT_PADDING);
+                    const cursor_x = inner.x + pad_x + base_prefix + ime_offset;
+                    const cursor_h = @max(0, inner.h - 2 * pad_y);
                     const cursor_rect = Rect{
                         .x = cursor_x,
-                        .y = inner.y + INPUT_TEXT_PADDING,
+                        .y = inner.y + pad_y,
                         .w = CURSOR_WIDTH,
                         .h = cursor_h,
                     };
@@ -802,6 +851,11 @@ fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
+
+// Chrome (border / shadow / hover / underline) tests live in their own file.
+test {
+    _ = @import("chrome_test.zig");
+}
 
 const cmd_mod = @import("../core/cmd.zig");
 
