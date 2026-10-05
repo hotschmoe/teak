@@ -210,3 +210,37 @@ exposes `windowTitle`.
 A **Host surface extension** under §2 hatch 4(d), not a new escape hatch:
 one decl added to `validateHost`, no platform type crosses the
 framework-facing API.
+
+## Chrome styling (borders, hover inversion, underline fields, shadows)
+
+All square-cornered: the quad renderer has no rounding (the old
+`corner_radius` fields were dead and are gone). Everything below is data on
+the style structs; render draws it from `TransientState` hover/press/focus
+exactly as before.
+
+| Style | Fields |
+|---|---|
+| `GroupStyle` | `border: ?[4]f32`, `border_width = 1`. Four quads INSIDE the rect, after `bg`, before children. No layout space: keep `padding >= border_width`. |
+| `ButtonStyle` | `border`, `border_width`; `hover_fg` / `press_fg` (null = `fg`); `press_offset_y` (label shifts down while pressed); `label_align: TextAlign = .start` (`start`/`center`/`end`); `h_padding = 8`, `min_width = 60`, `height = 36`, `flex`. |
+| `TextInputStyle` | `variant: InputVariant = .boxed` (`.underline` = no box, 1px bottom rule, 2px in `focus_border` when focused); `border_width = 2` (boxed); `selection_bg`; `height = 28`. |
+| `OverlayStyle` | `border`, `border_width`; `shadow: ?[4]f32`, `shadow_offset = {2, 2}`: a hard, blur-free copy of the overlay rect drawn behind it. It shows through transparent areas, so pair it with an opaque `backdrop` (or opaque child panel). |
+
+Ink-on-paper button that inverts on hover, with a hard-shadowed floating panel:
+
+```zig
+const key: teak.ButtonStyle = .{
+    .bg = paper, .fg = ink, .hover_bg = ink, .hover_fg = paper,
+    .press_bg = ink, .press_fg = paper, .press_offset_y = 1,
+    .border = ink, .label_align = .center, .min_width = 0, .height = 24,
+};
+cb.buttonStyled(.save, "SAVE", key);
+
+cb.pushOverlay(.{ .x = 400, .y = 120, .width = 260, .backdrop = paper, .padding = 10,
+                  .border = ink, .shadow = ink, .shadow_offset = .{ 3, 3 } });
+// ...panel content...
+cb.popOverlay();
+```
+
+A `ButtonStyle` / `TextInputStyle` assigned to a `buttonStyled` /
+`textInputStyled` call keeps the theme's body font (these emitters used to
+fall back to the default sans 14 and ignore the theme typography).

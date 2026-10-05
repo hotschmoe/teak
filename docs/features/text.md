@@ -1,6 +1,6 @@
 # Text measurement + rasterization
 
-**Status**: `pub` in `src/teak.zig` as `FontFamily`, `FontSpec`,
+**Status**: `pub` in `src/teak.zig` as `FontFamily`, `FontWeight`, `FontSpec`,
 `DEFAULT_FONT`, `TextMetrics`, `TextMeasurer`, `TextureHandle`,
 `TEXTURE_HANDLE_NONE`, `monoMeasurer`. WS1 ships the types, Host /
 GPU contract extensions, and stubs; real rasterization lands in WS2
@@ -21,13 +21,28 @@ The core vocabulary, usable above the platform layer:
 | Type | Purpose |
 |---|---|
 | `FontFamily` | enum `{ sans, serif, mono }`. Platform maps to a concrete system font. |
-| `FontSpec` | `{ size_px: f32 = 14, family: FontFamily = .sans }`. By-value. |
+| `FontWeight` | enum `{ regular, medium, bold }`. |
+| `FontSpec` | `{ size_px: f32 = 14, family: FontFamily = .sans, weight: FontWeight = .regular, letter_spacing: f32 = 0 }`. By-value. |
 | `DEFAULT_FONT` | `FontSpec{}` — sans 14px. Field default on text-bearing Cmds. |
 | `TextMetrics` | `{ width, height, ascent, descent: f32 }`. All in pixels. |
 | `TextMeasurer` | `{ ctx: *anyopaque, measure_fn: *const fn(...) TextMetrics }`. Opaque-context vtable. Methods: `measure(text, font) TextMetrics`, `prefixWidth(text, font, byte_prefix) f32`. |
 | `TextureHandle` | `u32` token. Opaque above the GPU layer; each backend maps it to a real resource. |
 | `TEXTURE_HANDLE_NONE` | Sentinel (`0`) for "no texture / stub". WS1 stubs return this; real impls issue non-zero handles. |
-| `monoMeasurer()` | Stateless 10 px/byte, 20 px/line fallback. For CLI canaries and framework tests where no Host exists. Not production. |
+| `monoMeasurer()` | Stateless 10 px/byte (+ `letter_spacing` per byte), 20 px/line fallback. For CLI canaries and framework tests where no Host exists. Not production. |
+
+### Weight and letter spacing
+
+`FontSpec.weight` and `FontSpec.letter_spacing` (pixels added after every glyph) are plain data that travel with the font into `TextDraw.font`. Core only threads them through; the backend interprets them:
+
+- **web**: CSS `font-weight` (`regular` 400, `medium` 500, `bold` 700) and canvas `letterSpacing`.
+- **native**: face selection (a bold/medium face if the font set has one); spacing added per glyph.
+- A backend that cannot honor a field **ignores it**: the text still renders, just regular and untracked. The measurer must agree with the rasterizer so layout matches pixels; `monoMeasurer` adds `letter_spacing` per byte and ignores `weight`.
+- Both fields are part of the glyph-cache key (`textCacheKey` in `src/gpu/glyph_cache.zig`), so changing them re-rasterizes instead of reusing a stale texture.
+
+```zig
+const label: teak.FontSpec = .{ .size_px = 11, .family = .mono, .weight = .bold, .letter_spacing = 1 };
+cb.textStyled("PARTS", label, cb.theme.muted_color);
+```
 
 ### Host extension
 
@@ -71,7 +86,7 @@ lands — WS1 doesn't proliferate API.
   Callers capture it per frame and discard; do not stash across Host
   lifetimes.
 - **`FontSpec` is by value.** Copied into each `Cmd`. The type is
-  small enough (8 bytes) that this is trivial; no interning needed.
+  small enough (16 bytes) that this is trivial; no interning needed.
 - **Texture handles are opaque above GPU.** Core / layout / render-
   build never unpack a `TextureHandle`. The GPU backend is the sole
   resolver. This mirrors `NativeHandle` and the validateGpu/validateHost
@@ -82,7 +97,7 @@ lands — WS1 doesn't proliferate API.
   fixed buffer; the allocation is never visible to core.
 - **`prefixWidth(text, font, 0)` returns 0 without dispatching.** The
   vtable short-circuits empty prefixes.
-- **Stubs return numbers compatible with CHAR_WIDTH.** WS1
+- **Stubs return numbers compatible with the 10 px/byte stub.** WS1
   backend stubs (`win32.zig`, `wasm.zig`, `native.zig`, `web.zig`)
   return `len * 10` for width and `20` for height, so WS1 ships with
   zero visual drift from pre-WS1 examples.

@@ -18,6 +18,7 @@ const text = @import("text.zig");
 
 const FontSpec = text.FontSpec;
 const FontFamily = text.FontFamily;
+const FontWeight = text.FontWeight;
 
 // ── Palette ────────────────────────────────────────────────────────
 //
@@ -70,9 +71,14 @@ pub const Typography = struct {
 
 // ── Theme ──────────────────────────────────────────────────────────
 
+/// Everything the un-styled emitters consult. A plain struct: build one
+/// with `fromPalette`, tweak a derived theme, or write a literal from
+/// scratch. Only the palette and the five text/panel colors have no
+/// default; the widget styles and typography fall back to their own
+/// struct defaults, so a custom theme need only override what it cares about.
 pub const Theme = struct {
     palette: Palette,
-    typography: Typography,
+    typography: Typography = .{},
 
     /// Color used by `cb.text(...)` when no per-cmd color override.
     text_color: [4]f32,
@@ -88,12 +94,17 @@ pub const Theme = struct {
     /// top with this fill, and text reads against the opaque card.
     panel_bg: [4]f32,
 
-    button: cmd.ButtonStyle,
-    text_input: cmd.TextInputStyle,
-    checkbox: cmd.CheckboxStyle,
-    radio: cmd.RadioStyle,
-    slider: cmd.SliderStyle,
-    divider: cmd.DividerStyle,
+    button: cmd.ButtonStyle = .{},
+    text_input: cmd.TextInputStyle = .{},
+    checkbox: cmd.CheckboxStyle = .{},
+    radio: cmd.RadioStyle = .{},
+    slider: cmd.SliderStyle = .{},
+    divider: cmd.DividerStyle = .{},
+    /// Bordered panel / card: `cb.pushGroup(cb.theme.card)`.
+    card: cmd.GroupStyle = .{},
+    /// Underline-variant text input for typed-form fields:
+    /// `cb.textInputStyled(msg, content, cursor, cb.theme.field)`.
+    field: cmd.TextInputStyle = .{ .variant = .underline },
 
     /// Apps that want a non-default starting point can branch from
     /// these and override specific fields.
@@ -104,6 +115,15 @@ pub const Theme = struct {
     /// that want a custom brand palette call this and then optionally
     /// tweak individual style fields.
     pub fn fromPalette(p: Palette) Theme {
+        const input: cmd.TextInputStyle = .{
+            .bg = p.bg_sunken,
+            .fg = p.fg,
+            .border = p.border,
+            .focus_border = p.accent,
+            .cursor = p.fg,
+            .flex = 1,
+            .min_width = 120,
+        };
         return .{
             .palette = p,
             .typography = .{},
@@ -118,15 +138,13 @@ pub const Theme = struct {
                 .press_bg = p.bg_press,
                 .fg = p.fg,
             },
-            .text_input = .{
-                .bg = p.bg_sunken,
-                .fg = p.fg,
-                .border = p.border,
-                .focus_border = p.accent,
-                .cursor = p.fg,
-                .flex = 1,
-                .min_width = 120,
+            .text_input = input,
+            .field = blk: {
+                var f = input;
+                f.variant = .underline;
+                break :blk f;
             },
+            .card = .{ .padding = 12, .gap = 8, .bg = p.bg_panel, .border = p.border },
             .checkbox = .{
                 .box_bg = p.bg_sunken,
                 .box_border = p.border,
@@ -226,6 +244,61 @@ test "Theme.fromPalette: panel_bg flows from palette.bg_panel" {
     const scene_sum = t.palette.bg[0] + t.palette.bg[1] + t.palette.bg[2];
     const panel_sum = t.panel_bg[0] + t.panel_bg[1] + t.panel_bg[2];
     try std.testing.expect(panel_sum > scene_sum);
+}
+
+test "a fully custom Theme is a plain literal - no fromPalette needed" {
+    const ink: [4]f32 = .{ 0.08, 0.08, 0.1, 1 };
+    const paper: [4]f32 = .{ 0.96, 0.94, 0.88, 1 };
+    const mono: FontSpec = .{ .size_px = 13, .family = .mono, .letter_spacing = 0.2 };
+    const custom: Theme = .{
+        .palette = .{
+            .bg = paper,
+            .bg_panel = paper,
+            .bg_sunken = paper,
+            .bg_raised = paper,
+            .bg_hover = ink,
+            .bg_press = ink,
+            .fg = ink,
+            .fg_muted = .{ 0.4, 0.4, 0.4, 1 },
+            .accent = .{ 0.8, 0.2, 0.1, 1 },
+            .danger = .{ 0.8, 0.2, 0.1, 1 },
+            .border = ink,
+        },
+        .typography = .{ .body = mono, .heading = .{ .size_px = 16, .family = .mono, .weight = .bold }, .mono = mono, .small = mono },
+        .text_color = ink,
+        .heading_color = ink,
+        .muted_color = .{ 0.4, 0.4, 0.4, 1 },
+        .danger_color = .{ 0.8, 0.2, 0.1, 1 },
+        .panel_bg = paper,
+        .button = .{ .bg = paper, .fg = ink, .hover_bg = ink, .hover_fg = paper, .border = ink },
+        .card = .{ .bg = paper, .border = ink, .padding = 12 },
+    };
+
+    var cb = cmd.CmdBuffer(union(enum) { a }).init(std.testing.allocator);
+    defer cb.deinit();
+    cb.theme = custom;
+    cb.button(.a, "OK");
+    cb.heading("Title");
+    cb.pushGroup(cb.theme.card);
+    cb.popGroup();
+
+    // Un-styled emitters pick the custom styles and typography up.
+    try std.testing.expectEqual(paper, cb.cmds.items[0].button.style.bg);
+    try std.testing.expectEqual(ink, cb.cmds.items[0].button.style.border.?);
+    try std.testing.expectEqual(mono, cb.cmds.items[0].button.font);
+    try std.testing.expectEqual(FontWeight.bold, cb.cmds.items[1].text.font.weight);
+    try std.testing.expectEqual(ink, cb.cmds.items[2].push_group.border.?);
+    // Unspecified widget styles fall back to the struct defaults.
+    try std.testing.expectEqual(cmd.InputVariant.boxed, custom.text_input.variant);
+    try std.testing.expectEqual(cmd.InputVariant.underline, custom.field.variant);
+}
+
+test "Theme.fromPalette derives card + field from the palette" {
+    const t = Theme.dark_default;
+    try std.testing.expectEqual(dark_palette.bg_panel, t.card.bg.?);
+    try std.testing.expectEqual(dark_palette.border, t.card.border.?);
+    try std.testing.expectEqual(cmd.InputVariant.underline, t.field.variant);
+    try std.testing.expectEqual(dark_palette.accent, t.field.focus_border);
 }
 
 test "Theme.typography has body, heading, mono, small" {

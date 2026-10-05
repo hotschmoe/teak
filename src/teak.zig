@@ -67,6 +67,8 @@ pub const CanvasPrimitive = cmd.CanvasPrimitive;
 pub const CanvasPoint = cmd.CanvasPoint;
 pub const Direction = cmd.Direction;
 pub const Align = cmd.Align;
+pub const TextAlign = cmd.TextAlign;
+pub const InputVariant = cmd.InputVariant;
 pub const Justify = cmd.Justify;
 
 pub const Buttons = pointer.Buttons;
@@ -162,6 +164,7 @@ pub const SecondaryWindowSpec = runtime.SecondaryWindowSpec;
 
 pub const FontFamily = text.FontFamily;
 pub const FontSpec = text.FontSpec;
+pub const FontWeight = text.FontWeight;
 pub const DEFAULT_FONT = text.DEFAULT_FONT;
 pub const TextMetrics = text.TextMetrics;
 pub const TextMeasurer = text.TextMeasurer;

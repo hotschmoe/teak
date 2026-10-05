@@ -119,7 +119,7 @@ Read-only extension (e.g. a debug pass that measures overflow): walk `[]Cmd` + `
 
 `GroupStyle` (in `src/core/cmd.zig`, consumed by both layout and render) carries an optional `bg: ?[4]f32 = null`. When non-null, the render pass emits a single solid-fill quad at the group's full padded rect **before** any of the group's children draw — children paint on top. Default `null` preserves the prior no-fill behaviour, so existing call sites are unaffected.
 
-This is presentation data on a Cmd, not new state-flow shape — HARDLINE §3 is undisturbed (no fn-pointer, no widget-internal state, the view function still pure). Corners are square everywhere: the quad renderer has no rounding.
+This is presentation data on a Cmd, not new state-flow shape — HARDLINE §3 is undisturbed (no fn-pointer, no widget-internal state, the view function still pure). Corners are square everywhere: the quad renderer has no rounding. `GroupStyle.border` / `border_width` add a frame inside the rect (see [widgets.md](widgets.md#chrome-styling-borders-hover-inversion-underline-fields-shadows)).
 
 ### Panel / modal-card idiom
 
