@@ -197,6 +197,7 @@ the primary window is unaffected on the other backends.
   focused, so the text cursor blinks (default 30; matches the renderer's
   cursor phase). Apps with no text input pay nothing.
 - `snapshot_path: ?[]const u8` — live-snapshot sink (default `null`).
+- `app_name: []const u8` — names the app for hosts that keep per-app files (native storage under `<config>/teak/<app_name>/`); empty = the window title.
 
 ### Live snapshot sink (`TEAK_SNAPSHOT`)
 

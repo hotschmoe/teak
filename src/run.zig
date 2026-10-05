@@ -140,6 +140,10 @@ pub const RunOptions = struct {
     /// See `docs/features/snapshot.md`. On a target with no host filesystem
     /// (wasm/freestanding) the whole sink compiles out.
     snapshot_path: ?[]const u8 = null,
+    /// Names the app for hosts that keep per-app files (native storage lives
+    /// under `<config>/teak/<app_name>/`). Empty: the Host's default, the
+    /// window title. Ignored by hosts without `setAppName`.
+    app_name: []const u8 = "",
 };
 
 /// The target has a host filesystem to mirror snapshots into. Freestanding
@@ -458,6 +462,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         ime_bufs: [2][128]u8 = undefined,
 
         pub fn init(gpa: std.mem.Allocator, host: *Host, gpu: *Gpu, opts: RunOptions) !Self {
+            if (comptime @hasDecl(Host, "setAppName")) {
+                if (opts.app_name.len > 0) host.setAppName(opts.app_name);
+            }
             return .{
                 .gpa = gpa,
                 .host = host,

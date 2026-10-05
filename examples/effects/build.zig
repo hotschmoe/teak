@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
     // --- CLI ---
 
     const exe = b.addExecutable(.{
-        .name = "fonts",
+        .name = "effects",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    const run_step = b.step("run", "Run the fonts CLI canary");
+    const run_step = b.step("run", "Run the effects CLI canary");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
     // --- Tests ---
 
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
-    const test_step = b.step("test", "Run fonts tests");
+    const test_step = b.step("test", "Run effects tests");
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
     // --- Native UI (wgpu native: Win32 / X11) ---
@@ -49,7 +49,7 @@ pub fn build(b: *std.Build) void {
 
     if (teak.hasNativeBackend(target.result.os.tag)) {
         const ui_exe = b.addExecutable(.{
-            .name = "fonts-ui",
+            .name = "effects-ui",
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/ui_main.zig"),
                 .target = target,
@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) void {
         ui_run.step.dependOn(&install_ui.step);
         if (b.args) |args| ui_run.addArgs(args);
 
-        const ui_step = b.step("ui", "Run Teak fonts UI (wgpu native: Win32 / X11)");
+        const ui_step = b.step("ui", "Run Teak effects UI (wgpu native: Win32 / X11)");
         ui_step.dependOn(&ui_run.step);
     }
 
@@ -81,7 +81,7 @@ pub fn build(b: *std.Build) void {
     ) orelse .ReleaseFast;
 
     const web_exe = b.addExecutable(.{
-        .name = "fonts-web",
+        .name = "effects-web",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/web_main.zig"),
             .target = wasm_target,

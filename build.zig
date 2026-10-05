@@ -191,6 +191,19 @@ pub fn build(b: *std.Build) void {
         };
     }
 
+    // Native effects service (HTTP worker threads, storage files, ...): runs
+    // against a local libc-socket server. Linux only, like its host.
+    if (target.result.os.tag == .linux) {
+        const native_fx_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/native_effects.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "teak", .module = mod }},
+        });
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = native_fx_mod })).step);
+    }
+
     // wasm32-freestanding compile canary. Run `zig build test-wasm` to
     // assert the framework core stays posix-dep-free. The artifact isn't
     // executed — successful compile is the signal.

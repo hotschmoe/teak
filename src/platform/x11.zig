@@ -19,6 +19,7 @@
 const std = @import("std");
 const teak = @import("teak");
 const text = @import("teak-text");
+const native_effects = @import("native_effects.zig");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -240,6 +241,8 @@ pub const Host = struct {
     window: Window,
     wm_protocols: Atom,
     wm_delete: Atom,
+    /// Effect servicing (HTTP worker threads, storage files, ...).
+    effects: *native_effects.Service,
 
     width: u32,
     height: u32,
@@ -295,6 +298,8 @@ pub const Host = struct {
         else
             1.0;
 
+        const effects = try native_effects.Service.create(title);
+
         return .{
             .lib = lib,
             .x = x,
@@ -302,6 +307,7 @@ pub const Host = struct {
             .window = window,
             .wm_protocols = wm_protocols,
             .wm_delete = wm_delete,
+            .effects = effects,
             .width = width,
             .height = height,
             .scale = scale,
@@ -315,6 +321,7 @@ pub const Host = struct {
 
     pub fn deinit(self: *Host) void {
         text.releaseFaces();
+        self.effects.destroy();
         _ = self.x.XDestroyWindow(self.display, self.window);
         _ = self.x.XCloseDisplay(self.display);
         self.lib.close();
@@ -432,6 +439,22 @@ pub const Host = struct {
 
     fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
         return text.measure(text_bytes, font);
+    }
+
+    // ── Declarative effects (docs/features/effects.md) ──────────────
+
+    pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
+        return self.effects.submit(e);
+    }
+
+    pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize {
+        return self.effects.poll(buf, self.nowMs());
+    }
+
+    /// Name the app's storage directory (`<config>/teak/<name>/`); defaults
+    /// to the window title.
+    pub fn setAppName(self: *Host, name: []const u8) void {
+        self.effects.setAppName(name) catch {};
     }
 
     /// Register the TTF `ttf` as the face for (`family`, `weight`), for both

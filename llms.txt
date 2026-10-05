@@ -418,6 +418,8 @@ EffectSubmit = enum { accepted, busy, unsupported }   // Host.submit's answer
 delisted (a late result for an unlisted id is dropped = cancellation). Results flow `effectMsg` -> `update`
 (`last_msg` names them). Effect slices live for the `submit` call; result slices until the `update` returns.
 Keep the request in `Model` (`effects()` returns a slice of it). 32 ids at once.
+Native: HTTP on worker threads, storage under `$XDG_CONFIG_HOME/teak/<app>/` (`RunOptions.app_name` or the window title), downloads to `$TEAK_OUT`,
+`TEAK_OPEN=path` feeds `open_file`, `query_param` reads `--name=value` / `TEAK_<NAME>`.
 
 ### Fonts (docs/features/text.md)
 ```zig

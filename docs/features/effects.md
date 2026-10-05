@@ -131,15 +131,17 @@ pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize; // fills 
 The lifecycle and the JS/wasm buffer protocol are written down once, in
 zunk's `docs/ARCHITECTURE.md` ("Host services: `web.fx`").
 
-### Native (Linux/X11; Win32 compiles but answers `unsupported`)
+### Native (Linux/X11 in `src/platform/native_effects.zig`; Win32 answers `unsupported`)
 
-HTTP runs on a worker thread through `std.http.Client` (TLS), so a frame
-never blocks; storage is files under `$XDG_CONFIG_HOME/teak/<app>/`
-(default `~/.config`); downloads are written to `$TEAK_OUT` or the cwd;
-`open_file` has no dialog: it answers `file_cancelled` unless the env var
-`TEAK_OPEN=path` is set (the file is read once — lets agents and tests drive
-it); `clock` and `query_param` read the OS clock and argv/env; `write_clipboard`
-logs once and is ignored.
+| Effect | Implementation |
+|---|---|
+| `http` | `std.http.Client` (TLS, system CA bundle) on a short-lived worker thread per request, at most 8 at once (`busy` beyond that), so a frame never blocks. Method, headers and body are copied at `submit`. The timeout is enforced at poll time: at the deadline the app gets `status = 0`, `err = "timeout after N ms"` and the worker's late answer is discarded (std's client has no socket timeout, so a hung connect lingers on its own thread until the OS gives up). Failures give `status = 0` and a reason ("network error: connection refused", "invalid URL", ...). Responses up to 32 MB. |
+| `storage_get` / `storage_set` | one file per key under `$XDG_CONFIG_HOME/teak/<app>/` (default `~/.config`); the key is escaped into a single path component; an empty value deletes the file. `<app>` is a slug of the window title, or `RunOptions.app_name`. |
+| `download` | written to `$TEAK_OUT` (created if missing) or the cwd, under the base name of `name`. |
+| `open_file` | no dialog: `file_cancelled`, unless env `TEAK_OPEN=path` is set; then every request reads that file (name, mime from the extension, bytes). Lets agents and tests drive the app. |
+| `clock` | OS wall clock and UTC offset. |
+| `query_param` | argv `--name=value` (read from `/proc/self/cmdline`), else env `TEAK_<NAME_UPPER>` (`api-base` -> `TEAK_API_BASE`), else absent. |
+| `write_clipboard` | logged once and ignored (X11 selections need an async round trip). |
 
 ## HARDLINE bounds (§2 hatch 7)
 
