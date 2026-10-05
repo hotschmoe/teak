@@ -35,6 +35,18 @@
 //!   - `keyNeedsClipboard(SpecialKey) bool`           — pairs with…
 //!   - `handleClipboard(*Model, SpecialKey, Clipboard) void` — cut/copy/paste
 //!   - `wheelMsg(*const Model, f32) ?Msg`             — vertical wheel
+//!   - `canvasMsg(*const Model, CanvasEvent) ?Msg`    — pointer input over
+//!     interactive canvases (`CanvasCmd.pointer`): down / move / up / wheel /
+//!     leave, plus `layout` on first layout and resize. A press captures the
+//!     pointer for its canvas until every button is released. A wheel over a
+//!     pointer canvas becomes a `wheel` event INSTEAD of `wheelMsg`.
+//!   - `scrollMsg(*const Model, id, dx, dy) ?Msg`     — wheel over the
+//!     innermost hovered scroll region with `ScrollStyle.id != 0` (a pointer
+//!     canvas inside it wins when it is the innermost).
+//!   - `scrollLayoutMsg(*const Model, id, vw, vh, cw, ch) ?Msg` — viewport and
+//!     content size of every `ScrollStyle.id != 0` region, on its first layout
+//!     and whenever either changes, so the app can clamp offsets and draw
+//!     scrollbars (the view cannot read layout).
 //!   - `focusedMsg(*const Model) ?Msg`                — the focus Msg of the
 //!     currently-focused widget; `run` maps it to a cmd index via
 //!     `indexOfFocusMsg` (stable across conditional/reordered widgets)
@@ -75,7 +87,9 @@ const sub_mod = @import("core/sub.zig");
 const transient = @import("core/transient.zig");
 const text = @import("core/text.zig");
 const theme_mod = @import("core/theme.zig");
+const pointer = @import("core/pointer.zig");
 const layout = @import("layout/engine.zig");
+const scroll_extent = @import("layout/scroll_extent.zig");
 const hit_test = @import("input/hit_test.zig");
 const focus = @import("input/focus.zig");
 const keys = @import("input/keys.zig");
@@ -329,6 +343,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// for apps that opt in AND a Gpu that supports secondary surfaces —
         /// the web Gpu has none (and its Host never opens a second window),
         /// so the hooks compile away there.
+        const has_canvas_hook = @hasDecl(App, "canvasMsg");
+        const has_scroll_hook = @hasDecl(App, "scrollMsg");
+        const has_scroll_layout_hook = @hasDecl(App, "scrollLayoutMsg");
         const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView") and
             @hasDecl(Gpu, "openSecondarySurface");
 
@@ -356,6 +373,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
         ts: TransientState = .{},
         prev_ts: TransientState = .{},
+
+        /// Interactive-canvas routing: which canvas has the pointer
+        /// captured / is hovered (by `CanvasCmd.id`, stable across frames
+        /// unlike cmd indices) and the last position a canvas saw, for
+        /// `move` deltas. Loop bookkeeping like `press_target`; the app's
+        /// own state still lives in its Model.
+        canvas_ptr: CanvasPointer = .{},
 
         /// Press model: arm on mousedown over a widget, fire the click only
         /// if mouseup lands on the same widget; drag-off cancels.
@@ -433,11 +457,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // the user is looking at — so `prev` is captured before the swap.
             const prev = self.current;
             self.routeMouse(input, prev);
+            self.routeCanvasPointer(input, prev);
             self.routeKeys(input, prev);
-            self.routeWheel(input);
+            self.routeWheel(input, prev);
             self.fireSubs();
 
             const cur = try self.buildView(input);
+            self.reportLayout(prev, cur);
             const cur_cmds = self.bufs[cur].cmds.items;
             const cur_rects = self.rects[cur].items;
             self.updateTransient(input, cur);
@@ -566,10 +592,160 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
         }
 
-        fn routeWheel(self: *Self, input: Input) void {
-            if (!@hasDecl(App, "wheelMsg")) return;
+        /// Wheel routing, innermost consumer first: a captured or hovered
+        /// pointer canvas, else the innermost id-bearing scroll region, else
+        /// the app's plain `wheelMsg`.
+        fn routeWheel(self: *Self, input: Input, prev: u1) void {
             if (input.wheel_dy == 0 and input.wheel_dx == 0) return;
-            if (App.wheelMsg(&self.model, input.wheel_dy)) |m| self.dispatch(m);
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+
+            if (has_canvas_hook) {
+                // A captured canvas takes every wheel event, wherever the cursor is.
+                if (self.canvas_ptr.capture) |id| return self.sendCanvasEvent(id, .wheel, input, prev, .none);
+            }
+            if (has_canvas_hook or has_scroll_hook) {
+                if (hit_test.wheelTarget(cmds, rects, input.mouse_x, input.mouse_y)) |target| switch (target) {
+                    .canvas => |c| if (has_canvas_hook) return self.sendCanvasEvent(c.id, .wheel, input, prev, .none),
+                    .scroll => |sc| if (has_scroll_hook) {
+                        if (App.scrollMsg(&self.model, sc.id, input.wheel_dx, input.wheel_dy)) |m| self.dispatch(m);
+                        return;
+                    },
+                };
+            }
+            if (@hasDecl(App, "wheelMsg")) {
+                if (App.wheelMsg(&self.model, input.wheel_dy)) |m| self.dispatch(m);
+            }
+        }
+
+        /// Pointer input over interactive canvases (`CanvasCmd.pointer`),
+        /// resolved against the previous frame's layout: hover enter / leave,
+        /// `move`, button `down` / `up`, and capture — a press on a canvas
+        /// sends it every following event (even off its rect) until all
+        /// buttons are released. A button held since before the cursor reached
+        /// a canvas (pressed elsewhere) does not hover it, so dragging a
+        /// slider across a canvas does not poke the canvas. Wheel is routed
+        /// separately (`routeWheel`).
+        fn routeCanvasPointer(self: *Self, input: Input, prev: u1) void {
+            if (!has_canvas_hook) return;
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+            const p = &self.canvas_ptr;
+            const under = hit_test.pointerTarget(cmds, rects, input.mouse_x, input.mouse_y);
+
+            // A capture whose canvas left the view can never see its release.
+            if (p.capture) |id| {
+                if (findPointerCanvas(cmds, id) == null) p.* = .{};
+            }
+
+            // Hover enter / leave (suspended while captured).
+            if (p.capture == null) {
+                const pressed_elsewhere = heldBeforeFrame(input).any();
+                const want: ?u32 = if (under != null and !pressed_elsewhere) under.?.id else null;
+                if (p.hover != want) {
+                    if (p.hover) |old| self.sendCanvasEvent(old, .leave, input, prev, .none);
+                    p.hover = want;
+                    p.has_last = false;
+                }
+            }
+
+            // Move: on entry (dx = dy = 0) and whenever the cursor moved.
+            if (p.capture orelse p.hover) |id| {
+                if (!p.has_last or p.last_x != input.mouse_x or p.last_y != input.mouse_y) {
+                    const dx = if (p.has_last) input.mouse_x - p.last_x else 0;
+                    const dy = if (p.has_last) input.mouse_y - p.last_y else 0;
+                    p.has_last = true;
+                    p.last_x = input.mouse_x;
+                    p.last_y = input.mouse_y;
+                    self.sendCanvasMove(id, input, prev, dx, dy);
+                }
+            }
+
+            const buttons = [_]pointer.Button{ .left, .middle, .right };
+            for (buttons) |b| {
+                if (!buttonSet(input.button_down, b)) continue;
+                if (p.capture == null) {
+                    const u = under orelse continue;
+                    p.capture = u.id;
+                    p.hover = u.id;
+                }
+                self.sendCanvasEvent(p.capture.?, .down, input, prev, b);
+            }
+            for (buttons) |b| {
+                if (!buttonSet(input.button_up, b)) continue;
+                if (p.capture) |id| self.sendCanvasEvent(id, .up, input, prev, b);
+            }
+
+            // Capture ends with the last release; if the cursor is no longer
+            // over the canvas it has now left it.
+            if (p.capture) |id| {
+                if (!input.buttons.any()) {
+                    p.capture = null;
+                    if (under == null or under.?.id != id) {
+                        self.sendCanvasEvent(id, .leave, input, prev, .none);
+                        p.hover = null;
+                        p.has_last = false;
+                    }
+                }
+            }
+        }
+
+        fn sendCanvasMove(self: *Self, id: u32, input: Input, prev: u1, dx: f32, dy: f32) void {
+            const cmds = self.bufs[prev].cmds.items;
+            const idx = findPointerCanvas(cmds, id) orelse return;
+            var ev = canvasEventAt(id, .move, input, self.rects[prev].items[idx], .none);
+            ev.dx = dx;
+            ev.dy = dy;
+            self.dispatchCanvas(ev);
+        }
+
+        /// Deliver one event to canvas `id`, located in the previous frame's
+        /// layout. A canvas no longer in that layout is skipped.
+        fn sendCanvasEvent(self: *Self, id: u32, kind: pointer.CanvasEventKind, input: Input, prev: u1, button: pointer.Button) void {
+            const cmds = self.bufs[prev].cmds.items;
+            const idx = findPointerCanvas(cmds, id) orelse return;
+            var ev = canvasEventAt(id, kind, input, self.rects[prev].items[idx], button);
+            if (kind == .wheel) {
+                ev.dx = input.wheel_dx;
+                ev.dy = input.wheel_dy;
+            }
+            self.dispatchCanvas(ev);
+        }
+
+        fn dispatchCanvas(self: *Self, ev: pointer.CanvasEvent) void {
+            if (App.canvasMsg(&self.model, ev)) |m| self.dispatch(m);
+        }
+
+        /// Tell the app about layout results it cannot read from `view`:
+        /// a pointer canvas's size (`CanvasEvent.layout`) and an id-bearing
+        /// scroll region's viewport + content size (`scrollLayoutMsg`), each
+        /// on first layout and whenever the value differs from the previous
+        /// frame's. The resulting Msg takes effect in the NEXT frame's view.
+        fn reportLayout(self: *Self, prev: u1, cur: u1) void {
+            if (!has_canvas_hook and !has_scroll_layout_hook) return;
+            const cmds = self.bufs[cur].cmds.items;
+            const rects = self.rects[cur].items;
+            const prev_cmds = self.bufs[prev].cmds.items;
+            const prev_rects = self.rects[prev].items;
+            for (cmds, 0..) |c, i| switch (c) {
+                .canvas => |cv| if (has_canvas_hook and cv.pointer) {
+                    const old = findPointerCanvas(prev_cmds, cv.id);
+                    if (old == null or prev_rects[old.?].w != rects[i].w or prev_rects[old.?].h != rects[i].h) {
+                        self.dispatchCanvas(.{ .id = cv.id, .kind = .layout, .w = rects[i].w, .h = rects[i].h });
+                    }
+                },
+                .push_scroll => |sc| if (has_scroll_layout_hook and sc.id != 0) {
+                    const now = scroll_extent.scrollExtent(cmds, rects, i);
+                    const unchanged = if (findScroll(prev_cmds, sc.id)) |old|
+                        std.meta.eql(now, scroll_extent.scrollExtent(prev_cmds, prev_rects, old))
+                    else
+                        false;
+                    if (!unchanged) {
+                        if (App.scrollLayoutMsg(&self.model, sc.id, now.viewport_w, now.viewport_h, now.content_w, now.content_h)) |m| self.dispatch(m);
+                    }
+                },
+                else => {},
+            };
         }
 
         /// Fire the app's declared timers before building this frame's view,
@@ -749,6 +925,70 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
     };
 }
 
+/// Pointer-canvas routing state; see `Runtime.canvas_ptr`.
+const CanvasPointer = struct {
+    /// Canvas that has the pointer captured (a press landed on it and not
+    /// every button has been released since).
+    capture: ?u32 = null,
+    /// Canvas the cursor is over (also the captured one during a capture).
+    hover: ?u32 = null,
+    /// Cursor position at the last `move` delivered, for deltas.
+    has_last: bool = false,
+    last_x: f32 = 0,
+    last_y: f32 = 0,
+};
+
+/// Buttons that were already down when this frame began: held now, or
+/// released this frame, minus those pressed this frame.
+fn heldBeforeFrame(input: anytype) pointer.Buttons {
+    const held: u8 = @bitCast(input.buttons);
+    const up: u8 = @bitCast(input.button_up);
+    const down: u8 = @bitCast(input.button_down);
+    return @bitCast((held | up) & ~down);
+}
+
+fn buttonSet(set: pointer.Buttons, b: pointer.Button) bool {
+    return switch (b) {
+        .left => set.left,
+        .middle => set.middle,
+        .right => set.right,
+        .none => false,
+    };
+}
+
+/// Cmd index of the pointer canvas with `id`, if the buffer has one.
+fn findPointerCanvas(cmds: anytype, id: u32) ?usize {
+    for (cmds, 0..) |c, i| switch (c) {
+        .canvas => |cv| if (cv.pointer and cv.id == id) return i,
+        else => {},
+    };
+    return null;
+}
+
+/// Cmd index of the `push_scroll` with `id`, if the buffer has one.
+fn findScroll(cmds: anytype, id: u32) ?usize {
+    for (cmds, 0..) |c, i| switch (c) {
+        .push_scroll => |sc| if (sc.id == id) return i,
+        else => {},
+    };
+    return null;
+}
+
+/// A `CanvasEvent` for the cursor's current position, canvas-local.
+fn canvasEventAt(id: u32, kind: pointer.CanvasEventKind, input: anytype, rect: Rect, button: pointer.Button) pointer.CanvasEvent {
+    return .{
+        .id = id,
+        .kind = kind,
+        .x = input.mouse_x - rect.x,
+        .y = input.mouse_y - rect.y,
+        .button = button,
+        .buttons = input.buttons,
+        .mods = input.mods,
+        .w = rect.w,
+        .h = rect.h,
+    };
+}
+
 /// Which of the primary frame's observable inputs changed against the
 /// previous frame.
 const FrameDiff = struct {
@@ -883,6 +1123,7 @@ pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd
                 if (!std.meta.eql(x.style, o.style)) return false;
                 if (!std.meta.eql(x.msg, o.msg)) return false;
                 if (!std.mem.eql(u8, x.label, o.label)) return false;
+                if (x.id != o.id or x.pointer != o.pointer) return false;
                 if (x.primitives.len != o.primitives.len) return false;
                 // Compare by content, not slice identity — the arena hands
                 // out fresh addresses each frame. Polyline carries a nested
@@ -2114,4 +2355,498 @@ test "run: a secondary-content-only change re-mirrors the snapshot (F2)" {
     try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 2\"") != null);
     // A frozen mirror (the bug) would still show the opening "ticks: 0".
     try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 0\"") == null);
+}
+
+// ── Interactive canvas / scroll routing tests ───────────────────────
+//
+// A scripted Host feeds `Runtime.frame` one `Frame` of input per tick and
+// closes after the last, so each test reads `rt.model` directly — no
+// statics. Input is routed against the PREVIOUS frame's layout, so frame 1
+// only builds the view (and reports layout); real pointer events start at
+// frame 2.
+
+const Frame = struct {
+    x: f32 = -10,
+    y: f32 = -10,
+    /// Buttons held after this frame's events.
+    held: pointer.Buttons = .{},
+    down: pointer.Buttons = .{},
+    up: pointer.Buttons = .{},
+    mods: pointer.Modifiers = .{},
+    wheel_dx: f32 = 0,
+    wheel_dy: f32 = 0,
+    keys: []const keys.SpecialKey = &.{},
+};
+
+const left: pointer.Buttons = .{ .left = true };
+const right: pointer.Buttons = .{ .right = true };
+const both: pointer.Buttons = .{ .left = true, .right = true };
+
+const ScriptHost = struct {
+    script: []const Frame,
+    next: usize = 0,
+    width: u32 = 400,
+    height: u32 = 300,
+
+    pub fn deinit(_: *ScriptHost) void {}
+    pub fn shouldClose(self: *const ScriptHost) bool {
+        return self.next > self.script.len;
+    }
+    pub fn pollInputs(self: *ScriptHost) InputState {
+        defer self.next += 1;
+        if (self.next >= self.script.len) return std.mem.zeroes(InputState); // past the end: closes
+        const f = self.script[self.next];
+        var in = std.mem.zeroes(InputState);
+        in.width = self.width;
+        in.height = self.height;
+        in.resized = self.next == 0;
+        in.mouse_x = f.x;
+        in.mouse_y = f.y;
+        in.buttons = f.held;
+        in.button_down = f.down;
+        in.button_up = f.up;
+        in.mouse_down = f.down.left;
+        in.mouse_up = f.up.left;
+        in.mods = f.mods;
+        in.wheel_dx = f.wheel_dx;
+        in.wheel_dy = f.wheel_dy;
+        in.keys = f.keys;
+        return in;
+    }
+    pub fn nativeHandle(_: *const ScriptHost) void {}
+    pub fn textMeasurer(_: *ScriptHost) text.TextMeasurer {
+        return text.monoMeasurer();
+    }
+    pub fn clipboard(_: *ScriptHost) Clipboard {
+        return .{ .ctx = undefined, .read_fn = StubHost.stubRead, .write_fn = StubHost.stubWrite };
+    }
+    pub fn imeState(_: *const ScriptHost) host_iface.ImeState {
+        return .{};
+    }
+    pub fn publishA11yTree(_: *ScriptHost, _: []const host_iface.A11yNode) void {}
+    pub fn openFileDialog(_: *ScriptHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn saveFileDialog(_: *ScriptHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
+        return null;
+    }
+    pub fn requestFileDialog(_: *ScriptHost, _: host_iface.FileDialogFilter) u32 {
+        return 0;
+    }
+    pub fn requestSaveFileDialog(_: *ScriptHost, _: host_iface.FileDialogFilter) u32 {
+        return 0;
+    }
+    pub fn pollFileDialogResult(_: *ScriptHost, _: u32) host_iface.FileDialogPoll {
+        return .{ .pending = {} };
+    }
+    pub fn openSecondaryWindow(_: *ScriptHost, _: []const u8, _: u32, _: u32) ?u32 {
+        return null;
+    }
+    pub fn pollSecondaryInputs(_: *ScriptHost, _: u32) ?InputState {
+        return null;
+    }
+    pub fn closeSecondaryWindow(_: *ScriptHost, _: u32) void {}
+    pub fn secondaryWindowHandle(_: *const ScriptHost, _: u32) ?void {
+        return null;
+    }
+    pub fn setTitle(_: *ScriptHost, _: []const u8) void {}
+    pub fn nowMs(_: *const ScriptHost) u64 {
+        return 0;
+    }
+};
+
+/// Drive `App` through `script` and hand back the finished Runtime (so the
+/// test can read `rt.model`). The caller deinits it.
+fn playScript(comptime App: type, script: []const Frame) !Runtime(App, ScriptHost, StubGpu) {
+    const Rt = Runtime(App, ScriptHost, StubGpu);
+    const S = struct {
+        var host: ScriptHost = undefined;
+        var gpu: StubGpu = .{};
+    };
+    S.host = .{ .script = script };
+    S.gpu = .{};
+    var rt = try Rt.init(std.testing.allocator, &S.host, &S.gpu, .{});
+    errdefer rt.deinit();
+    while (!S.host.shouldClose()) try rt.frame();
+    return rt;
+}
+
+/// Shared App: a 200x100 pointer canvas (id 7) at the origin with a button
+/// below it, logging every Msg into the Model.
+/// Fixed-capacity Msg log the test Models keep, so assertions read the
+/// Model straight off the finished Runtime.
+const EventLog = struct {
+    buf: [64]PointerApp.Logged = undefined,
+    n: usize = 0,
+
+    fn push(self: *EventLog, l: PointerApp.Logged) void {
+        self.buf[self.n] = l;
+        self.n += 1;
+    }
+    fn items(self: *const EventLog) []const PointerApp.Logged {
+        return self.buf[0..self.n];
+    }
+};
+
+const PointerApp = struct {
+    const Logged = union(enum) {
+        canvas: pointer.CanvasEvent,
+        click,
+        wheel: f32,
+        scroll: struct { id: u32, dx: f32, dy: f32 },
+        scroll_layout: struct { id: u32, vw: f32, vh: f32, cw: f32, ch: f32 },
+        widen,
+    };
+    pub const Model = struct {
+        log: EventLog = .{},
+        wide: bool = false,
+    };
+    pub const Msg = Logged;
+    pub fn update(m: *Model, msg: Msg) void {
+        if (msg == .widen) m.wide = true;
+        m.log.push(msg);
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+        cb.canvasInteractive(.{ .width = if (m.wide) 300 else 200, .height = 100 }, &.{}, 7, "viewport");
+        cb.button(.click, "B");
+        cb.popGroup();
+    }
+    pub fn canvasMsg(_: *const Model, ev: pointer.CanvasEvent) ?Msg {
+        return .{ .canvas = ev };
+    }
+    pub fn wheelMsg(_: *const Model, dy: f32) ?Msg {
+        return .{ .wheel = dy };
+    }
+    pub fn keySpecialMsg(_: *const Model, k: keys.SpecialKey) ?Msg {
+        return if (k == .enter) Msg.widen else null;
+    }
+};
+
+fn expectKinds(log: []const PointerApp.Logged, expected: []const pointer.CanvasEventKind) !void {
+    var got: [64]pointer.CanvasEventKind = undefined;
+    var n: usize = 0;
+    for (log) |l| switch (l) {
+        .canvas => |ev| {
+            got[n] = ev.kind;
+            n += 1;
+        },
+        else => {},
+    };
+    try std.testing.expectEqualSlices(pointer.CanvasEventKind, expected, got[0..n]);
+}
+
+test "canvas events: hover, press captures through a drag outside, release + leave" {
+    var rt = try playScript(PointerApp, &.{
+        .{}, // 1: view built; canvas laid out -> `layout`
+        .{ .x = 50, .y = 40 }, // 2: enters the canvas
+        .{ .x = 60, .y = 45 }, // 3: moves within it
+        .{ .x = 60, .y = 45, .held = left, .down = left }, // 4: press
+        .{ .x = 300, .y = 250, .held = left }, // 5: dragged off the canvas, still captured
+        .{ .x = 300, .y = 250, .up = left }, // 6: release outside
+        .{ .x = 300, .y = 250 }, // 7: idle
+    });
+    defer rt.deinit();
+    const log = rt.model.log.items();
+
+    try expectKinds(log, &.{ .layout, .move, .move, .down, .move, .up, .leave });
+
+    const layout_ev = log[0].canvas;
+    try std.testing.expectEqual(@as(u32, 7), layout_ev.id);
+    try std.testing.expectEqual(@as(f32, 200), layout_ev.w);
+    try std.testing.expectEqual(@as(f32, 100), layout_ev.h);
+
+    // Entry move: local coords, zero delta. Second move: delta from the first.
+    const enter = log[1].canvas;
+    try std.testing.expectEqual(@as(f32, 50), enter.x);
+    try std.testing.expectEqual(@as(f32, 40), enter.y);
+    try std.testing.expectEqual(@as(f32, 0), enter.dx);
+    const mv = log[2].canvas;
+    try std.testing.expectEqual(@as(f32, 10), mv.dx);
+    try std.testing.expectEqual(@as(f32, 5), mv.dy);
+
+    const down = log[3].canvas;
+    try std.testing.expectEqual(pointer.Button.left, down.button);
+    try std.testing.expect(down.buttons.left);
+    try std.testing.expectEqual(@as(f32, 60), down.x);
+
+    // Captured move outside the rect: local coords run past the canvas.
+    const drag = log[4].canvas;
+    try std.testing.expectEqual(@as(f32, 300), drag.x);
+    try std.testing.expectEqual(@as(f32, 240), drag.dx);
+    try std.testing.expect(drag.buttons.left);
+
+    const up = log[5].canvas;
+    try std.testing.expectEqual(pointer.Button.left, up.button);
+    try std.testing.expect(!up.buttons.any());
+    // No stray click Msg: a pointer canvas has no click msg.
+    for (log) |l| try std.testing.expect(l != .click);
+}
+
+test "canvas events: leaving without a press sends leave; wheel goes to the canvas, not wheelMsg" {
+    var rt = try playScript(PointerApp, &.{
+        .{},
+        .{ .x = 50, .y = 40 },
+        .{ .x = 50, .y = 40, .wheel_dy = 120, .mods = .{ .ctrl = true } }, // pinch-style wheel on the canvas
+        .{ .x = 50, .y = 150 }, // moved onto the button below
+        .{ .x = 50, .y = 150, .wheel_dy = 48 }, // wheel over a button: plain wheelMsg
+    });
+    defer rt.deinit();
+    const log = rt.model.log.items();
+
+    try expectKinds(log, &.{ .layout, .move, .wheel, .leave });
+    const wheel_ev = log[2].canvas;
+    try std.testing.expectEqual(@as(f32, 120), wheel_ev.dy);
+    try std.testing.expect(wheel_ev.mods.ctrl);
+    try std.testing.expectEqual(@as(f32, 50), wheel_ev.x);
+    // Exactly one plain wheel Msg: the one over the button, none for the canvas wheel.
+    var plain: usize = 0;
+    for (log) |l| if (l == .wheel) {
+        plain += 1;
+        try std.testing.expectEqual(@as(f32, 48), l.wheel);
+    };
+    try std.testing.expectEqual(@as(usize, 1), plain);
+}
+
+test "canvas events: a press that started elsewhere does not hover the canvas" {
+    var rt = try playScript(PointerApp, &.{
+        .{},
+        .{ .x = 50, .y = 150, .held = left, .down = left }, // press on the button
+        .{ .x = 50, .y = 50, .held = left }, // dragged over the canvas
+        .{ .x = 50, .y = 50, .up = left }, // released over it
+        .{ .x = 55, .y = 50 }, // now hovering is fine
+    });
+    defer rt.deinit();
+    try expectKinds(rt.model.log.items(), &.{ .layout, .move });
+    // The release over the canvas did not click the button (drag-off cancel).
+    for (rt.model.log.items()) |l| try std.testing.expect(l != .click);
+}
+
+test "canvas events: a click inside one frame sends down then up and leaves no capture" {
+    var rt = try playScript(PointerApp, &.{
+        .{},
+        .{ .x = 10, .y = 10, .held = .{}, .down = left, .up = left }, // fast click
+        .{ .x = 20, .y = 20 }, // hover continues, nothing captured
+    });
+    defer rt.deinit();
+    try expectKinds(rt.model.log.items(), &.{ .layout, .move, .down, .up, .move });
+}
+
+test "canvas events: multiple buttons keep the capture until all are released" {
+    var rt = try playScript(PointerApp, &.{
+        .{},
+        .{ .x = 10, .y = 10 },
+        .{ .x = 10, .y = 10, .held = left, .down = left },
+        .{ .x = 300, .y = 10, .held = both, .down = right, .mods = .{ .shift = true } }, // 2nd button, off the canvas
+        .{ .x = 300, .y = 10, .held = right, .up = left }, // one released: still captured
+        .{ .x = 300, .y = 10, .up = right }, // last released outside
+    });
+    defer rt.deinit();
+    const log = rt.model.log.items();
+    try expectKinds(log, &.{ .layout, .move, .down, .move, .down, .up, .up, .leave });
+    const second_down = log[4].canvas;
+    try std.testing.expectEqual(pointer.Button.right, second_down.button);
+    try std.testing.expect(second_down.buttons.left and second_down.buttons.right);
+    try std.testing.expect(second_down.mods.shift);
+}
+
+test "canvas events: layout fires again when the canvas size changes, not otherwise" {
+    var rt = try playScript(PointerApp, &.{
+        .{}, // 1: layout 200x100
+        .{}, // 2: unchanged -> nothing
+        .{ .keys = &.{.enter} }, // 3: model.wide = true
+        .{}, // 4: view builds the 300-wide canvas -> layout
+        .{}, // 5: unchanged
+    });
+    defer rt.deinit();
+    const log = rt.model.log.items();
+    var layouts: usize = 0;
+    var last_w: f32 = 0;
+    for (log) |l| switch (l) {
+        .canvas => |ev| if (ev.kind == .layout) {
+            layouts += 1;
+            last_w = ev.w;
+        },
+        else => {},
+    };
+    try std.testing.expectEqual(@as(usize, 2), layouts);
+    try std.testing.expectEqual(@as(f32, 300), last_w);
+}
+
+/// A scroll region (id 3) with a button list above a plain button, plus an
+/// id-0 region, to exercise `scrollMsg` / `scrollLayoutMsg`.
+const ScrollApp = struct {
+    pub const Model = struct {
+        log: EventLog = .{},
+        rows: u32 = 3,
+    };
+    pub const Msg = PointerApp.Logged;
+    pub fn update(m: *Model, msg: Msg) void {
+        if (msg == .widen) m.rows += 2;
+        m.log.push(msg);
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+        cb.pushScroll(.{ .id = 3, .width = 200, .height = 80, .padding = 0 }); // 0..80
+        for (0..m.rows) |_| cb.button(.click, "row");
+        cb.popScroll();
+        cb.pushScroll(.{ .id = 0, .width = 200, .height = 80, .padding = 0 }); // 80..160
+        cb.button(.click, "plain");
+        cb.popScroll();
+        cb.popGroup();
+    }
+    pub fn scrollMsg(_: *const Model, id: u32, dx: f32, dy: f32) ?Msg {
+        return .{ .scroll = .{ .id = id, .dx = dx, .dy = dy } };
+    }
+    pub fn scrollLayoutMsg(_: *const Model, id: u32, vw: f32, vh: f32, cw: f32, ch: f32) ?Msg {
+        return .{ .scroll_layout = .{ .id = id, .vw = vw, .vh = vh, .cw = cw, .ch = ch } };
+    }
+    pub fn wheelMsg(_: *const Model, dy: f32) ?Msg {
+        return .{ .wheel = dy };
+    }
+    pub fn keySpecialMsg(_: *const Model, k: keys.SpecialKey) ?Msg {
+        return if (k == .enter) Msg.widen else null;
+    }
+};
+
+test "scrollMsg: wheel over an id-bearing region; elsewhere falls to wheelMsg" {
+    var rt = try playScript(ScrollApp, &.{
+        .{},
+        .{ .x = 50, .y = 40, .wheel_dy = 96, .wheel_dx = 12 }, // over region id 3
+        .{ .x = 50, .y = 120, .wheel_dy = 48 }, // over the id-0 region: no consumer
+    });
+    defer rt.deinit();
+    var scrolls: usize = 0;
+    var wheels: usize = 0;
+    for (rt.model.log.items()) |l| switch (l) {
+        .scroll => |s| {
+            scrolls += 1;
+            try std.testing.expectEqual(@as(u32, 3), s.id);
+            try std.testing.expectEqual(@as(f32, 96), s.dy);
+            try std.testing.expectEqual(@as(f32, 12), s.dx);
+        },
+        .wheel => |dy| {
+            wheels += 1;
+            try std.testing.expectEqual(@as(f32, 48), dy);
+        },
+        else => {},
+    };
+    try std.testing.expectEqual(@as(usize, 1), scrolls);
+    try std.testing.expectEqual(@as(usize, 1), wheels);
+}
+
+test "scrollLayoutMsg: first layout and content changes, not idle frames" {
+    var rt = try playScript(ScrollApp, &.{
+        .{}, // 1: first layout of region 3
+        .{}, // 2: idle -> nothing
+        .{ .keys = &.{.enter} }, // 3: 3 -> 5 rows
+        .{}, // 4: new content size reported
+        .{}, // 5: idle
+    });
+    defer rt.deinit();
+    var reports: [8]@TypeOf(@as(PointerApp.Logged, undefined).scroll_layout) = undefined;
+    var n: usize = 0;
+    for (rt.model.log.items()) |l| switch (l) {
+        .scroll_layout => |r| {
+            reports[n] = r;
+            n += 1;
+        },
+        else => {},
+    };
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqual(@as(u32, 3), reports[0].id);
+    try std.testing.expectEqual(@as(f32, 200), reports[0].vw);
+    try std.testing.expectEqual(@as(f32, 80), reports[0].vh);
+    try std.testing.expectEqual(@as(f32, 3 * 36), reports[0].ch);
+    try std.testing.expectEqual(@as(f32, 5 * 36), reports[1].ch);
+    try std.testing.expectEqual(@as(f32, 80), reports[1].vh); // viewport unchanged
+}
+
+test "cmdsEqual: canvas id / pointer changes compare unequal" {
+    const Msg = union(enum) { a };
+    var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer x.deinit();
+    var y = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer y.deinit();
+
+    x.canvasInteractive(.{}, &.{}, 1, "c");
+    y.canvasInteractive(.{}, &.{}, 1, "c");
+    try std.testing.expect(cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+
+    y.reset();
+    y.canvasInteractive(.{}, &.{}, 2, "c");
+    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+
+    y.reset();
+    y.canvasLabeled(.{}, &.{}, "c"); // same label, not interactive
+    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+
+    // Scroll region ids are part of the push_scroll payload.
+    x.reset();
+    y.reset();
+    x.pushScroll(.{ .id = 1 });
+    y.pushScroll(.{ .id = 2 });
+    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+}
+
+/// Canvas (id 7) with a popup button overlapping its corner; `.widen` (Enter)
+/// removes the canvas from the view altogether.
+const OverlayApp = struct {
+    pub const Model = struct {
+        log: EventLog = .{},
+        canvas_gone: bool = false,
+    };
+    pub const Msg = PointerApp.Logged;
+    pub fn update(m: *Model, msg: Msg) void {
+        if (msg == .widen) m.canvas_gone = true;
+        m.log.push(msg);
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+        if (!m.canvas_gone) cb.canvasInteractive(.{ .width = 200, .height = 100 }, &.{}, 7, "");
+        cb.popGroup();
+        cb.pushOverlay(.{ .x = 10, .y = 10 });
+        cb.button(.click, "Menu"); // 60x36 at (10,10)
+        cb.popOverlay();
+    }
+    pub fn canvasMsg(_: *const Model, ev: pointer.CanvasEvent) ?Msg {
+        return .{ .canvas = ev };
+    }
+    pub fn keySpecialMsg(_: *const Model, k: keys.SpecialKey) ?Msg {
+        return if (k == .enter) Msg.widen else null;
+    }
+};
+
+test "canvas events: an overlay widget over the canvas wins hover, press and click" {
+    var rt = try playScript(OverlayApp, &.{
+        .{},
+        .{ .x = 20, .y = 20 }, // over the popup button, which covers the canvas corner
+        .{ .x = 20, .y = 20, .held = left, .down = left },
+        .{ .x = 20, .y = 20, .up = left }, // click on the button
+        .{ .x = 150, .y = 60 }, // canvas area outside the popup
+    });
+    defer rt.deinit();
+    const log = rt.model.log.items();
+    // Only the canvas layout, then the move once the cursor leaves the popup.
+    try expectKinds(log, &.{ .layout, .move });
+    try std.testing.expectEqual(@as(f32, 150), log[log.len - 1].canvas.x);
+    var clicks: usize = 0;
+    for (log) |l| if (l == .click) {
+        clicks += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), clicks);
+}
+
+test "canvas events: a capture whose canvas leaves the view is dropped, not stuck" {
+    var rt = try playScript(OverlayApp, &.{
+        .{},
+        .{ .x = 150, .y = 60 },
+        .{ .x = 150, .y = 60, .held = left, .down = left }, // capture
+        .{ .x = 150, .y = 60, .held = left, .keys = &.{.enter} }, // canvas removed from the view
+        .{ .x = 160, .y = 60, .held = left }, // drag with the canvas gone: no events, no crash
+        .{ .x = 160, .y = 60, .up = left },
+        .{ .x = 150, .y = 60 },
+    });
+    defer rt.deinit();
+    try expectKinds(rt.model.log.items(), &.{ .layout, .move, .down });
 }

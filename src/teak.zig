@@ -22,6 +22,7 @@ pub const chart = @import("core/chart.zig");
 pub const pointer = @import("core/pointer.zig");
 pub const effects = @import("core/effects.zig");
 pub const layout = @import("layout/engine.zig");
+pub const scroll_extent = @import("layout/scroll_extent.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
 pub const keys = @import("input/keys.zig");
@@ -88,6 +89,8 @@ pub const lineChartPrimitives = chart.lineChartPrimitives;
 
 pub const Rect = layout.Rect;
 pub const LayoutEngine = layout.LayoutEngine;
+pub const ScrollExtent = scroll_extent.Extent;
+pub const scrollExtent = scroll_extent.scrollExtent;
 
 pub const hitTest = hit_test.hitTest;
 pub const hoverTest = hit_test.hoverTest;

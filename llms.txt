@@ -106,7 +106,11 @@ pub fn keyCharMsg(*const Model, u8) ?Msg              // typed character → Msg
 pub fn keySpecialMsg(*const Model, SpecialKey) ?Msg   // arrows/backspace/etc → Msg
 pub fn keyNeedsClipboard(SpecialKey) bool             // pairs with handleClipboard
 pub fn handleClipboard(*Model, SpecialKey, Clipboard) void   // cut/copy/paste policy
-pub fn wheelMsg(*const Model, f32) ?Msg               // vertical wheel delta → Msg
+pub fn wheelMsg(*const Model, f32) ?Msg               // vertical wheel delta → Msg (when no canvas / scroll region took it)
+pub fn canvasMsg(*const Model, CanvasEvent) ?Msg      // pointer events over CanvasCmd.pointer canvases (see "Pointer events")
+pub fn scrollMsg(*const Model, id: u32, dx: f32, dy: f32) ?Msg   // wheel over innermost hovered ScrollStyle.id != 0 region
+pub fn scrollLayoutMsg(*const Model, id: u32, viewport_w: f32, viewport_h: f32,
+                       content_w: f32, content_h: f32) ?Msg      // id != 0 scroll region: first layout + on size change
 pub fn focusedMsg(*const Model) ?Msg                  // focus Msg of focused widget;
                                                       //   enables focus ring + cursor blink
                                                       //   + built-in Tab/Shift+Tab traversal
@@ -137,8 +141,8 @@ pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 `cmd component component_list transient text sub theme text_field numeric_field
-dropdown debug_overlay snapshot chart layout hit_test focus keys a11y render
-vertex host gpu runtime`.
+dropdown debug_overlay snapshot chart layout scroll_extent hit_test focus keys a11y render
+vertex host input_queue gpu runtime`.
 
 ### Commands & CmdBuffer (`teak.cmd` → core/cmd.zig)
 ```zig
@@ -169,14 +173,17 @@ Emitters (all `catch unreachable` on arena OOM):
   `pushOverlay(OverlayStyle(Msg))`/`popOverlay()`, `pushVirtualList(VirtualListStyle)`/`popVirtualList()`,
   `pushFormRow(FormRowOpts)`/`popFormRow()`
 - `image(TextureHandle, ImageStyle)`, `canvas(CanvasStyle, prims)`, `canvasLabeled(...)`,
-  `canvasClickable(msg, style, prims, label)`, `richText(content, spans)`, `richTextStyled(RichTextCmd)`
+  `canvasClickable(msg, style, prims, label)`, `canvasInteractive(style, prims, id, label)`,
+  `richText(content, spans)`, `richTextStyled(RichTextCmd)`
 
 Style / option structs an app constructs:
 ```zig
 GroupStyle = struct { direction: Direction = .vertical, padding: f32 = 8, gap: f32 = 8,
                       flex: f32 = 0, bg: ?[4]f32 = null }   // flex 0 = intrinsic, >0 = weight
 ScrollStyle = struct { direction = .vertical, padding, gap, flex, width, height,
-                       scroll_x, scroll_y: f32 = 0 }        // width/height 0 = measured
+                       scroll_x, scroll_y: f32 = 0,
+                       id: u32 = 0 }                        // width/height 0 = measured; id != 0 =>
+                                                            //   scrollMsg / scrollLayoutMsg routing
 OverlayStyle(Msg) = struct { x, y, width, height, padding = 8, gap = 4,
                        direction = .vertical, backdrop: [4]f32 = {0,0,0,0},
                        anchor_x_frac, anchor_y_frac: f32 = 0, modal: bool = false,
@@ -204,7 +211,8 @@ SliderStyle = struct { track_bg, track_fill, thumb: [4]f32, track_height = 6,
 SliderCmd(Msg) = struct { grab_msg, value: f32 = 0, style }   // app computes value from mouse+rect
 DividerStyle = struct { thickness: f32 = 1, color: [4]f32 }
 CanvasStyle = struct { width = 200, height = 120, flex: f32 = 0, bg: ?[4]f32 = null }
-CanvasCmd(Msg) = struct { style, primitives: []const CanvasPrimitive, msg: ?Msg, label }
+CanvasCmd(Msg) = struct { style, primitives: []const CanvasPrimitive, msg: ?Msg, label,
+                          pointer: bool = false, id: u32 = 0 }   // pointer+id => interactive (canvasMsg)
 CanvasPrimitive = union(enum) { polyline, filled_rect, hline, vline, marker }  // canvas-local px
 CanvasPoint = struct { x: f32, y: f32 }
 RichTextSpan = struct { start, end: u32, color: [4]f32, font: FontSpec, bold, italic: bool }
@@ -245,6 +253,9 @@ hitTest(cmds, rects: []const Rect, mouse_x, mouse_y: f32) ?HitResult(Msg)
                                      //   msg null = modal consumed click, don't fall through
 hoverTest(cmds, rects, mouse_x, mouse_y: f32) ?usize      // cmd index under the cursor
 canvasLocalPoint(rect: Rect, mouse_x, mouse_y: f32) ?struct { x, y: f32 }   // window→canvas-local
+pointerTarget(cmds, rects, x, y) ?PointerTarget           // {index, id}: pointer canvas a press lands on (overlays/modals win)
+wheelTarget(cmds, rects, x, y) ?WheelTarget               // innermost pointer canvas | id!=0 scroll region under the cursor
+scrollExtent(cmds, rects, scroll_index) ScrollExtent      // teak.scrollExtent: {viewport_w/h, content_w/h} of a push_scroll
 sliderValueAt(rect: Rect, mouse_x: f32) f32               // normalized [0,1]
 sliderDrag(cmds, rects, press_target: ?usize, mouse_x: f32) ?SliderDrag(Msg)
 SliderDrag(Msg) = struct { index: usize, grab_msg: Msg, value: f32 }
@@ -321,7 +332,7 @@ DropdownViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200,
 ```
 
 ### Pointer events on canvases (`teak.pointer` -> core/pointer.zig)
-Contract types (behavior lands in `teak.run`; see docs/features/canvas.md).
+Delivered by `teak.run` / `Runtime` through `canvasMsg`; semantics in docs/features/canvas.md.
 ```zig
 Buttons = packed struct(u8) { left, middle, right: bool }   // held buttons; .any()
 Modifiers = packed struct(u8) { shift, ctrl, alt, meta: bool }
@@ -330,8 +341,13 @@ CanvasEventKind = enum { down, move, up, wheel, leave, layout }   // layout = fi
 CanvasEvent = struct { id: u32, kind: CanvasEventKind, x, y, dx, dy: f32, button: Button,
                        buttons: Buttons, mods: Modifiers, w, h: f32 }  // canvas-local px
 ```
-An interactive canvas (`CanvasCmd.pointer = true`, `id != 0`) gets its events through the App hook
-`pub fn canvasMsg(*const Model, CanvasEvent) ?Msg` (down starts a capture until all buttons release).
+An interactive canvas is `cb.canvasInteractive(style, prims, id, label)` (`CanvasCmd.pointer = true`, `id != 0`);
+its events arrive through `pub fn canvasMsg(*const Model, CanvasEvent) ?Msg`. `down` starts a capture (move/up keep
+going to that canvas, even off its rect, until all buttons release); `move` while hovering; a wheel over it is a
+`wheel` event INSTEAD of `wheelMsg`/`scrollMsg`; `leave` when the cursor exits with no capture; `layout` (w/h) on
+first layout and whenever its size changes. Overlays and modals in front of a canvas win. Wheel routing, innermost
+first: pointer canvas -> `ScrollStyle.id != 0` region (`scrollMsg`) -> `wheelMsg`. `scrollLayoutMsg` reports each
+id-bearing scroll region's viewport + content size (`teak.scrollExtent`) so apps can clamp offsets / draw scrollbars.
 
 ### Declarative effects (`teak.effects` -> core/effects.zig; HARDLINE hatch 7, sibling of Sub)
 ```zig

@@ -147,6 +147,7 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writer.print(" {s}", .{@tagName(s.direction)});
             if (s.scroll_x != 0) try writer.print(" scroll_x={d}", .{ri(s.scroll_x)});
             if (s.scroll_y != 0) try writer.print(" scroll_y={d}", .{ri(s.scroll_y)});
+            if (s.id != 0) try writer.print(" id={d}", .{s.id});
         },
         .push_overlay => |o| {
             try writer.writeAll("overlay ");
@@ -225,6 +226,8 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writer.writeAll("canvas ");
             try writeRect(writer, r);
             try writer.print(" prims={d}", .{cv.primitives.len});
+            if (cv.id != 0) try writer.print(" id={d}", .{cv.id});
+            if (cv.pointer) try writer.writeAll(" pointer");
             if (cv.label.len > 0) {
                 try writer.writeByte(' ');
                 try writeQuoted(writer, cv.label);
@@ -528,6 +531,30 @@ test "snapshot: canvas shows rect + primitive count + label" {
     try expectSnapshot(cb.cmds.items, rs, .{},
         \\group (0,0,400,300) vertical
         \\  canvas (8,8,300,120) prims=3 "count history"
+        \\
+    );
+}
+
+test "snapshot: interactive canvas and id-bearing scroll show id + pointer" {
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.canvasInteractive(.{ .width = 200, .height = 100 }, &.{}, 7, "viewport");
+    cb.pushScroll(.{ .direction = .vertical, .padding = 0, .width = 200, .height = 50, .scroll_y = 10, .id = 3 });
+    cb.text("row");
+    cb.popScroll();
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    const rs = layoutInto(&rects, cb.cmds.items, 400, 300);
+
+    try expectSnapshot(cb.cmds.items, rs, .{},
+        \\group (0,0,400,300) vertical
+        \\  canvas (0,0,200,100) prims=0 id=7 pointer "viewport"
+        \\  scroll (0,100,200,50) vertical scroll_y=10 id=3
+        \\    text (0,90,30,20) "row"
         \\
     );
 }

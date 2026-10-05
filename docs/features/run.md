@@ -69,9 +69,49 @@ initial state if present, else `.{}`.
 Optional App decls, each detected with `@hasDecl` — present only what you
 need (full table in [consuming-teak.md §5](../consuming-teak.md)):
 `keyCharMsg`, `keySpecialMsg`, `keyNeedsClipboard` + `handleClipboard`,
-`wheelMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
+`wheelMsg`, `canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
 `secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`),
 `subscribe`.
+
+### Interactive canvases and scroll regions
+
+Three optional hooks turn pointer input over specific regions into `Msg`s. All
+route against the **previous** frame's layout, exactly like hit-testing.
+
+| Decl | Signature | Role |
+|------|-----------|------|
+| `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer events over `CanvasCmd.pointer` canvases: `down` / `move` / `up` / `wheel` / `leave`, and `layout` on first layout and whenever the rect size changes. Semantics in [canvas.md](canvas.md). |
+| `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over the innermost hovered scroll region whose `ScrollStyle.id != 0`. `dx`/`dy` are DOM-signed px. Return `null` to ignore; the wheel is still consumed. |
+| `scrollLayoutMsg` | `(*const Model, id: u32, viewport_w, viewport_h, content_w, content_h: f32) ?Msg` | for every `ScrollStyle.id != 0` region, on its first layout and whenever its viewport or content size changes. Content is the extent of its children (`teak.scrollExtent`: nested scroll interiors and overlays excluded), independent of the scroll offset — enough to clamp `scroll_y` and size a scrollbar thumb. |
+
+**Wheel routing**, innermost first: a captured pointer canvas (during a drag,
+wherever the cursor is) → the pointer canvas or `id != 0` scroll region
+innermost under the cursor (`hit_test.wheelTarget`; overlays win, modals block)
+→ plain `wheelMsg`. A wheel handled by `canvasMsg` / `scrollMsg` never also
+reaches `wheelMsg`.
+
+```zig
+// A pan/zoom viewport + a scrollable chat list, in one App:
+pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
+    return switch (ev.kind) {
+        .layout => Msg{ .viewport_size = .{ ev.w, ev.h } },
+        .move => if (ev.buttons.middle) Msg{ .pan = .{ ev.dx, ev.dy } } else Msg{ .hover = .{ ev.x, ev.y } },
+        .wheel => Msg{ .zoom = .{ ev.dy, ev.x, ev.y } },   // ev.mods.ctrl = pinch
+        else => null,
+    };
+}
+pub fn scrollMsg(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
+    return if (id == chat_scroll) Msg{ .chat_scroll_by = dy } else null;
+}
+pub fn scrollLayoutMsg(_: *const Model, id: u32, vw: f32, vh: f32, cw: f32, ch: f32) ?Msg {
+    return if (id == chat_scroll) Msg{ .chat_extent = .{ vh, ch } } else null;
+}
+```
+
+`layout` / scroll-layout reports are computed after the frame's layout from the
+two frame buffers (current vs previous), so they need no retained table; the
+Msg they produce shows up in the next frame's `view`. An id that disappears
+and later returns reports again, like a fresh layout.
 
 ### Subscriptions
 
@@ -163,11 +203,14 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
    Tab/Shift+Tab traversal and Enter→`submitMsg` first (if the app
    exposes the relevant hooks), then clipboard chords via
    `handleClipboard`, else `keySpecialMsg`.
-4. Wheel via `wheelMsg`.
+4. Pointer canvases (`canvasMsg`): hover / move / down / up / leave +
+   capture. Wheel: pointer canvas -> `scrollMsg` region -> `wheelMsg`.
 5. Subscriptions: `runSubs(subscribe(model))` on `Host.nowMs()`; fired subs
    dispatch as ordinary Msgs before the view builds (if `subscribe` present).
 6. Build this frame's view into the alternate buffer (theme from
-   `themeFor` if present), layout into a grown rect slice.
+   `themeFor` if present), layout into a grown rect slice; then report
+   canvas size / scroll extent changes (`canvasMsg` `layout`,
+   `scrollLayoutMsg`).
 7. Update `TransientState` (hover/press/focus/frame counter); focus index
    resolved from `focusedMsg` via `indexOfFocusMsg`.
 8. Push `windowTitle` to the host on change.
@@ -193,8 +236,10 @@ of the dependency arrow:
   exactly as it does Win32 — no per-OS code in `run.zig`.
 - It lives at `src/run.zig`, a sibling of the library root, **outside**
   the `src/{core,layout,input,render}/*` dirs the drift audit treats as
-  framework core. It is not an escape hatch — it adds no new mutable
-  state and routes every transition through the app's `update`.
+  framework core. It is not an escape hatch — it holds no *application*
+  state (only loop bookkeeping: the double-buffered cmds/rects, the press
+  target, the canvas hover/capture ids, the previous subscription
+  timestamp) and routes every transition through the app's `update`.
 - No wall-clock reads, no hidden state: animation (cursor blink) is
   driven by the `TransientState.frame_counter`, advanced once per frame,
   exactly as the renderer expects.

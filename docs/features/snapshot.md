@@ -60,7 +60,7 @@ Each open container (`push_group` / `push_scroll` / `push_overlay` /
   | tag | payload |
   |-----|---------|
   | `group` | `vertical` / `horizontal`; ` bg` when a fill is set |
-  | `scroll` | direction; `scroll_x=N` / `scroll_y=N` when non-zero |
+  | `scroll` | direction; `scroll_x=N` / `scroll_y=N` when non-zero; `id=N` when set |
   | `overlay` | `layer=1` (the single non-base z-layer); ` [modal]` when set |
   | `virtual_list` | `total=N extent=M visible=[start,end)` |
   | `text` | `"content"` |
@@ -72,6 +72,7 @@ Each open container (`push_group` / `push_scroll` / `push_overlay` /
   | `radio` | `(o)` / `( )` then `"label"` |
   | `slider` | `value=0.NN` (2 decimals) |
   | `divider` | (rect only) |
+  | `canvas` | `prims=N`; `id=N` when set; ` pointer` for an interactive canvas; `"label"` |
 
 - **Markers** (only when `opts.transient` is set), appended in a fixed
   order for determinism: ` [hover]`, ` [press]`, ` [focus]` — for the cmd
