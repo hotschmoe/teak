@@ -145,6 +145,7 @@ new variants). Worked example: [`docs/cookbook.md`](docs/cookbook.md) recipe 12.
 ```
 src/                           -- the library, consumable as a Zig module
   teak.zig                     -- public library root / re-exports
+  resources.zig                -- run-loop resource table (key -> Gpu handle); stageDraws
   run.zig                      -- teak.run + Runtime(App, Host, Gpu): canonical host loop, one
                                --   `frame()` per iteration (web calls it per rAF tick); routes
                                --   mouse/keys/wheel, interactive canvases (canvasMsg), scroll
@@ -176,6 +177,8 @@ src/                           -- the library, consumable as a Zig module
     sub.zig                    -- Sub(Msg) declarative timers (HARDLINE §2 hatch 6)
     effects.zig                -- Effect / EffectResult / Drop data + IssuedTable (hatch 7)
     chart.zig                  -- lineChartPrimitives — canvas line-chart helper
+    scene.zig                  -- MeshData/Camera/SceneDraw data for scene3d (docs/features/scene3d.md)
+    resources.zig              -- Resource union for the App `resources()` hook (HARDLINE hatch 8)
     table.zig                  -- fixed-column monospace tables: fitCell + Table.header/row
     snapshot.zig               -- []Cmd+[]Rect -> text; golden tests + TEAK_SNAPSHOT
   layout/
@@ -233,6 +236,7 @@ examples/
 shaders/
   quad.wgsl              -- shader for colored rectangles
   textured_quad.wgsl     -- alpha-from-texture (text glyphs)
+  scene.wgsl             -- 3D scenes: flat-lit triangles + instanced line quads
   image.wgsl             -- texture * tint (RGBA images)
 ```
 

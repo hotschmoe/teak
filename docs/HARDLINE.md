@@ -208,6 +208,41 @@ through the same `effectMsg`.
 
 See `docs/features/effects.md`.
 
+<!-- Hatch numbering is gap-free: 6 subscriptions, 7 declarative effects
+     (documented with `core/effects.zig`), 8 resources (below). -->
+
+### Escape hatch 8: Resources
+
+An App may expose `pub fn resources(model: *const Model) []const Resource`
+(pure function of model). `Resource` is a data tagged union —
+`.mesh { key, rev, data: MeshData }` or `.image { key, rev, width, height,
+rgba }` — naming the GPU-resident assets the current Model needs. The run
+loop reconciles the GPU with that list every frame: it uploads a resource
+when its (kind, `key`) is new or its `rev` changed, and releases the ones
+that disappeared. `Cmd`s refer to resources by the app `key`
+(`ImageCmd.handle`, `SceneCmd.mesh`); the loop maps keys to backend
+handles right before the Gpu sees the draw records. It is the level-
+triggered sibling of `Sub` (hatch 6): the app *declares*, the runtime
+does the watching and the I/O-ish work.
+
+**Bounded by**:
+- `resources` is pure: no I/O, no allocation outside the frame arena (or
+  Model-owned storage), no wall-clock. Same rules as `view` / `subscribe`.
+- `Resource` carries data only: slices of vertices / pixels, never a GPU
+  handle, never a function pointer (audit-enforced in `core/resources.zig`
+  and `core/scene.zig`, like `Cmd`). Handles never enter `Model`, `Msg` or
+  a `Cmd`; the key -> handle table lives in the run loop
+  (`src/resources.zig`), is a fixed-capacity cache of GPU residency, and
+  is safely losable (losing it re-uploads).
+- Upload / release go through the Gpu's optional scene/image extension
+  (hatch 4(d): `uploadMesh`, `releaseMesh`, `uploadImage`, `releaseImage`).
+  An App that declares `resources` with a Gpu lacking them fails to
+  compile; the loop never reaches past `validateGpu` + that extension.
+- No second mutation path: nothing is reported back through `Msg`. A
+  failed upload leaves the key non-resident (its draws are skipped) and is
+  retried only when `rev` changes.
+- Unique keys per kind (0 is reserved), at most 128 resident resources.
+
 ---
 
 ## 3. Forbidden patterns

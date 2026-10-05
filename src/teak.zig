@@ -22,6 +22,8 @@ pub const chart = @import("core/chart.zig");
 pub const table = @import("core/table.zig");
 pub const pointer = @import("core/pointer.zig");
 pub const effects = @import("core/effects.zig");
+pub const scene = @import("core/scene.zig");
+pub const resources = @import("core/resources.zig");
 pub const layout = @import("layout/engine.zig");
 pub const scroll_extent = @import("layout/scroll_extent.zig");
 pub const hit_test = @import("input/hit_test.zig");
@@ -79,6 +81,21 @@ pub const Modifiers = pointer.Modifiers;
 pub const Button = pointer.Button;
 pub const CanvasEvent = pointer.CanvasEvent;
 pub const CanvasEventKind = pointer.CanvasEventKind;
+
+pub const MeshHandle = scene.MeshHandle;
+pub const MESH_HANDLE_NONE = scene.MESH_HANDLE_NONE;
+pub const MeshVertex = scene.MeshVertex;
+pub const LineVertex = scene.LineVertex;
+pub const MeshData = scene.MeshData;
+pub const Camera = scene.Camera;
+pub const SceneDraw = scene.SceneDraw;
+
+pub const Resource = resources.Resource;
+pub const MeshResource = resources.MeshResource;
+pub const ImageResource = resources.ImageResource;
+
+pub const SceneStyle = cmd.SceneStyle;
+pub const SceneCmd = cmd.SceneCmd;
 
 pub const Effect = effects.Effect;
 pub const EffectResult = effects.EffectResult;
@@ -143,6 +160,12 @@ pub const emitQuad = vertex.emitQuad;
 pub const emitQuadCorners = vertex.emitQuadCorners;
 pub const buildVertices = render.buildVertices;
 pub const ImageDraw = render.ImageDraw;
+pub const buildFrame = render.buildFrame;
+/// Run-loop resource bookkeeping for hand-written host loops (web): `sync`
+/// the table with `App.resources(model)`, then `stageDraws` instead of
+/// `uploadImages`. `teak.run` does both for you.
+pub const ResourceTable = @import("resources.zig").Table;
+pub const stageDraws = @import("resources.zig").stageDraws;
 
 pub const TransientState = transient.TransientState;
 

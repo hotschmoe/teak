@@ -36,7 +36,8 @@
 //!   - `handleClipboard(*Model, SpecialKey, Clipboard) void` — cut/copy/paste
 //!   - `wheelMsg(*const Model, f32) ?Msg`             — vertical wheel
 //!   - `canvasMsg(*const Model, CanvasEvent) ?Msg`    — pointer input over
-//!     interactive canvases (`CanvasCmd.pointer`): down / move / up / wheel /
+//!     interactive canvases and scenes (`CanvasCmd.pointer`,
+//!     `SceneCmd.pointer`, same `id` space): down / move / up / wheel /
 //!     leave, plus `layout` on first layout and resize. A press captures the
 //!     pointer for its canvas until every button is released. A wheel over a
 //!     pointer canvas becomes a `wheel` event INSTEAD of `wheelMsg`.
@@ -78,6 +79,13 @@
 //!     Msg. Also receives unsolicited results (images / files dropped on the
 //!     window, pasted text), so an app may declare it without `effects`.
 //!     See `docs/features/effects.md`.
+//!   - `resources(*const Model) []const Resource`     — declarative GPU
+//!     resources (HARDLINE §2 hatch 8): meshes and RGBA images keyed by
+//!     (`key`, `rev`). `run` uploads on a new key / changed rev, releases
+//!     vanished keys, and maps the app keys in `ImageCmd.handle` /
+//!     `SceneCmd.mesh` to backend handles. Requires a Gpu with the scene
+//!     extension (`uploadMesh`, `releaseMesh`, `renderScenes`,
+//!     `releaseImage`). See `docs/features/scene3d.md`.
 //!
 //! IME composition state (`Host.imeState`) is folded into `TransientState`
 //! every frame with no opt-in — hosts without IME report inactive and it
@@ -102,6 +110,7 @@ const hit_test = @import("input/hit_test.zig");
 const focus = @import("input/focus.zig");
 const render = @import("render/build.zig");
 const vertex = @import("render/vertex.zig");
+const resources = @import("resources.zig");
 
 const Rect = layout.Rect;
 const TransientState = transient.TransientState;
@@ -359,6 +368,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         const has_canvas_hook = @hasDecl(App, "canvasMsg");
         const has_scroll_hook = @hasDecl(App, "scrollMsg");
         const has_scroll_layout_hook = @hasDecl(App, "scrollLayoutMsg");
+        const has_resources = @hasDecl(App, "resources");
         const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView") and
             @hasDecl(Gpu, "openSecondarySurface");
         const has_effects = @hasDecl(App, "effects");
@@ -392,6 +402,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         verts: std.ArrayList(vertex.Vertex) = .empty,
         text_draws: std.ArrayList(text.TextDraw) = .empty,
         image_draws: std.ArrayList(render.ImageDraw) = .empty,
+        scene_draws: std.ArrayList(render.SceneDraw) = .empty,
+
+        /// Declarative GPU resources (HARDLINE §2 hatch 8): which
+        /// (kind, key, rev) is resident and under which Gpu handle. Loop
+        /// bookkeeping — a safely-losable cache of GPU residency.
+        res_table: resources.Table = .{},
 
         ts: TransientState = .{},
         prev_ts: TransientState = .{},
@@ -464,6 +480,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
             self.snap.deinit();
             self.secondary.deinit(self.gpa);
+            if (has_resources) self.res_table.deinit(self.gpu);
+            self.scene_draws.deinit(self.gpa);
             self.image_draws.deinit(self.gpa);
             self.text_draws.deinit(self.gpa);
             self.verts.deinit(self.gpa);
@@ -499,6 +517,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // Frame diff: skip the vertex rebuild + upload when nothing
             // observable changed. The blink tick forces a rebuild on a phase
             // boundary so a focused cursor animates.
+            const res_changed = has_resources and self.res_table.sync(self.gpu, App.resources(&self.model));
             const diff = FrameDiff{
                 .cmds_same = cmdsEqual(Msg, cur_cmds, self.bufs[prev].cmds.items),
                 .rects_same = rectsEqual(cur_rects, self.rects[prev].items),
@@ -510,7 +529,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // buffers after the primary present, so the primary must rebuild
             // its own vertices every frame while it's open.
             const secondary_open = has_secondary and App.secondaryWindow(&self.model) != null;
-            if (diff.changed() or blink_tick or secondary_open) {
+            // A resource upload/release changes the handles the draws map to
+            // even when no Cmd changed, so it forces a re-stage too.
+            if (diff.changed() or blink_tick or secondary_open or res_changed) {
                 self.uploadFrame(cur_cmds, cur_rects, self.ts);
             }
             self.prev_ts = self.ts;
@@ -755,10 +776,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const prev_cmds = self.bufs[prev].cmds.items;
             const prev_rects = self.rects[prev].items;
             for (cmds, 0..) |c, i| switch (c) {
-                .canvas => |cv| if (has_canvas_hook and cv.pointer) {
-                    const old = findPointerCanvas(prev_cmds, cv.id);
+                .canvas, .scene3d => if (has_canvas_hook) if (hit_test.pointerSurface(cmds, i)) |t| {
+                    const old = findPointerCanvas(prev_cmds, t.id);
                     if (old == null or prev_rects[old.?].w != rects[i].w or prev_rects[old.?].h != rects[i].h) {
-                        self.dispatchCanvas(.{ .id = cv.id, .kind = .layout, .w = rects[i].w, .h = rects[i].h });
+                        self.dispatchCanvas(.{ .id = t.id, .kind = .layout, .w = rects[i].w, .h = rects[i].h });
                     }
                 },
                 .push_scroll => |sc| if (has_scroll_layout_hook and sc.id != 0) {
@@ -911,10 +932,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         }
 
         fn uploadFrame(self: *Self, cmds: []const cmd.Cmd(Msg), rects: []const Rect, ts: TransientState) void {
-            render.buildVertices(&self.verts, &self.text_draws, &self.image_draws, self.gpa, cmds, rects, ts, self.measurer);
+            render.buildFrame(&self.verts, &self.text_draws, &self.image_draws, &self.scene_draws, self.gpa, cmds, rects, ts, self.measurer);
             self.gpu.uploadVertices(self.verts.items);
             self.gpu.uploadText(self.text_draws.items);
-            self.gpu.uploadImages(self.image_draws.items);
+            resources.stageDraws(self.gpu, if (has_resources) &self.res_table else null, self.image_draws.items, self.scene_draws.items);
         }
 
         /// What the secondary window did this frame, for the snapshot gate.
@@ -1040,12 +1061,12 @@ fn buttonSet(set: pointer.Buttons, b: pointer.Button) bool {
     };
 }
 
-/// Cmd index of the pointer canvas with `id`, if the buffer has one.
+/// Cmd index of the pointer surface (canvas or scene) with `id`, if the
+/// buffer has one.
 fn findPointerCanvas(cmds: anytype, id: u32) ?usize {
-    for (cmds, 0..) |c, i| switch (c) {
-        .canvas => |cv| if (cv.pointer and cv.id == id) return i,
-        else => {},
-    };
+    for (cmds, 0..) |_, i| {
+        if (hit_test.pointerSurface(cmds, i)) |t| if (t.id == id) return i;
+    }
     return null;
 }
 
@@ -1202,6 +1223,7 @@ pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd
                 if (rt.spans.len != o.spans.len) return false;
                 for (rt.spans, o.spans) |sa, sb| if (!std.meta.eql(sa, sb)) return false;
             },
+            .scene3d => |x| if (!x.eql(cb.scene3d)) return false,
             .canvas => |x| {
                 const o = cb.canvas;
                 if (!std.meta.eql(x.style, o.style)) return false;
@@ -1210,20 +1232,9 @@ pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd
                 if (x.id != o.id or x.pointer != o.pointer) return false;
                 if (x.primitives.len != o.primitives.len) return false;
                 // Compare by content, not slice identity — the arena hands
-                // out fresh addresses each frame. Polyline carries a nested
-                // points slice, so it needs a content walk of its own.
-                for (x.primitives, o.primitives) |pa, pb| {
-                    if (std.meta.activeTag(pa) != std.meta.activeTag(pb)) return false;
-                    switch (pa) {
-                        .polyline => |pl| {
-                            const ob = pb.polyline;
-                            if (!std.meta.eql(pl.color, ob.color) or pl.thickness != ob.thickness) return false;
-                            if (pl.points.len != ob.points.len) return false;
-                            for (pl.points, ob.points) |qa, qb| if (!std.meta.eql(qa, qb)) return false;
-                        },
-                        else => if (!std.meta.eql(pa, pb)) return false,
-                    }
-                }
+                // out fresh addresses each frame (`eql` walks nested slices;
+                // big triangle/line batches compare by their `key`).
+                for (x.primitives, o.primitives) |pa, pb| if (!pa.eql(pb)) return false;
             },
         }
     }

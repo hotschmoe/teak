@@ -52,9 +52,9 @@ const RULE_NO_COND_COMP = Rule{
 };
 
 const RULE_CMD_HAS_NO_FN_PTRS = Rule{
-    .name = "Cmd union carries data, not callbacks",
-    .reason = "HARDLINE §3 — msgs are values, not fn pointers.",
-    .files = &.{"src/core/cmd.zig"},
+    .name = "Cmd union and resource/scene data types carry data, not callbacks",
+    .reason = "HARDLINE §3 — msgs are values, not fn pointers; §2 hatch 8 — resources are data.",
+    .files = &.{ "src/core/cmd.zig", "src/core/resources.zig", "src/core/scene.zig" },
     .forbid_any = &.{
         "*const fn",
         ": fn(",
