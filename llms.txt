@@ -561,6 +561,20 @@ validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uplo
 //                                              //   the overlay's, so an opaque overlay hides base text (hatch 5)
 ```
 
+### Headless runs (`teak.headless` → headless_run.zig; docs/features/headless.md)
+No display needed; Linux + a Vulkan device. In build.zig: `teak.linkHeadless(b, exe, .{})` adds imports
+`teak-platform-headless` (`Host`: scripted input, fake 16 ms/frame clock, stb text, captured effects) and
+`teak-gpu-headless` (`Gpu.initOffscreen(w,h,InitOptions)`, `Gpu.readFrame(alloc) ![]u8` RGBA8).
+```zig
+Step = union(enum) { frames: u32, move: [2]f32, down, up: Button, wheel: [2]f32, chars: []const u8,
+                     key: SpecialKey, mods: Modifiers, click: [2]f32, drag: [2][2]f32 }
+headless.play(rt: anytype, host: anytype, steps: []const Step) !void
+headless.shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa, steps, settle, run }) !void  // script -> PNG
+headless.writeFramePng(gpu, gpa, path) !void;  encodePng(gpa, rgba, w, h) ![]u8;  pathArg(init, default) []const u8
+// Host: pushMouseMove/Down/Up, pushWheel, pushChars, pushKey, setModifiers, close, injectEffectResult(EffectResult),
+//       submittedEffects() []const Captured{kind,id,name,bytes,mime,method}, countEffects(kind), clearSubmittedEffects()
+```
+
 ### Application loop (`teak.run` / `teak.runtime` → run.zig)
 ```zig
 run(comptime App: type, gpa, host: anytype, gpu: anytype, opts: RunOptions) !void
@@ -636,6 +650,7 @@ More worked examples and idioms: **docs/cookbook.md**.
 - `docs/features/transient-state.md` — presentation-only state.
 - `docs/features/text.md` — TextMeasurer + FontSpec.
 - `docs/features/host.md` — Host interface (window + input; DPI/scaling notes).
+- `docs/features/headless.md` — headless native runs: scripted input -> PNG (`linkHeadless`, `teak.headless`).
 - `docs/features/gpu.md` — Gpu interface (vertex upload + present).
 - `docs/features/snapshot.md` — golden snapshot tests + live TEAK_SNAPSHOT streaming.
 - `docs/features/functional-gaps.md` — overlay, image, selection/clipboard,

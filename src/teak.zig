@@ -36,6 +36,7 @@ pub const host = @import("platform/host.zig");
 pub const input_queue = @import("platform/input_queue.zig");
 pub const gpu = @import("gpu/context.zig");
 pub const runtime = @import("run.zig");
+pub const headless = @import("headless_run.zig");
 
 pub const Cmd = cmd.Cmd;
 pub const CmdBuffer = cmd.CmdBuffer;
