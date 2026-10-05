@@ -71,6 +71,14 @@
 //!     services the returned subs each frame via `runSubs` on the host's
 //!     monotonic clock (`Host.nowMs`) and dispatches any fired `Msg`
 //!     through the normal `update` loop. See `docs/features/subscriptions.md`.
+//!   - `effects(*const Model) []const Effect`         — declarative effects
+//!     (HARDLINE §2 hatch 7): HTTP, downloads, file picker, storage, clock,
+//!     clipboard, query params. Pure; each effect `id` is handed to the host
+//!     once while listed and forgotten when no longer listed.
+//!   - `effectMsg(*const Model, EffectResult) ?Msg`   — turns a result into a
+//!     Msg. Also receives unsolicited results (images / files dropped on the
+//!     window, pasted text), so an app may declare it without `effects`.
+//!     See `docs/features/effects.md`.
 //!   - `resources(*const Model) []const Resource`     — declarative GPU
 //!     resources (HARDLINE §2 hatch 8): meshes and RGBA images keyed by
 //!     (`key`, `rev`). `run` uploads on a new key / changed rev, releases
@@ -92,6 +100,7 @@ const builtin = @import("builtin");
 const cmd = @import("core/cmd.zig");
 const snapshot = @import("core/snapshot.zig");
 const sub_mod = @import("core/sub.zig");
+const effects_mod = @import("core/effects.zig");
 const transient = @import("core/transient.zig");
 const text = @import("core/text.zig");
 const pointer = @import("core/pointer.zig");
@@ -105,6 +114,12 @@ const resources = @import("resources.zig");
 
 const Rect = layout.Rect;
 const TransientState = transient.TransientState;
+
+/// Effect ids the loop remembers at once (see `effects.IssuedTable`). More
+/// distinct ids listed than this simply wait for a slot to free up.
+const max_issued_effects = 32;
+/// Results fetched from the host per frame; the rest wait for the next one.
+const effect_batch = 16;
 
 pub const RunOptions = struct {
     /// Scene clear color passed to `Gpu.renderFrame` each frame.
@@ -356,6 +371,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         const has_resources = @hasDecl(App, "resources");
         const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView") and
             @hasDecl(Gpu, "openSecondarySurface");
+        const has_effects = @hasDecl(App, "effects");
+        const has_effect_msg = @hasDecl(App, "effectMsg");
+        /// The Host's optional effects extension (`submit` + `pollEffectResults`,
+        /// validated as a pair). Without it every effect is answered "unsupported".
+        const host_effects = @hasDecl(Host, "submit");
+        comptime {
+            if (has_effects and !has_effect_msg)
+                @compileError("App declares `effects` but not `effectMsg`: results would have nowhere to go");
+        }
 
         gpa: std.mem.Allocator,
         host: *Host,
@@ -404,6 +428,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// timestamp is all the bookkeeping the loop holds. `null` until the
         /// first frame binds it: no sub fires on the opening tick.
         last_sub_ms: ?u64 = null,
+
+        /// Effect ids handed to the host and still listed by the app.
+        issued: effects_mod.IssuedTable(max_issued_effects) = .{},
 
         secondary: SecondaryDriver(CmdBufT),
         /// After the user closes the OS window, the spec that was open, so
@@ -476,7 +503,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.routeCanvasPointer(input, prev);
             self.routeKeys(input, prev);
             self.routeWheel(input, prev);
+            self.deliverEffectResults();
             self.fireSubs();
+            self.serviceEffects();
 
             const cur = try self.buildView(input);
             self.reportLayout(prev, cur);
@@ -787,6 +816,63 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const since = self.last_sub_ms orelse now_ms; // first frame: no window, no fire
             sub_mod.runSubs(Msg, App.subscribe(&self.model), since, now_ms, Dispatch{ .rt = self });
             self.last_sub_ms = now_ms;
+        }
+
+        /// Hand the host's finished effect results (and unsolicited drops /
+        /// pastes) to the app. Runs after key routing so a Ctrl+V handled by
+        /// `handleClipboard` has already claimed its paste. A result whose id
+        /// is no longer listed was cancelled by the app: dropped.
+        fn deliverEffectResults(self: *Self) void {
+            if (comptime !(has_effect_msg and host_effects)) return;
+            var buf: [effect_batch]effects_mod.EffectResult = undefined;
+            const n = self.host.pollEffectResults(&buf);
+            for (buf[0..n]) |r| self.deliverEffectResult(r);
+        }
+
+        fn deliverEffectResult(self: *Self, r: effects_mod.EffectResult) void {
+            if (comptime !has_effect_msg) return;
+            if (effects_mod.resultId(r)) |id| {
+                if (!self.issued.contains(id)) return;
+            }
+            if (App.effectMsg(&self.model, r)) |m| self.dispatch(m);
+        }
+
+        /// Issue the app's newly listed effects to the host and forget the
+        /// ones it stopped listing. `effects()` borrows from the Model, so
+        /// nothing is dispatched while iterating it: answers the host cannot
+        /// give (unsupported kinds) are collected and delivered afterwards.
+        fn serviceEffects(self: *Self) void {
+            if (comptime !has_effects) return;
+            var failed: [max_issued_effects]effects_mod.EffectResult = undefined;
+            var n_failed: usize = 0;
+
+            // Pass 1: forget what is no longer listed, so its slot is free for
+            // the new effects of this same frame.
+            const list = App.effects(&self.model);
+            self.issued.beginFrame();
+            for (list) |e| _ = self.issued.listed(e.id());
+            self.issued.sweep();
+
+            // Pass 2: hand the host whatever is not issued yet.
+            for (list) |e| {
+                if (self.issued.contains(e.id())) continue;
+                if (self.issued.isFull()) break; // the rest wait for a free slot
+                const status: effects_mod.EffectSubmit = if (comptime host_effects)
+                    self.host.submit(e)
+                else
+                    .unsupported;
+                switch (status) {
+                    .busy => continue,
+                    .accepted => {},
+                    .unsupported => if (effects_mod.unsupportedResult(e)) |r| {
+                        failed[n_failed] = r;
+                        n_failed += 1;
+                    },
+                }
+                _ = self.issued.issue(e.id());
+            }
+
+            for (failed[0..n_failed]) |r| self.deliverEffectResult(r);
         }
 
         /// Build this frame's view into the other buffer and lay it out.
@@ -1169,4 +1255,5 @@ pub fn rectsEqual(a: []const Rect, b: []const Rect) bool {
 
 test {
     _ = @import("run_test.zig");
+    _ = @import("run_effects_test.zig");
 }

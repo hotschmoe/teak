@@ -132,6 +132,24 @@ stateless); no sub fires on the opening frame. `.at` fires exactly once on
 its deadline crossing and then auto-stops. Full contract and bounds:
 [subscriptions.md](subscriptions.md).
 
+### Effects
+
+An app that talks to the outside world (HTTP, files, storage, clipboard,
+clock) exposes two decls; an app that only wants dropped / pasted input
+needs only the second:
+
+| Decl | Signature | Role |
+|------|-----------|------|
+| `effects` | `(*const Model) []const Effect` | declares the requests to service this frame; each `id` is issued once while listed. Pure. |
+| `effectMsg` | `(*const Model, EffectResult) ?Msg` | turns an answer (or an unsolicited drop / paste) into a Msg. Required when `effects` is declared. |
+
+Each frame, after key routing, `run` fetches the Host's finished results
+(`Host.pollEffectResults`) and dispatches each through `effectMsg` ->
+`update`; then, after subscriptions, it hands newly listed effects to
+`Host.submit` and forgets the ids that stopped being listed. A Host without
+the effect pair answers every effect with its "unsupported" result. Full
+contract: [effects.md](effects.md).
+
 ### Secondary window
 
 An app that wants a second top-level window (e.g. a detached stats/inspector
@@ -205,8 +223,10 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
    `handleClipboard`, else `keySpecialMsg`.
 4. Pointer canvases (`canvasMsg`): hover / move / down / up / leave +
    capture. Wheel: pointer canvas -> `scrollMsg` region -> `wheelMsg`.
-5. Subscriptions: `runSubs(subscribe(model))` on `Host.nowMs()`; fired subs
-   dispatch as ordinary Msgs before the view builds (if `subscribe` present).
+5. Effect results (`effectMsg`), then subscriptions: `runSubs(subscribe(model))`
+   on `Host.nowMs()`; fired subs dispatch as ordinary Msgs before the view
+   builds (if `subscribe` present). Then newly listed `effects()` go to the
+   Host.
 6. Build this frame's view into the alternate buffer (theme from
    `themeFor` if present), layout into a grown rect slice; then report
    canvas size / scroll extent changes (`canvasMsg` `layout`,

@@ -51,6 +51,11 @@ pub const ImeState = struct {
 
 pub const A11yNode = @import("../input/a11y.zig").A11yNode;
 
+const effects = @import("../core/effects.zig");
+pub const Effect = effects.Effect;
+pub const EffectResult = effects.EffectResult;
+pub const EffectSubmit = effects.EffectSubmit;
+
 /// File dialog result. `path` is UTF-8; lives in the Host's internal
 /// buffer and is valid until the next dialog call. null when the user
 /// cancels.
@@ -128,6 +133,14 @@ pub const InputState = struct {
     height: u32,
 };
 
+/// One Host declaration + the signature the error message quotes when it is
+/// missing or not a function. Receiver types and a handful of return types
+/// (e.g. `nativeHandle`) are platform-specific, so the validator checks
+/// *presence + callability* and names the expected shape — it does not pin
+/// exact parameter types (that would over-constrain the per-backend handle
+/// types).
+const HostDecl = struct { name: []const u8, sig: []const u8 };
+
 /// Comptime contract. A Host must expose these declarations; `init`
 /// signatures vary per backend and are NOT validated (some hosts take a
 /// title, some take a canvas selector, etc.).
@@ -186,14 +199,20 @@ pub const InputState = struct {
 ///   devicePixelRatio backing store internally). Nothing in the
 ///   framework consumes it yet; see docs/features/host.md "DPI and
 ///   scaling" for the end-to-end render-at-scale follow-up.
-/// One required Host declaration + the signature the error message
-/// quotes when it's missing or not a function. Receiver types and a
-/// handful of return types (e.g. `nativeHandle`) are platform-specific,
-/// so the validator checks *presence + callability* and names the
-/// expected shape — it does not pin exact parameter types (that would
-/// over-constrain the per-backend handle types).
-const HostDecl = struct { name: []const u8, sig: []const u8 };
-
+/// - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
+///   surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
+///   a pair** (a Host with neither answers every effect as unsupported;
+///   declaring only one is a compile error):
+///   `submit(*Host, Effect) EffectSubmit` starts one effect. The slices
+///   inside the effect are valid only during the call — copy what an async
+///   request needs. Fire-and-forget effects (`storage_set`,
+///   `write_clipboard`) are performed here and never answered.
+///   `pollEffectResults(*Host, []EffectResult) usize` fills `buf` with the
+///   results that arrived (async completions plus unsolicited
+///   `dropped` / `pasted_text`) and returns the count; the result slices
+///   stay valid until the Host's next `pollInputs` call (the runtime
+///   dispatches them within the same frame). Called once per frame, after
+///   key routing, so `Clipboard.read` can claim a paste first.
 pub fn validateHost(comptime T: type) void {
     const tn = @typeName(T);
     const required = [_]HostDecl{
@@ -237,8 +256,11 @@ pub fn validateHost(comptime T: type) void {
     // Host declares them, so their absence is not a contract violation. A
     // Host may omit `scaleFactor` (defaults to a 1.0 assumption at the
     // orchestrator once it consumes the decl); if present it must be a fn.
+    // `submit` and `pollEffectResults` come as a pair.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
+        .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
+        .{ .name = "pollEffectResults", .sig = "fn(*Host, []EffectResult) usize" },
     };
     inline for (optional) |d| {
         if (@hasDecl(T, d.name)) {
@@ -247,6 +269,9 @@ pub fn validateHost(comptime T: type) void {
                     "(expected " ++ d.sig ++ ")");
         }
     }
+    if (@hasDecl(T, "submit") != @hasDecl(T, "pollEffectResults"))
+        @compileError("Host '" ++ tn ++ "' must declare both `submit` and `pollEffectResults` " ++
+            "(declarative effects) or neither");
 }
 
 test "validateHost accepts a minimal shape" {
@@ -301,6 +326,12 @@ test "validateHost accepts a minimal shape" {
         }
         pub fn scaleFactor(_: *const @This()) f32 {
             return 1.0;
+        }
+        pub fn submit(_: *@This(), _: Effect) EffectSubmit {
+            return .unsupported;
+        }
+        pub fn pollEffectResults(_: *@This(), _: []EffectResult) usize {
+            return 0;
         }
 
         fn stubMeasure(_: *anyopaque, _: []const u8, _: FontSpec) TextMetrics {

@@ -30,7 +30,7 @@ const InputState = host_iface.InputState;
 // ── Scripted Host + counting Gpu ────────────────────────────────────
 
 /// One frame of scripted input.
-const Frame = struct {
+pub const Frame = struct {
     x: f32 = -10,
     y: f32 = -10,
     /// Buttons held after this frame's events.
@@ -47,6 +47,11 @@ const Frame = struct {
     /// Starts / updates an IME composition from this frame on. Written IN
     /// PLACE into one shared buffer, like a real Host's global.
     ime: ?[]const u8 = null,
+    /// A result the Host receives at the start of this frame, as if it had
+    /// arrived asynchronously (an unsolicited drop or paste, or a scripted
+    /// answer to an effect). Delivered by `pollEffectResults` after the
+    /// frame's key routing.
+    fx_result: ?host_iface.EffectResult = null,
 };
 
 const left: pointer.Buttons = .{ .left = true };
@@ -55,7 +60,7 @@ const both: pointer.Buttons = .{ .left = true, .right = true };
 
 /// Plays `script` one frame per `pollInputs`, then reports close. The
 /// secondary-window methods are scripted by `secondary_polls`.
-const ScriptHost = struct {
+pub const ScriptHost = struct {
     script: []const Frame,
     next: usize = 0,
     width: u32 = 400,
@@ -70,6 +75,20 @@ const ScriptHost = struct {
     /// times, then null (the user closed it from the OS).
     secondary_polls: ?u32 = null,
     secondary_polled: u32 = 0,
+
+    // Declarative-effects extension (`submit` / `pollEffectResults`).
+    /// What `submit` answers.
+    fx_mode: host_iface.EffectSubmit = .accepted,
+    /// Every effect `submit` was offered (accepted or not), in order. The
+    /// slices inside borrow from the test's statics.
+    fx_submitted: [64]host_iface.Effect = undefined,
+    fx_submitted_n: usize = 0,
+    /// Answer accepted `http` / `storage_get` / `clock` / `query_param`
+    /// requests on the next poll, like a real async host.
+    fx_auto_answer: bool = false,
+    /// Results waiting for the next `pollEffectResults`.
+    fx_queue: [32]host_iface.EffectResult = undefined,
+    fx_queue_n: usize = 0,
 
     pub const NativeHandle = struct { tag: u32 = 7 };
     const forever = std.math.maxInt(u32);
@@ -104,7 +123,32 @@ const ScriptHost = struct {
         in.wheel_dy = f.wheel_dy;
         in.chars = f.chars;
         in.keys = f.keys;
+        if (f.fx_result) |r| self.queueResult(r);
         return in;
+    }
+    pub fn queueResult(self: *ScriptHost, r: host_iface.EffectResult) void {
+        self.fx_queue[self.fx_queue_n] = r;
+        self.fx_queue_n += 1;
+    }
+    pub fn submit(self: *ScriptHost, e: host_iface.Effect) host_iface.EffectSubmit {
+        self.fx_submitted[self.fx_submitted_n] = e;
+        self.fx_submitted_n += 1;
+        if (self.fx_mode != .accepted) return self.fx_mode;
+        if (self.fx_auto_answer) switch (e) {
+            .http => |r| self.queueResult(.{ .http = .{ .id = r.id, .status = 200, .body = "pong" } }),
+            .storage_get => |r| self.queueResult(.{ .storage_value = .{ .id = r.id, .value = "stored" } }),
+            .clock => |r| self.queueResult(.{ .clock = .{ .id = r.id, .unix_ms = 1_700_000_000_000, .utc_offset_min = 60 } }),
+            .query_param => |r| self.queueResult(.{ .query_value = .{ .id = r.id, .value = "v" } }),
+            else => {},
+        };
+        return .accepted;
+    }
+    pub fn pollEffectResults(self: *ScriptHost, buf: []host_iface.EffectResult) usize {
+        const n = @min(buf.len, self.fx_queue_n);
+        @memcpy(buf[0..n], self.fx_queue[0..n]);
+        std.mem.copyForwards(host_iface.EffectResult, self.fx_queue[0 .. self.fx_queue_n - n], self.fx_queue[n..self.fx_queue_n]);
+        self.fx_queue_n -= n;
+        return n;
     }
     pub fn nativeHandle(_: *const ScriptHost) void {}
     pub fn textMeasurer(_: *ScriptHost) text.TextMeasurer {
@@ -162,7 +206,7 @@ const ScriptHost = struct {
 
 /// Counts what the loop asks of a Gpu, including the secondary-surface
 /// extensions that sit outside `validateGpu`.
-const StubGpu = struct {
+pub const StubGpu = struct {
     resize_calls: u32 = 0,
     upload_vert_calls: u32 = 0,
     render_calls: u32 = 0,
@@ -241,13 +285,13 @@ const StubGpu = struct {
 
 /// A finished run: the Runtime plus the Host and Gpu it drove. Heap-allocated
 /// because the Runtime points at its Host and Gpu, so none may move.
-fn Played(comptime App: type) type {
+pub fn Played(comptime App: type) type {
     return struct {
         host: ScriptHost,
         gpu: StubGpu,
         rt: Runtime(App, ScriptHost, StubGpu),
 
-        fn destroy(self: *@This()) void {
+        pub fn destroy(self: *@This()) void {
             self.rt.deinit();
             std.testing.allocator.destroy(self);
         }
@@ -255,18 +299,25 @@ fn Played(comptime App: type) type {
 }
 
 /// Drive `App` through `host`'s script to the end.
-fn playWith(comptime App: type, host: ScriptHost, opts: run_mod.RunOptions) !*Played(App) {
+pub fn playWith(comptime App: type, host: ScriptHost, opts: run_mod.RunOptions) !*Played(App) {
+    const p = try begin(App, host, opts);
+    errdefer p.destroy();
+    while (!p.host.shouldClose()) try p.rt.frame();
+    return p;
+}
+
+/// Build the Runtime without running it, for tests that step `rt.frame()`
+/// by hand and change the Model in between.
+pub fn begin(comptime App: type, host: ScriptHost, opts: run_mod.RunOptions) !*Played(App) {
     const p = try std.testing.allocator.create(Played(App));
     errdefer std.testing.allocator.destroy(p);
     p.host = host;
     p.gpu = .{};
     p.rt = try Runtime(App, ScriptHost, StubGpu).init(std.testing.allocator, &p.host, &p.gpu, opts);
-    errdefer p.rt.deinit();
-    while (!p.host.shouldClose()) try p.rt.frame();
     return p;
 }
 
-fn play(comptime App: type, script: []const Frame) !*Played(App) {
+pub fn play(comptime App: type, script: []const Frame) !*Played(App) {
     return playWith(App, .{ .script = script }, .{});
 }
 
