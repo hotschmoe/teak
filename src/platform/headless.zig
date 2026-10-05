@@ -69,7 +69,6 @@ pub const Host = struct {
     pub const MAX_INJECTED = 32;
 
     gpa: std.mem.Allocator,
-    font: text.Font,
     width: u32,
     height: u32,
 
@@ -92,13 +91,12 @@ pub const Host = struct {
     injected_len: usize = 0,
 
     pub fn init(gpa: std.mem.Allocator, width: u32, height: u32) !Host {
-        return .{ .gpa = gpa, .font = try text.Font.load(gpa), .width = width, .height = height };
+        return .{ .gpa = gpa, .width = width, .height = height };
     }
 
     pub fn deinit(self: *Host) void {
         for (self.captured.items) |c| freeCaptured(self.gpa, c);
         self.captured.deinit(self.gpa);
-        self.font.deinit();
     }
 
     // ── Scripting API ──────────────────────────────────────────────
@@ -213,15 +211,14 @@ pub const Host = struct {
         return .{ .ctx = @ptrCast(self), .measure_fn = measure };
     }
 
-    fn measure(ctx: *anyopaque, bytes: []const u8, font: teak.FontSpec) teak.TextMetrics {
-        const self: *Host = @ptrCast(@alignCast(ctx));
-        const vm = self.font.vMetrics(font.size_px);
-        return .{
-            .width = self.font.measureWidth(bytes, font.size_px),
-            .height = vm.ascent + vm.descent,
-            .ascent = vm.ascent,
-            .descent = vm.descent,
-        };
+    fn measure(_: *anyopaque, bytes: []const u8, font: teak.FontSpec) teak.TextMetrics {
+        return text.measure(bytes, font);
+    }
+
+    /// Register the TTF `ttf` as the face for (`family`, `weight`) (shared with the Gpu's
+    /// rasterizer through the face table). The bytes are borrowed: pass an `@embedFile` slice.
+    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
+        try text.registerFace(family, weight, ttf);
     }
 
     pub fn clipboard(self: *Host) teak.Clipboard {
