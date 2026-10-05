@@ -320,6 +320,32 @@ DropdownViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200,
                             list_max_height: f32 = 320, max_visible: usize = 0 }
 ```
 
+### Pointer events on canvases (`teak.pointer` -> core/pointer.zig)
+Contract types (behavior lands in `teak.run`; see docs/features/canvas.md).
+```zig
+Buttons = packed struct(u8) { left, middle, right: bool }   // held buttons; .any()
+Modifiers = packed struct(u8) { shift, ctrl, alt, meta: bool }
+Button = enum { none, left, middle, right }
+CanvasEventKind = enum { down, move, up, wheel, leave, layout }   // layout = first layout / size change
+CanvasEvent = struct { id: u32, kind: CanvasEventKind, x, y, dx, dy: f32, button: Button,
+                       buttons: Buttons, mods: Modifiers, w, h: f32 }  // canvas-local px
+```
+An interactive canvas (`CanvasCmd.pointer = true`, `id != 0`) gets its events through the App hook
+`pub fn canvasMsg(*const Model, CanvasEvent) ?Msg` (down starts a capture until all buttons release).
+
+### Declarative effects (`teak.effects` -> core/effects.zig; HARDLINE hatch 7, sibling of Sub)
+```zig
+// App decls: pub fn effects(*const Model) []const Effect;  pub fn effectMsg(*const Model, EffectResult) ?Msg
+Effect = union(enum) { http: HttpRequest, download, open_file, write_clipboard, storage_set, storage_get, clock }
+HttpRequest = struct { id: u32, method: HttpMethod, url, headers: []const Header, body: []const u8, timeout_ms }
+HttpResult = struct { id, status: u16 /*0 = transport failure*/, body, err }
+EffectResult = union(enum) { http, file_opened, file_cancelled, downloaded, storage_value, clock, dropped: Drop, pasted_text }
+Drop = struct { kind: DropKind /*file|image|text*/, name, mime, bytes }
+Header = struct { name, value }
+HttpMethod = enum { get, post, put, delete }
+```
+`run` executes each effect `id` once while listed; results flow back through `effectMsg` -> `update`.
+
 ### Components composition (`teak.component`, `teak.component_list`)
 ```zig
 Components(comptime components: anytype, comptime AppLevel: ?type) type

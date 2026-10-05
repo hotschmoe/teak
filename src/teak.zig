@@ -19,6 +19,8 @@ pub const component_list = @import("core/component_list.zig");
 pub const debug_overlay = @import("core/debug_overlay.zig");
 pub const snapshot = @import("core/snapshot.zig");
 pub const chart = @import("core/chart.zig");
+pub const pointer = @import("core/pointer.zig");
+pub const effects = @import("core/effects.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
@@ -64,6 +66,21 @@ pub const CanvasStyle = cmd.CanvasStyle;
 pub const CanvasPrimitive = cmd.CanvasPrimitive;
 pub const CanvasPoint = cmd.CanvasPoint;
 pub const Direction = cmd.Direction;
+
+pub const Buttons = pointer.Buttons;
+pub const Modifiers = pointer.Modifiers;
+pub const Button = pointer.Button;
+pub const CanvasEvent = pointer.CanvasEvent;
+pub const CanvasEventKind = pointer.CanvasEventKind;
+
+pub const Effect = effects.Effect;
+pub const EffectResult = effects.EffectResult;
+pub const HttpRequest = effects.HttpRequest;
+pub const HttpResult = effects.HttpResult;
+pub const HttpMethod = effects.HttpMethod;
+pub const Header = effects.Header;
+pub const Drop = effects.Drop;
+pub const DropKind = effects.DropKind;
 
 pub const LineChartOpts = chart.LineChartOpts;
 pub const lineChartPrimitives = chart.lineChartPrimitives;
