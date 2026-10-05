@@ -116,6 +116,7 @@ pub fn focusedMsg(*const Model) ?Msg                  // focus Msg of focused wi
                                                       //   + built-in Tab/Shift+Tab traversal
 pub fn submitMsg(*const Model) ?Msg                   // Enter key (precedes keySpecialMsg for Enter)
 pub fn themeFor(*const Model) Theme                   // per-frame theme (dark/light toggle)
+pub fn windowMsg(*const Model, f32, f32) ?Msg          // window size in logical px: first frame + every resize
 pub fn windowTitle(*const Model) ?[]const u8          // dynamic title bar; setTitle only on change
 pub fn secondaryWindow(*const Model) ?SecondaryWindowSpec  // 2nd top-level window, open when non-null
 pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view (pairs with above)

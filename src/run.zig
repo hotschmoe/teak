@@ -56,6 +56,7 @@
 //!   - `submitMsg(*const Model) ?Msg`                 — dispatched on the
 //!     Enter key (takes precedence over `keySpecialMsg` for Enter)
 //!   - `themeFor(*const Model) Theme`                 — per-frame theme
+//!   - `windowMsg(*const Model, w: f32, h: f32) ?Msg` — the window (viewport) size, on the first frame and on every resize
 //!   - `windowTitle(*const Model) ?[]const u8`        — dynamic title bar
 //!   - `secondaryWindow(*const Model) ?SecondaryWindowSpec` — declares a
 //!     second top-level window (title + size) that should be open this
@@ -494,7 +495,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         pub fn frame(self: *Self) !void {
             const input = self.host.pollInputs();
             if (self.host.shouldClose()) return;
-            if (input.resized) self.gpu.resize(input.width, input.height);
+            if (input.resized) {
+                self.gpu.resize(input.width, input.height);
+                if (@hasDecl(App, "windowMsg")) {
+                    if (App.windowMsg(&self.model, @floatFromInt(input.width), @floatFromInt(input.height))) |m| self.dispatch(m);
+                }
+            }
 
             // Input is routed against the PREVIOUS frame's layout — the one
             // the user is looking at — so `prev` is captured before the swap.

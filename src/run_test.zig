@@ -1455,3 +1455,32 @@ test "overlay layering: the loop hands the Gpu the overlay split; a Gpu without 
     defer rt.deinit();
     while (!host.shouldClose()) try rt.frame();
 }
+
+const WindowApp = struct {
+    pub const Model = struct { w: f32 = 0, h: f32 = 0, calls: u32 = 0 };
+    pub const Msg = union(enum) { size: [2]f32 };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .size => |s| {
+                m.w = s[0];
+                m.h = s[1];
+                m.calls += 1;
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.popGroup();
+    }
+    pub fn windowMsg(_: *const Model, w: f32, h: f32) ?Msg {
+        return .{ .size = .{ w, h } };
+    }
+};
+
+test "run: windowMsg reports the window size on the first frame" {
+    const t = try play(WindowApp, &.{ .{}, .{}, .{} });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(f32, 400), t.rt.model.w);
+    try std.testing.expectEqual(@as(f32, 300), t.rt.model.h);
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls); // only the first frame resized
+}

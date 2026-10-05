@@ -69,7 +69,7 @@ initial state if present, else `.{}`.
 Optional App decls, each detected with `@hasDecl` — present only what you
 need (full table in [consuming-teak.md §5](../consuming-teak.md)):
 `keyCharMsg`, `keySpecialMsg`, `keyNeedsClipboard` + `handleClipboard`,
-`wheelMsg`, `canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
+`wheelMsg`, `windowMsg` (window size on the first frame and each resize), `canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
 `secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`),
 `subscribe`.
 
