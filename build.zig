@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) void {
     // Pure GPU-side helpers (slot table, scene uniform packing / target
     // sizing / change signature). Not reachable from src/teak.zig for the
     // same reason as glyph_cache; each is a root file with its own tests.
-    for ([_][]const u8{ "src/gpu/slot_table.zig", "src/gpu/scene_common.zig" }) |path| {
+    for ([_][]const u8{ "src/gpu/slot_table.zig", "src/gpu/scene_common.zig", "src/gpu/overlay.zig" }) |path| {
         const m = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,

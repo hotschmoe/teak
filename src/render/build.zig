@@ -37,6 +37,21 @@ pub const ImageDraw = struct {
 };
 
 /// Fixed outline of checkbox / radio boxes.
+/// Where the overlay layer (HARDLINE §2 hatch 5: base z=0, overlay z=1)
+/// starts inside each staged list, as counts of what the base layer
+/// produced. A Gpu that honours it draws base solids, images, scene
+/// composites and text first, THEN the overlay's solids, images, composites
+/// and text, so an opaque overlay panel hides base-layer text and images
+/// beneath it. Without a split (all lists drawn by kind) the base layer's
+/// text and images would show through overlay quads.
+pub const OverlaySplit = struct {
+    /// Vertices in `verts` produced by the base layer.
+    verts: u32 = 0,
+    text: u32 = 0,
+    images: u32 = 0,
+    scenes: u32 = 0,
+};
+
 const BORDER_WIDTH: f32 = 2;
 const CURSOR_WIDTH: f32 = 2;
 const INPUT_TEXT_PADDING: f32 = 6;
@@ -114,14 +129,21 @@ pub fn buildFrame(
     rects: []const Rect,
     transient: TransientState,
     measurer: TextMeasurer,
-) void {
+) OverlaySplit {
     verts.clearRetainingCapacity();
     text_draws.clearRetainingCapacity();
     image_draws.clearRetainingCapacity();
     scene_draws.clearRetainingCapacity();
 
     buildLayer(verts, text_draws, image_draws, scene_draws, alloc, cmds, rects, transient, measurer, .base);
+    const split: OverlaySplit = .{
+        .verts = @intCast(verts.items.len),
+        .text = @intCast(text_draws.items.len),
+        .images = @intCast(image_draws.items.len),
+        .scenes = @intCast(scene_draws.items.len),
+    };
     buildLayer(verts, text_draws, image_draws, scene_draws, alloc, cmds, rects, transient, measurer, .overlay);
+    return split;
 }
 
 /// `buildFrame` without scene output: `scene3d` Cmds are skipped. For
@@ -139,7 +161,7 @@ pub fn buildVertices(
 ) void {
     var scenes: std.ArrayList(SceneDraw) = .empty;
     defer scenes.deinit(alloc);
-    buildFrame(verts, text_draws, image_draws, &scenes, alloc, cmds, rects, transient, measurer);
+    _ = buildFrame(verts, text_draws, image_draws, &scenes, alloc, cmds, rects, transient, measurer);
 }
 
 const Layer = enum { base, overlay };
@@ -1322,6 +1344,7 @@ const TestFrame = struct {
     texts: std.ArrayList(TextDraw) = .empty,
     images: std.ArrayList(ImageDraw) = .empty,
     scenes: std.ArrayList(SceneDraw) = .empty,
+    split: OverlaySplit = .{},
 
     fn deinit(self: *TestFrame, alloc: std.mem.Allocator) void {
         self.verts.deinit(alloc);
@@ -1337,7 +1360,7 @@ fn buildTestFrame(alloc: std.mem.Allocator, cb: anytype) !TestFrame {
     defer alloc.free(rects);
     layout.LayoutEngine.doLayout(rects, cb.cmds.items, 1000, 1000, text_mod.monoMeasurer());
     var f: TestFrame = .{};
-    buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
+    f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
     return f;
 }
 
@@ -1591,4 +1614,47 @@ test "perf: 100k line segments" {
     var f = try canvasWith(testing.allocator, 400, 400, &.{.{ .lines = .{ .segs = segs, .thickness = 1 } }});
     defer f.deinit(testing.allocator);
     try testing.expect(f.verts.items.len > 0 and f.verts.items.len <= n * 6);
+}
+
+test "buildFrame reports where the overlay layer starts in every list" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .bg = .{ 0.1, 0.1, 0.1, 1 } }); // 1 base quad
+    cb.text("base"); // 1 base text
+    cb.scene3d(.{ .mesh = 1 }); // 1 base scene
+    cb.pushOverlay(.{ .x = 10, .y = 10, .width = 100, .height = 60, .backdrop = .{ 1, 1, 1, 1 } }); // overlay panel quad
+    cb.text("over");
+    cb.text("over2");
+    cb.scene3d(.{ .mesh = 2 });
+    cb.popOverlay();
+    cb.popGroup();
+
+    var f = try buildTestFrame(testing.allocator, &cb);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 6), f.split.verts); // base group bg = 1 quad
+    try testing.expectEqual(@as(u32, 1), f.split.text);
+    try testing.expectEqual(@as(u32, 0), f.split.images);
+    try testing.expectEqual(@as(u32, 1), f.split.scenes);
+    // Everything after the split is overlay content.
+    try testing.expectEqual(@as(usize, 3), f.texts.items.len);
+    try testing.expectEqualStrings("over", f.texts.items[f.split.text].content);
+    try testing.expectEqual(@as(usize, 2), f.scenes.items.len);
+    try testing.expectEqual(@as(u32, 2), f.scenes.items[f.split.scenes].mesh);
+    try testing.expect(f.verts.items.len > f.split.verts);
+}
+
+test "buildFrame without an overlay splits at the end of every list" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{});
+    cb.text("only base");
+    cb.popGroup();
+    var f = try buildTestFrame(testing.allocator, &cb);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, @intCast(f.verts.items.len)), f.split.verts);
+    try testing.expectEqual(@as(u32, 1), f.split.text);
 }

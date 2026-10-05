@@ -107,7 +107,8 @@ export fn frame(_: f32) void {
     transient_state.frame_counter +%= 1;
 
     _ = resources.sync(&gpu, App.resources(&model));
-    teak.buildFrame(&verts, &text_draws, &image_draws, &scene_draws, alloc, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state, host.textMeasurer());
+    const split = teak.buildFrame(&verts, &text_draws, &image_draws, &scene_draws, alloc, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state, host.textMeasurer());
+    gpu.setOverlayStart(split);
     gpu.uploadVertices(verts.items);
     gpu.uploadText(text_draws.items);
     teak.stageDraws(&gpu, &resources, image_draws.items, scene_draws.items);

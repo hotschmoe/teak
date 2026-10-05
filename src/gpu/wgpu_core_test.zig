@@ -17,17 +17,22 @@ const NoSurface = struct {
     }
 };
 
-const NoRaster = struct {
-    pub fn init(_: std.mem.Allocator) !NoRaster {
+/// "Rasterizes" every string as a fully covered box (BGRA, coverage 255),
+/// so text draws show as solid rectangles in the draw color.
+const BoxRaster = struct {
+    pixels: [64 * 64 * 4]u8 = @splat(255),
+
+    pub fn init(_: std.mem.Allocator) !BoxRaster {
         return .{};
     }
-    pub fn deinit(_: *NoRaster) void {}
-    pub fn rasterize(_: *NoRaster, _: []const u8, _: teak.FontSpec, _: [4]f32, _: u32, _: u32) ?wgpu_core.Bitmap {
-        return null;
+    pub fn deinit(_: *BoxRaster) void {}
+    pub fn rasterize(self: *BoxRaster, _: []const u8, _: teak.FontSpec, _: [4]f32, w: u32, h: u32) ?wgpu_core.Bitmap {
+        if (w > 64 or h > 64) return null;
+        return .{ .pixels = self.pixels[0 .. w * h * 4], .width = w, .height = h };
     }
 };
 
-const TestGpu = wgpu_core.Gpu(NoSurface, NoRaster);
+const TestGpu = wgpu_core.Gpu(NoSurface, BoxRaster);
 
 comptime {
     teak.validateGpu(TestGpu);
@@ -204,4 +209,95 @@ test "images upload, draw and release (slot reuse)" {
     h.gpu.releaseImage(img);
     const again = h.gpu.uploadImage(&red_px, 2, 2);
     try std.testing.expectEqual(img, again);
+}
+
+fn textAt(x: f32, y: f32, w: f32, h: f32, content: []const u8) teak.TextDraw {
+    return .{
+        .rect_x = x,
+        .rect_y = y,
+        .rect_w = w,
+        .rect_h = h,
+        .content = content,
+        .font = .{},
+        .color = .{ 1, 1, 1, 1 },
+        .clip_x = 0,
+        .clip_y = 0,
+        .clip_w = px,
+        .clip_h = px,
+    };
+}
+
+fn solidQuad(out: *[6]teak.Vertex, x0: f32, y0: f32, x1: f32, y1: f32, rgb: [3]f32) void {
+    const v = struct {
+        fn at(x: f32, y: f32, col: [3]f32) teak.Vertex {
+            return .{ .x = x, .y = y, .r = col[0], .g = col[1], .b = col[2], .a = 1, .u = 0, .v = 0 };
+        }
+    };
+    out.* = .{ v.at(x0, y0, rgb), v.at(x1, y0, rgb), v.at(x0, y1, rgb), v.at(x1, y0, rgb), v.at(x1, y1, rgb), v.at(x0, y1, rgb) };
+}
+
+test "overlay layering: an opaque overlay hides base text and images, overlay text stays on top" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+
+    // Overlay panel: opaque red 0..40. Base text A (8,8) lies under it;
+    // overlay text B (8,24) is part of the overlay layer; image under it.
+    var quad: [6]teak.Vertex = undefined;
+    solidQuad(&quad, 0, 0, 40, 40, .{ 1, 0, 0 });
+    const texts = [_]teak.TextDraw{ textAt(8, 8, 16, 8, "base"), textAt(8, 24, 16, 8, "over") };
+    const green_px = [_]u8{ 0, 255, 0, 255 } ** 4;
+    const img = h.gpu.uploadImage(&green_px, 2, 2);
+    const images = [_]teak.ImageDraw{.{
+        .rect_x = 24,
+        .rect_y = 8,
+        .rect_w = 8,
+        .rect_h = 8,
+        .handle = img,
+        .tint = .{ 1, 1, 1, 1 },
+        .clip_x = 0,
+        .clip_y = 0,
+        .clip_w = px,
+        .clip_h = px,
+    }};
+
+    // Without a split everything is drawn by kind: the base text and the
+    // base image paint OVER the overlay's quad (the bug).
+    h.gpu.uploadVertices(&quad);
+    h.gpu.uploadText(&texts);
+    h.gpu.uploadImages(&images);
+    const by_kind = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(by_kind);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(by_kind, 12, 11)); // base text on top of the quad
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(by_kind, 28, 11)); // base image too
+
+    // With the split: base text (1) and image (1) end before the overlay.
+    h.gpu.setOverlayStart(.{ .verts = 0, .text = 1, .images = 1, .scenes = 0 });
+    h.gpu.uploadVertices(&quad);
+    h.gpu.uploadText(&texts);
+    h.gpu.uploadImages(&images);
+    const layered = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(layered);
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(layered, 12, 11)); // red quad hides base text (BGRA)
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(layered, 28, 11)); // ... and the base image
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(layered, 12, 27)); // overlay text is on top of the quad
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(layered, 50, 50)); // outside everything
+}
+
+test "overlay layering: base content below the split still draws in painter order" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    // Base: blue quad (0..20) then base text over it; overlay: red quad
+    // (10..30) that hides the part of both it overlaps.
+    var quads: [12]teak.Vertex = undefined;
+    solidQuad(quads[0..6], 0, 0, 20, 20, .{ 0, 0, 1 });
+    solidQuad(quads[6..12], 10, 10, 30, 30, .{ 1, 0, 0 });
+    const texts = [_]teak.TextDraw{textAt(2, 2, 16, 8, "base")};
+    h.gpu.setOverlayStart(.{ .verts = 6, .text = 1, .images = 0, .scenes = 0 });
+    h.gpu.uploadVertices(&quads);
+    h.gpu.uploadText(&texts);
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 5, 5)); // base text over the base quad
+    try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, at(f, 5, 15)); // base quad, no text there (BGRA blue)
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 25, 25)); // overlay quad
 }
