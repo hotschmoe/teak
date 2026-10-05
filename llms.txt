@@ -137,7 +137,7 @@ pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 `cmd component component_list transient text sub theme text_field numeric_field
-dropdown debug_overlay snapshot chart layout hit_test focus keys a11y render
+dropdown debug_overlay snapshot chart table layout hit_test focus keys a11y render
 vertex host gpu runtime`.
 
 ### Commands & CmdBuffer (`teak.cmd` → core/cmd.zig)
@@ -247,6 +247,20 @@ LineChartOpts = struct { width, height, min, max: f32, padding: f32 = 4,
                          line_color, grid_color: [4]f32, line_thickness: f32 = 2,
                          grid_lines: u32 = 5 }
 lineChartPrimitives(arena, series: []const f32, opts: LineChartOpts) []const CanvasPrimitive
+```
+
+### Tables (`teak.table` → core/table.zig)
+Fixed-column monospace tables: pad/truncate cells to a character width, emit rows as groups of text cmds.
+```zig
+Table = struct { columns: []const TableColumn, gutter: u8 = 1, ellipsis: []const u8 = "\u{2026}",
+                 pub fn header(self, cb, TableRowStyle) void,
+                 pub fn row(self, cb, cells: []const []const u8, TableRowStyle) void,
+                 pub fn totalChars(self) usize }
+TableColumn = struct { title: []const u8 = "", chars: u16, cell_align: CellAlign = .left }
+CellAlign = enum { left, right, center }
+TableRowStyle = struct { font = mono, color, bg: ?[4]f32 = null, rule: ?[4]f32 = null,
+                         pad_x = 4, pad_y = 2, height: f32 = 0 }
+fitCell(alloc, text, width: usize, align: CellAlign, ellipsis, trailing: usize) ![]u8
 ```
 
 ### Layout (`teak.layout` → layout/engine.zig)
@@ -519,6 +533,7 @@ More worked examples and idioms: **docs/cookbook.md**.
 - `docs/features/widgets.md` — disabled state, NumericField, Dropdown, setTitle.
 - `docs/features/components.md` — comptime component composition.
 - `docs/features/canvas.md` — charts & custom 2D drawing.
+- `docs/features/tables.md` — fixed-column monospace tables (`teak.table`).
 - `docs/features/layout.md` — layout engine (measure + position passes).
 - `docs/features/hit-test.md` — hit-test + hover-test.
 - `docs/features/focus.md` — Msg-keyed stable focus traversal.
