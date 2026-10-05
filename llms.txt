@@ -419,6 +419,18 @@ EffectSubmit = enum { accepted, busy, unsupported }   // Host.submit's answer
 delisted (a late result for an unlisted id is dropped = cancellation). Results flow `effectMsg` -> `update`
 (`last_msg` names them). Effect slices live for the `submit` call; result slices until the `update` returns.
 Keep the request in `Model` (`effects()` returns a slice of it). 32 ids at once.
+Native: HTTP on worker threads, storage under `$XDG_CONFIG_HOME/teak/<app>/` (`RunOptions.app_name` or the window title), downloads to `$TEAK_OUT`,
+`TEAK_OPEN=path` feeds `open_file`, `query_param` reads `--name=value` / `TEAK_<NAME>`.
+
+### Fonts (docs/features/text.md)
+```zig
+FontSpec = struct { size_px: f32 = 14 /* em size, like CSS px */, family: FontFamily = .sans,
+                    weight: FontWeight = .regular /* regular 400, medium 500, bold 700 */, letter_spacing: f32 = 0 }
+// web (build.zig):  teak.linkWebWgpu(b, exe, .{ .fonts = &.{ .{ .family = "IBM Plex Mono", .weight = 400,
+//                       .path = b.path("assets/IBMPlexMono-Regular.ttf"), .slot = .mono /* default */ }, ... } })
+//                   -> copied to dist/fonts/, @font-face, app starts after document.fonts.load; slot text uses "<family>", monospace
+// native Linux:     try host.registerFont(.mono, .bold, @embedFile("plex-Bold"));   // <= 3 weights per family; Gpu shares the table
+```
 
 ### Components composition (`teak.component`, `teak.component_list`)
 ```zig

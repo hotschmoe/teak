@@ -27,6 +27,7 @@ change yields.
 | Open a second top-level window | [10. Add a second window](#10-add-a-second-window) |
 | Fire a Msg on a timer | [11. Timer / subscription](#11-timer--subscription) |
 | Add a brand-new widget to the framework | [12. Add a new widget to the framework](#12-add-a-new-widget-to-the-framework) |
+| Call an HTTP API, open / save a file, remember a setting | [13. Effects: HTTP, files, storage](#13-effects-http-files-storage) |
 
 The mechanical spine underneath every app recipe: **1.** field on `Model`
 · **2.** variant on `Msg` · **3.** arm in `update` · **4.** `cb.*` calls in
@@ -728,3 +729,77 @@ and should clear the HARDLINE §4 bar.
 *Missing a recipe? The feature docs in [`docs/features/`](features/) carry
 the full contract for every `pub` surface; this cookbook only covers the
 common intents.*
+
+---
+
+## 13. Effects: HTTP, files, storage
+
+**Goal:** talk to the outside world (an HTTP API, a file the user picks, a
+download, a saved setting, a pasted screenshot) without doing I/O in
+`update` or `view`.
+
+**You will touch:** `src/app.zig` — `effects` + `effectMsg`. Escape hatch 7 in
+[HARDLINE §2](HARDLINE.md); depth: [effects.md](features/effects.md);
+a complete app: `examples/effects`.
+
+The app *lists* what it wants; the host does it; the answer comes back as a
+`Msg`. Keep the request in `Model` (the list borrows from it) and give every
+request a fresh id:
+
+```zig
+const Model = struct {
+    next_id: u32 = 1,
+    asking: bool = false,
+    req: [1]teak.Effect = undefined,
+    reply: [512]u8 = undefined,
+    reply_len: usize = 0,
+};
+const Msg = union(enum) { ask, answered: teak.HttpResult };
+
+pub fn update(m: *Model, msg: Msg) void {
+    switch (msg) {
+        .ask => {
+            m.req[0] = .{ .http = .{
+                .id = m.next_id,
+                .method = .post,
+                .url = "https://api.example.com/v1/chat",
+                .headers = &.{.{ .name = "content-type", .value = "application/json" }},
+                .body = "{\"q\":\"hi\"}",
+                .timeout_ms = 30_000,
+            } };
+            m.next_id += 1;
+            m.asking = true;
+        },
+        .answered => |r| {
+            m.asking = false; // delisted: the id is forgotten next frame
+            const n = @min(r.body.len, m.reply.len); // r.body dies when update returns: copy
+            @memcpy(m.reply[0..n], r.body[0..n]);
+            m.reply_len = n; // status 0 means a transport failure; r.err says why
+        },
+    }
+}
+
+pub fn effects(m: *const Model) []const teak.Effect {
+    return if (m.asking) &m.req else &.{};
+}
+
+pub fn effectMsg(_: *const Model, r: teak.EffectResult) ?Msg {
+    return switch (r) {
+        .http => |h| .{ .answered = h },
+        else => null,
+    };
+}
+```
+
+`run` issues the id once while it is listed, never again, and drops a late
+answer if you delisted it (that is how you cancel). The same shape covers
+`open_file` (`.file_opened{ name, mime, bytes }` / `.file_cancelled`),
+`download`, `storage_get` / `storage_set`, `clock`, `write_clipboard` and
+`query_param`. An app that only wants pasted / dropped images and text
+declares `effectMsg` alone and matches `.dropped` / `.pasted_text`.
+
+**Common mistakes:** reusing an id while an older request of that id is in
+flight (answers mix up); keeping `r.body` instead of copying it; expecting
+`open_file` to open a picker outside a user gesture on the web (it arms
+itself for the next click or key press); expecting a result from the
+fire-and-forget `storage_set` / `write_clipboard`.

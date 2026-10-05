@@ -63,6 +63,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    // The web font helper is tested with a registered mono family so the
+    // `"<family>", monospace` form is exercised.
+    const test_fonts = [_]WebFont{.{ .family = "Test Mono", .weight = 400, .path = b.path("build.zig") }};
+    const web_font_mod = webFontModule(b, mod, webFontsModule(b, &test_fonts), b.path("src/gpu/web_font.zig"), target, optimize);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = web_font_mod })).step);
     const platform_wasm_mod = b.createModule(.{
         .root_source_file = b.path("src/platform/wasm.zig"),
         .target = target,
@@ -70,6 +75,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "teak", .module = mod },
             .{ .name = "zunk", .module = zunk_host_dep.module("zunk") },
+            .{ .name = "teak-web-font", .module = web_font_mod },
         },
     });
     const platform_wasm_tests = b.addTest(.{ .root_module = platform_wasm_mod });
@@ -108,6 +114,26 @@ pub fn build(b: *std.Build) void {
     });
     const stbtt_tests = b.addTest(.{ .root_module = stbtt_mod });
     test_step.dependOn(&b.addRunArtifact(stbtt_tests).step);
+
+    // Face-table tests against the real IBM Plex Mono files shipped with
+    // examples/fonts (no system font needed).
+    const stbtt_face_mod = b.createModule(.{
+        .root_source_file = b.path("src/gpu/text_stbtt_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = mod },
+            .{ .name = "teak-text", .module = stbtt_mod },
+        },
+    });
+    for ([_][]const u8{ "regular", "medium", "bold" }) |weight| {
+        const file = b.fmt("IBMPlexMono-{c}{s}.ttf", .{ std.ascii.toUpper(weight[0]), weight[1..] });
+        stbtt_face_mod.addAnonymousImport(b.fmt("plex-{s}", .{weight}), .{
+            .root_source_file = b.path(b.fmt("examples/fonts/assets/{s}", .{file})),
+        });
+    }
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = stbtt_face_mod })).step);
 
     // X11 host (src/platform/x11.zig) — its keysym→SpecialKey mapping is
     // the one piece of host logic worth unit-testing headlessly (no
@@ -163,6 +189,19 @@ pub fn build(b: *std.Build) void {
                 gpu_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = gpu_test_mod })).step);
             }
         };
+    }
+
+    // Native effects service (HTTP worker threads, storage files, ...): runs
+    // against a local libc-socket server. Linux only, like its host.
+    if (target.result.os.tag == .linux) {
+        const native_fx_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/native_effects.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "teak", .module = mod }},
+        });
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = native_fx_mod })).step);
     }
 
     // wasm32-freestanding compile canary. Run `zig build test-wasm` to
@@ -439,10 +478,64 @@ fn linkLinux(
     exe.step.dependOn(&install_so.step);
 }
 
+/// Which of teak's three `FontFamily` values a web font stands in for.
+pub const WebFontSlot = enum { sans, serif, mono };
+
+/// A web font file. Register one per weight: text in `slot` then uses
+/// `"<family>", <generic>` with `FontSpec.weight` mapped to CSS
+/// `font-weight` (regular 400, medium 500, bold 700).
+pub const WebFont = struct {
+    /// CSS family name, e.g. "IBM Plex Mono". No quotes or backslashes.
+    family: []const u8,
+    /// CSS `font-weight` of this file.
+    weight: u16 = 400,
+    path: std.Build.LazyPath,
+    slot: WebFontSlot = .mono,
+};
+
 pub const WebWgpuOptions = struct {
     port: u16 = 8080,
     output_dir: []const u8 = "dist",
+    /// Fonts copied to `<output_dir>/fonts/` and loaded before the first frame.
+    fonts: []const WebFont = &.{},
 };
+
+/// The `teak-fonts` options module: the family registered for each slot ("" =
+/// none, the CSS generic family is used alone). The last font of a slot wins
+/// the name; all files of a slot should share one family.
+fn webFontsModule(b: *std.Build, fonts: []const WebFont) *std.Build.Module {
+    const opts = b.addOptions();
+    inline for (@typeInfo(WebFontSlot).@"enum".fields) |f| {
+        var family: []const u8 = "";
+        for (fonts) |font| {
+            if (@intFromEnum(font.slot) == f.value) family = font.family;
+        }
+        opts.addOption([]const u8, f.name, family);
+    }
+    return opts.createModule();
+}
+
+/// The shared CSS font-string helper used by the web Host and Gpu.
+fn webFontModule(b: *std.Build, teak_mod: *std.Build.Module, fonts_mod: *std.Build.Module, source: std.Build.LazyPath, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = source,
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-fonts", .module = fonts_mod },
+        },
+    });
+}
+
+fn addFontArgs(run: *std.Build.Step.Run, fonts: []const WebFont) void {
+    for (fonts) |f| {
+        run.addArg("--font");
+        run.addArg(f.family);
+        run.addArg(run.step.owner.fmt("{d}", .{f.weight}));
+        run.addFileArg(f.path);
+    }
+}
 
 /// Wire the wasm + WebGPU (zunk) backend onto `exe`. Adds `teak`,
 /// `teak-platform-wasm`, and `teak-gpu-web` imports; sets wasm linker
@@ -485,6 +578,8 @@ pub fn linkWebWgpu(
         .optimize = optimize,
     });
 
+    const web_font_mod = webFontModule(b, teak_mod, webFontsModule(b, opts.fonts), teak_dep.path("src/gpu/web_font.zig"), target, optimize);
+
     const platform_mod = b.createModule(.{
         .root_source_file = teak_dep.path("src/platform/wasm.zig"),
         .target = target,
@@ -492,6 +587,7 @@ pub fn linkWebWgpu(
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
             .{ .name = "zunk", .module = zunk_mod },
+            .{ .name = "teak-web-font", .module = web_font_mod },
         },
     });
 
@@ -502,6 +598,7 @@ pub fn linkWebWgpu(
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
             .{ .name = "zunk", .module = zunk_mod },
+            .{ .name = "teak-web-font", .module = web_font_mod },
             .{ .name = "teak-shaders", .module = shaders_mod },
         },
     });
@@ -521,6 +618,7 @@ pub fn linkWebWgpu(
     gen_cmd.addArtifactArg(exe);
     gen_cmd.addArg("--output-dir");
     gen_cmd.addArg(opts.output_dir);
+    addFontArgs(gen_cmd, opts.fonts);
     gen_cmd.setCwd(b.path("."));
 
     const web_step = b.step("web", "Build wasm + dist/ via zunk");
@@ -534,6 +632,7 @@ pub fn linkWebWgpu(
     serve_cmd.addArg(opts.output_dir);
     serve_cmd.addArg("--port");
     serve_cmd.addArg(b.fmt("{d}", .{opts.port}));
+    addFontArgs(serve_cmd, opts.fonts);
     serve_cmd.setCwd(b.path("."));
 
     const web_run = b.step("web-run", "Build and serve wasm on localhost");

@@ -43,9 +43,9 @@ zig build web            # wasm + WebGPU via zunk — writes dist/
 zig build web-run        # same, then serves dist/ on localhost:8080
 ```
 
-Building the Linux UI needs no X11 dev package (libX11 is `dlopen`ed at runtime); at runtime it needs `libX11.so.6`, a Vulkan driver, and a monospace TTF (DejaVuSansMono by default; override with `TEAK_FONT`).
+Building the Linux UI needs no X11 dev package (libX11 is `dlopen`ed at runtime); at runtime it needs `libX11.so.6`, a Vulkan driver, and a monospace TTF (DejaVuSansMono by default; override with `TEAK_FONT`, or register your own with `Host.registerFont`).
 
-Six examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array), **chrome** (an engineering-workstation shell: header / 360 | flex | 320 columns / status line, bordered cards, bracket tabs, a `teak.Table`, underline fields, hover-inverting buttons, a hard-shadowed overlay, a fully custom `Theme`), **viewport** (an interactive canvas you pan and zoom, plus a scroll list whose scrollbar is sized from `scrollLayoutMsg`), and **effects** (every `teak.Effect` with a visible result: HTTP, download, file open, storage, clock, clipboard, query params, dropped / pasted images).
+Seven examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array), **chrome** (an engineering-workstation shell: header / 360 | flex | 320 columns / status line, bordered cards, bracket tabs, a `teak.Table`, underline fields, hover-inverting buttons, a hard-shadowed overlay, a fully custom `Theme`), **viewport** (an interactive canvas you pan and zoom, plus a scroll list whose scrollbar is sized from `scrollLayoutMsg`), and **effects** (every `teak.Effect` with a visible result: HTTP, download, file open, storage, clock, clipboard, query params, dropped / pasted images), and **fonts** (IBM Plex Mono at three weights with tracking: `linkWebWgpu(.fonts)` on the web, `Host.registerFont` on Linux).
 
 Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until Zig ships a fix for [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865). See [`docs/archive/zig-016-win-arm64-crash.md`](docs/archive/zig-016-win-arm64-crash.md).
 
@@ -109,6 +109,7 @@ examples/tree/             recursive tree with expand/collapse over flat Model
 examples/chrome/           engineering-workstation chrome: cards, tables, bracket tabs, custom Theme
 examples/viewport/         pan/zoom interactive canvas + scroll list with scrollbar
 examples/effects/          declarative effects: HTTP, files, storage, clock, clipboard, paste/drop
+examples/fonts/            IBM Plex Mono at three weights + tracking (web .fonts, native registerFont)
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)

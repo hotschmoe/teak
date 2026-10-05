@@ -1,0 +1,15 @@
+.{
+    .name = .fonts,
+    .version = "0.0.0",
+    .fingerprint = 0x7303e8fba94d5f3a,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .teak = .{ .path = "../.." },
+    },
+    .paths = .{
+        "assets",
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
