@@ -1,21 +1,28 @@
 //! Shared stb_truetype text backend for the Linux native host.
 //!
-//! Two consumers, one module, one font — on purpose:
+//! Two consumers, one module, one face table — on purpose:
 //!   * `StbttRasterizer` is the wgpu *rasterizer provider* (the Linux
 //!     counterpart to `raster_gdi.GdiRasterizer`); `native_linux.zig`
 //!     binds it into `wgpu_core.Gpu`.
-//!   * `Font.measureWidth` / `vMetrics` back the X11 Host's
-//!     `TextMeasurer` (`platform/x11.zig`).
+//!   * `measure` backs the X11 Host's `TextMeasurer` (`platform/x11.zig`).
 //! Layout is driven by the measurer and rendering by the rasterizer, so
-//! if they disagreed on metrics the glyphs would clip or mis-place. They
-//! share this module — and therefore the same TTF + scale math — so they
-//! cannot drift.
+//! if they disagreed on metrics the glyphs would clip or mis-place. Both
+//! pick the face through `faceFor` from the one table below and apply
+//! `FontSpec.letter_spacing` the same way, so they cannot drift.
+//!
+//! Faces: an app registers up to three per family, one per weight, with
+//! `registerFace` (the X11 `Host.registerFont`; the bytes are typically an
+//! `@embedFile`). A request takes the registered weight nearest the one
+//! asked for (lighter wins a tie); a family with no registered face falls
+//! back to a system monospace TTF (`TEAK_FONT` overrides the search).
+//!
+//! The table is module state (this module is instantiated once and shared
+//! by the Host and the Gpu; they have no other common object). The UI is
+//! single-threaded.
 //!
 //! Pure CPU + libc: no wgpu, no X11. stb's edge-list temporaries go
-//! through STBTT_malloc → libc malloc/free (see stb_truetype_impl.c), so
-//! the consuming target links libc. v1 loads a single face (monospace by
-//! default) and ignores `FontSpec.family`; per-family faces are a future
-//! enhancement (the measurer would need matching faces to stay honest).
+//! through STBTT_malloc -> libc malloc/free (see stb_truetype_impl.c), so
+//! the consuming target links libc.
 
 const std = @import("std");
 const teak = @import("teak");
@@ -51,32 +58,44 @@ pub const Bitmap = struct {
     height: u32,
 };
 
-/// A loaded TTF face. `info` holds pointers into `data`, so `data` must
-/// outlive it (owned here; freed by `deinit`).
+/// A TTF face. `info` holds pointers into `data`, which must outlive it:
+/// either owned here (a system font; freed by `deinit`) or borrowed from the
+/// app (a registered face: static bytes, never freed).
 pub const Font = struct {
-    data: []u8,
+    data: []const u8,
     info: c.stbtt_fontinfo,
-    allocator: std.mem.Allocator,
+    /// Set when `data` was allocated by `loadSystem`.
+    allocator: ?std.mem.Allocator = null,
 
-    pub fn load(allocator: std.mem.Allocator) !Font {
-        const data = try readFontFile(allocator);
-        errdefer allocator.free(data);
-
+    /// Wrap `ttf` without copying it. The bytes must stay alive and unchanged.
+    pub fn fromBytes(ttf: []const u8) !Font {
         var info: c.stbtt_fontinfo = undefined;
-        const offset = c.stbtt_GetFontOffsetForIndex(data.ptr, 0);
-        if (offset < 0 or c.stbtt_InitFont(&info, data.ptr, offset) == 0) {
+        const offset = c.stbtt_GetFontOffsetForIndex(ttf.ptr, 0);
+        if (offset < 0 or c.stbtt_InitFont(&info, ttf.ptr, offset) == 0) {
             return error.FontInitFailed;
         }
-        return .{ .data = data, .info = info, .allocator = allocator };
+        return .{ .data = ttf, .info = info };
+    }
+
+    /// Load the system fallback face (`TEAK_FONT`, else the candidate list).
+    pub fn loadSystem(allocator: std.mem.Allocator) !Font {
+        const data = try readFontFile(allocator);
+        errdefer allocator.free(data);
+        var font = try fromBytes(data);
+        font.allocator = allocator;
+        return font;
     }
 
     pub fn deinit(self: *Font) void {
-        self.allocator.free(self.data);
+        if (self.allocator) |a| a.free(self.data);
         self.* = undefined;
     }
 
-    pub fn scaleForPixelHeight(self: *const Font, size_px: f32) f32 {
-        return c.stbtt_ScaleForPixelHeight(&self.info, size_px);
+    /// Font units -> pixels with `size_px` as the EM size, like CSS `px` and
+    /// GDI's negative `CreateFont` height (not stb's ascent-to-descent height,
+    /// which makes the same size_px smaller than on the other backends).
+    pub fn scaleForEm(self: *const Font, size_px: f32) f32 {
+        return c.stbtt_ScaleForMappingEmToPixels(&self.info, size_px);
     }
 
     pub const VMetrics = struct { ascent: f32, descent: f32, line_gap: f32 };
@@ -88,7 +107,7 @@ pub const Font = struct {
         var descent: c_int = 0;
         var line_gap: c_int = 0;
         c.stbtt_GetFontVMetrics(&self.info, &ascent, &descent, &line_gap);
-        const s = self.scaleForPixelHeight(size_px);
+        const s = self.scaleForEm(size_px);
         return .{
             .ascent = @as(f32, @floatFromInt(ascent)) * s,
             .descent = @as(f32, @floatFromInt(-descent)) * s,
@@ -96,38 +115,111 @@ pub const Font = struct {
         };
     }
 
-    /// Total advance width of the UTF-8 `text` run, in pixels at `size_px`.
-    pub fn measureWidth(self: *const Font, text: []const u8, size_px: f32) f32 {
-        const s = self.scaleForPixelHeight(size_px);
+    /// Total advance width of the UTF-8 `text` run, in pixels at `size_px`,
+    /// plus `letter_spacing` after every code point.
+    pub fn measureWidth(self: *const Font, text: []const u8, size_px: f32, letter_spacing: f32) f32 {
+        const s = self.scaleForEm(size_px);
         var width: f32 = 0;
         var it = CodepointIterator{ .text = text };
         while (it.next()) |cp| {
             var advance: c_int = 0;
             var lsb: c_int = 0;
             c.stbtt_GetCodepointHMetrics(&self.info, @intCast(cp), &advance, &lsb);
-            width += @as(f32, @floatFromInt(advance)) * s;
+            width += @as(f32, @floatFromInt(advance)) * s + letter_spacing;
         }
         return width;
     }
 };
 
+// ── Face table ─────────────────────────────────────────────────────
+
+const family_count = std.enums.values(teak.FontFamily).len;
+const weight_count = std.enums.values(teak.FontWeight).len;
+
+const Registry = struct {
+    faces: [family_count][weight_count]?Font = @splat(@splat(null)),
+    /// System fallback, loaded on first use. `fallback_tried` stops a missing
+    /// font from being searched for again every frame.
+    fallback: ?Font = null,
+    fallback_tried: bool = false,
+};
+
+var registry: Registry = .{};
+
+/// Register `ttf` as the face for (`family`, `weight`), replacing an earlier
+/// one. The bytes are borrowed: keep them alive (an `@embedFile` slice is).
+pub fn registerFace(family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) error{FontInitFailed}!void {
+    registry.faces[@intFromEnum(family)][@intFromEnum(weight)] = Font.fromBytes(ttf) catch return error.FontInitFailed;
+}
+
+/// Forget every registered face and the loaded fallback.
+pub fn releaseFaces() void {
+    if (registry.fallback) |*f| f.deinit();
+    registry = .{};
+}
+
+/// The face for a request: the registered weight of `family` nearest to
+/// `weight` (lighter on a tie), else the system fallback, else any
+/// registered face. Null only when no font exists at all.
+pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
+    const row = &registry.faces[@intFromEnum(family)];
+    const want: i32 = @intFromEnum(weight);
+    var best: ?usize = null;
+    var best_dist: i32 = std.math.maxInt(i32);
+    for (row, 0..) |face, i| {
+        if (face == null) continue;
+        const dist = @as(i32, @intCast(i)) - want;
+        const abs = if (dist < 0) -dist else dist;
+        // `row` runs light to heavy, so a strict `<` keeps the lighter on a tie.
+        if (abs < best_dist) {
+            best = i;
+            best_dist = abs;
+        }
+    }
+    if (best) |i| return &row[i].?;
+
+    if (!registry.fallback_tried) {
+        registry.fallback_tried = true;
+        registry.fallback = Font.loadSystem(std.heap.page_allocator) catch null;
+        if (registry.fallback == null) std.log.warn("teak: no font found (register one or set TEAK_FONT); text will not draw", .{});
+    }
+    if (registry.fallback) |*f| return f;
+    for (&registry.faces) |*r| {
+        for (r) |*face| {
+            if (face.*) |*f| return f;
+        }
+    }
+    return null;
+}
+
+/// Size of a run of `text` in `font`. The one measurement the X11 Host's
+/// measurer uses; the rasterizer places glyphs with the same advances.
+pub fn measure(text: []const u8, font: FontSpec) teak.TextMetrics {
+    const face = faceFor(font.family, font.weight) orelse return .{ .width = 0, .height = font.size_px, .ascent = font.size_px * 0.75, .descent = font.size_px * 0.25 };
+    const vm = face.vMetrics(font.size_px);
+    return .{
+        .width = face.measureWidth(text, font.size_px, font.letter_spacing),
+        .height = vm.ascent + vm.descent,
+        .ascent = vm.ascent,
+        .descent = vm.descent,
+    };
+}
+
 /// wgpu rasterizer provider. Reuses two scratch buffers across calls so a
 /// per-frame text run allocates nothing once warmed. The returned
 /// `Bitmap` views `bgra` and is valid only until the next `rasterize`.
 pub const StbttRasterizer = struct {
-    font: Font,
     allocator: std.mem.Allocator,
     cover: std.ArrayListUnmanaged(u8) = .empty,
     bgra: std.ArrayListUnmanaged(u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) !StbttRasterizer {
-        return .{ .font = try Font.load(allocator), .allocator = allocator };
+        return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *StbttRasterizer) void {
         self.cover.deinit(self.allocator);
         self.bgra.deinit(self.allocator);
-        self.font.deinit();
     }
 
     pub fn rasterize(
@@ -147,8 +239,9 @@ pub const StbttRasterizer = struct {
         self.cover.resize(self.allocator, total) catch return null;
         @memset(self.cover.items, 0);
 
-        const scale = self.font.scaleForPixelHeight(font_spec.size_px);
-        const vm = self.font.vMetrics(font_spec.size_px);
+        const face = faceFor(font_spec.family, font_spec.weight) orelse return null;
+        const scale = face.scaleForEm(font_spec.size_px);
+        const vm = face.vMetrics(font_spec.size_px);
         const baseline: i32 = @intFromFloat(@round(vm.ascent));
 
         var pen_x: f32 = 0;
@@ -156,19 +249,19 @@ pub const StbttRasterizer = struct {
         while (it.next()) |cp| {
             var advance: c_int = 0;
             var lsb: c_int = 0;
-            c.stbtt_GetCodepointHMetrics(&self.font.info, @intCast(cp), &advance, &lsb);
+            c.stbtt_GetCodepointHMetrics(&face.info, @intCast(cp), &advance, &lsb);
 
             var gw: c_int = 0;
             var gh: c_int = 0;
             var xoff: c_int = 0;
             var yoff: c_int = 0;
-            const glyph = c.stbtt_GetCodepointBitmap(&self.font.info, scale, scale, @intCast(cp), &gw, &gh, &xoff, &yoff);
+            const glyph = c.stbtt_GetCodepointBitmap(&face.info, scale, scale, @intCast(cp), &gw, &gh, &xoff, &yoff);
             if (glyph != null and gw > 0 and gh > 0) {
                 blit(self.cover.items, w, h, glyph, @intCast(gw), @intCast(gh), @as(i32, @intFromFloat(@round(pen_x))) + xoff, baseline + yoff);
                 c.stbtt_FreeBitmap(glyph, null);
             }
 
-            pen_x += @as(f32, @floatFromInt(advance)) * scale;
+            pen_x += @as(f32, @floatFromInt(advance)) * scale + font_spec.letter_spacing;
         }
 
         // Expand coverage → BGRA with the requested color stamped in.
@@ -276,14 +369,13 @@ fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return try list.toOwnedSlice(allocator);
 }
 
-test "stbtt: loads a font and rasterizes non-empty coverage" {
-    var rast = StbttRasterizer.init(std.testing.allocator) catch |e| {
-        // No system font on this builder — skip rather than fail. On the
-        // dev/CI box DejaVuSansMono is present, so this path is not taken.
-        std.debug.print("skipping stbtt test: {s}\n", .{@errorName(e)});
-        return;
-    };
+test "stbtt: the system fallback rasterizes non-empty coverage" {
+    defer releaseFaces();
+    var rast = StbttRasterizer.init(std.testing.allocator) catch unreachable;
     defer rast.deinit();
+    // No system font on this builder: skip rather than fail. On the dev box
+    // DejaVuSansMono is present.
+    if (faceFor(.mono, .regular) == null) return;
 
     const bmp = rast.rasterize("Hi", .{ .family = .mono, .size_px = 24 }, .{ 1, 1, 1, 1 }, 48, 32) orelse
         return error.RasterizeFailed;
@@ -291,7 +383,6 @@ test "stbtt: loads a font and rasterizes non-empty coverage" {
     try std.testing.expectEqual(@as(u32, 32), bmp.height);
     try std.testing.expectEqual(@as(usize, 48 * 32 * 4), bmp.pixels.len);
 
-    // At least one pixel must carry coverage in the alpha channel.
     var inked = false;
     var i: usize = 3;
     while (i < bmp.pixels.len) : (i += 4) {
@@ -303,11 +394,13 @@ test "stbtt: loads a font and rasterizes non-empty coverage" {
     try std.testing.expect(inked);
 }
 
-test "stbtt: measureWidth is positive and grows with length" {
-    var font = Font.load(std.testing.allocator) catch return;
-    defer font.deinit();
-    const w1 = font.measureWidth("i", 24);
-    const w3 = font.measureWidth("iii", 24);
+test "stbtt: measure grows with length and letter spacing adds per code point" {
+    defer releaseFaces();
+    if (faceFor(.mono, .regular) == null) return;
+    const w1 = measure("i", .{ .size_px = 24 }).width;
+    const w3 = measure("iii", .{ .size_px = 24 }).width;
     try std.testing.expect(w1 > 0);
     try std.testing.expect(w3 > w1);
+    const spaced = measure("iii", .{ .size_px = 24, .letter_spacing = 2 }).width;
+    try std.testing.expectApproxEqAbs(w3 + 6, spaced, 0.001);
 }

@@ -240,7 +240,6 @@ pub const Host = struct {
     window: Window,
     wm_protocols: Atom,
     wm_delete: Atom,
-    font: text.Font,
 
     width: u32,
     height: u32,
@@ -290,8 +289,6 @@ pub const Host = struct {
         _ = x.XMapWindow(display, window);
         _ = x.XFlush(display);
 
-        const font = try text.Font.load(std.heap.page_allocator);
-
         // Desktop scale from Xft.dpi (xrdb). Absent / unparsable → 1.0.
         const scale = if (x.XResourceManagerString(display)) |rm|
             scaleFromXrm(std.mem.span(rm))
@@ -305,7 +302,6 @@ pub const Host = struct {
             .window = window,
             .wm_protocols = wm_protocols,
             .wm_delete = wm_delete,
-            .font = font,
             .width = width,
             .height = height,
             .scale = scale,
@@ -318,7 +314,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
-        self.font.deinit();
+        text.releaseFaces();
         _ = self.x.XDestroyWindow(self.display, self.window);
         _ = self.x.XCloseDisplay(self.display);
         self.lib.close();
@@ -434,15 +430,17 @@ pub const Host = struct {
         return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
     }
 
-    fn stbMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        const self: *Host = @ptrCast(@alignCast(ctx));
-        const vm = self.font.vMetrics(font.size_px);
-        return .{
-            .width = self.font.measureWidth(text_bytes, font.size_px),
-            .height = vm.ascent + vm.descent,
-            .ascent = vm.ascent,
-            .descent = vm.descent,
-        };
+    fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
+        return text.measure(text_bytes, font);
+    }
+
+    /// Register the TTF `ttf` as the face for (`family`, `weight`), for both
+    /// the measurer and the Gpu's rasterizer (they share one face table). The
+    /// bytes are borrowed: pass an `@embedFile` slice. Register before the
+    /// first frame; up to three weights per family. A family without a
+    /// registered face uses the system monospace font (`TEAK_FONT`).
+    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
+        try text.registerFace(family, weight, ttf);
     }
 
     /// X11 clipboard (selections) requires an async XConvertSelection /

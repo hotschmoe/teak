@@ -115,6 +115,26 @@ pub fn build(b: *std.Build) void {
     const stbtt_tests = b.addTest(.{ .root_module = stbtt_mod });
     test_step.dependOn(&b.addRunArtifact(stbtt_tests).step);
 
+    // Face-table tests against the real IBM Plex Mono files shipped with
+    // examples/fonts (no system font needed).
+    const stbtt_face_mod = b.createModule(.{
+        .root_source_file = b.path("src/gpu/text_stbtt_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = mod },
+            .{ .name = "teak-text", .module = stbtt_mod },
+        },
+    });
+    for ([_][]const u8{ "regular", "medium", "bold" }) |weight| {
+        const file = b.fmt("IBMPlexMono-{c}{s}.ttf", .{ std.ascii.toUpper(weight[0]), weight[1..] });
+        stbtt_face_mod.addAnonymousImport(b.fmt("plex-{s}", .{weight}), .{
+            .root_source_file = b.path(b.fmt("examples/fonts/assets/{s}", .{file})),
+        });
+    }
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = stbtt_face_mod })).step);
+
     // X11 host (src/platform/x11.zig) — its keysym→SpecialKey mapping is
     // the one piece of host logic worth unit-testing headlessly (no
     // libX11 / display needed; the test calls only pure mapping fns).

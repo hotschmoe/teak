@@ -34,8 +34,9 @@ The core vocabulary, usable above the platform layer:
 
 `FontSpec.weight` and `FontSpec.letter_spacing` (pixels added after every glyph) are plain data that travel with the font into `TextDraw.font`. Core only threads them through; the backend interprets them:
 
-- **web**: CSS `font-weight` (`regular` 400, `medium` 500, `bold` 700) and canvas `letterSpacing`.
-- **native**: face selection (a bold/medium face if the font set has one); spacing added per glyph.
+- **web**: CSS `font-weight` (`regular` 400, `medium` 500, `bold` 700) and canvas `letterSpacing`. The Host measurer and the Gpu rasterizer build the canvas font from one helper (`src/gpu/web_font.zig`), so they agree; the measure cache is keyed on the whole `FontSpec`.
+- **native Linux** (X11 + stb_truetype): face selection by weight from the registered faces (below); spacing added after every code point in both the measurer and the rasterizer. `size_px` is the **em** size on every backend (CSS px = GDI negative height = stb em scale).
+- **native Windows** (GDI): `weight` maps to `FW_NORMAL` / `FW_MEDIUM` / `FW_BOLD`; `letter_spacing` is not applied yet.
 - A backend that cannot honor a field **ignores it**: the text still renders, just regular and untracked. The measurer must agree with the rasterizer so layout matches pixels; `monoMeasurer` adds `letter_spacing` per byte and ignores `weight`.
 - Both fields are part of the glyph-cache key (`textCacheKey` in `src/gpu/glyph_cache.zig`), so changing them re-rasterizes instead of reusing a stale texture.
 
@@ -43,6 +44,29 @@ The core vocabulary, usable above the platform layer:
 const label: teak.FontSpec = .{ .size_px = 11, .family = .mono, .weight = .bold, .letter_spacing = 1 };
 cb.textStyled("PARTS", label, cb.theme.muted_color);
 ```
+
+### Custom fonts (IBM Plex Mono and friends)
+
+**Web** — register files in the build; they are copied to `dist/fonts/`, declared with `@font-face`, and the app starts only after every face has loaded, so the first measurement already sees the real font:
+
+```zig
+teak.linkWebWgpu(b, web_exe, .{ .fonts = &.{
+    .{ .family = "IBM Plex Mono", .weight = 400, .path = b.path("assets/IBMPlexMono-Regular.ttf") },
+    .{ .family = "IBM Plex Mono", .weight = 500, .path = b.path("assets/IBMPlexMono-Medium.ttf") },
+    .{ .family = "IBM Plex Mono", .weight = 700, .path = b.path("assets/IBMPlexMono-Bold.ttf") },
+} });
+```
+
+`WebFont.slot` (default `.mono`) says which `FontFamily` the family stands in for; text in that slot is drawn with `"IBM Plex Mono", monospace`. Other slots keep the CSS generic family.
+
+**Native Linux** — the app registers embedded TTFs with the X11 Host before the first frame (up to three weights per family):
+
+```zig
+try host.registerFont(.mono, .regular, @embedFile("plex-Regular"));
+try host.registerFont(.mono, .bold, @embedFile("plex-Bold"));
+```
+
+The measurer and the Gpu rasterizer share one face table (`src/gpu/text_stbtt.zig`). A request takes the registered weight nearest the one asked for (lighter on a tie); a family with no registered face uses the system monospace TTF (`TEAK_FONT=/path/to.ttf` overrides the search). Win32 ignores `registerFont` (GDI uses installed fonts). `examples/fonts` is the working reference for both.
 
 ### Host extension
 
@@ -113,8 +137,8 @@ re-add these concerns as drift from the phase plan:
   only. Non-Latin runs render with the platform's fallback glyph.
 - **IME composition UI.** Candidate windows, preedit marks — owned
   by the OS; Teak receives finished code points.
-- **Custom font loading from disk / embedded TTF.** v1 uses
-  platform-provided families only.
+- **System font discovery by name.** Custom faces are registered
+  explicitly (above); there is no `fc-match` lookup.
 - **Subpixel anti-aliasing.** Grayscale only. Subpixel has per-
   orientation cost we don't need yet.
 - **Per-glyph atlas packing.** WS2 rasterizes whole strings per

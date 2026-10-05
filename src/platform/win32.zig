@@ -1130,6 +1130,8 @@ const TEXTMETRICW = extern struct {
 };
 
 const FW_NORMAL: c_int = 400;
+const FW_MEDIUM: c_int = 500;
+const FW_BOLD: c_int = 700;
 const DEFAULT_CHARSET: DWORD = 1;
 const OUT_TT_PRECIS: DWORD = 4;
 const CLIP_DEFAULT_PRECIS: DWORD = 0;
@@ -1175,6 +1177,7 @@ fn fontFaceUtf16(family: FontFamily) LPCWSTR {
 
 const FontCacheEntry = struct {
     family: FontFamily,
+    weight: teak.FontWeight,
     size_px: u16,
     hfont: HFONT,
     ascent: f32,
@@ -1672,6 +1675,11 @@ pub const Host = struct {
         return .{ .ctx = @ptrCast(self), .measure_fn = gdiMeasure };
     }
 
+    /// Fonts come from the system on Windows (GDI picks the face by family
+    /// and weight); a registered TTF is ignored. Present so one `ui_main`
+    /// can call `registerFont` on every OS.
+    pub fn registerFont(_: *Host, _: teak.FontFamily, _: teak.FontWeight, _: []const u8) !void {}
+
     fn gdiMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
         const self: *Host = @ptrCast(@alignCast(ctx));
         const entry = getOrCreateFont(self, font) orelse return fallbackMetrics();
@@ -1703,7 +1711,7 @@ pub const Host = struct {
     fn getOrCreateFont(self: *Host, font: FontSpec) ?*const FontCacheEntry {
         const size_px: u16 = @intFromFloat(font.size_px);
         for (self.font_cache[0..self.font_cache_len]) |*e| {
-            if (e.family == font.family and e.size_px == size_px) return e;
+            if (e.family == font.family and e.weight == font.weight and e.size_px == size_px) return e;
         }
         if (self.font_cache_len >= self.font_cache.len) return null;
 
@@ -1714,7 +1722,7 @@ pub const Host = struct {
             0,
             0,
             0,
-            FW_NORMAL,
+            gdiWeight(font.weight),
             0,
             0,
             0,
@@ -1732,6 +1740,7 @@ pub const Host = struct {
 
         self.font_cache[self.font_cache_len] = .{
             .family = font.family,
+            .weight = font.weight,
             .size_px = size_px,
             .hfont = hfont,
             .ascent = @floatFromInt(tm.tmAscent),
@@ -2216,4 +2225,12 @@ test "uia per-node providers: publishA11yTree copies labels into the heap" {
     const focused_fragment_ptr: *FragmentThis = @ptrCast(@alignCast(focused.?));
     const focused_node: *NodeProvider = @fieldParentPtr("vtbl_fragment", focused_fragment_ptr);
     try std.testing.expectEqual(@as(u32, 1), focused_node.index);
+}
+
+fn gdiWeight(w: teak.FontWeight) c_int {
+    return switch (w) {
+        .regular => FW_NORMAL,
+        .medium => FW_MEDIUM,
+        .bold => FW_BOLD,
+    };
 }

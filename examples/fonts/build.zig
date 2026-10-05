@@ -57,6 +57,12 @@ pub fn build(b: *std.Build) void {
             }),
         });
         teak.linkNativeWgpu(b, ui_exe, .{});
+        // The native build embeds the same files the web build ships.
+        for ([_][]const u8{ "Regular", "Medium", "Bold" }) |weight| {
+            ui_exe.root_module.addAnonymousImport(b.fmt("plex-{s}", .{weight}), .{
+                .root_source_file = b.path(b.fmt("assets/IBMPlexMono-{s}.ttf", .{weight})),
+            });
+        }
 
         const install_ui = b.addInstallArtifact(ui_exe, .{});
         const ui_run = b.addRunArtifact(ui_exe);

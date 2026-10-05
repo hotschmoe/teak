@@ -15,6 +15,10 @@ pub fn main() !void {
     var host = try platform.Host.init("Teak fonts", 1000, 520);
     defer host.deinit();
 
+    try host.registerFont(.mono, .regular, @embedFile("plex-Regular"));
+    try host.registerFont(.mono, .medium, @embedFile("plex-Medium"));
+    try host.registerFont(.mono, .bold, @embedFile("plex-Bold"));
+
     var gpu = try gpu_native.Gpu.init(host.nativeHandle(), 1000, 520);
     defer gpu.deinit();
 
