@@ -19,7 +19,13 @@ pub const component_list = @import("core/component_list.zig");
 pub const debug_overlay = @import("core/debug_overlay.zig");
 pub const snapshot = @import("core/snapshot.zig");
 pub const chart = @import("core/chart.zig");
+pub const table = @import("core/table.zig");
+pub const pointer = @import("core/pointer.zig");
+pub const effects = @import("core/effects.zig");
+pub const scene = @import("core/scene.zig");
+pub const resources = @import("core/resources.zig");
 pub const layout = @import("layout/engine.zig");
+pub const scroll_extent = @import("layout/scroll_extent.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
 pub const keys = @import("input/keys.zig");
@@ -27,8 +33,10 @@ pub const a11y = @import("input/a11y.zig");
 pub const render = @import("render/build.zig");
 pub const vertex = @import("render/vertex.zig");
 pub const host = @import("platform/host.zig");
+pub const input_queue = @import("platform/input_queue.zig");
 pub const gpu = @import("gpu/context.zig");
 pub const runtime = @import("run.zig");
+pub const headless = @import("headless_run.zig");
 
 pub const Cmd = cmd.Cmd;
 pub const CmdBuffer = cmd.CmdBuffer;
@@ -64,12 +72,55 @@ pub const CanvasStyle = cmd.CanvasStyle;
 pub const CanvasPrimitive = cmd.CanvasPrimitive;
 pub const CanvasPoint = cmd.CanvasPoint;
 pub const Direction = cmd.Direction;
+pub const Align = cmd.Align;
+pub const TextAlign = cmd.TextAlign;
+pub const InputVariant = cmd.InputVariant;
+pub const Justify = cmd.Justify;
+
+pub const Buttons = pointer.Buttons;
+pub const Modifiers = pointer.Modifiers;
+pub const Button = pointer.Button;
+pub const CanvasEvent = pointer.CanvasEvent;
+pub const CanvasEventKind = pointer.CanvasEventKind;
+
+pub const MeshHandle = scene.MeshHandle;
+pub const MESH_HANDLE_NONE = scene.MESH_HANDLE_NONE;
+pub const MeshVertex = scene.MeshVertex;
+pub const LineVertex = scene.LineVertex;
+pub const MeshData = scene.MeshData;
+pub const Camera = scene.Camera;
+pub const SceneDraw = scene.SceneDraw;
+
+pub const Resource = resources.Resource;
+pub const MeshResource = resources.MeshResource;
+pub const ImageResource = resources.ImageResource;
+
+pub const SceneStyle = cmd.SceneStyle;
+pub const SceneCmd = cmd.SceneCmd;
+
+pub const Effect = effects.Effect;
+pub const EffectResult = effects.EffectResult;
+pub const HttpRequest = effects.HttpRequest;
+pub const HttpResult = effects.HttpResult;
+pub const HttpMethod = effects.HttpMethod;
+pub const Header = effects.Header;
+pub const Drop = effects.Drop;
+pub const DropKind = effects.DropKind;
+pub const EffectSubmit = effects.EffectSubmit;
+
+pub const Table = table.Table;
+pub const TableColumn = table.Column;
+pub const TableRowStyle = table.RowStyle;
+pub const CellAlign = table.CellAlign;
+pub const fitCell = table.fitCell;
 
 pub const LineChartOpts = chart.LineChartOpts;
 pub const lineChartPrimitives = chart.lineChartPrimitives;
 
 pub const Rect = layout.Rect;
 pub const LayoutEngine = layout.LayoutEngine;
+pub const ScrollExtent = scroll_extent.Extent;
+pub const scrollExtent = scroll_extent.scrollExtent;
 
 pub const hitTest = hit_test.hitTest;
 pub const hoverTest = hit_test.hoverTest;
@@ -110,6 +161,13 @@ pub const emitQuad = vertex.emitQuad;
 pub const emitQuadCorners = vertex.emitQuadCorners;
 pub const buildVertices = render.buildVertices;
 pub const ImageDraw = render.ImageDraw;
+pub const buildFrame = render.buildFrame;
+pub const OverlaySplit = render.OverlaySplit;
+/// Run-loop resource bookkeeping for hand-written host loops (web): `sync`
+/// the table with `App.resources(model)`, then `stageDraws` instead of
+/// `uploadImages`. `teak.run` does both for you.
+pub const ResourceTable = @import("resources.zig").Table;
+pub const stageDraws = @import("resources.zig").stageDraws;
 
 pub const TransientState = transient.TransientState;
 
@@ -127,6 +185,9 @@ pub const snapshotAlloc = snapshot.snapshotAlloc;
 pub const expectSnapshot = snapshot.expectSnapshot;
 
 pub const InputState = host.InputState;
+pub const InputQueue = input_queue.InputQueue;
+pub const NavKey = input_queue.NavKey;
+pub const resolveKey = input_queue.resolveKey;
 pub const Clipboard = host.Clipboard;
 pub const ImeState = host.ImeState;
 pub const FileDialogResult = host.FileDialogResult;
@@ -138,11 +199,13 @@ pub const ClearColor = gpu.ClearColor;
 pub const validateGpu = gpu.validateGpu;
 
 pub const run = runtime.run;
+pub const Runtime = runtime.Runtime;
 pub const RunOptions = runtime.RunOptions;
 pub const SecondaryWindowSpec = runtime.SecondaryWindowSpec;
 
 pub const FontFamily = text.FontFamily;
 pub const FontSpec = text.FontSpec;
+pub const FontWeight = text.FontWeight;
 pub const DEFAULT_FONT = text.DEFAULT_FONT;
 pub const TextMetrics = text.TextMetrics;
 pub const TextMeasurer = text.TextMeasurer;

@@ -68,7 +68,51 @@ pub fn emitQuadCorners(
     }) catch unreachable;
 }
 
+/// The six vertices of an image-style quad covering `rect`, trimmed to
+/// `clip` with UVs adjusted so the texture is cropped, not squashed. `null`
+/// when nothing is visible. Both GPU backends build image and scene
+/// composite quads through this so their clip rules cannot drift.
+pub fn clippedTexturedQuad(rect: Rect, clip: Rect, tint: [4]f32) ?[6]Vertex {
+    if (rect.w <= 0 or rect.h <= 0) return null;
+    const x0 = @max(rect.x, clip.x);
+    const y0 = @max(rect.y, clip.y);
+    const x1 = @min(rect.x + rect.w, clip.x + clip.w);
+    const y1 = @min(rect.y + rect.h, clip.y + clip.h);
+    if (x1 <= x0 or y1 <= y0) return null;
+
+    const uv_u0 = (x0 - rect.x) / rect.w;
+    const uv_v0 = (y0 - rect.y) / rect.h;
+    const uv_u1 = (x1 - rect.x) / rect.w;
+    const uv_v1 = (y1 - rect.y) / rect.h;
+    const r, const g, const b, const a = tint;
+    return .{
+        .{ .x = x0, .y = y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v0 },
+        .{ .x = x1, .y = y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 },
+        .{ .x = x0, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 },
+        .{ .x = x1, .y = y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 },
+        .{ .x = x1, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v1 },
+        .{ .x = x0, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 },
+    };
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
+
+test "clippedTexturedQuad crops UVs to the visible region" {
+    const rect: Rect = .{ .x = 0, .y = 0, .w = 100, .h = 50 };
+    const clip: Rect = .{ .x = 25, .y = 0, .w = 50, .h = 50 };
+    const q = clippedTexturedQuad(rect, clip, .{ 1, 1, 1, 1 }).?;
+    try std.testing.expectEqual(@as(f32, 25), q[0].x);
+    try std.testing.expectEqual(@as(f32, 75), q[1].x);
+    try std.testing.expectEqual(@as(f32, 0.25), q[0].u);
+    try std.testing.expectEqual(@as(f32, 0.75), q[1].u);
+    try std.testing.expectEqual(@as(f32, 1), q[4].v);
+}
+
+test "clippedTexturedQuad is null when fully clipped or empty" {
+    const rect: Rect = .{ .x = 0, .y = 0, .w = 10, .h = 10 };
+    try std.testing.expect(clippedTexturedQuad(rect, .{ .x = 20, .y = 0, .w = 5, .h = 5 }, .{ 1, 1, 1, 1 }) == null);
+    try std.testing.expect(clippedTexturedQuad(.{ .x = 0, .y = 0, .w = 0, .h = 4 }, rect, .{ 1, 1, 1, 1 }) == null);
+}
 
 test "emitQuad emits 6 vertices for a rect" {
     const testing = std.testing;

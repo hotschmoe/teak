@@ -138,9 +138,8 @@ pub fn view(m: *const Model, cb: anytype) void {
     for (m.items[0..m.items_len], 0..) |item, i| {
         cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 4 });
         cb.checkbox(.{ .toggle = i }, item.done, item.label[0..item.label_len]);
-        // Spacer group claims the middle so the delete button pins right.
-        cb.pushGroup(.{ .direction = .vertical, .flex = 1, .padding = 0, .gap = 0 });
-        cb.popGroup();
+        // Spacer claims the middle so the delete button pins right.
+        cb.spacer(1);
         cb.button(.{ .remove = i }, "x");
         cb.popGroup();
     }
@@ -154,8 +153,7 @@ pub fn view(m: *const Model, cb: anytype) void {
     // into the cmd buffer and be clobbered before layout reads it.
     const count_str = std.fmt.allocPrint(cb.arena.allocator(), "{d} items", .{m.items_len}) catch "? items";
     cb.text(count_str);
-    cb.pushGroup(.{ .direction = .vertical, .flex = 1, .padding = 0, .gap = 0 });
-    cb.popGroup();
+    cb.spacer(1);
     cb.button(.clear_completed, "Clear done");
     cb.popGroup();
 

@@ -2,7 +2,8 @@
 
 **Status**: `pub` in `src/teak.zig` (`CanvasCmd`, `CanvasStyle`,
 `CanvasPrimitive`, `CanvasPoint`, `canvasLocalPoint`, `lineChartPrimitives`,
-`LineChartOpts`, `emitQuadCorners`)
+`LineChartOpts`, `emitQuadCorners`, `CanvasEvent`, `CanvasEventKind`, `Buttons`,
+`Modifiers`, `Button`)
 **Source**: `src/core/cmd.zig` (variant + emitters), `src/core/chart.zig`
 (chart helper), `src/layout/engine.zig`, `src/input/hit_test.zig`,
 `src/render/{vertex,build}.zig`, `src/input/a11y.zig`,
@@ -36,6 +37,8 @@ pub fn CanvasCmd(comptime Msg: type) type {
         primitives: []const CanvasPrimitive = &.{},  // arena-owned, pure data
         msg: ?Msg = null,       // non-null → clickable (hit-test leaf)
         label: []const u8 = "", // a11y name
+        pointer: bool = false,  // true → interactive surface: pointer input becomes CanvasEvents
+        id: u32 = 0,            // CanvasEvent.id; non-zero + distinct per interactive canvas
     };
 }
 ```
@@ -54,12 +57,43 @@ pub const CanvasPrimitive = union(enum) {
     hline:       struct { y: f32, color: [4]f32, thickness: f32 },  // spans full width
     vline:       struct { x: f32, color: [4]f32, thickness: f32 },  // spans full height
     marker:      struct { x, y: f32, size: f32, color: [4]f32 },    // centered square
+    triangles:   struct { verts: []const TriVertex, key: u64 = 0 }, // pre-tessellated, per-vertex RGBA
+    lines:       struct { segs: []const [4]f32, color: [4]f32, thickness: f32, key: u64 = 0 },
 };
+pub const TriVertex = struct { x, y, r, g, b, a: f32 };   // CanvasPrimitive.TriVertex
 ```
 
 `CanvasPrimitive` is a **data tagged union** — no function pointers, same
 rule as `Cmd` (HARDLINE §3). Build the slice in `view` into the per-frame
 arena.
+
+#### Big batches: `triangles` and `lines`
+
+For apps that tessellate themselves (CAD hatching, filled regions,
+antialiased vector linework) a canvas can carry whole batches in one
+primitive:
+
+- **`triangles`** — a plain triangle list (3 consecutive vertices = 1
+  triangle, either winding) in canvas-local px with a **color per vertex**,
+  interpolated across the triangle. Per-vertex alpha lets the app feather
+  1 px edges for antialiasing without MSAA. Renders through the solid
+  pipeline (alpha-blended, painter's order = slice order). A non-finite
+  vertex drops its triangle; a trailing partial triangle is ignored.
+- **`lines`** — `segs[i] = {x0, y0, x1, y1}`, one thickness/color for the
+  batch; each segment is a rotated quad (no joins), clipped like polyline
+  segments. For hatch fields.
+- **Clipping** is CPU, against the canvas rect intersected with the active
+  scroll/overlay clip. Triangles use three tiers: if the whole list's
+  bounds are inside the clip it is one bulk conversion (a single
+  allocation); else triangles whose own bounds are inside are copied;
+  only the straddling ones go through Sutherland–Hodgman (color
+  interpolated at the cut, result fan-triangulated). 200k vertices stay
+  linear (covered by the perf tests in `render/build.zig`).
+- **`key`** is a cheap content revision for the frame diff: two frames
+  whose batch has the same non-zero `key` and length are treated as
+  identical without comparing the vertices (megabytes). **Bump the key
+  whenever the batch changes.** `key = 0` means "no revision supplied":
+  the diff compares the bytes (still a fast `memcmp`).
 
 ### Emitters
 
@@ -67,6 +101,7 @@ arena.
 cb.canvas(style, primitives);                        // non-interactive, unlabeled
 cb.canvasLabeled(style, primitives, label);          // + a11y label
 cb.canvasClickable(msg, style, primitives, label);   // + click Msg
+cb.canvasInteractive(style, primitives, id, label);  // pointer surface (pan / zoom / drag)
 ```
 
 ### Per-pass behavior
@@ -87,7 +122,7 @@ cb.canvasClickable(msg, style, primitives, label);   // + click Msg
   click into canvas-local coordinates (mirrors `sliderValueAt`) so the app
   turns the point into its own data-space `Msg`.
 - **a11y**: emits an `A11yNode` with `role = .canvas` and the `label`.
-- **snapshot**: one line — `canvas (x,y,w,h) prims=N "label"`.
+- **snapshot**: one line — `canvas (x,y,w,h) prims=N [id=N] [pointer] "label"` (a batch counts as one primitive).
 
 ## The chart helper
 
@@ -114,7 +149,47 @@ cb.canvasLabeled(.{ .width = 320, .height = 100, .bg = cb.theme.panel_bg },
 See `examples/counter_greeter/src/app.zig` (`statsView`) for a live
 count-history chart driven by plain Model state.
 
-## Interactive recipe (click → data coordinate)
+## Interactive canvases (pan / zoom / drag)
+
+`cb.canvasInteractive(style, prims, id, label)` marks a canvas as a pointer
+surface. `teak.run` (and `teak.Runtime`) then turns raw pointer input over it
+into `CanvasEvent`s (`core/pointer.zig`) and hands each to the App's optional
+hook, which maps it to an ordinary `Msg`:
+
+```zig
+pub fn canvasMsg(m: *const Model, ev: teak.CanvasEvent) ?Msg {
+    return Msg{ .viewport = ev };   // update() does the pan / zoom / pick math
+}
+```
+
+Coordinates are **canvas-local logical px** — the same space as the primitives,
+so a pick is just `ev.x, ev.y` run through your own view transform.
+
+| `ev.kind` | When | Notes |
+|---|---|---|
+| `layout` | First layout, and whenever the canvas rect **size** changes | `w`/`h` carry the size, `x`/`y` = 0. This is how the Model learns the viewport size (the view cannot read layout). Takes effect in the next frame's view. |
+| `move` | Cursor moves over the canvas, or while a capture is active | `dx`/`dy` = delta since the previous event for this canvas (0 on the entry move). |
+| `down` | A button went down on the canvas | `button` = which one; `buttons` = all held. **Starts a capture.** |
+| `up` | A button was released | Delivered to the capturing canvas even if the cursor is outside it. |
+| `wheel` | Wheel / trackpad over the canvas | `dx`/`dy` are DOM-signed px (+dy = down). Delivered **instead of** `wheelMsg` / `scrollMsg`. A web pinch is a wheel with `mods.ctrl`. |
+| `leave` | The cursor left the canvas and no capture is active | Also sent when a capture ends with the cursor outside. |
+
+**Capture.** A press on a canvas sends it every following `move` / `up` /
+`wheel` until *all* buttons are released — a drag that leaves the rect (or the
+window: the hosts capture the mouse) still finishes cleanly. A button held
+since before the cursor reached the canvas (pressed on, say, a slider) does not
+hover it. If the canvas leaves the view mid-capture the capture is dropped.
+
+**Layering.** Routing uses the exact `hitTest` rules against the previous
+frame's layout, so a button or overlay in front of the canvas wins, a modal
+backdrop blocks it, and a scroll viewport clips it. Pointer canvases need the
+`canvasMsg` hook; without it `pointer = true` is inert and the canvas behaves
+as a plain one.
+
+`CanvasEvent.mods` / `.buttons` are the shift/ctrl/alt/meta and left/middle/
+right state at the event. See the example flow in `docs/features/run.md`.
+
+### Click-only recipe (no capture)
 
 ```zig
 cb.canvasClickable(Msg{ .chart_click = {} }, style, prims, "plot");
@@ -137,9 +212,11 @@ if (teak.canvasLocalPoint(rects[hit.index], mouse_x, mouse_y)) |p| {
 
 - **No text inside the canvas.** Compose regular `text` cmds around it for
   axis labels / titles.
-- **No curves, no fills-under-line, no per-point styling.** Polylines are
-  straight segments; markers are squares (the quad pipeline has no circle).
-- **No disabled state** and no drag/zoom interaction — only the optional
-  single click `msg`.
+- **No curves, no fills-under-line, no per-point styling** in the built-in
+  primitives. Polylines are straight segments; markers are squares (the
+  quad pipeline has no circle). Anything else: tessellate it yourself into
+  `triangles` / `lines`.
+- **No disabled state.** Drag / zoom live in the app: `canvasMsg` delivers
+  the pointer stream, the app keeps the transform in its Model.
 - Polyline joins are unmitred (each segment is an independent quad); thick
   lines show small gaps/overlaps at sharp corners.

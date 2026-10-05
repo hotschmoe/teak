@@ -131,7 +131,11 @@ menus can render outside their declaring parent.
 **Bounded by**:
 - The flat buffer stays flat — overlays are still cmds in the same
   `[]Cmd`, not a separate buffer. No tree, no z field on every cmd.
-- Exactly two priority levels: non-overlay (z=0) and overlay (z=1).
+- Exactly two priority levels: non-overlay (z=0) and overlay (z=1). The
+  GPU backends honour them across *all* draw kinds: the render pass reports
+  an `OverlaySplit` and a layering-aware Gpu draws base solids, images,
+  scene composites and text before the overlay's, so an opaque overlay hides
+  base text (docs/features/gpu.md, "Overlay layering").
   Each pass walks the buffer twice in the same forward order; within
   a level, painter's order = doc order (unchanged from §1).
 - Overlay position comes from explicit `x`, `y` on `OverlayStyle(Msg)`.
@@ -172,6 +176,76 @@ fires.
   is no second mutation path. This is why `Sub` is *not* a reactive
   signal (which §3 forbids): observers are still the next frame's
   `view`, not auto-recomputed expressions.
+
+### Escape hatch 7: Declarative effects
+
+A component may expose `pub fn effects(model: *const Model) []const Effect`
+(pure function of model) naming the outside-world requests the app wants
+serviced right now — an HTTP call, a download, a file picker, storage
+reads/writes, the clock, the clipboard, a startup parameter — and
+`pub fn effectMsg(model: *const Model, result: EffectResult) ?Msg` turning
+the answers into `Msg`s. `Effect` is a data tagged union; every request
+carries an app-chosen `id` (a counter kept in `Model`). The runtime hands an
+id to the Host the first time it is listed, leaves it alone while it stays
+listed, and forgets it once it is no longer listed. Unsolicited input from
+the outside (an image pasted or dropped on the window, pasted text) arrives
+through the same `effectMsg`.
+
+**Bounded by**:
+- `effects` is pure: no I/O, no wall-clock, no allocation outside the
+  per-frame arena. It *declares*; the runtime and Host perform. This is the
+  whole reason `update` never talks to the network.
+- `Effect` / `EffectResult` carry data only — no function pointers, no
+  callbacks, no platform types (§3), same rule as `Cmd` and `Sub`.
+- The in-flight bookkeeping (the table of issued ids) lives in the runtime,
+  fixed-size, and holds no application state; request payloads live in
+  `Model`. Platform machinery (threads, `fetch`, file handles) lives behind
+  the optional Host pair `submit` / `pollEffectResults` (§4(d)); the
+  framework core never touches it.
+- A result is a regular `Msg` through `update` (`last_msg` names it). There
+  is no second mutation path and no completion callback: delisting an
+  effect cancels interest in its answer (a late result for an unlisted id is
+  dropped).
+- Result slices are valid only until the `update` they trigger returns; the
+  app copies what it keeps. Effect slices are valid only for the Host's
+  `submit` call; the Host copies what an async request needs.
+
+See `docs/features/effects.md`.
+
+<!-- Hatch numbering is gap-free: 6 subscriptions, 7 declarative effects
+     (documented with `core/effects.zig`), 8 resources (below). -->
+
+### Escape hatch 8: Resources
+
+An App may expose `pub fn resources(model: *const Model) []const Resource`
+(pure function of model). `Resource` is a data tagged union —
+`.mesh { key, rev, data: MeshData }` or `.image { key, rev, width, height,
+rgba }` — naming the GPU-resident assets the current Model needs. The run
+loop reconciles the GPU with that list every frame: it uploads a resource
+when its (kind, `key`) is new or its `rev` changed, and releases the ones
+that disappeared. `Cmd`s refer to resources by the app `key`
+(`ImageCmd.handle`, `SceneCmd.mesh`); the loop maps keys to backend
+handles right before the Gpu sees the draw records. It is the level-
+triggered sibling of `Sub` (hatch 6): the app *declares*, the runtime
+does the watching and the I/O-ish work.
+
+**Bounded by**:
+- `resources` is pure: no I/O, no allocation outside the frame arena (or
+  Model-owned storage), no wall-clock. Same rules as `view` / `subscribe`.
+- `Resource` carries data only: slices of vertices / pixels, never a GPU
+  handle, never a function pointer (audit-enforced in `core/resources.zig`
+  and `core/scene.zig`, like `Cmd`). Handles never enter `Model`, `Msg` or
+  a `Cmd`; the key -> handle table lives in the run loop
+  (`src/resources.zig`), is a fixed-capacity cache of GPU residency, and
+  is safely losable (losing it re-uploads).
+- Upload / release go through the Gpu's optional scene/image extension
+  (hatch 4(d): `uploadMesh`, `releaseMesh`, `uploadImage`, `releaseImage`).
+  An App that declares `resources` with a Gpu lacking them fails to
+  compile; the loop never reaches past `validateGpu` + that extension.
+- No second mutation path: nothing is reported back through `Msg`. A
+  failed upload leaves the key non-resident (its draws are skipped) and is
+  retried only when `rev` changes.
+- Unique keys per kind (0 is reserved), at most 128 resident resources.
 
 ---
 

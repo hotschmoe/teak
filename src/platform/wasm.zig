@@ -2,8 +2,9 @@
 //! owns the rAF loop; `pollInputs` snapshots zunk's shared-memory
 //! state into teak's `InputState`.
 //!
-//! Mouse `mouse_down`/`mouse_up` are derived locally from diffs of the
-//! button state because zunk reports held-state, not edges.
+//! Button edges, modifiers, horizontal wheel and UTF-8 typed text all come
+//! straight from zunk's input block; the key policy (Shift/Ctrl variants)
+//! is the shared `teak.resolveKey` via an `InputQueue`.
 //!
 //! All pointer + viewport coords are CSS pixels (zunk v0.5.2+).
 
@@ -14,9 +15,13 @@ const zunk = @import("zunk");
 const zinput = zunk.web.input;
 const zapp = zunk.web.app;
 const zgpu = zunk.web.gpu;
+const fx = zunk.web.fx;
+const web_font = @import("teak-web-font");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
+pub const InputQueue = teak.InputQueue;
+const NavKey = teak.NavKey;
 pub const TextMeasurer = teak.TextMeasurer;
 pub const TextMetrics = teak.TextMetrics;
 pub const FontSpec = teak.FontSpec;
@@ -35,16 +40,16 @@ const MEASURE_CACHE_CAPACITY: usize = 128;
 const MeasureCacheEntry = struct {
     content_hash: u64,
     content_len: u32,
-    size_px: u16,
-    family: FontFamily,
+    font: FontSpec,
     metrics: TextMetrics,
     last_used: u64,
 };
 
-// Delete/Home/End are absent from zunk.web.input.Key; tracked in
-// docs/zunk-handoff.md as a follow-up ask.
-const key_mappings = [_]struct { from: zinput.Key, to: SpecialKey }{
+/// zunk key code -> host-neutral key. Letters only matter as Ctrl chords;
+/// `InputQueue.pushNav` drops them when Ctrl is not held.
+const key_mappings = [_]struct { from: zinput.Key, to: NavKey }{
     .{ .from = .backspace, .to = .backspace },
+    .{ .from = .delete, .to = .delete },
     .{ .from = .enter, .to = .enter },
     .{ .from = .tab, .to = .tab },
     .{ .from = .escape, .to = .escape },
@@ -52,8 +57,16 @@ const key_mappings = [_]struct { from: zinput.Key, to: SpecialKey }{
     .{ .from = .arrow_right, .to = .right },
     .{ .from = .arrow_up, .to = .up },
     .{ .from = .arrow_down, .to = .down },
+    .{ .from = .home, .to = .home },
+    .{ .from = .end, .to = .end },
     .{ .from = .page_up, .to = .page_up },
     .{ .from = .page_down, .to = .page_down },
+    .{ .from = .a, .to = .a },
+    .{ .from = .c, .to = .c },
+    .{ .from = .x, .to = .x },
+    .{ .from = .v, .to = .v },
+    .{ .from = .y, .to = .y },
+    .{ .from = .z, .to = .z },
 };
 
 /// Async file-dialog slot state. Matches the Win32 slot table's
@@ -68,6 +81,9 @@ const FileDialogSlot = struct {
 };
 
 const MAX_FILE_DIALOG_SLOTS: usize = 4;
+
+/// Allocator for transient request encodings (HTTP header text).
+const request_allocator = std.heap.wasm_allocator;
 
 // ── A11y DOM-mirror wire format ────────────────────────────────────
 //
@@ -234,16 +250,23 @@ var g_active_host: ?*Host = null;
 pub const Host = struct {
     width: u32,
     height: u32,
-    prev_left: bool = false,
     first_poll: bool = true,
-    keys_buf: [16]SpecialKey = undefined,
-    keys_len: usize = 0,
-    chars_buf: [32]u8 = undefined,
-    chars_len: usize = 0,
+    queue: InputQueue = .{},
     measure_cache: [MEASURE_CACHE_CAPACITY]MeasureCacheEntry = undefined,
     measure_cache_len: usize = 0,
     measure_tick: u64 = 0,
     file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = @splat(.{}),
+    /// This frame's effect completions (`zunk.web.fx`), fetched by
+    /// `pollInputs` so `Clipboard.read` can see a paste before the keys are
+    /// routed. `fx_next` is the first one `pollEffectResults` has not
+    /// handed out; `fx_claimed` marks pastes taken through `Clipboard.read`;
+    /// `fx_polled` says an app is draining results (otherwise a batch is
+    /// simply replaced next frame).
+    fx_batch: [fx.max_completions]fx.Completion = undefined,
+    fx_count: usize = 0,
+    fx_next: usize = 0,
+    fx_claimed: u32 = 0,
+    fx_polled: bool = false,
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         zinput.init();
@@ -264,35 +287,38 @@ pub const Host = struct {
 
     pub fn pollInputs(self: *Host) InputState {
         zinput.poll();
+        if (self.fx_next >= self.fx_count or !self.fx_polled) {
+            self.fx_count = fx.poll(&self.fx_batch);
+            self.fx_next = 0;
+            self.fx_claimed = 0;
+            self.fx_polled = false;
+        }
 
+        // Zunk reports held state AND per-frame press/release edges (a click
+        // that begins and ends inside one frame sets both), so there is no
+        // local edge derivation. Wheel is CSS pixels, positive = down/right.
         const mouse = zinput.getMouse();
-        const cur_left = mouse.buttons.left;
-        const mouse_down = !self.prev_left and cur_left;
-        const mouse_up = self.prev_left and !cur_left;
-        self.prev_left = cur_left;
+        const mods = zinput.getModifiers();
+        const q = &self.queue;
+        q.beginFrame();
+        q.mods = .{ .shift = mods.shift, .ctrl = mods.ctrl, .alt = mods.alt, .meta = mods.meta };
+        q.pointerMoved(mouse.x, mouse.y);
+        q.buttons = .{ .left = mouse.buttons.left, .middle = mouse.buttons.middle, .right = mouse.buttons.right };
+        q.pressed = buttonEdges(zinput.isMouseButtonPressed);
+        q.released = buttonEdges(zinput.isMouseButtonReleased);
+        q.wheel(mouse.wheel_x, mouse.wheel);
 
-        self.keys_len = 0;
+        // Cmd (meta) acts as Ctrl for the chord keys (Cmd+V pastes on macOS);
+        // the reported `mods` keep the real state.
+        const reported = q.mods;
+        q.mods.ctrl = reported.ctrl or reported.meta;
         for (key_mappings) |m| {
-            if (self.keys_len >= self.keys_buf.len) break;
-            if (zinput.isKeyPressed(m.from)) {
-                self.keys_buf[self.keys_len] = m.to;
-                self.keys_len += 1;
-            }
+            if (zinput.isKeyPressed(m.from)) q.pushNav(m.to);
         }
-
-        // Zunk pushes Backspace (8) and Enter (10) into typed_chars in
-        // addition to reporting them as pressed keys. Without this filter,
-        // backspace double-acts: it inserts char 8 then deletes one, and the
-        // user sees nothing change. Drop ASCII control codes here — the
-        // special-key path owns those events. Tracked upstream at
-        // https://github.com/hotschmoe/zunk/issues/8.
-        self.chars_len = 0;
-        for (zinput.getTypedChars()) |c| {
-            if (c < 0x20 or c == 0x7f) continue;
-            if (self.chars_len >= self.chars_buf.len) break;
-            self.chars_buf[self.chars_len] = c;
-            self.chars_len += 1;
-        }
+        q.mods = reported;
+        // Zunk delivers whole UTF-8 code points and no control codes or
+        // Ctrl/Cmd chords; `pushText` re-validates and drops anything else.
+        q.pushText(zinput.getTypedChars());
 
         const vp = zinput.getViewportSize();
         const w = if (vp.w != 0) vp.w else self.width;
@@ -301,28 +327,14 @@ pub const Host = struct {
         self.first_poll = false;
         self.width = w;
         self.height = h;
+        return q.finish(resized, w, h);
+    }
 
-        // Zunk exposes a single `mouse.wheel` accumulator (vertical
-        // only) in CSS pixels with deltaMode=0 — positive = scroll
-        // down, matching the InputState convention. No horizontal-
-        // wheel API today; tracked as a follow-up ask alongside the
-        // other zunk gaps in docs/zunk-handoff.md.
-        // TODO: zunk horizontal wheel events.
-        const wheel_dy = mouse.wheel;
-        const wheel_dx: f32 = 0;
-
+    fn buttonEdges(comptime isEdge: fn (zinput.MouseButton) bool) teak.Buttons {
         return .{
-            .mouse_x = mouse.x,
-            .mouse_y = mouse.y,
-            .mouse_down = mouse_down,
-            .mouse_up = mouse_up,
-            .wheel_dx = wheel_dx,
-            .wheel_dy = wheel_dy,
-            .chars = self.chars_buf[0..self.chars_len],
-            .keys = self.keys_buf[0..self.keys_len],
-            .resized = resized,
-            .width = w,
-            .height = h,
+            .left = isEdge(.left),
+            .middle = isEdge(.middle),
+            .right = isEdge(.right),
         };
     }
 
@@ -346,27 +358,22 @@ pub const Host = struct {
     fn zunkMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
         const self: *Host = @ptrCast(@alignCast(ctx));
         self.measure_tick += 1;
-        const size_px: u16 = @intFromFloat(font.size_px);
         const content_hash = std.hash.Wyhash.hash(0, text_bytes);
 
         for (self.measure_cache[0..self.measure_cache_len]) |*e| {
             if (e.content_hash == content_hash and
                 e.content_len == text_bytes.len and
-                e.size_px == size_px and
-                e.family == font.family)
+                std.meta.eql(e.font, font))
             {
                 e.last_used = self.measure_tick;
                 return e.metrics;
             }
         }
 
-        var font_buf: [32]u8 = undefined;
-        const css = std.fmt.bufPrint(&font_buf, "{d}px {s}", .{
-            size_px,
-            cssFontFamily(font.family),
-        }) catch return fallbackMetrics(font);
+        var font_buf: [web_font.css_buf_len]u8 = undefined;
+        const css = web_font.css(&font_buf, font);
 
-        const raw = zgpu.measureText(text_bytes, css);
+        const raw = zgpu.measureText(text_bytes, css, font.letter_spacing);
         // Canvas `measureText` returns glyph-tight height
         // (actualBoundingBoxAscent + Descent), which varies per string —
         // "hello" is shorter than "helloy". Native returns font-scope
@@ -401,8 +408,7 @@ pub const Host = struct {
         self.measure_cache[slot] = .{
             .content_hash = content_hash,
             .content_len = @intCast(text_bytes.len),
-            .size_px = size_px,
-            .family = font.family,
+            .font = font,
             .metrics = metrics,
             .last_used = self.measure_tick,
         };
@@ -418,14 +424,29 @@ pub const Host = struct {
         };
     }
 
-    // ── Clipboard + IME (stubs; web backend not yet wired) ─────────
-    //
-    // Browser clipboard requires async navigator.clipboard.* + a user
-    // gesture, which doesn't fit the synchronous Clipboard.read shape
-    // without a JS-side cache. Stubbed to satisfy validateHost; the
-    // contract is honored (no crashes, sane no-op).
-    pub fn clipboard(_: *Host) Clipboard {
-        return .{ .ctx = undefined, .read_fn = stubRead, .write_fn = stubWrite };
+    /// Clipboard vtable. `write` goes through the effects bridge
+    /// (`navigator.clipboard.writeText`, `execCommand` fallback). `read`
+    /// returns the text of the paste event that accompanied the Ctrl/Cmd+V
+    /// key press (browsers only expose the clipboard inside a `paste`
+    /// event), and claims it, so the same paste is not also delivered as
+    /// `EffectResult.pasted_text`. Empty when no paste arrived this frame.
+    pub fn clipboard(self: *Host) Clipboard {
+        return .{ .ctx = @ptrCast(self), .read_fn = clipboardRead, .write_fn = clipboardWrite };
+    }
+
+    fn clipboardRead(ctx: *anyopaque) []const u8 {
+        const self: *Host = @ptrCast(@alignCast(ctx));
+        for (self.fx_next..self.fx_count) |i| {
+            const claimed = self.fx_claimed & (@as(u32, 1) << @intCast(i)) != 0;
+            if (self.fx_batch[i].kind != .pasted_text or claimed) continue;
+            self.fx_claimed |= @as(u32, 1) << @intCast(i);
+            return self.fx_batch[i].blobs[0];
+        }
+        return "";
+    }
+
+    fn clipboardWrite(_: *anyopaque, text: []const u8) void {
+        fx.clipboardWrite(text);
     }
 
     pub fn imeState(_: *const Host) ImeState {
@@ -556,6 +577,42 @@ pub const Host = struct {
         slot.state = .resolved_ok;
     }
 
+    // ── Declarative effects (zunk.web.fx) ──────────────────────────
+    //
+    // `submit` starts the work and returns; results (and unsolicited pastes /
+    // drops) are fetched by `pollInputs` and handed out here. The completion
+    // slices stay valid until the next `pollInputs`.
+
+    pub fn submit(_: *Host, e: teak.Effect) teak.EffectSubmit {
+        switch (e) {
+            .http => |r| {
+                const headers = fx.encodeHeaders(request_allocator, r.headers) catch return .busy;
+                defer request_allocator.free(headers);
+                fx.http(r.id, httpMethod(r.method), r.url, headers, r.body, r.timeout_ms);
+            },
+            .download => |d| fx.download(d.id, d.name, d.mime, d.bytes),
+            .open_file => |o| fx.openFile(o.id, o.accept),
+            .write_clipboard => |c| fx.clipboardWrite(c.text),
+            .storage_set => |s| fx.storageSet(s.key, s.value),
+            .storage_get => |g| fx.storageGet(g.id, g.key),
+            .clock => |c| fx.clock(c.id),
+            .query_param => |q| fx.queryParam(q.id, q.name),
+        }
+        return .accepted;
+    }
+
+    pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize {
+        self.fx_polled = true;
+        var n: usize = 0;
+        while (n < buf.len and self.fx_next < self.fx_count) : (self.fx_next += 1) {
+            const claimed = self.fx_claimed & (@as(u32, 1) << @intCast(self.fx_next)) != 0;
+            if (claimed) continue;
+            buf[n] = effectResult(self.fx_batch[self.fx_next]);
+            n += 1;
+        }
+        return n;
+    }
+
     /// Web has no concept of a second top-level window (popup blockers
     /// killed window.open) — apps that want multi-pane on the web use
     /// overlays. Stub returns null.
@@ -583,14 +640,9 @@ pub const Host = struct {
         zapp.setTitle(title);
     }
 
-    /// Browser monotonic time. Goes through zunk which calls
-    /// performance.now() under the hood; if that's not yet wired,
-    /// falls back to 0 (subs degrade gracefully — `every` never fires).
-    pub fn nowMs(self: *const Host) u64 {
-        _ = self;
-        // zunk.web.app exposes a frame timestamp; if not, return 0.
-        if (@hasDecl(zapp, "nowMs")) return zapp.nowMs();
-        return 0;
+    /// Browser monotonic time (`performance.now()`), in milliseconds.
+    pub fn nowMs(_: *const Host) u64 {
+        return @intFromFloat(@max(0, zapp.performanceNow()));
     }
 
     /// Physical pixels per logical unit. Teak's web coordinate space is
@@ -606,19 +658,57 @@ pub const Host = struct {
     pub fn scaleFactor(_: *const Host) f32 {
         return 1.0;
     }
-
-    fn stubRead(_: *anyopaque) []const u8 {
-        return "";
-    }
-
-    fn stubWrite(_: *anyopaque, _: []const u8) void {}
 };
 
-fn cssFontFamily(family: FontFamily) []const u8 {
-    return switch (family) {
-        .sans => "sans-serif",
-        .serif => "serif",
-        .mono => "monospace",
+fn httpMethod(m: teak.effects.HttpMethod) fx.Method {
+    return switch (m) {
+        .get => .get,
+        .post => .post,
+        .put => .put,
+        .delete => .delete,
+    };
+}
+
+/// A completion as the framework's contract type. Slices alias `c`.
+fn effectResult(c: fx.Completion) teak.EffectResult {
+    return switch (c.kind) {
+        .http => .{ .http = .{
+            .id = c.id,
+            .status = std.math.cast(u16, c.a) orelse 0,
+            .body = c.blobs[0],
+            .err = c.blobs[1],
+        } },
+        .file_opened => .{ .file_opened = .{ .id = c.id, .name = c.blobs[0], .mime = c.blobs[1], .bytes = c.blobs[2] } },
+        .file_cancelled => .{ .file_cancelled = .{ .id = c.id } },
+        .downloaded => .{ .downloaded = .{ .id = c.id, .ok = c.a != 0 } },
+        .storage_value => .{ .storage_value = .{ .id = c.id, .value = if (c.a != 0) c.blobs[0] else null } },
+        .query_value => .{ .query_value = .{ .id = c.id, .value = if (c.a != 0) c.blobs[0] else null } },
+        .clock => .{ .clock = .{ .id = c.id, .unix_ms = c.unixMs(), .utc_offset_min = c.a } },
+        .pasted_text => .{ .pasted_text = .{ .text = c.blobs[0] } },
+        .dropped => .{ .dropped = dropOf(c) },
+    };
+}
+
+fn dropOf(c: fx.Completion) teak.Drop {
+    const kind: teak.DropKind = switch (c.a) {
+        1 => .image,
+        2 => .text,
+        else => .file,
+    };
+    const thumb = c.blobs[3];
+    const thumb_w: u32 = if (c.d > 0) @intCast(c.d) else 0;
+    // The preview is only meaningful when its length matches its width.
+    const thumb_h: u32 = if (thumb_w > 0 and thumb.len % (4 * thumb_w) == 0) @intCast(thumb.len / (4 * thumb_w)) else 0;
+    return .{
+        .kind = kind,
+        .name = c.blobs[0],
+        .mime = c.blobs[1],
+        .bytes = c.blobs[2],
+        .width = if (c.b > 0) @intCast(c.b) else 0,
+        .height = if (c.c > 0) @intCast(c.c) else 0,
+        .thumb_rgba = if (thumb_h > 0) thumb else "",
+        .thumb_w = if (thumb_h > 0) thumb_w else 0,
+        .thumb_h = thumb_h,
     };
 }
 
@@ -731,3 +821,83 @@ test "serializeA11yTree: oversized label is skipped, record still emitted" {
     try testing.expectEqual(@as(u32, 0), records[0].label_len);
 }
 
+test "wasm key table reaches every SpecialKey through the shared policy" {
+    var seen = std.EnumSet(SpecialKey).initEmpty();
+    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true } };
+    for (mod_sets) |mods| {
+        for (key_mappings) |m| {
+            if (teak.resolveKey(m.to, mods)) |sk| seen.insert(sk);
+        }
+    }
+    for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
+}
+
+test "effectResult maps every completion kind to the contract type" {
+    const blobs: [4][]const u8 = .{ "b0", "b1", "b2", "" };
+    const base: fx.Completion = .{ .kind = .http, .id = 5, .a = 201, .b = 0, .c = 0, .d = 0, .blobs = blobs };
+
+    const http = effectResult(base).http;
+    try std.testing.expectEqual(@as(u32, 5), http.id);
+    try std.testing.expectEqual(@as(u16, 201), http.status);
+    try std.testing.expectEqualStrings("b0", http.body);
+    try std.testing.expectEqualStrings("b1", http.err);
+
+    var failed = base;
+    failed.a = 0;
+    try std.testing.expectEqual(@as(u16, 0), effectResult(failed).http.status);
+
+    var opened = base;
+    opened.kind = .file_opened;
+    const f = effectResult(opened).file_opened;
+    try std.testing.expectEqualStrings("b0", f.name);
+    try std.testing.expectEqualStrings("b1", f.mime);
+    try std.testing.expectEqualStrings("b2", f.bytes);
+
+    var storage = base;
+    storage.kind = .storage_value;
+    storage.a = 0;
+    try std.testing.expect(effectResult(storage).storage_value.value == null);
+    storage.a = 1;
+    try std.testing.expectEqualStrings("b0", effectResult(storage).storage_value.value.?);
+
+    var q = base;
+    q.kind = .query_value;
+    q.a = 0;
+    try std.testing.expect(effectResult(q).query_value.value == null);
+
+    var ms: [8]u8 = undefined;
+    std.mem.writeInt(i64, &ms, 1_700_000_000_000, .little);
+    var clock = base;
+    clock.kind = .clock;
+    clock.a = -300;
+    clock.blobs[0] = &ms;
+    const t = effectResult(clock).clock;
+    try std.testing.expectEqual(@as(i64, 1_700_000_000_000), t.unix_ms);
+    try std.testing.expectEqual(@as(i32, -300), t.utc_offset_min);
+
+    var paste = base;
+    paste.kind = .pasted_text;
+    try std.testing.expectEqualStrings("b0", effectResult(paste).pasted_text.text);
+}
+
+test "dropOf: image metadata and a thumbnail that matches its width" {
+    const thumb = [_]u8{7} ** (4 * 3 * 2); // 3 x 2 RGBA
+    const img = dropOf(.{ .kind = .dropped, .id = 0, .a = 1, .b = 1568, .c = 900, .d = 3, .blobs = .{ "s.png", "image/png", "PNG", &thumb } });
+    try std.testing.expectEqual(teak.DropKind.image, img.kind);
+    try std.testing.expectEqual(@as(u32, 1568), img.width);
+    try std.testing.expectEqual(@as(u32, 900), img.height);
+    try std.testing.expectEqual(@as(u32, 3), img.thumb_w);
+    try std.testing.expectEqual(@as(u32, 2), img.thumb_h);
+    try std.testing.expectEqual(@as(usize, 24), img.thumb_rgba.len);
+
+    // A preview whose size does not fit its width is dropped, not guessed.
+    const bad = dropOf(.{ .kind = .dropped, .id = 0, .a = 1, .b = 8, .c = 8, .d = 3, .blobs = .{ "", "image/png", "PNG", thumb[0..10] } });
+    try std.testing.expectEqual(@as(usize, 0), bad.thumb_rgba.len);
+    try std.testing.expectEqual(@as(u32, 0), bad.thumb_h);
+
+    const file = dropOf(.{ .kind = .dropped, .id = 0, .a = 0, .b = 0, .c = 0, .d = 0, .blobs = .{ "a.json", "application/json", "{}", "" } });
+    try std.testing.expectEqual(teak.DropKind.file, file.kind);
+    try std.testing.expectEqual(@as(u32, 0), file.width);
+    const text = dropOf(.{ .kind = .dropped, .id = 0, .a = 2, .b = 0, .c = 0, .d = 0, .blobs = .{ "", "text/plain", "hi", "" } });
+    try std.testing.expectEqual(teak.DropKind.text, text.kind);
+}

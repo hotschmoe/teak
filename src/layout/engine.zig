@@ -2,8 +2,8 @@ const std = @import("std");
 const cmd = @import("../core/cmd.zig");
 const text = @import("../core/text.zig");
 const Direction = cmd.Direction;
-const GroupStyle = cmd.GroupStyle;
-const ScrollStyle = cmd.ScrollStyle;
+const Align = cmd.Align;
+const Justify = cmd.Justify;
 const TextMeasurer = text.TextMeasurer;
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -14,8 +14,9 @@ pub const Rect = struct {
     w: f32 = 0,
     h: f32 = 0,
 
-    // Meaningful only for push_group entries after the measure pass.
-    // Carried into the position pass so flex distribution has the totals
+    // Meaningful only for container entries (push_group / push_scroll /
+    // push_overlay / push_virtual_list) after the measure pass. Carried
+    // into the position pass so flex / justify distribution has the totals
     // without rescanning children.
     fixed_main: f32 = 0,
     flex_total: f32 = 0,
@@ -61,43 +62,47 @@ pub const ClipStack = struct {
     }
 };
 
+/// Measure-pass bookkeeping for one open container (group, scroll, overlay,
+/// virtual list). Children fold their size into the accumulators; the pop
+/// arm turns it into the container's own rect.
 const GroupContext = struct {
     cmd_index: usize,
     direction: Direction,
-    padding: f32,
+    pad_x: f32,
+    pad_y: f32,
     gap: f32,
-    group_flex: f32,
-    /// Scroll containers override the final outer rect with these fixed
-    /// viewport sizes. 0 = not a scroll or no fixed size.
+    /// Flex weight this container carries into its parent.
+    flex: f32 = 0,
+    /// Forced outer size per axis (0 = measured from children) and the
+    /// floor applied to the measured size.
     fixed_w: f32 = 0,
     fixed_h: f32 = 0,
-    scroll_x: f32 = 0,
-    scroll_y: f32 = 0,
+    min_w: f32 = 0,
+    min_h: f32 = 0,
     is_scroll: bool = false,
-    /// True if this entry was pushed by push_overlay. Overlays don't
-    /// contribute to their parent's measured size — see pop_overlay
-    /// arm in measurePass.
-    is_overlay: bool = false,
-    /// True if this entry was pushed by push_virtual_list. The
-    /// container's main-axis size is forced to total_count * item_extent
+    /// Virtual lists claim `total_count * item_extent` on the main axis
     /// regardless of how many children were emitted in the visible window.
     is_virtual: bool = false,
     total_count: f32 = 0,
     item_extent: f32 = 0,
-    visible_start: u32 = 0,
+    // Accumulators.
     fixed_main: f32 = 0,
     flex_total: f32 = 0,
     cross_axis_max: f32 = 0,
     child_count: u32 = 0,
 };
 
+/// Position-pass cursor for the children of one open container.
 const CursorContext = struct {
     x: f32,
     y: f32,
     direction: Direction,
+    /// Effective gap between children: the style gap plus the extra
+    /// spacing `Justify.space_between` hands out.
     gap: f32,
     per_flex_unit: f32 = 0,
     inner_cross: f32 = 0,
+    align_cross: Align = .start,
     child_count: u32 = 0,
 };
 
@@ -137,14 +142,17 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
 //
 // Two O(n) passes over a flat []Cmd. Works for any Cmd(Msg) since we
 // only read Msg-independent fields (styles, labels, content).
+//
+// Sizing model (details in docs/features/layout.md):
+//   - measure: every node gets an intrinsic outer size; a group/scroll
+//     `width`/`height` replaces it, `min_width`/`min_height` floor it.
+//   - position: a container's final size is known before its children are
+//     placed. Main axis: flex children split the leftover (on top of their
+//     own size); with no flex children `justify` distributes it. Cross axis:
+//     `align_cross` places each child, `.stretch` sizes it to the inner extent.
 
 pub const LayoutEngine = struct {
     const TEXT_HEIGHT: f32 = 20;
-    const BUTTON_HEIGHT: f32 = 36;
-    const BUTTON_MIN_WIDTH: f32 = 60;
-    const BUTTON_H_PADDING: f32 = 16;
-    const INPUT_HEIGHT: f32 = 28;
-    const INPUT_H_PADDING: f32 = 8;
     const SLIDER_HEIGHT: f32 = 24;
 
     /// Run both passes: measure then position. The first push_group (the
@@ -171,7 +179,7 @@ pub const LayoutEngine = struct {
     }
 
     /// Pass 1 — measure. Bottom-up via an explicit stack. Each command
-    /// writes its intrinsic size to rects[i]; push_group entries also
+    /// writes its intrinsic size to rects[i]; container entries also
     /// record fixed_main, flex_total, child_count for the position pass.
     pub fn measurePass(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void {
         var stack: FixedStack(GroupContext, 32) = .{};
@@ -183,9 +191,14 @@ pub const LayoutEngine = struct {
                     stack.push(.{
                         .cmd_index = i,
                         .direction = grp.direction,
-                        .padding = grp.padding,
+                        .pad_x = grp.padX(),
+                        .pad_y = grp.padY(),
                         .gap = grp.gap,
-                        .group_flex = grp.flex,
+                        .flex = grp.flex,
+                        .fixed_w = grp.width,
+                        .fixed_h = grp.height,
+                        .min_w = grp.min_width,
+                        .min_h = grp.min_height,
                     });
                 },
                 .push_scroll => |sc| {
@@ -193,15 +206,92 @@ pub const LayoutEngine = struct {
                     stack.push(.{
                         .cmd_index = i,
                         .direction = sc.direction,
-                        .padding = sc.padding,
+                        .pad_x = sc.padding,
+                        .pad_y = sc.padding,
                         .gap = sc.gap,
-                        .group_flex = sc.flex,
-                        .is_scroll = true,
+                        .flex = sc.flex,
                         .fixed_w = sc.width,
                         .fixed_h = sc.height,
-                        .scroll_x = sc.scroll_x,
-                        .scroll_y = sc.scroll_y,
+                        .is_scroll = true,
                     });
+                },
+                .push_overlay => |ov| {
+                    assertPushable(stack.len, stack.buffer.len, i);
+                    stack.push(.{
+                        .cmd_index = i,
+                        .direction = ov.direction,
+                        .pad_x = ov.padding,
+                        .pad_y = ov.padding,
+                        .gap = ov.gap,
+                        .fixed_w = ov.width,
+                        .fixed_h = ov.height,
+                    });
+                },
+                .push_virtual_list => |vl| {
+                    assertPushable(stack.len, stack.buffer.len, i);
+                    stack.push(.{
+                        .cmd_index = i,
+                        .direction = vl.direction,
+                        .pad_x = vl.padding,
+                        .pad_y = vl.padding,
+                        .gap = vl.gap,
+                        .is_virtual = true,
+                        .total_count = @floatFromInt(vl.total_count),
+                        .item_extent = vl.item_extent,
+                    });
+                },
+                .pop_group, .pop_scroll => {
+                    assertPoppable(stack.len, i);
+                    const grp = stack.pop();
+                    var r = finishContainer(grp);
+                    if (grp.is_scroll and grp.flex > 0 and stack.len > 0) {
+                        // Scroll content is allowed to overflow, so a flex
+                        // scroll starts from zero on the parent's main axis
+                        // (unless it fixed a size there) and takes only its
+                        // share of the leftover.
+                        switch (stack.top().direction) {
+                            .horizontal => if (grp.fixed_w <= 0) {
+                                r.w = 0;
+                            },
+                            .vertical => if (grp.fixed_h <= 0) {
+                                r.h = 0;
+                            },
+                        }
+                        // The same holds along the scroll's own axis whatever
+                        // the parent's direction (a vertical scroll inside a
+                        // horizontal row must not size the row to its content).
+                        switch (grp.direction) {
+                            .horizontal => if (grp.fixed_w <= 0) {
+                                r.w = 0;
+                            },
+                            .vertical => if (grp.fixed_h <= 0) {
+                                r.h = 0;
+                            },
+                        }
+                    }
+                    rects[grp.cmd_index] = r;
+                    addLeafToTop(&stack, r.w, r.h, grp.flex);
+                },
+                .pop_overlay => {
+                    assertPoppable(stack.len, i);
+                    const grp = stack.pop();
+                    // Overlays do NOT contribute to their parent's
+                    // measured size — they hop the layout.
+                    rects[grp.cmd_index] = finishContainer(grp);
+                },
+                .pop_virtual_list => {
+                    assertPoppable(stack.len, i);
+                    const grp = stack.pop();
+                    var r = finishContainer(grp);
+                    // Main axis = the full logical list, whatever was emitted.
+                    const total_main = grp.total_count * grp.item_extent;
+                    switch (grp.direction) {
+                        .horizontal => r.w = total_main + 2 * grp.pad_x,
+                        .vertical => r.h = total_main + 2 * grp.pad_y,
+                    }
+                    r.fixed_main = total_main;
+                    rects[grp.cmd_index] = r;
+                    addLeafToTop(&stack, r.w, r.h, 0);
                 },
                 .text => |txt| {
                     const m = measurer.measure(txt.content, txt.font);
@@ -209,18 +299,18 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, m.width, m.height, 0);
                 },
                 .button => |btn| {
-                    const label_w = measurer.measure(btn.label, btn.font).width + BUTTON_H_PADDING;
-                    const w = @max(@max(label_w, BUTTON_MIN_WIDTH), btn.style.min_width);
-                    const h = BUTTON_HEIGHT;
+                    const label_w = measurer.measure(btn.label, btn.font).width + 2 * btn.style.h_padding;
+                    const w = @max(label_w, btn.style.min_width);
+                    const h = btn.style.height;
                     rects[i] = .{ .w = w, .h = h };
-                    addLeafToTop(&stack, w, h, 0);
+                    addLeafToTop(&stack, w, h, btn.style.flex);
                 },
                 .text_input => |ti| {
                     // Intrinsic size; flex/cross-stretch expand it in the position pass.
                     const w = ti.style.min_width;
-                    const h = INPUT_HEIGHT;
+                    const h = ti.style.height;
                     rects[i] = .{ .w = w, .h = h };
-                    addLeafToTop(&stack, w, h, ti.style.flex);
+                    addLeafToTop(&stack, w, h, rowFlex(&stack, ti.style.flex));
                 },
                 .checkbox => |cb| {
                     const label_w = measurer.measure(cb.label, cb.font).width;
@@ -240,11 +330,11 @@ pub const LayoutEngine = struct {
                     const w = sl.style.min_width;
                     const h = @max(SLIDER_HEIGHT, sl.style.thumb_size);
                     rects[i] = .{ .w = w, .h = h };
-                    addLeafToTop(&stack, w, h, sl.style.flex);
+                    addLeafToTop(&stack, w, h, rowFlex(&stack, sl.style.flex));
                 },
                 .divider => |dv| {
                     // Thickness goes on the parent's main-axis; cross stretches
-                    // to the inner width/height in positionPass (placeFlexLeaf).
+                    // to the inner width/height in positionPass.
                     const parent_dir = if (stack.len > 0) stack.top().direction else .horizontal;
                     const w: f32 = switch (parent_dir) {
                         .horizontal => dv.thickness,
@@ -257,152 +347,22 @@ pub const LayoutEngine = struct {
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, 0);
                 },
-                .pop_group, .pop_scroll => {
-                    assertPoppable(stack.len, i);
-                    const grp = stack.pop();
-                    const gaps: f32 = if (grp.child_count > 1)
-                        @as(f32, @floatFromInt(grp.child_count - 1)) * grp.gap
-                    else
-                        0;
-
-                    const main_size = grp.fixed_main + gaps + 2 * grp.padding;
-                    const cross_size = grp.cross_axis_max + 2 * grp.padding;
-
-                    var w: f32 = switch (grp.direction) {
-                        .horizontal => main_size,
-                        .vertical => cross_size,
-                    };
-                    var h: f32 = switch (grp.direction) {
-                        .horizontal => cross_size,
-                        .vertical => main_size,
-                    };
-
-                    // Scroll containers clamp to viewport size when set.
-                    if (grp.is_scroll) {
-                        if (grp.fixed_w > 0) w = grp.fixed_w;
-                        if (grp.fixed_h > 0) h = grp.fixed_h;
-                    }
-
-                    rects[grp.cmd_index] = .{
-                        .w = w,
-                        .h = h,
-                        .fixed_main = grp.fixed_main,
-                        .flex_total = grp.flex_total,
-                        .child_count = grp.child_count,
-                    };
-
-                    if (grp.is_overlay) {
-                        // Forced sizes win over measured children.
-                        if (grp.fixed_w > 0) rects[grp.cmd_index].w = grp.fixed_w;
-                        if (grp.fixed_h > 0) rects[grp.cmd_index].h = grp.fixed_h;
-                        // Overlays do NOT contribute to their parent's
-                        // measured size — they hop the layout.
-                    } else if (grp.is_virtual) {
-                        // Virtual lists claim total_count * item_extent on
-                        // the main axis regardless of how many children
-                        // were emitted. Cross axis = inherited from
-                        // measured children.
-                        const total_main: f32 = grp.total_count * grp.item_extent + 2 * grp.padding;
-                        switch (grp.direction) {
-                            .horizontal => rects[grp.cmd_index].w = total_main,
-                            .vertical => rects[grp.cmd_index].h = total_main,
-                        }
-                        addLeafToTop(&stack, rects[grp.cmd_index].w, rects[grp.cmd_index].h, grp.group_flex);
-                    } else {
-                        addLeafToTop(&stack, w, h, grp.group_flex);
-                    }
-                },
-                .push_overlay => |ov| {
-                    assertPushable(stack.len, stack.buffer.len, i);
-                    stack.push(.{
-                        .cmd_index = i,
-                        .direction = ov.direction,
-                        .padding = ov.padding,
-                        .gap = ov.gap,
-                        .group_flex = 0,
-                        .is_overlay = true,
-                        .fixed_w = ov.width,
-                        .fixed_h = ov.height,
-                    });
-                },
-                .pop_overlay => {
-                    assertPoppable(stack.len, i);
-                    const grp = stack.pop();
-                    const gaps: f32 = if (grp.child_count > 1)
-                        @as(f32, @floatFromInt(grp.child_count - 1)) * grp.gap
-                    else
-                        0;
-                    const main_size = grp.fixed_main + gaps + 2 * grp.padding;
-                    const cross_size = grp.cross_axis_max + 2 * grp.padding;
-                    var w: f32 = switch (grp.direction) {
-                        .horizontal => main_size,
-                        .vertical => cross_size,
-                    };
-                    var h: f32 = switch (grp.direction) {
-                        .horizontal => cross_size,
-                        .vertical => main_size,
-                    };
-                    if (grp.fixed_w > 0) w = grp.fixed_w;
-                    if (grp.fixed_h > 0) h = grp.fixed_h;
-                    rects[grp.cmd_index] = .{
-                        .w = w,
-                        .h = h,
-                        .fixed_main = grp.fixed_main,
-                        .flex_total = grp.flex_total,
-                        .child_count = grp.child_count,
-                    };
-                    // Overlay does not call addLeafToTop — it doesn't
-                    // contribute to the parent's measured size.
-                },
-                .push_virtual_list => |vl| {
-                    assertPushable(stack.len, stack.buffer.len, i);
-                    stack.push(.{
-                        .cmd_index = i,
-                        .direction = vl.direction,
-                        .padding = vl.padding,
-                        .gap = vl.gap,
-                        .group_flex = 0,
-                        .is_virtual = true,
-                        .total_count = @floatFromInt(vl.total_count),
-                        .item_extent = vl.item_extent,
-                        .visible_start = vl.visible_start,
-                    });
-                },
-                .pop_virtual_list => {
-                    // Handled in the pop_group/pop_scroll arm above via
-                    // is_virtual branch — duplicated here for the
-                    // exhaustive switch.
-                    assertPoppable(stack.len, i);
-                    const grp = stack.pop();
-                    const total_main: f32 = grp.total_count * grp.item_extent + 2 * grp.padding;
-                    const w: f32 = switch (grp.direction) {
-                        .horizontal => total_main,
-                        .vertical => grp.cross_axis_max + 2 * grp.padding,
-                    };
-                    const h: f32 = switch (grp.direction) {
-                        .horizontal => grp.cross_axis_max + 2 * grp.padding,
-                        .vertical => total_main,
-                    };
-                    rects[grp.cmd_index] = .{
-                        .w = w,
-                        .h = h,
-                        .fixed_main = total_main - 2 * grp.padding,
-                        .flex_total = grp.flex_total,
-                        .child_count = grp.child_count,
-                    };
-                    addLeafToTop(&stack, w, h, grp.group_flex);
-                },
                 .image => |img| {
                     const w = img.style.width;
                     const h = img.style.height;
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, img.style.flex);
                 },
+                .scene3d => |sc| {
+                    // Fixed-size leaf, same sizing convention as `canvas`.
+                    const w = sc.style.width;
+                    const h = sc.style.height;
+                    rects[i] = .{ .w = w, .h = h };
+                    addLeafToTop(&stack, w, h, sc.style.flex);
+                },
                 .canvas => |cv| {
-                    // Fixed-size leaf: intrinsic w/h come straight from the
-                    // style. Flex weight is counted for sibling distribution
-                    // (same convention as `image`); the canvas itself keeps
-                    // its declared box in the position pass.
+                    // Intrinsic w/h come from the style; flex grows the box
+                    // along the parent's main axis, `.stretch` along the cross.
                     const w = cv.style.width;
                     const h = cv.style.height;
                     rects[i] = .{ .w = w, .h = h };
@@ -447,85 +407,75 @@ pub const LayoutEngine = struct {
         }
     }
 
-    /// Pass 2 — position. Top-down, forward scan. Each group computes its
-    /// per-flex-unit from its final size (now known) and the accumulators
-    /// stored during measure; each child is placed at the running cursor.
+    /// Pass 2 — position. Top-down, forward scan. A container is sized
+    /// (flex growth, stretch) while it is placed in its parent, so by the
+    /// time its own children are placed its final rect is known; each child
+    /// goes at the running cursor.
     pub fn positionPass(rects: []Rect, cmds: anytype) void {
         var stack: FixedStack(CursorContext, 32) = .{};
 
         for (cmds, 0..) |c, i| {
             switch (c) {
-                .push_group => |grp| placeContainer(rects, &stack, i, .{
-                    .direction = grp.direction,
-                    .padding = grp.padding,
-                    .gap = grp.gap,
-                    .flex = grp.flex,
-                }),
-                .push_scroll => |sc| placeContainer(rects, &stack, i, .{
-                    .direction = sc.direction,
-                    .padding = sc.padding,
-                    .gap = sc.gap,
-                    .flex = sc.flex,
-                    .scroll_x = sc.scroll_x,
-                    .scroll_y = sc.scroll_y,
-                }),
-                .text, .button, .checkbox, .radio, .image, .rich_text, .canvas => {
-                    const ctx = stack.top();
-                    if (ctx.child_count > 0) advanceCursor(ctx, ctx.gap);
-
-                    rects[i].x = ctx.x;
-                    rects[i].y = ctx.y;
-                    ctx.child_count += 1;
-
-                    const advance_by: f32 = switch (ctx.direction) {
-                        .horizontal => rects[i].w,
-                        .vertical => rects[i].h,
-                    };
-                    advanceCursor(ctx, advance_by);
+                .push_group => |g| {
+                    if (stack.len > 0) placeChild(rects, &stack, i, .{
+                        .flex = g.flex,
+                        .fixed_w = g.width > 0,
+                        .fixed_h = g.height > 0,
+                        .min_w = g.min_width,
+                        .min_h = g.min_height,
+                    });
+                    pushChildren(rects, &stack, i, .{
+                        .direction = g.direction,
+                        .pad_x = g.padX(),
+                        .pad_y = g.padY(),
+                        .gap = g.gap,
+                        .align_cross = g.align_cross,
+                        .justify = g.justify,
+                    });
                 },
-                .text_input => |ti| {
-                    placeFlexLeaf(rects, &stack, i, ti.style.flex);
+                .push_scroll => |sc| {
+                    if (stack.len > 0) placeChild(rects, &stack, i, .{
+                        .flex = sc.flex,
+                        .fixed_w = sc.width > 0,
+                        .fixed_h = sc.height > 0,
+                    });
+                    // Children's cursor starts shifted by the scroll offsets:
+                    // an overflowing child ends up outside the viewport, and
+                    // the render/hit-test clip stacks discard it.
+                    pushChildren(rects, &stack, i, .{
+                        .direction = sc.direction,
+                        .pad_x = sc.padding,
+                        .pad_y = sc.padding,
+                        .gap = sc.gap,
+                        .align_cross = sc.align_cross,
+                        .scroll_x = sc.scroll_x,
+                        .scroll_y = sc.scroll_y,
+                    });
                 },
-                .slider => |sl| {
-                    placeFlexLeaf(rects, &stack, i, sl.style.flex);
-                },
-                .divider => placeFlexLeaf(rects, &stack, i, 0),
                 .push_overlay => |ov| {
                     // Absolute placement; anchor fraction shifts by
-                    // (-w * frac_x, -h * frac_y).
+                    // (-w * frac_x, -h * frac_y). Overlays do NOT advance
+                    // the parent cursor.
                     rects[i].x = ov.x - rects[i].w * ov.anchor_x_frac;
                     rects[i].y = ov.y - rects[i].h * ov.anchor_y_frac;
-                    // Children get their own cursor context — overlays
-                    // do NOT advance the parent cursor (they're absolute).
-                    assertPushable(stack.len, stack.buffer.len, i);
-                    stack.push(.{
-                        .x = rects[i].x + ov.padding,
-                        .y = rects[i].y + ov.padding,
+                    pushChildren(rects, &stack, i, .{
                         .direction = ov.direction,
+                        .pad_x = ov.padding,
+                        .pad_y = ov.padding,
                         .gap = ov.gap,
-                        .per_flex_unit = 0,
-                        .inner_cross = @max(0, switch (ov.direction) {
-                            .horizontal => rects[i].h - 2 * ov.padding,
-                            .vertical => rects[i].w - 2 * ov.padding,
-                        }),
+                        .align_cross = ov.align_cross,
                     });
-                },
-                .pop_overlay => {
-                    assertPoppable(stack.len, i);
-                    _ = stack.pop();
                 },
                 .push_virtual_list => |vl| {
-                    // Children sit inside the parent (a scroll typically)
-                    // at offset `visible_start * item_extent` so they
-                    // land in the right "virtual" row.
-                    placeContainer(rects, &stack, i, .{
+                    if (stack.len > 0) placeChild(rects, &stack, i, .{});
+                    pushChildren(rects, &stack, i, .{
                         .direction = vl.direction,
-                        .padding = vl.padding,
+                        .pad_x = vl.padding,
+                        .pad_y = vl.padding,
                         .gap = vl.gap,
-                        .flex = 0,
                     });
-                    // Now bump the cursor so the first emitted child
-                    // sits at row visible_start, not row 0.
+                    // Bump the cursor so the first emitted child sits at
+                    // row visible_start, not row 0.
                     const ctx = stack.top();
                     const offset: f32 = @as(f32, @floatFromInt(vl.visible_start)) * vl.item_extent;
                     switch (vl.direction) {
@@ -533,118 +483,122 @@ pub const LayoutEngine = struct {
                         .vertical => ctx.y += offset,
                     }
                 },
-                .pop_virtual_list => {
+                .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => {
                     assertPoppable(stack.len, i);
                     _ = stack.pop();
                 },
-                .pop_group, .pop_scroll => {
-                    assertPoppable(stack.len, i);
-                    _ = stack.pop();
-                },
+                .text, .checkbox, .radio, .rich_text => placeChild(rects, &stack, i, .{}),
+                .button => |b| placeChild(rects, &stack, i, .{ .flex = b.style.flex }),
+                .image => |img| placeChild(rects, &stack, i, .{ .flex = img.style.flex }),
+                .canvas => |cv| placeChild(rects, &stack, i, .{ .flex = cv.style.flex }),
+                .scene3d => |sc| placeChild(rects, &stack, i, .{ .flex = sc.style.flex }),
+                .text_input => |ti| placeChild(rects, &stack, i, .{ .flex = ti.style.flex, .row_only = true, .fills_cross = true }),
+                .slider => |sl| placeChild(rects, &stack, i, .{ .flex = sl.style.flex, .row_only = true, .fills_cross = true }),
+                .divider => placeChild(rects, &stack, i, .{ .fills_cross = true }),
             }
         }
+    }
+
+    /// What `placeChild` needs to know about the child beyond its measured rect.
+    const ChildSpec = struct {
+        /// Main-axis flex weight.
+        flex: f32 = 0,
+        /// The child fixed its own outer size on that axis (group/scroll
+        /// `width`/`height` > 0); stretch leaves it alone.
+        fixed_w: bool = false,
+        fixed_h: bool = false,
+        /// Floor applied when stretching.
+        min_w: f32 = 0,
+        min_h: f32 = 0,
+        /// Single-line controls (text_input, slider) are one row tall: their
+        /// flex grows them along a horizontal main axis only, never a
+        /// vertical one (see `rowFlex`).
+        row_only: bool = false,
+        /// Legacy leaves (text_input, slider, divider) fill the cross axis
+        /// of a `.start` parent too.
+        fills_cross: bool = false,
+    };
+
+    /// Place one child (leaf or container) at the parent's cursor: grow it
+    /// along the main axis by its flex share, size it along the cross axis
+    /// per the parent's `align_cross`, then advance the cursor.
+    fn placeChild(rects: []Rect, stack: *FixedStack(CursorContext, 32), i: usize, spec: ChildSpec) void {
+        const ctx = stack.top();
+        if (ctx.child_count > 0) advanceCursor(ctx, ctx.gap);
+        const r = &rects[i];
+        const horizontal = ctx.direction == .horizontal;
+
+        const flex = if (spec.row_only and !horizontal) 0 else spec.flex;
+        if (flex > 0 and ctx.per_flex_unit > 0) {
+            if (horizontal) r.w += flex * ctx.per_flex_unit else r.h += flex * ctx.per_flex_unit;
+        }
+
+        const stretch = ctx.align_cross == .stretch or (ctx.align_cross == .start and spec.fills_cross);
+        const cross_fixed = if (horizontal) spec.fixed_h else spec.fixed_w;
+        if (stretch and !cross_fixed and ctx.inner_cross > 0) {
+            if (horizontal) r.h = @max(ctx.inner_cross, spec.min_h) else r.w = @max(ctx.inner_cross, spec.min_w);
+        }
+
+        const cross_size = if (horizontal) r.h else r.w;
+        const slack = @max(0, ctx.inner_cross - cross_size);
+        const cross_offset: f32 = switch (ctx.align_cross) {
+            .start, .stretch => 0,
+            .center => slack * 0.5,
+            .end => slack,
+        };
+        r.x = ctx.x + (if (horizontal) 0 else cross_offset);
+        r.y = ctx.y + (if (horizontal) cross_offset else 0);
+        ctx.child_count += 1;
+        advanceCursor(ctx, if (horizontal) r.w else r.h);
     }
 
     const ContainerSpec = struct {
         direction: Direction,
-        padding: f32,
+        pad_x: f32,
+        pad_y: f32,
         gap: f32,
-        flex: f32,
-        /// Children's cursor starts shifted by these offsets. Non-zero only
-        /// for scroll containers — an overflowing child ends up outside the
-        /// viewport, and the render/hit-test clip stacks discard it.
+        align_cross: Align = .start,
+        justify: Justify = .start,
         scroll_x: f32 = 0,
         scroll_y: f32 = 0,
     };
 
-    /// Place a push-{group|scroll} entry inside its parent and push a
-    /// fresh CursorContext for its children.
-    fn placeContainer(
-        rects: []Rect,
-        stack: *FixedStack(CursorContext, 32),
-        i: usize,
-        spec: ContainerSpec,
-    ) void {
-        if (stack.len > 0) {
-            const parent = stack.top();
-            if (parent.child_count > 0) advanceCursor(parent, parent.gap);
+    /// Open the cursor for the children of container `i`, whose rect is
+    /// final by now: split the leftover main-axis space (flex weights, else
+    /// `justify`) and record the inner cross extent for `align_cross`.
+    fn pushChildren(rects: []Rect, stack: *FixedStack(CursorContext, 32), i: usize, spec: ContainerSpec) void {
+        const r = rects[i];
+        const horizontal = spec.direction == .horizontal;
+        const inner_w = @max(0, r.w - 2 * spec.pad_x);
+        const inner_h = @max(0, r.h - 2 * spec.pad_y);
+        const inner_main = if (horizontal) inner_w else inner_h;
+        const gaps = gapTotal(r.child_count, spec.gap);
+        const extra = @max(0, inner_main - r.fixed_main - gaps);
 
-            if (spec.flex > 0 and parent.per_flex_unit > 0) {
-                switch (parent.direction) {
-                    .horizontal => rects[i].w += spec.flex * parent.per_flex_unit,
-                    .vertical => rects[i].h += spec.flex * parent.per_flex_unit,
-                }
-            }
-
-            rects[i].x = parent.x;
-            rects[i].y = parent.y;
-            parent.child_count += 1;
-
-            const advance_by: f32 = switch (parent.direction) {
-                .horizontal => rects[i].w,
-                .vertical => rects[i].h,
-            };
-            advanceCursor(parent, advance_by);
+        var gap = spec.gap;
+        var lead: f32 = 0;
+        var per_flex_unit: f32 = 0;
+        if (r.flex_total > 0) {
+            per_flex_unit = extra / r.flex_total;
+        } else switch (spec.justify) {
+            .start => {},
+            .center => lead = extra * 0.5,
+            .end => lead = extra,
+            .space_between => if (r.child_count > 1) {
+                gap += extra / @as(f32, @floatFromInt(r.child_count - 1));
+            },
         }
-
-        const inner_w = @max(0, rects[i].w - 2 * spec.padding);
-        const inner_h = @max(0, rects[i].h - 2 * spec.padding);
-        const inner_main: f32 = switch (spec.direction) {
-            .horizontal => inner_w,
-            .vertical => inner_h,
-        };
-        const inner_cross: f32 = switch (spec.direction) {
-            .horizontal => inner_h,
-            .vertical => inner_w,
-        };
-        const count = rects[i].child_count;
-        const gaps: f32 = if (count > 1)
-            @as(f32, @floatFromInt(count - 1)) * spec.gap
-        else
-            0;
-        const extra = @max(0, inner_main - rects[i].fixed_main - gaps);
-        const per_flex_unit: f32 = if (rects[i].flex_total > 0) extra / rects[i].flex_total else 0;
 
         assertPushable(stack.len, stack.buffer.len, i);
         stack.push(.{
-            .x = rects[i].x + spec.padding - spec.scroll_x,
-            .y = rects[i].y + spec.padding - spec.scroll_y,
+            .x = r.x + spec.pad_x - spec.scroll_x + (if (horizontal) lead else 0),
+            .y = r.y + spec.pad_y - spec.scroll_y + (if (horizontal) 0 else lead),
             .direction = spec.direction,
-            .gap = spec.gap,
+            .gap = gap,
             .per_flex_unit = per_flex_unit,
-            .inner_cross = inner_cross,
+            .inner_cross = if (horizontal) inner_h else inner_w,
+            .align_cross = spec.align_cross,
         });
-    }
-
-    /// Shared placement for leaves that support main-axis flex growth
-    /// and cross-axis stretch (text_input, slider).
-    fn placeFlexLeaf(rects: []Rect, stack: *FixedStack(CursorContext, 32), i: usize, flex: f32) void {
-        const ctx = stack.top();
-        if (ctx.child_count > 0) advanceCursor(ctx, ctx.gap);
-
-        if (flex > 0 and ctx.per_flex_unit > 0) {
-            switch (ctx.direction) {
-                .horizontal => rects[i].w += flex * ctx.per_flex_unit,
-                .vertical => rects[i].h += flex * ctx.per_flex_unit,
-            }
-        }
-
-        if (ctx.inner_cross > 0) {
-            switch (ctx.direction) {
-                .horizontal => rects[i].h = ctx.inner_cross,
-                .vertical => rects[i].w = ctx.inner_cross,
-            }
-        }
-
-        rects[i].x = ctx.x;
-        rects[i].y = ctx.y;
-        ctx.child_count += 1;
-
-        const advance_by: f32 = switch (ctx.direction) {
-            .horizontal => rects[i].w,
-            .vertical => rects[i].h,
-        };
-        advanceCursor(ctx, advance_by);
     }
 
     fn advanceCursor(ctx: *CursorContext, delta: f32) void {
@@ -652,6 +606,28 @@ pub const LayoutEngine = struct {
             .horizontal => ctx.x += delta,
             .vertical => ctx.y += delta,
         }
+    }
+
+    fn gapTotal(child_count: u32, gap: f32) f32 {
+        return if (child_count > 1) @as(f32, @floatFromInt(child_count - 1)) * gap else 0;
+    }
+
+    /// Turn a closed container's accumulators into its outer rect: content
+    /// size plus padding, replaced by a fixed size, then floored by the minimum.
+    fn finishContainer(grp: GroupContext) Rect {
+        const horizontal = grp.direction == .horizontal;
+        const main = grp.fixed_main + gapTotal(grp.child_count, grp.gap) +
+            2 * (if (horizontal) grp.pad_x else grp.pad_y);
+        const cross = grp.cross_axis_max + 2 * (if (horizontal) grp.pad_y else grp.pad_x);
+        const w = if (horizontal) main else cross;
+        const h = if (horizontal) cross else main;
+        return .{
+            .w = @max(if (grp.fixed_w > 0) grp.fixed_w else w, grp.min_w),
+            .h = @max(if (grp.fixed_h > 0) grp.fixed_h else h, grp.min_h),
+            .fixed_main = grp.fixed_main,
+            .flex_total = grp.flex_total,
+            .child_count = grp.child_count,
+        };
     }
 
     // ── Stack-balance diagnostics ──────────────────────────────────
@@ -682,20 +658,21 @@ pub const LayoutEngine = struct {
         );
     }
 
+    /// Flex weight of a single-line control (text_input, slider): it only
+    /// grows along a horizontal main axis. In a vertical parent its height
+    /// stays fixed instead of ballooning into the leftover column space.
+    fn rowFlex(stack: *FixedStack(GroupContext, 32), flex: f32) f32 {
+        return if (stack.len > 0 and stack.top().direction == .horizontal) flex else 0;
+    }
+
+    /// Fold a finished child into its parent's accumulators.
     fn addLeafToTop(stack: *FixedStack(GroupContext, 32), child_w: f32, child_h: f32, child_flex: f32) void {
         if (stack.len == 0) return;
         const t = stack.top();
-        const main: f32 = switch (t.direction) {
-            .horizontal => child_w,
-            .vertical => child_h,
-        };
-        const cross: f32 = switch (t.direction) {
-            .horizontal => child_h,
-            .vertical => child_w,
-        };
-        t.fixed_main += main;
+        const horizontal = t.direction == .horizontal;
+        t.fixed_main += if (horizontal) child_w else child_h;
+        t.cross_axis_max = @max(t.cross_axis_max, if (horizontal) child_h else child_w);
         t.flex_total += child_flex;
-        t.cross_axis_max = @max(t.cross_axis_max, cross);
         t.child_count += 1;
     }
 };
@@ -1120,4 +1097,30 @@ test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
     // must not, because 32 is the documented capacity.
     LayoutEngine.doLayout(rects, cb.cmds.items, 800, 600, test_measurer);
     try testing.expectEqual(@as(f32, 800), rects[0].w);
+}
+
+// Sizing-model tests (fixed sizes, align, justify, stretch, flex, golden
+// snapshots) live in their own file to keep this one readable.
+test {
+    _ = @import("sizing_test.zig");
+}
+
+test "scene3d is a fixed-size leaf sized from its style" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 10, .gap = 0 });
+    cb.text("Title"); // 50 x 20
+    cb.scene3d(.{ .style = .{ .width = 320, .height = 200 } });
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
+
+    try testing.expectEqual(@as(f32, 320), rects[2].w);
+    try testing.expectEqual(@as(f32, 200), rects[2].h);
+    try testing.expectEqual(@as(f32, 10), rects[2].x);
+    try testing.expectEqual(@as(f32, 30), rects[2].y);
 }

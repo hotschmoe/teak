@@ -11,7 +11,10 @@
 const std = @import("std");
 
 pub const SpecialKey = @import("../input/keys.zig").SpecialKey;
+pub const Buttons = pointer.Buttons;
+pub const Modifiers = pointer.Modifiers;
 
+const pointer = @import("../core/pointer.zig");
 const text = @import("../core/text.zig");
 pub const TextMeasurer = text.TextMeasurer;
 pub const TextMetrics = text.TextMetrics;
@@ -48,6 +51,11 @@ pub const ImeState = struct {
 
 pub const A11yNode = @import("../input/a11y.zig").A11yNode;
 
+const effects = @import("../core/effects.zig");
+pub const Effect = effects.Effect;
+pub const EffectResult = effects.EffectResult;
+pub const EffectSubmit = effects.EffectSubmit;
+
 /// File dialog result. `path` is UTF-8; lives in the Host's internal
 /// buffer and is valid until the next dialog call. null when the user
 /// cancels.
@@ -82,10 +90,22 @@ pub const FileDialogPoll = union(enum) {
 /// Per-frame input snapshot returned by `Host.pollInputs`.
 ///
 /// `mouse_x` / `mouse_y` are the current cursor position (state, not an
-/// event). `mouse_down` / `mouse_up` are edge events — true only on the
-/// frame the button transitioned. `chars` and `keys` are queues drained
-/// and returned in receive order; the slices reference Host-internal
-/// storage and are valid only until the next `pollInputs` call.
+/// event), in logical pixels relative to the window's client area.
+///
+/// Buttons: `buttons` is what is held now; `button_down` / `button_up` are
+/// the edges that happened since the previous poll — a press and release
+/// inside one frame sets both (and `buttons` then reads released), so a
+/// fast click is never lost. `mouse_down` / `mouse_up` are the left-button
+/// edges (== `button_down.left` / `button_up.left`), kept for the
+/// click-only code path. `mods` is the Shift/Ctrl/Alt/Meta state at the
+/// time of the most recent input event.
+///
+/// `chars` is UTF-8 text typed this frame (whole code points, no control
+/// codes, no Ctrl/Cmd chords); `keys` is the special-key queue (arrows,
+/// Delete/Home/End, Shift-extended motion, Ctrl+A/C/X/V/Y/Z, Tab, Escape,
+/// Enter...). Both are drained and returned in receive order; the slices
+/// reference Host-internal storage and are valid only until the next
+/// `pollInputs` call.
 ///
 /// `wheel_dx` / `wheel_dy` are accumulated pixels of intended scroll
 /// since the previous `pollInputs`. Sign convention matches the DOM
@@ -93,17 +113,17 @@ pub const FileDialogPoll = union(enum) {
 /// wants the content to scroll **down** (visible viewport advances
 /// toward higher y) and positive `wheel_dx` means scroll right. Hosts
 /// translate native wheel notches into pixels (typically 120 raw units
-/// = ~48 px on Win32). Zero when no wheel events arrived this frame.
-/// Host capability note: not every backend wires both axes today —
-/// e.g. the wasm host currently reports vertical wheel only and stubs
-/// `wheel_dx = 0`. Apps that care about horizontal wheel should be
-/// designed to tolerate a zero on hosts without it; treat the
-/// horizontal axis as best-effort across backends.
+/// = ~48 px on Win32). Zero when no wheel events arrived this frame. A
+/// trackpad pinch on the web arrives as a wheel event with `mods.ctrl` set.
 pub const InputState = struct {
     mouse_x: f32,
     mouse_y: f32,
+    buttons: Buttons,
+    button_down: Buttons,
+    button_up: Buttons,
     mouse_down: bool,
     mouse_up: bool,
+    mods: Modifiers,
     wheel_dx: f32,
     wheel_dy: f32,
     chars: []const u8,
@@ -112,6 +132,14 @@ pub const InputState = struct {
     width: u32,
     height: u32,
 };
+
+/// One Host declaration + the signature the error message quotes when it is
+/// missing or not a function. Receiver types and a handful of return types
+/// (e.g. `nativeHandle`) are platform-specific, so the validator checks
+/// *presence + callability* and names the expected shape — it does not pin
+/// exact parameter types (that would over-constrain the per-backend handle
+/// types).
+const HostDecl = struct { name: []const u8, sig: []const u8 };
 
 /// Comptime contract. A Host must expose these declarations; `init`
 /// signatures vary per backend and are NOT validated (some hosts take a
@@ -171,14 +199,20 @@ pub const InputState = struct {
 ///   devicePixelRatio backing store internally). Nothing in the
 ///   framework consumes it yet; see docs/features/host.md "DPI and
 ///   scaling" for the end-to-end render-at-scale follow-up.
-/// One required Host declaration + the signature the error message
-/// quotes when it's missing or not a function. Receiver types and a
-/// handful of return types (e.g. `nativeHandle`) are platform-specific,
-/// so the validator checks *presence + callability* and names the
-/// expected shape — it does not pin exact parameter types (that would
-/// over-constrain the per-backend handle types).
-const HostDecl = struct { name: []const u8, sig: []const u8 };
-
+/// - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
+///   surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
+///   a pair** (a Host with neither answers every effect as unsupported;
+///   declaring only one is a compile error):
+///   `submit(*Host, Effect) EffectSubmit` starts one effect. The slices
+///   inside the effect are valid only during the call — copy what an async
+///   request needs. Fire-and-forget effects (`storage_set`,
+///   `write_clipboard`) are performed here and never answered.
+///   `pollEffectResults(*Host, []EffectResult) usize` fills `buf` with the
+///   results that arrived (async completions plus unsolicited
+///   `dropped` / `pasted_text`) and returns the count; the result slices
+///   stay valid until the Host's next `pollInputs` call (the runtime
+///   dispatches them within the same frame). Called once per frame, after
+///   key routing, so `Clipboard.read` can claim a paste first.
 pub fn validateHost(comptime T: type) void {
     const tn = @typeName(T);
     const required = [_]HostDecl{
@@ -222,8 +256,11 @@ pub fn validateHost(comptime T: type) void {
     // Host declares them, so their absence is not a contract violation. A
     // Host may omit `scaleFactor` (defaults to a 1.0 assumption at the
     // orchestrator once it consumes the decl); if present it must be a fn.
+    // `submit` and `pollEffectResults` come as a pair.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
+        .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
+        .{ .name = "pollEffectResults", .sig = "fn(*Host, []EffectResult) usize" },
     };
     inline for (optional) |d| {
         if (@hasDecl(T, d.name)) {
@@ -232,6 +269,9 @@ pub fn validateHost(comptime T: type) void {
                     "(expected " ++ d.sig ++ ")");
         }
     }
+    if (@hasDecl(T, "submit") != @hasDecl(T, "pollEffectResults"))
+        @compileError("Host '" ++ tn ++ "' must declare both `submit` and `pollEffectResults` " ++
+            "(declarative effects) or neither");
 }
 
 test "validateHost accepts a minimal shape" {
@@ -286,6 +326,12 @@ test "validateHost accepts a minimal shape" {
         }
         pub fn scaleFactor(_: *const @This()) f32 {
             return 1.0;
+        }
+        pub fn submit(_: *@This(), _: Effect) EffectSubmit {
+            return .unsupported;
+        }
+        pub fn pollEffectResults(_: *@This(), _: []EffectResult) usize {
+            return 0;
         }
 
         fn stubMeasure(_: *anyopaque, _: []const u8, _: FontSpec) TextMetrics {

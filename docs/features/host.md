@@ -1,6 +1,6 @@
 # Host interface
 
-**Status**: `pub` in `src/teak.zig` as `InputState`, `validateHost`, `SpecialKey`.
+**Status**: `pub` in `src/teak.zig` as `InputState`, `InputQueue`, `NavKey`, `resolveKey`, `validateHost`, `SpecialKey`.
 **Source**: `src/platform/host.zig`; three backends — `src/platform/win32.zig` (Win32), `src/platform/x11.zig` (X11/Linux), `src/platform/wasm.zig` (web).
 **Tests**: `validateHost` has a colocated stub-acceptance test (and `x11.zig` runs its keysym→`SpecialKey` mapping unit test). Backend behavior is exercised through `examples/counter_greeter`.
 
@@ -31,6 +31,8 @@ A Host type must expose these declarations:
 | `closeSecondaryWindow` | `fn(*Host, u32) void` | Destroy a secondary window and free its slot. No-op on invalid ids. |
 | `secondaryWindowHandle` | `fn(*const Host, u32) ?NativeHandle` | Return the native handle of a secondary window so the app can hand it to `gpu.openSecondarySurface`. |
 | `nowMs` | `fn(*const Host) u64` | Monotonic millisecond timestamp on the host's clock. Used by `Sub.at(deadline_ms, msg)` and anything else needing a host-side wall clock without violating HARDLINE §3's "no wall-clock in `view`". |
+| `submit` + `pollEffectResults` *(optional pair)* | `fn(*Host, Effect) EffectSubmit` / `fn(*Host, []EffectResult) usize` | Declarative effects ([effects.md](effects.md), HARDLINE hatch 7): `submit` starts one effect (slices valid only during the call), `pollEffectResults` fills `buf` with finished results and unsolicited drops / pastes (slices valid until the next `pollInputs`). Declare both or neither; a Host without them answers every effect as unsupported. |
+| `registerFont` *(X11, Win32; not in `validateHost`)* | `fn(*Host, FontFamily, FontWeight, []const u8) !void` | Register a TTF (typically `@embedFile`) as the face for a family and weight, shared with the Gpu rasterizer. Win32 accepts and ignores it. See [text.md](text.md#custom-fonts-ibm-plex-mono-and-friends). |
 | `scaleFactor` *(optional)* | `fn(*const Host) f32` | Physical device pixels per logical UI unit at the window's current DPI (1.0 = no scaling). **Optional** — `validateHost` checks it for callability only when present, so Hosts (and `run.zig`'s test stubs) that predate it still validate. Nothing in the framework consumes it yet; see [DPI and scaling](#dpi-and-scaling). |
 
 `validateHost` comptime-asserts every non-`init` **required** decl above, and checks the optional `scaleFactor` only when a Host declares it. The clipboard / IME / a11y / dialog / secondary-window / `nowMs` decls landed during the `functional_gaps_yolo` push as HARDLINE §4(d) surface extensions. Compile-error format:
@@ -43,14 +45,18 @@ Host 'MyHost' is missing declaration 'pollInputs'
 
 ```zig
 pub const InputState = struct {
-    mouse_x: f32,           // state — current cursor position
+    mouse_x: f32,             // state — current cursor position (logical px, client area)
     mouse_y: f32,
-    mouse_down: bool,       // edge — true only the frame the button went down
-    mouse_up: bool,         // edge — true only the frame the button went up
-    wheel_dx: f32,          // accumulator — pixels of intended horizontal scroll
-    wheel_dy: f32,          // accumulator — pixels of intended vertical scroll
-    chars: []const u8,      // queue — typed Unicode codepoints this frame (ASCII for now)
-    keys: []const SpecialKey, // queue — backspace, enter, arrows, etc. this frame
+    buttons: Buttons,         // state — held now: left / middle / right
+    button_down: Buttons,     // edges since the previous poll
+    button_up: Buttons,
+    mouse_down: bool,         // left-button edges (== button_down.left / button_up.left)
+    mouse_up: bool,
+    mods: Modifiers,          // shift / ctrl / alt / meta at the most recent input event
+    wheel_dx: f32,            // accumulator — pixels of intended horizontal scroll
+    wheel_dy: f32,            // accumulator — pixels of intended vertical scroll
+    chars: []const u8,        // queue — UTF-8 text typed this frame (whole code points)
+    keys: []const SpecialKey, // queue — backspace, delete, enter, arrows, Home/End, chords...
     resized: bool,
     width: u32,
     height: u32,
@@ -59,17 +65,25 @@ pub const InputState = struct {
 
 **Slice lifetime**: `chars` and `keys` reference Host-internal buffers. They are valid **only until the next `pollInputs` call**. Copy into `Model` if you need to retain.
 
-**Edge vs state**: `mouse_down` / `mouse_up` are edges — the Host computes them by diffing against the previous poll. `mouse_x` / `mouse_y` are state. A widget that wants "is the button currently held?" must track it in `Model` based on edges.
+**Buttons**: `button_down` / `button_up` are edges since the previous poll; a press *and* release inside one frame sets both (and `buttons` reads released), so a fast click is never lost — on the web this matters, since a frame can span several mouse events. `buttons` is the held state, which `teak.run` uses to keep a drag going. The left-button edges stay available as `mouse_down` / `mouse_up`. `mouse_x` / `mouse_y` are state.
 
-**Wheel sign convention**: `wheel_dx` / `wheel_dy` carry pixels of *intended* scroll accumulated since the previous `pollInputs`. Positive `wheel_dy` means the user wants the content to scroll **down** (visible viewport advances toward higher y); positive `wheel_dx` means scroll **right**. This matches the DOM `WheelEvent.deltaX` / `deltaY` convention. Backends translate native wheel notches into pixels — Win32 maps each `WHEEL_DELTA` (120 raw units) to ~48 px (the standard "3 lines"); X11 maps each wheel notch (`Button4`/`5` vertical, `Button6`/`7` horizontal) to the same 48 px; the wasm host forwards zunk's already-pixel `mouse.wheel`. Zero when no wheel events arrived. Apps translate `wheel_dy` into a regular Msg (e.g. `.scroll_by`) and route it through `update`, same as any other input — there is no wheel-handler callback.
+**Text and keys**: `chars` is real UTF-8 — a typed `e-acute` arrives as two bytes, an emoji as four, never a truncated code unit; a code point that does not fit the queue is dropped whole. Control codes and Ctrl/Cmd chords are never text. `keys` carries the `SpecialKey` set: Backspace, Delete, arrows, Home/End, PageUp/Down, Enter, Tab / Shift+Tab, Escape, Shift+arrows/Home/End (selection extension), Ctrl+A/C/X/V/Y/Z. Hosts map native key codes to a host-neutral `NavKey` and `teak.resolveKey(NavKey, Modifiers)` applies the Shift/Ctrl policy — one table of "what does Shift+Left mean", not three.
+
+**Wheel sign convention**: `wheel_dx` / `wheel_dy` carry pixels of *intended* scroll accumulated since the previous `pollInputs`. Positive `wheel_dy` means the user wants the content to scroll **down** (visible viewport advances toward higher y); positive `wheel_dx` means scroll **right**. This matches the DOM `WheelEvent.deltaX` / `deltaY` convention. Backends translate native wheel notches into pixels — Win32 maps each `WHEEL_DELTA` (120 raw units) to ~48 px (the standard "3 lines"); X11 maps each wheel notch (`Button4`/`5` vertical, `Button6`/`7` horizontal) to the same 48 px; the wasm host forwards zunk's pixel deltas (line/page-mode wheels are scaled to pixels in the JS). Zero when no wheel events arrived. A trackpad **pinch** on the web arrives as a wheel event with `mods.ctrl` set (the browser's `ctrlKey + wheel` convention). Apps translate wheel input into a regular Msg and route it through `update` (`wheelMsg`, or `canvasMsg` / `scrollMsg` over an interactive canvas / scroll region) — there is no wheel-handler callback.
+
+### `InputQueue` (shared by event-driven hosts)
+
+`src/platform/input_queue.zig`, re-exported as `teak.InputQueue`. Win32 (primary + secondary windows) and X11 fold OS events into one: `beginFrame()` at the top of a poll, `pointerMoved` / `buttonDown` / `buttonUp` / `wheel` / `pushNav` / `pushCodepoint` / `pushUtf16Unit` (surrogate pairing for `WM_CHAR`) while pumping, `finish(resized, w, h)` to produce the `InputState` and clear the edges. The wasm host is poll-based but reuses the key policy and the text queue.
 
 ## Backends
 
 Three Hosts implement the contract; all satisfy `validateHost`.
 
 - **Win32** (`win32.zig`) — `WNDPROC`-driven; buffers async messages and drains on `pollInputs`. GDI text measurer. Implements clipboard and file dialogs for real.
-- **X11** (`x11.zig`) — the Linux backend. libX11 is loaded at runtime via `std.DynLib("libX11.so.6")` (no `-lX11`, no X11 dev package needed to build; the module links libc for the dlopen path). Window create/map, synchronous `XNextEvent` pump (mouse, wheel via `Button4`/`5`+`6`/`7`, keys), `keysym`→`SpecialKey` mapping (arrows + shift variants, Tab/Shift-Tab, Enter, Home/End/PgUp/PgDn, Esc, Ctrl chords), ASCII text via `XLookupString`, `setTitle` via `XStoreName`, `nowMs`. The text measurer is the shared stb_truetype `teak-text` module — the *same* font the GPU rasterizer renders from, so layout and rendering agree. All state lives on the `Host` struct (no module-scope globals), since X11 delivers events synchronously. X11 runs under **XWayland** on Wayland desktops; there is no native Wayland backend.
-- **wasm** (`wasm.zig`) — the web backend over zunk shared memory; `shouldClose` returns `false` (page lifecycle is zunk's problem).
+- **X11** (`x11.zig`) — the Linux backend. libX11 is loaded at runtime via `std.DynLib("libX11.so.6")` (no `-lX11`, no X11 dev package needed to build; the module links libc for the dlopen path). Window create/map, synchronous `XNextEvent` pump (mouse, wheel via `Button4`/`5`+`6`/`7`, keys), buttons 1-3 + modifiers from every event's `state`, `keysym`→`NavKey` mapping (Delete, arrows, Tab/Shift-Tab, Enter, Home/End/PgUp/PgDn, Esc, Ctrl chords), text from Latin-1 / Unicode keysyms (no input-method composition yet), `setTitle` via `XStoreName`, `nowMs`. The text measurer is the shared stb_truetype `teak-text` module — the *same* font the GPU rasterizer renders from, so layout and rendering agree. All state lives on the `Host` struct (no module-scope globals), since X11 delivers events synchronously. X11 runs under **XWayland** on Wayland desktops; there is no native Wayland backend.
+- **wasm** (`wasm.zig`) — the web backend over zunk shared memory; `shouldClose` returns `false` (page lifecycle is zunk's problem). Services effects through `zunk.web.fx` (fetch, downloads, file picker, localStorage, clock, query params, clipboard, paste / drop; see [effects.md](effects.md)). `clipboard().write` goes through the effects bridge; `clipboard().read` returns the text of the paste event that came with the Ctrl/Cmd+V key press (the browser only exposes it there) and claims it so it is not also reported as `pasted_text`. Cmd acts as Ctrl for chord keys. `nowMs` is `performance.now()`.
+
+X11 also services declarative effects (HTTP on worker threads, storage files, downloads, `TEAK_OPEN`, query params) through `native_effects.zig`; `Host.setAppName` (called from `RunOptions.app_name`) names the storage directory. See [effects.md](effects.md).
 
 **X11 v1 stubs** — present in the contract so apps call them unconditionally, but no-ops today: `clipboard` read returns `""` and write is a no-op (X11 selections need an async `XConvertSelection`/`SelectionNotify` round-trip); `openFileDialog` / `saveFileDialog` return `null` (need a portal/toolkit dependency); `publishA11yTree` is a no-op (no AT-SPI yet); `openSecondaryWindow` returns `null`; `imeState` is inactive (text entry is ASCII via `XLookupString`; wider Unicode needs `Xutf8LookupString` + an input method). Windows implements clipboard + file dialogs for real.
 
@@ -143,7 +157,7 @@ cross-cutting rewrite.
 
 - **Single owner.** The main loop owns one Host. No globals.
 - **Polling model.** The Host does not push events. The app pulls once per frame. Backends that receive events asynchronously (Win32 `WNDPROC`, zunk shared memory) buffer them and drain on `pollInputs`.
-- **No allocation on the hot path.** Backends hold fixed-size scratch buffers (see `Host.keys_buf` / `chars_buf` in `src/platform/wasm.zig`).
+- **No allocation on the hot path.** Backends hold fixed-size scratch buffers (see `InputQueue`'s fixed `chars` / `keys` arrays).
 - **`init` signatures are NOT validated.** A wasm host that only takes a title vs. a Win32 host that takes dimensions both satisfy the contract. Callers construct the Host via the backend-specific signature and then use it generically.
 
 ## Non-goals / known limits

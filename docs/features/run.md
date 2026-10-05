@@ -1,7 +1,7 @@
-# Application loop (`teak.run`)
+# Application loop (`teak.run` / `teak.Runtime`)
 
 `src/run.zig` — the canonical host-loop wrapper. Re-exported as
-`teak.run` (+ `teak.RunOptions`).
+`teak.run`, `teak.Runtime` (+ `teak.RunOptions`).
 
 ## Why
 
@@ -26,6 +26,36 @@ pub fn main() !void {
 }
 ```
 
+## `Runtime` — the loop body, one frame at a time
+
+`run` is `Runtime` driven in a `while (!host.shouldClose())` loop. Hosts that
+do not own the loop — the web, where the browser calls an exported `frame`
+once per rAF tick — build a `Runtime` and call `frame` themselves:
+
+```zig
+const Runtime = teak.Runtime(App, Host, Gpu);   // comptime App + concrete backend types
+var runtime: Runtime = undefined;               // module-level: exports can't close over a struct
+
+export fn init() void {
+    host = Host.init("My App", 900, 500) catch @panic("host init failed");
+    gpu = Gpu.init(host.nativeHandle(), 900, 500) catch @panic("gpu init failed");
+    runtime = Runtime.init(std.heap.wasm_allocator, &host, &gpu, .{}) catch @panic("runtime init failed");
+}
+export fn frame(_: f32) void { runtime.frame() catch @panic("frame failed"); }
+export fn resize(w: u32, h: u32) void { gpu.resize(w, h); }
+```
+
+`init(gpa, *Host, *Gpu, RunOptions) !Runtime`, `frame(*Runtime) !void` (one
+iteration; returns early without presenting if the host reports close during the
+input poll), `deinit()`. The value holds the Model, the double-buffered cmd/rect
+storage and all loop bookkeeping — create it once and don't move it. `frame`
+errors are allocation failures only. All three examples' `web_main.zig` are this
+shape; there are no hand-copied pipelines, fixed allocators or rect caps.
+
+The secondary-window path compiles away when the Gpu has no
+`openSecondarySurface` (the web Gpu), so apps with a "Stats" window still build
+for the web; the window simply never opens there.
+
 ## Shape
 
 ```zig
@@ -39,9 +69,49 @@ initial state if present, else `.{}`.
 Optional App decls, each detected with `@hasDecl` — present only what you
 need (full table in [consuming-teak.md §5](../consuming-teak.md)):
 `keyCharMsg`, `keySpecialMsg`, `keyNeedsClipboard` + `handleClipboard`,
-`wheelMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
+`wheelMsg`, `windowMsg` (window size on the first frame and each resize), `canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
 `secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`),
 `subscribe`.
+
+### Interactive canvases and scroll regions
+
+Three optional hooks turn pointer input over specific regions into `Msg`s. All
+route against the **previous** frame's layout, exactly like hit-testing.
+
+| Decl | Signature | Role |
+|------|-----------|------|
+| `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer events over `CanvasCmd.pointer` canvases: `down` / `move` / `up` / `wheel` / `leave`, and `layout` on first layout and whenever the rect size changes. Semantics in [canvas.md](canvas.md). |
+| `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over the innermost hovered scroll region whose `ScrollStyle.id != 0`. `dx`/`dy` are DOM-signed px. Return `null` to ignore; the wheel is still consumed. |
+| `scrollLayoutMsg` | `(*const Model, id: u32, viewport_w, viewport_h, content_w, content_h: f32) ?Msg` | for every `ScrollStyle.id != 0` region, on its first layout and whenever its viewport or content size changes. Content is the extent of its children (`teak.scrollExtent`: nested scroll interiors and overlays excluded), independent of the scroll offset — enough to clamp `scroll_y` and size a scrollbar thumb. |
+
+**Wheel routing**, innermost first: a captured pointer canvas (during a drag,
+wherever the cursor is) → the pointer canvas or `id != 0` scroll region
+innermost under the cursor (`hit_test.wheelTarget`; overlays win, modals block)
+→ plain `wheelMsg`. A wheel handled by `canvasMsg` / `scrollMsg` never also
+reaches `wheelMsg`.
+
+```zig
+// A pan/zoom viewport + a scrollable chat list, in one App:
+pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
+    return switch (ev.kind) {
+        .layout => Msg{ .viewport_size = .{ ev.w, ev.h } },
+        .move => if (ev.buttons.middle) Msg{ .pan = .{ ev.dx, ev.dy } } else Msg{ .hover = .{ ev.x, ev.y } },
+        .wheel => Msg{ .zoom = .{ ev.dy, ev.x, ev.y } },   // ev.mods.ctrl = pinch
+        else => null,
+    };
+}
+pub fn scrollMsg(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
+    return if (id == chat_scroll) Msg{ .chat_scroll_by = dy } else null;
+}
+pub fn scrollLayoutMsg(_: *const Model, id: u32, vw: f32, vh: f32, cw: f32, ch: f32) ?Msg {
+    return if (id == chat_scroll) Msg{ .chat_extent = .{ vh, ch } } else null;
+}
+```
+
+`layout` / scroll-layout reports are computed after the frame's layout from the
+two frame buffers (current vs previous), so they need no retained table; the
+Msg they produce shows up in the next frame's `view`. An id that disappears
+and later returns reports again, like a fresh layout.
 
 ### Subscriptions
 
@@ -61,6 +131,24 @@ tick, and updates `last_msg` for the live snapshot. The only loop state is
 stateless); no sub fires on the opening frame. `.at` fires exactly once on
 its deadline crossing and then auto-stops. Full contract and bounds:
 [subscriptions.md](subscriptions.md).
+
+### Effects
+
+An app that talks to the outside world (HTTP, files, storage, clipboard,
+clock) exposes two decls; an app that only wants dropped / pasted input
+needs only the second:
+
+| Decl | Signature | Role |
+|------|-----------|------|
+| `effects` | `(*const Model) []const Effect` | declares the requests to service this frame; each `id` is issued once while listed. Pure. |
+| `effectMsg` | `(*const Model, EffectResult) ?Msg` | turns an answer (or an unsolicited drop / paste) into a Msg. Required when `effects` is declared. |
+
+Each frame, after key routing, `run` fetches the Host's finished results
+(`Host.pollEffectResults`) and dispatches each through `effectMsg` ->
+`update`; then, after subscriptions, it hands newly listed effects to
+`Host.submit` and forgets the ids that stopped being listed. A Host without
+the effect pair answers every effect with its "unsupported" result. Full
+contract: [effects.md](effects.md).
 
 ### Secondary window
 
@@ -109,6 +197,7 @@ the primary window is unaffected on the other backends.
   focused, so the text cursor blinks (default 30; matches the renderer's
   cursor phase). Apps with no text input pay nothing.
 - `snapshot_path: ?[]const u8` — live-snapshot sink (default `null`).
+- `app_name: []const u8` — names the app for hosts that keep per-app files (native storage under `<config>/teak/<app_name>/`); empty = the window title.
 
 ### Live snapshot sink (`TEAK_SNAPSHOT`)
 
@@ -133,17 +222,45 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
    Tab/Shift+Tab traversal and Enter→`submitMsg` first (if the app
    exposes the relevant hooks), then clipboard chords via
    `handleClipboard`, else `keySpecialMsg`.
-4. Wheel via `wheelMsg`.
-5. Subscriptions: `runSubs(subscribe(model))` on `Host.nowMs()`; fired subs
-   dispatch as ordinary Msgs before the view builds (if `subscribe` present).
+4. Pointer canvases (`canvasMsg`): hover / move / down / up / leave +
+   capture. Wheel: pointer canvas -> `scrollMsg` region -> `wheelMsg`.
+5. Effect results (`effectMsg`), then subscriptions: `runSubs(subscribe(model))`
+   on `Host.nowMs()`; fired subs dispatch as ordinary Msgs before the view
+   builds (if `subscribe` present). Then newly listed `effects()` go to the
+   Host.
 6. Build this frame's view into the alternate buffer (theme from
-   `themeFor` if present), layout into a grown rect slice.
+   `themeFor` if present), layout into a grown rect slice; then report
+   canvas size / scroll extent changes (`canvasMsg` `layout`,
+   `scrollLayoutMsg`).
 7. Update `TransientState` (hover/press/focus/frame counter); focus index
    resolved from `focusedMsg` via `indexOfFocusMsg`.
 8. Push `windowTitle` to the host on change.
-9. Frame diff (`cmdsEqual` + `rectsEqual` + transient compare, plus the
-   blink tick): skip `buildVertices` + uploads when nothing observable
-   changed. Always `renderFrame`.
+9. Declarative resources (if the App declares `resources`): reconcile the
+   GPU with the listed meshes/images (upload on new key / changed `rev`,
+   release vanished keys); a change forces step 10 to re-stage.
+10. Frame diff (`cmdsEqual` + `rectsEqual` + transient compare, plus the
+   blink tick and resource changes): skip `buildFrame` + uploads when
+   nothing observable changed. Otherwise build the frame (solid quads,
+   text, image and `SceneDraw` records), remap resource keys to handles,
+   `uploadVertices` / `uploadText` / `uploadImages` and — when the Gpu has
+   the scene extension — `renderScenes`. Always `renderFrame`.
+
+### Resources (optional hook)
+
+`pub fn resources(*const Model) []const Resource` — HARDLINE §2 hatch 8.
+`Resource = union(enum) { mesh: { key, rev, data: MeshData }, image:
+{ key, rev, width, height, rgba } }`. The loop keeps a fixed-capacity
+(128) table of what is resident (`src/resources.zig`): a new (kind, key)
+uploads, a changed `rev` re-uploads (old handle released first), a key that
+disappears is released, and everything is released at shutdown. `Cmd`s use
+the app key: `cb.image(key, ...)`, `cb.scene3d(.{ .mesh = key })`; the loop
+rewrites those to backend handles in the draw records it hands the Gpu (an
+unknown / failed key draws nothing for an image and just the clear colour
+for a scene). Without the hook, `ImageCmd.handle` / `SceneCmd.mesh` are
+raw `Gpu` handles from `uploadImage` / `uploadMesh`, as before. The hook
+needs the Gpu scene extension (`uploadMesh`, `releaseMesh`,
+`renderScenes`, `releaseImage`); apps that do not declare it run on any
+conforming Gpu. See [scene3d.md](scene3d.md).
 
 `cmdsEqual` / `rectsEqual` are exposed from `run.zig` (they used to be
 duplicated in every example's `ui_main.zig`) and correctly diff the
@@ -163,8 +280,10 @@ of the dependency arrow:
   exactly as it does Win32 — no per-OS code in `run.zig`.
 - It lives at `src/run.zig`, a sibling of the library root, **outside**
   the `src/{core,layout,input,render}/*` dirs the drift audit treats as
-  framework core. It is not an escape hatch — it adds no new mutable
-  state and routes every transition through the app's `update`.
+  framework core. It is not an escape hatch — it holds no *application*
+  state (only loop bookkeeping: the double-buffered cmds/rects, the press
+  target, the canvas hover/capture ids, the previous subscription
+  timestamp) and routes every transition through the app's `update`.
 - No wall-clock reads, no hidden state: animation (cursor blink) is
   driven by the `TransientState.frame_counter`, advanced once per frame,
   exactly as the renderer expects.
@@ -176,7 +295,9 @@ that satisfy `validateHost`/`validateGpu`: a scripted click routes through
 `update` and presents per frame; a model side-channel confirms the
 mutation; scripted keyboard runs exercise `keyCharMsg`/`keySpecialMsg`/
 `themeFor`, Tab-advances-focus, and Enter-fires-`submitMsg`. `cmdsEqual`
-is unit-tested for label/disabled/length changes.
+is unit-tested for label/disabled/length changes, `scene3d` revisions and
+keyed canvas batches; a resource-recording stub Gpu checks upload-once,
+rev-bump re-upload, key remapping into draw records, and shutdown release.
 
 ## Status
 

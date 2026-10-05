@@ -12,9 +12,19 @@ const std = @import("std");
 
 pub const FontFamily = enum(u8) { sans, serif, mono };
 
+pub const FontWeight = enum(u8) { regular, medium, bold };
+
+/// A font request. Backends map it to a face: `weight` and `letter_spacing`
+/// are interpreted by the backend and ignored by one that cannot honor them
+/// (web: CSS `font-weight` + canvas `letterSpacing`; native: face selection).
+/// Both take part in the glyph-cache key, so changing them re-rasterizes.
 pub const FontSpec = struct {
     size_px: f32 = 14,
     family: FontFamily = .sans,
+    weight: FontWeight = .regular,
+    /// Extra advance after every glyph, in pixels (tracking). Layout adds
+    /// it per byte in `monoMeasurer`; real measurers add it per glyph.
+    letter_spacing: f32 = 0,
 };
 
 pub const DEFAULT_FONT: FontSpec = .{};
@@ -68,16 +78,16 @@ pub const TextDraw = struct {
     clip_h: f32,
 };
 
-/// Stateless 10-px-per-byte, 20-px-line-height measurer. Used by CLI
+/// Stateless 10-px-per-byte (plus `letter_spacing`), 20-px-line-height measurer. Used by CLI
 /// canaries that run layout without a Host, and by tests that assert
 /// on these exact pre-glyph-metrics numbers. Not a production
 /// measurer — real platforms return glyph-accurate metrics via their
 /// Host's `textMeasurer()`.
 pub fn monoMeasurer() TextMeasurer {
     const S = struct {
-        fn measure(_: *anyopaque, t: []const u8, _: FontSpec) TextMetrics {
+        fn measure(_: *anyopaque, t: []const u8, font: FontSpec) TextMetrics {
             return .{
-                .width = @as(f32, @floatFromInt(t.len)) * 10,
+                .width = @as(f32, @floatFromInt(t.len)) * (10 + font.letter_spacing),
                 .height = 20,
                 .ascent = 15,
                 .descent = 5,
@@ -111,6 +121,14 @@ test "TextMeasurer.prefixWidth short-circuits empty prefix" {
     const m: TextMeasurer = .{ .ctx = @ptrCast(&ctx), .measure_fn = testMeasure };
     try std.testing.expectEqual(@as(f32, 0), m.prefixWidth("hello", .{ .size_px = 10 }, 0));
     try std.testing.expectEqual(@as(f32, 20), m.prefixWidth("hello", .{ .size_px = 10 }, 2));
+}
+
+test "monoMeasurer adds letter_spacing per byte" {
+    const m = monoMeasurer();
+    try std.testing.expectEqual(@as(f32, 30), m.measure("abc", .{}).width);
+    try std.testing.expectEqual(@as(f32, 36), m.measure("abc", .{ .letter_spacing = 2 }).width);
+    // Weight does not change the stub's metrics.
+    try std.testing.expectEqual(@as(f32, 30), m.measure("abc", .{ .weight = .bold }).width);
 }
 
 test "DEFAULT_FONT is sans 14px" {

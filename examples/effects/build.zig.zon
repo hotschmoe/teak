@@ -1,0 +1,14 @@
+.{
+    .name = .effects,
+    .version = "0.0.0",
+    .fingerprint = 0x480b3caade905178,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .teak = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

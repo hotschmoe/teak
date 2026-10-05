@@ -19,9 +19,12 @@
 const std = @import("std");
 const teak = @import("teak");
 const text = @import("teak-text");
+const native_effects = @import("native_effects.zig");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
+pub const InputQueue = teak.InputQueue;
+const NavKey = teak.NavKey;
 pub const TextMeasurer = teak.TextMeasurer;
 pub const TextMetrics = teak.TextMetrics;
 pub const FontSpec = teak.FontSpec;
@@ -153,9 +156,11 @@ const MotionNotify: c_int = 6;
 const ConfigureNotify: c_int = 22;
 const ClientMessage: c_int = 33;
 
-// Modifier masks (XKeyEvent.state).
+// Modifier masks (`state` of key / button / motion events).
 const ShiftMask: c_uint = 1 << 0;
 const ControlMask: c_uint = 1 << 2;
+const Mod1Mask: c_uint = 1 << 3; // Alt
+const Mod4Mask: c_uint = 1 << 6; // Super
 
 // XSelectInput event masks.
 const KeyPressMask: c_long = 1 << 0;
@@ -236,7 +241,8 @@ pub const Host = struct {
     window: Window,
     wm_protocols: Atom,
     wm_delete: Atom,
-    font: text.Font,
+    /// Effect servicing (HTTP worker threads, storage files, ...).
+    effects: *native_effects.Service,
 
     width: u32,
     height: u32,
@@ -253,15 +259,8 @@ pub const Host = struct {
     first_resize: bool,
     resized_pending: bool,
 
-    mouse_x: f32,
-    mouse_y: f32,
-    wheel_dx: f32,
-    wheel_dy: f32,
-
-    chars: [64]u8,
-    chars_count: usize,
-    keys: [32]SpecialKey,
-    keys_count: usize,
+    /// Pointer, buttons, wheel, text and key queues — see `InputQueue`.
+    queue: InputQueue,
 
     /// Owned buffer for clipboard reads (stub returns empty; see below).
     clipboard_buf: [65536]u8,
@@ -293,13 +292,13 @@ pub const Host = struct {
         _ = x.XMapWindow(display, window);
         _ = x.XFlush(display);
 
-        const font = try text.Font.load(std.heap.page_allocator);
-
         // Desktop scale from Xft.dpi (xrdb). Absent / unparsable → 1.0.
         const scale = if (x.XResourceManagerString(display)) |rm|
             scaleFromXrm(std.mem.span(rm))
         else
             1.0;
+
+        const effects = try native_effects.Service.create(title);
 
         return .{
             .lib = lib,
@@ -308,65 +307,62 @@ pub const Host = struct {
             .window = window,
             .wm_protocols = wm_protocols,
             .wm_delete = wm_delete,
-            .font = font,
+            .effects = effects,
             .width = width,
             .height = height,
             .scale = scale,
             .running = true,
             .first_resize = true,
             .resized_pending = false,
-            .mouse_x = 0,
-            .mouse_y = 0,
-            .wheel_dx = 0,
-            .wheel_dy = 0,
-            .chars = undefined,
-            .chars_count = 0,
-            .keys = undefined,
-            .keys_count = 0,
+            .queue = .{},
             .clipboard_buf = undefined,
         };
     }
 
     pub fn deinit(self: *Host) void {
-        self.font.deinit();
+        text.releaseFaces();
+        self.effects.destroy();
         _ = self.x.XDestroyWindow(self.display, self.window);
         _ = self.x.XCloseDisplay(self.display);
         self.lib.close();
     }
 
     pub fn pollInputs(self: *Host) InputState {
-        self.chars_count = 0;
-        self.keys_count = 0;
-        var mouse_down = false;
-        var mouse_up = false;
+        const q = &self.queue;
+        q.beginFrame();
 
         while (self.x.XPending(self.display) > 0) {
             var ev: XEvent = undefined;
             _ = self.x.XNextEvent(self.display, &ev);
             switch (ev.kind) {
                 MotionNotify => {
-                    self.mouse_x = @floatFromInt(ev.xmotion.x);
-                    self.mouse_y = @floatFromInt(ev.xmotion.y);
+                    q.mods = modsFromState(ev.xmotion.state);
+                    q.pointerMoved(@floatFromInt(ev.xmotion.x), @floatFromInt(ev.xmotion.y));
                 },
                 ButtonPress => {
-                    self.mouse_x = @floatFromInt(ev.xbutton.x);
-                    self.mouse_y = @floatFromInt(ev.xbutton.y);
+                    q.mods = modsFromState(ev.xbutton.state);
+                    q.pointerMoved(@floatFromInt(ev.xbutton.x), @floatFromInt(ev.xbutton.y));
                     switch (ev.xbutton.button) {
-                        1 => mouse_down = true,
+                        1 => q.buttonDown(.left),
+                        2 => q.buttonDown(.middle),
+                        3 => q.buttonDown(.right),
                         // X11 wheel = buttons 4/5 (vertical), 6/7 (horizontal).
-                        // Sign per InputState: positive dy = scroll down.
-                        4 => self.wheel_dy -= WHEEL_PIXELS_PER_NOTCH,
-                        5 => self.wheel_dy += WHEEL_PIXELS_PER_NOTCH,
-                        6 => self.wheel_dx -= WHEEL_PIXELS_PER_NOTCH,
-                        7 => self.wheel_dx += WHEEL_PIXELS_PER_NOTCH,
+                        // Sign per InputState: positive = scroll down / right.
+                        4 => q.wheel(0, -WHEEL_PIXELS_PER_NOTCH),
+                        5 => q.wheel(0, WHEEL_PIXELS_PER_NOTCH),
+                        6 => q.wheel(-WHEEL_PIXELS_PER_NOTCH, 0),
+                        7 => q.wheel(WHEEL_PIXELS_PER_NOTCH, 0),
                         else => {},
                     }
                 },
                 ButtonRelease => {
-                    if (ev.xbutton.button == 1) {
-                        self.mouse_x = @floatFromInt(ev.xbutton.x);
-                        self.mouse_y = @floatFromInt(ev.xbutton.y);
-                        mouse_up = true;
+                    q.mods = modsFromState(ev.xbutton.state);
+                    q.pointerMoved(@floatFromInt(ev.xbutton.x), @floatFromInt(ev.xbutton.y));
+                    switch (ev.xbutton.button) {
+                        1 => q.buttonUp(.left),
+                        2 => q.buttonUp(.middle),
+                        3 => q.buttonUp(.right),
+                        else => {},
                     }
                 },
                 KeyPress => self.handleKey(&ev.xkey),
@@ -397,65 +393,30 @@ pub const Host = struct {
         const resized = self.resized_pending or self.first_resize;
         self.first_resize = false;
         self.resized_pending = false;
-        const wheel_dx = self.wheel_dx;
-        const wheel_dy = self.wheel_dy;
-        self.wheel_dx = 0;
-        self.wheel_dy = 0;
-
-        return .{
-            .mouse_x = self.mouse_x,
-            .mouse_y = self.mouse_y,
-            .mouse_down = mouse_down,
-            .mouse_up = mouse_up,
-            .wheel_dx = wheel_dx,
-            .wheel_dy = wheel_dy,
-            .chars = self.chars[0..self.chars_count],
-            .keys = self.keys[0..self.keys_count],
-            .resized = resized,
-            .width = self.width,
-            .height = self.height,
-        };
+        return q.finish(resized, self.width, self.height);
     }
 
     fn handleKey(self: *Host, ev: *XKeyEvent) void {
+        const q = &self.queue;
+        q.mods = modsFromState(ev.state);
         var buf: [16]u8 = undefined;
         var keysym: KeySym = 0;
         const n = self.x.XLookupString(ev, &buf, buf.len, &keysym, null);
-        const shift = (ev.state & ShiftMask) != 0;
-        const ctrl = (ev.state & ControlMask) != 0;
 
-        // 1. Navigation / editing keys.
-        if (mapSpecial(keysym, shift)) |sk| {
-            self.pushKey(sk);
+        // 1. Navigation / editing keys (Shift variants resolved by the queue).
+        if (navFromKeysym(keysym)) |nk| return q.pushNav(nk);
+        // 2. Ctrl chords (their control-char text is not typed).
+        if (q.mods.ctrl) {
+            if (chordFromKeysym(keysym)) |nk| q.pushNav(nk);
             return;
         }
-        // 2. Ctrl chords (don't emit their control-char text).
-        if (ctrl) {
-            if (mapCtrlChord(keysym)) |sk| self.pushKey(sk);
-            return;
-        }
-        // 3. Printable ASCII text (XLookupString gives Latin-1; we keep the
-        //    ASCII range, matching the Win32 host's WM_CHAR filter). Wider
-        //    Unicode text entry needs Xutf8LookupString + an input method.
-        var i: usize = 0;
-        const count: usize = if (n > 0) @intCast(n) else 0;
-        while (i < count) : (i += 1) {
-            const b = buf[i];
-            if (b >= 0x20 and b < 0x7f) self.pushChar(b);
-        }
-    }
-
-    fn pushChar(self: *Host, ch: u8) void {
-        if (self.chars_count < self.chars.len) {
-            self.chars[self.chars_count] = ch;
-            self.chars_count += 1;
-        }
-    }
-
-    fn pushKey(self: *Host, k: SpecialKey) void {
-        if (self.keys_count < self.keys.len) {
-            self.keys[self.keys_count] = k;
-            self.keys_count += 1;
+        // 3. Text. Unicode / Latin-1 keysyms map straight to a code point;
+        //    keysyms outside that (keypad digits with NumLock, ...) fall back
+        //    to the ASCII `XLookupString` produced. Input methods (CJK
+        //    composition) would need Xutf8LookupString + XIM.
+        if (codepointFromKeysym(keysym)) |cp| return q.pushCodepoint(cp);
+        for (buf[0..if (n > 0) @intCast(n) else 0]) |b| {
+            if (b >= 0x20 and b < 0x7f) q.pushCodepoint(b);
         }
     }
 
@@ -476,15 +437,33 @@ pub const Host = struct {
         return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
     }
 
-    fn stbMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        const self: *Host = @ptrCast(@alignCast(ctx));
-        const vm = self.font.vMetrics(font.size_px);
-        return .{
-            .width = self.font.measureWidth(text_bytes, font.size_px),
-            .height = vm.ascent + vm.descent,
-            .ascent = vm.ascent,
-            .descent = vm.descent,
-        };
+    fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
+        return text.measure(text_bytes, font);
+    }
+
+    // ── Declarative effects (docs/features/effects.md) ──────────────
+
+    pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
+        return self.effects.submit(e);
+    }
+
+    pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize {
+        return self.effects.poll(buf, self.nowMs());
+    }
+
+    /// Name the app's storage directory (`<config>/teak/<name>/`); defaults
+    /// to the window title.
+    pub fn setAppName(self: *Host, name: []const u8) void {
+        self.effects.setAppName(name) catch {};
+    }
+
+    /// Register the TTF `ttf` as the face for (`family`, `weight`), for both
+    /// the measurer and the Gpu's rasterizer (they share one face table). The
+    /// bytes are borrowed: pass an `@embedFile` slice. Register before the
+    /// first frame; up to three weights per family. A family without a
+    /// registered face uses the system monospace font (`TEAK_FONT`).
+    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
+        try text.registerFace(family, weight, ttf);
     }
 
     /// X11 clipboard (selections) requires an async XConvertSelection /
@@ -551,7 +530,9 @@ pub const Host = struct {
     }
 
     pub fn nowMs(_: *const Host) u64 {
-        return @intCast(std.time.milliTimestamp());
+        // Monotonic milliseconds (Zig 0.16: clocks live behind `std.Io`).
+        const now = std.Io.Clock.awake.now(std.Options.debug_io);
+        return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms));
     }
 
     /// Physical device pixels per logical unit, from `Xft.dpi` read at
@@ -602,35 +583,56 @@ fn setWindowTitle(x: *const Xlib, display: *Display, window: Window, title: []co
     _ = x.XStoreName(display, window, @ptrCast(&buf));
 }
 
-fn mapSpecial(keysym: KeySym, shift: bool) ?SpecialKey {
+fn modsFromState(state: c_uint) teak.Modifiers {
+    return .{
+        .shift = (state & ShiftMask) != 0,
+        .ctrl = (state & ControlMask) != 0,
+        .alt = (state & Mod1Mask) != 0,
+        .meta = (state & Mod4Mask) != 0,
+    };
+}
+
+/// Non-text keys. `XK_ISO_Left_Tab` is what X delivers for Shift+Tab; the
+/// Shift modifier on the event turns `.tab` into `shift_tab`.
+fn navFromKeysym(keysym: KeySym) ?NavKey {
     return switch (keysym) {
         XK_BackSpace => .backspace,
         XK_Delete => .delete,
-        XK_Left => if (shift) .shift_left else .left,
-        XK_Right => if (shift) .shift_right else .right,
-        XK_Up => if (shift) .shift_up else .up,
-        XK_Down => if (shift) .shift_down else .down,
-        XK_Home => if (shift) .shift_home else .home,
-        XK_End => if (shift) .shift_end else .end,
+        XK_Left => .left,
+        XK_Right => .right,
+        XK_Up => .up,
+        XK_Down => .down,
+        XK_Home => .home,
+        XK_End => .end,
         XK_Prior => .page_up,
         XK_Next => .page_down,
         XK_Return, XK_KP_Enter => .enter,
-        XK_Tab => .tab,
-        XK_ISO_Left_Tab => .shift_tab,
+        XK_Tab, XK_ISO_Left_Tab => .tab,
         XK_Escape => .escape,
         else => null,
     };
 }
 
-fn mapCtrlChord(keysym: KeySym) ?SpecialKey {
-    // Fold A–Z onto a–z; only ASCII letters reach the arms below.
+/// Letter keysyms that form editing chords (only consulted with Ctrl held).
+fn chordFromKeysym(keysym: KeySym) ?NavKey {
+    // Fold A-Z onto a-z so Caps Lock / Shift don't matter.
     return switch (keysym | 0x20) {
-        'a' => .ctrl_a,
-        'c' => .ctrl_c,
-        'v' => .ctrl_v,
-        'x' => .ctrl_x,
-        'y' => .ctrl_y,
-        'z' => .ctrl_z,
+        'a' => .a,
+        'c' => .c,
+        'x' => .x,
+        'v' => .v,
+        'y' => .y,
+        'z' => .z,
+        else => null,
+    };
+}
+
+/// Printable keysyms that are their own code point: ASCII + Latin-1
+/// (0x20..0x7e, 0xa0..0xff) and the Unicode range (0x01000000 + cp).
+fn codepointFromKeysym(keysym: KeySym) ?u21 {
+    return switch (keysym) {
+        0x20...0x7e, 0xa0...0xff => @intCast(keysym),
+        0x01000100...0x0110ffff => @intCast(keysym - 0x01000000),
         else => null,
     };
 }
@@ -639,16 +641,42 @@ comptime {
     teak.validateHost(Host);
 }
 
-test "mapSpecial covers navigation, shift variants, and chords path" {
-    try std.testing.expectEqual(SpecialKey.left, mapSpecial(XK_Left, false).?);
-    try std.testing.expectEqual(SpecialKey.shift_left, mapSpecial(XK_Left, true).?);
-    try std.testing.expectEqual(SpecialKey.enter, mapSpecial(XK_Return, false).?);
-    try std.testing.expectEqual(SpecialKey.shift_tab, mapSpecial(XK_ISO_Left_Tab, false).?);
-    try std.testing.expectEqual(SpecialKey.tab, mapSpecial(XK_Tab, false).?);
-    try std.testing.expect(mapSpecial(0x61, false) == null); // 'a' is text, not special
-    try std.testing.expectEqual(SpecialKey.ctrl_c, mapCtrlChord(0x63).?); // 'c'
-    try std.testing.expectEqual(SpecialKey.ctrl_c, mapCtrlChord(0x43).?); // 'C'
-    try std.testing.expect(mapCtrlChord(0x31) == null); // '1'
+test "X11 key tables reach every SpecialKey through the shared policy" {
+    var seen = std.EnumSet(SpecialKey).initEmpty();
+    const keysyms = [_]KeySym{
+        XK_BackSpace, XK_Delete,   XK_Left, XK_Right,        XK_Up,     XK_Down, XK_Home, XK_End, XK_Prior, XK_Next,
+        XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, 'a',     'c',     'x',    'v',      'y',
+        'z',
+    };
+    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true } };
+    for (mod_sets) |mods| {
+        for (keysyms) |ks| {
+            const nk = (if (mods.ctrl) chordFromKeysym(ks) else null) orelse navFromKeysym(ks) orelse continue;
+            if (teak.resolveKey(nk, mods)) |sk| seen.insert(sk);
+        }
+    }
+    for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
+}
+
+test "navFromKeysym: letters are text, not keys" {
+    try std.testing.expect(navFromKeysym('a') == null);
+    try std.testing.expectEqual(NavKey.tab, navFromKeysym(XK_ISO_Left_Tab).?);
+    try std.testing.expectEqual(NavKey.c, chordFromKeysym('C').?); // Caps Lock / Shift folded
+    try std.testing.expect(chordFromKeysym('1') == null);
+}
+
+test "codepointFromKeysym: ASCII, Latin-1 and Unicode keysyms" {
+    try std.testing.expectEqual(@as(u21, 'q'), codepointFromKeysym('q').?);
+    try std.testing.expectEqual(@as(u21, 0xE9), codepointFromKeysym(0xe9).?); // eacute
+    try std.testing.expectEqual(@as(u21, 0x20AC), codepointFromKeysym(0x010020ac).?); // EuroSign
+    try std.testing.expect(codepointFromKeysym(XK_Left) == null);
+    try std.testing.expect(codepointFromKeysym(0x1f) == null);
+}
+
+test "modsFromState decodes shift/ctrl/alt/super" {
+    const m = modsFromState(ShiftMask | Mod4Mask | 0x2); // 0x2 = Caps Lock: ignored
+    try std.testing.expect(m.shift and m.meta and !m.ctrl and !m.alt);
+    try std.testing.expect(modsFromState(ControlMask | Mod1Mask).ctrl);
 }
 
 test "parseXftDpi extracts the value from a resource-manager dump" {

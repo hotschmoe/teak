@@ -140,6 +140,7 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writeRect(writer, r);
             try writer.print(" {s}", .{@tagName(g.direction)});
             if (g.bg != null) try writer.writeAll(" bg");
+            if (g.border != null) try writer.writeAll(" border");
         },
         .push_scroll => |s| {
             try writer.writeAll("scroll ");
@@ -147,6 +148,7 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writer.print(" {s}", .{@tagName(s.direction)});
             if (s.scroll_x != 0) try writer.print(" scroll_x={d}", .{ri(s.scroll_x)});
             if (s.scroll_y != 0) try writer.print(" scroll_y={d}", .{ri(s.scroll_y)});
+            if (s.id != 0) try writer.print(" id={d}", .{s.id});
         },
         .push_overlay => |o| {
             try writer.writeAll("overlay ");
@@ -154,6 +156,7 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             // Overlays are the single non-base z-layer (HARDLINE §2 hatch 5).
             try writer.writeAll(" layer=1");
             if (o.modal) try writer.writeAll(" [modal]");
+            if (o.shadow != null) try writer.writeAll(" shadow");
         },
         .push_virtual_list => |v| {
             try writer.writeAll("virtual_list ");
@@ -225,9 +228,22 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writer.writeAll("canvas ");
             try writeRect(writer, r);
             try writer.print(" prims={d}", .{cv.primitives.len});
+            if (cv.id != 0) try writer.print(" id={d}", .{cv.id});
+            if (cv.pointer) try writer.writeAll(" pointer");
             if (cv.label.len > 0) {
                 try writer.writeByte(' ');
                 try writeQuoted(writer, cv.label);
+            }
+        },
+        .scene3d => |sc| {
+            try writer.writeAll("scene3d ");
+            try writeRect(writer, r);
+            try writer.print(" mesh={d} key={d}", .{ sc.mesh, sc.key });
+            if (sc.id != 0) try writer.print(" id={d}", .{sc.id});
+            if (sc.pointer) try writer.writeAll(" pointer");
+            if (sc.label.len > 0) {
+                try writer.writeByte(' ');
+                try writeQuoted(writer, sc.label);
             }
         },
         // Pop cmds are handled before writeCmd is ever called.
@@ -388,8 +404,8 @@ test "snapshot: text_input with cursor, selection, disabled, focus marker" {
 
     try expectSnapshot(cb.cmds.items, rs, .{ .transient = &ts },
         \\group (0,0,400,300) vertical
-        \\  text_input (0,0,400,150) "hello" cursor=5 sel=[1,5) [focus]
-        \\  text_input (0,150,400,150) "off" cursor=0 [disabled]
+        \\  text_input (0,0,400,28) "hello" cursor=5 sel=[1,5) [focus]
+        \\  text_input (0,28,400,28) "off" cursor=0 [disabled]
         \\
     );
 }
@@ -528,6 +544,30 @@ test "snapshot: canvas shows rect + primitive count + label" {
     try expectSnapshot(cb.cmds.items, rs, .{},
         \\group (0,0,400,300) vertical
         \\  canvas (8,8,300,120) prims=3 "count history"
+        \\
+    );
+}
+
+test "snapshot: interactive canvas and id-bearing scroll show id + pointer" {
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.canvasInteractive(.{ .width = 200, .height = 100 }, &.{}, 7, "viewport");
+    cb.pushScroll(.{ .direction = .vertical, .padding = 0, .width = 200, .height = 50, .scroll_y = 10, .id = 3 });
+    cb.text("row");
+    cb.popScroll();
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    const rs = layoutInto(&rects, cb.cmds.items, 400, 300);
+
+    try expectSnapshot(cb.cmds.items, rs, .{},
+        \\group (0,0,400,300) vertical
+        \\  canvas (0,0,200,100) prims=0 id=7 pointer "viewport"
+        \\  scroll (0,100,200,50) vertical scroll_y=10 id=3
+        \\    text (0,90,30,20) "row"
         \\
     );
 }
@@ -708,7 +748,56 @@ test "snapshot: realistic composed view golden" {
         \\    button (76,8,60,36) "+"
         \\    button (144,8,60,36) "-"
         \\  text (8,52,80,20) "Count: 0"
-        \\  text_input (8,80,784,512) "name" cursor=4
+        \\  text_input (8,80,784,28) "name" cursor=4
+        \\
+    );
+}
+
+test "snapshot: chrome - bordered card, underline field, shadowed overlay" {
+    const Msg = union(enum) { focus, ok };
+    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+    cb.pushGroup(.{ .padding = 8, .gap = 4, .width = 200, .bg = .{ 1, 1, 1, 1 }, .border = .{ 0, 0, 0, 1 } });
+    cb.text("NAME");
+    cb.textInputStyled(.focus, "bolt", 4, .{ .variant = .underline, .flex = 0 });
+    cb.popGroup();
+    cb.pushOverlay(.{ .x = 100, .y = 40, .width = 80, .height = 50, .shadow = .{ 0, 0, 0, 1 }, .border = .{ 0, 0, 0, 1 } });
+    cb.buttonStyled(.ok, "OK", .{ .min_width = 0 });
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    const rs = layoutInto(&rects, cb.cmds.items, 400, 300);
+    try expectSnapshot(cb.cmds.items, rs, .{},
+        \\group (0,0,400,300) vertical
+        \\  group (0,0,200,68) vertical bg border
+        \\    text (8,8,40,20) "NAME"
+        \\    text_input (8,32,184,28) "bolt" cursor=4
+        \\  overlay (100,40,80,50) layer=1 shadow
+        \\    button (108,48,36,36) "OK"
+        \\
+    );
+}
+
+test "snapshot: scene3d shows rect, mesh, key, id and label" {
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.scene3d(.{ .style = .{ .width = 320, .height = 200 }, .mesh = 3, .key = 9 });
+    cb.scene3d(.{ .style = .{ .width = 100, .height = 50 }, .id = 4, .pointer = true, .label = "model view" });
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    const rs = layoutInto(&rects, cb.cmds.items, 400, 300);
+
+    try expectSnapshot(cb.cmds.items, rs, .{},
+        \\group (0,0,400,300) vertical
+        \\  scene3d (0,0,320,200) mesh=3 key=9
+        \\  scene3d (0,200,100,50) mesh=0 key=0 id=4 pointer "model view"
         \\
     );
 }

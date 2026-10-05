@@ -12,6 +12,8 @@ const TextureHandle = text_mod.TextureHandle;
 const TEXTURE_HANDLE_NONE = text_mod.TEXTURE_HANDLE_NONE;
 const cmd_types = @import("../core/cmd.zig");
 const CanvasPrimitive = cmd_types.CanvasPrimitive;
+const scene_types = @import("../core/scene.zig");
+pub const SceneDraw = scene_types.SceneDraw;
 const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
@@ -34,10 +36,31 @@ pub const ImageDraw = struct {
     clip_h: f32,
 };
 
+/// Fixed outline of checkbox / radio boxes.
+/// Where the overlay layer (HARDLINE §2 hatch 5: base z=0, overlay z=1)
+/// starts inside each staged list, as counts of what the base layer
+/// produced. A Gpu that honours it draws base solids, images, scene
+/// composites and text first, THEN the overlay's solids, images, composites
+/// and text, so an opaque overlay panel hides base-layer text and images
+/// beneath it. Without a split (all lists drawn by kind) the base layer's
+/// text and images would show through overlay quads.
+pub const OverlaySplit = struct {
+    /// Vertices in `verts` produced by the base layer.
+    verts: u32 = 0,
+    text: u32 = 0,
+    images: u32 = 0,
+    scenes: u32 = 0,
+};
+
 const BORDER_WIDTH: f32 = 2;
 const CURSOR_WIDTH: f32 = 2;
 const INPUT_TEXT_PADDING: f32 = 6;
 const SLIDER_TRACK_PADDING: f32 = 2;
+/// Underline-variant text input: label inset and rule thickness.
+const UNDERLINE_PADDING_X: f32 = 2;
+const UNDERLINE_PADDING_Y: f32 = 4;
+const UNDERLINE_RULE: f32 = 1;
+const UNDERLINE_RULE_FOCUSED: f32 = 2;
 
 fn insetRect(r: Rect, amount: f32) Rect {
     const w = @max(0, r.w - 2 * amount);
@@ -77,13 +100,55 @@ fn emitText(
     }) catch {};
 }
 
+/// A `width`-thick frame INSIDE `r`: four non-overlapping edge quads (so a
+/// translucent border doesn't double-blend at the corners). `width` is
+/// clamped to half the smaller side.
+fn emitBorder(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, r: Rect, width: f32, color: [4]f32, clip: Rect) void {
+    const t = @min(width, @min(r.w, r.h) * 0.5);
+    if (t <= 0) return;
+    emit(verts, alloc, .{ .x = r.x, .y = r.y, .w = r.w, .h = t }, color, clip);
+    emit(verts, alloc, .{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t }, color, clip);
+    emit(verts, alloc, .{ .x = r.x, .y = r.y + t, .w = t, .h = r.h - 2 * t }, color, clip);
+    emit(verts, alloc, .{ .x = r.x + r.w - t, .y = r.y + t, .w = t, .h = r.h - 2 * t }, color, clip);
+}
+
 /// Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits
 /// solid-fill quads into `verts`, textured glyph records into
-/// `text_draws`, and textured image records into `image_draws`.
-/// Presentation state (hover, press, focus, blink) pulls from
-/// TransientState without touching Model. Two passes — base layer
-/// (cmds outside any push_overlay), then overlay layer — so overlays
-/// (HARDLINE §2 escape hatch 5) draw on top.
+/// `text_draws`, textured image records into `image_draws`, and 3D scene
+/// records into `scene_draws`. Presentation state (hover, press, focus,
+/// blink) pulls from TransientState without touching Model. Two passes —
+/// base layer (cmds outside any push_overlay), then overlay layer — so
+/// overlays (HARDLINE §2 escape hatch 5) draw on top.
+pub fn buildFrame(
+    verts: *std.ArrayList(Vertex),
+    text_draws: *std.ArrayList(TextDraw),
+    image_draws: *std.ArrayList(ImageDraw),
+    scene_draws: *std.ArrayList(SceneDraw),
+    alloc: std.mem.Allocator,
+    cmds: anytype,
+    rects: []const Rect,
+    transient: TransientState,
+    measurer: TextMeasurer,
+) OverlaySplit {
+    verts.clearRetainingCapacity();
+    text_draws.clearRetainingCapacity();
+    image_draws.clearRetainingCapacity();
+    scene_draws.clearRetainingCapacity();
+
+    buildLayer(verts, text_draws, image_draws, scene_draws, alloc, cmds, rects, transient, measurer, .base);
+    const split: OverlaySplit = .{
+        .verts = @intCast(verts.items.len),
+        .text = @intCast(text_draws.items.len),
+        .images = @intCast(image_draws.items.len),
+        .scenes = @intCast(scene_draws.items.len),
+    };
+    buildLayer(verts, text_draws, image_draws, scene_draws, alloc, cmds, rects, transient, measurer, .overlay);
+    return split;
+}
+
+/// `buildFrame` without scene output: `scene3d` Cmds are skipped. For
+/// hand-rolled host loops that predate 3D scenes; `teak.run` uses
+/// `buildFrame`.
 pub fn buildVertices(
     verts: *std.ArrayList(Vertex),
     text_draws: *std.ArrayList(TextDraw),
@@ -94,12 +159,9 @@ pub fn buildVertices(
     transient: TransientState,
     measurer: TextMeasurer,
 ) void {
-    verts.clearRetainingCapacity();
-    text_draws.clearRetainingCapacity();
-    image_draws.clearRetainingCapacity();
-
-    buildLayer(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer, .base);
-    buildLayer(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer, .overlay);
+    var scenes: std.ArrayList(SceneDraw) = .empty;
+    defer scenes.deinit(alloc);
+    _ = buildFrame(verts, text_draws, image_draws, &scenes, alloc, cmds, rects, transient, measurer);
 }
 
 const Layer = enum { base, overlay };
@@ -108,6 +170,7 @@ fn buildLayer(
     verts: *std.ArrayList(Vertex),
     text_draws: *std.ArrayList(TextDraw),
     image_draws: *std.ArrayList(ImageDraw),
+    scene_draws: *std.ArrayList(SceneDraw),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
@@ -131,7 +194,12 @@ fn buildLayer(
                 // Only the overlay layer draws the backdrop + clips to
                 // the overlay rect.
                 if (layer == .overlay) {
+                    if (ov.shadow) |sh| {
+                        const shadow_rect = Rect{ .x = rect.x + ov.shadow_offset[0], .y = rect.y + ov.shadow_offset[1], .w = rect.w, .h = rect.h };
+                        emit(verts, alloc, shadow_rect, sh, cur_clip);
+                    }
                     if (ov.backdrop[3] > 0) emit(verts, alloc, rect, ov.backdrop, cur_clip);
+                    if (ov.border) |bc| emitBorder(verts, alloc, rect, ov.border_width, bc, cur_clip);
                     clip.push(clipRect(rect, cur_clip));
                 } else {
                     // Base-layer must still push a clip so the
@@ -154,7 +222,10 @@ fn buildLayer(
                 // Optional panel/card fill. Drawn BEFORE children so they
                 // paint on top. Layout already gives us the group's full
                 // (padded) rect; no inset.
-                if (visible) if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+                if (visible) {
+                    if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+                    if (grp.border) |bc| emitBorder(verts, alloc, rect, grp.border_width, bc, cur_clip);
+                }
             },
             .pop_group, .push_virtual_list, .pop_virtual_list => {},
             .text => |txt| {
@@ -213,31 +284,63 @@ fn buildLayer(
                     }) catch {};
                 }
             },
+            .scene3d => |sc| {
+                if (!visible) continue;
+                if (rect.w <= 0 or rect.h <= 0) continue;
+                scene_draws.append(alloc, .{
+                    .mesh = sc.mesh,
+                    .rect_x = rect.x,
+                    .rect_y = rect.y,
+                    .rect_w = rect.w,
+                    .rect_h = rect.h,
+                    .clip_x = cur_clip.x,
+                    .clip_y = cur_clip.y,
+                    .clip_w = cur_clip.w,
+                    .clip_h = cur_clip.h,
+                    .camera = sc.camera,
+                    .clear = sc.clear,
+                    .edge_color = sc.edge_color,
+                    .edge_px = sc.edge_px,
+                }) catch {};
+            },
             .button => |btn| {
                 if (!visible) continue;
                 // Disabled buttons show no hover/press feedback: a flat
                 // greyed-out bg + greyed label, skipping the color ladder.
                 var bg = btn.style.disabled_bg;
                 var fg = btn.style.disabled_fg;
+                var label_dy: f32 = 0;
                 if (!btn.disabled) {
                     const pressed = if (transient.press_index) |pi| pi == i else false;
                     const hovered = if (transient.hover_index) |hi| hi == i else false;
-                    bg = if (pressed)
-                        btn.style.press_bg
-                    else if (hovered)
-                        btn.style.hover_bg
-                    else
-                        btn.style.bg;
-                    fg = btn.style.fg;
+                    if (pressed) {
+                        bg = btn.style.press_bg;
+                        fg = btn.style.press_fg orelse btn.style.fg;
+                        label_dy = btn.style.press_offset_y;
+                    } else if (hovered) {
+                        bg = btn.style.hover_bg;
+                        fg = btn.style.hover_fg orelse btn.style.fg;
+                    } else {
+                        bg = btn.style.bg;
+                        fg = btn.style.fg;
+                    }
                 }
                 emit(verts, alloc, rect, bg, cur_clip);
+                if (btn.style.border) |bc| emitBorder(verts, alloc, rect, btn.style.border_width, bc, cur_clip);
 
                 if (btn.label.len > 0) {
                     const m = measurer.measure(btn.label, btn.font);
+                    const avail = @max(0, rect.w - 2 * btn.style.h_padding);
+                    const label_w = @min(m.width, avail);
+                    const label_dx: f32 = switch (btn.style.label_align) {
+                        .start => 0,
+                        .center => (avail - label_w) * 0.5,
+                        .end => avail - label_w,
+                    };
                     const label_rect = Rect{
-                        .x = rect.x + 8,
-                        .y = rect.y + @max(0, (rect.h - m.height) * 0.5),
-                        .w = @min(m.width, @max(0, rect.w - 16)),
+                        .x = rect.x + btn.style.h_padding + label_dx,
+                        .y = rect.y + @max(0, (rect.h - m.height) * 0.5) + label_dy,
+                        .w = label_w,
                         .h = m.height,
                     };
                     emitText(text_draws, alloc, btn.label, btn.font, fg, label_rect, cur_clip);
@@ -255,9 +358,21 @@ fn buildLayer(
                 else
                     ti.style.border;
 
-                emit(verts, alloc, rect, border_color, cur_clip);
-                const inner = insetRect(rect, BORDER_WIDTH);
-                emit(verts, alloc, inner, if (ti.disabled) ti.style.disabled_bg else ti.style.bg, cur_clip);
+                // Boxed: border-colored rect with the bg inset inside it.
+                // Underline: no box, just a rule along the bottom edge.
+                const underline = ti.style.variant == .underline;
+                const pad_x = if (underline) UNDERLINE_PADDING_X else INPUT_TEXT_PADDING;
+                const pad_y = if (underline) UNDERLINE_PADDING_Y else INPUT_TEXT_PADDING;
+                var inner = rect;
+                if (underline) {
+                    const rule = if (focused) UNDERLINE_RULE_FOCUSED else UNDERLINE_RULE;
+                    emit(verts, alloc, .{ .x = rect.x, .y = rect.y + rect.h - rule, .w = rect.w, .h = rule }, border_color, cur_clip);
+                    inner.h = @max(0, rect.h - rule);
+                } else {
+                    emit(verts, alloc, rect, border_color, cur_clip);
+                    inner = insetRect(rect, ti.style.border_width);
+                    emit(verts, alloc, inner, if (ti.disabled) ti.style.disabled_bg else ti.style.bg, cur_clip);
+                }
 
                 // Selection highlight before the text so text draws on top.
                 // Disabled inputs never draw selection.
@@ -269,23 +384,21 @@ fn buildLayer(
                             const lo_w = measurer.prefixWidth(ti.content, ti.font, lo);
                             const hi_w = measurer.prefixWidth(ti.content, ti.font, hi);
                             const sel_rect = Rect{
-                                .x = inner.x + INPUT_TEXT_PADDING + lo_w,
-                                .y = inner.y + INPUT_TEXT_PADDING,
+                                .x = inner.x + pad_x + lo_w,
+                                .y = inner.y + pad_y,
                                 .w = @max(0, hi_w - lo_w),
-                                .h = @max(0, inner.h - 2 * INPUT_TEXT_PADDING),
+                                .h = @max(0, inner.h - 2 * pad_y),
                             };
-                            // Subtle highlight; the host can theme this via
-                            // a new field on TextInputStyle if desired.
-                            emit(verts, alloc, sel_rect, .{ 0.25, 0.45, 0.95, 0.45 }, cur_clip);
+                            emit(verts, alloc, sel_rect, ti.style.selection_bg, cur_clip);
                         }
                     }
                 }
 
-                if (ti.content.len > 0 and inner.w > 2 * INPUT_TEXT_PADDING) {
+                if (ti.content.len > 0 and inner.w > 2 * pad_x) {
                     const m = measurer.measure(ti.content, ti.font);
-                    const max_w = @max(0, inner.w - 2 * INPUT_TEXT_PADDING);
+                    const max_w = @max(0, inner.w - 2 * pad_x);
                     const text_rect = Rect{
-                        .x = inner.x + INPUT_TEXT_PADDING,
+                        .x = inner.x + pad_x,
                         .y = inner.y + @max(0, (inner.h - m.height) * 0.5),
                         .w = @min(m.width, max_w),
                         .h = m.height,
@@ -305,7 +418,7 @@ fn buildLayer(
                     const prefix_w = measurer.prefixWidth(ti.content, ti.font, ti.cursor);
                     const m = measurer.measure(transient.ime_text, ti.font);
                     const text_rect = Rect{
-                        .x = inner.x + INPUT_TEXT_PADDING + prefix_w,
+                        .x = inner.x + pad_x + prefix_w,
                         .y = inner.y + @max(0, (inner.h - m.height) * 0.5),
                         .w = m.width,
                         .h = m.height,
@@ -331,11 +444,11 @@ fn buildLayer(
                         measurer.prefixWidth(transient.ime_text, ti.font, transient.ime_cursor)
                     else
                         0;
-                    const cursor_x = inner.x + INPUT_TEXT_PADDING + base_prefix + ime_offset;
-                    const cursor_h = @max(0, inner.h - 2 * INPUT_TEXT_PADDING);
+                    const cursor_x = inner.x + pad_x + base_prefix + ime_offset;
+                    const cursor_h = @max(0, inner.h - 2 * pad_y);
                     const cursor_rect = Rect{
                         .x = cursor_x,
-                        .y = inner.y + INPUT_TEXT_PADDING,
+                        .y = inner.y + pad_y,
                         .w = CURSOR_WIDTH,
                         .h = cursor_h,
                     };
@@ -499,6 +612,19 @@ fn emitCanvasPrimitive(
                 .h = mk.size,
             }, mk.color, clip);
         },
+        .triangles => |tr| emitTriangles(verts, alloc, canvas, tr.verts, clip),
+        .lines => |ln| {
+            verts.ensureUnusedCapacity(alloc, ln.segs.len * 6) catch return;
+            for (ln.segs) |sg| {
+                var x0 = canvas.x + sg[0];
+                var y0 = canvas.y + sg[1];
+                var x1 = canvas.x + sg[2];
+                var y1 = canvas.y + sg[3];
+                if (clipSegment(&x0, &y0, &x1, &y1, clip)) {
+                    emitSegmentQuad(verts, alloc, x0, y0, x1, y1, ln.thickness, ln.color);
+                }
+            }
+        },
         .polyline => |pl| {
             if (pl.points.len < 2) return;
             var i: usize = 1;
@@ -518,6 +644,149 @@ fn emitCanvasPrimitive(
                 }
             }
         },
+    }
+}
+
+// ── Triangle list emission ─────────────────────────────────────────
+
+const TriVertex = CanvasPrimitive.TriVertex;
+
+fn toVertex(canvas: Rect, v: TriVertex) Vertex {
+    return .{ .x = canvas.x + v.x, .y = canvas.y + v.y, .r = v.r, .g = v.g, .b = v.b, .a = v.a, .u = 0, .v = 0 };
+}
+
+fn finiteVertex(v: TriVertex) bool {
+    return std.math.isFinite(v.x) and std.math.isFinite(v.y);
+}
+
+/// Emit a canvas-local triangle list, clipped to `clip` (window space).
+/// Three tiers, cheapest first: (1) the whole list's bounds sit inside the
+/// clip — convert the vertices in one pass; (2) a triangle's own bounds do —
+/// copy it; (3) otherwise Sutherland–Hodgman against the clip rect,
+/// interpolating color, fan-triangulating the result. Triangles with a
+/// non-finite position are dropped; a trailing partial triangle is ignored.
+fn emitTriangles(
+    verts: *std.ArrayList(Vertex),
+    alloc: std.mem.Allocator,
+    canvas: Rect,
+    list: []const TriVertex,
+    clip: Rect,
+) void {
+    const n = list.len - list.len % 3;
+    if (n == 0) return;
+    const tris = list[0..n];
+
+    // Tier 1: bounds of everything (and finiteness) in one linear scan.
+    var min_x = std.math.inf(f32);
+    var min_y = std.math.inf(f32);
+    var max_x = -std.math.inf(f32);
+    var max_y = -std.math.inf(f32);
+    var all_finite = true;
+    for (tris) |v| {
+        if (!finiteVertex(v)) {
+            all_finite = false;
+            break;
+        }
+        min_x = @min(min_x, v.x);
+        min_y = @min(min_y, v.y);
+        max_x = @max(max_x, v.x);
+        max_y = @max(max_y, v.y);
+    }
+    if (all_finite and boundsInside(canvas, min_x, min_y, max_x, max_y, clip)) {
+        const out = verts.addManyAsSlice(alloc, n) catch return;
+        for (tris, out) |v, *o| o.* = toVertex(canvas, v);
+        return;
+    }
+
+    var i: usize = 0;
+    while (i < n) : (i += 3) {
+        const t = tris[i..][0..3];
+        if (!(finiteVertex(t[0]) and finiteVertex(t[1]) and finiteVertex(t[2]))) continue;
+        const tx0 = @min(t[0].x, @min(t[1].x, t[2].x));
+        const ty0 = @min(t[0].y, @min(t[1].y, t[2].y));
+        const tx1 = @max(t[0].x, @max(t[1].x, t[2].x));
+        const ty1 = @max(t[0].y, @max(t[1].y, t[2].y));
+        if (boundsInside(canvas, tx0, ty0, tx1, ty1, clip)) {
+            // Tier 2.
+            verts.appendSlice(alloc, &.{ toVertex(canvas, t[0]), toVertex(canvas, t[1]), toVertex(canvas, t[2]) }) catch return;
+        } else if (boundsOverlap(canvas, tx0, ty0, tx1, ty1, clip)) {
+            // Tier 3.
+            clipTriangle(verts, alloc, .{ toVertex(canvas, t[0]), toVertex(canvas, t[1]), toVertex(canvas, t[2]) }, clip);
+        }
+    }
+}
+
+fn boundsInside(canvas: Rect, x0: f32, y0: f32, x1: f32, y1: f32, clip: Rect) bool {
+    return canvas.x + x0 >= clip.x and canvas.y + y0 >= clip.y and
+        canvas.x + x1 <= clip.x + clip.w and canvas.y + y1 <= clip.y + clip.h;
+}
+
+fn boundsOverlap(canvas: Rect, x0: f32, y0: f32, x1: f32, y1: f32, clip: Rect) bool {
+    return canvas.x + x1 > clip.x and canvas.y + y1 > clip.y and
+        canvas.x + x0 < clip.x + clip.w and canvas.y + y0 < clip.y + clip.h;
+}
+
+fn lerpVertex(a: Vertex, b: Vertex, t: f32) Vertex {
+    return .{
+        .x = a.x + (b.x - a.x) * t,
+        .y = a.y + (b.y - a.y) * t,
+        .r = a.r + (b.r - a.r) * t,
+        .g = a.g + (b.g - a.g) * t,
+        .b = a.b + (b.b - a.b) * t,
+        .a = a.a + (b.a - a.a) * t,
+        .u = 0,
+        .v = 0,
+    };
+}
+
+/// A triangle clipped by four half-planes has at most 3 + 4 = 7 vertices.
+const MAX_CLIP_POLY = 8;
+
+/// Sutherland–Hodgman: clip one window-space triangle to `clip` and emit
+/// the resulting convex polygon as a triangle fan.
+fn clipTriangle(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, tri: [3]Vertex, clip: Rect) void {
+    // Ping-pong between two scratch polygons, one pass per clip edge.
+    var buf_a: [MAX_CLIP_POLY]Vertex = undefined;
+    var buf_b: [MAX_CLIP_POLY]Vertex = undefined;
+    buf_a[0..3].* = tri;
+    var src: []Vertex = buf_a[0..3];
+    var dst: *[MAX_CLIP_POLY]Vertex = &buf_b;
+    var spare: *[MAX_CLIP_POLY]Vertex = &buf_a;
+
+    // Four edges: x >= left, x <= right, y >= top, y <= bottom.
+    const Edge = struct { axis_y: bool, bound: f32, keep_greater: bool };
+    const edges = [4]Edge{
+        .{ .axis_y = false, .bound = clip.x, .keep_greater = true },
+        .{ .axis_y = false, .bound = clip.x + clip.w, .keep_greater = false },
+        .{ .axis_y = true, .bound = clip.y, .keep_greater = true },
+        .{ .axis_y = true, .bound = clip.y + clip.h, .keep_greater = false },
+    };
+    for (edges) |e| {
+        var out_len: usize = 0;
+        for (src, 0..) |cur, i| {
+            const prev = src[(i + src.len - 1) % src.len];
+            const cur_c = if (e.axis_y) cur.y else cur.x;
+            const prev_c = if (e.axis_y) prev.y else prev.x;
+            const cur_in = if (e.keep_greater) cur_c >= e.bound else cur_c <= e.bound;
+            const prev_in = if (e.keep_greater) prev_c >= e.bound else prev_c <= e.bound;
+            if (cur_in != prev_in) {
+                dst[out_len] = lerpVertex(prev, cur, (e.bound - prev_c) / (cur_c - prev_c));
+                out_len += 1;
+            }
+            if (cur_in) {
+                dst[out_len] = cur;
+                out_len += 1;
+            }
+        }
+        if (out_len < 3) return;
+        src = dst[0..out_len];
+        std.mem.swap(*[MAX_CLIP_POLY]Vertex, &dst, &spare);
+    }
+
+    verts.ensureUnusedCapacity(alloc, (src.len - 2) * 3) catch return;
+    var k: usize = 1;
+    while (k + 1 < src.len) : (k += 1) {
+        verts.appendSliceAssumeCapacity(&.{ src[0], src[k], src[k + 1] });
     }
 }
 
@@ -604,6 +873,11 @@ fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
+
+// Chrome (border / shadow / hover / underline) tests live in their own file.
+test {
+    _ = @import("chrome_test.zig");
+}
 
 const cmd_mod = @import("../core/cmd.zig");
 
@@ -1061,4 +1335,326 @@ test "buildVertices: nested groups with bg render outer first, then inner" {
         try testing.expectEqual(@as(f32, 1), v.g);
         try testing.expectEqual(@as(f32, 0), v.b);
     }
+}
+
+// ── Triangles / lines / scene draws ────────────────────────────────
+
+const TestFrame = struct {
+    verts: std.ArrayList(Vertex) = .empty,
+    texts: std.ArrayList(TextDraw) = .empty,
+    images: std.ArrayList(ImageDraw) = .empty,
+    scenes: std.ArrayList(SceneDraw) = .empty,
+    split: OverlaySplit = .{},
+
+    fn deinit(self: *TestFrame, alloc: std.mem.Allocator) void {
+        self.verts.deinit(alloc);
+        self.texts.deinit(alloc);
+        self.images.deinit(alloc);
+        self.scenes.deinit(alloc);
+    }
+};
+
+/// Lay out `cb` in a 1000x1000 window and build its frame.
+fn buildTestFrame(alloc: std.mem.Allocator, cb: anytype) !TestFrame {
+    const rects = try alloc.alloc(Rect, cb.cmds.items.len);
+    defer alloc.free(rects);
+    layout.LayoutEngine.doLayout(rects, cb.cmds.items, 1000, 1000, text_mod.monoMeasurer());
+    var f: TestFrame = .{};
+    f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
+    return f;
+}
+
+const TV = CanvasPrimitive.TriVertex;
+
+fn tv(x: f32, y: f32, r: f32, g: f32, b: f32) TV {
+    return .{ .x = x, .y = y, .r = r, .g = g, .b = b, .a = 1 };
+}
+
+/// Area of a triangle-list vertex buffer (sum of |cross|/2).
+fn totalArea(verts: []const Vertex) f32 {
+    var area: f32 = 0;
+    var i: usize = 0;
+    while (i + 2 < verts.len) : (i += 3) {
+        const a = verts[i];
+        const b = verts[i + 1];
+        const c = verts[i + 2];
+        area += @abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) * 0.5;
+    }
+    return area;
+}
+
+fn canvasWith(alloc: std.mem.Allocator, w: f32, h: f32, prims: []const CanvasPrimitive) !TestFrame {
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(alloc);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.canvas(.{ .width = w, .height = h }, prims);
+    cb.popGroup();
+    return buildTestFrame(alloc, &cb);
+}
+
+test "canvas triangles fully inside are copied through, translated and colored" {
+    const testing = std.testing;
+    const tris = [_]TV{ tv(10, 10, 1, 0, 0), tv(60, 10, 0, 1, 0), tv(10, 60, 0, 0, 1), tv(70, 70, 1, 1, 1), tv(90, 70, 1, 1, 1), tv(90, 90, 1, 1, 1) };
+    var f = try canvasWith(testing.allocator, 100, 100, &.{.{ .triangles = .{ .verts = &tris } }});
+    defer f.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 6), f.verts.items.len);
+    // Group padding 0 + canvas at origin: local == window coords.
+    try testing.expectEqual(@as(f32, 10), f.verts.items[0].x);
+    try testing.expectEqual(@as(f32, 1), f.verts.items[0].r);
+    try testing.expectEqual(@as(f32, 1), f.verts.items[1].g);
+    try testing.expectEqual(@as(f32, 1), f.verts.items[2].b);
+    try testing.expectEqual(@as(f32, 1), f.verts.items[2].a);
+}
+
+test "canvas triangles are clipped to the canvas rect with color interpolation" {
+    const testing = std.testing;
+    // A=(50,10) red, B=(150,10) green, C=(50,60) blue; canvas is 100x100 so
+    // everything past x=100 is cut: the kept polygon is
+    // A, (100,10), (100,35), C with area 1875.
+    const tris = [_]TV{ tv(50, 10, 1, 0, 0), tv(150, 10, 0, 1, 0), tv(50, 60, 0, 0, 1) };
+    var f = try canvasWith(testing.allocator, 100, 100, &.{.{ .triangles = .{ .verts = &tris } }});
+    defer f.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 6), f.verts.items.len); // quad -> 2 triangles
+    for (f.verts.items) |v| {
+        try testing.expect(v.x >= 50 - 0.001 and v.x <= 100 + 0.001);
+        try testing.expect(v.y >= 10 - 0.001 and v.y <= 60 + 0.001);
+    }
+    try testing.expectApproxEqAbs(@as(f32, 1875), totalArea(f.verts.items), 0.5);
+
+    // The point where the A-B edge crosses x=100 is the midpoint: r=g=0.5.
+    var found = false;
+    for (f.verts.items) |v| {
+        if (@abs(v.x - 100) < 0.001 and @abs(v.y - 10) < 0.001) {
+            try testing.expectApproxEqAbs(@as(f32, 0.5), v.r, 1e-5);
+            try testing.expectApproxEqAbs(@as(f32, 0.5), v.g, 1e-5);
+            found = true;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "canvas triangles: fully outside, non-finite and trailing partial triangles are dropped" {
+    const testing = std.testing;
+    const nan = std.math.nan(f32);
+    const tris = [_]TV{
+        tv(200, 200, 1, 1, 1), tv(300, 200, 1, 1, 1), tv(200, 300, 1, 1, 1), // outside
+        tv(nan, 0, 1, 1, 1), tv(10, 0, 1, 1, 1), tv(0, 10, 1, 1, 1), // NaN
+        tv(10, 10, 1, 1, 1), tv(20, 10, 1, 1, 1), tv(10, 20, 1, 1, 1), // kept
+        tv(1, 1, 1, 1, 1), tv(2, 2, 1, 1, 1), // partial trailer
+    };
+    var f = try canvasWith(testing.allocator, 100, 100, &.{.{ .triangles = .{ .verts = &tris } }});
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 3), f.verts.items.len);
+    for (f.verts.items) |v| try testing.expect(std.math.isFinite(v.x) and std.math.isFinite(v.y));
+}
+
+test "canvas triangles honour the surrounding scroll clip, not just the canvas rect" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    // A 100x40 viewport over a 100x100 canvas: only the top 40 rows show.
+    const tris = [_]TV{ tv(0, 0, 1, 1, 1), tv(100, 0, 1, 1, 1), tv(0, 100, 1, 1, 1) };
+    cb.pushScroll(.{ .width = 100, .height = 40, .padding = 0, .gap = 0 });
+    cb.canvas(.{ .width = 100, .height = 100 }, &.{.{ .triangles = .{ .verts = &tris } }});
+    cb.popScroll();
+    var f = try buildTestFrame(testing.allocator, &cb);
+    defer f.deinit(testing.allocator);
+
+    try testing.expect(f.verts.items.len >= 3);
+    for (f.verts.items) |v| try testing.expect(v.y <= 40 + 0.001);
+    // Visible part: triangle area within y<=40 = 100*100/2 - 100*60... = 5000 - (60*60... )
+    // The triangle narrows linearly: at y the width is 100*(1 - y/100).
+    // Area(0..40) = integral of (100 - y) dy = 100*40 - 40*40/2 = 3200.
+    try testing.expectApproxEqAbs(@as(f32, 3200), totalArea(f.verts.items), 1);
+}
+
+test "canvas lines: one quad per visible segment, trimmed to the canvas" {
+    const testing = std.testing;
+    const segs = [_][4]f32{
+        .{ 10, 10, 90, 10 }, // inside
+        .{ 200, 0, 300, 0 }, // outside
+        .{ 50, 50, 150, 50 }, // crosses the right edge
+    };
+    var f = try canvasWith(testing.allocator, 100, 100, &.{.{ .lines = .{ .segs = &segs, .thickness = 2, .color = .{ 1, 0, 0, 1 } } }});
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 12), f.verts.items.len); // 2 quads
+    for (f.verts.items) |v| {
+        try testing.expect(v.x <= 100 + 0.001);
+        try testing.expectEqual(@as(f32, 1), v.r);
+    }
+}
+
+test "scene3d emits a SceneDraw with rect, clip and camera; buildVertices skips it" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 10, .gap = 0 });
+    cb.text("title");
+    var cam: scene_types.Camera = .{};
+    cam.eye = .{ 1, 2, 3 };
+    cb.scene3d(.{ .style = .{ .width = 200, .height = 150 }, .mesh = 7, .camera = cam, .clear = .{ 1, 0, 0, 1 }, .edge_px = 3 });
+    cb.popGroup();
+
+    var f = try buildTestFrame(testing.allocator, &cb);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), f.scenes.items.len);
+    const sd = f.scenes.items[0];
+    try testing.expectEqual(@as(u32, 7), sd.mesh);
+    try testing.expectEqual(@as(f32, 200), sd.rect_w);
+    try testing.expectEqual(@as(f32, 150), sd.rect_h);
+    try testing.expectEqual(@as(f32, 10), sd.rect_x);
+    try testing.expectEqual(@as(f32, 3), sd.camera.eye[2]);
+    try testing.expectEqual(@as(f32, 3), sd.edge_px);
+    try testing.expectEqual(@as(f32, 1), sd.clear[0]);
+    // No solid quad is drawn for the scene itself.
+    try testing.expectEqual(@as(usize, 0), f.verts.items.len);
+
+    // The scene-less entry point ignores it without leaking.
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var texts: std.ArrayList(TextDraw) = .empty;
+    defer texts.deinit(testing.allocator);
+    var images: std.ArrayList(ImageDraw) = .empty;
+    defer images.deinit(testing.allocator);
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 400, text_mod.monoMeasurer());
+    buildVertices(&verts, &texts, &images, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    try testing.expectEqual(@as(usize, 1), texts.items.len);
+}
+
+test "scene3d is clipped by a scroll container's clip rect" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushScroll(.{ .width = 100, .height = 60, .padding = 0, .gap = 0 });
+    cb.scene3d(.{ .style = .{ .width = 300, .height = 300 } });
+    cb.popScroll();
+    var f = try buildTestFrame(testing.allocator, &cb);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), f.scenes.items.len);
+    try testing.expectEqual(@as(f32, 300), f.scenes.items[0].rect_w);
+    try testing.expectEqual(@as(f32, 100), f.scenes.items[0].clip_w);
+    try testing.expectEqual(@as(f32, 60), f.scenes.items[0].clip_h);
+}
+
+test "scene3d inside an overlay is emitted by the overlay layer" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{});
+    cb.scene3d(.{ .mesh = 1 });
+    cb.pushOverlay(.{ .x = 50, .y = 50, .width = 200, .height = 200 });
+    cb.scene3d(.{ .mesh = 2 });
+    cb.popOverlay();
+    cb.popGroup();
+    var f = try buildTestFrame(testing.allocator, &cb);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 2), f.scenes.items.len);
+    try testing.expectEqual(@as(u32, 1), f.scenes.items[0].mesh); // base layer first
+    try testing.expectEqual(@as(u32, 2), f.scenes.items[1].mesh);
+}
+
+// 200k vertices (66k triangles): the all-inside path is a single bulk copy
+// (one allocation); the clipping path stays linear. Wall-clock bounds are
+// deliberately loose (Debug build, shared CI) — they catch accidental
+// quadratic behaviour, not micro-regressions.
+test "perf: 200k triangle vertices, inside and clipped" {
+    const testing = std.testing;
+    const n_tris: usize = 66_666;
+    const list = try testing.allocator.alloc(TV, n_tris * 3);
+    defer testing.allocator.free(list);
+    for (0..n_tris) |t| {
+        const x: f32 = @floatFromInt(t % 250);
+        const y: f32 = @floatFromInt(t / 250 % 250);
+        list[t * 3 + 0] = tv(x * 2, y * 2, 1, 0, 0);
+        list[t * 3 + 1] = tv(x * 2 + 1.5, y * 2, 0, 1, 0);
+        list[t * 3 + 2] = tv(x * 2, y * 2 + 1.5, 0, 0, 1);
+    }
+
+    const io = testing.io;
+    const t0 = std.Io.Clock.awake.now(io).nanoseconds;
+
+    // Inside: the clip covers everything -> one bulk conversion, one allocation.
+    var counting = testing.FailingAllocator.init(testing.allocator, .{});
+    var inside: std.ArrayList(Vertex) = .empty;
+    defer inside.deinit(counting.allocator());
+    const all: Rect = .{ .x = 0, .y = 0, .w = 600, .h = 600 };
+    emitTriangles(&inside, counting.allocator(), all, list, all);
+    try testing.expectEqual(n_tris * 3, inside.items.len);
+    try testing.expectEqual(@as(usize, 1), counting.allocations);
+
+    // Clipped: a 250x250 canvas cuts about 5/6 of the field; triangles
+    // straddling the edge go through Sutherland–Hodgman.
+    var clipped = try canvasWith(testing.allocator, 250, 250, &.{.{ .triangles = .{ .verts = list } }});
+    defer clipped.deinit(testing.allocator);
+    try testing.expect(clipped.verts.items.len > 0 and clipped.verts.items.len < n_tris * 3);
+    for (clipped.verts.items) |v| try testing.expect(v.x <= 250.001 and v.y <= 250.001);
+
+    const elapsed_ms = @divTrunc(std.Io.Clock.awake.now(io).nanoseconds - t0, std.time.ns_per_ms);
+    try testing.expect(elapsed_ms < 3000);
+}
+
+test "perf: 100k line segments" {
+    const testing = std.testing;
+    const n: usize = 100_000;
+    const segs = try testing.allocator.alloc([4]f32, n);
+    defer testing.allocator.free(segs);
+    for (segs, 0..) |*s, i| {
+        const y: f32 = @floatFromInt(i % 500);
+        const x: f32 = @floatFromInt(i / 500);
+        s.* = .{ x, y, x + 3, y + 2 };
+    }
+    var f = try canvasWith(testing.allocator, 400, 400, &.{.{ .lines = .{ .segs = segs, .thickness = 1 } }});
+    defer f.deinit(testing.allocator);
+    try testing.expect(f.verts.items.len > 0 and f.verts.items.len <= n * 6);
+}
+
+test "buildFrame reports where the overlay layer starts in every list" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .bg = .{ 0.1, 0.1, 0.1, 1 } }); // 1 base quad
+    cb.text("base"); // 1 base text
+    cb.scene3d(.{ .mesh = 1 }); // 1 base scene
+    cb.pushOverlay(.{ .x = 10, .y = 10, .width = 100, .height = 60, .backdrop = .{ 1, 1, 1, 1 } }); // overlay panel quad
+    cb.text("over");
+    cb.text("over2");
+    cb.scene3d(.{ .mesh = 2 });
+    cb.popOverlay();
+    cb.popGroup();
+
+    var f = try buildTestFrame(testing.allocator, &cb);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 6), f.split.verts); // base group bg = 1 quad
+    try testing.expectEqual(@as(u32, 1), f.split.text);
+    try testing.expectEqual(@as(u32, 0), f.split.images);
+    try testing.expectEqual(@as(u32, 1), f.split.scenes);
+    // Everything after the split is overlay content.
+    try testing.expectEqual(@as(usize, 3), f.texts.items.len);
+    try testing.expectEqualStrings("over", f.texts.items[f.split.text].content);
+    try testing.expectEqual(@as(usize, 2), f.scenes.items.len);
+    try testing.expectEqual(@as(u32, 2), f.scenes.items[f.split.scenes].mesh);
+    try testing.expect(f.verts.items.len > f.split.verts);
+}
+
+test "buildFrame without an overlay splits at the end of every list" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{});
+    cb.text("only base");
+    cb.popGroup();
+    var f = try buildTestFrame(testing.allocator, &cb);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, @intCast(f.verts.items.len)), f.split.verts);
+    try testing.expectEqual(@as(u32, 1), f.split.text);
 }

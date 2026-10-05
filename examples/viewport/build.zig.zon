@@ -1,0 +1,14 @@
+.{
+    .name = .viewport,
+    .version = "0.0.0",
+    .fingerprint = 0x602d6eae06b7aa13, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .teak = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

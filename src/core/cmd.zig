@@ -1,6 +1,7 @@
 const std = @import("std");
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
+const scene = @import("scene.zig");
 
 pub const FontSpec = text.FontSpec;
 const DEFAULT_FONT = text.DEFAULT_FONT;
@@ -10,21 +11,80 @@ const TextureHandle = text.TextureHandle;
 
 pub const Direction = enum { vertical, horizontal };
 
+/// Cross-axis placement of a container's children (the axis perpendicular
+/// to `direction`).
+pub const Align = enum {
+    /// Children sit at the start edge at their own size. Legacy leaves that
+    /// always filled the cross axis (text_input, slider, divider) still do.
+    start,
+    center,
+    end,
+    /// Every child kind is sized to the container's inner cross extent. A
+    /// group or scroll that fixed its own size on that axis (`width` /
+    /// `height` > 0) keeps it.
+    stretch,
+};
+
+/// Main-axis distribution of leftover space. Only applies when no child
+/// has a flex weight (flex children absorb the leftover first).
+pub const Justify = enum { start, center, end, space_between };
+
+/// Horizontal placement of a label inside its box (button labels).
+pub const TextAlign = enum { start, center, end };
+
+/// Look of a `text_input`.
+pub const InputVariant = enum {
+    /// A filled, bordered box (`bg`, `border` / `focus_border`, `border_width`).
+    boxed,
+    /// No box: a 1px rule along the bottom edge (2px, in `focus_border`,
+    /// while focused). For typed-form fields on a paper background.
+    underline,
+};
+
 pub const GroupStyle = struct {
     direction: Direction = .vertical,
     padding: f32 = 8,
+    /// Overrides `padding` on the horizontal / vertical axis when non-null.
+    pad_x: ?f32 = null,
+    pad_y: ?f32 = null,
     gap: f32 = 8,
-    /// 0 = intrinsic (measured from children). >0 = flex weight; parent
-    /// distributes remaining main-axis space proportionally.
+    /// 0 = no growth. >0 = flex weight: the parent shares its leftover
+    /// main-axis space among flex children in proportion, ON TOP of each
+    /// child's own size (flex-basis auto). Flex never shrinks a group below
+    /// its content; wrap overflowing content in a scroll.
     flex: f32 = 0,
+    /// Fixed OUTER size (padding included) on that axis; 0 = measured from
+    /// children. A fixed size is the flex basis and beats `align_cross`
+    /// stretch from the parent.
+    width: f32 = 0,
+    height: f32 = 0,
+    /// Floor on the outer size, applied to the measured size and to stretch.
+    min_width: f32 = 0,
+    min_height: f32 = 0,
+    /// How this group places / sizes its children on the cross axis.
+    align_cross: Align = .start,
+    /// How this group distributes leftover main-axis space (no flex kids).
+    justify: Justify = .start,
     /// Optional solid background fill. When non-null, the render pass
     /// emits a single quad at the group's full (padded) rect BEFORE
     /// drawing the group's children — children paint on top. Default
     /// `null` preserves the prior no-fill behavior. This is the panel /
     /// card idiom: pair with an overlay's dim backdrop for a readable
-    /// modal. No corner radius in this pass — rounded panels are a
-    /// separate concern.
+    /// modal. Corners are square: the quad renderer has no rounding.
     bg: ?[4]f32 = null,
+    /// Optional border: four `border_width` quads drawn INSIDE the group's
+    /// rect, after `bg` and before the children. It takes no layout space;
+    /// keep `padding >= border_width` so children don't paint over it.
+    border: ?[4]f32 = null,
+    border_width: f32 = 1,
+
+    pub fn padX(self: GroupStyle) f32 {
+        return self.pad_x orelse self.padding;
+    }
+
+    pub fn padY(self: GroupStyle) f32 {
+        return self.pad_y orelse self.padding;
+    }
 };
 
 pub const TextCmd = struct {
@@ -44,13 +104,32 @@ pub const ButtonStyle = struct {
     /// dimmed bg + greyed label. No hover/press feedback in this state.
     disabled_bg: [4]f32 = .{ 0.18, 0.18, 0.18, 1.0 },
     disabled_fg: [4]f32 = .{ 0.5, 0.5, 0.5, 1.0 },
-    corner_radius: f32 = 4,
-    /// Minimum intrinsic width in pixels. `0` = no floor (the button
-    /// measures to `max(label + padding, BUTTON_MIN_WIDTH)` as before).
-    /// A non-zero value forces the button at least this wide in the
-    /// measure pass — used e.g. by the dropdown so every open-list option
-    /// row spans the full list width and is clickable edge to edge.
-    min_width: f32 = 0,
+    /// Label color while hovered / pressed; null keeps `fg`. Together with
+    /// `hover_bg` this gives the classic ink-on-paper inversion on hover.
+    hover_fg: ?[4]f32 = null,
+    press_fg: ?[4]f32 = null,
+    /// Optional border drawn inside the button's rect, over `bg`, in every
+    /// state (a disabled button keeps it). Corners are square.
+    border: ?[4]f32 = null,
+    border_width: f32 = 1,
+    /// The label moves down this many pixels while pressed (a tactile
+    /// "key travel" without changing the rect).
+    press_offset_y: f32 = 0,
+    /// Where the label sits horizontally inside the padded box.
+    label_align: TextAlign = .start,
+    /// Horizontal padding on each side of the label. The button measures
+    /// to `label width + 2 * h_padding` (floored by `min_width`) and the
+    /// render pass insets the label by the same amount.
+    h_padding: f32 = 8,
+    /// Floor on the measured width in pixels. The default keeps the old
+    /// 60px minimum; set 0 for compact buttons (icons, close boxes) or a
+    /// larger value to force a width (the dropdown does, so every open-list
+    /// row spans the full list and is clickable edge to edge).
+    min_width: f32 = 60,
+    /// Outer height in pixels.
+    height: f32 = 36,
+    /// Flex weight on the parent's main axis (see `GroupStyle.flex`).
+    flex: f32 = 0,
 };
 
 pub const TextInputStyle = struct {
@@ -64,11 +143,19 @@ pub const TextInputStyle = struct {
     disabled_bg: [4]f32 = .{ 0.10, 0.10, 0.11, 1.0 },
     disabled_fg: [4]f32 = .{ 0.5, 0.5, 0.5, 1.0 },
     disabled_border: [4]f32 = .{ 0.22, 0.22, 0.25, 1.0 },
-    corner_radius: f32 = 4,
+    /// Selection highlight behind the selected text (drawn under the glyphs,
+    /// so give it some transparency).
+    selection_bg: [4]f32 = .{ 0.25, 0.45, 0.95, 0.45 },
+    variant: InputVariant = .boxed,
+    /// Border thickness of the `.boxed` variant (the `.underline` rule is
+    /// fixed at 1px, 2px focused).
+    border_width: f32 = 2,
     /// Text inputs expand along the main axis by default.
     flex: f32 = 1,
     /// Minimum width when flex is 0 or parent has no extra space.
     min_width: f32 = 120,
+    /// Outer height in pixels.
+    height: f32 = 28,
 };
 
 pub const CheckboxStyle = struct {
@@ -113,16 +200,32 @@ pub const ScrollStyle = struct {
     gap: f32 = 0,
     /// Flex weight used in the parent's main-axis distribution. 0 means
     /// use the intrinsic size (capped by width/height below).
+    ///
+    /// A scroll with `flex > 0` and no fixed size on the parent's main axis
+    /// has a zero basis there: it takes exactly its share of the leftover
+    /// space (its content may be taller and is clipped), instead of growing
+    /// to fit its content and pushing siblings out of the window.
     flex: f32 = 0,
-    /// Fixed viewport sizes. 0 means "measured from children" (in which
-    /// case overflow scrolling is pointless, but the shape still works).
+    /// Fixed viewport sizes; they win over `align_cross` stretch. 0 means
+    /// "measured from children" (in which case overflow scrolling is
+    /// pointless, but the shape still works).
     width: f32 = 0,
     height: f32 = 0,
+    /// Cross-axis placement of the scrolled children; `.stretch` makes
+    /// them fill the viewport's inner width (vertical) / height (horizontal).
+    align_cross: Align = .start,
     /// Current scroll offsets, read from Model. The framework does not
     /// own this state; the host translates wheel / drag events into app
     /// Msgs that update the Model fields feeding this value back in.
     scroll_x: f32 = 0,
     scroll_y: f32 = 0,
+    /// Non-zero opts this region into wheel routing and layout reports:
+    /// `teak.run` hands wheel events over its innermost hovered `id != 0`
+    /// scroll region to the App's `scrollMsg(model, id, dx, dy)`, and
+    /// reports its viewport + content size through `scrollLayoutMsg` on
+    /// first layout and whenever either changes. Apps give each such
+    /// region a distinct id.
+    id: u32 = 0,
 };
 
 // ── Overlay (HARDLINE §2 escape hatch 5) ───────────────────────────
@@ -153,11 +256,23 @@ pub fn OverlayStyle(comptime Msg: type) type {
         padding: f32 = 8,
         gap: f32 = 4,
         direction: Direction = .vertical,
+        /// Cross-axis placement of the overlay's children (see `Align`).
+        align_cross: Align = .start,
         /// Backdrop fill drawn behind the overlay's children. Alpha 0 means
         /// no backdrop quad. Modals typically set this to a semi-opaque
         /// black, tooltips/popups leave it at zero and put their own bg in
         /// a child group/panel.
         backdrop: [4]f32 = .{ 0, 0, 0, 0 },
+        /// Optional border drawn inside the overlay's rect over the backdrop,
+        /// before the children (keep `padding >= border_width`).
+        border: ?[4]f32 = null,
+        border_width: f32 = 1,
+        /// Hard drop shadow: the overlay's rect, offset by `shadow_offset`
+        /// and drawn BEHIND it in this color (no blur). It shows through
+        /// any transparent part of the overlay, so pair it with an opaque
+        /// `backdrop` (or an opaque child panel that fills the rect).
+        shadow: ?[4]f32 = null,
+        shadow_offset: [2]f32 = .{ 2, 2 },
         /// Optical anchor side relative to (x, y) — the overlay shifts by
         /// (-w*anchor_x_frac, -h*anchor_y_frac). For a tooltip below the
         /// cursor, set anchor at top-left (0, 0). For a context menu
@@ -322,6 +437,10 @@ pub const CanvasPrimitive = union(enum) {
     vline: VLine,
     /// A small square point marker centered on (`x`, `y`).
     marker: Marker,
+    /// Pre-tessellated colored triangle list (see `Triangles`).
+    triangles: Triangles,
+    /// A big batch of independent segments sharing one color / thickness.
+    lines: Lines,
 
     pub const Polyline = struct {
         points: []const CanvasPoint,
@@ -351,6 +470,74 @@ pub const CanvasPrimitive = union(enum) {
         size: f32 = 4,
         color: [4]f32 = .{ 0.85, 0.85, 0.9, 1.0 },
     };
+
+    /// One vertex of a `Triangles` list: canvas-local position + RGBA.
+    pub const TriVertex = struct {
+        x: f32,
+        y: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    };
+
+    /// A plain triangle list (three consecutive vertices = one triangle,
+    /// either winding) with a color per vertex, interpolated across the
+    /// triangle. Per-vertex alpha is what lets an app feather 1 px edges
+    /// for antialiasing without MSAA. The render pass clips the list to the
+    /// canvas rect and the active scroll clip (CPU Sutherland–Hodgman, with
+    /// a straight-copy fast path when everything is inside); triangles with
+    /// a non-finite vertex are dropped, a trailing partial triangle ignored.
+    ///
+    /// `key` is a cheap revision of the content: the run loop's frame diff
+    /// treats two frames with the same non-zero `key` and length as
+    /// identical without comparing the vertices. Bump it whenever `verts`
+    /// changes; leave it 0 to have the diff compare the vertex bytes.
+    pub const Triangles = struct {
+        verts: []const TriVertex,
+        key: u64 = 0,
+    };
+
+    /// `segs[i] = {x0, y0, x1, y1}`, each drawn as a `thickness`-wide quad
+    /// (no joins), clipped like polyline segments. For hatching and other
+    /// large sets of unconnected strokes. `key`: as for `Triangles`.
+    pub const Lines = struct {
+        segs: []const [4]f32,
+        color: [4]f32 = .{ 0.85, 0.85, 0.9, 1.0 },
+        thickness: f32 = 1,
+        key: u64 = 0,
+    };
+
+    /// Content equality for the frame diff (arena slices have fresh
+    /// addresses every frame, so compare what they point at).
+    pub fn eql(a: CanvasPrimitive, b: CanvasPrimitive) bool {
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+        return switch (a) {
+            .polyline => |pl| blk: {
+                const o = b.polyline;
+                if (!std.meta.eql(pl.color, o.color) or pl.thickness != o.thickness) break :blk false;
+                if (pl.points.len != o.points.len) break :blk false;
+                for (pl.points, o.points) |qa, qb| if (!std.meta.eql(qa, qb)) break :blk false;
+                break :blk true;
+            },
+            .triangles => |t| sameRevision(TriVertex, t.verts, t.key, b.triangles.verts, b.triangles.key),
+            .lines => |l| blk: {
+                const o = b.lines;
+                if (!std.meta.eql(l.color, o.color) or l.thickness != o.thickness) break :blk false;
+                break :blk sameRevision([4]f32, l.segs, l.key, o.segs, o.key);
+            },
+            .filled_rect => |x| std.meta.eql(x, b.filled_rect),
+            .hline => |x| std.meta.eql(x, b.hline),
+            .vline => |x| std.meta.eql(x, b.vline),
+            .marker => |x| std.meta.eql(x, b.marker),
+        };
+    }
+
+    fn sameRevision(comptime T: type, a: []const T, a_key: u64, b: []const T, b_key: u64) bool {
+        if (a.len != b.len) return false;
+        if (a_key != 0 or b_key != 0) return a_key == b_key;
+        return std.mem.eql(u8, std.mem.sliceAsBytes(a), std.mem.sliceAsBytes(b));
+    }
 };
 
 pub const CanvasStyle = struct {
@@ -380,6 +567,70 @@ pub fn CanvasCmd(comptime Msg: type) type {
         msg: ?Msg = null,
         /// Accessible label / name for the a11y tree.
         label: []const u8 = "",
+        /// Interactive canvas: when true, `teak.run` turns pointer input over
+        /// this canvas into `CanvasEvent`s for the App's `canvasMsg` hook
+        /// (see `core/pointer.zig`). Wheel events over it go to `canvasMsg`
+        /// instead of `wheelMsg` / `scrollMsg`.
+        pointer: bool = false,
+        /// Identifies the canvas in `CanvasEvent.id`. Non-zero and distinct
+        /// per interactive canvas.
+        id: u32 = 0,
+    };
+}
+
+// ── 3D scene (kerf: depth-tested mesh inside the UI) ────────────────
+//
+// A fixed-size leaf the Gpu fills with a rendered 3D scene (see
+// `core/scene.zig`, docs/features/scene3d.md). Like `image`, it is layout
+// + a draw record: the render pass emits a `SceneDraw`; the Gpu renders the
+// mesh offscreen and composites it at the leaf's rect.
+
+pub const SceneStyle = struct {
+    /// Intrinsic size in logical pixels; the scene is rendered at exactly
+    /// this size (times the display scale), so it is never resampled.
+    width: f32 = 320,
+    height: f32 = 240,
+    /// Flex weight on the parent's main axis (0 = intrinsic), as `image`.
+    flex: f32 = 0,
+};
+
+pub fn SceneCmd(comptime Msg: type) type {
+    return struct {
+        style: SceneStyle = .{},
+        /// The mesh to draw: a `Gpu.uploadMesh` handle, or — when the App
+        /// declares the `resources` hook — the app key of a `.mesh`
+        /// resource, which the run loop maps to the handle. 0 draws only
+        /// the clear colour.
+        mesh: scene.MeshHandle = scene.MESH_HANDLE_NONE,
+        camera: scene.Camera = .{},
+        /// Background colour of the scene.
+        clear: [4]f32 = .{ 0.1, 0.11, 0.14, 1 },
+        /// Multiplied into each line vertex's colour; line width in px.
+        edge_color: [4]f32 = .{ 1, 1, 1, 1 },
+        edge_px: f32 = 1.5,
+        /// Content revision. The frame diff compares the whole struct, but
+        /// the mesh's *contents* live behind `mesh` — bump `key` when the
+        /// geometry behind an unchanged handle/key changes (typically the
+        /// resource `rev`), or the frame is skipped as unchanged.
+        key: u64 = 0,
+        /// Interactive-scene routing (see `core/pointer.zig`): with
+        /// `pointer = true` and `id != 0` the scene receives `CanvasEvent`s
+        /// like an interactive canvas.
+        id: u32 = 0,
+        pointer: bool = false,
+        /// Dispatched on click when non-null (non-pointer scenes).
+        msg: ?Msg = null,
+        /// Accessible name for the a11y tree.
+        label: []const u8 = "",
+
+        /// Content equality for the frame diff.
+        pub fn eql(a: @This(), b: @This()) bool {
+            return std.meta.eql(a.style, b.style) and a.mesh == b.mesh and
+                std.meta.eql(a.camera, b.camera) and std.meta.eql(a.clear, b.clear) and
+                std.meta.eql(a.edge_color, b.edge_color) and a.edge_px == b.edge_px and
+                a.key == b.key and a.id == b.id and a.pointer == b.pointer and
+                std.meta.eql(a.msg, b.msg) and std.mem.eql(u8, a.label, b.label);
+        }
     };
 }
 
@@ -488,6 +739,7 @@ pub fn Cmd(comptime Msg: type) type {
         slider: SliderCmd(Msg),
         divider: DividerStyle,
         canvas: CanvasCmd(Msg),
+        scene3d: SceneCmd(Msg),
     };
 }
 
@@ -769,6 +1021,15 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .pop_group) catch unreachable;
         }
 
+        /// Invisible flex filler: an empty zero-padding group with the given
+        /// flex weight, so it soaks up leftover main-axis space (pin a button
+        /// to the far end of a row, push a footer down a column). Emits a
+        /// `push_group` / `pop_group` pair; no new Cmd variant.
+        pub fn spacer(self: *Self, flex: f32) void {
+            self.pushGroup(.{ .padding = 0, .gap = 0, .flex = flex });
+            self.popGroup();
+        }
+
         pub fn text(self: *Self, content: []const u8) void {
             self.cmds.append(self.backing, .{ .text = .{
                 .content = content,
@@ -848,6 +1109,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .msg = msg,
                 .label = label,
                 .style = style,
+                .font = self.theme.typography.body,
             } }) catch unreachable;
         }
 
@@ -892,6 +1154,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .cursor = cursor,
                 .style = style,
+                .font = self.theme.typography.body,
             } }) catch unreachable;
         }
 
@@ -1018,6 +1281,33 @@ pub fn CmdBuffer(comptime Msg: type) type {
             } }) catch unreachable;
         }
 
+        /// Emit a 3D scene leaf; see `SceneCmd`. Typical use:
+        /// `cb.scene3d(.{ .style = .{ .width = 480, .height = 360 }, .mesh = key, .camera = cam, .key = rev })`.
+        pub fn scene3d(self: *Self, cmd: SceneCmd(Msg)) void {
+            self.cmds.append(self.backing, .{ .scene3d = cmd }) catch unreachable;
+        }
+
+        /// Interactive canvas: pointer input over it (down/move/up/wheel/
+        /// leave, plus `layout` on first layout and resize) reaches the
+        /// App's `canvasMsg(model, CanvasEvent)` hook tagged with `id`.
+        /// That is how an app implements pan / zoom / drag over a canvas —
+        /// the primitives are still pure data built from the Model.
+        pub fn canvasInteractive(
+            self: *Self,
+            style: CanvasStyle,
+            primitives: []const CanvasPrimitive,
+            id: u32,
+            label: []const u8,
+        ) void {
+            self.cmds.append(self.backing, .{ .canvas = .{
+                .style = style,
+                .primitives = primitives,
+                .label = label,
+                .pointer = true,
+                .id = id,
+            } }) catch unreachable;
+        }
+
         pub fn textInputSelected(
             self: *Self,
             focus_msg: Msg,
@@ -1032,6 +1322,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cursor = cursor,
                 .selection_anchor = selection_anchor,
                 .style = style,
+                .font = self.theme.typography.body,
             } }) catch unreachable;
         }
 
@@ -1648,6 +1939,27 @@ test "CmdBuffer.canvas emits a canvas cmd carrying its primitives" {
     try testing.expectEqual(@as(usize, 0), cv.label.len);
 }
 
+test "CmdBuffer.canvasInteractive sets pointer + id; other emitters leave them off" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.canvas(.{}, &.{});
+    cb.canvasInteractive(.{ .width = 300, .height = 200 }, &.{}, 7, "viewport");
+    cb.pushScroll(.{ .id = 3 });
+    cb.popScroll();
+
+    try testing.expect(!cb.cmds.items[0].canvas.pointer);
+    try testing.expectEqual(@as(u32, 0), cb.cmds.items[0].canvas.id);
+    const cv = cb.cmds.items[1].canvas;
+    try testing.expect(cv.pointer);
+    try testing.expectEqual(@as(u32, 7), cv.id);
+    try testing.expectEqualStrings("viewport", cv.label);
+    try testing.expectEqual(@as(?Msg, null), cv.msg);
+    try testing.expectEqual(@as(u32, 3), cb.cmds.items[2].push_scroll.id);
+}
+
 test "CmdBuffer.canvasClickable / canvasLabeled set msg + label" {
     const testing = std.testing;
     const Msg = union(enum) { poke };
@@ -1683,4 +1995,81 @@ test "CmdBuffer.pushFormRow: documented depth of 8 is reachable without tripping
     i = 0;
     while (i < DEPTH) : (i += 1) cb.popFormRow();
     try testing.expectEqual(@as(u8, 0), cb.form_row_depth);
+}
+
+test "CmdBuffer.scene3d emits a scene3d cmd with defaults" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.scene3d(.{ .mesh = 5, .key = 12, .style = .{ .width = 480, .height = 360 } });
+    cb.scene3d(.{ .id = 2, .pointer = true, .msg = .poke, .label = "view" });
+
+    const a = cb.cmds.items[0].scene3d;
+    try testing.expectEqual(@as(u32, 5), a.mesh);
+    try testing.expectEqual(@as(u64, 12), a.key);
+    try testing.expectEqual(@as(f32, 480), a.style.width);
+    try testing.expectEqual(@as(u32, 0), a.id);
+    try testing.expect(!a.pointer);
+    try testing.expectEqual(scene.MESH_HANDLE_NONE, cb.cmds.items[1].scene3d.mesh);
+    const b = cb.cmds.items[1].scene3d;
+    try testing.expectEqual(@as(u32, 2), b.id);
+    try testing.expect(b.pointer);
+    try testing.expectEqual(@as(?Msg, Msg.poke), b.msg);
+}
+
+test "SceneCmd.eql compares content (label by value) and the revision key" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    const S = SceneCmd(Msg);
+    var label_a = [_]u8{ 'a', 'b' };
+    var label_b = [_]u8{ 'a', 'b' };
+    const x: S = .{ .label = &label_a, .key = 1 };
+    var y: S = .{ .label = &label_b, .key = 1 };
+    try testing.expect(x.eql(y)); // different addresses, same content
+    y.key = 2;
+    try testing.expect(!x.eql(y)); // geometry behind the handle changed
+    y.key = 1;
+    y.camera.eye[1] = 4;
+    try testing.expect(!x.eql(y));
+    y.camera.eye[1] = 0;
+    y.msg = .poke;
+    try testing.expect(!x.eql(y));
+}
+
+test "CanvasPrimitive.eql: batches compare by key (or by bytes when key is 0)" {
+    const testing = std.testing;
+    const V = CanvasPrimitive.TriVertex;
+    var a = [_]V{ .{ .x = 0, .y = 0, .r = 1, .g = 0, .b = 0, .a = 1 }, .{ .x = 1, .y = 0, .r = 1, .g = 0, .b = 0, .a = 1 }, .{ .x = 0, .y = 1, .r = 1, .g = 0, .b = 0, .a = 1 } };
+    var b = a; // distinct storage, equal content
+    const pa: CanvasPrimitive = .{ .triangles = .{ .verts = &a, .key = 7 } };
+    const pb: CanvasPrimitive = .{ .triangles = .{ .verts = &b, .key = 7 } };
+    try testing.expect(pa.eql(pb));
+
+    // Same key => trusted equal even if bytes differ (that is the contract).
+    b[0].x = 5;
+    try testing.expect(pa.eql(pb));
+    // A new key => different.
+    const pc: CanvasPrimitive = .{ .triangles = .{ .verts = &b, .key = 8 } };
+    try testing.expect(!pa.eql(pc));
+
+    // key 0 => deep compare.
+    const p0a: CanvasPrimitive = .{ .triangles = .{ .verts = &a } };
+    const p0b: CanvasPrimitive = .{ .triangles = .{ .verts = &b } };
+    try testing.expect(!p0a.eql(p0b));
+    b[0].x = 0;
+    try testing.expect(p0a.eql(p0b));
+
+    // Length mismatch is always unequal.
+    const short: CanvasPrimitive = .{ .triangles = .{ .verts = a[0..2], .key = 7 } };
+    try testing.expect(!pa.eql(short));
+
+    // Lines: style participates, key as above.
+    const segs = [_][4]f32{.{ 0, 0, 1, 1 }};
+    const l1: CanvasPrimitive = .{ .lines = .{ .segs = &segs, .key = 3 } };
+    const l2: CanvasPrimitive = .{ .lines = .{ .segs = &segs, .key = 3, .thickness = 2 } };
+    try testing.expect(l1.eql(l1));
+    try testing.expect(!l1.eql(l2));
+    try testing.expect(!l1.eql(pa));
 }
