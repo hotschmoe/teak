@@ -10,21 +10,80 @@ const TextureHandle = text.TextureHandle;
 
 pub const Direction = enum { vertical, horizontal };
 
+/// Cross-axis placement of a container's children (the axis perpendicular
+/// to `direction`).
+pub const Align = enum {
+    /// Children sit at the start edge at their own size. Legacy leaves that
+    /// always filled the cross axis (text_input, slider, divider) still do.
+    start,
+    center,
+    end,
+    /// Every child kind is sized to the container's inner cross extent. A
+    /// group or scroll that fixed its own size on that axis (`width` /
+    /// `height` > 0) keeps it.
+    stretch,
+};
+
+/// Main-axis distribution of leftover space. Only applies when no child
+/// has a flex weight (flex children absorb the leftover first).
+pub const Justify = enum { start, center, end, space_between };
+
+/// Horizontal placement of a label inside its box (button labels).
+pub const TextAlign = enum { start, center, end };
+
+/// Look of a `text_input`.
+pub const InputVariant = enum {
+    /// A filled, bordered box (`bg`, `border` / `focus_border`, `border_width`).
+    boxed,
+    /// No box: a 1px rule along the bottom edge (2px, in `focus_border`,
+    /// while focused). For typed-form fields on a paper background.
+    underline,
+};
+
 pub const GroupStyle = struct {
     direction: Direction = .vertical,
     padding: f32 = 8,
+    /// Overrides `padding` on the horizontal / vertical axis when non-null.
+    pad_x: ?f32 = null,
+    pad_y: ?f32 = null,
     gap: f32 = 8,
-    /// 0 = intrinsic (measured from children). >0 = flex weight; parent
-    /// distributes remaining main-axis space proportionally.
+    /// 0 = no growth. >0 = flex weight: the parent shares its leftover
+    /// main-axis space among flex children in proportion, ON TOP of each
+    /// child's own size (flex-basis auto). Flex never shrinks a group below
+    /// its content; wrap overflowing content in a scroll.
     flex: f32 = 0,
+    /// Fixed OUTER size (padding included) on that axis; 0 = measured from
+    /// children. A fixed size is the flex basis and beats `align_cross`
+    /// stretch from the parent.
+    width: f32 = 0,
+    height: f32 = 0,
+    /// Floor on the outer size, applied to the measured size and to stretch.
+    min_width: f32 = 0,
+    min_height: f32 = 0,
+    /// How this group places / sizes its children on the cross axis.
+    align_cross: Align = .start,
+    /// How this group distributes leftover main-axis space (no flex kids).
+    justify: Justify = .start,
     /// Optional solid background fill. When non-null, the render pass
     /// emits a single quad at the group's full (padded) rect BEFORE
     /// drawing the group's children — children paint on top. Default
     /// `null` preserves the prior no-fill behavior. This is the panel /
     /// card idiom: pair with an overlay's dim backdrop for a readable
-    /// modal. No corner radius in this pass — rounded panels are a
-    /// separate concern.
+    /// modal. Corners are square: the quad renderer has no rounding.
     bg: ?[4]f32 = null,
+    /// Optional border: four `border_width` quads drawn INSIDE the group's
+    /// rect, after `bg` and before the children. It takes no layout space;
+    /// keep `padding >= border_width` so children don't paint over it.
+    border: ?[4]f32 = null,
+    border_width: f32 = 1,
+
+    pub fn padX(self: GroupStyle) f32 {
+        return self.pad_x orelse self.padding;
+    }
+
+    pub fn padY(self: GroupStyle) f32 {
+        return self.pad_y orelse self.padding;
+    }
 };
 
 pub const TextCmd = struct {
@@ -44,13 +103,32 @@ pub const ButtonStyle = struct {
     /// dimmed bg + greyed label. No hover/press feedback in this state.
     disabled_bg: [4]f32 = .{ 0.18, 0.18, 0.18, 1.0 },
     disabled_fg: [4]f32 = .{ 0.5, 0.5, 0.5, 1.0 },
-    corner_radius: f32 = 4,
-    /// Minimum intrinsic width in pixels. `0` = no floor (the button
-    /// measures to `max(label + padding, BUTTON_MIN_WIDTH)` as before).
-    /// A non-zero value forces the button at least this wide in the
-    /// measure pass — used e.g. by the dropdown so every open-list option
-    /// row spans the full list width and is clickable edge to edge.
-    min_width: f32 = 0,
+    /// Label color while hovered / pressed; null keeps `fg`. Together with
+    /// `hover_bg` this gives the classic ink-on-paper inversion on hover.
+    hover_fg: ?[4]f32 = null,
+    press_fg: ?[4]f32 = null,
+    /// Optional border drawn inside the button's rect, over `bg`, in every
+    /// state (a disabled button keeps it). Corners are square.
+    border: ?[4]f32 = null,
+    border_width: f32 = 1,
+    /// The label moves down this many pixels while pressed (a tactile
+    /// "key travel" without changing the rect).
+    press_offset_y: f32 = 0,
+    /// Where the label sits horizontally inside the padded box.
+    label_align: TextAlign = .start,
+    /// Horizontal padding on each side of the label. The button measures
+    /// to `label width + 2 * h_padding` (floored by `min_width`) and the
+    /// render pass insets the label by the same amount.
+    h_padding: f32 = 8,
+    /// Floor on the measured width in pixels. The default keeps the old
+    /// 60px minimum; set 0 for compact buttons (icons, close boxes) or a
+    /// larger value to force a width (the dropdown does, so every open-list
+    /// row spans the full list and is clickable edge to edge).
+    min_width: f32 = 60,
+    /// Outer height in pixels.
+    height: f32 = 36,
+    /// Flex weight on the parent's main axis (see `GroupStyle.flex`).
+    flex: f32 = 0,
 };
 
 pub const TextInputStyle = struct {
@@ -64,11 +142,19 @@ pub const TextInputStyle = struct {
     disabled_bg: [4]f32 = .{ 0.10, 0.10, 0.11, 1.0 },
     disabled_fg: [4]f32 = .{ 0.5, 0.5, 0.5, 1.0 },
     disabled_border: [4]f32 = .{ 0.22, 0.22, 0.25, 1.0 },
-    corner_radius: f32 = 4,
+    /// Selection highlight behind the selected text (drawn under the glyphs,
+    /// so give it some transparency).
+    selection_bg: [4]f32 = .{ 0.25, 0.45, 0.95, 0.45 },
+    variant: InputVariant = .boxed,
+    /// Border thickness of the `.boxed` variant (the `.underline` rule is
+    /// fixed at 1px, 2px focused).
+    border_width: f32 = 2,
     /// Text inputs expand along the main axis by default.
     flex: f32 = 1,
     /// Minimum width when flex is 0 or parent has no extra space.
     min_width: f32 = 120,
+    /// Outer height in pixels.
+    height: f32 = 28,
 };
 
 pub const CheckboxStyle = struct {
@@ -113,11 +199,20 @@ pub const ScrollStyle = struct {
     gap: f32 = 0,
     /// Flex weight used in the parent's main-axis distribution. 0 means
     /// use the intrinsic size (capped by width/height below).
+    ///
+    /// A scroll with `flex > 0` and no fixed size on the parent's main axis
+    /// has a zero basis there: it takes exactly its share of the leftover
+    /// space (its content may be taller and is clipped), instead of growing
+    /// to fit its content and pushing siblings out of the window.
     flex: f32 = 0,
-    /// Fixed viewport sizes. 0 means "measured from children" (in which
-    /// case overflow scrolling is pointless, but the shape still works).
+    /// Fixed viewport sizes; they win over `align_cross` stretch. 0 means
+    /// "measured from children" (in which case overflow scrolling is
+    /// pointless, but the shape still works).
     width: f32 = 0,
     height: f32 = 0,
+    /// Cross-axis placement of the scrolled children; `.stretch` makes
+    /// them fill the viewport's inner width (vertical) / height (horizontal).
+    align_cross: Align = .start,
     /// Current scroll offsets, read from Model. The framework does not
     /// own this state; the host translates wheel / drag events into app
     /// Msgs that update the Model fields feeding this value back in.
@@ -160,11 +255,23 @@ pub fn OverlayStyle(comptime Msg: type) type {
         padding: f32 = 8,
         gap: f32 = 4,
         direction: Direction = .vertical,
+        /// Cross-axis placement of the overlay's children (see `Align`).
+        align_cross: Align = .start,
         /// Backdrop fill drawn behind the overlay's children. Alpha 0 means
         /// no backdrop quad. Modals typically set this to a semi-opaque
         /// black, tooltips/popups leave it at zero and put their own bg in
         /// a child group/panel.
         backdrop: [4]f32 = .{ 0, 0, 0, 0 },
+        /// Optional border drawn inside the overlay's rect over the backdrop,
+        /// before the children (keep `padding >= border_width`).
+        border: ?[4]f32 = null,
+        border_width: f32 = 1,
+        /// Hard drop shadow: the overlay's rect, offset by `shadow_offset`
+        /// and drawn BEHIND it in this color (no blur). It shows through
+        /// any transparent part of the overlay, so pair it with an opaque
+        /// `backdrop` (or an opaque child panel that fills the rect).
+        shadow: ?[4]f32 = null,
+        shadow_offset: [2]f32 = .{ 2, 2 },
         /// Optical anchor side relative to (x, y) — the overlay shifts by
         /// (-w*anchor_x_frac, -h*anchor_y_frac). For a tooltip below the
         /// cursor, set anchor at top-left (0, 0). For a context menu
@@ -784,6 +891,15 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .pop_group) catch unreachable;
         }
 
+        /// Invisible flex filler: an empty zero-padding group with the given
+        /// flex weight, so it soaks up leftover main-axis space (pin a button
+        /// to the far end of a row, push a footer down a column). Emits a
+        /// `push_group` / `pop_group` pair; no new Cmd variant.
+        pub fn spacer(self: *Self, flex: f32) void {
+            self.pushGroup(.{ .padding = 0, .gap = 0, .flex = flex });
+            self.popGroup();
+        }
+
         pub fn text(self: *Self, content: []const u8) void {
             self.cmds.append(self.backing, .{ .text = .{
                 .content = content,
@@ -863,6 +979,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .msg = msg,
                 .label = label,
                 .style = style,
+                .font = self.theme.typography.body,
             } }) catch unreachable;
         }
 
@@ -907,6 +1024,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .cursor = cursor,
                 .style = style,
+                .font = self.theme.typography.body,
             } }) catch unreachable;
         }
 
@@ -1068,6 +1186,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cursor = cursor,
                 .selection_anchor = selection_anchor,
                 .style = style,
+                .font = self.theme.typography.body,
             } }) catch unreachable;
         }
 

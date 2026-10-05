@@ -141,7 +141,7 @@ pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 `cmd component component_list transient text sub theme text_field numeric_field
-dropdown debug_overlay snapshot chart layout scroll_extent hit_test focus keys a11y render
+dropdown debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
 
 ### Commands & CmdBuffer (`teak.cmd` → core/cmd.zig)
@@ -152,6 +152,10 @@ Cmd(comptime Msg: type) type          // tagged union: push_group/pop_group, pus
                                        //   radio, slider, divider, canvas. Exposes .MsgT.
 CmdBuffer(comptime Msg: type) type     // arena-backed cmd list + emitter methods + .theme field.
 Direction = enum { vertical, horizontal }
+Align = enum { start, center, end, stretch }      // cross-axis placement of a container's children
+Justify = enum { start, center, end, space_between }   // main-axis leftover (no flex children)
+TextAlign = enum { start, center, end }           // button label placement
+InputVariant = enum { boxed, underline }          // text_input look (underline: 1px rule, 2px focused)
 ```
 Any slice stored on a Cmd (a text label, an option list, chart primitives)
 must borrow from `Model` or from `cb.arena.allocator()` — NEVER a stack
@@ -169,6 +173,7 @@ Emitters (all `catch unreachable` on arena OOM):
 - `textInput(focus_msg, content, cursor)`, `textInputStyled(...)`, `textInputDisabled(...)`,
   `textInputSelected(focus_msg, content, cursor, ?selection_anchor, TextInputStyle)`
 - `checkbox(msg, checked, label)`, `radio(msg, selected, label)`, `slider(grab_msg, value)`
+- `spacer(flex)` — invisible flex filler (empty zero-padding group)
 - containers: `pushGroup(GroupStyle)`/`popGroup()`, `pushScroll(ScrollStyle)`/`popScroll()`,
   `pushOverlay(OverlayStyle(Msg))`/`popOverlay()`, `pushVirtualList(VirtualListStyle)`/`popVirtualList()`,
   `pushFormRow(FormRowOpts)`/`popFormRow()`
@@ -178,15 +183,25 @@ Emitters (all `catch unreachable` on arena OOM):
 
 Style / option structs an app constructs:
 ```zig
-GroupStyle = struct { direction: Direction = .vertical, padding: f32 = 8, gap: f32 = 8,
-                      flex: f32 = 0, bg: ?[4]f32 = null }   // flex 0 = intrinsic, >0 = weight
+GroupStyle = struct { direction: Direction = .vertical, padding: f32 = 8,
+                      pad_x, pad_y: ?f32 = null,           // per-axis override of padding
+                      gap: f32 = 8, flex: f32 = 0,         // flex 0 = no growth, >0 = weight (on top of own size)
+                      width, height: f32 = 0,              // fixed OUTER size on that axis; 0 = measured
+                      min_width, min_height: f32 = 0,      // floor (beats fixed + stretch)
+                      align_cross: Align = .start,         // .stretch: every child fills the inner cross extent
+                      justify: Justify = .start,           // leftover main-axis space when no child has flex
+                      bg: ?[4]f32 = null,
+                      border: ?[4]f32 = null, border_width: f32 = 1 }   // border drawn INSIDE the rect
 ScrollStyle = struct { direction = .vertical, padding, gap, flex, width, height,
+                       align_cross: Align = .start,
                        scroll_x, scroll_y: f32 = 0,
-                       id: u32 = 0 }                        // width/height 0 = measured; id != 0 =>
-                                                            //   scrollMsg / scrollLayoutMsg routing
+                       id: u32 = 0 }                        // width/height 0 = measured; flex scroll has zero basis;
+                                                            //   id != 0 => scrollMsg / scrollLayoutMsg routing
 OverlayStyle(Msg) = struct { x, y, width, height, padding = 8, gap = 4,
-                       direction = .vertical, backdrop: [4]f32 = {0,0,0,0},
+                       direction = .vertical, align_cross: Align = .start, backdrop: [4]f32 = {0,0,0,0},
                        anchor_x_frac, anchor_y_frac: f32 = 0, modal: bool = false,
+                       border: ?[4]f32 = null, border_width: f32 = 1,
+                       shadow: ?[4]f32 = null, shadow_offset: [2]f32 = {2,2},   // hard offset shadow
                        backdrop_msg: ?Msg = null }          // modal swallows click-through;
                                                             //   backdrop_msg = click-outside-to-close
 VirtualListStyle = struct { direction, total_count: u32, item_extent: f32,
@@ -194,12 +209,15 @@ VirtualListStyle = struct { direction, total_count: u32, item_extent: f32,
 ImageStyle = struct { width = 64, height = 64, flex: f32 = 0, tint: [4]f32 = {1,1,1,1} }
 ImageCmd = struct { handle: TextureHandle, style: ImageStyle }
 ButtonStyle = struct { bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg: [4]f32,
-                       corner_radius: f32 = 4, min_width: f32 = 0 }
+                       hover_fg, press_fg: ?[4]f32 = null, border: ?[4]f32 = null, border_width = 1,
+                       press_offset_y: f32 = 0, label_align: TextAlign = .start,
+                       h_padding: f32 = 8, min_width: f32 = 60, height: f32 = 36, flex: f32 = 0 }
+                       // corners are square (no corner_radius: the quad renderer has no rounding)
 ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false }
 TextCmd = struct { content: []const u8, font: FontSpec, color: [4]f32 }
 TextInputStyle = struct { bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg,
-                       disabled_border: [4]f32, corner_radius: f32 = 4, flex: f32 = 1,
-                       min_width: f32 = 120 }
+                       disabled_border, selection_bg: [4]f32, variant: InputVariant = .boxed,
+                       border_width: f32 = 2, flex: f32 = 1, min_width: f32 = 120, height: f32 = 28 }  
 TextInputCmd(Msg) = struct { focus_msg, content, cursor, selection_anchor: ?usize,
                        style, font, disabled: bool }
 CheckboxStyle = struct { box_bg, box_border, check, fg: [4]f32, size = 18, label_gap = 8 }
@@ -237,6 +255,20 @@ LineChartOpts = struct { width, height, min, max: f32, padding: f32 = 4,
                          line_color, grid_color: [4]f32, line_thickness: f32 = 2,
                          grid_lines: u32 = 5 }
 lineChartPrimitives(arena, series: []const f32, opts: LineChartOpts) []const CanvasPrimitive
+```
+
+### Tables (`teak.table` → core/table.zig)
+Fixed-column monospace tables: pad/truncate cells to a character width, emit rows as groups of text cmds.
+```zig
+Table = struct { columns: []const TableColumn, gutter: u8 = 1, ellipsis: []const u8 = "\u{2026}",
+                 pub fn header(self, cb, TableRowStyle) void,
+                 pub fn row(self, cb, cells: []const []const u8, TableRowStyle) void,
+                 pub fn totalChars(self) usize }
+TableColumn = struct { title: []const u8 = "", chars: u16, cell_align: CellAlign = .left }
+CellAlign = enum { left, right, center }
+TableRowStyle = struct { font = mono, color, bg: ?[4]f32 = null, rule: ?[4]f32 = null,
+                         pad_x = 4, pad_y = 2, height: f32 = 0 }
+fitCell(alloc, text, width: usize, align: CellAlign, ellipsis, trailing: usize) ![]u8
 ```
 
 ### Layout (`teak.layout` → layout/engine.zig)
@@ -298,8 +330,10 @@ mutation path). See docs/features/subscriptions.md.
 
 ### Theme (`teak.theme` → core/theme.zig)
 ```zig
-Theme = struct { palette, typography, text_color, heading_color, muted_color, danger_color,
-                 panel_bg: [4]f32, button, text_input, checkbox, radio, slider, divider;
+Theme = struct { palette, text_color, heading_color, muted_color, danger_color, panel_bg: [4]f32,  // required
+                 typography, button, text_input, checkbox, radio, slider, divider, card: GroupStyle,
+                 field: TextInputStyle (underline);   // all default to their struct defaults
+                 // a fully custom Theme is a plain literal; see docs/features/ergonomic-helpers.md
                  pub const dark_default: Theme; pub const light_default: Theme;
                  pub fn fromPalette(p: Palette) Theme }
 Palette = struct { bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted,
@@ -415,7 +449,9 @@ emitQuadCorners(verts, alloc, c0, c1, c2, c3: [2]f32, color: [4]f32) void   // r
 ### Text measurement (`teak.text` → core/text.zig)
 ```zig
 FontFamily = enum { sans, serif, mono }
-FontSpec = struct { size_px: f32 = 14, family: FontFamily = .sans }
+FontWeight = enum { regular, medium, bold }
+FontSpec = struct { size_px: f32 = 14, family: FontFamily = .sans, weight: FontWeight = .regular,
+                    letter_spacing: f32 = 0 }   // px per glyph; backends that can't honor weight/spacing ignore them
 DEFAULT_FONT: FontSpec        // sans 14px
 TextMetrics = struct { width, height, ascent, descent: f32 }
 TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
@@ -532,6 +568,7 @@ More worked examples and idioms: **docs/cookbook.md**.
 - `docs/features/widgets.md` — disabled state, NumericField, Dropdown, setTitle.
 - `docs/features/components.md` — comptime component composition.
 - `docs/features/canvas.md` — charts & custom 2D drawing.
+- `docs/features/tables.md` — fixed-column monospace tables (`teak.table`).
 - `docs/features/layout.md` — layout engine (measure + position passes).
 - `docs/features/hit-test.md` — hit-test + hover-test.
 - `docs/features/focus.md` — Msg-keyed stable focus traversal.

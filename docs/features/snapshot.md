@@ -59,9 +59,9 @@ Each open container (`push_group` / `push_scroll` / `push_overlay` /
 
   | tag | payload |
   |-----|---------|
-  | `group` | `vertical` / `horizontal`; ` bg` when a fill is set |
+  | `group` | `vertical` / `horizontal`; ` bg` when a fill is set, ` border` when a border is set |
   | `scroll` | direction; `scroll_x=N` / `scroll_y=N` when non-zero; `id=N` when set |
-  | `overlay` | `layer=1` (the single non-base z-layer); ` [modal]` when set |
+  | `overlay` | `layer=1` (the single non-base z-layer); ` [modal]` when set, ` shadow` when it has a drop shadow |
   | `virtual_list` | `total=N extent=M visible=[start,end)` |
   | `text` | `"content"` |
   | `rich_text` | `"content"` (flattened — spans index into it) |

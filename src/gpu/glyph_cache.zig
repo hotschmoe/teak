@@ -56,7 +56,10 @@ pub fn textCacheKey(
         (@as(u32, @intFromFloat(std.math.clamp(color[2], 0, 1) * 255)) << 8) |
         (@as(u32, @intFromFloat(std.math.clamp(color[3], 0, 1) * 255)));
     const size_px: u16 = @intFromFloat(font.size_px);
-    const font_bits: u64 = (@as(u64, size_px) << 16) | @as(u64, @intFromEnum(font.family));
+    // Tracking in 1/16 px steps; weight and spacing change the rasterized pixels.
+    const spacing: u16 = @bitCast(@as(i16, @intFromFloat(std.math.clamp(font.letter_spacing * 16, -32768, 32767))));
+    const font_bits: u64 = (@as(u64, spacing) << 40) | (@as(u64, size_px) << 16) |
+        (@as(u64, @intFromEnum(font.weight)) << 8) | @as(u64, @intFromEnum(font.family));
     const dim_bits: u64 = (@as(u64, w) << 32) | @as(u64, h);
     return content_hash ^ font_bits ^ @as(u64, color_bits) ^ dim_bits;
 }
@@ -245,6 +248,13 @@ test "lookup miss, insert, then hit" {
     try std.testing.expectEqual(@as(u32, 1), s.misses);
     try std.testing.expectEqual(@as(u32, 1), s.hits);
     try std.testing.expectEqual(@as(u32, 0), s.evictions);
+}
+
+test "textCacheKey separates weight and letter_spacing" {
+    const base = textCacheKey("abc", .{}, test_color, 50, 20);
+    try std.testing.expect(base != textCacheKey("abc", .{ .weight = .bold }, test_color, 50, 20));
+    try std.testing.expect(base != textCacheKey("abc", .{ .letter_spacing = 1 }, test_color, 50, 20));
+    try std.testing.expectEqual(base, textCacheKey("abc", .{}, test_color, 50, 20));
 }
 
 test "LRU eviction picks the oldest untouched entry" {
