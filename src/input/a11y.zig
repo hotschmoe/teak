@@ -293,6 +293,13 @@ fn collectLayer(
                 .bounds = b,
                 .label = cv.label,
             },
+            // A 3D scene is announced as an image with its label.
+            .scene3d => |sc| .{
+                .role = .image,
+                .cmd_index = @intCast(i),
+                .bounds = b,
+                .label = sc.label,
+            },
             // Containers handled above; pop_* + virtual_list never
             // emit leaves.
             else => null,
@@ -566,4 +573,26 @@ test "buildTree: non-modal overlay does NOT suppress base-layer nodes" {
     }
     try testing.expect(saw_base_button);
     try testing.expect(saw_overlay);
+}
+
+test "buildTree: scene3d is an image node carrying its label" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical });
+    cb.scene3d(.{ .style = .{ .width = 100, .height = 80 }, .label = "3D model" });
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], null);
+
+    try testing.expectEqual(@as(usize, 2), tree.len);
+    try testing.expectEqual(Role.image, tree[1].role);
+    try testing.expectEqualStrings("3D model", tree[1].label);
+    try testing.expectEqual(@as(usize, 1), tree[1].cmd_index);
 }

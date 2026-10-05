@@ -107,7 +107,7 @@ pub fn keySpecialMsg(*const Model, SpecialKey) ?Msg   // arrows/backspace/etc �
 pub fn keyNeedsClipboard(SpecialKey) bool             // pairs with handleClipboard
 pub fn handleClipboard(*Model, SpecialKey, Clipboard) void   // cut/copy/paste policy
 pub fn wheelMsg(*const Model, f32) ?Msg               // vertical wheel delta → Msg (when no canvas / scroll region took it)
-pub fn canvasMsg(*const Model, CanvasEvent) ?Msg      // pointer events over CanvasCmd.pointer canvases (see "Pointer events")
+pub fn canvasMsg(*const Model, CanvasEvent) ?Msg      // pointer events over CanvasCmd.pointer canvases and SceneCmd.pointer scenes (shared id space) (see "Pointer events")
 pub fn scrollMsg(*const Model, id: u32, dx: f32, dy: f32) ?Msg   // wheel over innermost hovered ScrollStyle.id != 0 region
 pub fn scrollLayoutMsg(*const Model, id: u32, viewport_w: f32, viewport_h: f32,
                        content_w: f32, content_h: f32) ?Msg      // id != 0 scroll region: first layout + on size change
@@ -122,6 +122,8 @@ pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view 
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
 pub fn subscribe(*const Model) []const Sub(Msg)       // declarative timers; run services them each
                                                       //   frame via runSubs on Host.nowMs() (§2 hatch 6)
+pub fn resources(*const Model) []const Resource       // declarative GPU meshes/images by (key, rev);
+                                                      //   run uploads/releases + maps keys to handles (§2 hatch 8)
 ```
 IME composition (`Host.imeState`) is folded into `TransientState` every
 frame with no opt-in. A static read-only app is just Model/Msg/update/view.
@@ -177,6 +179,7 @@ Emitters (all `catch unreachable` on arena OOM):
 - containers: `pushGroup(GroupStyle)`/`popGroup()`, `pushScroll(ScrollStyle)`/`popScroll()`,
   `pushOverlay(OverlayStyle(Msg))`/`popOverlay()`, `pushVirtualList(VirtualListStyle)`/`popVirtualList()`,
   `pushFormRow(FormRowOpts)`/`popFormRow()`
+- `scene3d(SceneCmd(Msg))` — 3D mesh leaf (see "3D scenes" below).
 - `image(TextureHandle, ImageStyle)`, `canvas(CanvasStyle, prims)`, `canvasLabeled(...)`,
   `canvasClickable(msg, style, prims, label)`, `canvasInteractive(style, prims, id, label)`,
   `richText(content, spans)`, `richTextStyled(RichTextCmd)`
@@ -231,7 +234,11 @@ DividerStyle = struct { thickness: f32 = 1, color: [4]f32 }
 CanvasStyle = struct { width = 200, height = 120, flex: f32 = 0, bg: ?[4]f32 = null }
 CanvasCmd(Msg) = struct { style, primitives: []const CanvasPrimitive, msg: ?Msg, label,
                           pointer: bool = false, id: u32 = 0 }   // pointer+id => interactive (canvasMsg)
-CanvasPrimitive = union(enum) { polyline, filled_rect, hline, vline, marker }  // canvas-local px
+CanvasPrimitive = union(enum) { polyline, filled_rect, hline, vline, marker,
+    triangles: struct { verts: []const TriVertex /*x,y,r,g,b,a*/, key: u64 = 0 },       // per-vertex RGBA triangle list
+    lines: struct { segs: []const [4]f32, color, thickness, key: u64 = 0 } }            // canvas-local px
+// triangles/lines: CPU-clipped to canvas+scroll clip; `key` = content revision for the frame diff
+// (same non-zero key+len => treated equal; 0 => bytes compared). Bump it when the batch changes.
 CanvasPoint = struct { x: f32, y: f32 }
 RichTextSpan = struct { start, end: u32, color: [4]f32, font: FontSpec, bold, italic: bool }
 RichTextCmd = struct { content: []const u8, spans: []const RichTextSpan,
@@ -437,14 +444,42 @@ TransientState = struct { hover_index, press_index, focus_index: ?usize = null,
 
 ### Render (`teak.render`, `teak.vertex`)
 ```zig
-buildVertices(verts, text_draws, image_draws: *std.ArrayList(...), alloc, cmds, rects,
-              transient: TransientState, measurer: TextMeasurer) void
+buildFrame(verts, text_draws, image_draws, scene_draws: *std.ArrayList(...), alloc, cmds, rects,
+           transient: TransientState, measurer: TextMeasurer) void      // what teak.run uses
+buildVertices(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer) void  // = buildFrame, scenes skipped
+ResourceTable = struct { sync(self, gpu, []const Resource) bool /*changed*/, deinit(self, gpu), handleOf(kind, key) u32 }
+stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw) void  // remap keys, uploadImages, renderScenes
+                                      // (hand-written web loops call these; teak.run does it for you)
 ImageDraw = struct { rect_x, rect_y, rect_w, rect_h: f32, handle: TextureHandle,
                      tint: [4]f32, clip_x, clip_y, clip_w, clip_h: f32 }
 Vertex = extern struct { x, y, r, g, b, a, u, v: f32 }
 emitQuad(verts, alloc, rect: Rect, color: [4]f32) void
 emitQuadCorners(verts, alloc, c0, c1, c2, c3: [2]f32, color: [4]f32) void   // rotated quads
 ```
+
+### 3D scenes (`teak.scene` → core/scene.zig; see docs/features/scene3d.md)
+```zig
+MeshHandle = u32;  MESH_HANDLE_NONE: MeshHandle = 0
+MeshVertex = extern struct { pos: [3]f32, normal: [3]f32, color: [4]f32 }   // 40 B
+LineVertex = extern struct { pos: [3]f32, color: [4]f32 }                   // 28 B
+MeshData = struct { vertices: []const MeshVertex = &.{}, indices: []const u32 = &.{},
+                    lines: []const LineVertex = &.{} /* consecutive pairs = segments */;
+                    pub fn validate(self) error{IndexOutOfRange,PartialTriangle}!void }
+Camera = struct { view_proj: [16]f32 /* column-major, WebGPU clip: z 0..1 */ = identity,
+                  eye: [3]f32 = .{0,0,0}, light_dir: [3]f32 /* travel dir; zero = headlight */ }
+SceneDraw = struct { mesh: MeshHandle, rect_x, rect_y, rect_w, rect_h: f32, clip_x, clip_y, clip_w, clip_h: f32,
+                     camera: Camera, clear: [4]f32, edge_color: [4]f32, edge_px: f32 }
+```
+```zig
+SceneStyle = struct { width: f32 = 320, height: f32 = 240, flex: f32 = 0 }
+SceneCmd(Msg) = struct { style, mesh: MeshHandle /*or resource key*/, camera: Camera, clear: [4]f32,
+                         edge_color: [4]f32, edge_px: f32 = 1.5, key: u64 /*bump with mesh rev*/,
+                         id: u32 = 0, pointer: bool = false, msg: ?Msg, label: []const u8 }
+Resource = union(enum) { mesh: MeshResource{key,rev,data: MeshData}, image: ImageResource{key,rev,width,height,rgba} }
+```
+Flat-shaded two-sided lighting (one directional light + ambient), depth-tested, feature lines
+as camera-facing pixel-width quads (colour = vertex colour * `edge_color`). The Gpu renders each
+`SceneDraw` offscreen, then composites it like an image.
 
 ### Text measurement (`teak.text` → core/text.zig)
 ```zig
@@ -497,8 +532,14 @@ Backends live in `gpu/{native,native_linux,web}.zig` — picked by the build und
 `teak-gpu-native`.
 ```zig
 ClearColor = [4]f32
+InitOptions = struct { msaa: bool = false /* 4x main UI pass */, scene_msaa: bool = true }
+                                       // backends: Gpu.init(handle, w, h) | Gpu.initWithOptions(handle, w, h, InitOptions)
 validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uploadVertices,
                                        //   renderFrame, rasterizeText, uploadText, uploadImage, uploadImages
+// Optional extension (checked only when present; the scene trio is all-or-none):
+//   uploadMesh(*Gpu, MeshData) MeshHandle      releaseMesh(*Gpu, MeshHandle) void
+//   renderScenes(*Gpu, []const SceneDraw) void  // before renderFrame; offscreen 3D -> composite quads
+//   releaseImage(*Gpu, TextureHandle) void
 ```
 
 ### Application loop (`teak.run` / `teak.runtime` → run.zig)
@@ -567,7 +608,8 @@ More worked examples and idioms: **docs/cookbook.md**.
 - `docs/features/subscriptions.md` — declarative timers (`Sub`/`subscribe`); `run` wiring.
 - `docs/features/widgets.md` — disabled state, NumericField, Dropdown, setTitle.
 - `docs/features/components.md` — comptime component composition.
-- `docs/features/canvas.md` — charts & custom 2D drawing.
+- `docs/features/canvas.md` — charts & custom 2D drawing (+ triangle/line batches).
+- `docs/features/scene3d.md` — 3D meshes in the UI, `resources()` hook, Gpu scene extension.
 - `docs/features/tables.md` — fixed-column monospace tables (`teak.table`).
 - `docs/features/layout.md` — layout engine (measure + position passes).
 - `docs/features/hit-test.md` — hit-test + hover-test.

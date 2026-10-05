@@ -342,6 +342,13 @@ pub const LayoutEngine = struct {
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, img.style.flex);
                 },
+                .scene3d => |sc| {
+                    // Fixed-size leaf, same sizing convention as `canvas`.
+                    const w = sc.style.width;
+                    const h = sc.style.height;
+                    rects[i] = .{ .w = w, .h = h };
+                    addLeafToTop(&stack, w, h, sc.style.flex);
+                },
                 .canvas => |cv| {
                     // Intrinsic w/h come from the style; flex grows the box
                     // along the parent's main axis, `.stretch` along the cross.
@@ -473,6 +480,7 @@ pub const LayoutEngine = struct {
                 .button => |b| placeChild(rects, &stack, i, .{ .flex = b.style.flex }),
                 .image => |img| placeChild(rects, &stack, i, .{ .flex = img.style.flex }),
                 .canvas => |cv| placeChild(rects, &stack, i, .{ .flex = cv.style.flex }),
+                .scene3d => |sc| placeChild(rects, &stack, i, .{ .flex = sc.style.flex }),
                 .text_input => |ti| placeChild(rects, &stack, i, .{ .flex = ti.style.flex, .row_only = true, .fills_cross = true }),
                 .slider => |sl| placeChild(rects, &stack, i, .{ .flex = sl.style.flex, .row_only = true, .fills_cross = true }),
                 .divider => placeChild(rects, &stack, i, .{ .fills_cross = true }),
@@ -1084,4 +1092,24 @@ test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
 // snapshots) live in their own file to keep this one readable.
 test {
     _ = @import("sizing_test.zig");
+}
+
+test "scene3d is a fixed-size leaf sized from its style" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 10, .gap = 0 });
+    cb.text("Title"); // 50 x 20
+    cb.scene3d(.{ .style = .{ .width = 320, .height = 200 } });
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
+
+    try testing.expectEqual(@as(f32, 320), rects[2].w);
+    try testing.expectEqual(@as(f32, 200), rects[2].h);
+    try testing.expectEqual(@as(f32, 10), rects[2].x);
+    try testing.expectEqual(@as(f32, 30), rects[2].y);
 }

@@ -58,6 +58,8 @@ fn interactiveLeaf(c: anytype) ?Leaf(@TypeOf(c).MsgT) {
         // A canvas is interactive with a click Msg, a pointer surface, or
         // both; otherwise it is a decorative leaf that clicks pass through.
         .canvas => |cv| if (cv.msg != null or cv.pointer) .{ .msg = cv.msg } else null,
+        // Same rule for a 3D scene.
+        .scene3d => |sc| if (sc.msg != null or sc.pointer) .{ .msg = sc.msg } else null,
         else => null,
     };
 }
@@ -196,6 +198,7 @@ pub fn pointerSurface(cmds: anytype, index: usize) ?PointerTarget {
     if (index >= cmds.len) return null;
     return switch (cmds[index]) {
         .canvas => |cv| if (cv.pointer) .{ .index = index, .id = cv.id } else null,
+        .scene3d => |sc| if (sc.pointer) .{ .index = index, .id = sc.id } else null,
         else => null,
     };
 }
@@ -263,7 +266,7 @@ fn wheelTargetLayer(cmds: anytype, rects: []const Rect, x: f32, y: f32, layer: L
                 overlay_depth -= 1;
                 clip.pop();
             },
-            .canvas => if (visible and inside) {
+            .canvas, .scene3d => if (visible and inside) {
                 if (pointerSurface(cmds, i)) |t| best = .{ .canvas = t };
             },
             else => {},
@@ -1026,4 +1029,30 @@ test "wheelTarget: an overlay scroll region wins over the base, a modal blocks i
     const rs = testLayout(&rects, &cb, 400, 400);
     try testing.expectEqual(@as(u32, 2), wheelTarget(cb.cmds.items, rs, 70, 70).?.scroll.id);
     try testing.expectEqual(@as(u32, 1), wheelTarget(cb.cmds.items, rs, 300, 300).?.scroll.id);
+}
+
+test "hitTest: scene3d is interactive only with a click msg or pointer" {
+    const testing = std.testing;
+    const Msg = union(enum) { orbit };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.scene3d(.{ .style = .{ .width = 200, .height = 100 } }); // index 1 - inert
+    cb.scene3d(.{ .style = .{ .width = 200, .height = 100 }, .msg = .orbit }); // index 2
+    cb.scene3d(.{ .style = .{ .width = 200, .height = 100 }, .id = 3, .pointer = true }); // index 3
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    const rs = testLayout(&rects, &cb, 400, 400);
+
+    try testing.expect(hitTest(cb.cmds.items, rs, rs[1].x + 5, rs[1].y + 5) == null);
+    const hit = hitTest(cb.cmds.items, rs, rs[2].x + 5, rs[2].y + 5);
+    try testing.expectEqual(@as(?Msg, Msg.orbit), hit.?.msg);
+    // A pointer-only scene claims the point but dispatches no click Msg.
+    const ph = hitTest(cb.cmds.items, rs, rs[3].x + 5, rs[3].y + 5);
+    try testing.expectEqual(@as(usize, 3), ph.?.index);
+    try testing.expectEqual(@as(?Msg, null), ph.?.msg);
+    try testing.expectEqual(@as(?usize, null), hoverTest(cb.cmds.items, rs, rs[1].x + 5, rs[1].y + 5));
+    try testing.expectEqual(@as(?usize, 2), hoverTest(cb.cmds.items, rs, rs[2].x + 5, rs[2].y + 5));
 }

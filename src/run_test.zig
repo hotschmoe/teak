@@ -17,6 +17,8 @@ const theme_mod = @import("core/theme.zig");
 const keys = @import("input/keys.zig");
 const render = @import("render/build.zig");
 const vertex = @import("render/vertex.zig");
+const scene = @import("core/scene.zig");
+const resources_mod = @import("core/resources.zig");
 const host_iface = @import("platform/host.zig");
 const gpu_iface = @import("gpu/context.zig");
 
@@ -168,6 +170,18 @@ const StubGpu = struct {
     secondary_rendered: u32 = 0,
     secondary_closed: u32 = 0,
 
+    // Scene / resource extension: handles are handed out from 100 so a
+    // test can tell a backend handle from an app key.
+    next_handle: u32 = 100,
+    mesh_uploads: u32 = 0,
+    image_uploads: u32 = 0,
+    mesh_releases: u32 = 0,
+    image_releases: u32 = 0,
+    scene_calls: u32 = 0,
+    last_scene_mesh: u32 = 0,
+    last_scene_count: usize = 0,
+    last_image_handle: u32 = 0,
+
     pub fn deinit(_: *StubGpu) void {}
     pub fn resize(self: *StubGpu, _: u32, _: u32) void {
         self.resize_calls += 1;
@@ -176,15 +190,37 @@ const StubGpu = struct {
         self.upload_vert_calls += 1;
     }
     pub fn uploadText(_: *StubGpu, _: []const text.TextDraw) void {}
-    pub fn uploadImages(_: *StubGpu, _: []const render.ImageDraw) void {}
+    pub fn uploadImages(self: *StubGpu, d: []const render.ImageDraw) void {
+        if (d.len > 0) self.last_image_handle = d[0].handle;
+    }
+    pub fn uploadMesh(self: *StubGpu, _: scene.MeshData) u32 {
+        self.mesh_uploads += 1;
+        return self.takeHandle();
+    }
+    pub fn releaseMesh(self: *StubGpu, _: u32) void {
+        self.mesh_releases += 1;
+    }
+    pub fn releaseImage(self: *StubGpu, _: u32) void {
+        self.image_releases += 1;
+    }
+    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw) void {
+        self.scene_calls += 1;
+        self.last_scene_count = d.len;
+        if (d.len > 0) self.last_scene_mesh = d[0].mesh;
+    }
+    fn takeHandle(self: *StubGpu) u32 {
+        defer self.next_handle += 1;
+        return self.next_handle;
+    }
     pub fn renderFrame(self: *StubGpu, _: [4]f32) void {
         self.render_calls += 1;
     }
     pub fn rasterizeText(_: *StubGpu, _: []const u8, _: text.FontSpec, _: [4]f32, _: u32, _: u32) text.TextureHandle {
         return text.TEXTURE_HANDLE_NONE;
     }
-    pub fn uploadImage(_: *StubGpu, _: []const u8, _: u32, _: u32) text.TextureHandle {
-        return text.TEXTURE_HANDLE_NONE;
+    pub fn uploadImage(self: *StubGpu, _: []const u8, _: u32, _: u32) text.TextureHandle {
+        self.image_uploads += 1;
+        return self.takeHandle();
     }
     pub fn openSecondarySurface(self: *StubGpu, _: anytype, _: u32, _: u32) ?u32 {
         self.secondary_opened += 1;
@@ -392,11 +428,13 @@ const NoopApp = struct {
 test "run: a same-length IME composition change forces a rebuild" {
     // Blink disabled so the ONLY rebuild triggers are content/transient
     // changes — the IME edit must be one of them.
-    const t = try playWith(NoopApp, .{ .script = &.{
-        .{},
-        .{ .ime = "ab" }, // composition starts
-        .{ .ime = "cd" }, // same length, written over "ab" in the Host's one shared buffer
-    } }, .{ .blink_period = 0 });
+    const t = try playWith(NoopApp, .{
+        .script = &.{
+            .{},
+            .{ .ime = "ab" }, // composition starts
+            .{ .ime = "cd" }, // same length, written over "ab" in the Host's one shared buffer
+        },
+    }, .{ .blink_period = 0 });
     defer t.destroy();
     // Frame 1: first content. Frame 2: IME activates. Frame 3: "cd" — a
     // rebuild ONLY if the loop copies each frame's composition into its own
@@ -487,14 +525,16 @@ test "run: live snapshot mirrors the frame and skips idle rewrites" {
     // Cursor parked over the button throughout. The last content change is
     // frame 4 (the click), so a correct sink stamps `frame=4`; a higher
     // number would mean an idle frame rewrote the file.
-    const t = try playWith(SnapApp, .{ .script = &.{
-        .{ .x = 5, .y = 5 }, // 1: first write
-        .{ .x = 5, .y = 5 }, // 2: idle
-        .{ .x = 5, .y = 5, .held = left, .down = left }, // 3
-        .{ .x = 5, .y = 5, .up = left }, // 4: click
-        .{ .x = 5, .y = 5 }, // 5: idle
-        .{ .x = 5, .y = 5 }, // 6: idle
-    } }, .{ .snapshot_path = path });
+    const t = try playWith(SnapApp, .{
+        .script = &.{
+            .{ .x = 5, .y = 5 }, // 1: first write
+            .{ .x = 5, .y = 5 }, // 2: idle
+            .{ .x = 5, .y = 5, .held = left, .down = left }, // 3
+            .{ .x = 5, .y = 5, .up = left }, // 4: click
+            .{ .x = 5, .y = 5 }, // 5: idle
+            .{ .x = 5, .y = 5 }, // 6: idle
+        },
+    }, .{ .snapshot_path = path });
     defer t.destroy();
 
     const contents = try readSnapshot(td, "app.snap");
@@ -631,10 +671,12 @@ test "run: services a .every subscription and mirrors the fired Msg to the snaps
     const path = try snapshotPath(td, "timer.snap");
     defer gpa.free(path);
 
-    const t = try playWith(TimerApp, .{ .script = &.{
-        .{ .clock_ms = 50 }, // first frame: no window to compare, no fire
-        .{ .clock_ms = 250 }, // crosses the 100 and 200 ms boundaries
-    } }, .{ .snapshot_path = path });
+    const t = try playWith(TimerApp, .{
+        .script = &.{
+            .{ .clock_ms = 50 }, // first frame: no window to compare, no fire
+            .{ .clock_ms = 250 }, // crosses the 100 and 200 ms boundaries
+        },
+    }, .{ .snapshot_path = path });
     defer t.destroy();
 
     try std.testing.expectEqual(@as(i32, 2), t.rt.model.ticks);
@@ -1102,4 +1144,231 @@ test "canvas events: a capture whose canvas leaves the view is dropped, not stuc
     });
     defer t.destroy();
     try expectKinds(t.rt.model.log.items(), &.{ .layout, .move, .down });
+}
+
+// ── Scenes: resources hook, pointer routing, frame diff ────────────
+
+const pixel_rgba = [_]u8{ 255, 0, 0, 255 };
+
+/// A model whose `rev` a button click bumps; the scene's Cmd key is
+/// deliberately constant so only the resource change can force a re-stage.
+const ResourceApp = struct {
+    pub const Model = struct { rev: u32 = 1 };
+    pub const Msg = union(enum) { bump };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .bump => m.rev += 1,
+        }
+    }
+    pub fn resources(m: *const Model) []const resources_mod.Resource {
+        const S = struct {
+            var list: [2]resources_mod.Resource = undefined;
+        };
+        S.list[0] = .{ .mesh = .{ .key = 5, .rev = m.rev, .data = .{} } };
+        S.list[1] = .{ .image = .{ .key = 3, .rev = 1, .width = 1, .height = 1, .rgba = &pixel_rgba } };
+        return &S.list;
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.button(.bump, "X");
+        cb.scene3d(.{ .style = .{ .width = 50, .height = 40 }, .mesh = 5 });
+        cb.image(3, .{ .width = 16, .height = 16 });
+        cb.popGroup();
+    }
+};
+
+test "resources: uploaded once, keys remapped to handles, rev bump re-uploads, shutdown releases" {
+    const t = try play(ResourceApp, &.{
+        .{},
+        .{ .x = 5, .y = 5, .held = left, .down = left },
+        .{ .x = 5, .y = 5, .up = left }, // click => rev 2
+        .{},
+        .{},
+    });
+    const gpu = t.gpu; // copy the counters, then tear the runtime down
+    t.destroy();
+
+    // Mesh: rev 1, then rev 2 after the click. Image: once.
+    try std.testing.expectEqual(@as(u32, 2), gpu.mesh_uploads);
+    try std.testing.expectEqual(@as(u32, 1), gpu.image_uploads);
+    // The Gpu only ever saw backend handles, never the app keys 5 / 3.
+    try std.testing.expect(gpu.last_scene_mesh >= 100);
+    try std.testing.expect(gpu.last_image_handle >= 100);
+    try std.testing.expectEqual(@as(usize, 1), gpu.last_scene_count);
+}
+
+test "resources: the superseded handle is released on rev bump, the rest at deinit" {
+    var host: ScriptHost = .{ .script = &.{
+        .{},
+        .{ .x = 5, .y = 5, .held = left, .down = left },
+        .{ .x = 5, .y = 5, .up = left },
+        .{},
+    } };
+    var gpu: StubGpu = .{};
+    var rt = try Runtime(ResourceApp, ScriptHost, StubGpu).init(std.testing.allocator, &host, &gpu, .{});
+    while (!host.shouldClose()) try rt.frame();
+
+    // Before teardown: only the superseded mesh handle has been released,
+    // and the re-upload re-staged the scene although its Cmd was unchanged.
+    try std.testing.expectEqual(@as(u32, 1), gpu.mesh_releases);
+    try std.testing.expectEqual(@as(u32, 0), gpu.image_releases);
+    try std.testing.expectEqual(@as(u32, 102), gpu.last_scene_mesh);
+
+    rt.deinit();
+    try std.testing.expectEqual(@as(u32, 2), gpu.mesh_releases);
+    try std.testing.expectEqual(@as(u32, 1), gpu.image_releases);
+}
+
+const PlainGpu = struct {
+    renders: u32 = 0,
+    pub fn deinit(_: *PlainGpu) void {}
+    pub fn resize(_: *PlainGpu, _: u32, _: u32) void {}
+    pub fn uploadVertices(_: *PlainGpu, _: []const vertex.Vertex) void {}
+    pub fn uploadText(_: *PlainGpu, _: []const text.TextDraw) void {}
+    pub fn uploadImages(_: *PlainGpu, _: []const render.ImageDraw) void {}
+    pub fn renderFrame(self: *PlainGpu, _: [4]f32) void {
+        self.renders += 1;
+    }
+    pub fn rasterizeText(_: *PlainGpu, _: []const u8, _: text.FontSpec, _: [4]f32, _: u32, _: u32) text.TextureHandle {
+        return text.TEXTURE_HANDLE_NONE;
+    }
+    pub fn uploadImage(_: *PlainGpu, _: []const u8, _: u32, _: u32) text.TextureHandle {
+        return text.TEXTURE_HANDLE_NONE;
+    }
+};
+
+test "a Gpu without the scene extension still runs scene-bearing apps" {
+    const NoResApp = struct {
+        pub const Model = struct {};
+        pub const Msg = union(enum) { x };
+        pub fn update(_: *Model, _: Msg) void {}
+        pub fn view(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{ .padding = 0, .gap = 0 });
+            cb.scene3d(.{ .style = .{ .width = 20, .height = 20 }, .mesh = 42 });
+            cb.popGroup();
+        }
+    };
+    comptime gpu_iface.validateGpu(PlainGpu);
+    var host: ScriptHost = .{ .script = &.{ .{}, .{}, .{} } };
+    var gpu: PlainGpu = .{};
+    var rt = try Runtime(NoResApp, ScriptHost, PlainGpu).init(std.testing.allocator, &host, &gpu, .{});
+    defer rt.deinit();
+    while (!host.shouldClose()) try rt.frame();
+    try std.testing.expectEqual(@as(u32, 3), gpu.renders);
+}
+
+test "without the resources hook, scene mesh values are raw Gpu handles" {
+    const RawApp = struct {
+        pub const Model = struct {};
+        pub const Msg = union(enum) { x };
+        pub fn update(_: *Model, _: Msg) void {}
+        pub fn view(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{ .padding = 0, .gap = 0 });
+            cb.scene3d(.{ .style = .{ .width = 20, .height = 20 }, .mesh = 42 });
+            cb.popGroup();
+        }
+    };
+    const t = try play(RawApp, &.{ .{}, .{} });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 42), t.gpu.last_scene_mesh);
+    try std.testing.expectEqual(@as(u32, 0), t.gpu.mesh_uploads);
+}
+
+/// Like PointerApp but the interactive surface is a 3D scene.
+const SceneApp = struct {
+    pub const Model = PointerApp.Model;
+    pub const Msg = PointerApp.Msg;
+    pub fn update(m: *Model, msg: Msg) void {
+        PointerApp.update(m, msg);
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+        cb.scene3d(.{ .style = .{ .width = 200, .height = 100 }, .id = 7, .pointer = true, .label = "view" });
+        cb.button(.click, "B");
+        cb.popGroup();
+    }
+    pub const canvasMsg = PointerApp.canvasMsg;
+    pub const wheelMsg = PointerApp.wheelMsg;
+};
+
+test "scene events: layout, hover, capture through a drag outside, release + leave" {
+    const t = try play(SceneApp, &.{
+        .{}, // layout
+        .{ .x = 50, .y = 40 }, // enter
+        .{ .x = 50, .y = 40, .held = left, .down = left }, // press
+        .{ .x = 300, .y = 250, .held = left }, // dragged off, still captured
+        .{ .x = 300, .y = 250, .up = left }, // release outside
+        .{ .x = 300, .y = 250 }, // idle
+    });
+    defer t.destroy();
+    const log = t.rt.model.log.items();
+    try expectKinds(log, &.{ .layout, .move, .down, .move, .up, .leave });
+    try std.testing.expectEqual(@as(u32, 7), log[0].canvas.id);
+    try std.testing.expectEqual(@as(f32, 200), log[0].canvas.w);
+    try std.testing.expectEqual(@as(f32, 300), log[3].canvas.x); // captured move past the rect
+    for (log) |l| try std.testing.expect(l != .click);
+}
+
+test "scene events: wheel over the scene goes to the canvas hook, not wheelMsg" {
+    const t = try play(SceneApp, &.{
+        .{},
+        .{ .x = 50, .y = 40 },
+        .{ .x = 50, .y = 40, .wheel_dy = 3 },
+    });
+    defer t.destroy();
+    const log = t.rt.model.log.items();
+    var saw_wheel = false;
+    for (log) |l| switch (l) {
+        .canvas => |ev| if (ev.kind == .wheel) {
+            saw_wheel = true;
+            try std.testing.expectEqual(@as(u32, 7), ev.id);
+            try std.testing.expectEqual(@as(f32, 3), ev.dy);
+        },
+        .wheel => return error.WheelLeakedToWheelMsg,
+        else => {},
+    };
+    try std.testing.expect(saw_wheel);
+}
+
+test "scene events: a press that started elsewhere does not hover the scene" {
+    const t = try play(SceneApp, &.{
+        .{},
+        .{ .x = 20, .y = 120, .held = left, .down = left }, // press on the button below
+        .{ .x = 50, .y = 40, .held = left }, // drag over the scene
+        .{ .x = 50, .y = 40, .up = left }, // released over it
+        .{ .x = 55, .y = 40 }, // now hovering is fine
+    });
+    defer t.destroy();
+    try expectKinds(t.rt.model.log.items(), &.{ .layout, .move });
+}
+
+test "cmdsEqual: scene3d fields and keyed canvas batches" {
+    const Msg = union(enum) { a };
+    const C = cmd.Cmd(Msg);
+    const tri = [_]cmd.CanvasPrimitive.TriVertex{
+        .{ .x = 0, .y = 0, .r = 1, .g = 1, .b = 1, .a = 1 },
+        .{ .x = 1, .y = 0, .r = 1, .g = 1, .b = 1, .a = 1 },
+        .{ .x = 0, .y = 1, .r = 1, .g = 1, .b = 1, .a = 1 },
+    };
+    const copy = tri; // same content, other address
+    const a = [_]C{
+        .{ .scene3d = .{ .mesh = 1, .key = 4, .id = 2, .pointer = true } },
+        .{ .canvas = .{ .primitives = &.{.{ .triangles = .{ .verts = &tri, .key = 9 } }} } },
+    };
+    var b = [_]C{
+        .{ .scene3d = .{ .mesh = 1, .key = 4, .id = 2, .pointer = true } },
+        .{ .canvas = .{ .primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 9 } }} } },
+    };
+    try std.testing.expect(cmdsEqual(Msg, &a, &b));
+    b[0].scene3d.key = 5;
+    try std.testing.expect(!cmdsEqual(Msg, &a, &b));
+    b[0].scene3d.key = 4;
+    b[0].scene3d.id = 3;
+    try std.testing.expect(!cmdsEqual(Msg, &a, &b));
+    b[0].scene3d.id = 2;
+    b[0].scene3d.pointer = false;
+    try std.testing.expect(!cmdsEqual(Msg, &a, &b));
+    b[0].scene3d.pointer = true;
+    b[1].canvas.primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 10 } }};
+    try std.testing.expect(!cmdsEqual(Msg, &a, &b));
 }

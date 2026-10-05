@@ -1,0 +1,14 @@
+.{
+    .name = .scene3d,
+    .version = "0.0.0",
+    .fingerprint = 0xb40fd98ba2bf205c,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .teak = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

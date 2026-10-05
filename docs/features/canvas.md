@@ -57,12 +57,43 @@ pub const CanvasPrimitive = union(enum) {
     hline:       struct { y: f32, color: [4]f32, thickness: f32 },  // spans full width
     vline:       struct { x: f32, color: [4]f32, thickness: f32 },  // spans full height
     marker:      struct { x, y: f32, size: f32, color: [4]f32 },    // centered square
+    triangles:   struct { verts: []const TriVertex, key: u64 = 0 }, // pre-tessellated, per-vertex RGBA
+    lines:       struct { segs: []const [4]f32, color: [4]f32, thickness: f32, key: u64 = 0 },
 };
+pub const TriVertex = struct { x, y, r, g, b, a: f32 };   // CanvasPrimitive.TriVertex
 ```
 
 `CanvasPrimitive` is a **data tagged union** — no function pointers, same
 rule as `Cmd` (HARDLINE §3). Build the slice in `view` into the per-frame
 arena.
+
+#### Big batches: `triangles` and `lines`
+
+For apps that tessellate themselves (CAD hatching, filled regions,
+antialiased vector linework) a canvas can carry whole batches in one
+primitive:
+
+- **`triangles`** — a plain triangle list (3 consecutive vertices = 1
+  triangle, either winding) in canvas-local px with a **color per vertex**,
+  interpolated across the triangle. Per-vertex alpha lets the app feather
+  1 px edges for antialiasing without MSAA. Renders through the solid
+  pipeline (alpha-blended, painter's order = slice order). A non-finite
+  vertex drops its triangle; a trailing partial triangle is ignored.
+- **`lines`** — `segs[i] = {x0, y0, x1, y1}`, one thickness/color for the
+  batch; each segment is a rotated quad (no joins), clipped like polyline
+  segments. For hatch fields.
+- **Clipping** is CPU, against the canvas rect intersected with the active
+  scroll/overlay clip. Triangles use three tiers: if the whole list's
+  bounds are inside the clip it is one bulk conversion (a single
+  allocation); else triangles whose own bounds are inside are copied;
+  only the straddling ones go through Sutherland–Hodgman (color
+  interpolated at the cut, result fan-triangulated). 200k vertices stay
+  linear (covered by the perf tests in `render/build.zig`).
+- **`key`** is a cheap content revision for the frame diff: two frames
+  whose batch has the same non-zero `key` and length are treated as
+  identical without comparing the vertices (megabytes). **Bump the key
+  whenever the batch changes.** `key = 0` means "no revision supplied":
+  the diff compares the bytes (still a fast `memcmp`).
 
 ### Emitters
 
@@ -91,7 +122,7 @@ cb.canvasInteractive(style, primitives, id, label);  // pointer surface (pan / z
   click into canvas-local coordinates (mirrors `sliderValueAt`) so the app
   turns the point into its own data-space `Msg`.
 - **a11y**: emits an `A11yNode` with `role = .canvas` and the `label`.
-- **snapshot**: one line — `canvas (x,y,w,h) prims=N [id=N] [pointer] "label"`.
+- **snapshot**: one line — `canvas (x,y,w,h) prims=N [id=N] [pointer] "label"` (a batch counts as one primitive).
 
 ## The chart helper
 
@@ -181,8 +212,10 @@ if (teak.canvasLocalPoint(rects[hit.index], mouse_x, mouse_y)) |p| {
 
 - **No text inside the canvas.** Compose regular `text` cmds around it for
   axis labels / titles.
-- **No curves, no fills-under-line, no per-point styling.** Polylines are
-  straight segments; markers are squares (the quad pipeline has no circle).
+- **No curves, no fills-under-line, no per-point styling** in the built-in
+  primitives. Polylines are straight segments; markers are squares (the
+  quad pipeline has no circle). Anything else: tessellate it yourself into
+  `triangles` / `lines`.
 - **No disabled state.** Drag / zoom live in the app: `canvasMsg` delivers
   the pointer stream, the app keeps the transform in its Model.
 - Polyline joins are unmitred (each segment is an independent quad); thick
