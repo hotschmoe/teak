@@ -24,10 +24,60 @@ pub const Rect = struct { x, y, w, h: f32, ... };
 
 Two O(n) linear passes over `[]Cmd`:
 
-1. **Measure** (bottom-up, via explicit `FixedStack<GroupContext, 32>`). Each command writes its intrinsic size to `rects[i]`. `push_group` entries also record `fixed_main`, `flex_total`, `child_count` so the position pass doesn't rescan children.
-2. **Position** (top-down). Root `push_group` gets stretched to `(window_w, window_h)`. Each group distributes remaining main-axis space proportionally to children with `flex > 0`.
+1. **Measure** (bottom-up, via explicit `FixedStack<GroupContext, 32>`). Each command writes its intrinsic outer size to `rects[i]`. Containers (`push_group` / `push_scroll` / `push_overlay` / `push_virtual_list`) also record `fixed_main`, `flex_total`, `child_count` so the position pass doesn't rescan children. A group's or scroll's `width` / `height` replaces the measured size; `min_width` / `min_height` floor it.
+2. **Position** (top-down). Root `push_group` gets stretched to `(window_w, window_h)`. A container is sized while it is placed in its parent (flex growth, stretch), so its final rect is known before its own children are placed.
 
 No tree allocation. The `FixedStack` is the only stack-based storage, capped at depth 32.
+
+### Sizing model
+
+Every node has an **outer size** (padding and border included). Per axis:
+
+| Source | Effect |
+|---|---|
+| intrinsic | text/button/etc. measure themselves; a container is content + padding + gaps |
+| `width` / `height` (group, scroll, overlay) | replaces the intrinsic size on that axis; `0` = measured |
+| `min_width` / `min_height` (group) | floors the result, including a fixed size and stretch |
+| `flex` (main axis of the parent) | share of the parent's leftover space, added ON TOP of the child's size |
+| `align_cross = .stretch` (parent) | cross size = parent's inner extent, unless the child fixed that axis itself |
+
+**Main axis.** `flex` is a weight (flex-basis auto, grow only): leftover = inner extent - children - gaps, split by weight. Groups never shrink below their content; put overflowing content in a scroll. `flex` works on groups, scrolls, `button`, `canvas`, `image`, `text_input` and `slider`. `cb.spacer(w)` emits an empty flex group for "push the rest to the far end". With **no** flex child, `GroupStyle.justify` distributes the leftover: `.start` (default), `.center`, `.end`, `.space_between` (first/last child flush, equal gaps between; a single child behaves like `.start`).
+
+**Cross axis.** `GroupStyle.align_cross` (also on `ScrollStyle` and `OverlayStyle`) places every child:
+
+- `.start` (default): intrinsic cross size at the start edge. `text_input`, `slider` and `divider` keep their historic behaviour and fill the cross axis in a `.start` parent too.
+- `.center` / `.end`: intrinsic size, centered / flush to the end.
+- `.stretch`: every child kind (group, scroll, text, button, text_input, checkbox, radio, slider, divider, canvas, image) takes the inner cross extent. A group/scroll with an explicit `width` (vertical parent) or `height` (horizontal parent) keeps it. Stretch may shrink a child below its measured size; its content then overflows (a scroll clips, a group does not).
+
+**Scroll containers.** `width` / `height` fix the viewport; `flex` / stretch size it from the parent. A scroll with `flex > 0` and no fixed size on the parent's main axis has a zero basis there: it takes exactly its share of the leftover and its content (which may be taller) is clipped by render and hit-test. Children are measured as before, shifted by `scroll_x` / `scroll_y`.
+
+**Single-line controls.** `text_input` and `slider` are one row tall: their `flex` grows them along a *horizontal* main axis only. (Before, a `text_input` in a vertical group ballooned into the leftover column height.)
+
+**Overlays.** Absolute `x` / `y` (shifted by the anchor fractions); `width` / `height` force the size; children lay out like a group's (`direction`, `gap`, `padding`, `align_cross`, flex). An overlay never contributes to its parent's size.
+
+**Padding.** `padding` is uniform; `GroupStyle.pad_x` / `pad_y` override one axis.
+
+### The app-shell recipe
+
+```zig
+cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });          // root: fills the window
+    cb.pushGroup(.{ .direction = .horizontal, .height = 40, .align_cross = .center });  // header bar
+    // ...title, cb.spacer(1), buttons...
+    cb.popGroup();
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .flex = 1, .align_cross = .stretch }); // body
+        cb.pushGroup(.{ .width = 360, .align_cross = .stretch });            // left column, full height
+        cb.popGroup();
+        cb.pushGroup(.{ .flex = 1, .align_cross = .stretch });               // flexible center
+        cb.popGroup();
+        cb.pushGroup(.{ .width = 320, .align_cross = .stretch });            // right column
+        cb.popGroup();
+    cb.popGroup();
+    cb.pushGroup(.{ .direction = .horizontal, .height = 24, .align_cross = .center }); // status line
+    cb.popGroup();
+cb.popGroup();
+```
+
+`src/layout/sizing_test.zig` snapshots exactly this shape at 1440x900 (header 40, status 24, columns 360 / flex / 320), plus nested stretch, fixed table columns, `space_between`, min sizes and scroll overflow.
 
 ### Rect fields
 
@@ -36,7 +86,7 @@ No tree allocation. The `FixedStack` is the only stack-based storage, capped at 
 
 ### Text measurement
 
-Monospace approximation: `content.len * CHAR_WIDTH` where `CHAR_WIDTH = 10`, `TEXT_HEIGHT = 20`. Proto-2 ships with this; real font metrics are a future task dependent on a glyph atlas (blocked on `gpu.md` sampler gap).
+Text is measured through the Host's `TextMeasurer` (real glyph metrics). `teak.monoMeasurer()` is the headless stub the tests use: 10 px per byte (plus `FontSpec.letter_spacing` per byte), 20 px line height.
 
 ## Invariants
 
@@ -50,9 +100,9 @@ Monospace approximation: `content.len * CHAR_WIDTH` where `CHAR_WIDTH = 10`, `TE
 
 - **No constraint solver / CSS Grid.** Groups are horizontal or vertical flex only. A constraint-based pass would swap `positionPass` — the interface supports that, but no such pass exists today. See [`docs/archive/init_convo/ui-framework-refinement.md`](../archive/init_convo/ui-framework-refinement.md) §3 for the design sketch.
 - **No intrinsic aspect ratios.** A child can't say "keep me 16:9".
-- **No min/max constraints beyond `flex`.** `TextInputStyle` has a `min_width` field read by the emitter, but the layout engine itself treats it as a measured width.
+- **No max constraints, no flex-shrink.** Groups have `min_width` / `min_height` but no maximum, and a flex group never shrinks below its content.
 - **No text wrapping.** `text` cmds are single-line. Wrapping requires a shaper.
-- **No baseline alignment.** Cross-axis alignment is center-by-stretch (children fill the cross-axis).
+- **No baseline alignment.** Cross-axis alignment is start / center / end / stretch.
 - **No RTL / bidi.** Horizontal groups advance left-to-right.
 
 ## Extension points
@@ -69,7 +119,7 @@ Read-only extension (e.g. a debug pass that measures overflow): walk `[]Cmd` + `
 
 `GroupStyle` (in `src/core/cmd.zig`, consumed by both layout and render) carries an optional `bg: ?[4]f32 = null`. When non-null, the render pass emits a single solid-fill quad at the group's full padded rect **before** any of the group's children draw — children paint on top. Default `null` preserves the prior no-fill behaviour, so existing call sites are unaffected.
 
-This is presentation data on a Cmd, not new state-flow shape — HARDLINE §3 is undisturbed (no fn-pointer, no widget-internal state, the view function still pure). No corner radius in this pass; rounded panels are a separate concern when one is asked for.
+This is presentation data on a Cmd, not new state-flow shape — HARDLINE §3 is undisturbed (no fn-pointer, no widget-internal state, the view function still pure). Corners are square everywhere: the quad renderer has no rounding. `GroupStyle.border` / `border_width` add a frame inside the rect (see [widgets.md](widgets.md#chrome-styling-borders-hover-inversion-underline-fields-shadows)).
 
 ### Panel / modal-card idiom
 

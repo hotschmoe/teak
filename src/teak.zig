@@ -19,6 +19,7 @@ pub const component_list = @import("core/component_list.zig");
 pub const debug_overlay = @import("core/debug_overlay.zig");
 pub const snapshot = @import("core/snapshot.zig");
 pub const chart = @import("core/chart.zig");
+pub const table = @import("core/table.zig");
 pub const pointer = @import("core/pointer.zig");
 pub const effects = @import("core/effects.zig");
 pub const layout = @import("layout/engine.zig");
@@ -66,6 +67,10 @@ pub const CanvasStyle = cmd.CanvasStyle;
 pub const CanvasPrimitive = cmd.CanvasPrimitive;
 pub const CanvasPoint = cmd.CanvasPoint;
 pub const Direction = cmd.Direction;
+pub const Align = cmd.Align;
+pub const TextAlign = cmd.TextAlign;
+pub const InputVariant = cmd.InputVariant;
+pub const Justify = cmd.Justify;
 
 pub const Buttons = pointer.Buttons;
 pub const Modifiers = pointer.Modifiers;
@@ -81,6 +86,12 @@ pub const HttpMethod = effects.HttpMethod;
 pub const Header = effects.Header;
 pub const Drop = effects.Drop;
 pub const DropKind = effects.DropKind;
+
+pub const Table = table.Table;
+pub const TableColumn = table.Column;
+pub const TableRowStyle = table.RowStyle;
+pub const CellAlign = table.CellAlign;
+pub const fitCell = table.fitCell;
 
 pub const LineChartOpts = chart.LineChartOpts;
 pub const lineChartPrimitives = chart.lineChartPrimitives;
@@ -160,6 +171,7 @@ pub const SecondaryWindowSpec = runtime.SecondaryWindowSpec;
 
 pub const FontFamily = text.FontFamily;
 pub const FontSpec = text.FontSpec;
+pub const FontWeight = text.FontWeight;
 pub const DEFAULT_FONT = text.DEFAULT_FONT;
 pub const TextMetrics = text.TextMetrics;
 pub const TextMeasurer = text.TextMeasurer;

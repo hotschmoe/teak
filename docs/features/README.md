@@ -47,6 +47,7 @@ tests; names the gaps.
 | Subscriptions (declarative timers `Sub` / `subscribe`) | [subscriptions.md](subscriptions.md) |
 | Widgets: disabled / NumericField / Dropdown / setTitle | [widgets.md](widgets.md) |
 | Canvas: charts & custom 2D drawing | [canvas.md](canvas.md) |
+| Fixed-column monospace tables (`teak.table`) | [tables.md](tables.md) |
 | Comptime component composition | [components.md](components.md) |
 | Transient (presentation-only) state | [transient-state.md](transient-state.md) |
 | Host interface (window + input) | [host.md](host.md) |

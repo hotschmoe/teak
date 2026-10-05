@@ -127,8 +127,43 @@ cb.textMono("42.0");       // uses theme.typography.mono
 ```
 
 `*Styled` variants (`buttonStyled`, `textInputStyled`, …) keep their
-explicit-override behavior. Switching dark↔light is a one-line theme
+explicit-override behavior for the *style* (they still take the theme's
+body font). Switching dark↔light is a one-line theme
 assignment at the top of the per-frame view setup; no widget knows.
+
+### A fully custom theme (no `fromPalette`)
+
+`Theme` is a plain struct. Only `palette` and the five text/panel colors
+are required; `typography` and every widget style default to their own
+struct defaults, so a custom look is a literal that overrides what it cares
+about. Two derived styles ride along: `theme.card` (a bordered panel,
+`cb.pushGroup(cb.theme.card)`) and `theme.field` (an underline text input,
+`cb.textInputStyled(msg, content, cursor, cb.theme.field)`).
+
+```zig
+const ink: [4]f32 = .{ 0.10, 0.09, 0.08, 1 };
+const paper: [4]f32 = .{ 0.95, 0.93, 0.87, 1 };
+const plex: teak.FontSpec = .{ .size_px = 13, .family = .mono };
+
+const retro: teak.Theme = .{
+    .palette = .{ .bg = paper, .bg_panel = paper, .bg_sunken = paper, .bg_raised = paper,
+                  .bg_hover = ink, .bg_press = ink, .fg = ink, .fg_muted = .{ 0.4, 0.4, 0.38, 1 },
+                  .accent = .{ 0.75, 0.2, 0.1, 1 }, .danger = .{ 0.75, 0.2, 0.1, 1 }, .border = ink },
+    .typography = .{ .body = plex, .mono = plex, .small = plex,
+                     .heading = .{ .size_px = 15, .family = .mono, .weight = .bold } },
+    .text_color = ink, .heading_color = ink, .muted_color = .{ 0.4, 0.4, 0.38, 1 },
+    .danger_color = .{ 0.75, 0.2, 0.1, 1 }, .panel_bg = paper,
+    .button = .{ .bg = paper, .fg = ink, .hover_bg = ink, .hover_fg = paper, .border = ink,
+                 .press_offset_y = 1, .label_align = .center },
+    .card = .{ .bg = paper, .border = ink, .padding = 12 },
+    .field = .{ .variant = .underline, .border = ink, .focus_border = ink, .fg = ink, .cursor = ink },
+};
+
+// teak.run picks it up through the optional App hook:
+pub fn themeFor(_: *const Model) teak.Theme {
+    return retro;
+}
+```
 
 The per-frame `cb.theme = ...` assignment must be replicated in every
 entry point (native, wasm). The framework deliberately does not pull

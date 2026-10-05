@@ -140,6 +140,7 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writeRect(writer, r);
             try writer.print(" {s}", .{@tagName(g.direction)});
             if (g.bg != null) try writer.writeAll(" bg");
+            if (g.border != null) try writer.writeAll(" border");
         },
         .push_scroll => |s| {
             try writer.writeAll("scroll ");
@@ -154,6 +155,7 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             // Overlays are the single non-base z-layer (HARDLINE §2 hatch 5).
             try writer.writeAll(" layer=1");
             if (o.modal) try writer.writeAll(" [modal]");
+            if (o.shadow != null) try writer.writeAll(" shadow");
         },
         .push_virtual_list => |v| {
             try writer.writeAll("virtual_list ");
@@ -388,8 +390,8 @@ test "snapshot: text_input with cursor, selection, disabled, focus marker" {
 
     try expectSnapshot(cb.cmds.items, rs, .{ .transient = &ts },
         \\group (0,0,400,300) vertical
-        \\  text_input (0,0,400,150) "hello" cursor=5 sel=[1,5) [focus]
-        \\  text_input (0,150,400,150) "off" cursor=0 [disabled]
+        \\  text_input (0,0,400,28) "hello" cursor=5 sel=[1,5) [focus]
+        \\  text_input (0,28,400,28) "off" cursor=0 [disabled]
         \\
     );
 }
@@ -708,7 +710,35 @@ test "snapshot: realistic composed view golden" {
         \\    button (76,8,60,36) "+"
         \\    button (144,8,60,36) "-"
         \\  text (8,52,80,20) "Count: 0"
-        \\  text_input (8,80,784,512) "name" cursor=4
+        \\  text_input (8,80,784,28) "name" cursor=4
+        \\
+    );
+}
+
+test "snapshot: chrome - bordered card, underline field, shadowed overlay" {
+    const Msg = union(enum) { focus, ok };
+    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+    cb.pushGroup(.{ .padding = 8, .gap = 4, .width = 200, .bg = .{ 1, 1, 1, 1 }, .border = .{ 0, 0, 0, 1 } });
+    cb.text("NAME");
+    cb.textInputStyled(.focus, "bolt", 4, .{ .variant = .underline, .flex = 0 });
+    cb.popGroup();
+    cb.pushOverlay(.{ .x = 100, .y = 40, .width = 80, .height = 50, .shadow = .{ 0, 0, 0, 1 }, .border = .{ 0, 0, 0, 1 } });
+    cb.buttonStyled(.ok, "OK", .{ .min_width = 0 });
+    cb.popOverlay();
+    cb.popGroup();
+
+    var rects: [16]Rect = undefined;
+    const rs = layoutInto(&rects, cb.cmds.items, 400, 300);
+    try expectSnapshot(cb.cmds.items, rs, .{},
+        \\group (0,0,400,300) vertical
+        \\  group (0,0,200,68) vertical bg border
+        \\    text (8,8,40,20) "NAME"
+        \\    text_input (8,32,184,28) "bolt" cursor=4
+        \\  overlay (100,40,80,50) layer=1 shadow
+        \\    button (108,48,36,36) "OK"
         \\
     );
 }
