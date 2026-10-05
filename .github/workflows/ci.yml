@@ -10,8 +10,18 @@ jobs:
   library:
     name: Library tests + HARDLINE audit
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: teak
     steps:
+      # teak depends on zunk by path (../zunk), so check both out as siblings.
       - uses: actions/checkout@v4
+        with:
+          path: teak
+      - uses: actions/checkout@v4
+        with:
+          repository: hotschmoe/zunk
+          path: zunk
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -28,12 +38,12 @@ jobs:
 
       - name: Example tests (counter_greeter)
         run: zig build test
-        working-directory: examples/counter_greeter
+        working-directory: teak/examples/counter_greeter
 
       - name: Example tests (todo)
         run: zig build test
-        working-directory: examples/todo
+        working-directory: teak/examples/todo
 
       - name: Example tests (tree)
         run: zig build test
-        working-directory: examples/tree
+        working-directory: teak/examples/tree
