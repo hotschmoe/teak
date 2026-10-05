@@ -11,7 +11,10 @@
 const std = @import("std");
 
 pub const SpecialKey = @import("../input/keys.zig").SpecialKey;
+pub const Buttons = pointer.Buttons;
+pub const Modifiers = pointer.Modifiers;
 
+const pointer = @import("../core/pointer.zig");
 const text = @import("../core/text.zig");
 pub const TextMeasurer = text.TextMeasurer;
 pub const TextMetrics = text.TextMetrics;
@@ -82,10 +85,22 @@ pub const FileDialogPoll = union(enum) {
 /// Per-frame input snapshot returned by `Host.pollInputs`.
 ///
 /// `mouse_x` / `mouse_y` are the current cursor position (state, not an
-/// event). `mouse_down` / `mouse_up` are edge events — true only on the
-/// frame the button transitioned. `chars` and `keys` are queues drained
-/// and returned in receive order; the slices reference Host-internal
-/// storage and are valid only until the next `pollInputs` call.
+/// event), in logical pixels relative to the window's client area.
+///
+/// Buttons: `buttons` is what is held now; `button_down` / `button_up` are
+/// the edges that happened since the previous poll — a press and release
+/// inside one frame sets both (and `buttons` then reads released), so a
+/// fast click is never lost. `mouse_down` / `mouse_up` are the left-button
+/// edges (== `button_down.left` / `button_up.left`), kept for the
+/// click-only code path. `mods` is the Shift/Ctrl/Alt/Meta state at the
+/// time of the most recent input event.
+///
+/// `chars` is UTF-8 text typed this frame (whole code points, no control
+/// codes, no Ctrl/Cmd chords); `keys` is the special-key queue (arrows,
+/// Delete/Home/End, Shift-extended motion, Ctrl+A/C/X/V/Y/Z, Tab, Escape,
+/// Enter...). Both are drained and returned in receive order; the slices
+/// reference Host-internal storage and are valid only until the next
+/// `pollInputs` call.
 ///
 /// `wheel_dx` / `wheel_dy` are accumulated pixels of intended scroll
 /// since the previous `pollInputs`. Sign convention matches the DOM
@@ -93,17 +108,17 @@ pub const FileDialogPoll = union(enum) {
 /// wants the content to scroll **down** (visible viewport advances
 /// toward higher y) and positive `wheel_dx` means scroll right. Hosts
 /// translate native wheel notches into pixels (typically 120 raw units
-/// = ~48 px on Win32). Zero when no wheel events arrived this frame.
-/// Host capability note: not every backend wires both axes today —
-/// e.g. the wasm host currently reports vertical wheel only and stubs
-/// `wheel_dx = 0`. Apps that care about horizontal wheel should be
-/// designed to tolerate a zero on hosts without it; treat the
-/// horizontal axis as best-effort across backends.
+/// = ~48 px on Win32). Zero when no wheel events arrived this frame. A
+/// trackpad pinch on the web arrives as a wheel event with `mods.ctrl` set.
 pub const InputState = struct {
     mouse_x: f32,
     mouse_y: f32,
+    buttons: Buttons,
+    button_down: Buttons,
+    button_up: Buttons,
     mouse_down: bool,
     mouse_up: bool,
+    mods: Modifiers,
     wheel_dx: f32,
     wheel_dy: f32,
     chars: []const u8,

@@ -1,6 +1,8 @@
 # Hit-test + hover-test
 
-**Status**: `pub` in `src/teak.zig` as `hitTest`, `hoverTest`, `sliderValueAt`.
+**Status**: `pub` in `src/teak.zig` as `hitTest`, `hoverTest`, `sliderValueAt`
+(`hit_test.pointerTarget` / `wheelTarget` / `PointerTarget` / `WheelTarget` are
+reached through `teak.hit_test`).
 **Source**: `src/input/hit_test.zig`
 **Tests**: colocated — scroll clipping, painter's order, slider value mapping.
 
@@ -43,7 +45,21 @@ if (teak.hitTest(prev_cmds, prev_rects, mx, my)) |hit| {
 - **`hitTest`** — "what `Msg` should fire on click?" Returns the interactive leaf (`button`, `text_input`, `checkbox`, `radio`, `slider`) under the cursor, or `null`.
 - **`hoverTest`** — "what index should glow?" Broader: any hoverable cmd, used to drive `TransientState.hover_index`.
 
+`hoverTest` is `hitTest`'s index: one walker, one set of layering rules (it used to be a hand-copied twin). A **pointer canvas** (`CanvasCmd.pointer`) is an interactive leaf with no click Msg: it claims the point, so widgets behind it are not hit, but a click dispatches nothing — its input goes through `canvasMsg`.
+
 Both honor the same scroll clip stack (`push_scroll` / `pop_scroll` push/pop rects that intersect with parent clips).
+
+## Pointer + wheel targets
+
+Built on the same layering (overlay layer first, then base; modal overlays block; scroll clips intersect) for `teak.run`'s interactive-canvas and scroll routing:
+
+```zig
+pub fn pointerTarget(cmds, rects, x, y) ?PointerTarget      // { index, id } of the pointer canvas a press / hover lands on
+pub fn wheelTarget(cmds, rects, x, y) ?WheelTarget          // union { canvas: PointerTarget, scroll: { index, id } }
+```
+
+- `pointerTarget` is `hitTest` filtered to pointer canvases: an overlay leaf, a later widget, or a modal backdrop in front of the canvas wins and the canvas gets nothing. `pointerSurface(cmds, index)` is the single place that decides which cmd kinds are pointer surfaces.
+- `wheelTarget` picks the **innermost** wheel consumer under the cursor: a pointer canvas or a `push_scroll` with `ScrollStyle.id != 0`, whichever is last in document order among those containing the point (children follow their container). `id == 0` scroll regions are ignored, an overlay-layer candidate beats a base one, and a modal overlay under the point swallows the wheel.
 
 ## Invariants
 

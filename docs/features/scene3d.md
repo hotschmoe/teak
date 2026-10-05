@@ -60,18 +60,18 @@ The loop uploads on a new `key`, re-uploads when `rev` changes, releases vanishe
 
 ### Pointer routing
 
-`id` / `pointer` follow the canvas contract ([canvas.md](canvas.md), `core/pointer.zig`): a `pointer = true`, `id != 0` scene is an interactive target that receives `CanvasEvent`s (down/move/up/wheel/leave/layout, scene-local pixels) so the app can orbit/zoom by dragging. A non-pointer scene with `msg` set is a plain click target. The routing itself lives in `run`.
+`id` / `pointer` follow the canvas contract exactly ([canvas.md](canvas.md), `core/pointer.zig`), in the same `id` space as interactive canvases: a `pointer = true`, `id != 0` scene delivers `CanvasEvent`s (`layout` on first layout and resize, then `move` / `down` / `up` / `wheel` / `leave`, scene-local logical pixels, capture until every button is released, wheel over it goes to `canvasMsg` instead of `wheelMsg`) through the App's `canvasMsg(*const Model, CanvasEvent) ?Msg` hook, so the app can orbit / zoom / pan by dragging and keep the `Camera` in its `Model`. A pointer scene claims clicks (widgets behind it are not hit) but has no click Msg; a non-pointer scene with `msg` set is a plain click target. Routing lives in `hit_test.pointerTarget` / `pointerSurface` / `wheelTarget` and `run`'s `Runtime`; the scene participates through the same `pointerSurface` probe as canvases, so ids must be unique across both kinds.
 
 ## Per-pass behaviour
 
 | Pass | Behaviour |
 |---|---|
 | Layout | Fixed-size leaf from `style.width/height`; `flex` counted for siblings (as `image`). |
-| Hit-test | Interactive only with a `msg` (shared `leafMsg` predicate). |
+| Hit-test | Interactive with a `msg` or `pointer = true` (shared leaf probe); `pointerSurface` / `wheelTarget` route pointer scenes like canvases. |
 | Render | `SceneDraw` per visible scene (base layer, then overlay layer); nothing is added to the solid-vertex stream. `buildVertices` (the scene-less entry point) skips scenes. |
-| Snapshot | `scene3d (x,y,w,h) mesh=N key=K [id=I] ["label"]` |
+| Snapshot | `scene3d (x,y,w,h) mesh=N key=K [id=I] [pointer] ["label"]` |
 | A11y | `Role.image` node with `label`. |
-| Frame diff | `SceneCmd.eql`: every field, label by content. |
+| Frame diff | `SceneCmd.eql`: every field (incl. `id`, `pointer`), label by content. |
 
 ## Invariants
 

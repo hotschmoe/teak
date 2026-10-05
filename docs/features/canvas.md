@@ -2,7 +2,8 @@
 
 **Status**: `pub` in `src/teak.zig` (`CanvasCmd`, `CanvasStyle`,
 `CanvasPrimitive`, `CanvasPoint`, `canvasLocalPoint`, `lineChartPrimitives`,
-`LineChartOpts`, `emitQuadCorners`)
+`LineChartOpts`, `emitQuadCorners`, `CanvasEvent`, `CanvasEventKind`, `Buttons`,
+`Modifiers`, `Button`)
 **Source**: `src/core/cmd.zig` (variant + emitters), `src/core/chart.zig`
 (chart helper), `src/layout/engine.zig`, `src/input/hit_test.zig`,
 `src/render/{vertex,build}.zig`, `src/input/a11y.zig`,
@@ -36,6 +37,8 @@ pub fn CanvasCmd(comptime Msg: type) type {
         primitives: []const CanvasPrimitive = &.{},  // arena-owned, pure data
         msg: ?Msg = null,       // non-null → clickable (hit-test leaf)
         label: []const u8 = "", // a11y name
+        pointer: bool = false,  // true → interactive surface: pointer input becomes CanvasEvents
+        id: u32 = 0,            // CanvasEvent.id; non-zero + distinct per interactive canvas
     };
 }
 ```
@@ -98,6 +101,7 @@ primitive:
 cb.canvas(style, primitives);                        // non-interactive, unlabeled
 cb.canvasLabeled(style, primitives, label);          // + a11y label
 cb.canvasClickable(msg, style, primitives, label);   // + click Msg
+cb.canvasInteractive(style, primitives, id, label);  // pointer surface (pan / zoom / drag)
 ```
 
 ### Per-pass behavior
@@ -118,7 +122,7 @@ cb.canvasClickable(msg, style, primitives, label);   // + click Msg
   click into canvas-local coordinates (mirrors `sliderValueAt`) so the app
   turns the point into its own data-space `Msg`.
 - **a11y**: emits an `A11yNode` with `role = .canvas` and the `label`.
-- **snapshot**: one line — `canvas (x,y,w,h) prims=N "label"` (a batch counts as one primitive).
+- **snapshot**: one line — `canvas (x,y,w,h) prims=N [id=N] [pointer] "label"` (a batch counts as one primitive).
 
 ## The chart helper
 
@@ -145,7 +149,47 @@ cb.canvasLabeled(.{ .width = 320, .height = 100, .bg = cb.theme.panel_bg },
 See `examples/counter_greeter/src/app.zig` (`statsView`) for a live
 count-history chart driven by plain Model state.
 
-## Interactive recipe (click → data coordinate)
+## Interactive canvases (pan / zoom / drag)
+
+`cb.canvasInteractive(style, prims, id, label)` marks a canvas as a pointer
+surface. `teak.run` (and `teak.Runtime`) then turns raw pointer input over it
+into `CanvasEvent`s (`core/pointer.zig`) and hands each to the App's optional
+hook, which maps it to an ordinary `Msg`:
+
+```zig
+pub fn canvasMsg(m: *const Model, ev: teak.CanvasEvent) ?Msg {
+    return Msg{ .viewport = ev };   // update() does the pan / zoom / pick math
+}
+```
+
+Coordinates are **canvas-local logical px** — the same space as the primitives,
+so a pick is just `ev.x, ev.y` run through your own view transform.
+
+| `ev.kind` | When | Notes |
+|---|---|---|
+| `layout` | First layout, and whenever the canvas rect **size** changes | `w`/`h` carry the size, `x`/`y` = 0. This is how the Model learns the viewport size (the view cannot read layout). Takes effect in the next frame's view. |
+| `move` | Cursor moves over the canvas, or while a capture is active | `dx`/`dy` = delta since the previous event for this canvas (0 on the entry move). |
+| `down` | A button went down on the canvas | `button` = which one; `buttons` = all held. **Starts a capture.** |
+| `up` | A button was released | Delivered to the capturing canvas even if the cursor is outside it. |
+| `wheel` | Wheel / trackpad over the canvas | `dx`/`dy` are DOM-signed px (+dy = down). Delivered **instead of** `wheelMsg` / `scrollMsg`. A web pinch is a wheel with `mods.ctrl`. |
+| `leave` | The cursor left the canvas and no capture is active | Also sent when a capture ends with the cursor outside. |
+
+**Capture.** A press on a canvas sends it every following `move` / `up` /
+`wheel` until *all* buttons are released — a drag that leaves the rect (or the
+window: the hosts capture the mouse) still finishes cleanly. A button held
+since before the cursor reached the canvas (pressed on, say, a slider) does not
+hover it. If the canvas leaves the view mid-capture the capture is dropped.
+
+**Layering.** Routing uses the exact `hitTest` rules against the previous
+frame's layout, so a button or overlay in front of the canvas wins, a modal
+backdrop blocks it, and a scroll viewport clips it. Pointer canvases need the
+`canvasMsg` hook; without it `pointer = true` is inert and the canvas behaves
+as a plain one.
+
+`CanvasEvent.mods` / `.buttons` are the shift/ctrl/alt/meta and left/middle/
+right state at the event. See the example flow in `docs/features/run.md`.
+
+### Click-only recipe (no capture)
 
 ```zig
 cb.canvasClickable(Msg{ .chart_click = {} }, style, prims, "plot");
@@ -172,7 +216,7 @@ if (teak.canvasLocalPoint(rects[hit.index], mouse_x, mouse_y)) |p| {
   primitives. Polylines are straight segments; markers are squares (the
   quad pipeline has no circle). Anything else: tessellate it yourself into
   `triangles` / `lines`.
-- **No disabled state** and no drag/zoom interaction — only the optional
-  single click `msg`.
+- **No disabled state.** Drag / zoom live in the app: `canvasMsg` delivers
+  the pointer stream, the app keeps the transform in its Model.
 - Polyline joins are unmitred (each segment is an independent quad); thick
   lines show small gaps/overlaps at sharp corners.

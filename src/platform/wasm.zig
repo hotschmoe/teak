@@ -2,8 +2,9 @@
 //! owns the rAF loop; `pollInputs` snapshots zunk's shared-memory
 //! state into teak's `InputState`.
 //!
-//! Mouse `mouse_down`/`mouse_up` are derived locally from diffs of the
-//! button state because zunk reports held-state, not edges.
+//! Button edges, modifiers, horizontal wheel and UTF-8 typed text all come
+//! straight from zunk's input block; the key policy (Shift/Ctrl variants)
+//! is the shared `teak.resolveKey` via an `InputQueue`.
 //!
 //! All pointer + viewport coords are CSS pixels (zunk v0.5.2+).
 
@@ -17,6 +18,8 @@ const zgpu = zunk.web.gpu;
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
+pub const InputQueue = teak.InputQueue;
+const NavKey = teak.NavKey;
 pub const TextMeasurer = teak.TextMeasurer;
 pub const TextMetrics = teak.TextMetrics;
 pub const FontSpec = teak.FontSpec;
@@ -41,10 +44,11 @@ const MeasureCacheEntry = struct {
     last_used: u64,
 };
 
-// Delete/Home/End are absent from zunk.web.input.Key; tracked in
-// docs/zunk-handoff.md as a follow-up ask.
-const key_mappings = [_]struct { from: zinput.Key, to: SpecialKey }{
+/// zunk key code -> host-neutral key. Letters only matter as Ctrl chords;
+/// `InputQueue.pushNav` drops them when Ctrl is not held.
+const key_mappings = [_]struct { from: zinput.Key, to: NavKey }{
     .{ .from = .backspace, .to = .backspace },
+    .{ .from = .delete, .to = .delete },
     .{ .from = .enter, .to = .enter },
     .{ .from = .tab, .to = .tab },
     .{ .from = .escape, .to = .escape },
@@ -52,8 +56,16 @@ const key_mappings = [_]struct { from: zinput.Key, to: SpecialKey }{
     .{ .from = .arrow_right, .to = .right },
     .{ .from = .arrow_up, .to = .up },
     .{ .from = .arrow_down, .to = .down },
+    .{ .from = .home, .to = .home },
+    .{ .from = .end, .to = .end },
     .{ .from = .page_up, .to = .page_up },
     .{ .from = .page_down, .to = .page_down },
+    .{ .from = .a, .to = .a },
+    .{ .from = .c, .to = .c },
+    .{ .from = .x, .to = .x },
+    .{ .from = .v, .to = .v },
+    .{ .from = .y, .to = .y },
+    .{ .from = .z, .to = .z },
 };
 
 /// Async file-dialog slot state. Matches the Win32 slot table's
@@ -234,12 +246,8 @@ var g_active_host: ?*Host = null;
 pub const Host = struct {
     width: u32,
     height: u32,
-    prev_left: bool = false,
     first_poll: bool = true,
-    keys_buf: [16]SpecialKey = undefined,
-    keys_len: usize = 0,
-    chars_buf: [32]u8 = undefined,
-    chars_len: usize = 0,
+    queue: InputQueue = .{},
     measure_cache: [MEASURE_CACHE_CAPACITY]MeasureCacheEntry = undefined,
     measure_cache_len: usize = 0,
     measure_tick: u64 = 0,
@@ -265,34 +273,26 @@ pub const Host = struct {
     pub fn pollInputs(self: *Host) InputState {
         zinput.poll();
 
+        // Zunk reports held state AND per-frame press/release edges (a click
+        // that begins and ends inside one frame sets both), so there is no
+        // local edge derivation. Wheel is CSS pixels, positive = down/right.
         const mouse = zinput.getMouse();
-        const cur_left = mouse.buttons.left;
-        const mouse_down = !self.prev_left and cur_left;
-        const mouse_up = self.prev_left and !cur_left;
-        self.prev_left = cur_left;
+        const mods = zinput.getModifiers();
+        const q = &self.queue;
+        q.beginFrame();
+        q.mods = .{ .shift = mods.shift, .ctrl = mods.ctrl, .alt = mods.alt, .meta = mods.meta };
+        q.pointerMoved(mouse.x, mouse.y);
+        q.buttons = .{ .left = mouse.buttons.left, .middle = mouse.buttons.middle, .right = mouse.buttons.right };
+        q.pressed = buttonEdges(zinput.isMouseButtonPressed);
+        q.released = buttonEdges(zinput.isMouseButtonReleased);
+        q.wheel(mouse.wheel_x, mouse.wheel);
 
-        self.keys_len = 0;
         for (key_mappings) |m| {
-            if (self.keys_len >= self.keys_buf.len) break;
-            if (zinput.isKeyPressed(m.from)) {
-                self.keys_buf[self.keys_len] = m.to;
-                self.keys_len += 1;
-            }
+            if (zinput.isKeyPressed(m.from)) q.pushNav(m.to);
         }
-
-        // Zunk pushes Backspace (8) and Enter (10) into typed_chars in
-        // addition to reporting them as pressed keys. Without this filter,
-        // backspace double-acts: it inserts char 8 then deletes one, and the
-        // user sees nothing change. Drop ASCII control codes here — the
-        // special-key path owns those events. Tracked upstream at
-        // https://github.com/hotschmoe/zunk/issues/8.
-        self.chars_len = 0;
-        for (zinput.getTypedChars()) |c| {
-            if (c < 0x20 or c == 0x7f) continue;
-            if (self.chars_len >= self.chars_buf.len) break;
-            self.chars_buf[self.chars_len] = c;
-            self.chars_len += 1;
-        }
+        // Zunk delivers whole UTF-8 code points and no control codes or
+        // Ctrl/Cmd chords; `pushText` re-validates and drops anything else.
+        q.pushText(zinput.getTypedChars());
 
         const vp = zinput.getViewportSize();
         const w = if (vp.w != 0) vp.w else self.width;
@@ -301,28 +301,14 @@ pub const Host = struct {
         self.first_poll = false;
         self.width = w;
         self.height = h;
+        return q.finish(resized, w, h);
+    }
 
-        // Zunk exposes a single `mouse.wheel` accumulator (vertical
-        // only) in CSS pixels with deltaMode=0 — positive = scroll
-        // down, matching the InputState convention. No horizontal-
-        // wheel API today; tracked as a follow-up ask alongside the
-        // other zunk gaps in docs/zunk-handoff.md.
-        // TODO: zunk horizontal wheel events.
-        const wheel_dy = mouse.wheel;
-        const wheel_dx: f32 = 0;
-
+    fn buttonEdges(comptime isEdge: fn (zinput.MouseButton) bool) teak.Buttons {
         return .{
-            .mouse_x = mouse.x,
-            .mouse_y = mouse.y,
-            .mouse_down = mouse_down,
-            .mouse_up = mouse_up,
-            .wheel_dx = wheel_dx,
-            .wheel_dy = wheel_dy,
-            .chars = self.chars_buf[0..self.chars_len],
-            .keys = self.keys_buf[0..self.keys_len],
-            .resized = resized,
-            .width = w,
-            .height = h,
+            .left = isEdge(.left),
+            .middle = isEdge(.middle),
+            .right = isEdge(.right),
         };
     }
 
@@ -731,3 +717,14 @@ test "serializeA11yTree: oversized label is skipped, record still emitted" {
     try testing.expectEqual(@as(u32, 0), records[0].label_len);
 }
 
+
+test "wasm key table reaches every SpecialKey through the shared policy" {
+    var seen = std.EnumSet(SpecialKey).initEmpty();
+    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true } };
+    for (mod_sets) |mods| {
+        for (key_mappings) |m| {
+            if (teak.resolveKey(m.to, mods)) |sk| seen.insert(sk);
+        }
+    }
+    for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
+}

@@ -44,7 +44,7 @@ zig build web-run        # same, then serves dist/ on localhost:8080
 
 Building the Linux UI needs no X11 dev package (libX11 is `dlopen`ed at runtime); at runtime it needs `libX11.so.6`, a Vulkan driver, and a monospace TTF (DejaVuSansMono by default; override with `TEAK_FONT`).
 
-Four examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), and **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array), and **chrome** (an engineering-workstation shell: header / 360 | flex | 320 columns / status line, bordered cards, bracket tabs, a `teak.Table`, underline fields, hover-inverting buttons, a hard-shadowed overlay, a fully custom `Theme`).
+Five examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array), **chrome** (an engineering-workstation shell: header / 360 | flex | 320 columns / status line, bordered cards, bracket tabs, a `teak.Table`, underline fields, hover-inverting buttons, a hard-shadowed overlay, a fully custom `Theme`), and **viewport** (an interactive canvas you pan and zoom, plus a scroll list whose scrollbar is sized from `scrollLayoutMsg`).
 
 Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until Zig ships a fix for [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865). See [`docs/archive/zig-016-win-arm64-crash.md`](docs/archive/zig-016-win-arm64-crash.md).
 
@@ -76,7 +76,7 @@ Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until
 ```
 src/
 ├── teak.zig              public library root, re-exports
-├── run.zig               teak.run — canonical host-loop wrapper
+├── run.zig               teak.run / Runtime — canonical host loop (tests: run_test.zig)
 ├── core/
 │   ├── cmd.zig           Cmd union, CmdBuffer, arena mgmt (incl. disabled, canvas, validateBalance)
 │   ├── component.zig     Components(), validateComponent, buildMsgs
@@ -89,20 +89,24 @@ src/
 │   ├── chart.zig         lineChartPrimitives — canvas chart helper
 │   ├── snapshot.zig      []Cmd+[]Rect → text; golden tests + TEAK_SNAPSHOT
 │   └── transient.zig     hover/press/focus presentation state
-├── layout/engine.zig     measure + position passes
+├── layout/
+│   ├── engine.zig        measure + position passes
+│   └── scroll_extent.zig viewport + content size of a scroll region
 ├── input/
-│   ├── hit_test.zig      mouse → CmdIndex → Msg (disabled leaves inert)
+│   ├── hit_test.zig      mouse → CmdIndex → Msg; pointer-canvas + wheel targets
 │   ├── focus.zig         traversal + indexOfFocusMsg / focusMsgAt
 │   └── keys.zig          SpecialKey enum (incl. tab / shift_tab)
 ├── render/
 │   ├── vertex.zig        Vertex struct, emitQuad
 │   └── build.zig         []Cmd + []Rect + TransientState → vertex buffer
-├── platform/             Host interface + Win32 / X11 / wasm backends
+├── platform/             Host interface, InputQueue + Win32 / X11 / wasm backends
 └── gpu/                  Gpu interface + wgpu-native (Win32+GDI / X11+stb_truetype) / zunk
 
 examples/counter_greeter/  proto-2 demo; composed Components + focus routing
 examples/todo/             dynamic-list demo; N rows, Msg-with-index, scroll
 examples/tree/             recursive tree with expand/collapse over flat Model
+examples/chrome/           engineering-workstation chrome: cards, tables, bracket tabs, custom Theme
+examples/viewport/         pan/zoom interactive canvas + scroll list with scrollbar
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)

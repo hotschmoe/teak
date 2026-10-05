@@ -84,7 +84,11 @@ pub fn build(b: *std.Build) void {
 ```
 
 `teak.linkWebWgpu(b, exe, .{})` is the wasm + WebGPU equivalent; it
-registers `web` / `web-run` steps.
+registers `web` / `web-run` steps. The browser owns the frame loop, so the
+web entry builds a `teak.Runtime` once and calls `runtime.frame()` from its
+exported `frame` — the same loop `teak.run` runs natively (see
+[features/run.md](features/run.md#runtime--the-loop-body-one-frame-at-a-time)
+and any example's `src/web_main.zig`, ~30 lines).
 
 > **Cross-platform note.** Native UI runs on **Win32** (Windows) and
 > **X11** (Linux); the **wasm + WebGPU** path covers the browser.
@@ -193,7 +197,10 @@ are required; an app without them just doesn't get that behavior.
 | `keyCharMsg` | `(*const Model, u8) ?Msg` | typed characters → Msg |
 | `keySpecialMsg` | `(*const Model, SpecialKey) ?Msg` | arrows/backspace/etc → Msg |
 | `keyNeedsClipboard` + `handleClipboard` | `(SpecialKey) bool` / `(*Model, SpecialKey, Clipboard) void` | cut/copy/paste |
-| `wheelMsg` | `(*const Model, f32) ?Msg` | mouse-wheel scroll |
+| `wheelMsg` | `(*const Model, f32) ?Msg` | mouse-wheel scroll (when no canvas / scroll region took it) |
+| `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pan / zoom / drag over `cb.canvasInteractive` canvases — see [features/canvas.md](features/canvas.md#interactive-canvases-pan--zoom--drag) |
+| `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over a `ScrollStyle.id != 0` region |
+| `scrollLayoutMsg` | `(*const Model, id, viewport_w, viewport_h, content_w, content_h: f32) ?Msg` | scroll region viewport + content size (clamp offsets, scrollbars) |
 | `focusedMsg` | `(*const Model) ?Msg` | focus ring + cursor blink **and** Tab/Shift+Tab nav |
 | `submitMsg` | `(*const Model) ?Msg` | Enter-to-submit |
 | `themeFor` | `(*const Model) Theme` | per-frame theme (e.g. dark/light toggle) |
