@@ -22,6 +22,7 @@ pub const chart = @import("core/chart.zig");
 pub const pointer = @import("core/pointer.zig");
 pub const effects = @import("core/effects.zig");
 pub const scene = @import("core/scene.zig");
+pub const resources = @import("core/resources.zig");
 pub const layout = @import("layout/engine.zig");
 pub const hit_test = @import("input/hit_test.zig");
 pub const focus = @import("input/focus.zig");
@@ -82,6 +83,13 @@ pub const MeshData = scene.MeshData;
 pub const Camera = scene.Camera;
 pub const SceneDraw = scene.SceneDraw;
 
+pub const Resource = resources.Resource;
+pub const MeshResource = resources.MeshResource;
+pub const ImageResource = resources.ImageResource;
+
+pub const SceneStyle = cmd.SceneStyle;
+pub const SceneCmd = cmd.SceneCmd;
+
 pub const Effect = effects.Effect;
 pub const EffectResult = effects.EffectResult;
 pub const HttpRequest = effects.HttpRequest;
@@ -136,6 +144,7 @@ pub const emitQuad = vertex.emitQuad;
 pub const emitQuadCorners = vertex.emitQuadCorners;
 pub const buildVertices = render.buildVertices;
 pub const ImageDraw = render.ImageDraw;
+pub const buildFrame = render.buildFrame;
 
 pub const TransientState = transient.TransientState;
 

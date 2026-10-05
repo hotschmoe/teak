@@ -230,6 +230,16 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
                 try writeQuoted(writer, cv.label);
             }
         },
+        .scene3d => |sc| {
+            try writer.writeAll("scene3d ");
+            try writeRect(writer, r);
+            try writer.print(" mesh={d} key={d}", .{ sc.mesh, sc.key });
+            if (sc.id != 0) try writer.print(" id={d}", .{sc.id});
+            if (sc.label.len > 0) {
+                try writer.writeByte(' ');
+                try writeQuoted(writer, sc.label);
+            }
+        },
         // Pop cmds are handled before writeCmd is ever called.
         .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => unreachable,
     }
@@ -709,6 +719,27 @@ test "snapshot: realistic composed view golden" {
         \\    button (144,8,60,36) "-"
         \\  text (8,52,80,20) "Count: 0"
         \\  text_input (8,80,784,512) "name" cursor=4
+        \\
+    );
+}
+
+test "snapshot: scene3d shows rect, mesh, key, id and label" {
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.scene3d(.{ .style = .{ .width = 320, .height = 200 }, .mesh = 3, .key = 9 });
+    cb.scene3d(.{ .style = .{ .width = 100, .height = 50 }, .id = 4, .pointer = true, .label = "model view" });
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    const rs = layoutInto(&rects, cb.cmds.items, 400, 300);
+
+    try expectSnapshot(cb.cmds.items, rs, .{},
+        \\group (0,0,400,300) vertical
+        \\  scene3d (0,0,320,200) mesh=3 key=9
+        \\  scene3d (0,200,100,50) mesh=0 key=0 id=4 "model view"
         \\
     );
 }

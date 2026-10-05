@@ -57,6 +57,13 @@
 //!     services the returned subs each frame via `runSubs` on the host's
 //!     monotonic clock (`Host.nowMs`) and dispatches any fired `Msg`
 //!     through the normal `update` loop. See `docs/features/subscriptions.md`.
+//!   - `resources(*const Model) []const Resource`     — declarative GPU
+//!     resources (HARDLINE §2 hatch 8): meshes and RGBA images keyed by
+//!     (`key`, `rev`). `run` uploads on a new key / changed rev, releases
+//!     vanished keys, and maps the app keys in `ImageCmd.handle` /
+//!     `SceneCmd.mesh` to backend handles. Requires a Gpu with the scene
+//!     extension (`uploadMesh`, `releaseMesh`, `renderScenes`,
+//!     `releaseImage`). See `docs/features/scene3d.md`.
 //!
 //! IME composition state (`Host.imeState`) is folded into `TransientState`
 //! every frame with no opt-in — hosts without IME report inactive and it
@@ -80,6 +87,7 @@ const focus = @import("input/focus.zig");
 const keys = @import("input/keys.zig");
 const render = @import("render/build.zig");
 const vertex = @import("render/vertex.zig");
+const resources = @import("resources.zig");
 
 const Rect = layout.Rect;
 const TransientState = transient.TransientState;
@@ -354,6 +362,15 @@ pub fn run(
     defer text_draws.deinit(gpa);
     var image_draws: std.ArrayList(render.ImageDraw) = .empty;
     defer image_draws.deinit(gpa);
+    var scene_draws: std.ArrayList(render.SceneDraw) = .empty;
+    defer scene_draws.deinit(gpa);
+
+    // Declarative GPU resources (HARDLINE §2 hatch 8): the table remembers
+    // which (kind, key, rev) is resident; it is loop bookkeeping, not
+    // application state.
+    const has_resources = @hasDecl(App, "resources");
+    var res_table: resources.Table = .{};
+    defer if (has_resources) res_table.deinit(gpu);
 
     var ts: TransientState = .{};
     var prev_ts: TransientState = .{};
@@ -553,6 +570,7 @@ pub fn run(
         // 10. Frame diff — skip the vertex rebuild + upload when nothing
         //     observable changed. The blink tick forces a rebuild on a
         //     phase boundary so a focused cursor animates.
+        const res_changed = has_resources and res_table.sync(gpu, App.resources(&model));
         const cmds_same = cmdsEqual(Msg, cur_cmds, bufs[prev].cmds.items);
         const rects_same = rectsEqual(rects[cur].items, rects[prev].items);
         const ts_same = ts.hover_index == prev_ts.hover_index and
@@ -569,11 +587,11 @@ pub fn run(
         // its own vertices every frame while it's open.
         const secondary_open = has_secondary and App.secondaryWindow(&model) != null;
 
-        if (!cmds_same or !rects_same or !ts_same or blink_tick or secondary_open) {
-            render.buildVertices(&verts, &text_draws, &image_draws, gpa, cur_cmds, rects[cur].items, ts, measurer);
+        if (!cmds_same or !rects_same or !ts_same or blink_tick or secondary_open or res_changed) {
+            render.buildFrame(&verts, &text_draws, &image_draws, &scene_draws, gpa, cur_cmds, rects[cur].items, ts, measurer);
             gpu.uploadVertices(verts.items);
             gpu.uploadText(text_draws.items);
-            gpu.uploadImages(image_draws.items);
+            resources.stageDraws(gpu, if (has_resources) &res_table else null, image_draws.items, scene_draws.items);
         }
 
         prev_ts = ts;
@@ -657,10 +675,10 @@ pub fn run(
                         // The secondary window has no interactive/transient
                         // state of its own — a fresh default is correct.
                         const sec_ts: TransientState = .{};
-                        render.buildVertices(&verts, &text_draws, &image_draws, gpa, sec_cmds, secondary.rects[scur].items, sec_ts, measurer);
+                        render.buildFrame(&verts, &text_draws, &image_draws, &scene_draws, gpa, sec_cmds, secondary.rects[scur].items, sec_ts, measurer);
                         gpu.uploadVertices(verts.items);
                         gpu.uploadText(text_draws.items);
-                        gpu.uploadImages(image_draws.items);
+                        resources.stageDraws(gpu, if (has_resources) &res_table else null, image_draws.items, scene_draws.items);
                         gpu.renderToWindow(wid, opts.clear_color);
                         sec_snap_title = if (spec) |s| s.title else "secondary";
                         // Diff against the previous secondary frame so a
@@ -823,6 +841,7 @@ pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd
                 if (rt.spans.len != o.spans.len) return false;
                 for (rt.spans, o.spans) |sa, sb| if (!std.meta.eql(sa, sb)) return false;
             },
+            .scene3d => |x| if (!x.eql(cb.scene3d)) return false,
             .canvas => |x| {
                 const o = cb.canvas;
                 if (!std.meta.eql(x.style, o.style)) return false;
@@ -830,20 +849,9 @@ pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd
                 if (!std.mem.eql(u8, x.label, o.label)) return false;
                 if (x.primitives.len != o.primitives.len) return false;
                 // Compare by content, not slice identity — the arena hands
-                // out fresh addresses each frame. Polyline carries a nested
-                // points slice, so it needs a content walk of its own.
-                for (x.primitives, o.primitives) |pa, pb| {
-                    if (std.meta.activeTag(pa) != std.meta.activeTag(pb)) return false;
-                    switch (pa) {
-                        .polyline => |pl| {
-                            const ob = pb.polyline;
-                            if (!std.meta.eql(pl.color, ob.color) or pl.thickness != ob.thickness) return false;
-                            if (pl.points.len != ob.points.len) return false;
-                            for (pl.points, ob.points) |qa, qb| if (!std.meta.eql(qa, qb)) return false;
-                        },
-                        else => if (!std.meta.eql(pa, pb)) return false,
-                    }
-                }
+                // out fresh addresses each frame (`eql` walks nested slices;
+                // big triangle/line batches compare by their `key`).
+                for (x.primitives, o.primitives) |pa, pb| if (!pa.eql(pb)) return false;
             },
         }
     }
@@ -2059,4 +2067,163 @@ test "run: a secondary-content-only change re-mirrors the snapshot (F2)" {
     try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 2\"") != null);
     // A frozen mirror (the bug) would still show the opening "ticks: 0".
     try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 0\"") == null);
+}
+
+// ── Declarative resources through the loop ─────────────────────────
+
+/// StubGpu plus the scene/resource extension, recording what the loop
+/// uploaded, released and staged.
+const ResourceGpu = struct {
+    next_handle: u32 = 100,
+    mesh_uploads: u32 = 0,
+    image_uploads: u32 = 0,
+    mesh_releases: u32 = 0,
+    image_releases: u32 = 0,
+    last_released_mesh: u32 = 0,
+    scene_calls: u32 = 0,
+    last_scene_mesh: u32 = 0,
+    last_scene_count: usize = 0,
+    last_image_handle: u32 = 0,
+    render_calls: u32 = 0,
+
+    pub fn deinit(_: *ResourceGpu) void {}
+    pub fn resize(_: *ResourceGpu, _: u32, _: u32) void {}
+    pub fn uploadVertices(_: *ResourceGpu, _: []const vertex.Vertex) void {}
+    pub fn uploadText(_: *ResourceGpu, _: []const text.TextDraw) void {}
+    pub fn uploadImages(self: *ResourceGpu, d: []const render.ImageDraw) void {
+        if (d.len > 0) self.last_image_handle = d[0].handle;
+    }
+    pub fn renderFrame(self: *ResourceGpu, _: [4]f32) void {
+        self.render_calls += 1;
+    }
+    pub fn rasterizeText(_: *ResourceGpu, _: []const u8, _: text.FontSpec, _: [4]f32, _: u32, _: u32) text.TextureHandle {
+        return text.TEXTURE_HANDLE_NONE;
+    }
+    pub fn uploadImage(self: *ResourceGpu, _: []const u8, _: u32, _: u32) text.TextureHandle {
+        self.image_uploads += 1;
+        return self.take();
+    }
+    pub fn releaseImage(self: *ResourceGpu, _: text.TextureHandle) void {
+        self.image_releases += 1;
+    }
+    pub fn uploadMesh(self: *ResourceGpu, _: @import("core/scene.zig").MeshData) u32 {
+        self.mesh_uploads += 1;
+        return self.take();
+    }
+    pub fn releaseMesh(self: *ResourceGpu, h: u32) void {
+        self.mesh_releases += 1;
+        self.last_released_mesh = h;
+    }
+    pub fn renderScenes(self: *ResourceGpu, d: []const render.SceneDraw) void {
+        self.scene_calls += 1;
+        self.last_scene_count = d.len;
+        if (d.len > 0) self.last_scene_mesh = d[0].mesh;
+    }
+    fn take(self: *ResourceGpu) u32 {
+        defer self.next_handle += 1;
+        return self.next_handle;
+    }
+};
+
+const pixel_rgba = [_]u8{ 255, 0, 0, 255 };
+
+/// A model whose `rev` a button click bumps; the scene's Cmd key is
+/// deliberately constant so only the resource change can force a re-stage.
+const ResourceApp = struct {
+    pub const Model = struct { rev: u32 = 1 };
+    pub const Msg = union(enum) { bump };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .bump => m.rev += 1,
+        }
+    }
+    pub fn resources(m: *const Model) []const @import("core/resources.zig").Resource {
+        const S = struct {
+            var list: [2]@import("core/resources.zig").Resource = undefined;
+        };
+        S.list[0] = .{ .mesh = .{ .key = 5, .rev = m.rev, .data = .{} } };
+        S.list[1] = .{ .image = .{ .key = 3, .rev = 1, .width = 1, .height = 1, .rgba = &pixel_rgba } };
+        return &S.list;
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.button(.bump, "X");
+        cb.scene3d(.{ .style = .{ .width = 50, .height = 40 }, .mesh = 5 });
+        cb.image(3, .{ .width = 16, .height = 16 });
+        cb.popGroup();
+    }
+};
+
+test "run: resources are uploaded once, keys remapped to handles, rev bump re-uploads, shutdown releases" {
+    comptime @import("gpu/context.zig").validateGpu(ResourceGpu);
+
+    var host: StubHost = .{}; // script: frame 2 down, frame 3 up over the button => .bump
+    var gpu: ResourceGpu = .{};
+    try run(ResourceApp, std.testing.allocator, &host, &gpu, .{});
+
+    // Mesh: uploaded at rev 1, re-uploaded at rev 2 after the click (old
+    // handle released), final handle released at shutdown. Image: once.
+    try std.testing.expectEqual(@as(u32, 2), gpu.mesh_uploads);
+    try std.testing.expectEqual(@as(u32, 1), gpu.image_uploads);
+    try std.testing.expectEqual(@as(u32, 2), gpu.mesh_releases);
+    try std.testing.expectEqual(@as(u32, 1), gpu.image_releases);
+
+    // The Gpu only ever saw backend handles, never the app keys 5 / 3.
+    try std.testing.expect(gpu.last_scene_mesh >= 100);
+    try std.testing.expect(gpu.last_image_handle >= 100);
+    // The re-upload re-staged the scene even though its Cmd was unchanged.
+    // Handles are handed out in upload order starting at 100: the mesh's
+    // second upload comes after mesh#1 (100) and the image (101).
+    try std.testing.expectEqual(@as(u32, 102), gpu.last_scene_mesh);
+    try std.testing.expectEqual(@as(usize, 1), gpu.last_scene_count);
+}
+
+test "run: scenes are staged (and cleared) without a resources hook; the plain Gpu needs no extension" {
+    const NoResApp = struct {
+        pub const Model = struct {};
+        pub const Msg = union(enum) { x };
+        pub fn update(_: *Model, _: Msg) void {}
+        pub fn view(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{ .padding = 0, .gap = 0 });
+            cb.scene3d(.{ .style = .{ .width = 20, .height = 20 }, .mesh = 42 });
+            cb.popGroup();
+        }
+    };
+    var host: StubHost = .{};
+    var gpu: ResourceGpu = .{};
+    try run(NoResApp, std.testing.allocator, &host, &gpu, .{});
+    // Without the hook the mesh value is already a backend handle.
+    try std.testing.expectEqual(@as(u32, 42), gpu.last_scene_mesh);
+    try std.testing.expectEqual(@as(u32, 0), gpu.mesh_uploads);
+
+    // A Gpu without the scene extension still runs scene-bearing apps.
+    var plain: StubGpu = .{};
+    var host2: StubHost = .{};
+    try run(NoResApp, std.testing.allocator, &host2, &plain, .{});
+    try std.testing.expectEqual(@as(u32, 3), plain.render_calls);
+}
+
+test "cmdsEqual: scene3d and keyed canvas batches" {
+    const Msg = union(enum) { a };
+    const C = cmd.Cmd(Msg);
+    const tri = [_]cmd.CanvasPrimitive.TriVertex{
+        .{ .x = 0, .y = 0, .r = 1, .g = 1, .b = 1, .a = 1 },
+        .{ .x = 1, .y = 0, .r = 1, .g = 1, .b = 1, .a = 1 },
+        .{ .x = 0, .y = 1, .r = 1, .g = 1, .b = 1, .a = 1 },
+    };
+    const copy = tri; // same content, other address
+    const a = [_]C{
+        .{ .scene3d = .{ .mesh = 1, .key = 4 } },
+        .{ .canvas = .{ .primitives = &.{.{ .triangles = .{ .verts = &tri, .key = 9 } }} } },
+    };
+    var b = [_]C{
+        .{ .scene3d = .{ .mesh = 1, .key = 4 } },
+        .{ .canvas = .{ .primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 9 } }} } },
+    };
+    try std.testing.expect(cmdsEqual(Msg, &a, &b));
+    b[0].scene3d.key = 5;
+    try std.testing.expect(!cmdsEqual(Msg, &a, &b));
+    b[0].scene3d.key = 4;
+    b[1].canvas.primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 10 } }};
+    try std.testing.expect(!cmdsEqual(Msg, &a, &b));
 }

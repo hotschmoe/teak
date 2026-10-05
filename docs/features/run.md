@@ -141,9 +141,32 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
 7. Update `TransientState` (hover/press/focus/frame counter); focus index
    resolved from `focusedMsg` via `indexOfFocusMsg`.
 8. Push `windowTitle` to the host on change.
-9. Frame diff (`cmdsEqual` + `rectsEqual` + transient compare, plus the
-   blink tick): skip `buildVertices` + uploads when nothing observable
-   changed. Always `renderFrame`.
+9. Declarative resources (if the App declares `resources`): reconcile the
+   GPU with the listed meshes/images (upload on new key / changed `rev`,
+   release vanished keys); a change forces step 10 to re-stage.
+10. Frame diff (`cmdsEqual` + `rectsEqual` + transient compare, plus the
+   blink tick and resource changes): skip `buildFrame` + uploads when
+   nothing observable changed. Otherwise build the frame (solid quads,
+   text, image and `SceneDraw` records), remap resource keys to handles,
+   `uploadVertices` / `uploadText` / `uploadImages` and — when the Gpu has
+   the scene extension — `renderScenes`. Always `renderFrame`.
+
+### Resources (optional hook)
+
+`pub fn resources(*const Model) []const Resource` — HARDLINE §2 hatch 8.
+`Resource = union(enum) { mesh: { key, rev, data: MeshData }, image:
+{ key, rev, width, height, rgba } }`. The loop keeps a fixed-capacity
+(128) table of what is resident (`src/resources.zig`): a new (kind, key)
+uploads, a changed `rev` re-uploads (old handle released first), a key that
+disappears is released, and everything is released at shutdown. `Cmd`s use
+the app key: `cb.image(key, ...)`, `cb.scene3d(.{ .mesh = key })`; the loop
+rewrites those to backend handles in the draw records it hands the Gpu (an
+unknown / failed key draws nothing for an image and just the clear colour
+for a scene). Without the hook, `ImageCmd.handle` / `SceneCmd.mesh` are
+raw `Gpu` handles from `uploadImage` / `uploadMesh`, as before. The hook
+needs the Gpu scene extension (`uploadMesh`, `releaseMesh`,
+`renderScenes`, `releaseImage`); apps that do not declare it run on any
+conforming Gpu. See [scene3d.md](scene3d.md).
 
 `cmdsEqual` / `rectsEqual` are exposed from `run.zig` (they used to be
 duplicated in every example's `ui_main.zig`) and correctly diff the
@@ -176,7 +199,9 @@ that satisfy `validateHost`/`validateGpu`: a scripted click routes through
 `update` and presents per frame; a model side-channel confirms the
 mutation; scripted keyboard runs exercise `keyCharMsg`/`keySpecialMsg`/
 `themeFor`, Tab-advances-focus, and Enter-fires-`submitMsg`. `cmdsEqual`
-is unit-tested for label/disabled/length changes.
+is unit-tested for label/disabled/length changes, `scene3d` revisions and
+keyed canvas batches; a resource-recording stub Gpu checks upload-once,
+rev-bump re-upload, key remapping into draw records, and shutdown release.
 
 ## Status
 

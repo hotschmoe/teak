@@ -1,6 +1,7 @@
 const std = @import("std");
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
+const scene = @import("scene.zig");
 
 pub const FontSpec = text.FontSpec;
 const DEFAULT_FONT = text.DEFAULT_FONT;
@@ -322,6 +323,10 @@ pub const CanvasPrimitive = union(enum) {
     vline: VLine,
     /// A small square point marker centered on (`x`, `y`).
     marker: Marker,
+    /// Pre-tessellated colored triangle list (see `Triangles`).
+    triangles: Triangles,
+    /// A big batch of independent segments sharing one color / thickness.
+    lines: Lines,
 
     pub const Polyline = struct {
         points: []const CanvasPoint,
@@ -351,6 +356,74 @@ pub const CanvasPrimitive = union(enum) {
         size: f32 = 4,
         color: [4]f32 = .{ 0.85, 0.85, 0.9, 1.0 },
     };
+
+    /// One vertex of a `Triangles` list: canvas-local position + RGBA.
+    pub const TriVertex = struct {
+        x: f32,
+        y: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    };
+
+    /// A plain triangle list (three consecutive vertices = one triangle,
+    /// either winding) with a color per vertex, interpolated across the
+    /// triangle. Per-vertex alpha is what lets an app feather 1 px edges
+    /// for antialiasing without MSAA. The render pass clips the list to the
+    /// canvas rect and the active scroll clip (CPU Sutherland–Hodgman, with
+    /// a straight-copy fast path when everything is inside); triangles with
+    /// a non-finite vertex are dropped, a trailing partial triangle ignored.
+    ///
+    /// `key` is a cheap revision of the content: the run loop's frame diff
+    /// treats two frames with the same non-zero `key` and length as
+    /// identical without comparing the vertices. Bump it whenever `verts`
+    /// changes; leave it 0 to have the diff compare the vertex bytes.
+    pub const Triangles = struct {
+        verts: []const TriVertex,
+        key: u64 = 0,
+    };
+
+    /// `segs[i] = {x0, y0, x1, y1}`, each drawn as a `thickness`-wide quad
+    /// (no joins), clipped like polyline segments. For hatching and other
+    /// large sets of unconnected strokes. `key`: as for `Triangles`.
+    pub const Lines = struct {
+        segs: []const [4]f32,
+        color: [4]f32 = .{ 0.85, 0.85, 0.9, 1.0 },
+        thickness: f32 = 1,
+        key: u64 = 0,
+    };
+
+    /// Content equality for the frame diff (arena slices have fresh
+    /// addresses every frame, so compare what they point at).
+    pub fn eql(a: CanvasPrimitive, b: CanvasPrimitive) bool {
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+        return switch (a) {
+            .polyline => |pl| blk: {
+                const o = b.polyline;
+                if (!std.meta.eql(pl.color, o.color) or pl.thickness != o.thickness) break :blk false;
+                if (pl.points.len != o.points.len) break :blk false;
+                for (pl.points, o.points) |qa, qb| if (!std.meta.eql(qa, qb)) break :blk false;
+                break :blk true;
+            },
+            .triangles => |t| sameRevision(TriVertex, t.verts, t.key, b.triangles.verts, b.triangles.key),
+            .lines => |l| blk: {
+                const o = b.lines;
+                if (!std.meta.eql(l.color, o.color) or l.thickness != o.thickness) break :blk false;
+                break :blk sameRevision([4]f32, l.segs, l.key, o.segs, o.key);
+            },
+            .filled_rect => |x| std.meta.eql(x, b.filled_rect),
+            .hline => |x| std.meta.eql(x, b.hline),
+            .vline => |x| std.meta.eql(x, b.vline),
+            .marker => |x| std.meta.eql(x, b.marker),
+        };
+    }
+
+    fn sameRevision(comptime T: type, a: []const T, a_key: u64, b: []const T, b_key: u64) bool {
+        if (a.len != b.len) return false;
+        if (a_key != 0 or b_key != 0) return a_key == b_key;
+        return std.mem.eql(u8, std.mem.sliceAsBytes(a), std.mem.sliceAsBytes(b));
+    }
 };
 
 pub const CanvasStyle = struct {
@@ -380,6 +453,62 @@ pub fn CanvasCmd(comptime Msg: type) type {
         msg: ?Msg = null,
         /// Accessible label / name for the a11y tree.
         label: []const u8 = "",
+    };
+}
+
+// ── 3D scene (kerf: depth-tested mesh inside the UI) ────────────────
+//
+// A fixed-size leaf the Gpu fills with a rendered 3D scene (see
+// `core/scene.zig`, docs/features/scene3d.md). Like `image`, it is layout
+// + a draw record: the render pass emits a `SceneDraw`; the Gpu renders the
+// mesh offscreen and composites it at the leaf's rect.
+
+pub const SceneStyle = struct {
+    /// Intrinsic size in logical pixels; the scene is rendered at exactly
+    /// this size (times the display scale), so it is never resampled.
+    width: f32 = 320,
+    height: f32 = 240,
+    /// Flex weight on the parent's main axis (0 = intrinsic), as `image`.
+    flex: f32 = 0,
+};
+
+pub fn SceneCmd(comptime Msg: type) type {
+    return struct {
+        style: SceneStyle = .{},
+        /// The mesh to draw: a `Gpu.uploadMesh` handle, or — when the App
+        /// declares the `resources` hook — the app key of a `.mesh`
+        /// resource, which the run loop maps to the handle. 0 draws only
+        /// the clear colour.
+        mesh: scene.MeshHandle = scene.MESH_HANDLE_NONE,
+        camera: scene.Camera = .{},
+        /// Background colour of the scene.
+        clear: [4]f32 = .{ 0.1, 0.11, 0.14, 1 },
+        /// Multiplied into each line vertex's colour; line width in px.
+        edge_color: [4]f32 = .{ 1, 1, 1, 1 },
+        edge_px: f32 = 1.5,
+        /// Content revision. The frame diff compares the whole struct, but
+        /// the mesh's *contents* live behind `mesh` — bump `key` when the
+        /// geometry behind an unchanged handle/key changes (typically the
+        /// resource `rev`), or the frame is skipped as unchanged.
+        key: u64 = 0,
+        /// Interactive-scene routing (see `core/pointer.zig`): with
+        /// `pointer = true` and `id != 0` the scene receives `CanvasEvent`s
+        /// like an interactive canvas.
+        id: u32 = 0,
+        pointer: bool = false,
+        /// Dispatched on click when non-null (non-pointer scenes).
+        msg: ?Msg = null,
+        /// Accessible name for the a11y tree.
+        label: []const u8 = "",
+
+        /// Content equality for the frame diff.
+        pub fn eql(a: @This(), b: @This()) bool {
+            return std.meta.eql(a.style, b.style) and a.mesh == b.mesh and
+                std.meta.eql(a.camera, b.camera) and std.meta.eql(a.clear, b.clear) and
+                std.meta.eql(a.edge_color, b.edge_color) and a.edge_px == b.edge_px and
+                a.key == b.key and a.id == b.id and a.pointer == b.pointer and
+                std.meta.eql(a.msg, b.msg) and std.mem.eql(u8, a.label, b.label);
+        }
     };
 }
 
@@ -488,6 +617,7 @@ pub fn Cmd(comptime Msg: type) type {
         slider: SliderCmd(Msg),
         divider: DividerStyle,
         canvas: CanvasCmd(Msg),
+        scene3d: SceneCmd(Msg),
     };
 }
 
@@ -1016,6 +1146,12 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .msg = msg,
                 .label = label,
             } }) catch unreachable;
+        }
+
+        /// Emit a 3D scene leaf; see `SceneCmd`. Typical use:
+        /// `cb.scene3d(.{ .style = .{ .width = 480, .height = 360 }, .mesh = key, .camera = cam, .key = rev })`.
+        pub fn scene3d(self: *Self, cmd: SceneCmd(Msg)) void {
+            self.cmds.append(self.backing, .{ .scene3d = cmd }) catch unreachable;
         }
 
         pub fn textInputSelected(
@@ -1683,4 +1819,81 @@ test "CmdBuffer.pushFormRow: documented depth of 8 is reachable without tripping
     i = 0;
     while (i < DEPTH) : (i += 1) cb.popFormRow();
     try testing.expectEqual(@as(u8, 0), cb.form_row_depth);
+}
+
+test "CmdBuffer.scene3d emits a scene3d cmd with defaults" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.scene3d(.{ .mesh = 5, .key = 12, .style = .{ .width = 480, .height = 360 } });
+    cb.scene3d(.{ .id = 2, .pointer = true, .msg = .poke, .label = "view" });
+
+    const a = cb.cmds.items[0].scene3d;
+    try testing.expectEqual(@as(u32, 5), a.mesh);
+    try testing.expectEqual(@as(u64, 12), a.key);
+    try testing.expectEqual(@as(f32, 480), a.style.width);
+    try testing.expectEqual(@as(u32, 0), a.id);
+    try testing.expect(!a.pointer);
+    try testing.expectEqual(scene.MESH_HANDLE_NONE, cb.cmds.items[1].scene3d.mesh);
+    const b = cb.cmds.items[1].scene3d;
+    try testing.expectEqual(@as(u32, 2), b.id);
+    try testing.expect(b.pointer);
+    try testing.expectEqual(@as(?Msg, Msg.poke), b.msg);
+}
+
+test "SceneCmd.eql compares content (label by value) and the revision key" {
+    const testing = std.testing;
+    const Msg = union(enum) { poke };
+    const S = SceneCmd(Msg);
+    var label_a = [_]u8{ 'a', 'b' };
+    var label_b = [_]u8{ 'a', 'b' };
+    const x: S = .{ .label = &label_a, .key = 1 };
+    var y: S = .{ .label = &label_b, .key = 1 };
+    try testing.expect(x.eql(y)); // different addresses, same content
+    y.key = 2;
+    try testing.expect(!x.eql(y)); // geometry behind the handle changed
+    y.key = 1;
+    y.camera.eye[1] = 4;
+    try testing.expect(!x.eql(y));
+    y.camera.eye[1] = 0;
+    y.msg = .poke;
+    try testing.expect(!x.eql(y));
+}
+
+test "CanvasPrimitive.eql: batches compare by key (or by bytes when key is 0)" {
+    const testing = std.testing;
+    const V = CanvasPrimitive.TriVertex;
+    var a = [_]V{ .{ .x = 0, .y = 0, .r = 1, .g = 0, .b = 0, .a = 1 }, .{ .x = 1, .y = 0, .r = 1, .g = 0, .b = 0, .a = 1 }, .{ .x = 0, .y = 1, .r = 1, .g = 0, .b = 0, .a = 1 } };
+    var b = a; // distinct storage, equal content
+    const pa: CanvasPrimitive = .{ .triangles = .{ .verts = &a, .key = 7 } };
+    const pb: CanvasPrimitive = .{ .triangles = .{ .verts = &b, .key = 7 } };
+    try testing.expect(pa.eql(pb));
+
+    // Same key => trusted equal even if bytes differ (that is the contract).
+    b[0].x = 5;
+    try testing.expect(pa.eql(pb));
+    // A new key => different.
+    const pc: CanvasPrimitive = .{ .triangles = .{ .verts = &b, .key = 8 } };
+    try testing.expect(!pa.eql(pc));
+
+    // key 0 => deep compare.
+    const p0a: CanvasPrimitive = .{ .triangles = .{ .verts = &a } };
+    const p0b: CanvasPrimitive = .{ .triangles = .{ .verts = &b } };
+    try testing.expect(!p0a.eql(p0b));
+    b[0].x = 0;
+    try testing.expect(p0a.eql(p0b));
+
+    // Length mismatch is always unequal.
+    const short: CanvasPrimitive = .{ .triangles = .{ .verts = a[0..2], .key = 7 } };
+    try testing.expect(!pa.eql(short));
+
+    // Lines: style participates, key as above.
+    const segs = [_][4]f32{.{ 0, 0, 1, 1 }};
+    const l1: CanvasPrimitive = .{ .lines = .{ .segs = &segs, .key = 3 } };
+    const l2: CanvasPrimitive = .{ .lines = .{ .segs = &segs, .key = 3, .thickness = 2 } };
+    try testing.expect(l1.eql(l1));
+    try testing.expect(!l1.eql(l2));
+    try testing.expect(!l1.eql(pa));
 }

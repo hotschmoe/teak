@@ -398,6 +398,13 @@ pub const LayoutEngine = struct {
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, img.style.flex);
                 },
+                .scene3d => |sc| {
+                    // Fixed-size leaf, same sizing convention as `image`.
+                    const w = sc.style.width;
+                    const h = sc.style.height;
+                    rects[i] = .{ .w = w, .h = h };
+                    addLeafToTop(&stack, w, h, sc.style.flex);
+                },
                 .canvas => |cv| {
                     // Fixed-size leaf: intrinsic w/h come straight from the
                     // style. Flex weight is counted for sibling distribution
@@ -469,7 +476,7 @@ pub const LayoutEngine = struct {
                     .scroll_x = sc.scroll_x,
                     .scroll_y = sc.scroll_y,
                 }),
-                .text, .button, .checkbox, .radio, .image, .rich_text, .canvas => {
+                .text, .button, .checkbox, .radio, .image, .rich_text, .canvas, .scene3d => {
                     const ctx = stack.top();
                     if (ctx.child_count > 0) advanceCursor(ctx, ctx.gap);
 
@@ -1120,4 +1127,24 @@ test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
     // must not, because 32 is the documented capacity.
     LayoutEngine.doLayout(rects, cb.cmds.items, 800, 600, test_measurer);
     try testing.expectEqual(@as(f32, 800), rects[0].w);
+}
+
+test "scene3d is a fixed-size leaf sized from its style" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 10, .gap = 0 });
+    cb.text("Title"); // 50 x 20
+    cb.scene3d(.{ .style = .{ .width = 320, .height = 200 } });
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
+
+    try testing.expectEqual(@as(f32, 320), rects[2].w);
+    try testing.expectEqual(@as(f32, 200), rects[2].h);
+    try testing.expectEqual(@as(f32, 10), rects[2].x);
+    try testing.expectEqual(@as(f32, 30), rects[2].y);
 }

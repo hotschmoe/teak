@@ -52,6 +52,7 @@ fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
         // null msg (the default) leaves it non-interactive, like a plain
         // decorative leaf.
         .canvas => |cv| cv.msg,
+        .scene3d => |sc| sc.msg,
         else => null,
     };
 }
@@ -831,4 +832,27 @@ test "hitTest: non-modal overlay backdrop click falls through to base" {
     );
     try testing.expect(hit != null);
     try testing.expectEqual(@as(?Msg, Msg.base_click), hit.?.msg);
+}
+
+test "hitTest: scene3d is interactive only with a click msg" {
+    const testing = std.testing;
+    const Msg = union(enum) { orbit };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.scene3d(.{ .style = .{ .width = 200, .height = 100 } }); // index 1 — no msg
+    cb.scene3d(.{ .style = .{ .width = 200, .height = 100 }, .msg = .orbit }); // index 2
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 400, text_mod.monoMeasurer());
+    const rs = rects[0..cb.cmds.items.len];
+
+    try testing.expect(hitTest(cb.cmds.items, rs, rs[1].x + 5, rs[1].y + 5) == null);
+    const hit = hitTest(cb.cmds.items, rs, rs[2].x + 5, rs[2].y + 5);
+    try testing.expectEqual(@as(?Msg, Msg.orbit), hit.?.msg);
+    // hoverTest shares leafMsg: only the clickable scene reports hover.
+    try testing.expectEqual(@as(?usize, 2), hoverTest(cb.cmds.items, rs, rs[2].x + 5, rs[2].y + 5));
+    try testing.expectEqual(@as(?usize, null), hoverTest(cb.cmds.items, rs, rs[1].x + 5, rs[1].y + 5));
 }
