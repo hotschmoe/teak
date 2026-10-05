@@ -213,6 +213,10 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         scene_vert_buf: c.WGPUBuffer,
         scene_vert_buf_size: u64,
 
+        /// Headless mode (`initOffscreen`): the colour target `renderFrame`
+        /// presents to, read back by `readFrame`. null for windowed Gpus.
+        offscreen: c.WGPUTexture,
+
         // ── Overlay layering ───────────────────────────────────────
         //
         // `setOverlayStart` records where the overlay layer begins in each
@@ -252,6 +256,46 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const surface = try Surface.createSurface(instance, handle);
             const ctx = try wgpu_c.requestDevice(instance, surface);
             return initFromDevice(instance, surface, ctx, width, height, options);
+        }
+
+        /// A surface-less Gpu for headless runs (agents, CI screenshots): a
+        /// device on the best Vulkan / Metal / D3D12 adapter and an
+        /// offscreen colour target of the surface format and the same MSAA
+        /// path as the windowed Gpu. `renderFrame` draws into that target
+        /// ("presents" to it) and `readFrame` reads it back. Needs a GPU
+        /// driver (software Vulkan works where wgpu supports it) but no
+        /// window system.
+        pub fn initOffscreen(width: u32, height: u32, options: InitOptions) !Self {
+            const instance = wgpu_c.createInstance(c.WGPUInstanceBackend_Primary) orelse return error.InstanceCreateFailed;
+            const ctx = try wgpu_c.requestDevice(instance, null);
+            var gpu = try initFromDevice(instance, null, ctx, width, height, options);
+            errdefer gpu.deinit();
+            try gpu.recreateOffscreen(width, height);
+            return gpu;
+        }
+
+        fn recreateOffscreen(self: *Self, width: u32, height: u32) error{GpuResource}!void {
+            if (self.offscreen) |t| c.wgpuTextureRelease(t);
+            self.offscreen = null;
+            self.offscreen = wgpu_c.createTexture2D(self.device, "offscreen-frame", .{
+                .width = @max(width, 1),
+                .height = @max(height, 1),
+                .format = self.surf_format,
+                .usage = c.WGPUTextureUsage_RenderAttachment | c.WGPUTextureUsage_CopySrc,
+            }) orelse return error.GpuResource;
+        }
+
+        /// The last frame `renderFrame` drew into the offscreen target
+        /// (`initOffscreen`), as tightly packed RGBA8 rows `width * height * 4`
+        /// bytes; the caller frees. Blocks until the GPU is done.
+        pub fn readFrame(self: *Self, allocator: std.mem.Allocator) ![]u8 {
+            const tex = self.offscreen orelse return error.NotOffscreen;
+            const ctx: wgpu_c.DeviceContext = .{ .adapter = self.adapter, .device = self.device, .queue = self.queue };
+            const px = try wgpu_c.readTexture(allocator, ctx, tex, @max(self.width, 1), @max(self.height, 1), 4);
+            // The target is BGRA8; PNG and most consumers want RGBA.
+            var i: usize = 0;
+            while (i + 3 < px.len) : (i += 4) std.mem.swap(u8, &px[i], &px[i + 2]);
+            return px;
         }
 
         /// Build the Gpu on an already opened device. Takes ownership of
@@ -465,6 +509,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .scene_vert_count = 0,
                 .scene_vert_buf = null,
                 .scene_vert_buf_size = 0,
+                .offscreen = null,
                 .overlay_split = null,
                 .text_ov = 0,
                 .image_ov = 0,
@@ -502,6 +547,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             self.raster.deinit();
 
             self.releaseMsaa();
+            if (self.offscreen) |t| c.wgpuTextureRelease(t);
             if (self.vert_buf) |vb| c.wgpuBufferRelease(vb);
             c.wgpuBindGroupRelease(self.bind_group);
             c.wgpuBufferRelease(self.uniform_buf);
@@ -546,6 +592,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             self.width = width;
             self.height = height;
             if (self.surface != null) self.configureSurface(self.surface, width, height);
+            if (self.offscreen != null) self.recreateOffscreen(width, height) catch {};
 
             const screen_size = [2]f32{ @floatFromInt(width), @floatFromInt(height) };
             c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &screen_size, @sizeOf([2]f32));
@@ -631,6 +678,11 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// (apps that render different content per window simply call
         /// upload* + renderToWindow once per window per frame).
         pub fn renderToWindow(self: *Self, window_id: u32, clear_color: ClearColor) void {
+            if (self.surface == null and window_id == 0) {
+                // Headless: the primary "window" is the offscreen target.
+                if (self.offscreen) |t| self.renderToTexture(t, self.width, self.height, clear_color);
+                return;
+            }
             const target_w: u32, const target_h: u32, const surface_handle: c.WGPUSurface = blk: {
                 if (window_id == 0) break :blk .{ self.width, self.height, self.surface };
                 if (window_id > MAX_SECONDARY_SURFACES) return;

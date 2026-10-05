@@ -67,6 +67,26 @@ pub fn build(b: *std.Build) void {
         ui_step.dependOn(&ui_run.step);
     }
 
+    // --- Headless screenshot (no display; needs a Vulkan device) ---
+    //
+    //   zig build shot -- out.png
+
+    if (target.result.os.tag == .linux) {
+        const shot_exe = b.addExecutable(.{
+            .name = "scene3d-shot",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/shot_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        teak.linkHeadless(b, shot_exe, .{});
+        const shot_run = b.addRunArtifact(shot_exe);
+        if (b.args) |args| shot_run.addArgs(args);
+        const shot_step = b.step("shot", "Render a headless PNG screenshot: zig build shot -- out.png");
+        shot_step.dependOn(&shot_run.step);
+    }
+
     // --- Web (wasm + zunk) ---
 
     const wasm_target = b.resolveTargetQuery(.{

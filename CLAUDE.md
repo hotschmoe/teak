@@ -220,6 +220,7 @@ src/                           -- the library, consumable as a Zig module
     x11.zig                    -- X11 Host via std.DynLib(libX11.so.6); stb measurer;
                                --   keysym->SpecialKey; no -lX11 (dlopened at runtime)
     wasm.zig                   -- zunk Host (web)
+    headless.zig               -- scripted-input Host for display-less runs (teak.linkHeadless)
 
 examples/
   counter_greeter/             -- the proto-2 demo; consumes teak as a module

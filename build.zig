@@ -135,6 +135,20 @@ pub fn build(b: *std.Build) void {
     }
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = stbtt_face_mod })).step);
 
+    // Headless host (src/platform/headless.zig): scripted input, fake
+    // clock, effect capture. Needs the stb text module for its font.
+    const headless_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/headless.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = mod },
+            .{ .name = "teak-text", .module = stbtt_mod },
+        },
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = headless_mod })).step);
+
     // X11 host (src/platform/x11.zig) — its keysym→SpecialKey mapping is
     // the one piece of host logic worth unit-testing headlessly (no
     // libX11 / display needed; the test calls only pure mapping fns).
@@ -414,24 +428,7 @@ fn linkLinux(
         .optimize = optimize,
     });
 
-    // Shared stb_truetype text module — one font + scale math feeds both
-    // the Host's measurer and the GPU's rasterizer so layout and rendering
-    // can't drift. Owns the vendored stb impl TU (compiled once) and links
-    // libc (stb's malloc/free + the X11 host's std.DynLib dlopen path).
-    const text_mod = b.createModule(.{
-        .root_source_file = teak_dep.path("src/gpu/text_stbtt.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "teak", .module = teak_mod },
-        },
-    });
-    text_mod.addIncludePath(teak_dep.path("src/gpu/vendor"));
-    text_mod.addCSourceFile(.{
-        .file = teak_dep.path("src/gpu/vendor/stb_truetype_impl.c"),
-        .flags = &.{"-std=c99"},
-    });
+    const text_mod = stbTextModule(b, teak_dep, teak_mod, target, optimize);
 
     // X11 host. libX11 is loaded at runtime via std.DynLib (no -lX11, no
     // X11 dev headers needed) — but std.DynLib must take its dlopen path,
@@ -492,6 +489,114 @@ pub const WebFont = struct {
     path: std.Build.LazyPath,
     slot: WebFontSlot = .mono,
 };
+
+/// Shared stb_truetype text module — one font + scale math feeds both the
+/// Host's measurer and the GPU's rasterizer so layout and rendering can't
+/// drift. Owns the vendored stb impl TU (compiled once) and links libc
+/// (stb's malloc/free + the X11 host's std.DynLib dlopen path).
+fn stbTextModule(
+    b: *std.Build,
+    teak_dep: *std.Build.Dependency,
+    teak_mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const text_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("src/gpu/text_stbtt.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+        },
+    });
+    text_mod.addIncludePath(teak_dep.path("src/gpu/vendor"));
+    text_mod.addCSourceFile(.{
+        .file = teak_dep.path("src/gpu/vendor/stb_truetype_impl.c"),
+        .flags = &.{"-std=c99"},
+    });
+    return text_mod;
+}
+
+pub const HeadlessOptions = struct {};
+
+/// Wire the HEADLESS native backend onto `exe` — no window system needed,
+/// only a Vulkan device (Linux for now). Adds the imports `teak`,
+/// `teak-platform-headless` (scripted-input Host, `platform/headless.zig`)
+/// and `teak-gpu-headless` (the wgpu core with no surface, for
+/// `Gpu.initOffscreen`/`readFrame`), links wgpu-native and sets the rpath.
+/// Typical `build.zig`:
+///
+///     const shot = b.addExecutable(.{ .name = "shot", .root_module = b.createModule(.{
+///         .root_source_file = b.path("src/shot_main.zig"), .target = target, .optimize = optimize }) });
+///     teak.linkHeadless(b, shot, .{});
+///     const run = b.addRunArtifact(shot);
+///     if (b.args) |args| run.addArgs(args);
+///     b.step("shot", "Render a headless screenshot").dependOn(&run.step);
+///
+/// See docs/features/headless.md.
+pub fn linkHeadless(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    _: HeadlessOptions,
+) void {
+    const root = exe.root_module;
+    const target = root.resolved_target.?;
+    const optimize = root.optimize.?;
+    if (target.result.os.tag != .linux) @panic("teak.linkHeadless: Linux only for now (Windows has no stb-text headless stitch yet)");
+
+    const teak_dep = b.dependencyFromBuildZig(BuildZig, .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const teak_mod = teak_dep.module("teak");
+    const wgpu_dep_name: []const u8 = switch (target.result.cpu.arch) {
+        .aarch64 => "wgpu-native-linux-aarch64",
+        .x86_64 => "wgpu-native-linux-x86_64",
+        else => @panic("teak.linkHeadless: unsupported Linux arch (aarch64 or x86_64 only)"),
+    };
+    const wgpu_dep = teak_dep.builder.lazyDependency(wgpu_dep_name, .{}) orelse return;
+
+    const shaders_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("shaders/shaders.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const text_mod = stbTextModule(b, teak_dep, teak_mod, target, optimize);
+
+    const platform_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("src/platform/headless.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-text", .module = text_mod },
+        },
+    });
+    const gpu_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("src/gpu/native_headless.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-shaders", .module = shaders_mod },
+            .{ .name = "teak-text", .module = text_mod },
+        },
+    });
+    gpu_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
+    gpu_mod.addLibraryPath(wgpu_dep.path("lib"));
+    gpu_mod.linkSystemLibrary("wgpu_native", .{});
+
+    root.link_libc = true;
+    root.addImport("teak", teak_mod);
+    root.addImport("teak-platform-headless", platform_mod);
+    root.addImport("teak-gpu-headless", gpu_mod);
+    root.addRPathSpecial("$ORIGIN");
+    const install_so = b.addInstallBinFile(wgpu_dep.path("lib/libwgpu_native.so"), "libwgpu_native.so");
+    exe.step.dependOn(&install_so.step);
+}
 
 pub const WebWgpuOptions = struct {
     port: u16 = 8080,

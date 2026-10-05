@@ -47,6 +47,8 @@ Building the Linux UI needs no X11 dev package (libX11 is `dlopen`ed at runtime)
 
 Seven examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array), **chrome** (an engineering-workstation shell: header / 360 | flex | 320 columns / status line, bordered cards, bracket tabs, a `teak.Table`, underline fields, hover-inverting buttons, a hard-shadowed overlay, a fully custom `Theme`), **viewport** (an interactive canvas you pan and zoom, plus a scroll list whose scrollbar is sized from `scrollLayoutMsg`), and **effects** (every `teak.Effect` with a visible result: HTTP, download, file open, storage, clock, clipboard, query params, dropped / pasted images), and **fonts** (IBM Plex Mono at three weights with tracking: `linkWebWgpu(.fonts)` on the web, `Host.registerFont` on Linux).
 
+**Headless screenshots** (no display): `zig build shot -- out.png` in `examples/chrome` and `examples/scene3d` runs the real App on the native wgpu backend with scripted input and writes a PNG (`teak.linkHeadless`, `teak.headless`; see [`docs/features/headless.md`](docs/features/headless.md)). It needs a Vulkan device and a TTF.
+
 Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until Zig ships a fix for [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865). See [`docs/archive/zig-016-win-arm64-crash.md`](docs/archive/zig-016-win-arm64-crash.md).
 
 ## Where to read next
@@ -65,6 +67,10 @@ Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until
 - [`llms.txt`](llms.txt) — the whole public API in **one read** (types,
   signatures, HARDLINE rules, the App contract). Audit-enforced to stay in
   sync with `src/teak.zig`, so it never silently drifts.
+- **Headless PNGs** — `teak.linkHeadless` + `teak.headless`: scripted
+  mouse / keys / wheel against the real native backend, no display, output a
+  PNG (and the Model is inspectable between steps). See
+  [`docs/features/headless.md`](docs/features/headless.md).
 - **`TEAK_SNAPSHOT`** — run any app with `TEAK_SNAPSHOT=/tmp/teak.snap` and
   `teak.run` mirrors each changed frame to that file as `tag (x,y,w,h)
   payload` text, so an agent driving the app reads the **GUI as data**

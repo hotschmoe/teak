@@ -301,3 +301,38 @@ test "overlay layering: base content below the split still draws in painter orde
     try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, at(f, 5, 15)); // base quad, no text there (BGRA blue)
     try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 25, 25)); // overlay quad
 }
+
+test "initOffscreen: renderFrame presents to the offscreen target and readFrame returns RGBA" {
+    var gpu = TestGpu.initOffscreen(px, px, .{ .msaa = true }) catch |e| switch (e) {
+        error.AdapterFailed, error.DeviceFailed, error.InstanceCreateFailed => return error.SkipZigTest,
+        else => return e,
+    };
+    defer gpu.deinit();
+
+    var quad: [6]teak.Vertex = undefined;
+    solidQuad(&quad, 8, 8, 40, 40, .{ 1, 0.5, 0 });
+    gpu.uploadVertices(&quad);
+    gpu.renderFrame(.{ 0, 0, 1, 1 });
+    const rgba = try gpu.readFrame(std.testing.allocator);
+    defer std.testing.allocator.free(rgba);
+    try std.testing.expectEqual(@as(usize, px * px * 4), rgba.len);
+    const inside = rgba[(20 * px + 20) * 4 ..][0..4].*;
+    try std.testing.expectEqual(@as(u8, 255), inside[0]); // R first: RGBA, not BGRA
+    try std.testing.expect(inside[1] >= 126 and inside[1] <= 129);
+    try std.testing.expectEqual(@as(u8, 0), inside[2]);
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, rgba[(50 * px + 50) * 4 ..][0..4].*); // clear colour
+
+    // Resizing recreates the target; the next frame has the new size.
+    gpu.resize(32, 32);
+    gpu.uploadVertices(&quad);
+    gpu.renderFrame(.{ 0, 1, 0, 1 });
+    const small = try gpu.readFrame(std.testing.allocator);
+    defer std.testing.allocator.free(small);
+    try std.testing.expectEqual(@as(usize, 32 * 32 * 4), small.len);
+}
+
+test "readFrame on a windowed (non-offscreen) Gpu is an error" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    try std.testing.expectError(error.NotOffscreen, h.gpu.readFrame(std.testing.allocator));
+}
