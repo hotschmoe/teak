@@ -46,8 +46,9 @@ The whole file, as `zig init` would generate it plus the Teak dependency:
 Rules that bite: `.path` must be **relative** to the directory holding this file
 (an absolute path is an error); `.fingerprint` is mandatory and must stay
 stable; with `.url` you need the matching `.hash` (`zig fetch --save <url>`
-writes both). Teak itself depends on `zunk` (web) by relative path, so when
-you use a local checkout keep `zunk` next to it (`../zunk` from teak).
+writes both). Teak pins `zunk` (the web toolchain) by url + hash to a zunk
+release, so nothing needs to sit next to a teak checkout. To build against a
+local zunk instead, pass `--fork=/path/to/zunk` to `zig build`.
 
 A pure-library consumer pays for nothing else. The `wgpu-native`
 prebuilts are **lazy** deps of Teak — they're fetched only when you call

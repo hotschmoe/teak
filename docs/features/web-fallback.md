@@ -1,5 +1,8 @@
 # Browsers without WebGPU
 
+> **Decision (owner, 2026-10-09): the WebGL2 backend is deferred.** WebGPU is required on the web; browsers without it get the in-page
+> message / `zunkFallback` hook described below. Revisit if Firefox-on-Linux/Android users become a real audience for a teak product.
+
 **Status.** A browser without usable WebGPU no longer shows a blank canvas: zunk's generated `app.js` detects the missing
 `navigator.gpu` / adapter / device, calls the page's `window.zunkFallback({ reason, webgl2 })` hook if it has one, and otherwise shows a
 full-page "This app needs WebGPU" message (zunk `docs/ARCHITECTURE.md`, "No WebGPU"). That is the shipped policy. This note evaluates what a real

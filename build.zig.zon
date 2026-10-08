@@ -41,10 +41,13 @@
             .hash = "N-V-__8AAFWheQIu8DV1xiTixrDsCJ0xr7-Ssy-XhEIkgx5u",
             .lazy = true,
         },
-        // Path dep during zunk co-development. Switch to a
-        // `git+https://github.com/hotschmoe/zunk.git#<sha>` + hash once zunk
-        // cuts a release tag teak CI can pin to.
-        .zunk = .{ .path = "../zunk" },
+        // zunk (wasm build tool + web bindings), pinned to the v0.16.0 release.
+        // Co-developing zunk? Build with `zig build --fork=../zunk` to use a
+        // local checkout instead of this pin (see CLAUDE.md, "zunk").
+        .zunk = .{
+            .url = "git+https://github.com/hotschmoe/zunk.git#663dbd7dbe9082e1db3e64e9745289c75783db5d",
+            .hash = "zunk-0.16.0-gquBQic5BgAWKkopmkXULGPZXm_iN38jGUOF2BOaGRai",
+        },
         // HarfBuzz 11.2.1 (MIT) — the optional complex-script shaper. Fetched
         // only when a build asks for it (`-Dharfbuzz=true` /
         // `.harfbuzz = true`); default builds never touch it.
