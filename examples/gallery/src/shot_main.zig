@@ -22,6 +22,7 @@ const states = [_]State{
     .{ .name = "overlays_dark_menu", .steps = &.{ .{ .frames = 2 }, dark, .{ .click = .{ 88, 174 } }, .{ .click = .{ 108, 14 } }, .{ .move = .{ 900, 700 } }, .{ .frames = 2 } } },
     .{ .name = "scene", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 270 } }, .{ .frames = 4 } } },
     .{ .name = "pickers", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 238 } }, .{ .frames = 3 } } },
+    .{ .name = "date_open", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 238 } }, .{ .click = .{ 750, 125 } }, .{ .chars = "2026-10-08" }, .{ .click = .{ 852, 125 } }, .{ .key = .right }, .{ .key = .down }, .{ .move = .{ 1000, 600 } }, .{ .frames = 2 } } },
     .{ .name = "pickers_edit", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 238 } }, .{ .click = .{ 496, 166 } }, .{ .key = .ctrl_a }, .{ .chars = "#3366CC" }, .{ .frames = 1 }, .{ .drag = .{ .{ 300, 150 }, .{ 360, 230 } } }, .{ .click = .{ 880, 134 } }, .{ .click = .{ 880, 134 } }, .{ .move = .{ 900, 700 } }, .{ .frames = 2 } } },
     .{ .name = "layout", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 206 } }, .{ .frames = 2 } } },
     .{ .name = "layout_split", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 206 } }, .{ .click = .{ 160, 126 } }, .{ .frames = 2 }, .{ .drag = .{ .{ 835, 200 }, .{ 930, 200 } } }, .{ .frames = 2 } } },

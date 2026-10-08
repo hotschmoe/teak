@@ -44,6 +44,7 @@ pub const NameField = teak.TextField(32);
 pub const QtyField = teak.NumericField(.{ .capacity = 8, .min = 0, .max = 999, .precision = 0, .invalid_message = "enter 0 - 999" });
 pub const Drop = teak.Dropdown(8);
 pub const Color = W.color_picker;
+pub const Dates = W.date_field;
 pub const Spin = W.spinner.Spinner(.{ .min = 0, .max = 100, .step = 1, .big_step = 10 });
 pub const Spin2 = W.spinner.Spinner(.{ .min = 0, .max = 1, .step = 0.05, .big_step = 0.25, .precision = 2 });
 pub const Combo = teak.Combobox(24);
@@ -70,7 +71,7 @@ pub const Page = enum {
     }
 };
 
-pub const Field = enum { name, search, qty, combo, color_hex, color_r, color_g, color_b, spin, spin2 };
+pub const Field = enum { name, search, qty, combo, color_hex, color_r, color_g, color_b, spin, spin2, date };
 pub const SliderId = enum { volume, mix };
 pub const Dialog = enum { none, about, shortcuts, confirm_reset };
 
@@ -128,6 +129,7 @@ pub const Msg = union(enum) {
     spin_step: Spin.Step,
     spin2: Spin2.Msg,
     spin2_step: Spin2.Step,
+    date: Dates.Msg,
     // layout
     tabs: Tabs.Msg,
     split: Split.Msg,
@@ -192,6 +194,7 @@ pub const Model = struct {
     color: Color.Model = Color.init(.{ .r = 200, .g = 70, .b = 50 }),
     spin: Spin.Model = spinInit(Spin, 42),
     spin2: Spin2.Model = spinInit(Spin2, 0.5),
+    date: Dates.Model = .{},
 
     // layout
     tabs: Tabs.Model = .{},
@@ -346,6 +349,13 @@ pub fn update(m: *Model, msg: Msg) void {
         .spin_step => |s| Spin.step(&m.spin, s),
         .spin2 => |s| Spin2.update(&m.spin2, s),
         .spin2_step => |s| Spin2.step(&m.spin2, s),
+        .date => |s| {
+            Dates.update(&m.date, s);
+            switch (s) {
+                .toggle, .edit => m.focus = .date,
+                else => {},
+            }
+        },
         .tabs => |s| Tabs.update(&m.tabs, s),
         .split => |s| Split.update(&m.split, s),
         .progress => |s| Progress.update(&m.progress, s),

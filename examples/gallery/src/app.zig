@@ -235,6 +235,7 @@ pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
         .color_b => .{ .color = W.color_picker.charMsg(.b, c) },
         .spin => .{ .spin = .{ .char = c } },
         .spin2 => .{ .spin2 = .{ .char = c } },
+        .date => .{ .date = W.date_field.charMsg(c) },
         .combo => .{ .combo = model_mod.Combo.charMsg(c) },
     };
 }
@@ -255,6 +256,7 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
         .color_g => if (W.color_picker.keyMsg(.g, key)) |c| Msg{ .color = c } else null,
         .color_b => if (W.color_picker.keyMsg(.b, key)) |c| Msg{ .color = c } else null,
         .spin => if (model_mod.Spin.keyStep(key)) |st| Msg{ .spin_step = st } else teak.textFieldSpecial(Msg, "spin", key),
+        .date => if (W.date_field.keyMsg(&m.date, key)) |d| Msg{ .date = d } else null,
         .spin2 => if (model_mod.Spin2.keyStep(key)) |st| Msg{ .spin2_step = st } else teak.textFieldSpecial(Msg, "spin2", key),
         .combo => if (model_mod.Combo.keyMsg(&m.combo, key, &page_inputs.woods, page_inputs.combo_key_opts)) |c| Msg{ .combo = c } else null,
     };
@@ -311,6 +313,18 @@ pub fn wheelMsg(m: *const Model, dy: f32) ?Msg {
     return switch (f) {
         .spin => if (model_mod.Spin.wheelStep(dy, false)) |st| Msg{ .spin_step = st } else null,
         .spin2 => if (model_mod.Spin2.wheelStep(dy, false)) |st| Msg{ .spin2_step = st } else null,
+        else => null,
+    };
+}
+
+/// One clock request until `today` is known; its result becomes `set_today`.
+pub fn effects(m: *const Model) []const teak.Effect {
+    return if (m.date.today == null) &.{.{ .clock = .{ .id = 1 } }} else &.{};
+}
+
+pub fn effectMsg(_: *const Model, r: teak.EffectResult) ?Msg {
+    return switch (r) {
+        .clock => |c| .{ .date = .{ .set_today = W.date.fromUnixMs(c.unix_ms, c.utc_offset_min) } },
         else => null,
     };
 }
