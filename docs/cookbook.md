@@ -870,6 +870,61 @@ flight (answers mix up); keeping `r.body` instead of copying it; expecting
 itself for the next click or key press); expecting a result from the
 fire-and-forget `storage_set` / `write_clipboard`.
 
+---
+
+## 14. Searchable combobox
+
+**Goal:** a picker over a long option list (W-shapes, materials, rebar) that
+filters as you type. (Consumer issue #2; `Dropdown` is the no-search
+variant, recipe 5.)
+
+**You will touch:** `src/app.zig` — a `Model` field, a `Msg` variant, an
+`update` arm, `viewWith` in the view, and four host hooks. Live example:
+the MATERIAL field in `examples/chrome`.
+
+```zig
+const Material = teak.Combobox(24);            // 24 = query capacity (bytes)
+const opts: teak.ComboboxViewOpts = .{ .list_x = 12, .list_y = 390, .list_width = 336, .max_visible = 6 };
+// Model:  material: Material.Model = .{ .selected = 0 },
+// Msg:    material: Material.Msg,
+// update: .material => |mm| Material.update(&m.material, mm),
+// view:   Material.viewWith(&m.material, cb, &options, msgs, opts);
+const msgs = .{ .focus = Msg{ .material = .focus }, .close = Msg{ .material = .close }, .selectMsg = pick };
+fn pick(i: usize) Msg { return .{ .material = .{ .select = i } }; }   // i = ORIGINAL option index
+```
+
+Host hooks (only while `m.material.open`, which doubles as "has focus"):
+
+```zig
+pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    if (m.material.open) return .{ .material = Material.charMsg(c) };
+    ...
+}
+pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
+    if (m.material.open) return if (Material.keyMsg(&m.material, key, &options, opts)) |mm| .{ .material = mm } else null;
+    ...
+}
+pub fn wheelMsg(m: *const Model, dy: f32) ?Msg {
+    if (!m.material.open) return null;
+    return .{ .material = Material.scrollByMsg(&m.material, dy, &options, opts) };
+}
+pub fn focusedMsg(m: *const Model) ?Msg { if (m.material.open) return .{ .material = .focus }; ... }
+```
+
+Behaviour: click the input or press Down to open; typing filters
+(case-insensitive substring, or `.match = .prefix`) and highlights the first
+match; Up/Down/PageUp/PageDown move the highlight (scrolled into view);
+Enter picks it; Escape or a click outside closes; a disabled "No matches"
+row shows when nothing matches. Focus the app's other fields with a Msg that
+sets `material.open = false` (see chrome's `.focus_name`).
+
+**Common mistake:** treating the `selectMsg` index as the filtered ordinal —
+it is the index into *your* options slice, so `m.material.selected` is always
+a valid index into it. `list_x/list_y` are window coordinates (the previous
+frame's rect of the input, as for `Dropdown`).
+
+---
+
 ## 15. Add a 3D viewport
 
 **You want** a model on screen you can orbit, click, section and annotate.
@@ -931,56 +986,3 @@ pub fn view(m: *const Model, cb: anytype) void {
 **Common mistakes:** forgetting `.pointer = true` / an `id` (no events arrive); rebuilding the *mesh resource* on every selection
 change (use item flags); using `Item.mesh` with a key that is not in `resources()` (it draws nothing); expecting `screen_px` sprite
 sizes in non-camera-facing modes; a plane whose `u`/`v` are not unit-length changes its world size (it is a scale).
-
----
-
-## 14. Searchable combobox
-
-**Goal:** a picker over a long option list (W-shapes, materials, rebar) that
-filters as you type. (Consumer issue #2; `Dropdown` is the no-search
-variant, recipe 5.)
-
-**You will touch:** `src/app.zig` — a `Model` field, a `Msg` variant, an
-`update` arm, `viewWith` in the view, and four host hooks. Live example:
-the MATERIAL field in `examples/chrome`.
-
-```zig
-const Material = teak.Combobox(24);            // 24 = query capacity (bytes)
-const opts: teak.ComboboxViewOpts = .{ .list_x = 12, .list_y = 390, .list_width = 336, .max_visible = 6 };
-// Model:  material: Material.Model = .{ .selected = 0 },
-// Msg:    material: Material.Msg,
-// update: .material => |mm| Material.update(&m.material, mm),
-// view:   Material.viewWith(&m.material, cb, &options, msgs, opts);
-const msgs = .{ .focus = Msg{ .material = .focus }, .close = Msg{ .material = .close }, .selectMsg = pick };
-fn pick(i: usize) Msg { return .{ .material = .{ .select = i } }; }   // i = ORIGINAL option index
-```
-
-Host hooks (only while `m.material.open`, which doubles as "has focus"):
-
-```zig
-pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
-    if (m.material.open) return .{ .material = Material.charMsg(c) };
-    ...
-}
-pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
-    if (m.material.open) return if (Material.keyMsg(&m.material, key, &options, opts)) |mm| .{ .material = mm } else null;
-    ...
-}
-pub fn wheelMsg(m: *const Model, dy: f32) ?Msg {
-    if (!m.material.open) return null;
-    return .{ .material = Material.scrollByMsg(&m.material, dy, &options, opts) };
-}
-pub fn focusedMsg(m: *const Model) ?Msg { if (m.material.open) return .{ .material = .focus }; ... }
-```
-
-Behaviour: click the input or press Down to open; typing filters
-(case-insensitive substring, or `.match = .prefix`) and highlights the first
-match; Up/Down/PageUp/PageDown move the highlight (scrolled into view);
-Enter picks it; Escape or a click outside closes; a disabled "No matches"
-row shows when nothing matches. Focus the app's other fields with a Msg that
-sets `material.open = false` (see chrome's `.focus_name`).
-
-**Common mistake:** treating the `selectMsg` index as the filtered ordinal —
-it is the index into *your* options slice, so `m.material.selected` is always
-a valid index into it. `list_x/list_y` are window coordinates (the previous
-frame's rect of the input, as for `Dropdown`).

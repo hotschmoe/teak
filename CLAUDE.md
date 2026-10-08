@@ -213,7 +213,8 @@ src/                           -- the library, consumable as a Zig module
     surface_xlib.zig           -- Xlib Window surface provider } Linux stitch:
     native_linux.zig           -- Gpu(surface_xlib, StbttRasterizer) + validateGpu
     web.zig                    -- zunk WebGPU backend (wasm)
-    glyph_cache.zig            -- GlyphCache(Backend): shared LRU glyph-texture cache
+    glyph_atlas.zig            -- GlyphAtlas: paged R8 shelf atlas, page-granular eviction, GlyphInstance
+    text_stage.zig             -- TextStage(Raster): shape -> pack -> glyph instances (native + web)
     vendor/stb_truetype.h(.c)  -- vendored public-domain rasterizer (Linux text)
   text/                        -- teak-text module (stb; shared by X11 Host measurer + Gpu rasterizer)
     text.zig                   -- module root; face.zig (Font + face table), shaper.zig (SimpleShaper:
@@ -242,7 +243,7 @@ examples/
 
 shaders/
   quad.wgsl              -- shader for colored rectangles
-  textured_quad.wgsl     -- alpha-from-texture (text glyphs)
+  glyph.wgsl             -- instanced glyph quads from the R8 atlas (native + web)
   scene.wgsl             -- 3D scenes: flat-lit triangles + instanced line quads
   image.wgsl             -- texture * tint (RGBA images)
 ```

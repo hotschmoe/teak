@@ -321,3 +321,23 @@ The examples' native UI builds on **Linux (X11)** and **Windows**;
 `teak.linkNativeWgpu` picks the backend by target OS and the examples gate
 their `ui` step on `teak.hasNativeBackend`. Pixels-on-screen verification on
 a real display is still pending (the CI host is headless + cross-arch).
+
+## Event-driven idle
+
+With `RunOptions.idle_skip` (default true) a frame in which nothing happened
+does no pipeline work at all: no view, layout, diff, upload or present. A
+frame is *quiet* when, after routing, there was no input event (pointer
+moved / button / wheel / key / char / resize), no Msg was dispatched (so no
+sub fired, no effect result or window hook arrived), no text input is
+focused (the cursor blink needs frames; `blink_period = 0` lifts this), no
+IME composition, no secondary window, and it is not the first frame.
+`Runtime.quiet` reports it, and `run` then calls the Host's optional
+`waitEvents(timeout_ms)` (documented in `platform/host.zig`) with the time to
+the next due `Sub` (`sub.nextDueMs`; 16 ms while an effect is outstanding,
+else at most 1 s). The web loop stays rAF-driven but skips the same work.
+
+Consequences: `ts.frame_counter` and the snapshot `frame=` header count
+frames that actually built; an app that animates must do it through a `Sub`
+(a model field advanced by `.every`), which is the HARDLINE way anyway.
+Measured (headless, 600 identical frames, an 8k-cmd view, ReleaseFast): 337 ms
+without idle skip, 30 ms with it (all of it the one real first frame).
