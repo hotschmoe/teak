@@ -115,7 +115,7 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
                 const k = u.face.kernUnits(pending_glyph, u.glyph);
                 pending_raw += @as(f32, @floatFromInt(k)) * pending_scale;
             }
-            x += finish(&out[count - 1], pending_raw, font.snap_advance);
+            x += finish(&out[count - 1], pending_raw, font.snapsAdvance());
         }
         if (count == out.len) {
             return .{ .count = count, .width = x, .consumed = pos };
@@ -135,7 +135,7 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
         count += 1;
         pos += u.len;
     }
-    if (count > 0) x += finish(&out[count - 1], pending_raw, font.snap_advance);
+    if (count > 0) x += finish(&out[count - 1], pending_raw, font.snapsAdvance());
     return .{ .count = count, .width = x, .consumed = pos };
 }
 

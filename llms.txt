@@ -540,7 +540,7 @@ section.chain(gpa, []const Segment) !Loops;  section.isClosed(gpa, MeshData) !bo
 FontFamily = enum { sans, serif, mono }
 FontWeight = enum { regular, medium, bold }
 FontSpec = struct { size_px: f32 = 14, family: FontFamily = .sans, weight: FontWeight = .regular,
-                    letter_spacing: f32 = 0, snap_advance: bool = false }   // px per glyph; snap_advance rounds advances to whole px
+                    letter_spacing: f32 = 0, snap_advance: ?bool = null }   // px per glyph; snap_advance rounds advances to whole px (null: on for .mono)
 DEFAULT_FONT: FontSpec        // sans 14px
 TextMetrics = struct { width, height, ascent, descent: f32 }
 TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
