@@ -48,6 +48,15 @@
 //!     content size of every `ScrollStyle.id != 0` region, on its first layout
 //!     and whenever either changes, so the app can clamp offsets and draw
 //!     scrollbars (the view cannot read layout).
+//!   - `hoverMsg(*const Model, PointerEvent(Msg)) ?Msg` — the interactive widget
+//!     under the pointer changed (entered, left, or replaced by another).
+//!     `ev.hit` is that widget's click Msg, `ev.box` its rect, `ev.now_ms` the
+//!     host clock: enough to drive a tooltip (`teak.Tooltip`) with a
+//!     `Sub.at` delay, all in the Model.
+//!   - `contextMsg(*const Model, PointerEvent(Msg)) ?Msg` — the right button
+//!     went down. `ev.hit` is the Msg of the widget under the cursor (null on
+//!     empty space), so one hook opens a context menu for any region
+//!     (`teak.ContextMenu`); the app maps `hit` to "which row / which panel".
 //!   - `focusedMsg(*const Model) ?Msg`                — the focus Msg of the
 //!     currently-focused widget; `run` maps it to a cmd index via
 //!     `indexOfFocusMsg` (stable across conditional/reordered widgets)
@@ -428,6 +437,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// if mouseup lands on the same widget; drag-off cancels.
         press_target: ?usize = null,
 
+        /// Cmd index last reported to `hoverMsg`; loop bookkeeping like
+        /// `press_target` (a lost value only repeats one hover event).
+        hover_reported: ?usize = null,
+        hover_seen: bool = false,
+
         /// The previous frame's `nowMs`. `runSubs` is stateless — it decides
         /// fire/skip from (last_sub_ms, now_ms, sub data) — so this single
         /// timestamp is all the bookkeeping the loop holds. `null` until the
@@ -513,6 +527,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // the user is looking at — so `prev` is captured before the swap.
             const prev = self.current;
             self.routeMouse(input, prev);
+            self.routePointerHooks(input, prev);
             self.routeCanvasPointer(input, prev);
             self.routeKeys(input, prev);
             self.routeWheel(input, prev);
@@ -602,6 +617,51 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 self.press_target = null;
             }
             if (self.press_target != null and hover != self.press_target) self.press_target = null;
+        }
+
+        /// `hoverMsg` / `contextMsg`: both resolve the pointer against the
+        /// previous frame's layout like a click does.
+        fn routePointerHooks(self: *Self, input: Input, prev: u1) void {
+            const has_hover = comptime @hasDecl(App, "hoverMsg");
+            const has_context = comptime @hasDecl(App, "contextMsg");
+            if (!has_hover and !has_context) return;
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+            const hit = if (cmds.len > 0) hit_test.hitTest(cmds, rects, input.mouse_x, input.mouse_y) else null;
+            const under: ?usize = if (hit) |h| h.index else null;
+
+            if (has_hover) {
+                if (!self.hover_seen or under != self.hover_reported) {
+                    const first = !self.hover_seen;
+                    self.hover_seen = true;
+                    self.hover_reported = under;
+                    // Nothing to report before the first frame laid anything out.
+                    if (!(first and under == null)) {
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+                    }
+                }
+            }
+            if (has_context and input.button_down.right) {
+                if (App.contextMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+            }
+        }
+
+        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect) pointer.PointerEvent(Msg) {
+            var ev: pointer.PointerEvent(Msg) = .{
+                .x = input.mouse_x,
+                .y = input.mouse_y,
+                .mods = input.mods,
+                .now_ms = self.host.nowMs(),
+            };
+            if (hit) |h| {
+                // A modal backdrop that swallows the click has no Msg: report it as empty space.
+                ev.hit = h.msg;
+                if (h.msg != null and h.index < rects.len) {
+                    const r = rects[h.index];
+                    ev.box = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
+                }
+            }
+            return ev;
         }
 
         /// Characters first, then special keys; clipboard chords route to the

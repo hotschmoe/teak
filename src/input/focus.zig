@@ -17,36 +17,78 @@ fn isFocusable(c: anytype) bool {
     };
 }
 
+/// Half-open cmd range Tab traversal may visit: the whole buffer, or - when a
+/// modal overlay is open - only that overlay's contents (the focus trap of a
+/// dialog / menu: Tab never lands on a field hidden behind the backdrop).
+/// With several modal overlays the last one (topmost) wins.
+fn focusScope(cmds: anytype) struct { lo: usize, hi: usize } {
+    var lo: usize = 0;
+    var hi: usize = cmds.len;
+    var open_at: ?usize = null;
+    var depth: usize = 0;
+    for (cmds, 0..) |c, i| switch (c) {
+        .push_overlay => |o| {
+            if (depth == 0) open_at = if (o.modal) i else null;
+            depth += 1;
+        },
+        .pop_overlay => {
+            if (depth > 0) depth -= 1;
+            if (depth == 0) if (open_at) |start| {
+                lo = start;
+                hi = i + 1;
+                open_at = null;
+            };
+        },
+        else => {},
+    };
+    // An unclosed modal overlay (malformed buffer) scopes to the buffer end.
+    if (open_at) |start| lo = start;
+    return .{ .lo = lo, .hi = hi };
+}
+
 /// Find the next focusable cmd index strictly after `current`. If
-/// `current` is null, start from index 0. Wraps to 0 at the end.
-/// Returns null only if the buffer has no focusable widgets at all.
+/// `current` is null (or outside the traversal scope), start at the scope's
+/// beginning. Wraps at the end of the scope - the whole buffer, or the
+/// topmost modal overlay when one is open (see `focusScope`). Returns null
+/// only if the scope has no focusable widgets at all.
 pub fn nextFocusable(cmds: anytype, current: ?usize) ?usize {
     const n = cmds.len;
     if (n == 0) return null;
+    const sc = focusScope(cmds);
+    const len = sc.hi - sc.lo;
+    if (len == 0) return null;
 
-    const start: usize = if (current) |c| (c + 1) % n else 0;
+    const start: usize = if (current) |c|
+        (if (c >= sc.lo and c < sc.hi) c + 1 - sc.lo else 0)
+    else
+        0;
     var i: usize = 0;
-    while (i < n) : (i += 1) {
-        const idx = (start + i) % n;
+    while (i < len) : (i += 1) {
+        const idx = sc.lo + (start + i) % len;
         if (isFocusable(cmds[idx])) return idx;
     }
     return null;
 }
 
 /// Find the previous focusable cmd index strictly before `current`. If
-/// `current` is null, start from the last index. Wraps to the end at 0.
+/// `current` is null (or outside the traversal scope), start from the
+/// scope's last index. Wraps at the start of the scope.
 pub fn prevFocusable(cmds: anytype, current: ?usize) ?usize {
     const n = cmds.len;
     if (n == 0) return null;
+    const sc = focusScope(cmds);
+    const len = sc.hi - sc.lo;
+    if (len == 0) return null;
 
     const start: usize = if (current) |c|
-        if (c == 0) n - 1 else c - 1
+        (if (c >= sc.lo and c < sc.hi) (if (c == sc.lo) len - 1 else c - sc.lo - 1) else len - 1)
     else
-        n - 1;
+        len - 1;
 
     var i: usize = 0;
-    while (i < n) : (i += 1) {
-        const idx = if (start >= i) start - i else start + n - i;
+    while (i < len) : (i += 1) {
+        const off = if (start >= i) start - i else start + len - i;
+        const idx = sc.lo + off;
         if (isFocusable(cmds[idx])) return idx;
     }
     return null;
@@ -149,6 +191,42 @@ test "nextFocusable with a single focusable wraps back to itself" {
     // must wrap and land back on 0.
     try testing.expectEqual(@as(?usize, 0), nextFocusable(cb.cmds.items, 0));
     try testing.expectEqual(@as(?usize, 0), prevFocusable(cb.cmds.items, 0));
+}
+
+test "a modal overlay traps Tab traversal inside itself" {
+    const testing = std.testing;
+    const Msg = union(enum) { under, in1, in2, close };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.textInput(.under, "", 0); // idx 0: behind the dialog
+    cb.pushOverlay(.{ .modal = true, .backdrop_msg = .close }); // idx 1
+    cb.textInput(.in1, "", 0); // idx 2
+    cb.button(.close, "OK"); // idx 3
+    cb.textInput(.in2, "", 0); // idx 4
+    cb.popOverlay(); // idx 5
+
+    // From outside the scope, traversal enters the overlay (never idx 0).
+    try testing.expectEqual(@as(?usize, 2), nextFocusable(cb.cmds.items, 0));
+    try testing.expectEqual(@as(?usize, 4), prevFocusable(cb.cmds.items, 0));
+    try testing.expectEqual(@as(?usize, 4), nextFocusable(cb.cmds.items, 2));
+    // ...and wraps inside it rather than escaping to idx 0.
+    try testing.expectEqual(@as(?usize, 2), nextFocusable(cb.cmds.items, 4));
+    try testing.expectEqual(@as(?usize, 4), prevFocusable(cb.cmds.items, 2));
+}
+
+test "a non-modal overlay does not trap traversal" {
+    const testing = std.testing;
+    const Msg = union(enum) { a, b };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.textInput(.a, "", 0); // idx 0
+    cb.pushOverlay(.{}); // tooltip-like
+    cb.text("tip");
+    cb.popOverlay();
+    cb.textInput(.b, "", 0); // idx 4
+    try testing.expectEqual(@as(?usize, 4), nextFocusable(cb.cmds.items, 0));
+    try testing.expectEqual(@as(?usize, 0), nextFocusable(cb.cmds.items, 4));
 }
 
 test "nextFocusable returns null when no focusables" {

@@ -86,6 +86,8 @@ pub const Buttons = pointer.Buttons;
 pub const Modifiers = pointer.Modifiers;
 pub const Button = pointer.Button;
 pub const CanvasEvent = pointer.CanvasEvent;
+pub const PointerEvent = pointer.PointerEvent;
+pub const Box = pointer.Box;
 pub const CanvasEventKind = pointer.CanvasEventKind;
 
 pub const MeshHandle = scene.MeshHandle;
