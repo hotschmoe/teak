@@ -12,7 +12,7 @@
 //! concrete `Gpu = Gpu(SurfaceProvider, RasterizerType)` and run
 //! `validateGpu` on the result. This file imports neither — keeping each
 //! OS's `extern`s out of the other's translation unit (no comptime
-//! gating), the idiom already used by `glyph_cache.GlyphCache(Backend)`.
+//! gating), the idiom `text_stage.TextStage(Raster)` shares with the web backend.
 //!
 //! Frame structure (see `docs/features/gpu.md`):
 //!   1. `uploadVertices` / `uploadText` / `uploadImages` stage the UI draws.

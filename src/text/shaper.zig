@@ -41,7 +41,20 @@ const Unit = struct {
     len: usize,
     /// Advance in font units, or null to ask the face (non-ASCII, ligatures).
     adv: ?u16 = null,
+    /// A code point no face has, from a full-width script: one em wide, so the
+    /// glyph a fallback rasterizer draws for it does not overlap its neighbours.
+    wide: bool = false,
 };
+
+/// Full-width code points (CJK ideographs, kana, hangul, full-width forms).
+fn isWide(cp: u21) bool {
+    return (cp >= 0x1100 and cp <= 0x115F) or (cp >= 0x2E80 and cp <= 0x303E) or
+        (cp >= 0x3041 and cp <= 0x33FF) or (cp >= 0x3400 and cp <= 0x4DBF) or
+        (cp >= 0x4E00 and cp <= 0x9FFF) or (cp >= 0xA960 and cp <= 0xA97F) or
+        (cp >= 0xAC00 and cp <= 0xD7A3) or (cp >= 0xF900 and cp <= 0xFAFF) or
+        (cp >= 0xFF01 and cp <= 0xFF60) or (cp >= 0xFFE0 and cp <= 0xFFE6) or
+        (cp >= 0x20000 and cp <= 0x3FFFD);
+}
 
 /// Glyph for `cp`: the primary face, else another registered weight of the same
 /// family. Missing everywhere yields the primary face's glyph 0 (.notdef).
@@ -90,7 +103,7 @@ fn nextUnit(primary: *const Font, primary_id: u16, text: []const u8, i: usize, f
     const d = decode(text, i);
     const m = mapGlyph(primary, primary_id, font.family, d.cp);
     const adv: ?u16 = if (d.cp < 128 and m.face == primary) primary.ascii_adv[d.cp] else null;
-    return .{ .glyph = m.glyph, .face_id = m.face_id, .face = m.face, .len = d.len, .adv = adv };
+    return .{ .glyph = m.glyph, .face_id = m.face_id, .face = m.face, .len = d.len, .adv = adv, .wide = m.glyph == 0 and isWide(d.cp) };
 }
 
 /// Shape `text` into `out`. Without any font the result is empty (count 0,
@@ -132,7 +145,7 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
             .x = x,
             .advance = 0,
         };
-        pending_raw = @as(f32, @floatFromInt(u.adv orelse @as(u16, @intCast(@max(0, u.face.advanceUnits(u.glyph)))))) * scale + font.letter_spacing;
+        pending_raw = if (u.wide) font.size_px + font.letter_spacing else @as(f32, @floatFromInt(u.adv orelse @as(u16, @intCast(@max(0, u.face.advanceUnits(u.glyph)))))) * scale + font.letter_spacing;
         pending_face = u.face;
         pending_glyph = u.glyph;
         pending_scale = scale;

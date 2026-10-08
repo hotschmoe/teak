@@ -67,14 +67,14 @@ pub fn TextStage(comptime Raster: type) type {
         runs: []Run = &.{},
         run_count: usize = 0,
         run_glyphs: std.ArrayList(teak.ShapedGlyph) = .empty,
-        /// Atlas entry last resolved for each cached glyph (snapped text only: bin 0).
+        /// Atlas entry last resolved for each cached glyph.
         run_entries: std.ArrayList(?glyph_atlas.Entry) = .empty,
         entries_scale: f32 = 0,
         run_text: std.ArrayList(u8) = .empty,
         epoch: u64 = 0,
 
         /// Fallback clusters: code point -> synthetic glyph id.
-        cluster_ids: std.AutoHashMapUnmanaged(u21, u16) = .empty,
+        cluster_cps: std.ArrayList(u21) = .empty,
 
         const max_pool_glyphs = 1 << 20;
         const max_pool_text = 1 << 22;
@@ -97,7 +97,7 @@ pub fn TextStage(comptime Raster: type) type {
             self.run_glyphs.deinit(self.gpa);
             self.run_entries.deinit(self.gpa);
             self.run_text.deinit(self.gpa);
-            self.cluster_ids.deinit(self.gpa);
+            self.cluster_cps.deinit(self.gpa);
             if (@hasDecl(Raster, "deinit")) self.raster.deinit();
         }
 
@@ -182,11 +182,11 @@ pub fn TextStage(comptime Raster: type) type {
 
                 const run = self.runFor(draw.content, font) orelse continue;
                 const glyphs = self.run_glyphs.items[run.off..][0..run.len];
-                // Snapped glyphs always use bin 0, so their atlas entry can be reused
-                // from the previous frame while its page generation is unchanged.
+                // The atlas entry resolved last frame is reused while its page
+                // generation (and the glyph's subpixel bin) is unchanged.
                 const entries = self.run_entries.items[run.off..][0..run.len];
                 for (glyphs, entries) |g, *cached| {
-                    self.emitGlyph(layer, draw.content, font, g, if (snap) cached else null, base_x + g.x * scale, baseline, size_q, snap, color, clip);
+                    self.emitGlyph(layer, draw.content, font, g, cached, base_x + g.x * scale, baseline, size_q, snap, color, clip);
                 }
             }
         }
@@ -306,15 +306,12 @@ pub fn TextStage(comptime Raster: type) type {
             clip: DeviceClip,
         ) void {
             const fx = @floor(pen_x);
-            var key: glyph_atlas.GlyphKey = .{
-                .face = g.face,
-                .glyph = g.glyph,
-                .size_q = size_q,
-                .bin = if (snap) 0 else @intCast(@min(3, @as(u32, @intFromFloat((pen_x - fx) * 4)))),
-            };
+            const bin: u2 = if (snap) 0 else @intCast(@min(3, @as(u32, @intFromFloat((pen_x - fx) * 4))));
+            var key: glyph_atlas.GlyphKey = .{ .face = g.face, .glyph = g.glyph, .size_q = size_q, .bin = bin };
             if (cached) |c| {
+                // Fallback clusters are always bin 0; other glyphs must match this pen's bin.
                 if (c.*) |ce| {
-                    if (self.atlas.stillValid(&ce)) {
+                    if ((ce.key.face == cluster_face or ce.key.bin == bin) and self.atlas.stillValid(&ce)) {
                         self.atlas.touch(&ce);
                         self.appendInstance(layer, ce, fx, baseline, color, clip);
                         return;
@@ -362,12 +359,19 @@ pub fn TextStage(comptime Raster: type) type {
             }) catch return;
         }
 
+        /// Synthetic glyph id of a fallback code point (1-based, stable). A
+        /// recently seen code point is found by scanning backwards: the working
+        /// set of missing glyphs in one frame is small, and misses only happen once.
         fn clusterId(self: *Self, cp: u21) ?u16 {
-            if (self.cluster_ids.get(cp)) |id| return id;
-            const next = self.cluster_ids.count() + 1;
-            if (next > std.math.maxInt(u16)) return null;
-            self.cluster_ids.put(self.gpa, cp, @intCast(next)) catch return null;
-            return @intCast(next);
+            const cps = self.cluster_cps.items;
+            var i = cps.len;
+            while (i > 0) {
+                i -= 1;
+                if (cps[i] == cp) return @intCast(i + 1);
+            }
+            if (cps.len >= std.math.maxInt(u16)) return null;
+            self.cluster_cps.append(self.gpa, cp) catch return null;
+            return @intCast(cps.len + 1);
         }
 
         /// Rasterize `key`'s glyph and place it in the atlas (staging copy + dirty

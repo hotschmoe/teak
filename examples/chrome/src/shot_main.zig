@@ -5,7 +5,8 @@
 //! Options (after the path): `--scale S` renders at S device px per logical
 //! px (HiDPI); `--stress N` renders the text stress app with N runs instead
 //! (glyph-atlas check) and prints the warm frame CPU time;
-//! `--max-pages P` caps the glyph atlas (exhaustion check).
+//! `--max-pages P` caps the glyph atlas (exhaustion check); `--plain` skips the
+//! input script (the first-load state, for comparing with the web build).
 
 const std = @import("std");
 const teak = @import("teak");
@@ -14,7 +15,7 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 const Stress = @import("textstress.zig");
 
-const Opts = struct { path: []const u8, scale: f32 = 1, stress: usize = 0, max_pages: u8 = 8 };
+const Opts = struct { path: []const u8, scale: f32 = 1, stress: usize = 0, max_pages: u8 = 8, plain: bool = false };
 
 fn parseArgs(init: std.process.Init) Opts {
     var o: Opts = .{ .path = "chrome.png" };
@@ -25,6 +26,8 @@ fn parseArgs(init: std.process.Init) Opts {
             o.scale = std.fmt.parseFloat(f32, it.next() orelse "1") catch 1;
         } else if (std.mem.eql(u8, a, "--stress")) {
             o.stress = std.fmt.parseInt(usize, it.next() orelse "640", 10) catch 640;
+        } else if (std.mem.eql(u8, a, "--plain")) {
+            o.plain = true; // no input script: the state a browser loads first
         } else if (std.mem.eql(u8, a, "--max-pages")) {
             o.max_pages = std.fmt.parseInt(u8, it.next() orelse "8", 10) catch 8;
         } else o.path = a;
@@ -39,8 +42,9 @@ pub fn main(init: std.process.Init) !void {
         .width = 1280,
         .height = 800,
         .scale = o.scale,
+        .msaa = !o.plain, // --plain matches the web build (no MSAA) pixel for pixel
         .run = .{ .clear_color = App.paper },
-        .steps = &.{
+        .steps = if (o.plain) &.{.{ .frames = 2 }} else &.{
             .{ .frames = 2 },
             .{ .click = .{ 43, 239 } }, // "< PREV": selects the previous part
             .{ .click = .{ 180, 298 } }, // focus the NAME field

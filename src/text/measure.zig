@@ -33,17 +33,18 @@ pub fn width(text: []const u8, font: teak.FontSpec) f32 {
 // the face table changes. Runs longer than `max_text` bypass the cache.
 
 const max_text = 48;
-const cache_slots = 2048;
+const cache_slots = 1024;
 
 const Slot = struct {
-    used: bool = false,
-    len: u8 = 0,
-    font: teak.FontSpec = .{},
-    text: [max_text]u8 = undefined,
-    metrics: teak.TextMetrics = undefined,
+    used: bool,
+    len: u8,
+    font: teak.FontSpec,
+    text: [max_text]u8,
+    metrics: teak.TextMetrics,
 };
 
-var cache: [cache_slots]Slot = @splat(.{});
+// All-zero (so it lives in .bss, not the wasm data section): `used` is false.
+var cache: [cache_slots]Slot = std.mem.zeroes([cache_slots]Slot);
 var cache_epoch: u64 = 0;
 
 fn sameFont(a: teak.FontSpec, b: teak.FontSpec) bool {
@@ -63,16 +64,19 @@ fn slotHash(text: []const u8, font: teak.FontSpec) u64 {
 /// measurer uses; the rasterizer places glyphs with the same advances.
 pub fn measure(text: []const u8, font: teak.FontSpec) teak.TextMetrics {
     if (face_mod.epoch != cache_epoch) {
-        cache = @splat(.{});
+        cache = std.mem.zeroes([cache_slots]Slot);
         cache_epoch = face_mod.epoch;
     }
     if (text.len > max_text) return measureUncached(text, font);
-    const slot = &cache[slotHash(text, font) % cache_slots];
+    const slot = &cache[@as(usize, @intCast(slotHash(text, font) % cache_slots))];
     if (slot.used and slot.len == text.len and sameFont(slot.font, font) and std.mem.eql(u8, slot.text[0..slot.len], text)) {
         return slot.metrics;
     }
     const m = measureUncached(text, font);
-    slot.* = .{ .used = true, .len = @intCast(text.len), .font = font, .metrics = m };
+    slot.used = true;
+    slot.len = @intCast(text.len);
+    slot.font = font;
+    slot.metrics = m;
     @memcpy(slot.text[0..text.len], text);
     return m;
 }

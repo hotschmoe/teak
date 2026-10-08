@@ -121,7 +121,7 @@ examples/fonts/            IBM Plex Mono at three weights + tracking (web .fonts
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)
-shaders/textured_quad.wgsl alpha-from-texture shader (text glyphs)
+shaders/glyph.wgsl instanced glyph quads from the R8 atlas (text)
 shaders/image.wgsl         texture * tint shader (RGBA images)
 ```
 

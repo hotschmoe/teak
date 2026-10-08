@@ -4,6 +4,18 @@
 
 ### Changed
 
+- Web text now uses the same glyph atlas as native: stb_truetype compiled into the wasm
+  (`src/text/stb_wasm_impl.c` + a malloc/libm shim) shapes and rasterizes glyphs, the web Host
+  measures with `teak-text` (layout == render, and chrome's web render is pixel-identical to
+  native), and glyphs no shipped face has (CJK, symbols) are rasterized by canvas 2D one cluster
+  at a time. The `.fonts` files are embedded in the wasm (and still copied to `dist/fonts/` for
+  the canvas fallback); a small Plex Mono subset is embedded as the default face. Text is
+  vertically centred in buttons on web now. `glyph_cache.zig`, `textured_quad.wgsl` and the old
+  `rasterizeText` web path are removed. Chrome's wasm grows ~19 KB gzip (stripped).
+- `shaders/glyph.wgsl` reads the instance as raw 32-bit words (shared by native and web, since
+  zunk vertex formats are 32-bit). `TextStage` (src/gpu/text_stage.zig) holds the backend-neutral
+  staging code with a shaped-run cache; `teak-text`'s `measure` has a small result cache.
+
 - Native text (Linux, Windows) is drawn from a glyph atlas: shaped glyphs are packed into R8
   pages and drawn as instanced quads (`shaders/glyph.wgsl`), replacing the per-string BGRA
   texture cache. Text is rasterized at the device pixel size with quarter-pixel x positioning.

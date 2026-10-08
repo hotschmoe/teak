@@ -202,3 +202,13 @@ test "invalid bytes become one replacement unit each" {
     try std.testing.expectEqual(@as(usize, 6), r.count); // a, bad, bad, b, bad, bad
     try std.testing.expectEqual(@as(usize, 6), r.consumed);
 }
+
+test "unmapped full-width code points advance one em" {
+    defer text.releaseFaces();
+    try text.registerFace(.mono, .regular, mono_sub);
+    const f: teak.FontSpec = .{ .size_px = 20, .family = .mono, .snap_advance = false };
+    try std.testing.expectApproxEqAbs(@as(f32, 20), text.measure("\u{6F22}", f).width, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 12), text.measure("a", f).width, 0.001);
+    // An unmapped narrow code point keeps the face's missing-glyph advance.
+    try std.testing.expect(text.measure("\u{00E9}", f).width < 19);
+}
