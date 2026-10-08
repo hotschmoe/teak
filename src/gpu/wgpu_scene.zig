@@ -26,7 +26,12 @@ const SceneDraw = teak.SceneDraw;
 const TargetSize = common.TargetSize;
 
 pub const MESH_CAPACITY: usize = 128;
-pub const depth_format = c.WGPUTextureFormat_Depth32Float;
+/// Depth + stencil: section caps use stencil parity. 24-bit depth is plenty
+/// for the line bias (`scene_common.line_depth_bias`).
+pub const depth_format = c.WGPUTextureFormat_Depth24PlusStencil8;
+
+/// One cap quad to draw: which plan instance, and where its vertices start in `Target.cap_buf`.
+const CapDraw = struct { inst: u32, first_vertex: u32 };
 
 /// Scratch for the per-frame plan (item counts are small and unbounded by
 /// design; this is backend code outside the framework core).
@@ -41,8 +46,16 @@ const MeshEntry = struct {
     /// Bumped on every upload so a re-upload into a reused slot is a
     /// different mesh as far as `signature` is concerned.
     version: u32,
+    /// CPU copy of positions + indices and the model-space bounds, kept for
+    /// section outlines and cap quads (the GPU buffers cannot be read back).
+    cpu_pos: []teak.scene.mat.Vec3 = &.{},
+    cpu_idx: []u32 = &.{},
+    lo: teak.scene.mat.Vec3 = .{ 0, 0, 0 },
+    hi: teak.scene.mat.Vec3 = .{ 0, 0, 0 },
 
     fn release(self: MeshEntry) void {
+        plan_allocator.free(self.cpu_pos);
+        plan_allocator.free(self.cpu_idx);
         if (self.vertex_buf) |b| c.wgpuBufferRelease(b);
         if (self.index_buf) |b| c.wgpuBufferRelease(b);
         if (self.line_buf) |b| c.wgpuBufferRelease(b);
@@ -72,11 +85,23 @@ pub const Target = struct {
     gizmo_ubo: c.WGPUBuffer,
     gizmo_bg: c.WGPUBindGroup,
     gizmo_lines: c.WGPUBuffer,
+    /// Section cut: cap quads, outline segments (+ their own `Globals`, since
+    /// the outline width differs from the edge width).
+    cap_buf: c.WGPUBuffer = null,
+    cap_cap: usize = 0,
+    outline_buf: c.WGPUBuffer = null,
+    outline_cap: usize = 0,
+    outline_ubo: c.WGPUBuffer,
+    outline_bg: c.WGPUBindGroup,
     signature: u64,
     generation: u32,
 
     fn release(self: Target) void {
         if (self.inst_buf) |b| c.wgpuBufferRelease(b);
+        if (self.cap_buf) |b| c.wgpuBufferRelease(b);
+        if (self.outline_buf) |b| c.wgpuBufferRelease(b);
+        c.wgpuBindGroupRelease(self.outline_bg);
+        c.wgpuBufferRelease(self.outline_ubo);
         c.wgpuBufferRelease(self.gizmo_lines);
         c.wgpuBindGroupRelease(self.gizmo_bg);
         c.wgpuBufferRelease(self.gizmo_ubo);
@@ -108,6 +133,14 @@ pub const Renderer = struct {
     grid_pipeline: c.WGPURenderPipeline,
     /// One identity `Packed` record bound at stride 0 for gizmo lines.
     ident_buf: c.WGPUBuffer,
+    /// Section cap: stencil-parity pre-pass (colour writes off) + the cap quad.
+    stencil_pipeline: c.WGPURenderPipeline,
+    cap_pipeline: c.WGPURenderPipeline,
+    /// Scratch for per-frame cut geometry (cap quads, outline segments).
+    cap_quads: std.ArrayList(CapDraw) = .empty,
+    cap_verts: std.ArrayList(LineVertex) = .empty,
+    outline_segs: std.ArrayList(teak.scene.section.Segment) = .empty,
+    outline_verts: std.ArrayList(LineVertex) = .empty,
 
     meshes: SlotTable(MeshEntry, MESH_CAPACITY) = .{},
     next_version: u32 = 1,
@@ -255,6 +288,54 @@ pub const Renderer = struct {
             .samples = samples,
         }) orelse return error.PipelineCreateFailed;
 
+        // Cap pipelines: both draw into the same depth+stencil attachment.
+        var stencil_ds = wgpu_c.depthState(depth_format, false, c.WGPUCompareFunction_Always);
+        stencil_ds.stencilFront = .{ .compare = c.WGPUCompareFunction_Always, .failOp = c.WGPUStencilOperation_Keep, .depthFailOp = c.WGPUStencilOperation_Keep, .passOp = c.WGPUStencilOperation_Invert };
+        stencil_ds.stencilBack = stencil_ds.stencilFront;
+        stencil_ds.stencilReadMask = 0xFFFFFFFF;
+        stencil_ds.stencilWriteMask = 0xFFFFFFFF;
+        const stencil_pipeline = wgpu_c.createPipeline(device, .{
+            .label = "scene-stencil-pipeline",
+            .layout = layout,
+            .module = shader,
+            .vs_entry = "vs_mesh",
+            .fs_entry = "fs_stencil",
+            .vertex_buffers = &mesh_inst_layout,
+            .format = format,
+            .blend = null,
+            .write_mask = c.WGPUColorWriteMask_None,
+            .depth = stencil_ds,
+            .samples = samples,
+        }) orelse return error.PipelineCreateFailed;
+        var cap_ds = wgpu_c.depthState(depth_format, true, c.WGPUCompareFunction_LessEqual);
+        cap_ds.stencilFront = .{ .compare = c.WGPUCompareFunction_NotEqual, .failOp = c.WGPUStencilOperation_Keep, .depthFailOp = c.WGPUStencilOperation_Zero, .passOp = c.WGPUStencilOperation_Zero };
+        cap_ds.stencilBack = cap_ds.stencilFront;
+        cap_ds.stencilReadMask = 0xFFFFFFFF;
+        cap_ds.stencilWriteMask = 0xFFFFFFFF;
+        // A cap vertex is a position and a colour: the `LineVertex` layout.
+        const cap_attrs = [_]c.WGPUVertexAttribute{
+            .{ .format = c.WGPUVertexFormat_Float32x3, .offset = @offsetOf(LineVertex, "pos"), .shaderLocation = 0 },
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = @offsetOf(LineVertex, "color"), .shaderLocation = 1 },
+        };
+        const cap_layout = [_]c.WGPUVertexBufferLayout{.{
+            .arrayStride = @sizeOf(LineVertex),
+            .stepMode = c.WGPUVertexStepMode_Vertex,
+            .attributeCount = cap_attrs.len,
+            .attributes = &cap_attrs,
+        }};
+        const cap_pipeline = wgpu_c.createPipeline(device, .{
+            .label = "scene-cap-pipeline",
+            .layout = layout,
+            .module = shader,
+            .vs_entry = "vs_cap",
+            .fs_entry = "fs_cap",
+            .vertex_buffers = &cap_layout,
+            .format = format,
+            .blend = null,
+            .depth = cap_ds,
+            .samples = samples,
+        }) orelse return error.PipelineCreateFailed;
+
         const ident_buf = wgpu_c.createBuffer(device, "scene-identity", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, @sizeOf(scene_pass.Packed)) orelse return error.GpuResource;
         const ident = scene_pass.pack(.{ .mesh = 1 });
         c.wgpuQueueWriteBuffer(queue, ident_buf, 0, &ident, @sizeOf(scene_pass.Packed));
@@ -271,6 +352,8 @@ pub const Renderer = struct {
             .grid_bgl = grid_bgl,
             .grid_pipeline = grid_pipeline,
             .ident_buf = ident_buf,
+            .stencil_pipeline = stencil_pipeline,
+            .cap_pipeline = cap_pipeline,
         };
     }
 
@@ -279,6 +362,12 @@ pub const Renderer = struct {
         var it = self.meshes.iterator();
         while (it.next()) |m| m.release();
         for (self.targets) |t| if (t) |tt| tt.release();
+        c.wgpuRenderPipelineRelease(self.cap_pipeline);
+        c.wgpuRenderPipelineRelease(self.stencil_pipeline);
+        self.cap_quads.deinit(plan_allocator);
+        self.cap_verts.deinit(plan_allocator);
+        self.outline_segs.deinit(plan_allocator);
+        self.outline_verts.deinit(plan_allocator);
         c.wgpuBufferRelease(self.ident_buf);
         c.wgpuRenderPipelineRelease(self.grid_pipeline);
         c.wgpuBindGroupLayoutRelease(self.grid_bgl);
@@ -321,6 +410,18 @@ pub const Renderer = struct {
             entry.vertex_buf = self.makeBuffer("mesh-vertices", c.WGPUBufferUsage_Vertex, std.mem.sliceAsBytes(data.vertices)) orelse return false;
             entry.index_buf = self.makeBuffer("mesh-indices", c.WGPUBufferUsage_Index, std.mem.sliceAsBytes(data.indices)) orelse return false;
             entry.index_count = @intCast(data.indices.len);
+            const pos = plan_allocator.alloc(teak.scene.mat.Vec3, data.vertices.len) catch return false;
+            entry.cpu_pos = pos; // freed by `release` even if a later step fails
+            entry.cpu_idx = plan_allocator.dupe(u32, data.indices) catch return false;
+            var lo: teak.scene.mat.Vec3 = @splat(std.math.inf(f32));
+            var hi: teak.scene.mat.Vec3 = @splat(-std.math.inf(f32));
+            for (data.vertices, pos) |v, *p| {
+                p.* = v.pos;
+                lo = teak.scene.mat.minV(lo, v.pos);
+                hi = teak.scene.mat.maxV(hi, v.pos);
+            }
+            entry.lo = lo;
+            entry.hi = hi;
         }
         if (entry.segment_count > 0) {
             const used = data.lines[0 .. entry.segment_count * 2];
@@ -345,6 +446,69 @@ pub const Renderer = struct {
 
     pub fn hasMesh(self: *Renderer, handle: MeshHandle) bool {
         return self.meshes.get(handle) != null;
+    }
+
+    const CutGeo = struct { outline_verts: u32 = 0 };
+
+    /// Backend mesh of plan instance `k` (the run that contains it).
+    fn meshOfInstance(self: *Renderer, k: u32) ?MeshEntry {
+        for (self.plan.runs.items) |run| {
+            if (k >= run.first and k < run.first + run.count) return self.meshes.get(run.mesh).?.*;
+        }
+        return null;
+    }
+
+    fn growBuffer(self: *Renderer, buf: *c.WGPUBuffer, cap: *usize, label: []const u8, bytes: usize) bool {
+        if (cap.* >= bytes and buf.* != null) return true;
+        if (buf.*) |b| c.wgpuBufferRelease(b);
+        const want = @max(std.math.ceilPowerOfTwo(usize, bytes) catch bytes, 4096);
+        buf.* = wgpu_c.createBuffer(self.device, label, c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, want);
+        cap.* = if (buf.* != null) want else 0;
+        return buf.* != null;
+    }
+
+    /// Build and upload the per-frame cut geometry: one cap quad per capped
+    /// item (`cap_quads` + `cap_buf`) and the exact outline segments of every
+    /// item (`outline_buf`), plus the outline's `Globals`.
+    fn prepareCut(self: *Renderer, t: *Target, draw: SceneDraw, cut: teak.scene.Cut, size: TargetSize, scale: f32) CutGeo {
+        self.cap_quads.clearRetainingCapacity();
+        self.cap_verts.clearRetainingCapacity();
+        self.outline_segs.clearRetainingCapacity();
+        self.outline_verts.clearRetainingCapacity();
+        for (self.plan.runs.items) |run| {
+            const m = (self.meshes.get(run.mesh) orelse continue).*;
+            for (self.plan.insts.items[run.first..][0..run.count], run.first..) |inst, k| {
+                const xf = scene_pass.affineOf(inst);
+                if (cut.cap and inst.flags & scene_pass.flag_no_cap == 0 and m.index_count > 0) cap: {
+                    const quad = scene_pass.capQuad(cut.plane, m.lo, m.hi, xf) orelse break :cap;
+                    const own = self.plan.caps.items[k];
+                    const col = if (own[3] > 0) own else cut.cap_color;
+                    const first: u32 = @intCast(self.cap_verts.items.len);
+                    for ([_]usize{ 0, 1, 2, 0, 2, 3 }) |qi| self.cap_verts.append(plan_allocator, .{ .pos = quad[qi], .color = col }) catch return .{};
+                    self.cap_quads.append(plan_allocator, .{ .inst = @intCast(k), .first_vertex = first }) catch return .{};
+                }
+                if (cut.outline_px > 0 and m.cpu_idx.len > 0) {
+                    teak.scene.section.outlinePositions(plan_allocator, m.cpu_pos, m.cpu_idx, xf, cut.plane, &self.outline_segs) catch return .{};
+                }
+            }
+        }
+        if (self.cap_verts.items.len > 0 and self.growBuffer(&t.cap_buf, &t.cap_cap, "scene-cap-quads", self.cap_verts.items.len * @sizeOf(LineVertex))) {
+            c.wgpuQueueWriteBuffer(self.queue, t.cap_buf, 0, self.cap_verts.items.ptr, self.cap_verts.items.len * @sizeOf(LineVertex));
+        } else self.cap_quads.clearRetainingCapacity();
+
+        for (self.outline_segs.items) |sg| {
+            self.outline_verts.append(plan_allocator, .{ .pos = sg.a, .color = .{ 1, 1, 1, 1 } }) catch return .{};
+            self.outline_verts.append(plan_allocator, .{ .pos = sg.b, .color = .{ 1, 1, 1, 1 } }) catch return .{};
+        }
+        if (self.outline_verts.items.len == 0) return .{};
+        if (!self.growBuffer(&t.outline_buf, &t.outline_cap, "scene-outline", self.outline_verts.items.len * @sizeOf(LineVertex))) return .{};
+        c.wgpuQueueWriteBuffer(self.queue, t.outline_buf, 0, self.outline_verts.items.ptr, self.outline_verts.items.len * @sizeOf(LineVertex));
+        var og = common.globals(draw, size, scale);
+        og.edge_color = cut.outline_color;
+        og.viewport[2] = cut.outline_px * scale;
+        og.misc[2] = 0; // the outline lies on the plane: never cut it away
+        c.wgpuQueueWriteBuffer(self.queue, t.outline_ubo, 0, &og, @sizeOf(common.Globals));
+        return .{ .outline_verts = @intCast(self.outline_verts.items.len) };
     }
 
     /// Make sure `t.inst_buf` holds at least `bytes`; contents are rewritten by the caller.
@@ -414,6 +578,10 @@ pub const Renderer = struct {
         errdefer c.wgpuBufferRelease(gizmo_ubo);
         const gizmo_bg = self.uniformBindGroup(self.bgl, gizmo_ubo, @sizeOf(common.Globals)) orelse return error.GpuResource;
         errdefer c.wgpuBindGroupRelease(gizmo_bg);
+        const outline_ubo = wgpu_c.createBuffer(self.device, "scene-outline-uniforms", c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst, @sizeOf(common.Globals)) orelse return error.GpuResource;
+        errdefer c.wgpuBufferRelease(outline_ubo);
+        const outline_bg = self.uniformBindGroup(self.bgl, outline_ubo, @sizeOf(common.Globals)) orelse return error.GpuResource;
+        errdefer c.wgpuBindGroupRelease(outline_bg);
         const gizmo_lines = wgpu_c.createBuffer(self.device, "scene-gizmo-lines", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, scene_pass.gizmo_segments * 2 * @sizeOf(LineVertex)) orelse return error.GpuResource;
 
         const gen = self.next_generation;
@@ -433,6 +601,8 @@ pub const Renderer = struct {
             .gizmo_ubo = gizmo_ubo,
             .gizmo_bg = gizmo_bg,
             .gizmo_lines = gizmo_lines,
+            .outline_ubo = outline_ubo,
+            .outline_bg = outline_bg,
             .signature = 0,
             .generation = gen,
         };
@@ -480,12 +650,16 @@ pub const Renderer = struct {
         depth.depthLoadOp = c.WGPULoadOp_Clear;
         depth.depthStoreOp = c.WGPUStoreOp_Discard;
         depth.depthClearValue = 1.0;
+        depth.stencilLoadOp = c.WGPULoadOp_Clear;
+        depth.stencilStoreOp = c.WGPUStoreOp_Discard;
+        depth.stencilClearValue = 0;
 
         var rp = std.mem.zeroes(c.WGPURenderPassDescriptor);
         rp.label = wgpu_c.wgpuStr("scene-pass");
         rp.colorAttachmentCount = 1;
         rp.colorAttachments = &color;
         rp.depthStencilAttachment = &depth;
+        const cut_geo: CutGeo = if (draw.cut) |cut| self.prepareCut(t, draw, cut, size, scale) else .{};
         const pass = c.wgpuCommandEncoderBeginRenderPass(encoder, &rp);
 
         const inst_bytes = self.plan.insts.items.len * @sizeOf(scene_pass.Packed);
@@ -502,6 +676,19 @@ pub const Renderer = struct {
                 c.wgpuRenderPassEncoderSetIndexBuffer(pass, m.index_buf, c.WGPUIndexFormat_Uint32, 0, c.WGPU_WHOLE_SIZE);
                 c.wgpuRenderPassEncoderDrawIndexed(pass, m.index_count, run.count, 0, 0, run.first);
             }
+            // Section caps: per item, stencil parity then the cap quad (which clears it).
+            for (self.cap_quads.items) |cd| {
+                const run_mesh = self.meshOfInstance(cd.inst) orelse continue;
+                c.wgpuRenderPassEncoderSetPipeline(pass, self.stencil_pipeline);
+                c.wgpuRenderPassEncoderSetBindGroup(pass, 0, t.bind_group, 0, null);
+                c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, run_mesh.vertex_buf, 0, c.WGPU_WHOLE_SIZE);
+                c.wgpuRenderPassEncoderSetVertexBuffer(pass, 1, t.inst_buf, 0, inst_bytes);
+                c.wgpuRenderPassEncoderSetIndexBuffer(pass, run_mesh.index_buf, c.WGPUIndexFormat_Uint32, 0, c.WGPU_WHOLE_SIZE);
+                c.wgpuRenderPassEncoderDrawIndexed(pass, run_mesh.index_count, 1, 0, 0, cd.inst);
+                c.wgpuRenderPassEncoderSetPipeline(pass, self.cap_pipeline);
+                c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, t.cap_buf, cd.first_vertex * @sizeOf(LineVertex), 6 * @sizeOf(LineVertex));
+                c.wgpuRenderPassEncoderDraw(pass, 6, 1, 0, 0);
+            }
             // Feature edges: one draw per item (its transform is bound at stride 0).
             c.wgpuRenderPassEncoderSetPipeline(pass, self.line_pipeline);
             for (self.plan.runs.items) |run| {
@@ -514,6 +701,15 @@ pub const Renderer = struct {
                     c.wgpuRenderPassEncoderDraw(pass, 6, m.segment_count, 0, 0);
                 }
             }
+        }
+
+        // Cut outline: exact plane x mesh segments, in their own pass-wide line style.
+        if (cut_geo.outline_verts > 0) {
+            c.wgpuRenderPassEncoderSetPipeline(pass, self.line_pipeline);
+            c.wgpuRenderPassEncoderSetBindGroup(pass, 0, t.outline_bg, 0, null);
+            c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, t.outline_buf, 0, cut_geo.outline_verts * @sizeOf(LineVertex));
+            c.wgpuRenderPassEncoderSetVertexBuffer(pass, 1, self.ident_buf, 0, @sizeOf(scene_pass.Packed));
+            c.wgpuRenderPassEncoderDraw(pass, 6, cut_geo.outline_verts / 2, 0, 0);
         }
 
         // Grid: depth-tested against everything drawn above, blended over it.

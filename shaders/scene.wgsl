@@ -75,6 +75,36 @@ fn fs_mesh(in: MeshOut) -> @location(0) vec4f {
     return vec4f(rgb * (AMBIENT + (1.0 - AMBIENT) * diffuse), 1.0);
 }
 
+// ── Section caps ───────────────────────────────────────────────────
+// Stencil parity: the item's faces (cut-away half discarded) are drawn with
+// colour writes off and stencil `invert`; a pixel's stencil is then odd iff
+// the view ray enters the kept half inside the closed solid. The cap quad on
+// the plane is drawn where stencil != 0 (and clears it again).
+
+@fragment
+fn fs_stencil(in: MeshOut) -> @location(0) vec4f {
+    if (cut_away(in.world)) { discard; }
+    return vec4f(0.0);
+}
+
+struct CapOut {
+    @builtin(position) pos: vec4f,
+    @location(0) color: vec4f,
+};
+
+@vertex
+fn vs_cap(@location(0) pos: vec3f, @location(1) color: vec4f) -> CapOut {
+    return CapOut(g.view_proj * vec4f(pos, 1.0), color);
+}
+
+// A drafting-style hatch: diagonal stripes in screen space, slightly darker.
+@fragment
+fn fs_cap(in: CapOut) -> @location(0) vec4f {
+    let t = fract((in.pos.x + in.pos.y) / 7.0);
+    let stripe = step(0.8, t);
+    return vec4f(mix(in.color.rgb, in.color.rgb * 0.7, stripe), 1.0);
+}
+
 // ── Lines ──────────────────────────────────────────────────────────
 // One instance per segment; six vertices expand it into a quad of
 // constant pixel width, extended by half a width at each end so

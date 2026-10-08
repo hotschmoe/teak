@@ -51,9 +51,11 @@ pub const CanvasEventKind = enum {
     /// The cursor left the canvas and no capture is active.
     leave,
     /// Delivered when the canvas is first laid out and whenever its rect
-    /// SIZE changes. `w`/`h` carry the new size; `x`/`y` are 0. Lets the
-    /// app keep the viewport size in its Model (the view cannot read
-    /// layout results).
+    /// SIZE or POSITION changes. `w`/`h` carry the size and `x`/`y` the
+    /// rect's top-left in WINDOW coordinates (not canvas-local like every
+    /// other event). Lets the app keep the viewport size and origin in its
+    /// Model (the view cannot read layout results), e.g. to anchor overlay
+    /// text over a 3D viewport.
     layout,
 };
 

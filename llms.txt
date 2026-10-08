@@ -513,10 +513,13 @@ as camera-facing pixel-width quads (colour = vertex colour * `edge_color`). The 
 
 ### viewport3d: placed items + scene options (`teak.SceneView`, `SceneItem`; design: docs/features/scene.md)
 `cb.viewport3d(.{ .style, .camera, .view = .{ .items = arena_slice, ... }, .clear, .key, .id, .pointer })` is `scene3d` with
-`SceneCmd.view` populated; with no items it is the legacy single-mesh scene.
+`SceneCmd.view` populated; with no items it is the legacy single-mesh scene. A `cut` plane discards the removed half and fills
+caps by stencil parity per closed item (hatched, per-item colour) with an exact outline from the CPU mesh copy; `no_cap` items
+(open shells) get the outline only. A canvas `layout` event carries the rect's window origin in `x`,`y`.
 ```zig
 SceneItem = struct { mesh: u32 /*resource key*/, transform: [12]f32 /*3x4 rows, identity*/, tint: [4]f32 = white,
-                     id: u32 = 0 /*echoed by pick*/, flags: SceneItemFlags{hidden, unlit, no_edges, no_pick, highlight} }
+                     id: u32 = 0 /*echoed by pick*/, flags: SceneItemFlags{hidden, unlit, no_edges, no_pick, highlight, no_cap},
+                     cap_color: [4]f32 = 0 /*section-cap fill; alpha 0 = Cut.cap_color*/ }
 SceneView = struct { items: []const SceneItem, grid: ?Grid, gizmo: ?Gizmo, cut: ?Cut /*keeps n.p+d<=0*/,
                      material: enum{lambert,flat}, highlight_color: [4]f32, highlight_mix: f32; pub fn eql }
 ```
@@ -543,7 +546,9 @@ pick.Item = struct { mesh: u32, transform: [12]f32 /*3x4 rows*/, id: u32, hidden
 pick.MeshRef = struct { key: u32, mesh: MeshData, bvh: ?*const pick.Bvh, bounds: ?Bounds }
 pick.Bvh.build(gpa, MeshData) !Bvh;  pick.rayTriangle / pick.rayAabb / pick.nearestBrute
 pick.gizmoHit(Orbit, GizmoLayout, w, h, x, y) ?GizmoAxis;  pick.gizmoTips;  GizmoAxis.preset(up) Preset
+pick.gizmoLabels(Orbit, GizmoLayout, w, h, origin_x, origin_y, gap_px) [3]GizmoLabel  // X/Y/Z letter centres; pass the canvas `layout` event's x,y as origin for window space
 section.outline(gpa, MeshData, transform, plane [nx,ny,nz,d] /*keeps n.p+d<=0*/, *ArrayList(Segment)) !void
+section.outlinePositions(gpa, []const Vec3, []const u32, transform, plane, *ArrayList(Segment)) !void  // same, over bare positions
 section.chain(gpa, []const Segment) !Loops;  section.isClosed(gpa, MeshData) !bool   // even-edge watertight check
 ```
 

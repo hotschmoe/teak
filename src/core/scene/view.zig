@@ -20,7 +20,10 @@ pub const ItemFlags = packed struct(u8) {
     no_pick: bool = false,
     /// Blend toward `View.highlight_color`.
     highlight: bool = false,
-    _pad: u3 = 0,
+    /// No cap fill for this item under a section cut (open shells would
+    /// streak under stencil parity); its cut outline is still drawn.
+    no_cap: bool = false,
+    _pad: u2 = 0,
 };
 
 /// One placed instance of a mesh resource.
@@ -34,6 +37,8 @@ pub const Item = struct {
     /// App-chosen id echoed by picking; 0 = none.
     id: u32 = 0,
     flags: ItemFlags = .{},
+    /// Section-cap fill for this item; alpha 0 uses `Cut.cap_color`.
+    cap_color: [4]f32 = .{ 0, 0, 0, 0 },
 };
 
 pub const Material = enum(u8) { lambert, flat };
@@ -72,6 +77,7 @@ pub const Cut = struct {
     cap: bool = true,
     /// Cap boundary line width in logical px; 0 = off.
     outline_px: f32 = 1.5,
+    outline_color: [4]f32 = .{ 0.1, 0.1, 0.1, 1 },
 };
 
 pub const View = struct {

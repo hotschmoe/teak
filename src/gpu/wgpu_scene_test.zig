@@ -376,6 +376,88 @@ test "gizmo: axis triad lands in its corner, shafts follow the view, nothing out
     try expectNear(px(moved, 22, 48), .{ 0, 0, 0 }, 3);
 }
 
+/// Closed cube of half-size `h` (shared vertices, outward CCW), white.
+fn cubeMesh(fx: *Fixture, h: f32) teak.MeshHandle {
+    var verts: [8]teak.MeshVertex = undefined;
+    for (&verts, 0..) |*v, i| {
+        const sx: f32 = if (i & 1 == 0) -h else h;
+        const sy: f32 = if (i & 2 == 0) -h else h;
+        const sz: f32 = if (i & 4 == 0) -h else h;
+        v.* = .{ .pos = .{ sx, sy, sz }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1, 1 } };
+    }
+    const idx = [36]u32{ 0, 2, 3, 0, 3, 1, 4, 5, 7, 4, 7, 6, 0, 1, 5, 0, 5, 4, 2, 6, 7, 2, 7, 3, 0, 4, 6, 0, 6, 2, 1, 3, 7, 1, 7, 5 };
+    return fx.renderer.uploadMesh(.{ .vertices = &verts, .indices = &idx });
+}
+
+test "section cut: stencil-parity cap fills the cut face, per-item colour, outline, open shells" {
+    var fx = try Fixture.init(true);
+    defer fx.deinit();
+    const mesh = cubeMesh(&fx, 1);
+    var d = drawFor(0);
+    d.camera = topCamera(); // looking down -y; 8.77 px per unit
+    // keep y <= 0.2: the top half is cut away, the viewer sees the inside of the solid
+    d.cut = .{ .plane = .{ 0, 1, 0, -0.2 }, .cap_color = .{ 0, 0.5, 0, 1 }, .outline_px = 2, .outline_color = .{ 0, 0, 1, 1 } };
+
+    // 1. default cap colour (green), outline, nothing outside the footprint
+    var items = [_]teak.SceneItem{.{ .mesh = mesh }};
+    const capped = try fx.renderItems(d, &items);
+    defer std.testing.allocator.free(capped);
+    const mid = px(capped, 32, 32);
+    try std.testing.expect(chan(mid, .g) >= 80 and chan(mid, .g) <= 140 and chan(mid, .r) < 20); // 0.5 green (hatch darkens to 0.35)
+    try expectNear(px(capped, 32 + 20, 32 + 20), .{ 0, 0, 0 }, 3); // outside the +-1 footprint (8.77 px)
+    // outline: the +x boundary at x = 1 -> px 40.8
+    var found_outline = false;
+    for (39..43) |xx| {
+        const q = px(capped, @intCast(xx), 32);
+        if (chan(q, .b) > 150 and chan(q, .g) < 60) found_outline = true;
+    }
+    try std.testing.expect(found_outline);
+
+    // 2. per-item cap colour overrides the cut's
+    items[0].cap_color = .{ 1, 0, 0, 1 };
+    const red = try fx.renderItems(d, &items);
+    defer std.testing.allocator.free(red);
+    const rmid = px(red, 32, 32);
+    try std.testing.expect(chan(rmid, .r) >= 170 and chan(rmid, .g) < 20);
+
+    // 3. no_cap (an open shell): no cap fill, the outline is still drawn
+    items[0].flags.no_cap = true;
+    const nocap = try fx.renderItems(d, &items);
+    defer std.testing.allocator.free(nocap);
+    const nmid = px(nocap, 32, 32);
+    try std.testing.expect(!(chan(nmid, .r) >= 170 and chan(nmid, .g) < 20));
+    var outline_still = false;
+    for (39..43) |xx| {
+        const q = px(nocap, @intCast(xx), 32);
+        if (chan(q, .b) > 150 and chan(q, .g) < 60) outline_still = true;
+    }
+    try std.testing.expect(outline_still);
+
+    // 4. Cut with cap = false shows the inside faces (white-ish), no cap colour
+    items[0].flags.no_cap = false;
+    d.cut.?.cap = false;
+    const hollow = try fx.renderItems(d, &items);
+    defer std.testing.allocator.free(hollow);
+    const hmid = px(hollow, 32, 32);
+    try std.testing.expect(!(chan(hmid, .r) >= 170 and chan(hmid, .g) < 20));
+    try std.testing.expect(chan(hmid, .g) > 100);
+}
+
+test "section cut: a plane that misses the item draws no cap and no outline" {
+    var fx = try Fixture.init(false);
+    defer fx.deinit();
+    const mesh = cubeMesh(&fx, 1);
+    var d = drawFor(0);
+    d.camera = topCamera();
+    d.cut = .{ .plane = .{ 0, 1, 0, -3 }, .cap_color = .{ 1, 0, 0, 1 }, .outline_px = 2 }; // keep y <= 3: everything kept
+    const items = [_]teak.SceneItem{.{ .mesh = mesh }};
+    const pixels = try fx.renderItems(d, &items);
+    defer std.testing.allocator.free(pixels);
+    const mid = px(pixels, 32, 32); // the cube's lit top face, no red cap
+    try std.testing.expect(chan(mid, .g) > 100 and chan(mid, .r) > 100);
+    try std.testing.expect(!(chan(mid, .r) >= 170 and chan(mid, .g) < 20));
+}
+
 test "scene_common is linked into the gpu test" {
     try std.testing.expectEqual(@as(usize, 176), @sizeOf(common.Globals));
 }
