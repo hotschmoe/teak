@@ -485,6 +485,7 @@ fn dtRelease(_: *DropTarget) callconv(WINAPI) ULONG {
     return 1;
 }
 fn dtDragEnter(_: *DropTarget, obj: *IDataObject, _: DWORD, _: POINTL, effect: *DWORD) callconv(WINAPI) HRESULT {
+    std.debug.print("[teak] DragEnter\n", .{});
     g_drag_accepts = dropAcceptable(obj);
     effect.* = if (g_drag_accepts) DROPEFFECT_COPY else DROPEFFECT_NONE;
     return S_OK;
@@ -498,6 +499,7 @@ fn dtDragLeave(_: *DropTarget) callconv(WINAPI) HRESULT {
     return S_OK;
 }
 fn dtDrop(_: *DropTarget, obj: *IDataObject, _: DWORD, _: POINTL, effect: *DWORD) callconv(WINAPI) HRESULT {
+    std.debug.print("[teak] Drop\n", .{});
     g_drag_accepts = false;
     effect.* = DROPEFFECT_NONE;
     var f = fmtEtc(CF_HDROP);

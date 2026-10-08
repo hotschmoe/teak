@@ -492,6 +492,8 @@ fn isIid(iid: *const anyopaque, ids: []const u32) bool {
 // processes: answering "yes" to those corrupts the drag, so only the real
 // interfaces (IUnknown 0, IDataObject 0x10e, IDropSource 0x121) are offered.
 fn doQI(this: *DataObject, iid: *const anyopaque, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const g: *const GUID = @ptrCast(@alignCast(iid));
+    log("data QI {x}", .{g.d1});
     if (!isIid(iid, &.{ 0x0, 0x10e })) {
         ppv.* = null;
         return E_NOINTERFACE;
@@ -511,6 +513,7 @@ fn doGetDataHere(_: *DataObject, _: *const FORMATETC, _: *STGMEDIUM) callconv(WI
     return E_NOTIMPL;
 }
 fn doQueryGetData(_: *DataObject, f: *const FORMATETC) callconv(WINAPI) HRESULT {
+    log("QueryGetData cf={d}", .{f.cfFormat});
     return if (f.cfFormat == CF_HDROP) 0 else DV_E_FORMATETC;
 }
 fn doCanon(_: *DataObject, _: *const FORMATETC, _: *FORMATETC) callconv(WINAPI) HRESULT {
@@ -550,6 +553,8 @@ const data_vtbl: @typeInfo(@FieldType(DataObject, "vtbl")).pointer.child = .{
 var data_object: DataObject = .{ .vtbl = &data_vtbl };
 
 fn dsQI(this: *DropSource, iid: *const anyopaque, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const g: *const GUID = @ptrCast(@alignCast(iid));
+    log("source QI {x}", .{g.d1});
     if (!isIid(iid, &.{ 0x0, 0x121 })) {
         ppv.* = null;
         return E_NOINTERFACE;
