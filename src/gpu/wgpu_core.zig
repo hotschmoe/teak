@@ -12,7 +12,7 @@
 //! concrete `Gpu = Gpu(SurfaceProvider, RasterizerType)` and run
 //! `validateGpu` on the result. This file imports neither — keeping each
 //! OS's `extern`s out of the other's translation unit (no comptime
-//! gating), the idiom already used by `glyph_cache.GlyphCache(Backend)`.
+//! gating), the idiom `text_stage.TextStage(Raster)` shares with the web backend.
 //!
 //! Frame structure (see `docs/features/gpu.md`):
 //!   1. `uploadVertices` / `uploadText` / `uploadImages` stage the UI draws.
@@ -28,11 +28,13 @@
 
 const std = @import("std");
 const teak = @import("teak");
-const glyph_cache = @import("glyph_cache.zig");
+const glyph_atlas = @import("glyph_atlas.zig");
+const text_stage = @import("text_stage.zig");
 const wgpu_c = @import("wgpu_c.zig");
 const wgpu_scene = @import("wgpu_scene.zig");
 const scene_common = @import("scene_common.zig");
 const SlotTable = @import("slot_table.zig").SlotTable;
+const GrowSlotTable = @import("slot_table.zig").GrowSlotTable;
 const overlay = @import("overlay.zig");
 
 const Vertex = teak.Vertex;
@@ -49,43 +51,22 @@ pub const FontFamily = teak.FontFamily;
 pub const TextDraw = teak.TextDraw;
 pub const InitOptions = teak.gpu.InitOptions;
 
-const IMAGE_CACHE_CAPACITY: usize = 64;
-const IMAGE_VERT_BUF_CAPACITY: usize = IMAGE_CACHE_CAPACITY * 6;
+/// Allocator for the growable image tables.
+const image_gpa = std.heap.page_allocator;
+/// Ceiling on live app images (handles are `u32`; this bounds a runaway app).
+const IMAGE_MAX_SLOTS: u32 = 1 << 16;
 const SCENE_VERT_BUF_CAPACITY: usize = scene_common.max_scenes * 6;
 
-/// A rasterized glyph run handed from a `Rasterizer` to the wgpu upload
-/// path. `pixels` is BGRA8 (`[b, g, r, coverage]` per pixel), `width *
-/// height * 4` bytes, top-down rows — ready for a `BGRA8Unorm`
-/// `wgpuQueueWriteTexture` with `bytesPerRow = width * 4`. The slice is
-/// owned by the rasterizer and valid only until its next `rasterize`
-/// call, so the upload must happen before rasterizing again.
-pub const Bitmap = struct {
-    pixels: []const u8,
-    width: u32,
-    height: u32,
+/// Atlas page edge in texels (R8, one byte per texel).
+const atlas_dim: u32 = glyph_atlas.page_size;
+
+/// One atlas page on the GPU: the texture and its bind group. The CPU copy
+/// lives in the `TextStage`.
+const AtlasPage = struct {
+    texture: c.WGPUTexture,
+    view: c.WGPUTextureView,
+    bind_group: c.WGPUBindGroup,
 };
-
-// ── Text cache ─────────────────────────────────────────────────────
-//
-// Cache layout, LRU policy, and key composition are shared with
-// gpu/web.zig via `glyph_cache.GlyphCache(Backend)`. Only the resource
-// types and the destroy semantics differ.
-
-const TEXT_VERT_BUF_CAPACITY: usize = glyph_cache.CAPACITY * 6; // 6 verts per draw
-
-const NativeBackend = struct {
-    pub const Texture = c.WGPUTexture;
-    pub const View = c.WGPUTextureView;
-    pub const BindGroup = c.WGPUBindGroup;
-
-    pub fn destroyEntry(e: anytype) void {
-        c.wgpuBindGroupRelease(e.bind_group);
-        c.wgpuTextureViewRelease(e.view);
-        c.wgpuTextureRelease(e.texture);
-    }
-};
-
-const TextCache = glyph_cache.GlyphCache(NativeBackend);
 
 /// A draw of one textured quad (6 vertices at `vert_offset`) with its own
 /// bind group — shared by the text, image and scene-composite lists.
@@ -108,16 +89,16 @@ const Sampled = struct {
     }
 };
 
-// ── Image cache (app-driven, no LRU) ───────────────────────────────
+// ── Image cache (app-driven, growable, no eviction) ───────────────────────────────
 //
 // Unlike the glyph cache, the app explicitly creates image textures via
 // `uploadImage` and frees them with `releaseImage`. The returned handle
 // is a slot index (+1 so 0 is the sentinel).
 
-const ImageCache = SlotTable(Sampled, IMAGE_CACHE_CAPACITY);
+const ImageCache = GrowSlotTable(Sampled, IMAGE_MAX_SLOTS);
 
 const SHADER_CODE = @import("teak-shaders").quad_wgsl;
-const SHADER_TEXT = @import("teak-shaders").textured_quad_wgsl;
+const SHADER_GLYPH = @import("teak-shaders").glyph_wgsl;
 const SHADER_IMAGE = @import("teak-shaders").image_wgsl;
 
 // ── Gpu ────────────────────────────────────────────────────────────
@@ -172,28 +153,26 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         width: u32,
         height: u32,
 
-        // ── Text pass ──────────────────────────────────────────────
-        text_pipeline: c.WGPURenderPipeline,
+        // ── Text pass (instanced glyph quads from the atlas) ───────
+        glyph_pipeline: c.WGPURenderPipeline,
+        glyph_bgl: c.WGPUBindGroupLayout,
+        /// {logical size, scale, text gamma}; see shaders/glyph.wgsl.
+        glyph_uniform_buf: c.WGPUBuffer,
+        /// Bind group layout + sampler shared by the image/scene pipelines.
         text_bgl: c.WGPUBindGroupLayout,
         sampler: c.WGPUSampler,
-        text_cache: TextCache,
-        text_draws: [glyph_cache.CAPACITY]QuadDraw,
-        text_draw_count: usize,
-        text_verts: [TEXT_VERT_BUF_CAPACITY]Vertex,
-        text_vert_count: u32,
-        text_vert_buf: c.WGPUBuffer,
-        text_vert_buf_size: u64,
-
-        // ── Rasterization (OS-specific provider) ───────────────────
-        raster: Rasterizer,
+        text: text_stage.TextStage(Rasterizer),
+        atlas_pages: std.ArrayList(AtlasPage),
+        glyph_buf: c.WGPUBuffer,
+        glyph_buf_size: u64,
+        /// Device pixels per logical pixel (`InitOptions.scale`).
+        scale: f32,
 
         // ── Image pass (shares text_bgl + sampler) ─────────────────
         image_pipeline: c.WGPURenderPipeline,
         images: ImageCache,
-        image_draws: [IMAGE_CACHE_CAPACITY]QuadDraw,
-        image_draw_count: usize,
-        image_verts: [IMAGE_VERT_BUF_CAPACITY]Vertex,
-        image_vert_count: u32,
+        image_draws: std.ArrayList(QuadDraw),
+        image_verts: std.ArrayList(Vertex),
         image_vert_buf: c.WGPUBuffer,
         image_vert_buf_size: u64,
 
@@ -224,7 +203,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         // indices (`*_ov`) so the main pass can draw base content first and
         // overlay content after it. null = no split (draw by kind).
         overlay_split: ?OverlaySplit,
-        text_ov: usize,
         image_ov: usize,
         scene_ov: usize,
 
@@ -270,7 +248,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const ctx = try wgpu_c.requestDevice(instance, null);
             var gpu = try initFromDevice(instance, null, ctx, width, height, options);
             errdefer gpu.deinit();
-            try gpu.recreateOffscreen(width, height);
+            try gpu.recreateOffscreen(gpu.width, gpu.height);
             return gpu;
         }
 
@@ -413,17 +391,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const text_pipeline_layout = c.wgpuDeviceCreatePipelineLayout(device, &text_pl_desc) orelse return error.TextPipelineLayoutFailed;
             defer c.wgpuPipelineLayoutRelease(text_pipeline_layout);
 
-            const text_shader = try wgpu_c.createShader(device, "text-shader", SHADER_TEXT);
-            defer c.wgpuShaderModuleRelease(text_shader);
-            const text_pipeline = wgpu_c.createPipeline(device, .{
-                .label = "text-pipeline",
-                .layout = text_pipeline_layout,
-                .module = text_shader,
-                .vertex_buffers = &vert_buf_layout,
-                .format = surf_format,
-                .samples = samples,
-            }) orelse return error.TextPipelineFailed;
-
             // Image shader: texture * tint, no alpha-from-texture trick.
             const image_shader = try wgpu_c.createShader(device, "image-shader", SHADER_IMAGE);
             defer c.wgpuShaderModuleRelease(image_shader);
@@ -456,8 +423,62 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             const scene = try wgpu_scene.Renderer.init(device, ctx.queue, surf_format, options.scene_msaa);
 
-            // OS-specific glyph rasterizer (GDI / stb_truetype).
+            // OS-specific glyph rasterizer (stb_truetype).
             const raster = try Rasterizer.init(std.heap.page_allocator);
+
+            const scale: f32 = if (options.scale > 0) options.scale else 1;
+            var text = try text_stage.TextStage(Rasterizer).init(std.heap.page_allocator, raster, options.max_atlas_pages, scale);
+            errdefer text.deinit();
+
+            // Glyph pipeline: {uniform, R8 atlas page}; instance-stepped quads.
+            var glyph_bgl_entries = [_]c.WGPUBindGroupLayoutEntry{
+                std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
+                std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
+            };
+            glyph_bgl_entries[0].binding = 0;
+            glyph_bgl_entries[0].visibility = c.WGPUShaderStage_Vertex | c.WGPUShaderStage_Fragment;
+            glyph_bgl_entries[0].buffer.type = c.WGPUBufferBindingType_Uniform;
+            glyph_bgl_entries[0].buffer.minBindingSize = 16;
+            glyph_bgl_entries[1].binding = 1;
+            glyph_bgl_entries[1].visibility = c.WGPUShaderStage_Fragment;
+            glyph_bgl_entries[1].texture.sampleType = c.WGPUTextureSampleType_Float;
+            glyph_bgl_entries[1].texture.viewDimension = c.WGPUTextureViewDimension_2D;
+            var glyph_bgl_desc = std.mem.zeroes(c.WGPUBindGroupLayoutDescriptor);
+            glyph_bgl_desc.label = wgpuStr("glyph-bgl");
+            glyph_bgl_desc.entryCount = glyph_bgl_entries.len;
+            glyph_bgl_desc.entries = &glyph_bgl_entries;
+            const glyph_bgl = c.wgpuDeviceCreateBindGroupLayout(device, &glyph_bgl_desc) orelse return error.TextBglFailed;
+            var glyph_pl_desc = std.mem.zeroes(c.WGPUPipelineLayoutDescriptor);
+            glyph_pl_desc.label = wgpuStr("glyph-pipeline-layout");
+            glyph_pl_desc.bindGroupLayoutCount = 1;
+            glyph_pl_desc.bindGroupLayouts = &glyph_bgl;
+            const glyph_pl = c.wgpuDeviceCreatePipelineLayout(device, &glyph_pl_desc) orelse return error.TextPipelineLayoutFailed;
+            defer c.wgpuPipelineLayoutRelease(glyph_pl);
+            const glyph_shader = try wgpu_c.createShader(device, "glyph-shader", SHADER_GLYPH);
+            defer c.wgpuShaderModuleRelease(glyph_shader);
+            // Raw words, unpacked in glyph.wgsl (shared with the web backend).
+            const inst_attrs = [_]c.WGPUVertexAttribute{
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(glyph_atlas.GlyphInstance, "x"), .shaderLocation = 0 },
+                .{ .format = c.WGPUVertexFormat_Uint32x2, .offset = @offsetOf(glyph_atlas.GlyphInstance, "w"), .shaderLocation = 1 },
+                .{ .format = c.WGPUVertexFormat_Uint32, .offset = @offsetOf(glyph_atlas.GlyphInstance, "color"), .shaderLocation = 2 },
+                .{ .format = c.WGPUVertexFormat_Uint32x2, .offset = @offsetOf(glyph_atlas.GlyphInstance, "clip_xy"), .shaderLocation = 3 },
+                .{ .format = c.WGPUVertexFormat_Uint32, .offset = @offsetOf(glyph_atlas.GlyphInstance, "flags"), .shaderLocation = 4 },
+            };
+            const inst_layout = [_]c.WGPUVertexBufferLayout{.{
+                .arrayStride = @sizeOf(glyph_atlas.GlyphInstance),
+                .stepMode = c.WGPUVertexStepMode_Instance,
+                .attributeCount = inst_attrs.len,
+                .attributes = &inst_attrs,
+            }};
+            const glyph_pipeline = wgpu_c.createPipeline(device, .{
+                .label = "glyph-pipeline",
+                .layout = glyph_pl,
+                .module = glyph_shader,
+                .vertex_buffers = &inst_layout,
+                .format = surf_format,
+                .samples = samples,
+            }) orelse return error.TextPipelineFailed;
+            const glyph_uniform_buf = wgpu_c.createBuffer(device, "glyph-uniform-buf", c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst, 16) orelse return error.UniformBufFailed;
 
             var gpu: Self = .{
                 .instance = instance,
@@ -481,23 +502,20 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 // zero-init here keeps the field set strictly post-init.
                 .width = 0,
                 .height = 0,
-                .text_pipeline = text_pipeline,
                 .text_bgl = text_bgl,
                 .sampler = sampler,
-                .text_cache = .{},
-                .text_draws = undefined,
-                .text_draw_count = 0,
-                .text_verts = undefined,
-                .text_vert_count = 0,
-                .text_vert_buf = null,
-                .text_vert_buf_size = 0,
-                .raster = raster,
+                .glyph_pipeline = glyph_pipeline,
+                .glyph_bgl = glyph_bgl,
+                .glyph_uniform_buf = glyph_uniform_buf,
+                .text = text,
+                .atlas_pages = .empty,
+                .glyph_buf = null,
+                .glyph_buf_size = 0,
+                .scale = scale,
                 .image_pipeline = image_pipeline,
                 .images = .{},
-                .image_draws = undefined,
-                .image_draw_count = 0,
-                .image_verts = undefined,
-                .image_vert_count = 0,
+                .image_draws = .empty,
+                .image_verts = .empty,
                 .image_vert_buf = null,
                 .image_vert_buf_size = 0,
                 .scene = scene,
@@ -511,7 +529,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .scene_vert_buf_size = 0,
                 .offscreen = null,
                 .overlay_split = null,
-                .text_ov = 0,
                 .image_ov = 0,
                 .scene_ov = 0,
                 .secondary_surfaces = @splat(.{
@@ -534,17 +551,25 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             var images = self.images.iterator();
             while (images.next()) |e| e.release();
+            self.images.deinit(image_gpa);
+            self.image_draws.deinit(image_gpa);
+            self.image_verts.deinit(image_gpa);
             if (self.image_vert_buf) |ib| c.wgpuBufferRelease(ib);
             c.wgpuRenderPipelineRelease(self.image_pipeline);
 
-            self.text_cache.clear();
-            if (self.text_vert_buf) |tb| c.wgpuBufferRelease(tb);
+            for (self.atlas_pages.items) |pg| {
+                c.wgpuBindGroupRelease(pg.bind_group);
+                c.wgpuTextureViewRelease(pg.view);
+                c.wgpuTextureRelease(pg.texture);
+            }
+            self.atlas_pages.deinit(std.heap.page_allocator);
+            self.text.deinit();
+            if (self.glyph_buf) |gb| c.wgpuBufferRelease(gb);
+            c.wgpuBufferRelease(self.glyph_uniform_buf);
+            c.wgpuRenderPipelineRelease(self.glyph_pipeline);
+            c.wgpuBindGroupLayoutRelease(self.glyph_bgl);
             c.wgpuSamplerRelease(self.sampler);
             c.wgpuBindGroupLayoutRelease(self.text_bgl);
-            c.wgpuRenderPipelineRelease(self.text_pipeline);
-
-            // Release the OS-specific rasterizer (GDI fonts/DC, stb font buf).
-            self.raster.deinit();
 
             self.releaseMsaa();
             if (self.offscreen) |t| c.wgpuTextureRelease(t);
@@ -588,14 +613,32 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             c.wgpuSurfaceConfigure(surface, &surf_config);
         }
 
-        pub fn resize(self: *Self, width: u32, height: u32) void {
+        /// Device pixels for a logical extent: `InitOptions.scale` times it.
+        /// `resize`, `init*` and the secondary-surface calls take the logical
+        /// window size (identical to device pixels while the scale is 1).
+        fn devicePx(self: *const Self, logical: u32) u32 {
+            return @intFromFloat(@round(@as(f32, @floatFromInt(logical)) * self.scale));
+        }
+
+        pub fn resize(self: *Self, logical_w: u32, logical_h: u32) void {
+            const width = self.devicePx(logical_w);
+            const height = self.devicePx(logical_h);
             self.width = width;
             self.height = height;
             if (self.surface != null) self.configureSurface(self.surface, width, height);
             if (self.offscreen != null) self.recreateOffscreen(width, height) catch {};
 
-            const screen_size = [2]f32{ @floatFromInt(width), @floatFromInt(height) };
-            c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &screen_size, @sizeOf([2]f32));
+            self.writeScreenSize(width, height);
+        }
+
+        /// Publish the target's size to the shaders: the solid/image pipelines
+        /// work in logical px (device size / scale); the glyph pipeline also
+        /// needs the scale because its instances are in device px.
+        fn writeScreenSize(self: *Self, device_w: u32, device_h: u32) void {
+            const logical = [2]f32{ @as(f32, @floatFromInt(device_w)) / self.scale, @as(f32, @floatFromInt(device_h)) / self.scale };
+            c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &logical, @sizeOf([2]f32));
+            const glyph_u = [4]f32{ logical[0], logical[1], self.scale, 1.0 };
+            c.wgpuQueueWriteBuffer(self.queue, self.glyph_uniform_buf, 0, &glyph_u, @sizeOf([4]f32));
         }
 
         /// Grow `buf` to hold `verts` and write them. Shared by the solid,
@@ -697,8 +740,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             // — otherwise rendering a secondary leaves its dims in the
             // uniform, scaling the next primary frame to the secondary's
             // viewport. Single 8-byte queue write per frame per window.
-            const screen_size = [2]f32{ @floatFromInt(target_w), @floatFromInt(target_h) };
-            c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &screen_size, @sizeOf([2]f32));
+            self.writeScreenSize(target_w, target_h);
 
             var surface_texture: c.WGPUSurfaceTexture = undefined;
             c.wgpuSurfaceGetCurrentTexture(surface_handle, &surface_texture);
@@ -719,8 +761,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// attachment in the surface format) instead of a window: headless
         /// tests and screenshots. Same pass as `renderFrame`, including MSAA.
         pub fn renderToTexture(self: *Self, texture: c.WGPUTexture, w: u32, h: u32, clear_color: ClearColor) void {
-            const screen_size = [2]f32{ @floatFromInt(w), @floatFromInt(h) };
-            c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &screen_size, @sizeOf([2]f32));
+            self.writeScreenSize(w, h);
             const view = c.wgpuTextureCreateView(texture, null);
             defer c.wgpuTextureViewRelease(view);
             self.encodeMainPass(view, w, h, clear_color);
@@ -766,14 +807,13 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             // overlay's solids after the base's TEXT is what lets an opaque
             // popup hide the text beneath it.
             const solid = overlay.Range.of(self.splitOf("verts", self.vert_count), self.vert_count);
-            const imgs = overlay.Range.of(self.image_ov, self.image_draw_count);
+            const imgs = overlay.Range.of(self.image_ov, self.image_draws.items.len);
             const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
-            const txts = overlay.Range.of(self.text_ov, self.text_draw_count);
             inline for (.{ "base", "overlay" }) |layer| {
                 self.drawSolids(pass, @field(overlay.Range, layer)(solid));
-                drawQuads(pass, self.image_pipeline, self.image_vert_buf, self.image_vert_count, self.image_draws[0..self.image_draw_count], @field(overlay.Range, layer)(imgs));
+                drawQuads(pass, self.image_pipeline, self.image_vert_buf, @intCast(self.image_verts.items.len), self.image_draws.items, @field(overlay.Range, layer)(imgs));
                 drawQuads(pass, self.image_pipeline, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count], @field(overlay.Range, layer)(scns));
-                drawQuads(pass, self.text_pipeline, self.text_vert_buf, self.text_vert_count, self.text_draws[0..self.text_draw_count], @field(overlay.Range, layer)(txts));
+                self.drawGlyphs(pass, if (comptime std.mem.eql(u8, layer, "base")) 0 else 1);
             }
 
             c.wgpuRenderPassEncoderEnd(pass);
@@ -842,12 +882,14 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const surface = Surface.createSurface(self.instance, handle) catch return null;
 
             // Configure the surface with the same format the primary uses.
-            self.configureSurface(surface, w, h);
+            const dw = self.devicePx(w);
+            const dh = self.devicePx(h);
+            self.configureSurface(surface, dw, dh);
 
             self.secondary_surfaces[slot_idx] = .{
                 .surface = surface,
-                .width = w,
-                .height = h,
+                .width = dw,
+                .height = dh,
                 .active = true,
             };
             return @intCast(slot_idx + 1);
@@ -877,133 +919,121 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const slot = &self.secondary_surfaces[window_id - 1];
             if (!slot.active or slot.surface == null) return;
 
-            slot.width = w;
-            slot.height = h;
-            self.configureSurface(slot.surface, w, h);
+            slot.width = self.devicePx(w);
+            slot.height = self.devicePx(h);
+            self.configureSurface(slot.surface, slot.width, slot.height);
         }
 
-        /// height` via the provider rasterizer, upload to the GPU, return
-        /// a TextureHandle = (cache slot + 1) so 0 stays the sentinel.
-        /// Cache-aware: repeated calls with the same (content, font,
-        /// color, w, h) reuse the existing texture.
-        pub fn rasterizeText(
-            self: *Self,
-            text_bytes: []const u8,
-            font: FontSpec,
-            color: [4]f32,
-            width: u32,
-            height: u32,
-        ) TextureHandle {
-            if (width == 0 or height == 0) return teak.TEXTURE_HANDLE_NONE;
+        // ── Text: shaped glyphs -> atlas -> instanced quads ────────
 
-            const key = glyph_cache.textCacheKey(text_bytes, font, color, width, height);
-            const content_hash = std.hash.Wyhash.hash(0, text_bytes);
-
-            const hit = self.text_cache.lookup(key, text_bytes.len, content_hash);
-            if (hit != teak.TEXTURE_HANDLE_NONE) return hit;
-
-            self.text_cache.evictLRU();
-
-            const r = self.rasterAndUpload(text_bytes, font, color, width, height) orelse
-                return teak.TEXTURE_HANDLE_NONE;
-
-            return self.text_cache.insert(
-                key,
-                @intCast(text_bytes.len),
-                content_hash,
-                r.texture,
-                r.view,
-                r.bind_group,
-            );
-        }
-
-        /// Per-frame text orchestration. Rasterizes each TextDraw (with
-        /// cache), emits 6 textured vertices per visible draw, records a
-        /// draw entry for `renderFrame`'s text pass. Must be called after
-        /// `uploadVertices` and before `renderFrame`.
+        /// Per-frame text staging (call after `uploadVertices`, before
+        /// `renderFrame`). `text_stage` shapes every `TextDraw`, packs glyphs the
+        /// atlas has not seen (rasterized at the device pixel size with a
+        /// quarter-pixel x bin) into CPU pages and appends one `GlyphInstance` per
+        /// visible glyph; this uploads the new pages' dirty rects and the
+        /// instances. Glyphs used this frame pin their page, so nothing visible is
+        /// evicted mid-frame; if every page is pinned the glyph is dropped for the
+        /// frame and a warning names `InitOptions.max_atlas_pages`.
         pub fn uploadText(self: *Self, draws: []const TextDraw) void {
-            self.text_cache.tick();
-            self.text_draw_count = 0;
-            self.text_vert_count = 0;
-            var mark: overlay.Marker = .{ .start = self.splitOf("text", draws.len) };
-            defer self.text_ov = mark.finish(self.text_draw_count);
-
-            if (self.text_cache.shouldReport()) {
-                const s = self.text_cache.stats();
-                std.debug.print(
-                    "[teak glyph_cache native] hits={d} misses={d} evictions={d} (last 60 frames)\n",
-                    .{ s.hits, s.misses, s.evictions },
+            self.text.stage(draws, self.splitOf("text", draws.len));
+            self.flushGlyphs();
+            if (self.text.shouldReportDrops()) {
+                std.log.warn(
+                    "teak: glyph atlas exhausted ({d} pages in use this frame, cap {d}); dropped {d} glyphs. " ++
+                        "Raise InitOptions.max_atlas_pages or draw fewer distinct glyphs/sizes per frame.",
+                    .{ self.text.atlas.pageCount(), self.text.atlas.max_pages, self.text.dropped },
                 );
-                self.text_cache.resetStats();
             }
+        }
 
-            for (draws, 0..) |draw, di| {
-                mark.visit(di, self.text_draw_count);
-                // Snap rect + clip to integer pixel boundaries FIRST, then
-                // derive visibility + UVs from the snapped coordinates. This
-                // keeps texture size == rect size (in pixels) and ensures
-                // UVs land on exact texel boundaries, not fractional offsets
-                // that ClampToEdge would paper over by duplicating the edge
-                // texel (visible as a stray pixel on glyph edges).
-                const r_x = @floor(draw.rect_x);
-                const r_y = @floor(draw.rect_y);
-                const r_w = @ceil(draw.rect_x + draw.rect_w) - r_x;
-                const r_h = @ceil(draw.rect_y + draw.rect_h) - r_y;
-
-                const c_x0 = @floor(draw.clip_x);
-                const c_y0 = @floor(draw.clip_y);
-                const c_x1 = @ceil(draw.clip_x + draw.clip_w);
-                const c_y1 = @ceil(draw.clip_y + draw.clip_h);
-
-                const vis_x0 = @max(r_x, c_x0);
-                const vis_y0 = @max(r_y, c_y0);
-                const vis_x1 = @min(r_x + r_w, c_x1);
-                const vis_y1 = @min(r_y + r_h, c_y1);
-                if (vis_x1 <= vis_x0 or vis_y1 <= vis_y0) continue;
-
-                const tex_w: u32 = @intFromFloat(r_w);
-                const tex_h: u32 = @intFromFloat(r_h);
-                if (tex_w == 0 or tex_h == 0) continue;
-
-                const handle = self.rasterizeText(draw.content, draw.font, draw.color, tex_w, tex_h);
-                if (handle == teak.TEXTURE_HANDLE_NONE) continue;
-                const entry = self.text_cache.entryPtr(handle);
-
-                // UVs on exact texel boundaries (0, k/N, or 1). No
-                // ClampToEdge edge-repeat slop. `u0/u1` would shadow
-                // Zig's integer-type primitives.
-                const uv_u0 = (vis_x0 - r_x) / r_w;
-                const uv_v0 = (vis_y0 - r_y) / r_h;
-                const uv_u1 = (vis_x1 - r_x) / r_w;
-                const uv_v1 = (vis_y1 - r_y) / r_h;
-
-                // Color is passed through the vertex stream so the shader
-                // can multiply the alpha-from-texture by color.a.
-                const r = draw.color[0];
-                const g = draw.color[1];
-                const b = draw.color[2];
-                const a = draw.color[3];
-
-                const offset = self.text_vert_count;
-                if (offset + 6 > self.text_verts.len) break; // text buffer full
-
-                const verts = &self.text_verts;
-                verts[offset + 0] = .{ .x = vis_x0, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v0 };
-                verts[offset + 1] = .{ .x = vis_x1, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
-                verts[offset + 2] = .{ .x = vis_x0, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
-                verts[offset + 3] = .{ .x = vis_x1, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
-                verts[offset + 4] = .{ .x = vis_x1, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v1 };
-                verts[offset + 5] = .{ .x = vis_x0, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
-
-                self.text_vert_count += 6;
-                self.text_draws[self.text_draw_count] = .{
-                    .bind_group = entry.bind_group,
-                    .vert_offset = offset,
+        /// Create GPU textures for atlas pages added since the last frame.
+        fn ensurePages(self: *Self) void {
+            const alloc = std.heap.page_allocator;
+            while (self.atlas_pages.items.len < self.text.pageCount()) {
+                const texture = wgpu_c.createTexture2D(self.device, "glyph-atlas", .{
+                    .width = atlas_dim,
+                    .height = atlas_dim,
+                    .format = c.WGPUTextureFormat_R8Unorm,
+                    .usage = c.WGPUTextureUsage_TextureBinding | c.WGPUTextureUsage_CopyDst,
+                }) orelse return;
+                const view = wgpu_c.createView2D(texture, "glyph-atlas", c.WGPUTextureFormat_R8Unorm) orelse {
+                    c.wgpuTextureRelease(texture);
+                    return;
                 };
-                self.text_draw_count += 1;
+                var entries = [_]c.WGPUBindGroupEntry{
+                    std.mem.zeroes(c.WGPUBindGroupEntry),
+                    std.mem.zeroes(c.WGPUBindGroupEntry),
+                };
+                entries[0].binding = 0;
+                entries[0].buffer = self.glyph_uniform_buf;
+                entries[0].size = 16;
+                entries[1].binding = 1;
+                entries[1].textureView = view;
+                var desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
+                desc.label = wgpuStr("glyph-atlas-bg");
+                desc.layout = self.glyph_bgl;
+                desc.entryCount = entries.len;
+                desc.entries = &entries;
+                const bg = c.wgpuDeviceCreateBindGroup(self.device, &desc) orelse {
+                    c.wgpuTextureViewRelease(view);
+                    c.wgpuTextureRelease(texture);
+                    return;
+                };
+                self.atlas_pages.append(alloc, .{ .texture = texture, .view = view, .bind_group = bg }) catch return;
+            }
+        }
+
+        /// Upload dirty atlas rects and the frame's instances.
+        fn flushGlyphs(self: *Self) void {
+            self.ensurePages();
+            for (self.atlas_pages.items, 0..) |pg, i| {
+                if (i >= self.text.pageCount()) break;
+                const d = self.text.takeDirty(i) orelse continue;
+                var dst = std.mem.zeroes(c.WGPUTexelCopyTextureInfo);
+                dst.texture = pg.texture;
+                dst.aspect = c.WGPUTextureAspect_All;
+                dst.origin = .{ .x = d.x, .y = d.y, .z = 0 };
+                var layout = std.mem.zeroes(c.WGPUTexelCopyBufferLayout);
+                layout.bytesPerRow = atlas_dim;
+                layout.rowsPerImage = d.h;
+                const extent = c.WGPUExtent3D{ .width = d.w, .height = d.h, .depthOrArrayLayers = 1 };
+                const staging = self.text.pageStaging(i);
+                const start = @as(usize, d.y) * atlas_dim + d.x;
+                const len = (@as(usize, d.h) - 1) * atlas_dim + d.w;
+                c.wgpuQueueWriteTexture(self.queue, &dst, staging[start..].ptr, len, &layout, &extent);
             }
 
-            self.writeVerts("text-vert-buf", &self.text_vert_buf, &self.text_vert_buf_size, self.text_verts[0..self.text_vert_count]);
+            const total = self.text.finish();
+            if (total == 0) return;
+            const bytes: u64 = @as(u64, total) * @sizeOf(glyph_atlas.GlyphInstance);
+            // Grow geometrically so a scrolling frame does not reallocate every frame.
+            const want = if (self.glyph_buf != null and bytes > self.glyph_buf_size) bytes + bytes / 2 else bytes;
+            wgpu_c.ensureBuffer(self.device, "glyph-instances", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, &self.glyph_buf, &self.glyph_buf_size, want);
+            for (0..2) |layer| {
+                for (self.text.insts.items) |*pi| {
+                    const list = pi.list[layer].items;
+                    if (list.len == 0) continue;
+                    const off: u64 = @as(u64, pi.first[layer]) * @sizeOf(glyph_atlas.GlyphInstance);
+                    c.wgpuQueueWriteBuffer(self.queue, self.glyph_buf, off, list.ptr, @as(u64, list.len) * @sizeOf(glyph_atlas.GlyphInstance));
+                }
+            }
+        }
+
+        /// One instanced draw per atlas page holding glyphs of `layer`.
+        fn drawGlyphs(self: *Self, pass: c.WGPURenderPassEncoder, layer: usize) void {
+            if (self.glyph_buf == null) return;
+            var bound = false;
+            for (self.text.insts.items, 0..) |pi, i| {
+                const n = pi.list[layer].items.len;
+                if (n == 0 or i >= self.atlas_pages.items.len) continue;
+                if (!bound) {
+                    c.wgpuRenderPassEncoderSetPipeline(pass, self.glyph_pipeline);
+                    c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.glyph_buf, 0, self.glyph_buf_size);
+                    bound = true;
+                }
+                c.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.atlas_pages.items[i].bind_group, 0, null);
+                c.wgpuRenderPassEncoderDraw(pass, 6, @intCast(n), 0, pi.first[layer]);
+            }
         }
 
         // ── Sampled textures (text glyph runs, images) ─────────────
@@ -1072,15 +1102,16 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
         /// Upload an RGBA8 image. `bytes.len` must equal `width * height * 4`.
         /// Returns an opaque handle the app stashes in `ImageCmd.handle`.
-        /// Returns `TEXTURE_HANDLE_NONE` on bad dims, full cache, or
-        /// device failure.
+        /// Returns `TEXTURE_HANDLE_NONE` on bad dims, device failure, or
+        /// (loudly) at the 65536-image ceiling. The cache grows on demand.
         pub fn uploadImage(self: *Self, bytes: []const u8, width: u32, height: u32) TextureHandle {
             if (width == 0 or height == 0) return teak.TEXTURE_HANDLE_NONE;
             const need = @as(usize, width) * @as(usize, height) * 4;
             if (bytes.len < need) return teak.TEXTURE_HANDLE_NONE;
             const sampled = self.createSampled("image", c.WGPUTextureFormat_RGBA8Unorm, bytes[0..need], width, height) orelse
                 return teak.TEXTURE_HANDLE_NONE;
-            return self.images.insert(sampled) orelse {
+            return self.images.insert(image_gpa, sampled) orelse {
+                std.debug.print("teak: image cache full ({d} live images); upload dropped\n", .{IMAGE_MAX_SLOTS});
                 sampled.release();
                 return teak.TEXTURE_HANDLE_NONE;
             };
@@ -1105,20 +1136,20 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// `ImageDraw` still carrying it) is dead afterwards; the slot is
         /// reused by the next upload.
         pub fn releaseImage(self: *Self, handle: TextureHandle) void {
-            if (self.images.remove(handle)) |e| e.release();
+            if (self.images.remove(image_gpa, handle)) |e| e.release();
         }
 
         /// Per-frame draw orchestration for images. Walks ImageDraws, emits
         /// 6 textured vertices per visible draw, records a draw entry per
         /// image. Call after `uploadText` and before `renderFrame`.
         pub fn uploadImages(self: *Self, draws: []const ImageDraw) void {
-            self.image_draw_count = 0;
-            self.image_vert_count = 0;
+            self.image_draws.clearRetainingCapacity();
+            self.image_verts.clearRetainingCapacity();
             var mark: overlay.Marker = .{ .start = self.splitOf("images", draws.len) };
-            defer self.image_ov = mark.finish(self.image_draw_count);
+            defer self.image_ov = mark.finish(self.image_draws.items.len);
 
             for (draws, 0..) |draw, di| {
-                mark.visit(di, self.image_draw_count);
+                mark.visit(di, self.image_draws.items.len);
                 const entry = self.images.get(draw.handle) orelse continue;
                 const quad = teak.vertex.clippedTexturedQuad(
                     .{ .x = draw.rect_x, .y = draw.rect_y, .w = draw.rect_w, .h = draw.rect_h },
@@ -1126,15 +1157,13 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                     draw.tint,
                 ) orelse continue;
 
-                const offset = self.image_vert_count;
-                if (offset + 6 > self.image_verts.len) break;
-                @memcpy(self.image_verts[offset..][0..6], &quad);
-                self.image_vert_count += 6;
-                self.image_draws[self.image_draw_count] = .{ .bind_group = entry.bind_group, .vert_offset = offset };
-                self.image_draw_count += 1;
+                const offset: u32 = @intCast(self.image_verts.items.len);
+                self.image_draws.ensureUnusedCapacity(image_gpa, 1) catch break;
+                self.image_verts.appendSlice(image_gpa, &quad) catch break;
+                self.image_draws.appendAssumeCapacity(.{ .bind_group = entry.bind_group, .vert_offset = offset });
             }
 
-            self.writeVerts("image-vert-buf", &self.image_vert_buf, &self.image_vert_buf_size, self.image_verts[0..self.image_vert_count]);
+            self.writeVerts("image-vert-buf", &self.image_vert_buf, &self.image_vert_buf_size, self.image_verts.items);
         }
 
         // ── 3D scenes ──────────────────────────────────────────────
@@ -1201,21 +1230,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             self.scene_bind_groups[i] = self.textureBindGroup("scene-composite", target.color_view);
             self.scene_bg_gen[i] = target.generation;
             return self.scene_bind_groups[i];
-        }
-
-        /// Rasterize a glyph run via the provider, then upload the BGRA8
-        /// `Bitmap` into a fresh `BGRA8Unorm` wgpu texture + bind group.
-        /// The bitmap is consumed here, before the next `rasterize` call.
-        fn rasterAndUpload(
-            self: *Self,
-            text_bytes: []const u8,
-            font: FontSpec,
-            color: [4]f32,
-            width: u32,
-            height: u32,
-        ) ?Sampled {
-            const bmp = self.raster.rasterize(text_bytes, font, color, width, height) orelse return null;
-            return self.createSampled("text", c.WGPUTextureFormat_BGRA8Unorm, bmp.pixels, bmp.width, bmp.height);
         }
     };
 }
