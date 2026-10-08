@@ -204,6 +204,51 @@ export fn teak_wasm_probe() u32 {
     return @intCast(verts.items.len);
 }
 
+/// Log policy of the wasm canary root. The default `std.log` sink drags in
+/// `std.Io.Threaded`, which does not compile on wasm32-freestanding, so a web
+/// entry point must declare a logFn (`platform.logFn`, i.e. `zunk.web.logFn`).
+/// The framework itself logs (e.g. the resource-table overflow warning);
+/// `teak_wasm_log_probe` below keeps those call sites in the canary so a
+/// log path that only compiles natively fails `zig build test-wasm`.
+pub const std_options: std.Options = if (builtin.target.cpu.arch == .wasm32)
+    .{ .logFn = canaryLog }
+else
+    .{};
+
+fn canaryLog(
+    comptime level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    _ = level;
+    _ = scope;
+    _ = format;
+    _ = args;
+}
+
+const LogProbeGpu = struct {
+    pub fn uploadImage(_: *LogProbeGpu, _: []const u8, _: u32, _: u32) u32 {
+        return 1;
+    }
+    pub fn uploadMesh(_: *LogProbeGpu, _: teak.MeshData) u32 {
+        return 1;
+    }
+    pub fn releaseImage(_: *LogProbeGpu, _: u32) void {}
+    pub fn releaseMesh(_: *LogProbeGpu, _: u32) void {}
+};
+
+/// Overflows the resource table so its `std.log.warn` is compiled and run
+/// through the root's logFn.
+export fn teak_wasm_log_probe() u32 {
+    var gpu: LogProbeGpu = .{};
+    var table: teak.ResourceTable = .{};
+    var list: [200]teak.Resource = undefined;
+    for (&list, 0..) |*r, i| r.* = .{ .image = .{ .key = @intCast(i + 1), .rev = 1, .rgba = &.{}, .width = 0, .height = 0 } };
+    _ = table.sync(&gpu, &list);
+    return @intCast(table.len);
+}
+
 // On native, drive teak_wasm_probe via a test so `zig build test`
 // exercises the same surface the wasm canary covers.
 test "wasm probe pipeline produces vertices on native too" {
