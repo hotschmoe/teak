@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Web build: stripped wasm by default
+
+- `linkWebWgpu` now strips DWARF and the name section from the wasm in every
+  non-Debug build (`WebWgpuOptions.strip`, default true). The shipped
+  `chrome-web.wasm` was 1.27 MB, of which 1.15 MB was debug info (the
+  apparent 0.16 -> 0.17 growth of +65 KB was all DWARF: code actually shrank
+  97.5 KB -> 89.8 KB); stripped it is 120 KB. Pass `.{ .strip = false }` to
+  keep symbols for wasm debugging.
+
 ### Core cleanup (idiomatic Zig + silent-failure hardening)
 
 - **Frame diff is derived by reflection.** `cmdsEqual` now uses the generic
