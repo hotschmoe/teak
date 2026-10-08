@@ -64,6 +64,21 @@
 //!     content size of every `ScrollStyle.id != 0` region, on its first layout
 //!     and whenever either changes, so the app can clamp offsets and draw
 //!     scrollbars (the view cannot read layout).
+//!   - `hoverMsg(*const Model, PointerEvent(Msg)) ?Msg` — the interactive widget
+//!     under the pointer changed (entered, left, or replaced by another).
+//!     `ev.hit` is that widget's click Msg, `ev.box` its rect, `ev.now_ms` the
+//!     host clock: enough to drive a tooltip (`teak.Tooltip`) with a
+//!     `Sub.at` delay, all in the Model.
+//!   - `contextMsg(*const Model, PointerEvent(Msg)) ?Msg` — the right button
+//!     went down. `ev.hit` is the Msg of the widget under the cursor (null on
+//!     empty space), so one hook opens a context menu for any region
+//!     (`teak.ContextMenu`); the app maps `hit` to "which row / which panel".
+//!   - `sliderMsg(*const Model, grab: Msg, value: f32) ?Msg` — a `slider` cmd is
+//!     being dragged: `grab` is its `grab_msg` (which slider), `value` the
+//!     0..1 position under the pointer. Fired on press and every frame the
+//!     left button stays down (the pointer is captured: the drag keeps
+//!     working off the track), and the slider's plain click Msg is NOT
+//!     dispatched. Without the hook a slider is click-only.
 //!   - `focusedMsg(*const Model) ?Msg`                — the focus Msg of the
 //!     currently-focused widget; `run` maps it to a cmd index via
 //!     `indexOfFocusMsg` (stable across conditional/reordered widgets)
@@ -146,11 +161,12 @@ const effect_batch = 16;
 pub const RunOptions = struct {
     /// Scene clear color passed to `Gpu.renderFrame` each frame.
     clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },
-    /// Frames between forced vertex rebuilds while a widget is focused,
-    /// so the text cursor blink animates. 0 disables the blink tick
-    /// (apps with no text input pay nothing). The renderer toggles the
-    /// cursor on a 30-frame phase, so 30 matches it.
-    blink_period: u32 = 30,
+    /// Text-cursor blink half-period in ms of the Host clock (500 = 500 ms on,
+    /// 500 ms off). 0 disables blinking (the caret stays on). While a text
+    /// input is focused the loop wakes at each toggle and re-renders only the
+    /// caret change (vertices from the last built frame; no view/layout), so
+    /// a focused field costs two cheap frames per second when idle.
+    blink_half_ms: u32 = 500,
     /// Live-snapshot sink. When non-null (or the `TEAK_SNAPSHOT` env var is
     /// set — env wins), `run` mirrors the current frame's snapshot text to
     /// this file every time the frame content changes, so an LLM agent
@@ -168,8 +184,8 @@ pub const RunOptions = struct {
     app_name: []const u8 = "",
     /// Event-driven idle. When true, a frame in which nothing happened (no
     /// input event, no Msg dispatched by a sub / effect result / window hook,
-    /// no focused text input blinking, no secondary window, not the first
-    /// frame) skips view, layout, diff, upload and present entirely —
+    /// secondary window, not the first frame; a caret toggle is a cheap
+    /// re-render of the last frame, see `blink_half_ms`) skips view, layout, diff, upload and present entirely —
     /// `Runtime.quiet` reports it — and `run` then blocks in the Host's
     /// optional `waitEvents(timeout_ms)` until input or the next sub is due.
     /// Set false for an app that needs a frame every tick. The web Host stays
@@ -477,6 +493,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// if mouseup lands on the same widget; drag-off cancels.
         press_target: ?usize = null,
 
+        /// Cmd index last reported to `hoverMsg`; loop bookkeeping like
+        /// `press_target` (a lost value only repeats one hover event).
+        hover_reported: ?usize = null,
+        hover_seen: bool = false,
+        /// The `grab_msg` of the slider being dragged (`sliderMsg` hook).
+        slider_grab: ?Msg = null,
+
         /// The previous frame's `nowMs`. `runSubs` is stateless — it decides
         /// fire/skip from (last_sub_ms, now_ms, sub data) — so this single
         /// timestamp is all the bookkeeping the loop holds. `null` until the
@@ -587,6 +610,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const prev = self.current;
             const dispatched_before = self.dispatch_count;
             self.routeMouse(input, prev);
+            self.routePointerHooks(input, prev);
             self.routeCanvasPointer(input, prev);
             self.routeKeys(input, prev);
             self.routeWheel(input, prev);
@@ -600,7 +624,18 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
-            if (self.quiet) return;
+            if (self.quiet) {
+                // Idle, but the caret may be due to toggle: redraw the last
+                // built frame with the new phase (no view / layout / diff).
+                if (self.blinkDue()) {
+                    self.ts.blink_on = !self.ts.blink_on;
+                    const last = self.current;
+                    self.uploadFrame(self.bufs[last].cmds.items, self.rects[last].items, self.ts);
+                    self.prev_ts = self.ts;
+                    self.gpu.renderFrame(self.opts.clear_color);
+                }
+                return;
+            }
             self.built_once = true;
 
             const cur = try self.buildView(input);
@@ -620,15 +655,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .rects_same = rectsEqual(cur_rects, self.rects[prev].items),
                 .ts_same = transientSame(self.ts, self.prev_ts),
             };
-            const blink_tick = self.opts.blink_period > 0 and self.ts.focus_index != null and
-                (self.ts.frame_counter % self.opts.blink_period == 0);
             // A live secondary window re-uploads into the shared Gpu scratch
             // buffers after the primary present, so the primary must rebuild
             // its own vertices every frame while it's open.
             const secondary_open = has_secondary and App.secondaryWindow(&self.model) != null;
             // A resource upload/release changes the handles the draws map to
             // even when no Cmd changed, so it forces a re-stage too.
-            if (diff.changed() or blink_tick or secondary_open or res_changed) {
+            if (diff.changed() or secondary_open or res_changed) {
                 self.uploadFrame(cur_cmds, cur_rects, self.ts);
             }
             self.prev_ts = self.ts;
@@ -667,10 +700,22 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (input.chars.len != 0 or input.keys.len != 0) return false;
             if (self.animating) return false;
             if (self.ts.ime_active or self.host.imeState().active) return false;
-            if (self.opts.blink_period > 0 and self.ts.focus_index != null) return false;
             if (has_secondary and App.secondaryWindow(&self.model) != null) return false;
             if (has_secondary and self.secondary.window_id != null) return false;
             return true;
+        }
+
+        /// The caret phase the Host clock says should be showing right now.
+        fn blinkPhase(self: *Self) bool {
+            const half = self.opts.blink_half_ms;
+            if (half == 0) return true;
+            return (self.host.nowMs() / half) & 1 == 0;
+        }
+
+        /// A focused text input's caret is showing the wrong phase.
+        fn blinkDue(self: *Self) bool {
+            if (self.opts.blink_half_ms == 0 or self.ts.focus_index == null) return false;
+            return self.blinkPhase() != self.ts.blink_on;
         }
 
         /// How long the Host may block after a quiet frame: until the next
@@ -679,9 +724,17 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // Effect results arrive from the Host asynchronously; poll them
             // at frame rate while any effect is outstanding.
             const cap: u32 = if (self.issued.len != 0) 16 else 1000;
-            if (!@hasDecl(App, "subscribe")) return cap;
-            const due = sub_mod.nextDueMs(Msg, App.subscribe(&self.model), self.host.nowMs()) orelse return cap;
-            return @intCast(@min(due, cap));
+            var wait: u32 = cap;
+            const now = self.host.nowMs();
+            if (self.opts.blink_half_ms != 0 and self.ts.focus_index != null) {
+                // Sleep until the caret's next toggle.
+                const half = self.opts.blink_half_ms;
+                wait = @min(wait, @as(u32, @intCast(half - now % half)));
+            }
+            if (@hasDecl(App, "subscribe")) {
+                if (sub_mod.nextDueMs(Msg, App.subscribe(&self.model), now)) |due| wait = @intCast(@min(due, wait));
+            }
+            return wait;
         }
 
         /// Every Msg is routed through here so the live snapshot's header can
@@ -702,9 +755,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             else
                 null;
 
+            var slider_consumed = false;
+            if (comptime @hasDecl(App, "sliderMsg")) slider_consumed = self.routeSlider(input, prev_cmds, prev_rects, hover);
+
             if (input.mouse_down) self.press_target = hover;
             if (input.mouse_up) {
-                if (self.press_target != null and hover == self.press_target) {
+                if (!slider_consumed and self.press_target != null and hover == self.press_target) {
                     if (hit_test.hitTest(prev_cmds, prev_rects, input.mouse_x, input.mouse_y)) |hit| {
                         // `hit.msg` is null when a modal overlay consumed the
                         // click but asked for no Msg (HARDLINE §2 hatch 5) —
@@ -715,6 +771,78 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 self.press_target = null;
             }
             if (self.press_target != null and hover != self.press_target) self.press_target = null;
+        }
+
+        /// `hoverMsg` / `contextMsg`: both resolve the pointer against the
+        /// previous frame's layout like a click does.
+        fn routePointerHooks(self: *Self, input: Input, prev: u1) void {
+            const has_hover = comptime @hasDecl(App, "hoverMsg");
+            const has_context = comptime @hasDecl(App, "contextMsg");
+            if (!has_hover and !has_context) return;
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+            const hit = if (cmds.len > 0) hit_test.hitTest(cmds, rects, input.mouse_x, input.mouse_y) else null;
+            const under: ?usize = if (hit) |h| h.index else null;
+
+            if (has_hover) {
+                if (!self.hover_seen or under != self.hover_reported) {
+                    const first = !self.hover_seen;
+                    self.hover_seen = true;
+                    self.hover_reported = under;
+                    // Nothing to report before the first frame laid anything out.
+                    if (!(first and under == null)) {
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+                    }
+                }
+            }
+            if (has_context and input.button_down.right) {
+                if (App.contextMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+            }
+        }
+
+        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect) pointer.PointerEvent(Msg) {
+            var ev: pointer.PointerEvent(Msg) = .{
+                .x = input.mouse_x,
+                .y = input.mouse_y,
+                .mods = input.mods,
+                .now_ms = self.host.nowMs(),
+            };
+            if (hit) |h| {
+                // A modal backdrop that swallows the click has no Msg: report it as empty space.
+                ev.hit = h.msg;
+                if (h.msg != null and h.index < rects.len) {
+                    const r = rects[h.index];
+                    ev.box = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
+                }
+            }
+            return ev;
+        }
+
+        /// Slider drag with pointer capture (`sliderMsg`). Returns true when
+        /// this frame's press / release belongs to a slider, so the plain
+        /// click dispatch must be skipped.
+        fn routeSlider(self: *Self, input: Input, cmds: anytype, rects: []const Rect, hover: ?usize) bool {
+            var consumed = false;
+            if (input.mouse_down) {
+                if (hover) |idx| if (idx < cmds.len and idx < rects.len) switch (cmds[idx]) {
+                    .slider => |sl| {
+                        self.slider_grab = sl.grab_msg;
+                        consumed = true;
+                    },
+                    else => {},
+                };
+            }
+            if (self.slider_grab) |grab| {
+                consumed = true;
+                if (focus.indexOfFocusMsg(cmds, grab)) |idx| {
+                    if (idx < rects.len) {
+                        const v = hit_test.sliderValueAt(rects[idx], input.mouse_x);
+                        if (App.sliderMsg(&self.model, grab, v)) |m| self.dispatch(m);
+                    }
+                }
+                if (!input.buttons.left) self.slider_grab = null;
+            }
+            return consumed;
         }
 
         /// Characters first, then special keys; clipboard chords route to the
@@ -1244,6 +1372,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.ts.mouse_x = input.mouse_x;
             self.ts.mouse_y = input.mouse_y;
             self.ts.frame_counter +%= 1;
+            self.ts.blink_on = self.blinkPhase();
 
             // Folded in unconditionally: inactive/empty on hosts without IME.
             const ime = self.host.imeState();
@@ -1479,6 +1608,7 @@ fn transientSame(a: TransientState, b: TransientState) bool {
     return a.hover_index == b.hover_index and
         a.press_index == b.press_index and
         a.focus_index == b.focus_index and
+        a.blink_on == b.blink_on and
         a.ime_active == b.ime_active and
         a.ime_cursor == b.ime_cursor and
         std.mem.eql(u8, a.ime_text, b.ime_text);

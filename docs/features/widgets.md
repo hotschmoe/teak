@@ -226,6 +226,118 @@ function of `(query, options)` recomputed in `view` with no allocation.
 
 ---
 
+## Primitive-built widgets (`teak.widgets`)
+
+### Why
+
+A widget that needs a new `Cmd` variant touches every pass over the flat
+buffer. These nine do not: each is a `Model` + `Msg` + `update` and view
+helpers that emit existing cmds (`button`, `canvas`, groups, overlays), in the
+mould of Dropdown and Combobox. Source: `src/core/widgets/*.zig`; tests and
+snapshot goldens sit next to each. They are reached as `teak.widgets.<name>`.
+
+### Shape
+
+| Widget | State (in the app's Model) | Emits |
+|--------|----------------------------|-------|
+| `toggle` | the app's own `bool` | a clickable `canvas` (track + knob) + label |
+| `progress` | `phase` (indeterminate only) | a non-interactive `canvas` |
+| `tabs` | `selected`, `focused` | a row of `button`s + a `divider` |
+| `split` | `ratio`, `dragging` | two sized groups + an interactive `canvas` divider |
+| `tooltip` | `item`, `box`, `deadline`, `shown` | a non-modal `overlay` |
+| `toast` | a ring of `cap` entries with a tick countdown | a non-modal bottom-right `overlay` of cards |
+| `dialog` | the app's own `bool` | a modal `overlay` (dim backdrop + centred card) |
+| `menu.MenuBar` | `State` (active, hot, open, depth, sel) | a button row + modal-scrim + `overlay` panels |
+| `menu.ContextMenu` | `State` + the open point | the same panels at the pointer |
+
+**toggle.** `toggle.view(cb, msg, on, label)`: the click Msg flips the app's
+bool. Square corners (the quad renderer has no radius), so the retro switch is
+a slab with a square knob.
+
+**progress.** `progress.bar(cb, value, style)` is a pure function of a 0..1
+value. `progress.indeterminate(cb, phase, style)` slides a block; advance
+`phase` with `Sub.every(progress.TICK_MS)` while the work runs
+(`Progress.Msg.tick`), never otherwise.
+
+**tabs.** `Tabs.viewWith(model, cb, labels, msgs, opts)` draws the strip (the
+selected tab takes the panel colour and an accent border when the strip has
+focus); the app emits the content for `model.selected`. Clicking a tab focuses
+the strip; `Tabs.keyMsg` then maps Left / Right (wrapping) / Home / End /
+Escape. `msgs.selectMsg(i)` is a comptime fn like Dropdown's.
+
+**split.** `begin` / `divider` / `end` bracket the two panes; the outer size
+comes from the app (`windowMsg`) because `view` cannot read layout. The divider
+is an interactive canvas, so a drag keeps working off the thin strip (pointer
+capture). Route it from the app's `canvasMsg` with `split.canvasMsg`. The ratio
+is clamped to `min_a` / `min_b`; when both minimums cannot fit, the space is
+split in their proportion.
+
+**tooltip.** See "HARDLINE" below. Wiring: `hoverMsg` hook ->
+`Tooltip.hoverMsg(Msg, ev, &targets, delay_ms)`, `subscribe` lists
+`Sub.at(deadline)`, `view` ends with `Tooltip.view`. The popup flips above and
+right-aligns near the window's lower-right so it stays on screen.
+
+**toast.** `Toast(cap, text_cap)`. `Toast.push(&m.toasts, kind, text, ttl)`
+from any `update` arm; `ttl` counts `TICK_MS` ticks (0 = sticky). List
+`Sub.every(TICK_MS)` only while `Toast.active`. A full stack drops its oldest.
+No slide / fade yet (it needs the animation layer); cards appear and vanish.
+
+**dialog.** `Dialog.view(cb, opts, .{ .confirm = ..., .cancel = ... })` while
+the app's flag is set; `begin` / `end` wrap custom body content. Enter / Escape
+via `Dialog.keyMsg`. Focus trap: the card is a modal overlay, so clicks outside
+it hit the backdrop, and `focus.nextFocusable` / `prevFocusable` now confine
+Tab traversal to the topmost modal overlay.
+
+**menu.** `MenuBar(Action)` and `ContextMenu(Action)`; the tree is app data
+(`MenuItem`: label with an `&` mnemonic, optional action, shortcut text,
+enabled / checked, separator, children). Choosing a leaf dispatches
+`msgs.run(action)`; the app's `update` for that Msg also closes the menu
+(`MenuBar.update(&m.bar, .close)`). Keyboard: F10 or a bare Alt tap
+(`SpecialKey.f10` / `.alt_tap`) activates the bar, arrows / Enter / Escape
+navigate, a letter is a mnemonic while the bar is active. Because `view` cannot
+read layout, geometry is computed from fixed sizes (`top_width`, `row_h`,
+`panel_w`, `SEP_H`); rows pad their text to `cols` columns so shortcuts align
+in a monospaced font. Panels clamp to the window. A transparent full-window
+modal "scrim" overlay behind the panels makes a click anywhere else dismiss
+the menu. The navigation logic (`Nav`) is pure and exhaustively tested.
+
+### Host support for the keys
+
+`SpecialKey.f10` is mapped on Win32 (`WM_SYSKEYDOWN`), X11 (`XK_F10`) and the
+web host; `alt_tap` is produced by `InputQueue.altDown` / `altUp`, which the
+three hosts call from their Alt press / release handling. An Alt press that is
+followed by any other key, text or mouse button is not a tap, so Alt+F4 and
+Alt+letter chords keep working. (Browsers may take a bare Alt for their own
+menu; F10 is the portable activator.)
+
+### Two new App hooks
+
+The tooltip and the context menu need to know what is under the pointer,
+which the view cannot read. `teak.run` therefore offers two optional hooks that
+hand the app a `PointerEvent(Msg)`: `hoverMsg` (the interactive widget under
+the pointer changed) and `contextMsg` (the right button went down). Each event
+carries `hit` (the Msg a left click on that widget would dispatch, which *is*
+the widget's identity: compare it with `std.meta.eql`, no ids), `box` (its rect
+in the previous frame's layout), `mods` and the host clock `now_ms`. Both are
+plain data in, `?Msg` out, like `canvasMsg`.
+
+### HARDLINE
+
+* **State.** Everything above is in the Model and moves only through `Msg`s.
+* **Tooltip hover and the 3-rule gate.** `TransientState` is for presentation
+  that never affects routing *or the Cmd stream* (hover colour, focus ring). A
+  tooltip changes what `view` emits, so it fails the gate and its hover state is
+  Model state, fed by `hoverMsg`. The delay is a declarative `Sub.at`
+  (hatch 6), the anchor comes from the previous frame's rect via the event,
+  and there is no wall-clock read in `view`.
+* **Toast timing.** A tick countdown in the Model, not `now - created`: `update`
+  never sees a clock, and tests are deterministic.
+* **No fn pointers on Cmds.** The comptime `msgs.*Msg(i)` / `msgs.menu` /
+  `msgs.run` fns build Msg *values*; they are never stored on a cmd.
+* **Panels are positioned from constants**, never from measured layout.
+
+---
+
 ## Dynamic window title — `Host.setTitle`
 
 `src/platform/host.zig` (contract), `win32.zig` / `x11.zig` / `wasm.zig`
