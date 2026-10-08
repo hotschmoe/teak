@@ -563,6 +563,7 @@ fn dsAddRef(_: *DropSource) callconv(WINAPI) c_ulong {
 fn dsQuery(_: *DropSource, escape: BOOL, _: DWORD) callconv(WINAPI) HRESULT {
     if (escape != 0) return 0x00040101; // DRAGDROP_S_CANCEL
     drag_polls += 1;
+    if (drag_polls <= 3 or drag_polls % 10 == 0) log("QueryContinueDrag #{d}", .{drag_polls});
     // Hover over the target for a moment, then drop.
     return if (drag_polls > 12 or GetTickCount64() > drag_deadline) DRAGDROP_S_DROP else 0;
 }
@@ -581,7 +582,13 @@ var drop_source: DropSource = .{ .vtbl = &source_vtbl };
 fn nudge(lx: f32, ly: f32) void {
     var flip = false;
     while (drag_running.load(.acquire)) {
-        moveTo(lx + (if (flip) @as(f32, 2) else 0), ly);
+        _ = lx;
+        _ = ly;
+        // A real relative mouse move input event (SetCursorPos alone does not
+        // wake OLE's capture loop).
+        const dx: c_long = if (flip) 3 else -3;
+        const in = [_]INPUT{.{ .type = 0, .u = .{ .mi = .{ .dx = dx, .dy = 0, .mouseData = 0, .dwFlags = 1, .time = 0, .dwExtraInfo = 0 } } }};
+        _ = SendInput(1, &in, @sizeOf(INPUT));
         flip = !flip;
         sleepMs(40);
     }
