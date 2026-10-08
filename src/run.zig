@@ -33,7 +33,13 @@
 //!   - `keyCharMsg(*const Model, u8) ?Msg`            — typed character
 //!   - `keySpecialMsg(*const Model, SpecialKey) ?Msg` — arrows/enter/etc
 //!   - `keyNeedsClipboard(SpecialKey) bool`           — pairs with…
-//!   - `handleClipboard(*Model, SpecialKey, Clipboard) void` — cut/copy/paste
+//!   - `clipboardText(*const Model, SpecialKey) ?[]const u8` — what Ctrl+C /
+//!     Ctrl+X copy (a pure query; the loop writes it to the Host clipboard)
+//!   - `clipboardMsg(*const Model, SpecialKey, paste: []const u8) ?Msg` — the
+//!     Msg for Ctrl+C / Ctrl+X / Ctrl+V (`paste` is the clipboard text for
+//!     Ctrl+V, "" otherwise; an empty paste is not delivered)
+//!   - `handleClipboard(*Model, SpecialKey, Clipboard) void` — DEPRECATED
+//!     (mutates the Model outside `update`); cut/copy/paste
 //!   - `wheelMsg(*const Model, f32) ?Msg`             — vertical wheel
 //!   - `canvasMsg(*const Model, CanvasEvent) ?Msg`    — pointer input over
 //!     interactive canvases and scenes (`CanvasCmd.pointer`,
@@ -716,12 +722,42 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         continue;
                     }
                 }
+                // Clipboard chords. New contract (HARDLINE-clean): `clipboardText`
+                // names what Ctrl+C / Ctrl+X put on the clipboard (a pure query),
+                // `clipboardMsg` turns the chord (+ the pasted text) into a Msg.
+                const has_clip_hooks = comptime (@hasDecl(App, "clipboardMsg") or @hasDecl(App, "clipboardText"));
+                if (has_clip_hooks and (k == .ctrl_c or k == .ctrl_x or k == .ctrl_v)) {
+                    self.routeClipboard(k);
+                    continue;
+                }
+                // Deprecated adapter: `handleClipboard` mutates the Model outside
+                // `update` (HARDLINE §1). Kept one release; see CHANGELOG.
                 const clipboard_capable = comptime (@hasDecl(App, "keyNeedsClipboard") and @hasDecl(App, "handleClipboard"));
                 if (clipboard_capable and App.keyNeedsClipboard(k)) {
                     App.handleClipboard(&self.model, k, self.host.clipboard());
                 } else if (@hasDecl(App, "keySpecialMsg")) {
                     if (App.keySpecialMsg(&self.model, k)) |m| self.dispatch(m);
                 }
+            }
+        }
+
+        /// Ctrl+C / Ctrl+X / Ctrl+V through the App's `clipboardText` (what to
+        /// copy, read BEFORE the cut Msg runs) and `clipboardMsg` (the Msg for
+        /// the chord, carrying the pasted text for Ctrl+V). An empty paste is
+        /// not delivered, so an image paste still reaches `effectMsg` unclaimed.
+        fn routeClipboard(self: *Self, k: anytype) void {
+            const clip = self.host.clipboard();
+            var pasted: []const u8 = "";
+            if (k == .ctrl_v) {
+                pasted = clip.read();
+                if (pasted.len == 0) return;
+            } else if (@hasDecl(App, "clipboardText")) {
+                if (App.clipboardText(&self.model, k)) |t| {
+                    if (t.len > 0) clip.write(t);
+                }
+            }
+            if (@hasDecl(App, "clipboardMsg")) {
+                if (App.clipboardMsg(&self.model, k, pasted)) |m| self.dispatch(m);
             }
         }
 

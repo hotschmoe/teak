@@ -104,8 +104,10 @@ pub fn view(m: *const Model, cb: *CmdBuffer(Msg)) void;   // pure; cb passed as 
 ```zig
 pub fn keyCharMsg(*const Model, u8) ?Msg              // typed character → Msg
 pub fn keySpecialMsg(*const Model, SpecialKey) ?Msg   // arrows/backspace/etc → Msg
-pub fn keyNeedsClipboard(SpecialKey) bool             // pairs with handleClipboard
-pub fn handleClipboard(*Model, SpecialKey, Clipboard) void   // cut/copy/paste policy
+pub fn clipboardText(*const Model, SpecialKey) ?[]const u8        // what Ctrl+C/X copy (pure query)
+pub fn clipboardMsg(*const Model, SpecialKey, paste: []const u8) ?Msg  // Ctrl+C/X/V -> Msg (paste = clipboard text)
+pub fn keyNeedsClipboard(SpecialKey) bool             // DEPRECATED, pairs with handleClipboard
+pub fn handleClipboard(*Model, SpecialKey, Clipboard) void   // DEPRECATED: mutates Model outside update
 pub fn wheelMsg(*const Model, f32) ?Msg               // vertical wheel delta → Msg (when no canvas / scroll region took it)
 pub fn canvasMsg(*const Model, CanvasEvent) ?Msg      // pointer events over CanvasCmd.pointer canvases and SceneCmd.pointer scenes (shared id space) (see "Pointer events")
 pub fn scrollMsg(*const Model, id: u32, dx: f32, dy: f32) ?Msg   // wheel over innermost hovered ScrollStyle.id != 0 region
@@ -386,6 +388,8 @@ textFieldChar(comptime AppMsg, comptime field_name: []const u8, c: u8) AppMsg
 textFieldSpecial(comptime AppMsg, comptime field_name, key: SpecialKey) ?AppMsg
 textFieldReplaceSelection(comptime AppMsg, comptime field_name, bytes: []const u8) AppMsg
 keyNeedsClipboard(key: SpecialKey) bool     // true for ctrl_c/ctrl_x/ctrl_v
+textFieldClipboardMsg(AppMsg, field, key, paste) ?AppMsg   // for clipboardMsg: ctrl_v -> replace_selection, ctrl_x -> delete selection
+textFieldCopyText(model, key) ?[]const u8   // for clipboardText: the field's selection
 
 NumericField(comptime config: NumericConfig) type   // TextField + parse/validate; adds
                                                      //   value()?f64, isValid(), content(), formatValue()

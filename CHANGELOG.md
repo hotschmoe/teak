@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Clipboard: Msg-returning hooks (HARDLINE §1 fix)
+
+- New optional App hooks `clipboardText(*const Model, SpecialKey) ?[]const u8`
+  (what Ctrl+C / Ctrl+X copy; a pure query, the loop writes the Host clipboard)
+  and `clipboardMsg(*const Model, SpecialKey, paste) ?Msg` (the Msg for the
+  chord; `paste` is the clipboard text for Ctrl+V, an empty paste is not
+  delivered). Helpers `teak.textFieldClipboardMsg` / `teak.textFieldCopyText`.
+- **Deprecated:** `keyNeedsClipboard` + `handleClipboard(*Model, ...)` mutated the
+  Model outside `update`. They still work when neither new hook is declared, and
+  are removed next release. See docs/migration-clipboard.md.
+
 ### Animation primitive
 
 - New `teak.anim`: `Tween(T)` (Model-resident), `Ease`/`ease`, `lerp`. New

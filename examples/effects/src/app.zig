@@ -281,23 +281,19 @@ pub fn effectMsg(_: *const Model, r: EffectResult) ?Msg {
     };
 }
 
-/// Ctrl+V / Ctrl+C go through the Host clipboard; the text a paste event
-/// carried is what `read` returns, and such a paste is not also delivered as
+/// Ctrl+C / Ctrl+X copy this text; the text a Ctrl+V paste carried is what
+/// `clipboardMsg` receives, and such a paste is not also delivered as
 /// `pasted_text`.
-pub const keyNeedsClipboard = teak.keyNeedsClipboard;
+pub fn clipboardText(_: *const Model, key: teak.SpecialKey) ?[]const u8 {
+    return if (key == .ctrl_c or key == .ctrl_x) "teak effects Ctrl+C" else null;
+}
 
-pub fn handleClipboard(m: *Model, key: teak.SpecialKey, clip: teak.Clipboard) void {
-    switch (key) {
-        .ctrl_v => {
-            const t = clip.read();
-            if (t.len > 0) update(m, .{ .clip_paste = t });
-        },
-        .ctrl_c, .ctrl_x => {
-            clip.write("teak effects Ctrl+C");
-            update(m, .clip_copy);
-        },
-        else => {},
-    }
+pub fn clipboardMsg(_: *const Model, key: teak.SpecialKey, paste: []const u8) ?Msg {
+    return switch (key) {
+        .ctrl_v => .{ .clip_paste = paste },
+        .ctrl_c, .ctrl_x => .clip_copy,
+        else => null,
+    };
 }
 
 // ── View ───────────────────────────────────────────────────────────

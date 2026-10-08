@@ -90,6 +90,11 @@ pub const ScriptHost = struct {
     fx_queue: [32]host_iface.EffectResult = undefined,
     fx_queue_n: usize = 0,
 
+    /// Clipboard: what a paste reads, and the last text a copy wrote.
+    clip_in: []const u8 = "",
+    clip_out: [64]u8 = undefined,
+    clip_out_len: usize = 0,
+    clip_writes: u32 = 0,
     /// `waitEvents` calls from `run` after quiet frames, and the last timeout.
     wait_calls: u32 = 0,
     last_wait_ms: u32 = 0,
@@ -162,13 +167,21 @@ pub const ScriptHost = struct {
     pub fn textMeasurer(_: *ScriptHost) text.TextMeasurer {
         return text.monoMeasurer();
     }
-    pub fn clipboard(_: *ScriptHost) host_iface.Clipboard {
-        return .{ .ctx = undefined, .read_fn = readEmpty, .write_fn = writeDiscard };
+    pub fn clipboard(self: *ScriptHost) host_iface.Clipboard {
+        return .{ .ctx = @ptrCast(self), .read_fn = clipRead, .write_fn = clipWrite };
     }
-    fn readEmpty(_: *anyopaque) []const u8 {
-        return "";
+    fn clipRead(ctx: *anyopaque) []const u8 {
+        const self: *ScriptHost = @ptrCast(@alignCast(ctx));
+        return self.clip_in;
     }
-    fn writeDiscard(_: *anyopaque, _: []const u8) void {}
+    /// Records the last text written (what the loop copied), for assertions.
+    fn clipWrite(ctx: *anyopaque, bytes: []const u8) void {
+        const self: *ScriptHost = @ptrCast(@alignCast(ctx));
+        const n = @min(bytes.len, self.clip_out.len);
+        @memcpy(self.clip_out[0..n], bytes[0..n]);
+        self.clip_out_len = n;
+        self.clip_writes += 1;
+    }
     pub fn imeState(self: *const ScriptHost) host_iface.ImeState {
         return .{ .active = self.ime_on, .text = self.ime_buf[0..self.ime_len], .cursor = self.ime_len };
     }
@@ -1790,4 +1803,90 @@ test "animation_frame: dt is capped so a stalled frame cannot skip an animation"
     rt.model.tween.start(1000, 1000, .linear);
     while (!host.shouldClose()) try rt.frame();
     try std.testing.expectEqual(@as(f32, 100), rt.model.tween.value()); // advanced by the 100 ms cap, not 5000
+}
+
+// ── Clipboard hooks ─────────────────────────────────────────────────
+
+const ClipApp = struct {
+    pub const Model = struct { text: [32]u8 = undefined, len: usize = 0, sel_len: usize = 0, pastes: u32 = 0 };
+    pub const Msg = union(enum) { paste: []const u8, cut, copied, noop };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .paste => |t| {
+                @memcpy(m.text[m.len..][0..t.len], t);
+                m.len += t.len;
+                m.pastes += 1;
+            },
+            .cut => m.len = 0,
+            .copied, .noop => {},
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{});
+        cb.text("clip");
+        cb.popGroup();
+    }
+    pub fn clipboardText(m: *const Model, key: keys.SpecialKey) ?[]const u8 {
+        if (key != .ctrl_c and key != .ctrl_x) return null;
+        return if (m.len > 0) m.text[0..m.len] else null;
+    }
+    pub fn clipboardMsg(_: *const Model, key: keys.SpecialKey, text_in: []const u8) ?Msg {
+        return switch (key) {
+            .ctrl_v => .{ .paste = text_in },
+            .ctrl_x => .cut,
+            .ctrl_c => .copied,
+            else => null,
+        };
+    }
+};
+
+test "clipboardMsg: Ctrl+V delivers the clipboard text as a Msg through update" {
+    const t = try playWith(ClipApp, .{ .script = &.{ .{}, .{ .keys = &.{.ctrl_v} }, .{ .keys = &.{.ctrl_v} } }, .clip_in = "ab" }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.rt.model.pastes);
+    try std.testing.expectEqualStrings("abab", t.rt.model.text[0..t.rt.model.len]);
+}
+
+test "clipboardText + clipboardMsg: Ctrl+C copies without mutating, Ctrl+X copies then cuts" {
+    const t = try playWith(ClipApp, .{
+        .script = &.{
+            .{},
+            .{ .keys = &.{.ctrl_v} }, // model now holds "xyz"
+            .{ .keys = &.{.ctrl_c} },
+            .{ .keys = &.{.ctrl_x} },
+        },
+        .clip_in = "xyz",
+    }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.host.clip_writes); // copy and cut each wrote
+    try std.testing.expectEqualStrings("xyz", t.host.clip_out[0..t.host.clip_out_len]);
+    try std.testing.expectEqual(@as(usize, 0), t.rt.model.len); // the cut ran AFTER the text was read
+}
+
+test "clipboardMsg: an empty paste is not delivered (image pastes stay unclaimed)" {
+    const t = try playWith(ClipApp, .{ .script = &.{ .{}, .{ .keys = &.{.ctrl_v} } }, .clip_in = "" }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 0), t.rt.model.pastes);
+}
+
+test "handleClipboard (deprecated adapter) still works for apps that have not migrated" {
+    const Old = struct {
+        pub const Model = struct { pasted: u32 = 0 };
+        pub const Msg = union(enum) { noop };
+        pub fn update(_: *Model, _: Msg) void {}
+        pub fn view(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{});
+            cb.text("old");
+            cb.popGroup();
+        }
+        pub fn keyNeedsClipboard(k: keys.SpecialKey) bool {
+            return k == .ctrl_v;
+        }
+        pub fn handleClipboard(m: *Model, _: keys.SpecialKey, clip: host_iface.Clipboard) void {
+            if (clip.read().len > 0) m.pasted += 1;
+        }
+    };
+    const t = try playWith(Old, .{ .script = &.{ .{}, .{ .keys = &.{.ctrl_v} } }, .clip_in = "q" }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.pasted);
 }

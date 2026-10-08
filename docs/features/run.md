@@ -68,7 +68,7 @@ initial state if present, else `.{}`.
 
 Optional App decls, each detected with `@hasDecl` — present only what you
 need (full table in [consuming-teak.md §5](../consuming-teak.md)):
-`keyCharMsg`, `keySpecialMsg`, `keyNeedsClipboard` + `handleClipboard`,
+`keyCharMsg`, `keySpecialMsg`, `clipboardText` + `clipboardMsg`,
 `wheelMsg`, `windowMsg` (window size on the first frame and each resize), `canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
 `secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`),
 `subscribe`.
@@ -221,7 +221,7 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
 3. Keyboard: chars via `keyCharMsg`; then special keys — built-in
    Tab/Shift+Tab traversal and Enter→`submitMsg` first (if the app
    exposes the relevant hooks), then clipboard chords via
-   `handleClipboard`, else `keySpecialMsg`.
+   `clipboardText` / `clipboardMsg` (or the deprecated `handleClipboard`), else `keySpecialMsg`.
 4. Pointer canvases (`canvasMsg`): hover / move / down / up / leave +
    capture. Wheel: pointer canvas -> `scrollMsg` region -> `wheelMsg`.
 5. Effect results (`effectMsg`), then subscriptions: `runSubs(subscribe(model))`
