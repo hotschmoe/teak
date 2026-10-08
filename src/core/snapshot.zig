@@ -86,7 +86,8 @@ pub fn write(writer: anytype, cmds: anytype, rects: []const Rect, opts: Snapshot
                 if (depth > 0) depth -= 1;
                 continue;
             },
-            else => {},
+            .push_group, .push_scroll, .push_overlay, .push_virtual_list => {},
+            .text, .rich_text, .image, .divider, .button, .text_input, .checkbox, .radio, .slider, .canvas, .scene3d => {},
         }
 
         try writeIndent(writer, depth);
@@ -97,7 +98,8 @@ pub fn write(writer: anytype, cmds: anytype, rects: []const Rect, opts: Snapshot
 
         switch (c) {
             .push_group, .push_scroll, .push_overlay, .push_virtual_list => depth += 1,
-            else => {},
+            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => unreachable, // skipped above
+            .text, .rich_text, .image, .divider, .button, .text_input, .checkbox, .radio, .slider, .canvas, .scene3d => {},
         }
     }
 }
