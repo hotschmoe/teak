@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Kerf dogfood
+
+- `examples/kerf_viewer` is now the Kerf workstation: SECTION / ISO drawings on a pan/zoom canvas (vellum + blue grid,
+  the Kerf tessellator ported into the example), the 3D tab, one selection/hover shared by the table, the sheets and the
+  3D view, a `TextArea` NOTES card, and an OPERATOR CONSOLE with a scripted Claude (no network). See its README.
+- `SpecialKey.shift_enter` (resolved by `InputQueue.resolveKey` on every host); `TextArea.keyMsg` maps it to a newline,
+  so "Enter submits, Shift+Enter newline" needs no host code (`submitMsg` still fires only for plain Enter).
+
 ### Idle hosts and blink-aware idle
 
 - `Host.waitEvents(timeout_ms)` on X11 (poll on the connection fd), Win32
