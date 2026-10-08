@@ -22,6 +22,8 @@ pub fn main(init: std.process.Init) !void {
                 .{ .click = .{ 47, 253 } }, // "< PREV": selects the previous part
                 .{ .click = .{ 180, 314 } }, // focus the NAME field
                 .{ .chars = "-X1" },
+                .{ .click = .{ 180, 376 } }, // open the MATERIAL combobox
+                .{ .chars = "al" }, // filter: aluminum alloys, G10 / FR4 ... "al" substring
                 .{ .move = .{ 600, 500 } },
                 .{ .frames = 1 },
             },

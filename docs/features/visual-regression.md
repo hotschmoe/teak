@@ -55,4 +55,4 @@ until the goldens move:
 
 ## Cookbook
 
-See [cookbook recipe 14](../cookbook.md): add a golden screenshot test for your own example.
+See [cookbook recipe 15](../cookbook.md): add a golden screenshot test for your own example.
