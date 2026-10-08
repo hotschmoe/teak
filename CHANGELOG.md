@@ -17,6 +17,7 @@
   zunk vertex formats are 32-bit). `TextStage` (src/gpu/text_stage.zig) holds the backend-neutral
   staging code with a shaped-run cache; `teak-text`'s `measure` has a small result cache.
 
+- **Image cache is growable** (native + web): the fixed 64-slot table and 64-draw/frame limit are gone (65536 live images, log at the ceiling on native). `releaseImage` is now a required `Gpu` declaration (`validateGpu`). `resources.MAX_RESOURCES` 128 -> 1024 and overflow now logs a warning and counts `Table.dropped`. Part of #7.
 - Native text (Linux, Windows) is drawn from a glyph atlas: shaped glyphs are packed into R8
   pages and drawn as instanced quads (`shaders/glyph.wgsl`), replacing the per-string BGRA
   texture cache. Text is rasterized at the device pixel size with quarter-pixel x positioning.

@@ -77,6 +77,7 @@ pub fn validateGpu(comptime T: type) void {
         .{ .name = "renderFrame", .sig = "fn(*Gpu, ClearColor) void" },
         .{ .name = "uploadText", .sig = "fn(*Gpu, []const TextDraw) void" },
         .{ .name = "uploadImage", .sig = "fn(*Gpu, []const u8, u32, u32) TextureHandle" },
+        .{ .name = "releaseImage", .sig = "fn(*Gpu, TextureHandle) void" },
         .{ .name = "uploadImages", .sig = "fn(*Gpu, []const ImageDraw) void" },
     };
     inline for (required) |d| {
@@ -111,9 +112,6 @@ pub fn validateGpu(comptime T: type) void {
     if (@hasDecl(T, "setOverlayStart") and @typeInfo(@TypeOf(T.setOverlayStart)) != .@"fn")
         @compileError("Gpu '" ++ tn ++ "'.setOverlayStart must be a function " ++
             "(expected fn(*Gpu, OverlaySplit) void)");
-    if (@hasDecl(T, "releaseImage") and @typeInfo(@TypeOf(T.releaseImage)) != .@"fn")
-        @compileError("Gpu '" ++ tn ++ "'.releaseImage must be a function " ++
-            "(expected fn(*Gpu, TextureHandle) void)");
 }
 
 test "validateGpu accepts a minimal shape" {
@@ -144,6 +142,7 @@ test "validateGpu accepts a minimal shape" {
         /// Per-frame counterpart to `uploadText`. Walks ImageDraws and
         /// records a draw entry per visible image.
         pub fn uploadImages(_: *@This(), _: []const ImageDraw) void {}
+        pub fn releaseImage(_: *@This(), _: TextureHandle) void {}
     };
     comptime validateGpu(Stub);
 }
