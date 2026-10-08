@@ -44,6 +44,9 @@ pub const numeric_field = @import("core/numeric_field.zig");
 pub const dropdown = @import("core/dropdown.zig");
 /// `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
 pub const combobox = @import("core/combobox.zig");
+/// Widgets built from existing Cmd primitives: toggle, progress, tabs, split pane,
+/// tooltip, toast, dialog, menu bar, context menu.
+pub const widgets = @import("core/widgets.zig");
 /// `ComponentList`: a dynamic homogeneous list of components.
 pub const component_list = @import("core/component_list.zig");
 /// `appendDebugOverlay`: dump the frame's cmds and rects as an overlay.
@@ -178,6 +181,10 @@ pub const Modifiers = pointer.Modifiers;
 pub const Button = pointer.Button;
 /// One pointer event on an interactive canvas or scene.
 pub const CanvasEvent = pointer.CanvasEvent;
+/// What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
+pub const PointerEvent = pointer.PointerEvent;
+/// A window-space rectangle (`PointerEvent.box`).
+pub const Box = pointer.Box;
 /// Kind of a `CanvasEvent` (press, move, release, wheel, ...).
 pub const CanvasEventKind = pointer.CanvasEventKind;
 

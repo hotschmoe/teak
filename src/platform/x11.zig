@@ -202,6 +202,7 @@ pub const XEvent = extern union {
 
 // X protocol event type codes.
 const KeyPress: c_int = 2;
+const KeyRelease: c_int = 3;
 const ButtonPress: c_int = 4;
 const ButtonRelease: c_int = 5;
 const MotionNotify: c_int = 6;
@@ -232,6 +233,7 @@ const Mod4Mask: c_uint = 1 << 6; // Super
 
 // XSelectInput event masks.
 const KeyPressMask: c_long = 1 << 0;
+const KeyReleaseMask: c_long = 1 << 1;
 const ButtonPressMask: c_long = 1 << 2;
 const ButtonReleaseMask: c_long = 1 << 3;
 const PointerMotionMask: c_long = 1 << 6;
@@ -247,6 +249,9 @@ const XK_ISO_Left_Tab: KeySym = 0xfe20;
 const XK_Return: KeySym = 0xff0d;
 const XK_KP_Enter: KeySym = 0xff8d;
 const XK_Escape: KeySym = 0xff1b;
+const XK_F10: KeySym = 0xffc7;
+const XK_Alt_L: KeySym = 0xffe9;
+const XK_Alt_R: KeySym = 0xffea;
 const XK_Delete: KeySym = 0xffff;
 const XK_Home: KeySym = 0xff50;
 const XK_Left: KeySym = 0xff51;
@@ -599,7 +604,7 @@ pub const Host = struct {
         errdefer gpa.destroy(ime);
         ime.* = .{};
         const im = initIme(&x, display, window, ime);
-        var select_mask: c_long = KeyPressMask | ButtonPressMask | ButtonReleaseMask |
+        var select_mask: c_long = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask |
             PointerMotionMask | StructureNotifyMask | ExposureMask | FocusChangeMask | PropertyChangeMask;
         if (im.ic) |ic| {
             // The IM may need events beyond the ones we asked for.
@@ -709,6 +714,7 @@ pub const Host = struct {
                     }
                 },
                 KeyPress => self.handleKey(&ev.xkey),
+                KeyRelease => self.handleKeyRelease(&ev.xkey),
                 ConfigureNotify => {
                     const w = ev.xconfigure.width;
                     const h = ev.xconfigure.height;
@@ -762,6 +768,8 @@ pub const Host = struct {
         }
         const chars = buf[0..if (n > 0) @intCast(n) else 0];
 
+        // 0. Alt on its own: the press arms an `alt_tap`, the release fires it.
+        if (keysym == XK_Alt_L or keysym == XK_Alt_R) return q.altDown();
         // 1. Navigation / editing keys (Shift variants resolved by the queue).
         if (navFromKeysym(keysym)) |nk| return q.pushNav(nk);
         // 2. Ctrl chords (their control-char text is not typed).
@@ -790,6 +798,14 @@ pub const Host = struct {
         for (chars) |b| {
             if (b >= 0x20 and b < 0x7f) q.pushCodepoint(b);
         }
+    }
+
+    /// Only Alt releases matter (`alt_tap`); other releases are ignored.
+    fn handleKeyRelease(self: *Host, ev: *XKeyEvent) void {
+        var buf: [16]u8 = undefined;
+        var keysym: KeySym = 0;
+        _ = self.x.XLookupString(ev, &buf, buf.len, &keysym, null);
+        if (keysym == XK_Alt_L or keysym == XK_Alt_R) self.queue.altUp();
     }
 
     // ── Selections: clipboard + XDND ────────────────────────────────
@@ -1485,6 +1501,7 @@ fn navFromKeysym(keysym: KeySym) ?NavKey {
         XK_Return, XK_KP_Enter => .enter,
         XK_Tab, XK_ISO_Left_Tab => .tab,
         XK_Escape => .escape,
+        XK_F10 => .f10,
         else => null,
     };
 }
@@ -1521,8 +1538,8 @@ test "X11 key tables reach every SpecialKey through the shared policy" {
     var seen = std.EnumSet(SpecialKey).empty;
     const keysyms = [_]KeySym{
         XK_BackSpace, XK_Delete,   XK_Left, XK_Right,        XK_Up,     XK_Down, XK_Home, XK_End, XK_Prior, XK_Next,
-        XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, 'a',     'c',     'x',    'v',      'y',
-        'z',
+        XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, XK_F10,  'a',     'c',    'x',      'v',
+        'y',          'z',
     };
     const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = true } };
     for (mod_sets) |mods| {
@@ -1531,7 +1548,10 @@ test "X11 key tables reach every SpecialKey through the shared policy" {
             if (teak.resolveKey(nk, mods)) |sk| seen.insert(sk);
         }
     }
-    for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
+    for (std.enums.values(SpecialKey)) |sk| {
+        if (sk == .alt_tap) continue; // synthesized by InputQueue.altUp, not a keysym
+        try std.testing.expect(seen.contains(sk));
+    }
 }
 
 test "navFromKeysym: letters are text, not keys" {

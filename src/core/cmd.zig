@@ -1217,6 +1217,18 @@ pub fn CmdBuffer(comptime Msg: type) type {
             } }) catch oom();
         }
 
+        /// `buttonDisabled` with an explicit style (a compact menu row stays
+        /// its own height when disabled).
+        pub fn buttonStyledDisabled(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle) void {
+            self.cmds.append(self.backing, .{ .button = .{
+                .msg = msg,
+                .label = label,
+                .style = style,
+                .font = self.theme.typography.body,
+                .disabled = true,
+            } }) catch unreachable;
+        }
+
         pub fn textInput(
             self: *Self,
             focus_msg: Msg,
