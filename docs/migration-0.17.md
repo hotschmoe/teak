@@ -43,3 +43,9 @@ yourself.
 - `std.EnumSet(E).initEmpty()` is now `.empty`.
 - `@enumFromInt` / `@intFromEnum` are `@fromBackingInt` / `@backingInt` (run
   `zig fmt` and it upgrades them).
+
+## Cleanup and renames
+
+- `TextField(N).Model` is now a `teak.editor.Editor`: the byte array field `buffer` was renamed
+  `buf`. `len`, `cursor`, `selection_anchor`, `content()`, `selectionText()` and `hasSelection()` are
+  unchanged. Replace `model.field.buffer[...]` with `model.field.buf[...]` (prefer `content()`).
