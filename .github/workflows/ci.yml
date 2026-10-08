@@ -52,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [chrome, counter_greeter, effects, fonts, scene3d, todo, tree, viewport]
+        example: [chrome, counter_greeter, effects, fonts, notes, scene3d, todo, tree, viewport]
     defaults:
       run:
         working-directory: teak/examples/${{ matrix.example }}

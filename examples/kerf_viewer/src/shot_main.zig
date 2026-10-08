@@ -24,6 +24,21 @@ pub fn main(init: std.process.Init) !void {
                 .{ .frames = 2 },
             },
         },
+        // NOTES is a TextArea: type a wrapped note, drag-select across both lines.
+        .{ .name = "notes", .steps = &.{
+            .{ .frames = 3 },
+            .{ .click = .{ 250, 520 } },
+            .{ .drag = .{ .{ 600, 650 }, .{ 640, 620 } } },
+            .{ .frames = 2 },
+            .{ .click = .{ 1100, 715 } },
+            .{ .chars = "Check gusset fit; the bolt pattern needs a" },
+            .{ .frames = 1 },
+            .{ .chars = " second look before release." },
+            .{ .frames = 2 },
+            .{ .drag = .{ .{ 990, 697 }, .{ 1180, 727 } } },
+            .{ .move = .{ 600, 400 } },
+            .{ .frames = 2 },
+        } },
         .{ .name = "initial", .steps = &.{.{ .frames = 3 }} },
     });
 }

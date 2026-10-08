@@ -7,7 +7,10 @@
 //! px (HiDPI); `--stress N` renders the text stress app with N runs instead
 //! (glyph-atlas check) and prints the warm frame CPU time;
 //! `--max-pages P` caps the glyph atlas (exhaustion check); `--plain` is the
-//! `plain` state (the first-load state without MSAA, for comparing with the web build).
+//! `plain` state (the first-load state without MSAA, for comparing with the web build);
+//! `--anim N` closes the help popover, lets it settle, re-opens it and
+//! captures N frames (16 ms each) into the slide-in animation: N=1 is
+//! mid-slide, N=40 is settled.
 
 const std = @import("std");
 const teak = @import("teak");
@@ -16,7 +19,7 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 const Stress = @import("textstress.zig");
 
-const Opts = struct { path: []const u8, scale: f32 = 1, stress: usize = 0, max_pages: u8 = 8 };
+const Opts = struct { path: []const u8, scale: f32 = 1, stress: usize = 0, max_pages: u8 = 8, anim: ?u32 = null };
 
 fn parseArgs(init: std.process.Init) Opts {
     var o: Opts = .{ .path = "chrome.png" };
@@ -29,6 +32,8 @@ fn parseArgs(init: std.process.Init) Opts {
             o.stress = std.fmt.parseInt(usize, it.next() orelse "640", 10) catch 640;
         } else if (std.mem.eql(u8, a, "--max-pages")) {
             o.max_pages = std.fmt.parseInt(u8, it.next() orelse "8", 10) catch 8;
+        } else if (std.mem.eql(u8, a, "--anim")) {
+            o.anim = std.fmt.parseInt(u32, it.next() orelse "8", 10) catch 8;
         } else if (!std.mem.startsWith(u8, a, "--")) o.path = a;
     }
     return o;
@@ -37,7 +42,19 @@ fn parseArgs(init: std.process.Init) Opts {
 pub fn main(init: std.process.Init) !void {
     const o = parseArgs(init);
     if (o.stress > 0) return stress(init, o);
+    if (o.anim) |n| {
+        try teak.headless.shot(App, Host, Gpu, init.gpa, o.path, .{
+            .width = 1280,
+            .height = 800,
+            .scale = o.scale,
+            .run = .{ .clear_color = App.paper },
+            .steps = &slide_steps(n),
+        });
+        std.debug.print("wrote {s} ({d} frames into the slide-in)\n", .{ o.path, n });
+        return;
+    }
     // `shotCli` re-parses argv (`--state`, `--list`, `--all`, `--scale`, `--plain`).
+    // Every state ends with 40 frames so the QUICK KEYS popover has settled.
     try teak.headless.shotCli(App, Host, Gpu, init, "chrome.png", .{
         .width = 1280,
         .height = 800,
@@ -54,13 +71,26 @@ pub fn main(init: std.process.Init) !void {
                 .{ .click = .{ 180, 376 } }, // open the MATERIAL combobox
                 .{ .chars = "al" }, // filter: aluminum alloys, G10 / FR4 ... "al" substring
                 .{ .move = .{ 600, 500 } },
-                .{ .frames = 1 },
+                .{ .frames = 40 },
             },
         },
-        .{ .name = "initial", .steps = &.{.{ .frames = 2 }} },
+        .{ .name = "initial", .steps = &.{.{ .frames = 40 }} },
         // The first-load state without MSAA: matches the web build pixel for pixel.
-        .{ .name = "plain", .steps = &.{.{ .frames = 2 }}, .msaa = false },
+        .{ .name = "plain", .steps = &.{.{ .frames = 40 }}, .msaa = false },
+        // Mid-slide of the popover's re-open animation (deterministic: 16 ms per frame).
+        .{ .name = "popover_sliding", .steps = &slide_steps(6) },
     });
+}
+
+/// Close the help popover, let it settle, re-open it, run `n` frames into the slide-in.
+fn slide_steps(comptime n: u32) [5]teak.headless.Step {
+    return .{
+        .{ .frames = 2 },
+        .{ .click = .{ 1240, 20 } }, // HELP: close the popover
+        .{ .frames = 40 }, // let the slide-out settle
+        .{ .click = .{ 1240, 20 } }, // HELP: re-open (starts the slide-in)
+        .{ .frames = n },
+    };
 }
 
 /// N text runs on a grid sized to fit the image; reports warm frame CPU time.

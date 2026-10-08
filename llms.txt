@@ -123,6 +123,8 @@ pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view 
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
 pub fn subscribe(*const Model) []const Sub(Msg)       // declarative timers; run services them each
                                                       //   frame via runSubs on Host.nowMs() (§2 hatch 6)
+pub fn animationMsg(*const Model, dt_ms: u32) ?Msg    // frame time while a Sub.animation_frame is listed
+                                                      //   (core/anim.zig; run loop idles when none is listed)
 pub fn resources(*const Model) []const Resource       // declarative GPU meshes/images by (key, rev);
                                                       //   run uploads/releases + maps keys to handles (§2 hatch 8)
 ```
@@ -143,9 +145,14 @@ pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: 
 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
-`cmd component component_list transient text sub theme text_field numeric_field
+`cmd component component_list transient text sub theme text_field text_area text_event numeric_field
+`cmd component component_list transient text sub anim theme text_field numeric_field
 dropdown debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
+
+### Version (`teak.version`)
+`teak.version: []const u8` — library semver, derived from `build.zig.zon` `.version` (plus `+<meta>` when built with
+`-Dversion-meta=<meta>`); the single source is documented in docs/VERSIONING.md.
 
 ### Commands & CmdBuffer (`teak.cmd` → core/cmd.zig)
 ```zig
@@ -157,7 +164,9 @@ CmdBuffer(comptime Msg: type) type     // arena-backed cmd list + emitter method
 Direction = enum { vertical, horizontal }
 Align = enum { start, center, end, stretch }      // cross-axis placement of a container's children
 Justify = enum { start, center, end, space_between }   // main-axis leftover (no flex children)
-TextAlign = enum { start, center, end }           // button label placement
+TextAlign = enum { start, center, end }           // button label / paragraph line placement
+Wrap = enum { none, word, char, ellipsis }       // TextCmd.wrap
+ParagraphOpts = struct { wrap: Wrap = .word, max_lines: u16 = 0, text_align: TextAlign = .start }
 InputVariant = enum { boxed, underline }          // text_input look (underline: 1px rule, 2px focused)
 ```
 Any slice stored on a Cmd (a text label, an option list, chart primitives)
@@ -330,13 +339,25 @@ buildA11yTree(arena, cmds, rects: []const Rect, focus_index: ?usize) ![]A11yNode
 
 ### Subscriptions (`teak.sub` → core/sub.zig)
 ```zig
-Sub(Msg) = union(enum) { every: {interval_ms: u32, msg}, at: {deadline_ms: u64, msg} }
+Sub(Msg) = union(enum) { every: {interval_ms: u32, msg}, at: {deadline_ms: u64, msg}, animation_frame }
 runSubs(Msg, subs: []const Sub(Msg), last_frame_ms, now_ms: u64, dispatch: anytype) void
 ```
 App declares `pub fn subscribe(*const Model) []const Sub` (pure). `teak.run`
 services it each frame — `runSubs(subscribe(model))` on `Host.nowMs()` — and
 dispatches any fired sub as a normal `Msg` through `update` (no second
 mutation path). See docs/features/subscriptions.md.
+`animation_frame` carries no Msg: while listed, the loop calls the App's
+`animationMsg(model, dt_ms) ?Msg` each frame and does not idle-skip.
+
+### Animation (`teak.anim` → core/anim.zig)
+```zig
+Tween(T)            // plain struct for the Model: still(v), start(target, ms, Ease), advance(dt_ms),
+                    //   active(), progress(), value()   (retargeting continues from value())
+Ease                // linear in_quad out_quad in_out_quad in_cubic out_cubic in_out_cubic out_back
+ease(Ease, t) f32   // eased progress, t clamped to [0,1]
+lerp(T, a, b, t) T  // floats/ints/arrays ([4]f32 colours)/vectors/structs of those
+```
+Frame time is a Msg (HARDLINE: no wall clock in view). See docs/features/animation.md.
 
 ### Theme (`teak.theme` → core/theme.zig)
 ```zig
@@ -560,6 +581,25 @@ TextDraw = struct { rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x
 monoMeasurer() TextMeasurer    // stateless 10px/byte, 20px line — for headless tests + CLI
 ```
 
+### TextArea and text events (`teak.TextArea`, `teak.text_area`, `teak.text_event`)
+Multi-line editing: `cb.textArea(TextAreaCmd{ focus_msg, id, content, cursor, selection_anchor, scroll_x/y, goal_x,
+wrap: Wrap = .word, font, style: TextInputStyle, width, min_width = 120, height = 120, flex, padding = 6, disabled })`
+(`cb.textAreaThemed(...)`). Layout sizes it like a canvas; render wraps to the inner box, draws per-line selection,
+caret and IME composition, clipped. The runtime turns input over it into `TextEvent`s for the optional hook
+`textMsg(*const Model, TextEvent) ?Msg`; the focused area also gets Up/Down/PageUp/PageDown/Home/End (and Shift
+variants) as `move` events resolved on the wrapped layout, and its caret rect feeds `Host.setImeSpot` when present.
+```zig
+TextEventKind = enum { down, drag, up, double_click, triple_click, wheel, move, metrics, leave }
+TextEvent = struct { id, kind, index: u32 /*nearest grapheme boundary*/, line: u32, x, y, dx, dy, goal_x, keep_goal,
+                     mods, clicks, viewport_w/h, content_w/h, caret_x/y/h }   // metrics fields only for .metrics
+TextArea(comptime cap: usize) type   // Model { ed: Editor (multiline), scroll_x/y, viewport/content/caret metrics }
+  Msg = union(enum) { focus, char: u8, newline, key: SpecialKey, paste: []const u8, event: TextEvent }
+  update(model, msg)   // events: Editor.applyPointer for caret/selection; wheel scrolls; metrics clamp + reveal caret
+  eventMsg(ev) / charMsg(c) / pasteMsg(bytes) / keyMsg(SpecialKey) ?Msg
+  viewWith(model, cb, .{ .focus = msg }, ViewOpts{ id = 1, width, min_width, height, flex, wrap, padding, style, font, disabled })
+Editor.applyPointer(ev) bool          // down / drag / double / triple / move -> caret + selection
+text_wrap.resolveNav(text, cursor, goal_x, NavKind, page, font, max_w, mode, m) NavResult{index, goal_x, line}
+layout.textAreaInner(rect, ta) Rect;  layout.textAreaWrapWidth(inner, ta) f32
 ### Combobox (`teak.Combobox` → core/combobox.zig)
 Searchable select: text query + filtered modal overlay list (Dropdown-style, zero new Cmds).
 ```zig
@@ -595,6 +635,11 @@ UndoLog(rec_cap, byte_cap) type
 
 ### Unicode, line breaking, wrapping (`teak.unicode`, `teak.linebreak`, `teak.text_wrap`)
 Pure, allocation-free, std-only; byte offsets everywhere; invalid UTF-8 tolerated (1 bad byte = 1 unit).
+// Wrapped text and shrink (layout passes 2-3 run only when present; see docs/features/layout.md)
+cb.paragraph(s) / cb.paragraphStyled(s, font, color, ParagraphOpts{ wrap = .word, max_lines: u16 = 0, text_align }) / cb.textEllipsis(s)
+Wrap = enum { none, word, char, ellipsis }          // TextCmd.wrap (default none)
+GroupStyle.shrink / ScrollStyle.shrink: f32 = 0      // shrink weight; wrapped text shrinks implicitly
+LayoutEngine.doLayoutStats(rects, cmds, w, h, measurer) Stats{ wrap_passes: bool }
 ```zig
 // core/unicode.zig (Unicode 16 tables generated by tools/gen_unicode.zig)
 utf8DecodeLossy(bytes, i) Decoded{cp: u21, len: u3}      // bad byte -> U+FFFD, len 1
@@ -608,7 +653,6 @@ lineBreakClass(cp) Lb;  graphemeBreakClass(cp) Gcb;  isWide(cp) bool
 // core/linebreak.zig: UAX#14-lite opportunities (kinsoku, NBSP/WJ, ZWSP, hyphen)
 Breaker.init(text, start).next() ?Break{end, kind: soft|hard|end}
 // core/text_wrap.zig
-Wrap = enum { none, word, char, ellipsis }
 Line = struct { start, end, hang, next: u32, width: f32, hard_break, ellipsized: bool }
 nextLine(text, start, font, max_w, mode, m) Line;  LineIter.init(text, font, max_w, mode, max_lines, m).next() ?Line
 measureWrapped(text, font, max_w, mode, max_lines, m) Measured{w, h, lines}
