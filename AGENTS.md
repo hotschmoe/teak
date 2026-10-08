@@ -225,10 +225,12 @@ src/                                          -- the library, consumable as a Zi
     native.zig                                -- Win32 + wgpu-native GPU backend (the Windows stitch)
     native_headless.zig                       -- Headless native GPU stitch: the wgpu core with no surface provider and the stb_truetype
     native_linux.zig                          -- Linux + wgpu-native GPU backend (the Linux stitch), for the X11 and Wayland hosts
+    native_macos.zig                          -- macOS + wgpu-native (Metal) GPU backend (the macOS stitch)
     overlay.zig                               -- Overlay layering shared by the GPU backends (HARDLINE §2 hatch 5: two levels, base z=0 and
     scene_common.zig                          -- Backend-independent half of 3D scene rendering: uniform packing, target sizing, the
     scene_pass.zig                            -- Backend-neutral plan of what a scene slot draws: the packed per-instance records, the runs of
     slot_table.zig                            -- Fixed-capacity slot table behind the GPU backends' app-owned resource caches (images, meshes)
+    surface_cocoa.zig                         -- Metal-layer surface source for the wgpu backend — the macOS counterpart to surface_win32.zig /
     surface_linux.zig                         -- Linux surface provider: builds the wgpu surface source for whichever backend platform/linux.zig
     surface_win32.zig                         -- Win32 HWND surface source for the wgpu backend
     surface_xlib.zig                          -- Xlib Window surface source for the wgpu backend — the Linux counterpart to surface_win32.zig
@@ -248,6 +250,8 @@ src/                                          -- the library, consumable as a Zi
     scroll_extent.zig                         -- Content extent of a scroll region, measured from the rects the layout passes already produced
     virtual_rows.zig                          -- Measured row extents of a virtual list, read from the rects the layout passes already produced
   platform/
+    cocoa.zig                                 -- macOS host backend (Cocoa, via the Objective-C runtime)
+    cocoa_data.zig                            -- Display-free decoding for the macOS host: virtual key codes, modifier flags, scroll deltas
     control_socket.zig                        -- Unix-domain-socket transport for the agent control channel (docs/features/agent-driver.md): a
     headless.zig                              -- Headless Host: scripted input, a fake clock and real text metrics, for running a teak App with
     host.zig                                  -- Host interface: window + input event source
@@ -256,6 +260,7 @@ src/                                          -- the library, consumable as a Zi
     linux.zig                                 -- The Linux host: one binary, two backends
     native_drops.zig                          -- Turning pasted / dropped bytes into the EffectResults the web host produces, for native hosts
     native_effects.zig                        -- Declarative-effects service for native hosts (Linux/X11 and Windows): what Host.submit /
+    objc.zig                                  -- A minimal Objective-C runtime binding for the macOS host, loaded with std.DynLib instead of
     wasm.zig                                  -- Wasm host backed by zunk's web.input + web.app modules
     wayland.zig                               -- Wayland host backend: the platform/host.zig contract on top of xdg-shell, the Linux counterpart
     win32.zig                                 -- Win32 host backend

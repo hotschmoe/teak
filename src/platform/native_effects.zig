@@ -29,7 +29,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const teak = @import("teak");
-const builtin = @import("builtin");
 const x11_data = @import("x11_data.zig");
 
 const is_windows = builtin.os.tag == .windows;
