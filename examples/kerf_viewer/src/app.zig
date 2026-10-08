@@ -2240,10 +2240,11 @@ const golden_section =
     \\      group (98,13,6,14) vertical bg
     \\    text (116,10,180,20) "DETAIL WORKSTATION"
     \\    text (308,10,180,20) "DOC: FLUSH-PSL-2X6"
-    \\    group (500,20,310,0) vertical
-    \\    button (822,7,174,26) "PALMER-SD1-LIKE"
-    \\    button (1008,7,154,26) "FLUSH-PSL-2X6"
-    \\    button (1174,7,94,26) "OPEN..."
+    \\    group (500,20,214,0) vertical
+    \\    button (726,7,174,26) "PALMER-SD1-LIKE"
+    \\    button (912,7,154,26) "FLUSH-PSL-2X6"
+    \\    button (1078,7,94,26) "OPEN..."
+    \\    button (1184,7,84,26) "CTRL+K"
     \\  group (0,40,1280,2) vertical bg
     \\  group (0,42,1280,734) horizontal
     \\    group (0,42,360,734) vertical bg border
@@ -2354,10 +2355,11 @@ const golden_iso =
     \\      group (98,13,6,14) vertical bg
     \\    text (116,10,180,20) "DETAIL WORKSTATION"
     \\    text (308,10,180,20) "DOC: FLUSH-PSL-2X6"
-    \\    group (500,20,310,0) vertical
-    \\    button (822,7,174,26) "PALMER-SD1-LIKE"
-    \\    button (1008,7,154,26) "FLUSH-PSL-2X6"
-    \\    button (1174,7,94,26) "OPEN..."
+    \\    group (500,20,214,0) vertical
+    \\    button (726,7,174,26) "PALMER-SD1-LIKE"
+    \\    button (912,7,154,26) "FLUSH-PSL-2X6"
+    \\    button (1078,7,94,26) "OPEN..."
+    \\    button (1184,7,84,26) "CTRL+K"
     \\  group (0,40,1280,2) vertical bg
     \\  group (0,42,1280,734) horizontal
     \\    group (0,42,360,734) vertical bg border
@@ -2463,10 +2465,11 @@ const golden_3d =
     \\      group (98,13,6,14) vertical bg
     \\    text (116,10,180,20) "DETAIL WORKSTATION"
     \\    text (308,10,180,20) "DOC: FLUSH-PSL-2X6"
-    \\    group (500,20,310,0) vertical
-    \\    button (822,7,174,26) "PALMER-SD1-LIKE"
-    \\    button (1008,7,154,26) "FLUSH-PSL-2X6"
-    \\    button (1174,7,94,26) "OPEN..."
+    \\    group (500,20,214,0) vertical
+    \\    button (726,7,174,26) "PALMER-SD1-LIKE"
+    \\    button (912,7,154,26) "FLUSH-PSL-2X6"
+    \\    button (1078,7,94,26) "OPEN..."
+    \\    button (1184,7,84,26) "CTRL+K"
     \\  group (0,40,1280,2) vertical bg
     \\  group (0,42,1280,734) horizontal
     \\    group (0,42,360,734) vertical bg border
