@@ -68,6 +68,10 @@
 
 ### Added
 
+- **In-app drag and drop** (docs/features/drag-drop.md): `GroupStyle.drag_id` / `drop_id`, App hook `dragMsg(*const Model, DragEvent)`
+  (`start` / `move` / `drop` / `cancel`, innermost drop target + pointer fraction); `examples/todo` reorders by mouse (ghost overlay,
+  drop indicator) and by keyboard (Alt+Up/Down via the command table); control command `drag`, `teak-drive drag`, MCP tool `drag`.
+
 - **Commands, shortcuts, command palette** (docs/features/commands.md): App hook `commands(*const Model, *CommandList(Msg))`;
   `teak.Chord` / `teak.Key`; hosts (X11, Win32, web, headless) report `InputState.chords`; `teak.run` matches them before widget
   key handling and swallows claimed chords; `teak.CommandPalette(cap)` (fuzzy, built on `Combobox`, new `Match.fuzzy`);

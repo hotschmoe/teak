@@ -53,6 +53,13 @@
 //!     `indexOfFocusMsg` (stable across conditional/reordered widgets)
 //!     to drive the focus ring + cursor blink. Also enables built-in
 //!     Tab / Shift+Tab traversal between focusable widgets.
+//!   - `dragMsg(*const Model, DragEvent) ?Msg` — in-app drag and drop. Groups
+//!     with `GroupStyle.drag_id != 0` are sources, `drop_id != 0` targets; a
+//!     press on a source (that no interactive child claims) plus movement
+//!     starts a drag, and `dragMsg` hears `start` / `move` (every frame, with
+//!     the innermost target under the pointer) / `drop` / `cancel` (Escape).
+//!     Drag state, the ghost overlay and the reorder itself live in the app.
+//!     See docs/features/drag-drop.md.
 //!   - `commands(*const Model, *CommandList(Msg)) void` — the App's command
 //!     table (id, label, shortcut, enabled, Msg), a pure function of the Model.
 //!     The loop matches the frame's key chords (`InputState.chords`) against
@@ -415,6 +422,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         const has_scroll_layout_hook = @hasDecl(App, "scrollLayoutMsg");
         const has_resources = @hasDecl(App, "resources");
         const has_commands = @hasDecl(App, "commands");
+        const has_drag = @hasDecl(App, "dragMsg");
         const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView") and
             @hasDecl(Gpu, "openSecondarySurface");
         const has_effects = @hasDecl(App, "effects");
@@ -468,6 +476,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Press model: arm on mousedown over a widget, fire the click only
         /// if mouseup lands on the same widget; drag-off cancels.
         press_target: ?usize = null,
+
+        /// In-app drag tracking (`GroupStyle.drag_id` / `dragMsg`): loop
+        /// bookkeeping like `press_target`; what is being dragged, where the
+        /// ghost goes and which row is hot live in the app's Model, fed by
+        /// the `DragEvent`s.
+        drag: DragState = .{},
 
         /// The previous frame's `nowMs`. `runSubs` is stateless — it decides
         /// fire/skip from (last_sub_ms, now_ms, sub data) — so this single
@@ -581,6 +595,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const prev = self.current;
             const dispatched_before = self.dispatch_count;
             self.routeMouse(input, prev);
+            self.routeDrag(input, prev);
             self.routeCanvasPointer(input, prev);
             const swallow = self.routeChords(input);
             self.routeKeys(input, prev, swallow);
@@ -714,6 +729,93 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 self.press_target = null;
             }
             if (self.press_target != null and hover != self.press_target) self.press_target = null;
+        }
+
+        /// Pointer travel (px) before a pressed drag source becomes a drag.
+        const drag_threshold: f32 = 4;
+
+        const DragState = struct {
+            phase: enum { idle, armed, active } = .idle,
+            id: u32 = 0,
+            x0: f32 = 0,
+            y0: f32 = 0,
+            grab_dx: f32 = 0,
+            grab_dy: f32 = 0,
+            src: [4]f32 = .{ 0, 0, 0, 0 },
+        };
+
+        /// Drag and drop, against the PREVIOUS frame's layout: a left press on
+        /// a `drag_id` group that no interactive widget claims arms a drag;
+        /// moving past the threshold starts it; every frame reports the drop
+        /// target under the pointer; release drops, Escape cancels.
+        fn routeDrag(self: *Self, input: Input, prev: u1) void {
+            if (comptime !has_drag) return;
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+            const d = &self.drag;
+            switch (d.phase) {
+                .idle => if (input.button_down.left and cmds.len > 0) {
+                    if (hit_test.hoverTest(cmds, rects, input.mouse_x, input.mouse_y) != null) return;
+                    const src = hit_test.dragTargets(cmds, rects, input.mouse_x, input.mouse_y).source orelse return;
+                    const r = rects[src.index];
+                    d.* = .{
+                        .phase = .armed,
+                        .id = src.id,
+                        .x0 = input.mouse_x,
+                        .y0 = input.mouse_y,
+                        .grab_dx = input.mouse_x - r.x,
+                        .grab_dy = input.mouse_y - r.y,
+                        .src = .{ r.x, r.y, r.w, r.h },
+                    };
+                },
+                .armed => {
+                    if (!input.buttons.left or input.button_up.left) {
+                        d.phase = .idle; // a plain press, no drag
+                        return;
+                    }
+                    const dx = input.mouse_x - d.x0;
+                    const dy = input.mouse_y - d.y0;
+                    if (dx * dx + dy * dy < drag_threshold * drag_threshold) return;
+                    d.phase = .active;
+                    self.sendDrag(.start, input, cmds, rects);
+                },
+                .active => {
+                    for (input.keys) |k| if (k == .escape) {
+                        self.sendDrag(.cancel, input, cmds, rects);
+                        d.phase = .idle;
+                        return;
+                    };
+                    if (!input.buttons.left or input.button_up.left) {
+                        self.sendDrag(.drop, input, cmds, rects);
+                        d.phase = .idle;
+                        return;
+                    }
+                    self.sendDrag(.move, input, cmds, rects);
+                },
+            }
+        }
+
+        fn sendDrag(self: *Self, phase: pointer.DragPhase, input: Input, cmds: []const cmd.Cmd(Msg), rects: []const Rect) void {
+            const d = &self.drag;
+            var ev: pointer.DragEvent = .{
+                .phase = phase,
+                .id = d.id,
+                .x = input.mouse_x,
+                .y = input.mouse_y,
+                .grab_dx = d.grab_dx,
+                .grab_dy = d.grab_dy,
+                .src = d.src,
+            };
+            if (phase != .cancel) {
+                if (hit_test.dragTargets(cmds, rects, input.mouse_x, input.mouse_y).target) |t| {
+                    const r = rects[t.index];
+                    ev.over = t.id;
+                    ev.over_rect = .{ r.x, r.y, r.w, r.h };
+                    ev.over_fx = if (r.w > 0) std.math.clamp((input.mouse_x - r.x) / r.w, 0, 1) else 0;
+                    ev.over_fy = if (r.h > 0) std.math.clamp((input.mouse_y - r.y) / r.h, 0, 1) else 0;
+                }
+            }
+            if (App.dragMsg(&self.model, ev)) |m| self.dispatch(m);
         }
 
         /// What a claimed shortcut keeps from also reaching widgets this frame.

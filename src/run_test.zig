@@ -556,6 +556,115 @@ test "commands: the palette opens from its chords, filters fuzzily, Enter runs t
     try std.testing.expectEqual(@as(u32, 0), m.typed); // palette chars never reached the app
 }
 
+// ── In-app drag and drop ────────────────────────────────────────────
+
+const DragApp = struct {
+    pub const Model = struct {
+        starts: u32 = 0,
+        moves: u32 = 0,
+        drops: u32 = 0,
+        cancels: u32 = 0,
+        last_over: u32 = 99,
+        drop_over: u32 = 99,
+        src_id: u32 = 0,
+        grab: [2]f32 = .{ 0, 0 },
+        drop_fy: f32 = -1,
+        clicks: u32 = 0,
+    };
+    pub const Msg = union(enum) { drag: teak_pointer.DragEvent, click };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .click => m.clicks += 1,
+            .drag => |ev| switch (ev.phase) {
+                .start => {
+                    m.starts += 1;
+                    m.src_id = ev.id;
+                    m.grab = .{ ev.grab_dx, ev.grab_dy };
+                },
+                .move => {
+                    m.moves += 1;
+                    m.last_over = ev.over;
+                },
+                .drop => {
+                    m.drops += 1;
+                    m.drop_over = ev.over;
+                    m.drop_fy = ev.over_fy;
+                },
+                .cancel => m.cancels += 1,
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .align_cross = .start });
+        for (0..4) |i| {
+            const id: u32 = @intCast(i + 1);
+            cb.pushGroup(.{ .padding = 0, .gap = 0, .width = 100, .height = 30, .drag_id = id, .drop_id = id });
+            if (i == 0) cb.button(.click, "go"); // an interactive child: a press on it is a click
+            cb.popGroup();
+        }
+        cb.popGroup();
+    }
+    pub fn dragMsg(_: *const Model, ev: teak_pointer.DragEvent) ?Msg {
+        return .{ .drag = ev };
+    }
+};
+const teak_pointer = pointer;
+
+test "drag: press on a source, move past the threshold, hover targets, drop" {
+    const t = try play(DragApp, &.{
+        .{},
+        .{ .x = 80, .y = 45, .held = left, .down = left }, // row 2 (id 2), grab at (80, 15)
+        .{ .x = 82, .y = 46, .held = left }, // within the 4px slop: not a drag yet
+        .{ .x = 70, .y = 100, .held = left }, // row 4: drag starts
+        .{ .x = 70, .y = 110, .held = left }, // move
+        .{ .x = 70, .y = 110, .up = left }, // drop on row 4, lower half
+        .{},
+    });
+    defer t.destroy();
+    const m = t.rt.model;
+    try std.testing.expectEqual(@as(u32, 1), m.starts);
+    try std.testing.expectEqual(@as(u32, 2), m.src_id);
+    try std.testing.expectEqual(@as(f32, 80), m.grab[0]);
+    try std.testing.expect(m.moves >= 1);
+    try std.testing.expectEqual(@as(u32, 4), m.last_over);
+    try std.testing.expectEqual(@as(u32, 1), m.drops);
+    try std.testing.expectEqual(@as(u32, 4), m.drop_over);
+    try std.testing.expect(m.drop_fy > 0.5);
+    try std.testing.expectEqual(@as(u32, 0), m.cancels);
+}
+
+test "drag: a press-release without movement is not a drag; a press on a button is a click" {
+    const t = try play(DragApp, &.{
+        .{},
+        .{ .x = 80, .y = 15, .held = left, .down = left },
+        .{ .x = 80, .y = 15, .up = left },
+        .{ .x = 10, .y = 10 }, // hover the button ("go" sits at the row's top-left)
+        .{ .x = 10, .y = 10, .held = left, .down = left },
+        .{ .x = 10, .y = 10, .up = left },
+        .{},
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 0), t.rt.model.starts);
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.clicks);
+}
+
+test "drag: Escape cancels and later frames report nothing" {
+    const t = try play(DragApp, &.{
+        .{},
+        .{ .x = 80, .y = 45, .held = left, .down = left },
+        .{ .x = 70, .y = 100, .held = left },
+        .{ .x = 70, .y = 100, .held = left, .keys = &.{.escape} },
+        .{ .x = 70, .y = 100, .held = left },
+        .{ .x = 70, .y = 100, .up = left },
+        .{},
+    });
+    defer t.destroy();
+    const m = t.rt.model;
+    try std.testing.expectEqual(@as(u32, 1), m.starts);
+    try std.testing.expectEqual(@as(u32, 1), m.cancels);
+    try std.testing.expectEqual(@as(u32, 0), m.drops);
+}
+
 const TabApp = struct {
     pub const Focus = enum { none, a, b };
     pub const Model = struct { focus: Focus = .none, submitted: bool = false };

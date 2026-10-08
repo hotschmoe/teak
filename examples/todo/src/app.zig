@@ -37,6 +37,26 @@ pub const Model = struct {
     /// keyboard events. Mirrored into TransientState.focus_index by the
     /// main loop.
     input_focused: bool = false,
+    /// The row the keyboard reorder commands act on: the last row toggled
+    /// or dragged.
+    selected: ?u16 = null,
+    /// An in-progress drag (HARDLINE: drag state is Model state; the loop
+    /// only reports `DragEvent`s).
+    drag: ?Drag = null,
+};
+
+/// What the view needs to draw the ghost and the drop indicator.
+pub const Drag = struct {
+    /// Row being dragged (index) and the pointer + grab offset for the ghost.
+    from: u16,
+    x: f32,
+    y: f32,
+    grab_dx: f32,
+    grab_dy: f32,
+    /// Row id (index + 1) under the pointer, 0 = none; and whether the
+    /// pointer is in its lower half (drop after it).
+    over: u32 = 0,
+    after: bool = false,
 };
 
 // ── Msg ────────────────────────────────────────────────────────────
@@ -55,7 +75,24 @@ pub const Msg = union(enum) {
 
     // Bulk.
     clear_completed,
+
+    /// Drag and drop reorder (mouse) ...
+    drag: teak.DragEvent,
+    /// ... and its keyboard alternative: Alt+Up / Alt+Down move the selected row.
+    move_selected: i8,
 };
+
+/// Move item `from` so it ends up at index `to` (order-preserving shift).
+pub fn moveItem(m: *Model, from: usize, to: usize) void {
+    if (from >= m.items_len or to >= m.items_len or from == to) return;
+    const item = m.items[from];
+    if (from < to) {
+        std.mem.copyForwards(Item, m.items[from..to], m.items[from + 1 .. to + 1]);
+    } else {
+        std.mem.copyBackwards(Item, m.items[to + 1 .. from + 1], m.items[to..from]);
+    }
+    m.items[to] = item;
+}
 
 // ── Update ─────────────────────────────────────────────────────────
 
@@ -86,6 +123,17 @@ pub fn update(m: *Model, msg: Msg) void {
 
         .toggle => |i| {
             if (i < m.items_len) m.items[i].done = !m.items[i].done;
+            m.selected = @intCast(i);
+        },
+
+        .drag => |ev| updateDrag(m, ev),
+
+        .move_selected => |d| {
+            const s = m.selected orelse return;
+            const to: i32 = @as(i32, s) + d;
+            if (to < 0 or to >= m.items_len) return;
+            moveItem(m, s, @intCast(to));
+            m.selected = @intCast(to);
         },
 
         .remove => |i| {
@@ -107,6 +155,34 @@ pub fn update(m: *Model, msg: Msg) void {
             }
             m.items_len = write;
         },
+    }
+}
+
+fn updateDrag(m: *Model, ev: teak.DragEvent) void {
+    switch (ev.phase) {
+        .start => if (ev.id >= 1 and ev.id <= m.items_len) {
+            m.drag = .{ .from = @intCast(ev.id - 1), .x = ev.x, .y = ev.y, .grab_dx = ev.grab_dx, .grab_dy = ev.grab_dy };
+            m.selected = @intCast(ev.id - 1);
+        },
+        .move => if (m.drag) |*d| {
+            d.x = ev.x;
+            d.y = ev.y;
+            d.over = ev.over;
+            d.after = ev.over_fy >= 0.5;
+        },
+        .drop => if (m.drag) |d| {
+            m.drag = null;
+            if (ev.over == 0) return;
+            const over: usize = ev.over - 1;
+            // Dropping on the lower half inserts after the target row.
+            var to: usize = if (ev.over_fy >= 0.5) over + 1 else over;
+            // Removing the source first shifts later rows up by one.
+            if (d.from < to) to -= 1;
+            if (to >= m.items_len) to = m.items_len - 1;
+            moveItem(m, d.from, to);
+            m.selected = @intCast(to);
+        },
+        .cancel => m.drag = null,
     }
 }
 
@@ -136,7 +212,20 @@ pub fn view(m: *const Model, cb: anytype) void {
         .height = 320,
     });
     for (m.items[0..m.items_len], 0..) |*item, i| {
-        cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 4 });
+        const id: u32 = @intCast(i + 1);
+        const dragging_this = if (m.drag) |d| d.from == i else false;
+        const hot = if (m.drag) |d| (d.over == id and d.from != i) else false;
+        const selected = if (m.selected) |s| s == i else false;
+        cb.pushGroup(.{
+            .direction = .horizontal,
+            .gap = 8,
+            .padding = 4,
+            .drag_id = id,
+            .drop_id = id,
+            .bg = if (dragging_this) .{ 0.12, 0.12, 0.15, 1 } else if (selected) .{ 0.16, 0.18, 0.24, 1 } else null,
+            .border = if (hot) .{ 0.4, 0.7, 1.0, 1 } else null,
+        });
+        cb.text("::");
         cb.checkbox(.{ .toggle = i }, item.done, item.label[0..item.label_len]);
         // Spacer claims the middle so the delete button pins right.
         cb.spacer(1);
@@ -158,6 +247,34 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
 
     cb.popGroup();
+
+    // The drag ghost: the dragged row's label, following the pointer.
+    if (m.drag) |d| {
+        if (d.from < m.items_len) {
+            cb.pushOverlay(.{
+                .x = d.x - d.grab_dx,
+                .y = d.y - d.grab_dy,
+                .padding = 8,
+                .backdrop = .{ 0.2, 0.3, 0.5, 0.85 },
+                .border = .{ 0.5, 0.75, 1.0, 1 },
+            });
+            const it = &m.items[d.from];
+            cb.text(it.label[0..it.label_len]);
+            cb.popOverlay();
+        }
+    }
+}
+
+/// Agent / keyboard command table: reorder the selected row without a mouse.
+pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
+    const s = m.selected orelse return;
+    list.add(.{ .id = "item.up", .label = "Move item up", .shortcut = teak.Chord.altKey(.up), .enabled = s > 0, .msg = .{ .move_selected = -1 } });
+    list.add(.{ .id = "item.down", .label = "Move item down", .shortcut = teak.Chord.altKey(.down), .enabled = s + 1 < m.items_len, .msg = .{ .move_selected = 1 } });
+}
+
+/// Mouse drag reorder: groups carry `drag_id` / `drop_id` (see `view`).
+pub fn dragMsg(_: *const Model, ev: teak.DragEvent) ?Msg {
+    return .{ .drag = ev };
 }
 
 // ── Key event translation (for host integration) ──────────────────
@@ -318,4 +435,122 @@ test "end-to-end: click delete button on item 0 removes it" {
 
     try t.expectEqual(@as(u16, 1), m.items_len);
     try t.expectEqualStrings("b", m.items[0].label[0..m.items[0].label_len]);
+}
+
+fn labels(m: *const Model, buf: *[8][]const u8) []const []const u8 {
+    for (m.items[0..m.items_len], 0..) |*it, i| buf[i] = it.label[0..it.label_len];
+    return buf[0..m.items_len];
+}
+
+test "moveItem reorders in both directions" {
+    const t = std.testing;
+    var m: Model = .{};
+    for ("abcd") |c| {
+        update(&m, .{ .input_char = c });
+        update(&m, .add_item);
+    }
+    var buf: [8][]const u8 = undefined;
+    moveItem(&m, 0, 2);
+    try t.expectEqualStrings("bcad", flat(labels(&m, &buf)));
+    moveItem(&m, 3, 0);
+    try t.expectEqualStrings("dbca", flat(labels(&m, &buf)));
+    moveItem(&m, 1, 1);
+    try t.expectEqualStrings("dbca", flat(labels(&m, &buf)));
+}
+
+fn flat(parts: []const []const u8) []const u8 {
+    const S = struct {
+        var out: [16]u8 = undefined;
+    };
+    var n: usize = 0;
+    for (parts) |p| {
+        @memcpy(S.out[n..][0..p.len], p);
+        n += p.len;
+    }
+    return S.out[0..n];
+}
+
+test "drag and drop: dropping on the lower half of a row inserts after it; cancel restores" {
+    const t = std.testing;
+    var m: Model = .{};
+    for ("abc") |c| {
+        update(&m, .{ .input_char = c });
+        update(&m, .add_item);
+    }
+    var buf: [8][]const u8 = undefined;
+    // Drag row a (id 1) onto the lower half of row c (id 3): a ends up last.
+    update(&m, .{ .drag = .{ .phase = .start, .id = 1, .x = 10, .y = 10 } });
+    try t.expect(m.drag != null);
+    update(&m, .{ .drag = .{ .phase = .move, .id = 1, .x = 10, .y = 90, .over = 3, .over_fy = 0.8 } });
+    try t.expect(m.drag.?.after and m.drag.?.over == 3);
+    update(&m, .{ .drag = .{ .phase = .drop, .id = 1, .x = 10, .y = 90, .over = 3, .over_fy = 0.8 } });
+    try t.expect(m.drag == null);
+    try t.expectEqualStrings("bca", flat(labels(&m, &buf)));
+    try t.expectEqual(@as(?u16, 2), m.selected);
+    // Upper half of row b (id 1 now): a lands before b.
+    update(&m, .{ .drag = .{ .phase = .start, .id = 3, .x = 0, .y = 0 } });
+    update(&m, .{ .drag = .{ .phase = .drop, .id = 3, .x = 0, .y = 0, .over = 1, .over_fy = 0.2 } });
+    try t.expectEqualStrings("abc", flat(labels(&m, &buf)));
+    // Cancel and a drop on nothing change nothing.
+    update(&m, .{ .drag = .{ .phase = .start, .id = 1, .x = 0, .y = 0 } });
+    update(&m, .{ .drag = .{ .phase = .cancel, .id = 1, .x = 0, .y = 0 } });
+    try t.expect(m.drag == null);
+    update(&m, .{ .drag = .{ .phase = .start, .id = 1, .x = 0, .y = 0 } });
+    update(&m, .{ .drag = .{ .phase = .drop, .id = 1, .x = 0, .y = 0, .over = 0 } });
+    try t.expectEqualStrings("abc", flat(labels(&m, &buf)));
+}
+
+test "keyboard alternative: Alt+Up / Alt+Down move the selected row" {
+    const t = std.testing;
+    var m: Model = .{};
+    for ("abc") |c| {
+        update(&m, .{ .input_char = c });
+        update(&m, .add_item);
+    }
+    var buf: [8][]const u8 = undefined;
+    var list: teak.CommandList(Msg) = .{};
+    commands(&m, &list);
+    try t.expectEqual(@as(usize, 0), list.len); // nothing selected: no commands
+    update(&m, .{ .toggle = 2 }); // select c
+    list = .{};
+    commands(&m, &list);
+    try t.expect(list.match(teak.Chord.altKey(.up)) != null);
+    try t.expect(list.match(teak.Chord.altKey(.down)) == null); // already last
+    update(&m, list.match(teak.Chord.altKey(.up)).?.msg);
+    try t.expectEqualStrings("acb", flat(labels(&m, &buf)));
+    try t.expectEqual(@as(?u16, 1), m.selected);
+}
+
+test "view: while dragging, the ghost is an overlay and the hot row gets a border" {
+    const t = std.testing;
+    var m: Model = .{};
+    for ("ab") |c| {
+        update(&m, .{ .input_char = c });
+        update(&m, .add_item);
+    }
+    var cb = teak.CmdBuffer(Msg).init(t.allocator);
+    defer cb.deinit();
+    view(&m, &cb);
+    for (cb.cmds.items) |c| try t.expect(c != .push_overlay); // idle: no ghost
+    cb.reset();
+    update(&m, .{ .drag = .{ .phase = .start, .id = 1, .x = 50, .y = 60, .grab_dx = 5, .grab_dy = 5 } });
+    update(&m, .{ .drag = .{ .phase = .move, .id = 1, .x = 50, .y = 80, .over = 2, .over_fy = 0.3 } });
+    view(&m, &cb);
+    var overlays: usize = 0;
+    var hot_borders: usize = 0;
+    var draggable_rows: usize = 0;
+    for (cb.cmds.items) |c| switch (c) {
+        .push_overlay => |o| {
+            overlays += 1;
+            try t.expectEqual(@as(f32, 45), o.x);
+        },
+        .push_group => |g| {
+            if (g.border != null) hot_borders += 1;
+            if (g.drag_id != 0 and g.drop_id == g.drag_id) draggable_rows += 1;
+        },
+        else => {},
+    };
+    try t.expectEqual(@as(usize, 1), overlays);
+    try t.expectEqual(@as(usize, 1), hot_borders);
+    try t.expectEqual(@as(usize, 2), draggable_rows);
 }

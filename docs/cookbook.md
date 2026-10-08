@@ -30,6 +30,7 @@ change yields.
 | Fire a Msg on a timer | [11. Timer / subscription](#11-timer--subscription) |
 | Add a brand-new widget to the framework | [12. Add a new widget to the framework](#12-add-a-new-widget-to-the-framework) |
 | Call an HTTP API, open / save a file, remember a setting | [13. Effects: HTTP, files, storage](#13-effects-http-files-storage) |
+| Reorder rows / drop an item on a target by dragging | [17. Drag and drop](#17-drag-and-drop) |
 | Add shortcuts + a Ctrl+K command palette | [16. Shortcuts and a command palette](#16-shortcuts-and-a-command-palette) |
 | Drive my app from an LLM agent (click, type, screenshot, replay) | [15. Drive your app from an LLM agent](#15-drive-your-app-from-an-llm-agent) |
 
@@ -994,4 +995,19 @@ on `palette_run(i)` close it and `update(m, list.paletteCommand(i).?.msg)`. The 
 **3. Menus**: show `cmd.menuLabel(arena, .pc, 20)` (or `Chord.format`) so the displayed shortcut is the working one.
 
 Test it headlessly with `host.pushChord(.{ .key = .s, .mod = true })` or, against a live app, `teak-drive shortcut ctrl+s`. Depth: [commands.md](features/commands.md).
+
+---
+
+## 17. Drag and drop
+
+**Goal:** drag a list row to reorder it, with a ghost and a drop indicator, plus a keyboard alternative.
+
+1. **Mark the rows**: `cb.pushGroup(.{ ..., .drag_id = id, .drop_id = id })` with `id = index + 1` (non-zero). Put a non-interactive grip (`cb.text("::")`) in the row: pressing a button or checkbox clicks it, pressing the rest of the row drags.
+2. **Hook**: `pub fn dragMsg(_: *const Model, ev: teak.DragEvent) ?Msg { return .{ .drag = ev }; }`.
+3. **Model + update**: `drag: ?Drag` (source, pointer, grab offset, `over`, `after`). `.start` sets it, `.move` follows (`over = ev.over`, `after = ev.over_fy >= 0.5`), `.drop` reorders (insert after when `after`), `.cancel` clears it.
+4. **View**: while `drag != null`, emit `pushOverlay(.{ .x = d.x - d.grab_dx, .y = d.y - d.grab_dy, ... })` with the row's label (the ghost) and give the row where `drag.over == id` a `.border`.
+5. **Keyboard**: a `commands` table with `Chord.altKey(.up/.down)` moving the selected row (recipe 16).
+
+The complete, tested version is `examples/todo`. Agents: `teak-drive drag '{"role":"text","label":"::","nth":0}' '{"role":"text","label":"::","nth":2}'`.
+Depth: [drag-drop.md](features/drag-drop.md).
 

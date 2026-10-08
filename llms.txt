@@ -123,6 +123,7 @@ pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view 
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
 pub fn subscribe(*const Model) []const Sub(Msg)       // declarative timers; run services them each
                                                       //   frame via runSubs on Host.nowMs() (§2 hatch 6)
+pub fn dragMsg(*const Model, DragEvent) ?Msg          // in-app drag and drop (GroupStyle.drag_id / drop_id)
 pub fn commands(*const Model, *CommandList(Msg)) void // command table: shortcuts, menu/palette rows (see "Commands")
 pub fn debugState(*const Model, *std.Io.Writer) void  // Model dump for the control channel's `state` command
 pub fn resources(*const Model) []const Resource       // declarative GPU meshes/images by (key, rev);
@@ -466,6 +467,17 @@ DebugOverlayOpts = struct { x = 8, y = 8, padding = 8, gap = 2, backdrop, fg: [4
                             font: FontSpec, skip_pops = true, skip_pushes = false,
                             max_lines: usize = 512 }
 appendDebugOverlay(cb, cmds, rects: []const Rect, opts: DebugOverlayOpts) void
+```
+
+### In-app drag and drop (docs/features/drag-drop.md)
+`GroupStyle.drag_id: u32 = 0` (source) / `drop_id: u32 = 0` (target) on `pushGroup`; App hook `dragMsg(*const Model, DragEvent) ?Msg`.
+A left press on a source that no interactive child claims + 4 px of travel starts a drag; ghost, hot-target highlight and the reorder are
+app code driven by the events (state in the Model); Escape cancels.
+```zig
+DragPhase = enum { start, move, drop, cancel }
+DragEvent = struct { phase: DragPhase, id: u32, x, y: f32, grab_dx, grab_dy: f32 = 0, src: [4]f32,
+                     over: u32 = 0, over_rect: [4]f32, over_fx, over_fy: f32 }   // over = innermost drop_id under the pointer (0 none); fx/fy in 0..1 inside it
+hit_test.dragTargets(cmds, rects, x, y) DragHit{ source: ?DragZone, target: ?DragZone }
 ```
 
 ### Commands, shortcuts, palette (`teak.commands` → core/commands.zig; docs/features/commands.md)

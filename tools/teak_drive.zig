@@ -23,7 +23,7 @@ const usage =
     \\  (the socket defaults to $TEAK_CONTROL)
     \\
     \\read:     snapshot | tree | info | state | msglog [N]
-    \\act:      shortcut CHORD (e.g. ctrl+shift+p) | click|hover [--role R] [--label L | LABEL...] [--index N] [--nth N] [--x X --y Y]
+    \\act:      drag '<from-selector-json>' '<to-selector-json>' | shortcut CHORD (e.g. ctrl+shift+p) | click|hover [--role R] [--label L | LABEL...] [--index N] [--nth N] [--x X --y Y]
     \\          type TEXT | key NAME [COUNT] | scroll --dy N [--dx N] [selector]
     \\          wait --frames N | wait --text STR [--timeout FRAMES]
     \\          screenshot PATH | inspect [on|off] | quit
@@ -182,6 +182,9 @@ fn buildCommand(gpa: std.mem.Allocator, cmd: []const u8, args: []const []const u
         }
         try jsonStr(w, joined.written());
         try w.writeByte('}');
+    } else if (std.mem.eql(u8, cmd, "drag")) {
+        if (args.len != 2) return null; // two selector objects as JSON
+        try w.print("{{\"cmd\":\"drag\",\"from\":{s},\"to\":{s}}}", .{ args[0], args[1] });
     } else if (std.mem.eql(u8, cmd, "shortcut")) {
         if (args.len != 1) return null;
         try w.writeAll("{\"cmd\":\"shortcut\",\"chord\":");
@@ -357,6 +360,9 @@ const tools = [_]Tool{
     },
     .{ .name = "key", .description = "Press a special key by teak.SpecialKey name: enter, tab, shift_tab, escape, backspace, delete, left, right, up, down, home, end, page_up, page_down, ctrl_a, ctrl_c, ctrl_v, ...", .schema =
     \\{"type":"object","properties":{"name":{"type":"string"},"count":{"type":"integer"}},"required":["name"]}
+    },
+    .{ .name = "drag", .description = "Drag from one widget to another with the real pointer path (in-app drag and drop, e.g. reordering list rows). `from` and `to` are selector objects ({role,label,index,nth,x,y}); add offset_x / offset_y (from the node center) to press the non-interactive part of a row, since pressing an interactive widget clicks it instead.", .schema =
+    \\{"type":"object","properties":{"from":{"type":"object"},"to":{"type":"object"}},"required":["from","to"]}
     },
     .{ .name = "shortcut", .description = "Press a keyboard shortcut such as ctrl+s, ctrl+shift+p, alt+enter or f5; the app's command table matches it like a real key press (use this to run commands and open the command palette).", .schema =
     \\{"type":"object","properties":{"chord":{"type":"string"}},"required":["chord"]}

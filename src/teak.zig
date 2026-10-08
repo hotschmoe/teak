@@ -172,6 +172,9 @@ pub const Modifiers = pointer.Modifiers;
 pub const Button = pointer.Button;
 /// One pointer event on an interactive canvas or scene.
 pub const CanvasEvent = pointer.CanvasEvent;
+/// In-app drag and drop: `GroupStyle.drag_id` / `drop_id`, the App `dragMsg` hook and its event.
+pub const DragEvent = pointer.DragEvent;
+pub const DragPhase = pointer.DragPhase;
 /// Kind of a `CanvasEvent` (press, move, release, wheel, ...).
 pub const CanvasEventKind = pointer.CanvasEventKind;
 

@@ -518,6 +518,8 @@ fn handleLine(rt: anytype, line: []const u8) void {
         return cmdClick(rt, obj);
     } else if (std.mem.eql(u8, cmd, "hover")) {
         return cmdHover(rt, obj);
+    } else if (std.mem.eql(u8, cmd, "drag")) {
+        return cmdDrag(rt, obj);
     } else if (std.mem.eql(u8, cmd, "shortcut")) {
         return cmdShortcut(rt, obj);
     } else if (std.mem.eql(u8, cmd, "type")) {
@@ -723,6 +725,19 @@ const Target = struct {
 /// the "selector" member if present, else the command object itself) to a
 /// point in the latest frame.
 fn resolve(rt: anytype, obj: std.json.ObjectMap) !Target {
+    var t = try resolveRaw(rt, obj);
+    const sel: std.json.ObjectMap = if (obj.get("selector")) |s| switch (s) {
+        .object => |o| o,
+        else => obj,
+    } else obj;
+    // Optional offset from the node's center: to press the non-interactive
+    // part of a row, or a specific spot inside a big widget.
+    if (getNum(sel, "offset_x")) |o| t.x += @floatCast(o);
+    if (getNum(sel, "offset_y")) |o| t.y += @floatCast(o);
+    return t;
+}
+
+fn resolveRaw(rt: anytype, obj: std.json.ObjectMap) !Target {
     const sel: std.json.ObjectMap = if (obj.get("selector")) |s| switch (s) {
         .object => |o| o,
         else => obj,
@@ -854,6 +869,31 @@ fn cmdType(rt: anytype, obj: std.json.ObjectMap) void {
         rest = rest[n..];
     }
     addAct(st, .nop);
+    begin(rt);
+}
+
+/// `{"cmd":"drag","from":{selector},"to":{selector}}`: press on `from`, move to
+/// `to` in interpolated steps (one frame each, so the app sees a real drag:
+/// start, moves over targets, drop), release. Selectors take `offset_x` /
+/// `offset_y` from the node center (press the non-interactive part of a row).
+fn cmdDrag(rt: anytype, obj: std.json.ObjectMap) void {
+    const st = &rt.ctl;
+    const from_v = obj.get("from") orelse return fail(rt, "drag needs \"from\" and \"to\" selectors", .{});
+    const to_v = obj.get("to") orelse return fail(rt, "drag needs \"from\" and \"to\" selectors", .{});
+    if (from_v != .object or to_v != .object) return fail(rt, "\"from\" and \"to\" must be selector objects", .{});
+    const a = resolve(rt, from_v.object) catch |e| return selectorError(rt, e);
+    const b = resolve(rt, to_v.object) catch |e| return selectorError(rt, e);
+    addAct(st, .{ .move = .{ a.x, a.y } });
+    addAct(st, .{ .down = .left });
+    const steps = 6;
+    for (1..steps + 1) |i| {
+        const f: f32 = @as(f32, @floatFromInt(i)) / steps;
+        addAct(st, .{ .move = .{ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f } });
+    }
+    addAct(st, .nop); // a frame at the destination so the hover target is reported
+    addAct(st, .{ .up = .left });
+    addAct(st, .nop);
+    setTargetNote(rt, b);
     begin(rt);
 }
 
