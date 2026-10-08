@@ -13,6 +13,8 @@ pub const menu = @import("widgets/menu.zig");
 pub const toast = @import("widgets/toast.zig");
 pub const dialog = @import("widgets/dialog.zig");
 pub const spinner = @import("widgets/spinner.zig");
+pub const date = @import("widgets/date.zig");
+pub const date_field = @import("widgets/date_field.zig");
 pub const util = @import("widgets/util.zig");
 
 test {

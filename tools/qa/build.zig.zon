@@ -1,0 +1,14 @@
+.{
+    .name = .qa,
+    .version = "0.0.0",
+    .fingerprint = 0x4d480b86a2a13a1c,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .teak = .{ .path = "../.." },
+        .rich_zig = .{
+            .url = "git+https://github.com/hotschmoe/rich_zig.git#8936c396c7bb13a003ee7f488072a55d928f331f",
+            .hash = "rich_zig-2.1.0-cZcAnKhZDAAex8HYaphWHqrjR0PgvL2qyyeR4BgQsHVn",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "shot.zig", "scripts.zig" },
+}

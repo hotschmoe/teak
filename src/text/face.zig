@@ -21,6 +21,7 @@ const builtin = @import("builtin");
 const teak = @import("teak");
 
 pub const c = @import("stb-c");
+const fallback = @import("fallback.zig");
 
 /// Font search order. `TEAK_FONT` (absolute path) overrides everything;
 /// otherwise the first readable candidate wins. DejaVuSansMono leads
@@ -34,6 +35,12 @@ const FONT_CANDIDATES = [_][]const u8{
     "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    // macOS (collections load through `stbtt_GetFontOffsetForIndex`).
+    "/System/Library/Fonts/Menlo.ttc",
+    "/System/Library/Fonts/Monaco.ttf",
+    "/System/Library/Fonts/Courier.ttc",
+    "/System/Library/Fonts/SFNSMono.ttf",
+    "/Library/Fonts/Courier New.ttf",
 };
 
 const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
@@ -140,7 +147,18 @@ pub const Font = struct {
     /// Kerning between two glyphs of this face, in font units (legacy `kern`
     /// table or GPOS pair adjustment, whichever stb finds).
     pub fn kernUnits(self: *const Font, left: u16, right: u16) i32 {
-        return c.stbtt_GetGlyphKernAdvance(&self.info, left, right);
+        // stb re-walks the kern/GPOS tables per call; a direct-mapped cache keyed by
+        // (face, pair) turns repeat pairs into one load. Losable: a miss recomputes.
+        if (kern_epoch != epoch) {
+            kern_cache = std.mem.zeroes([8192]KernSlot);
+            kern_epoch = epoch;
+        }
+        const key: u64 = (@as(u64, @intFromPtr(self)) << 20) ^ (@as(u64, left) << 16) ^ right;
+        const slot = &kern_cache[@as(usize, @truncate((key *% 0x9E3779B97F4A7C15) >> 51))];
+        if (slot.used and slot.face == @intFromPtr(self) and slot.left == left and slot.right == right) return slot.value;
+        const v = c.stbtt_GetGlyphKernAdvance(&self.info, left, right);
+        slot.* = .{ .used = true, .face = @intFromPtr(self), .left = left, .right = right, .value = v };
+        return v;
     }
 
     /// True when the face has one advance for every glyph probed ('i' and 'W').
@@ -152,6 +170,10 @@ pub const Font = struct {
         return self.advanceUnits(i) == self.advanceUnits(w);
     }
 };
+
+const KernSlot = struct { used: bool, left: u16, right: u16, value: i32, face: usize };
+var kern_epoch: u64 = 0;
+var kern_cache: [8192]KernSlot = std.mem.zeroes([8192]KernSlot);
 
 // ── Face table ─────────────────────────────────────────────────────
 
@@ -193,6 +215,7 @@ pub fn registerFace(family: teak.FontFamily, weight: teak.FontWeight, ttf: []con
 
 /// Forget every registered face and the loaded fallback.
 pub fn releaseFaces() void {
+    fallback.release();
     if (registry.fallback) |*f| f.deinit();
     registry = .{};
     epoch += 1;
@@ -212,7 +235,7 @@ pub fn faceById(id: u16) ?*const Font {
         if (registry.fallback) |*f| return f;
         return null;
     }
-    if (id > fallback_face_id) return null;
+    if (id > fallback_face_id) return fallback.faceByExtraId(id);
     const fam = id / weight_count;
     const w = id % weight_count;
     if (registry.faces[fam][w]) |*f| return f;
@@ -270,6 +293,19 @@ pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
     return null;
 }
 
+/// Windows system fonts tried in order, relative to `<WINDIR>\Fonts`:
+/// Consolas (monospace, Vista+), then Courier New, Lucida Console, and the
+/// proportional UI faces as a last resort.
+const WINDOWS_FONT_FILES = [_][]const u8{ "consola.ttf", "cour.ttf", "lucon.ttf", "segoeui.ttf", "arial.ttf" };
+
+/// The `i`th Windows font candidate under `windir` (e.g. `C:\Windows`) written
+/// into `buf`; null past the end of the list or when `buf` is too small.
+/// Pure so the probe order is testable on any OS.
+pub fn windowsFontCandidate(buf: []u8, windir: []const u8, i: usize) ?[]const u8 {
+    if (i >= WINDOWS_FONT_FILES.len) return null;
+    return std.fmt.bufPrint(buf, "{s}\\Fonts\\{s}", .{ std.mem.trimEnd(u8, windir, "\\/"), WINDOWS_FONT_FILES[i] }) catch null;
+}
+
 const readFontFile = if (has_files) readFontFileLibc else readFontFileNone;
 
 fn readFontFileNone(_: std.mem.Allocator) ![]u8 {
@@ -284,6 +320,15 @@ fn readFontFileLibc(allocator: std.mem.Allocator) ![]u8 {
             if (readAbsolute(allocator, env_path)) |bytes| return bytes else |_| {}
         }
     }
+    if (builtin.os.tag == .windows) {
+        const windir = if (std.c.getenv("WINDIR")) |w| std.mem.span(w) else "C:\\Windows";
+        var buf: [1024]u8 = undefined;
+        var i: usize = 0;
+        while (windowsFontCandidate(&buf, windir, i)) |path| : (i += 1) {
+            if (readAbsolute(allocator, path)) |bytes| return bytes else |_| {}
+        }
+        return error.FontNotFound;
+    }
     for (FONT_CANDIDATES) |path| {
         if (readAbsolute(allocator, path)) |bytes| return bytes else |_| {}
     }
@@ -295,7 +340,7 @@ fn readFontFileLibc(allocator: std.mem.Allocator) ![]u8 {
 /// threading an `Io` handle from `main` — impractical for a font load
 /// deep inside backend init — so libc `fopen`/`fread` is the pragmatic,
 /// churn-proof choice. Reads in chunks; no `fseek`/`fstat` dependency.
-fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+pub fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     var path_buf: [4096]u8 = undefined;
     if (path.len + 1 > path_buf.len) return error.PathTooLong;
     @memcpy(path_buf[0..path.len], path);
@@ -316,4 +361,13 @@ fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     }
     if (list.items.len == 0) return error.EmptyFont;
     return try list.toOwnedSlice(allocator);
+}
+
+test "windowsFontCandidate probes monospace faces first under the given Windows dir" {
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("D:\\Win\\Fonts\\consola.ttf", windowsFontCandidate(&buf, "D:\\Win", 0).?);
+    try std.testing.expectEqualStrings("D:\\Win\\Fonts\\cour.ttf", windowsFontCandidate(&buf, "D:\\Win\\", 1).?);
+    try std.testing.expect(windowsFontCandidate(&buf, "D:\\Win", WINDOWS_FONT_FILES.len) == null);
+    var tiny: [4]u8 = undefined;
+    try std.testing.expect(windowsFontCandidate(&tiny, "D:\\Win", 0) == null);
 }

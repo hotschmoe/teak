@@ -6,8 +6,11 @@
 //! asks for multi-window.
 
 const std = @import("std");
-const teak = @import("teak");
 const text = @import("teak-text");
+const native_effects = @import("native_effects.zig");
+const win32_data = @import("win32_data.zig");
+const x11_data = @import("x11_data.zig");
+const teak = @import("teak");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -94,12 +97,37 @@ const WHEEL_DELTA: f32 = 120;
 /// DOM convention browsers use when `deltaMode == 0` (pixel deltas).
 const WHEEL_PIXELS_PER_NOTCH: f32 = 48;
 const IDC_ARROW: LPCWSTR = @ptrFromInt(32512);
+const WM_SETCURSOR: UINT = 0x0020;
+const HTCLIENT: usize = 1;
+extern "user32" fn SetCursor(?HANDLE) callconv(WINAPI) ?HANDLE;
+
+/// Standard `IDC_*` resource id for a cursor shape. Win32 has no grab
+/// cursor: `grab` is the hand, `grabbing` the four-way move arrow.
+fn idcFor(shape: teak.CursorShape) usize {
+    return switch (shape) {
+        .arrow => 32512,
+        .ibeam => 32513,
+        .crosshair => 32515,
+        .resize_nwse => 32642,
+        .resize_nesw => 32643,
+        .resize_ew => 32644,
+        .resize_ns => 32645,
+        .move, .grabbing => 32646,
+        .not_allowed => 32648,
+        .pointer, .grab => 32649,
+    };
+}
+
+/// The cursor `WM_SETCURSOR` applies over the client area (null: arrow).
+var g_cursor: ?HANDLE = null;
 
 const VK_BACK: WPARAM = 0x08;
 const VK_TAB: WPARAM = 0x09;
 const VK_RETURN: WPARAM = 0x0D;
 const VK_ESCAPE: WPARAM = 0x1B;
+const VK_F12: WPARAM = 0x7B;
 const VK_F10: WPARAM = 0x79;
+const VK_APPS: WPARAM = 0x5D;
 const VK_ALT: WPARAM = 0x12; // VK_MENU
 const VK_PRIOR: WPARAM = 0x21; // page up
 const VK_NEXT: WPARAM = 0x22; // page down
@@ -121,8 +149,6 @@ extern "user32" fn DispatchMessageW(*const MSG) callconv(WINAPI) LRESULT;
 extern "user32" fn DefWindowProcW(HANDLE, UINT, WPARAM, LPARAM) callconv(WINAPI) LRESULT;
 extern "user32" fn PostQuitMessage(c_int) callconv(WINAPI) void;
 extern "user32" fn LoadCursorW(?HANDLE, LPCWSTR) callconv(WINAPI) ?HANDLE;
-extern "user32" fn GetDC(?HANDLE) callconv(WINAPI) ?HDC;
-extern "user32" fn ReleaseDC(?HANDLE, HDC) callconv(WINAPI) c_int;
 extern "user32" fn GetKeyState(c_int) callconv(WINAPI) i16;
 extern "user32" fn SetCapture(HANDLE) callconv(WINAPI) ?HANDLE;
 extern "user32" fn ReleaseCapture() callconv(WINAPI) BOOL;
@@ -187,6 +213,364 @@ const OFN_EXPLORER: DWORD = 0x00080000;
 
 extern "comdlg32" fn GetOpenFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
 extern "comdlg32" fn GetSaveFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
+
+// Per-monitor DPI awareness (v2): Windows stops bitmap-stretching the window
+// and reports physical pixels; the Host converts to logical units itself.
+extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(WINAPI) BOOL;
+extern "user32" fn GetDpiForSystem() callconv(WINAPI) UINT;
+extern "user32" fn SetWindowPos(HANDLE, ?HANDLE, c_int, c_int, c_int, c_int, UINT) callconv(WINAPI) BOOL;
+const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
+const WM_DPICHANGED: UINT = 0x02E0;
+const SWP_NOZORDER: UINT = 0x0004;
+const SWP_NOACTIVATE: UINT = 0x0010;
+
+/// Physical pixels per logical unit of the (primary) window, from its DPI.
+/// 1.0 until `Host.init` reads the real value and after `WM_DPICHANGED`.
+var g_scale: f32 = 1.0;
+
+/// Physical client pixels -> the logical units the app sees (at least 1).
+fn toLogical(physical: u32) u32 {
+    const v: f32 = @round(@as(f32, @floatFromInt(physical)) / g_scale);
+    return @max(1, @as(u32, @intFromFloat(v)));
+}
+
+fn dpiScale(dpi: u32) f32 {
+    return if (dpi == 0) 1.0 else @as(f32, @floatFromInt(dpi)) / USER_DEFAULT_SCREEN_DPI;
+}
+
+// Drag-and-drop of files from Explorer (WM_DROPFILES).
+const WM_DROPFILES: UINT = 0x0233;
+extern "shell32" fn DragAcceptFiles(HANDLE, BOOL) callconv(WINAPI) void;
+extern "shell32" fn DragQueryFileW(HANDLE, UINT, ?[*]u16, UINT) callconv(WINAPI) UINT;
+extern "shell32" fn DragFinish(HANDLE) callconv(WINAPI) void;
+
+/// Paths dropped on the window since the last `pollEffectResults` (UTF-8,
+/// written by `wndProc`, drained by the Host). A drop past the table is
+/// ignored.
+const MAX_PENDING_DROPS = 8;
+var g_drops: [MAX_PENDING_DROPS][1024]u8 = undefined;
+var g_drop_lens: [MAX_PENDING_DROPS]usize = @splat(0);
+var g_drop_count: usize = 0;
+
+fn queueDroppedFiles(hdrop: HANDLE) void {
+    const n = DragQueryFileW(hdrop, 0xFFFFFFFF, null, 0);
+    var i: UINT = 0;
+    while (i < n and g_drop_count < MAX_PENDING_DROPS) : (i += 1) {
+        var wide: [520]u16 = undefined;
+        const len = DragQueryFileW(hdrop, i, &wide, wide.len);
+        if (len == 0 or len >= wide.len) continue;
+        const written = std.unicode.utf16LeToUtf8(&g_drops[g_drop_count], wide[0..len]) catch continue;
+        g_drop_lens[g_drop_count] = written;
+        g_drop_count += 1;
+    }
+}
+
+// ── OLE drag-and-drop (IDropTarget) and image paste ────────────────
+//
+// `RegisterDragDrop` replaces `WM_DROPFILES` for the window and delivers
+// whatever the source offers through an `IDataObject`: files (CF_HDROP,
+// queued like WM_DROPFILES), images (registered "PNG", else CF_DIB) and
+// text (CF_UNICODETEXT). Images become the same `Drop{kind = .image}` the web
+// host produces (PNG <= 1568 px + RGBA thumbnail), text `Drop{kind = .text}`.
+// The DIB / PNG / thumbnail conversions are pure and live in `win32_data.zig`.
+
+const POINTL = extern struct { x: c_long, y: c_long };
+
+const FORMATETC = extern struct {
+    cfFormat: u16,
+    ptd: ?*anyopaque,
+    dwAspect: DWORD,
+    lindex: c_long,
+    tymed: DWORD,
+};
+
+const STGMEDIUM = extern struct {
+    tymed: DWORD,
+    hGlobal: ?HANDLE,
+    pUnkForRelease: ?*anyopaque,
+};
+
+const DVASPECT_CONTENT: DWORD = 1;
+const TYMED_HGLOBAL: DWORD = 1;
+const DROPEFFECT_NONE: DWORD = 0;
+const DROPEFFECT_COPY: DWORD = 1;
+const CF_DIB: UINT = 8;
+const CF_HDROP: UINT = 15;
+const CF_DIBV5: UINT = 17;
+
+const IID_IDropTarget: GUID = .{
+    .Data1 = 0x00000122,
+    .Data2 = 0x0000,
+    .Data3 = 0x0000,
+    .Data4 = .{ 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 },
+};
+
+const IDataObject = extern struct {
+    vtbl: *const extern struct {
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const anyopaque,
+        GetData: *const fn (*IDataObject, *const FORMATETC, *STGMEDIUM) callconv(WINAPI) HRESULT,
+        GetDataHere: *const anyopaque,
+        QueryGetData: *const fn (*IDataObject, *const FORMATETC) callconv(WINAPI) HRESULT,
+    },
+};
+
+const DropTarget = extern struct {
+    vtbl: *const extern struct {
+        QueryInterface: *const fn (*DropTarget, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+        AddRef: *const fn (*DropTarget) callconv(WINAPI) ULONG,
+        Release: *const fn (*DropTarget) callconv(WINAPI) ULONG,
+        DragEnter: *const fn (*DropTarget, *IDataObject, DWORD, POINTL, *DWORD) callconv(WINAPI) HRESULT,
+        DragOver: *const fn (*DropTarget, DWORD, POINTL, *DWORD) callconv(WINAPI) HRESULT,
+        DragLeave: *const fn (*DropTarget) callconv(WINAPI) HRESULT,
+        Drop: *const fn (*DropTarget, *IDataObject, DWORD, POINTL, *DWORD) callconv(WINAPI) HRESULT,
+    },
+};
+
+extern "ole32" fn OleInitialize(?*anyopaque) callconv(WINAPI) HRESULT;
+extern "ole32" fn OleUninitialize() callconv(WINAPI) void;
+extern "ole32" fn RegisterDragDrop(HANDLE, *DropTarget) callconv(WINAPI) HRESULT;
+extern "ole32" fn RevokeDragDrop(HANDLE) callconv(WINAPI) HRESULT;
+extern "ole32" fn ReleaseStgMedium(*STGMEDIUM) callconv(WINAPI) void;
+extern "user32" fn IsClipboardFormatAvailable(UINT) callconv(WINAPI) BOOL;
+extern "user32" fn RegisterClipboardFormatW(LPCWSTR) callconv(WINAPI) UINT;
+
+const drop_gpa = std.heap.page_allocator;
+
+/// The Host's effects service, set by `Host.init` so the (module-level) OLE
+/// callbacks can queue results. Null outside a live Host.
+var g_effects: ?*native_effects.Service = null;
+var g_png_format: UINT = 0;
+var g_ole_inited = false;
+var g_ole_drop = false;
+/// Whether the data object of the current drag offers something we take.
+var g_drag_accepts = false;
+/// Ctrl+V seen and not yet claimed by `Clipboard.read` (see `pollEffectResults`).
+var g_paste_requested = false;
+
+fn pngFormat() UINT {
+    if (g_png_format == 0) g_png_format = RegisterClipboardFormatW(std.unicode.utf8ToUtf16LeStringLiteral("PNG"));
+    return g_png_format;
+}
+
+/// Bytes of a global-memory block (valid until `GlobalUnlock`).
+fn lockedBytes(h: HANDLE) ?struct { bytes: []const u8 } {
+    const ptr = GlobalLock(h) orelse return null;
+    const len = GlobalSize(h);
+    const p: [*]const u8 = @ptrCast(ptr);
+    return .{ .bytes = p[0..len] };
+}
+
+fn pushText(utf8: []const u8, pasted: bool) void {
+    const svc = g_effects orelse return;
+    if (utf8.len == 0) return;
+    const arena = native_effects.Service.newArena() orelse return;
+    const copy = arena.allocator().dupe(u8, utf8) catch return native_effects.Service.freeArena(arena);
+    if (pasted) {
+        svc.push(arena, .{ .pasted_text = .{ .text = copy } });
+    } else {
+        svc.push(arena, .{ .dropped = .{ .kind = .text, .mime = "text/plain", .bytes = copy } });
+    }
+}
+
+/// An image that arrived as PNG bytes (the registered "PNG" format): handed
+/// over verbatim, like the X11 host does.
+fn pushPng(png: []const u8) void {
+    const svc = g_effects orelse return;
+    const size = x11_data.pngSize(png) orelse return;
+    const arena = native_effects.Service.newArena() orelse return;
+    const copy = arena.allocator().dupe(u8, png) catch return native_effects.Service.freeArena(arena);
+    svc.push(arena, .{ .dropped = .{ .kind = .image, .mime = "image/png", .bytes = copy, .width = size.w, .height = size.h } });
+}
+
+/// An image that arrived as a packed DIB: decoded, re-encoded as PNG
+/// (<= 1568 px) with an RGBA thumbnail, exactly the web host's `Drop`.
+fn pushDib(dib: []const u8) void {
+    const svc = g_effects orelse return;
+    const arena = native_effects.Service.newArena() orelse return;
+    const a = arena.allocator();
+    const img = win32_data.dibToRgba(a, dib) catch return native_effects.Service.freeArena(arena);
+    const parts = win32_data.imageParts(a, img) catch return native_effects.Service.freeArena(arena);
+    svc.push(arena, .{ .dropped = .{
+        .kind = .image,
+        .mime = "image/png",
+        .bytes = parts.png,
+        .width = parts.w,
+        .height = parts.h,
+        .thumb_rgba = parts.thumb,
+        .thumb_w = parts.thumb_w,
+        .thumb_h = parts.thumb_h,
+    } });
+}
+
+fn pushUtf16Text(wide: []const u8, pasted: bool) void {
+    const units: [*]align(1) const u16 = @ptrCast(wide.ptr);
+    var n: usize = 0;
+    while (n < wide.len / 2 and units[n] != 0) : (n += 1) {}
+    var buf: [65536]u8 = undefined;
+    var tmp: [32768]u16 = undefined;
+    const take = @min(n, tmp.len);
+    for (0..take) |i| tmp[i] = units[i];
+    const len = std.unicode.utf16LeToUtf8(&buf, tmp[0..take]) catch return;
+    pushText(buf[0..len], pasted);
+}
+
+/// Deliver the image on the clipboard (PNG, else DIB) as a `dropped` image.
+/// Returns whether one was found. The clipboard must be open.
+fn pasteClipboardImage() bool {
+    if (IsClipboardFormatAvailable(pngFormat()) != 0) {
+        if (GetClipboardData(pngFormat())) |h| {
+            if (lockedBytes(h)) |b| {
+                defer _ = GlobalUnlock(h);
+                pushPng(b.bytes);
+                return true;
+            }
+        }
+    }
+    for ([_]UINT{ CF_DIBV5, CF_DIB }) |fmt| {
+        if (IsClipboardFormatAvailable(fmt) == 0) continue;
+        const h = GetClipboardData(fmt) orelse continue;
+        const b = lockedBytes(h) orelse continue;
+        defer _ = GlobalUnlock(h);
+        pushDib(b.bytes);
+        return true;
+    }
+    return false;
+}
+
+/// Ctrl+V that no `Clipboard.read` claimed: text arrives as `pasted_text`,
+/// an image as `dropped` (the same results the web host reports).
+fn pasteUnclaimed() void {
+    if (OpenClipboard(null) == 0) return;
+    defer _ = CloseClipboard();
+    if (IsClipboardFormatAvailable(CF_UNICODETEXT) != 0) {
+        const h = GetClipboardData(CF_UNICODETEXT) orelse return;
+        const b = lockedBytes(h) orelse return;
+        defer _ = GlobalUnlock(h);
+        pushUtf16Text(b.bytes, true);
+        return;
+    }
+    _ = pasteClipboardImage();
+}
+
+fn fmtEtc(cf: UINT) FORMATETC {
+    return .{ .cfFormat = @intCast(cf), .ptd = null, .dwAspect = DVASPECT_CONTENT, .lindex = -1, .tymed = TYMED_HGLOBAL };
+}
+
+fn dataOffers(obj: *IDataObject, cf: UINT) bool {
+    const f = fmtEtc(cf);
+    return obj.vtbl.QueryGetData(obj, &f) == S_OK;
+}
+
+fn dropAcceptable(obj: *IDataObject) bool {
+    for ([_]UINT{ CF_HDROP, pngFormat(), CF_DIBV5, CF_DIB, CF_UNICODETEXT }) |cf| {
+        if (dataOffers(obj, cf)) return true;
+    }
+    return false;
+}
+
+fn dtQueryInterface(this: *DropTarget, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    if (guidEql(iid, &IID_IUnknown) or guidEql(iid, &IID_IDropTarget)) {
+        ppv.* = @ptrCast(this);
+        return S_OK;
+    }
+    ppv.* = null;
+    return E_NOINTERFACE;
+}
+fn dtAddRef(_: *DropTarget) callconv(WINAPI) ULONG {
+    return 1; // static singleton
+}
+fn dtRelease(_: *DropTarget) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn dtDragEnter(_: *DropTarget, obj: *IDataObject, _: DWORD, _: POINTL, effect: *DWORD) callconv(WINAPI) HRESULT {
+    g_drag_accepts = dropAcceptable(obj);
+    effect.* = if (g_drag_accepts) DROPEFFECT_COPY else DROPEFFECT_NONE;
+    return S_OK;
+}
+fn dtDragOver(_: *DropTarget, _: DWORD, _: POINTL, effect: *DWORD) callconv(WINAPI) HRESULT {
+    effect.* = if (g_drag_accepts) DROPEFFECT_COPY else DROPEFFECT_NONE;
+    return S_OK;
+}
+fn dtDragLeave(_: *DropTarget) callconv(WINAPI) HRESULT {
+    g_drag_accepts = false;
+    return S_OK;
+}
+fn dtDrop(_: *DropTarget, obj: *IDataObject, _: DWORD, _: POINTL, effect: *DWORD) callconv(WINAPI) HRESULT {
+    g_drag_accepts = false;
+    effect.* = DROPEFFECT_NONE;
+    var f = fmtEtc(CF_HDROP);
+    var m: STGMEDIUM = undefined;
+    if (obj.vtbl.GetData(obj, &f, &m) == S_OK) {
+        defer ReleaseStgMedium(&m);
+        if (m.hGlobal) |h| queueDroppedFiles(h);
+        effect.* = DROPEFFECT_COPY;
+        return S_OK;
+    }
+    f = fmtEtc(pngFormat());
+    if (obj.vtbl.GetData(obj, &f, &m) == S_OK) {
+        defer ReleaseStgMedium(&m);
+        if (m.hGlobal) |h| if (lockedBytes(h)) |b| {
+            defer _ = GlobalUnlock(h);
+            pushPng(b.bytes);
+            effect.* = DROPEFFECT_COPY;
+        };
+        if (effect.* == DROPEFFECT_COPY) return S_OK;
+    }
+    for ([_]UINT{ CF_DIBV5, CF_DIB }) |cf| {
+        f = fmtEtc(cf);
+        if (obj.vtbl.GetData(obj, &f, &m) != S_OK) continue;
+        defer ReleaseStgMedium(&m);
+        if (m.hGlobal) |h| if (lockedBytes(h)) |b| {
+            defer _ = GlobalUnlock(h);
+            pushDib(b.bytes);
+            effect.* = DROPEFFECT_COPY;
+        };
+        if (effect.* == DROPEFFECT_COPY) return S_OK;
+    }
+    f = fmtEtc(CF_UNICODETEXT);
+    if (obj.vtbl.GetData(obj, &f, &m) == S_OK) {
+        defer ReleaseStgMedium(&m);
+        if (m.hGlobal) |h| if (lockedBytes(h)) |b| {
+            defer _ = GlobalUnlock(h);
+            pushUtf16Text(b.bytes, false);
+            effect.* = DROPEFFECT_COPY;
+        };
+    }
+    return S_OK;
+}
+
+const drop_vtbl: @typeInfo(@FieldType(DropTarget, "vtbl")).pointer.child = .{
+    .QueryInterface = dtQueryInterface,
+    .AddRef = dtAddRef,
+    .Release = dtRelease,
+    .DragEnter = dtDragEnter,
+    .DragOver = dtDragOver,
+    .DragLeave = dtDragLeave,
+    .Drop = dtDrop,
+};
+var g_drop_target: DropTarget = .{ .vtbl = &drop_vtbl };
+
+/// Register the window for OLE drops; falls back to `WM_DROPFILES` (files
+/// only) if OLE is unavailable.
+fn registerDropTarget(hwnd: HANDLE) void {
+    const hr = OleInitialize(null);
+    // S_OK, or S_FALSE (already initialized on this thread).
+    g_ole_inited = hr == S_OK or hr == 1;
+    if (g_ole_inited and RegisterDragDrop(hwnd, &g_drop_target) == S_OK) {
+        g_ole_drop = true;
+        return;
+    }
+    DragAcceptFiles(hwnd, 1);
+}
+
+fn unregisterDropTarget(hwnd: HANDLE) void {
+    if (g_ole_drop) _ = RevokeDragDrop(hwnd);
+    g_ole_drop = false;
+    if (g_ole_inited) OleUninitialize();
+    g_ole_inited = false;
+}
 
 /// Async file-dialog slot table — see Host.file_dialog_slots. Four
 /// concurrent requests is plenty for any reasonable app; oversaturating
@@ -294,6 +678,32 @@ const IID_IRawElementProviderFragmentRoot: GUID = .{
     .Data4 = .{ 0x86, 0xCB, 0xDE, 0x3C, 0x75, 0x59, 0x9B, 0x58 },
 };
 
+const IID_IInvokeProvider: GUID = .{
+    .Data1 = 0x54FCB24B,
+    .Data2 = 0xE18E,
+    .Data3 = 0x47A2,
+    .Data4 = .{ 0xB4, 0xD3, 0xEC, 0xCB, 0xE7, 0x57, 0x59, 0x9E },
+};
+const IID_IToggleProvider: GUID = .{
+    .Data1 = 0x56D00BD0,
+    .Data2 = 0xC4F4,
+    .Data3 = 0x433C,
+    .Data4 = .{ 0xA8, 0x36, 0x1A, 0x52, 0xA5, 0x7E, 0x08, 0x92 },
+};
+const IID_IValueProvider: GUID = .{
+    .Data1 = 0xC7935180,
+    .Data2 = 0x6FB3,
+    .Data3 = 0x4201,
+    .Data4 = .{ 0xB1, 0x74, 0x7D, 0xF7, 0x3A, 0xDB, 0xF6, 0x4A },
+};
+const UIA_InvokePatternId: c_long = 10000;
+const UIA_ValuePatternId: c_long = 10002;
+const UIA_TogglePatternId: c_long = 10015;
+const UIA_E_ELEMENTNOTENABLED: HRESULT = @bitCast(@as(u32, 0x80040200));
+const UIA_E_ELEMENTNOTAVAILABLE: HRESULT = @bitCast(@as(u32, 0x80040201));
+const ToggleState_Off: c_int = 0;
+const ToggleState_On: c_int = 1;
+
 // Provider option bits (only ServerSideProvider matters for us).
 const ProviderOptions_ServerSideProvider: c_int = 0x01;
 
@@ -321,6 +731,23 @@ const UIA_SliderControlTypeId: c_long = 50015;
 const UIA_SeparatorControlTypeId: c_long = 50038;
 const UIA_ImageControlTypeId: c_long = 50006;
 const UIA_PaneControlTypeId: c_long = 50033;
+const UIA_ComboBoxControlTypeId: c_long = 50003;
+const UIA_HyperlinkControlTypeId: c_long = 50005;
+const UIA_ListItemControlTypeId: c_long = 50007;
+const UIA_ListControlTypeId: c_long = 50008;
+const UIA_MenuControlTypeId: c_long = 50009;
+const UIA_MenuBarControlTypeId: c_long = 50010;
+const UIA_MenuItemControlTypeId: c_long = 50011;
+const UIA_ProgressBarControlTypeId: c_long = 50012;
+const UIA_StatusBarControlTypeId: c_long = 50017;
+const UIA_TabControlTypeId: c_long = 50018;
+const UIA_TabItemControlTypeId: c_long = 50019;
+const UIA_ToolBarControlTypeId: c_long = 50021;
+const UIA_TreeControlTypeId: c_long = 50023;
+const UIA_TreeItemControlTypeId: c_long = 50024;
+const UIA_DataItemControlTypeId: c_long = 50029;
+const UIA_HeaderItemControlTypeId: c_long = 50035;
+const UIA_TableControlTypeId: c_long = 50036;
 
 // Event ids
 const UIA_StructureChangedEventId: c_long = 20002;
@@ -438,6 +865,34 @@ const IRawElementProviderSimple_Vtbl = extern struct {
     get_HostRawElementProvider: *const fn (*SimpleThis, *?*anyopaque) callconv(WINAPI) HRESULT,
 };
 
+const InvokeThis = *const IInvokeProvider_Vtbl;
+const ToggleThis = *const IToggleProvider_Vtbl;
+const ValueThis = *const IValueProvider_Vtbl;
+
+const IInvokeProvider_Vtbl = extern struct {
+    QueryInterface: *const fn (*InvokeThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+    AddRef: *const fn (*InvokeThis) callconv(WINAPI) ULONG,
+    Release: *const fn (*InvokeThis) callconv(WINAPI) ULONG,
+    Invoke: *const fn (*InvokeThis) callconv(WINAPI) HRESULT,
+};
+
+const IToggleProvider_Vtbl = extern struct {
+    QueryInterface: *const fn (*ToggleThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+    AddRef: *const fn (*ToggleThis) callconv(WINAPI) ULONG,
+    Release: *const fn (*ToggleThis) callconv(WINAPI) ULONG,
+    Toggle: *const fn (*ToggleThis) callconv(WINAPI) HRESULT,
+    get_ToggleState: *const fn (*ToggleThis, *c_int) callconv(WINAPI) HRESULT,
+};
+
+const IValueProvider_Vtbl = extern struct {
+    QueryInterface: *const fn (*ValueThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+    AddRef: *const fn (*ValueThis) callconv(WINAPI) ULONG,
+    Release: *const fn (*ValueThis) callconv(WINAPI) ULONG,
+    SetValue: *const fn (*ValueThis, ?[*:0]const u16) callconv(WINAPI) HRESULT,
+    get_Value: *const fn (*ValueThis, *BSTR) callconv(WINAPI) HRESULT,
+    get_IsReadOnly: *const fn (*ValueThis, *BOOL) callconv(WINAPI) HRESULT,
+};
+
 const IRawElementProviderFragment_Vtbl = extern struct {
     // IUnknown
     QueryInterface: *const fn (*FragmentThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
@@ -485,6 +940,10 @@ const RootProvider = extern struct {
 const NodeProvider = extern struct {
     vtbl_simple: *const IRawElementProviderSimple_Vtbl,
     vtbl_fragment: *const IRawElementProviderFragment_Vtbl,
+    /// Control patterns (handed out by GetPatternProvider per role).
+    vtbl_invoke: *const IInvokeProvider_Vtbl,
+    vtbl_toggle: *const IToggleProvider_Vtbl,
+    vtbl_value: *const IValueProvider_Vtbl,
     /// Slot index inside `g_node_providers` — equal to the position
     /// in `g_published_nodes_buf` so siblings can be resolved by
     /// ±1 arithmetic.
@@ -731,8 +1190,134 @@ fn npGetProviderOptions(_: *SimpleThis, opts: *c_int) callconv(WINAPI) HRESULT {
     return S_OK;
 }
 
-fn npGetPatternProvider(_: *SimpleThis, _: c_long, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+/// Which control patterns a role supports.
+fn supportsInvoke(role: A11yRole) bool {
+    return switch (role) {
+        .button, .tab, .menuitem, .link, .option, .treeitem, .radio => true,
+        else => false,
+    };
+}
+fn supportsToggle(role: A11yRole) bool {
+    return role == .checkbox;
+}
+fn supportsValue(role: A11yRole) bool {
+    return role == .text_input;
+}
+
+fn npGetPatternProvider(this: *SimpleThis, pattern_id: c_long, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_simple", this);
     out.* = null;
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    if (self.index >= g_published_count) return S_OK;
+    const role = g_published_nodes_buf[self.index].role;
+    switch (pattern_id) {
+        UIA_InvokePatternId => if (supportsInvoke(role)) {
+            out.* = @ptrCast(&self.vtbl_invoke);
+        },
+        UIA_TogglePatternId => if (supportsToggle(role)) {
+            out.* = @ptrCast(&self.vtbl_toggle);
+        },
+        UIA_ValuePatternId => if (supportsValue(role)) {
+            out.* = @ptrCast(&self.vtbl_value);
+        },
+        else => {},
+    }
+    return S_OK;
+}
+
+// ── Control patterns: requests go onto `g_action_queue`, drained by
+// `Host.pollA11yActions` on the run-loop thread, so they reach `update` as
+// ordinary input. The pattern methods run on UIA's worker thread.
+
+/// Queue `kind` for the published node `index` (lock held by the caller).
+fn queueAction(index: u32, kind: teak.A11yActionKind, payload: []const u8) HRESULT {
+    if (index >= g_published_count) return UIA_E_ELEMENTNOTAVAILABLE;
+    const node = g_published_nodes_buf[index];
+    if (node.disabled) return UIA_E_ELEMENTNOTENABLED;
+    return if (g_action_queue.push(kind, node.cmd_index, payload)) S_OK else E_FAIL;
+}
+
+fn patQueryInterface(vt: anytype, iid: *const GUID, ppv: *?*anyopaque, comptime slot: []const u8) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr(slot, vt);
+    return nodeQueryInterface(self, iid, ppv);
+}
+
+fn ipQueryInterface(this: *InvokeThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    return patQueryInterface(this, iid, ppv, "vtbl_invoke");
+}
+fn ipAddRef(_: *InvokeThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn ipRelease(_: *InvokeThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn ipInvoke(this: *InvokeThis) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_invoke", this);
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    return queueAction(self.index, .activate, "");
+}
+
+fn tpQueryInterface(this: *ToggleThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    return patQueryInterface(this, iid, ppv, "vtbl_toggle");
+}
+fn tpAddRef(_: *ToggleThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn tpRelease(_: *ToggleThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn tpToggle(this: *ToggleThis) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_toggle", this);
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    return queueAction(self.index, .activate, "");
+}
+fn tpGetState(this: *ToggleThis, out: *c_int) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_toggle", this);
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    if (self.index >= g_published_count) return UIA_E_ELEMENTNOTAVAILABLE;
+    out.* = if (g_published_nodes_buf[self.index].state > 0.5) ToggleState_On else ToggleState_Off;
+    return S_OK;
+}
+
+fn vpQueryInterface(this: *ValueThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    return patQueryInterface(this, iid, ppv, "vtbl_value");
+}
+fn vpAddRef(_: *ValueThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn vpRelease(_: *ValueThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn vpSetValue(this: *ValueThis, val: ?[*:0]const u16) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_value", this);
+    const w = val orelse return E_INVALIDARG;
+    var utf8: [1024]u8 = undefined;
+    const n = std.unicode.utf16LeToUtf8(&utf8, std.mem.span(w)) catch return E_INVALIDARG;
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    return queueAction(self.index, .set_value, utf8[0..n]);
+}
+fn vpGetValue(this: *ValueThis, out: *BSTR) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_value", this);
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    if (self.index >= g_published_count) return UIA_E_ELEMENTNOTAVAILABLE;
+    var utf16_buf: [512]u16 = undefined;
+    const len = std.unicode.utf8ToUtf16Le(&utf16_buf, g_published_nodes_buf[self.index].value) catch 0;
+    const clamped: usize = @min(len, utf16_buf.len - 1);
+    utf16_buf[clamped] = 0;
+    out.* = SysAllocString(@ptrCast(&utf16_buf));
+    return S_OK;
+}
+fn vpGetIsReadOnly(this: *ValueThis, out: *BOOL) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_value", this);
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    out.* = if (self.index < g_published_count and g_published_nodes_buf[self.index].disabled) 1 else 0;
     return S_OK;
 }
 
@@ -882,6 +1467,18 @@ fn nodeQueryInterface(self: *NodeProvider, iid: *const GUID, ppv: *?*anyopaque) 
         ppv.* = @ptrCast(&self.vtbl_fragment);
         return S_OK;
     }
+    if (guidEql(iid, &IID_IInvokeProvider)) {
+        ppv.* = @ptrCast(&self.vtbl_invoke);
+        return S_OK;
+    }
+    if (guidEql(iid, &IID_IToggleProvider)) {
+        ppv.* = @ptrCast(&self.vtbl_toggle);
+        return S_OK;
+    }
+    if (guidEql(iid, &IID_IValueProvider)) {
+        ppv.* = @ptrCast(&self.vtbl_value);
+        return S_OK;
+    }
     ppv.* = null;
     return E_NOINTERFACE;
 }
@@ -904,12 +1501,31 @@ fn controlTypeForRole(role: A11yRole) c_long {
         // `.image` above (its primitives aren't individually exposed).
         .canvas => UIA_ImageControlTypeId,
         .overlay => UIA_PaneControlTypeId,
+        .list, .listbox => UIA_ListControlTypeId,
+        .listitem, .option => UIA_ListItemControlTypeId,
+        .combobox => UIA_ComboBoxControlTypeId,
+        .tablist => UIA_TabControlTypeId,
+        .tab => UIA_TabItemControlTypeId,
+        .tree => UIA_TreeControlTypeId,
+        .treeitem => UIA_TreeItemControlTypeId,
+        .table => UIA_TableControlTypeId,
+        .row, .cell => UIA_DataItemControlTypeId,
+        .columnheader => UIA_HeaderItemControlTypeId,
+        .menu => UIA_MenuControlTypeId,
+        .menubar => UIA_MenuBarControlTypeId,
+        .menuitem => UIA_MenuItemControlTypeId,
+        .toolbar => UIA_ToolBarControlTypeId,
+        .dialog => UIA_PaneControlTypeId,
+        .status, .alert => UIA_StatusBarControlTypeId,
+        .progressbar => UIA_ProgressBarControlTypeId,
+        .heading => UIA_TextControlTypeId,
+        .link => UIA_HyperlinkControlTypeId,
     };
 }
 
 fn isFocusableRole(role: A11yRole) bool {
     return switch (role) {
-        .button, .text_input, .text_area, .checkbox, .radio, .slider => true,
+        .button, .text_input, .text_area, .checkbox, .radio, .slider, .tab, .menuitem, .option, .treeitem, .link, .combobox => true,
         else => false,
     };
 }
@@ -1035,6 +1651,30 @@ var g_node_provider_vtbl_simple: IRawElementProviderSimple_Vtbl = .{
     .get_HostRawElementProvider = npGetHostRawElementProvider,
 };
 
+var g_invoke_vtbl: IInvokeProvider_Vtbl = .{
+    .QueryInterface = ipQueryInterface,
+    .AddRef = ipAddRef,
+    .Release = ipRelease,
+    .Invoke = ipInvoke,
+};
+
+var g_toggle_vtbl: IToggleProvider_Vtbl = .{
+    .QueryInterface = tpQueryInterface,
+    .AddRef = tpAddRef,
+    .Release = tpRelease,
+    .Toggle = tpToggle,
+    .get_ToggleState = tpGetState,
+};
+
+var g_value_vtbl: IValueProvider_Vtbl = .{
+    .QueryInterface = vpQueryInterface,
+    .AddRef = vpAddRef,
+    .Release = vpRelease,
+    .SetValue = vpSetValue,
+    .get_Value = vpGetValue,
+    .get_IsReadOnly = vpGetIsReadOnly,
+};
+
 var g_node_provider_vtbl_fragment: IRawElementProviderFragment_Vtbl = .{
     .QueryInterface = npfQueryInterface,
     .AddRef = npfAddRef,
@@ -1083,6 +1723,12 @@ var g_published_count: usize = 0;
 var g_label_heap: [MAX_A11Y_LABEL_BYTES]u8 = undefined;
 var g_label_heap_used: usize = 0;
 
+/// AT requests queued by the UIA pattern methods (worker thread, under
+/// `g_a11y_lock`) and drained by `Host.pollA11yActions`.
+var g_action_queue: teak.A11yActionQueue = .{};
+/// Run-loop-owned copy of delivered action texts (valid until the next poll).
+var g_action_text: [teak.A11yActionQueue.TEXT_CAP]u8 = undefined;
+
 var g_node_providers: [MAX_A11Y_NODES]NodeProvider = undefined;
 var g_node_providers_initialized: bool = false;
 
@@ -1095,6 +1741,9 @@ fn initNodeProviderPool() void {
         g_node_providers[i] = .{
             .vtbl_simple = &g_node_provider_vtbl_simple,
             .vtbl_fragment = &g_node_provider_vtbl_fragment,
+            .vtbl_invoke = &g_invoke_vtbl,
+            .vtbl_toggle = &g_toggle_vtbl,
+            .vtbl_value = &g_value_vtbl,
             .index = i,
         };
     }
@@ -1106,95 +1755,6 @@ fn initNodeProviderPool() void {
 /// StructureChanged event. A perfect diff is overkill for an MVP.
 var g_last_tree_len: usize = 0;
 var g_last_focus_index: ?u32 = null;
-
-// ── GDI types + externs (text measurement) ────────────────────────
-
-const HDC = *anyopaque;
-const HFONT = *anyopaque;
-
-const SIZE = extern struct {
-    cx: c_long,
-    cy: c_long,
-};
-
-const TEXTMETRICW = extern struct {
-    tmHeight: c_long,
-    tmAscent: c_long,
-    tmDescent: c_long,
-    tmInternalLeading: c_long,
-    tmExternalLeading: c_long,
-    tmAveCharWidth: c_long,
-    tmMaxCharWidth: c_long,
-    tmWeight: c_long,
-    tmOverhang: c_long,
-    tmDigitizedAspectX: c_long,
-    tmDigitizedAspectY: c_long,
-    tmFirstChar: u16,
-    tmLastChar: u16,
-    tmDefaultChar: u16,
-    tmBreakChar: u16,
-    tmItalic: u8,
-    tmUnderlined: u8,
-    tmStruckOut: u8,
-    tmPitchAndFamily: u8,
-    tmCharSet: u8,
-};
-
-const FW_NORMAL: c_int = 400;
-const FW_MEDIUM: c_int = 500;
-const FW_BOLD: c_int = 700;
-const DEFAULT_CHARSET: DWORD = 1;
-const OUT_TT_PRECIS: DWORD = 4;
-const CLIP_DEFAULT_PRECIS: DWORD = 0;
-const CLEARTYPE_QUALITY: DWORD = 5;
-const DEFAULT_PITCH: DWORD = 0;
-
-extern "gdi32" fn CreateCompatibleDC(?HDC) callconv(WINAPI) ?HDC;
-extern "gdi32" fn DeleteDC(HDC) callconv(WINAPI) BOOL;
-extern "gdi32" fn CreateFontW(
-    nHeight: c_int,
-    nWidth: c_int,
-    nEscapement: c_int,
-    nOrientation: c_int,
-    fnWeight: c_int,
-    fdwItalic: DWORD,
-    fdwUnderline: DWORD,
-    fdwStrikeOut: DWORD,
-    fdwCharSet: DWORD,
-    fdwOutputPrecision: DWORD,
-    fdwClipPrecision: DWORD,
-    fdwQuality: DWORD,
-    fdwPitchAndFamily: DWORD,
-    lpszFace: LPCWSTR,
-) callconv(WINAPI) ?HFONT;
-extern "gdi32" fn SelectObject(HDC, HANDLE) callconv(WINAPI) ?HANDLE;
-extern "gdi32" fn DeleteObject(HANDLE) callconv(WINAPI) BOOL;
-extern "gdi32" fn GetTextExtentPoint32W(HDC, LPCWSTR, c_int, *SIZE) callconv(WINAPI) BOOL;
-extern "gdi32" fn GetTextMetricsW(HDC, *TEXTMETRICW) callconv(WINAPI) BOOL;
-
-// Face names for each FontFamily. Windows ships Segoe UI / Cambria /
-// Cascadia Mono on every supported version; no fallback chain.
-const FACE_SANS = std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI");
-const FACE_SERIF = std.unicode.utf8ToUtf16LeStringLiteral("Cambria");
-const FACE_MONO = std.unicode.utf8ToUtf16LeStringLiteral("Cascadia Mono");
-
-fn fontFaceUtf16(family: FontFamily) LPCWSTR {
-    return switch (family) {
-        .sans => FACE_SANS,
-        .serif => FACE_SERIF,
-        .mono => FACE_MONO,
-    };
-}
-
-const FontCacheEntry = struct {
-    family: FontFamily,
-    weight: teak.FontWeight,
-    size_px: u16,
-    hfont: HFONT,
-    ascent: f32,
-    descent: f32,
-    line_height: f32,
-};
 
 // ── Module-scoped state (written by wndProc, drained by pollInputs) ──
 
@@ -1263,12 +1823,18 @@ fn secondaryWndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WI
             sw.closed = true;
             return 0;
         },
+        WM_DROPFILES => {
+            const hdrop: HANDLE = @ptrFromInt(wp);
+            queueDroppedFiles(hdrop);
+            DragFinish(hdrop);
+            return 0;
+        },
         WM_SIZE => {
             const w: u32 = loword(lp);
             const h: u32 = hiword(lp);
             if (w > 0 and h > 0) {
-                sw.width = w;
-                sw.height = h;
+                sw.width = toLogical(w);
+                sw.height = toLogical(h);
                 sw.resized = true;
             }
             return 0;
@@ -1319,7 +1885,9 @@ fn navFromVk(vk: WPARAM) ?NavKey {
         VK_RETURN => .enter,
         VK_TAB => .tab,
         VK_ESCAPE => .escape,
+        VK_F12 => .f12,
         VK_F10 => .f10,
+        VK_APPS => .menu,
         VK_A => .a,
         VK_C => .c,
         VK_X => .x,
@@ -1338,7 +1906,7 @@ fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: L
     switch (msg) {
         WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP => {
             q.mods = currentMods();
-            q.pointerMoved(@floatFromInt(lowordSigned(lp)), @floatFromInt(hiwordSigned(lp)));
+            q.pointerMoved(@as(f32, @floatFromInt(lowordSigned(lp))) / g_scale, @as(f32, @floatFromInt(hiwordSigned(lp))) / g_scale);
             switch (msg) {
                 WM_LBUTTONDOWN => q.buttonDown(.left),
                 WM_RBUTTONDOWN => q.buttonDown(.right),
@@ -1366,7 +1934,10 @@ fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: L
         WM_CHAR => q.pushUtf16Unit(@truncate(wp)),
         WM_KEYDOWN => {
             q.mods = currentMods();
-            if (navFromVk(wp)) |nk| q.pushNav(nk);
+            if (navFromVk(wp)) |nk| {
+                q.pushNav(nk);
+                if (nk == .v and q.mods.ctrl) g_paste_requested = true;
+            }
         },
         // Alt-modified keys and F10 arrive as "system" keys. Alt alone and F10
         // are ours (menu-bar activation) and are swallowed so Windows does not
@@ -1409,8 +1980,47 @@ fn utf16OffsetToUtf8(utf8: []const u8, utf16_off: usize) usize {
     return byte_i;
 }
 
+// IME mirror transitions, split out of `wndProc` so synthetic messages can
+// test them without an input method context.
+
+fn imeStart() void {
+    g_ime_active = true;
+    imeClearText();
+}
+
+fn imeEnd() void {
+    g_ime_active = false;
+    imeClearText();
+}
+
+fn imeClearText() void {
+    g_ime_text_len = 0;
+    g_ime_cursor = 0;
+}
+
+/// Store the in-progress composition (UTF-16 as the IME reports it) and the
+/// caret, which arrives as a UTF-16 unit offset and is stored as a UTF-8 byte
+/// offset into the mirror. A negative / absent caret parks it at the end.
+fn imeSetComposition(utf16: []const u16, cursor_units: c_long) void {
+    g_ime_text_len = std.unicode.utf16LeToUtf8(g_ime_text[0..], utf16) catch 0;
+    g_ime_cursor = if (cursor_units >= 0 and g_ime_text_len > 0)
+        utf16OffsetToUtf8(g_ime_text[0..g_ime_text_len], @intCast(cursor_units))
+    else
+        g_ime_text_len;
+}
+
 fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
     switch (msg) {
+        WM_SETCURSOR => {
+            // Only the client area is ours; borders keep the system cursor.
+            if ((@as(usize, @bitCast(lp)) & 0xFFFF) == HTCLIENT) {
+                if (g_cursor) |c| {
+                    _ = SetCursor(c);
+                    return 1;
+                }
+            }
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        },
         WM_DESTROY => {
             g_running = false;
             PostQuitMessage(0);
@@ -1420,10 +2030,20 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             const w: u32 = loword(lp);
             const h: u32 = hiword(lp);
             if (w > 0 and h > 0) {
-                g_width = w;
-                g_height = h;
+                g_width = toLogical(w);
+                g_height = toLogical(h);
                 g_resized = true;
             }
+            return 0;
+        },
+        WM_DPICHANGED => {
+            // New DPI in the low word of wParam; lParam is the window rect
+            // Windows suggests so the window keeps its logical size on the
+            // new monitor. Accepting it triggers WM_SIZE -> re-layout.
+            g_scale = dpiScale(loword(@bitCast(wp)));
+            const r: *const RECT = @ptrFromInt(@as(usize, @bitCast(lp)));
+            _ = SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            g_resized = true;
             return 0;
         },
         // An uncovered / invalidated area: the idle loop skips frames, so
@@ -1433,9 +2053,7 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             return DefWindowProcW(hwnd, msg, wp, lp);
         },
         WM_IME_STARTCOMPOSITION => {
-            g_ime_active = true;
-            g_ime_text_len = 0;
-            g_ime_cursor = 0;
+            imeStart();
             // Returning 0 suppresses the default IME window so the
             // composition is only rendered inline by teak. The caret
             // still receives WM_CHAR on commit via the IME's normal
@@ -1464,40 +2082,20 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
                         @ptrCast(&utf16_buf),
                         @intCast(utf16_buf.len * @sizeOf(u16)),
                     );
-                    if (byte_len > 0) {
-                        const u16_units: usize = @intCast(@divTrunc(byte_len, @as(c_long, @sizeOf(u16))));
-                        const clamped: usize = @min(u16_units, utf16_buf.len);
-                        const written = std.unicode.utf16LeToUtf8(g_ime_text[0..], utf16_buf[0..clamped]) catch 0;
-                        g_ime_text_len = written;
-                    } else {
-                        g_ime_text_len = 0;
-                    }
-                    // Caret position is a UTF-16 code-unit offset; convert
-                    // to a UTF-8 byte offset against our newly-decoded
-                    // mirror so the renderer can place the caret correctly.
+                    const units: usize = if (byte_len > 0) @min(@as(usize, @intCast(@divTrunc(byte_len, @as(c_long, @sizeOf(u16))))), utf16_buf.len) else 0;
                     const cur_units = ImmGetCompositionStringW(himc, GCS_CURSORPOS, null, 0);
-                    if (cur_units >= 0 and g_ime_text_len > 0) {
-                        g_ime_cursor = utf16OffsetToUtf8(
-                            g_ime_text[0..g_ime_text_len],
-                            @intCast(cur_units),
-                        );
-                    } else {
-                        g_ime_cursor = g_ime_text_len;
-                    }
+                    imeSetComposition(utf16_buf[0..units], cur_units);
                 }
             } else if ((flags & GCS_COMPSTR) == 0 and (flags & GCS_RESULTSTR) != 0) {
                 // Commit-only message: drop the pre-commit mirror but
                 // stay active until WM_IME_ENDCOMPOSITION arrives.
-                g_ime_text_len = 0;
-                g_ime_cursor = 0;
+                imeClearText();
             }
             // Pass through so the IME's commit -> WM_CHAR path still fires.
             return DefWindowProcW(hwnd, msg, wp, lp);
         },
         WM_IME_ENDCOMPOSITION => {
-            g_ime_active = false;
-            g_ime_text_len = 0;
-            g_ime_cursor = 0;
+            imeEnd();
             return 0;
         },
         WM_GETOBJECT => {
@@ -1530,13 +2128,9 @@ pub const NativeHandle = struct {
 pub const Host = struct {
     hinstance: HANDLE,
     hwnd: HANDLE,
-    /// Memory DC reused for every measurement. `GetTextExtentPoint32W`
-    /// needs a DC, but we never draw to this one — rasterization lives
-    /// in the GPU layer (`src/gpu/native.zig`) with its own DC.
-    measure_dc: HDC,
-    font_cache: [8]FontCacheEntry,
-    font_cache_len: usize,
-
+    /// Declarative-effects service (HTTP workers, storage, clock, ...);
+    /// the picker / clipboard / drop effects are handled by this Host.
+    effects: *native_effects.Service,
     /// Persistent UTF-8 buffer for the most recent clipboard read.
     /// Valid until the next `clipboard().read()` call (which overwrites
     /// it). 64K is plenty for any reasonable text payload; longer pastes
@@ -1560,6 +2154,13 @@ pub const Host = struct {
     file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = @splat(.{}),
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
+        // Declare per-monitor v2 awareness before any window exists (a
+        // failure — Windows older than 10 1703, or awareness already set by
+        // a manifest — leaves the previous mode, which is fine). The
+        // `width`/`height` asked for are logical; the window is created at
+        // the system DPI's physical size and WM_SIZE converts back.
+        _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        g_scale = dpiScale(GetDpiForSystem());
         g_running = true;
         g_width = width;
         g_height = height;
@@ -1610,30 +2211,29 @@ pub const Host = struct {
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            @intCast(width),
-            @intCast(height),
+            @intFromFloat(@round(@as(f32, @floatFromInt(width)) * g_scale)),
+            @intFromFloat(@round(@as(f32, @floatFromInt(height)) * g_scale)),
             null,
             null,
             hinstance,
             null,
         ) orelse return error.CreateWindowFailed;
         _ = ShowWindow(hwnd, SW_SHOW);
+        registerDropTarget(hwnd);
+        g_scale = dpiScale(GetDpiForWindow(hwnd));
+        const effects = try native_effects.Service.create(title);
+        errdefer effects.destroy();
+        g_effects = effects;
 
         // Capture the HWND so UIA's get_HostRawElementProvider can hand
         // it to UiaHostProviderFromHwnd for any property we don't
         // ourselves answer.
         g_hwnd_for_uia = hwnd;
 
-        const screen_dc = GetDC(null) orelse return error.GetDcFailed;
-        defer _ = ReleaseDC(null, screen_dc);
-        const measure_dc = CreateCompatibleDC(screen_dc) orelse return error.CreateDcFailed;
-
         return .{
             .hinstance = hinstance,
             .hwnd = hwnd,
-            .measure_dc = measure_dc,
-            .font_cache = undefined,
-            .font_cache_len = 0,
+            .effects = effects,
             .clipboard_buf = undefined,
             .clipboard_len = 0,
             .dialog_path_buf = undefined,
@@ -1658,10 +2258,10 @@ pub const Host = struct {
             g_a11y_lock_initialized = false;
         }
 
-        for (self.font_cache[0..self.font_cache_len]) |entry| {
-            _ = DeleteObject(entry.hfont);
-        }
-        _ = DeleteDC(self.measure_dc);
+        unregisterDropTarget(self.hwnd);
+        g_effects = null;
+        self.effects.destroy();
+        text.releaseFaces();
         // Win32 cleans up the window on process exit; explicit teardown
         // would require tracking class registration state.
     }
@@ -1695,6 +2295,13 @@ pub const Host = struct {
     /// conversion: UTF-8 → stack UTF-16 (256 code units) → SetWindowTextW.
     /// A title is cosmetic, so an over-long or invalid string is dropped
     /// rather than erroring.
+    /// Show `shape` over the client area (`WM_SETCURSOR` re-applies it whenever
+    /// Windows asks, so it survives pointer moves).
+    pub fn setCursor(_: *Host, shape: teak.CursorShape) void {
+        g_cursor = LoadCursorW(null, @ptrFromInt(idcFor(shape)));
+        _ = SetCursor(g_cursor);
+    }
+
     pub fn setTitle(self: *Host, title: []const u8) void {
         var title_buf: [256]u16 = undefined;
         const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title) catch return;
@@ -1703,10 +2310,56 @@ pub const Host = struct {
         _ = SetWindowTextW(self.hwnd, @ptrCast(&title_buf));
     }
 
-    /// The shared stb_truetype measurer (`teak-text`): the same shaper the
-    /// Gpu rasterizes with, so layout and glyphs agree. Faces come from
-    /// `registerFont`, else the system font probe (`TEAK_FONT`, then
-    /// `C:\Windows\Fonts`). The GDI helpers below are retained as a fallback.
+    // ── Declarative effects (docs/features/effects.md) ─────────────
+
+    /// Start one effect. The file pickers, the clipboard and downloads are
+    /// native Win32 UI and run here (blocking the frame while a dialog is
+    /// up, like `openFileDialog`); everything else (HTTP on worker threads,
+    /// storage under `%APPDATA%\teak\<app>`, clock, command-line query
+    /// parameters) is the shared `native_effects.Service`. `TEAK_OPEN` /
+    /// `TEAK_OUT` skip the dialogs so scripted runs stay hands-free.
+    pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
+        switch (e) {
+            .open_file => |o| {
+                if (native_effects.envSet("TEAK_OPEN")) return self.effects.submit(e);
+                self.effects.openPath(o.id, runFileDialog(self, .{}, false, ""));
+            },
+            .download => |d| {
+                if (native_effects.envSet("TEAK_OUT")) return self.effects.submit(e);
+                if (runFileDialog(self, .{}, true, std.fs.path.basename(d.name))) |path| {
+                    self.effects.downloadTo(d.id, path, d.bytes);
+                } else self.effects.downloadCancelled(d.id);
+            },
+            .write_clipboard => |w| clipWrite(@ptrCast(self), w.text),
+            else => return self.effects.submit(e),
+        }
+        return .accepted;
+    }
+
+    /// Finished effect results plus files dropped on the window since the
+    /// last poll. Slices stay valid until the next call.
+    pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize {
+        var i: usize = 0;
+        while (i < g_drop_count) : (i += 1) self.effects.dropFile(g_drops[i][0..g_drop_lens[i]]);
+        g_drop_count = 0;
+        // A Ctrl+V the app's `handleClipboard` did not claim through
+        // `Clipboard.read` is a page-style paste: text or an image.
+        if (g_paste_requested) {
+            g_paste_requested = false;
+            pasteUnclaimed();
+        }
+        return self.effects.poll(buf, self.nowMs());
+    }
+
+    /// Name the app's storage directory (`%APPDATA%\teak\<name>\`);
+    /// defaults to the window title.
+    pub fn setAppName(self: *Host, name: []const u8) void {
+        self.effects.setAppName(name) catch {};
+    }
+
+    /// The shared stb_truetype measurer (`teak-text`): the same faces and
+    /// scale math the Gpu rasterizes from, so layout and render agree and
+    /// `FontSpec.letter_spacing` is honoured identically on every native OS.
     pub fn textMeasurer(self: *Host) TextMeasurer {
         return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
     }
@@ -1715,87 +2368,13 @@ pub const Host = struct {
         return text.measure(text_bytes, font);
     }
 
-    /// Register a TTF for (`family`, `weight`); the bytes are borrowed (pass an
-    /// `@embedFile` slice). Without one the family uses a system font.
+    /// Register the TTF `ttf` (typically `@embedFile`, borrowed — keep it
+    /// alive) as the face for (`family`, `weight`), shared by the measurer
+    /// and the Gpu's rasterizer. Register before the first frame. A family
+    /// without a registered face uses the system monospace font
+    /// (`%WINDIR%\Fonts\consola.ttf`, or `TEAK_FONT`).
     pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
         try text.registerFace(family, weight, ttf);
-    }
-
-    fn gdiMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        const self: *Host = @ptrCast(@alignCast(ctx));
-        const entry = getOrCreateFont(self, font) orelse return fallbackMetrics();
-
-        // UTF-8 → UTF-16 on the stack. 1024 code units covers any label
-        // we'll ever measure; longer inputs clamp to len 0.
-        var utf16_buf: [1024]u16 = undefined;
-        const len = std.unicode.utf8ToUtf16Le(&utf16_buf, text_bytes) catch 0;
-
-        _ = SelectObject(self.measure_dc, entry.hfont);
-
-        var size: SIZE = undefined;
-        const ok = GetTextExtentPoint32W(
-            self.measure_dc,
-            @ptrCast(&utf16_buf),
-            @intCast(len),
-            &size,
-        );
-        const width: f32 = if (ok != 0) @floatFromInt(size.cx) else 0;
-
-        return .{
-            .width = width,
-            .height = entry.line_height,
-            .ascent = entry.ascent,
-            .descent = entry.descent,
-        };
-    }
-
-    fn getOrCreateFont(self: *Host, font: FontSpec) ?*const FontCacheEntry {
-        const size_px: u16 = @intFromFloat(font.size_px);
-        for (self.font_cache[0..self.font_cache_len]) |*e| {
-            if (e.family == font.family and e.weight == font.weight and e.size_px == size_px) return e;
-        }
-        if (self.font_cache_len >= self.font_cache.len) return null;
-
-        // Negative lfHeight selects font by character (cell-less) height
-        // in logical units — closest to "pixel size" for a 100% DPI DC.
-        const hfont = CreateFontW(
-            -@as(c_int, @intCast(size_px)),
-            0,
-            0,
-            0,
-            gdiWeight(font.weight),
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_TT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            DEFAULT_PITCH,
-            fontFaceUtf16(font.family),
-        ) orelse return null;
-
-        _ = SelectObject(self.measure_dc, hfont);
-        var tm: TEXTMETRICW = undefined;
-        _ = GetTextMetricsW(self.measure_dc, &tm);
-
-        self.font_cache[self.font_cache_len] = .{
-            .family = font.family,
-            .weight = font.weight,
-            .size_px = size_px,
-            .hfont = hfont,
-            .ascent = @floatFromInt(tm.tmAscent),
-            .descent = @floatFromInt(tm.tmDescent),
-            .line_height = @floatFromInt(tm.tmHeight),
-        };
-        self.font_cache_len += 1;
-        return &self.font_cache[self.font_cache_len - 1];
-    }
-
-    /// Returned when font creation or conversion fails. Mirrors the
-    /// WS1 stub numbers so a broken font path doesn't explode layouts.
-    fn fallbackMetrics() TextMetrics {
-        return .{ .width = 0, .height = 20, .ascent = 15, .descent = 5 };
     }
 
     pub fn clipboard(self: *Host) Clipboard {
@@ -1846,6 +2425,16 @@ pub const Host = struct {
             } else {
                 n.label = &.{};
             }
+            // Same for the value (ValuePattern.get_Value reads it on UIA's thread).
+            const vremaining = MAX_A11Y_LABEL_BYTES - g_label_heap_used;
+            const vtake = @min(n.value.len, vremaining);
+            if (vtake > 0) {
+                @memcpy(g_label_heap[g_label_heap_used..][0..vtake], n.value[0..vtake]);
+                n.value = g_label_heap[g_label_heap_used..][0..vtake];
+                g_label_heap_used += vtake;
+            } else {
+                n.value = &.{};
+            }
             g_published_nodes_buf[i] = n;
         }
         g_published_count = cap;
@@ -1876,15 +2465,24 @@ pub const Host = struct {
         }
     }
 
+    /// Requests UIA clients made through the Invoke / Toggle / Value patterns
+    /// since the last poll; `text` stays valid until the next call.
+    pub fn pollA11yActions(_: *Host, out: []teak.A11yAction) usize {
+        if (!g_a11y_lock_initialized) return 0;
+        EnterCriticalSection(&g_a11y_lock);
+        defer LeaveCriticalSection(&g_a11y_lock);
+        return g_action_queue.drain(out, &g_action_text);
+    }
+
     /// Blocks until the user picks a file or cancels. Returns a UTF-8
     /// slice into the Host's dialog buffer (valid until the next
     /// dialog call) or null on cancel.
     pub fn openFileDialog(self: *Host, filter: FileDialogFilter) FileDialogResult {
-        return runFileDialog(self, filter, false);
+        return runFileDialog(self, filter, false, "");
     }
 
     pub fn saveFileDialog(self: *Host, filter: FileDialogFilter) FileDialogResult {
-        return runFileDialog(self, filter, true);
+        return runFileDialog(self, filter, true, "");
     }
 
     /// Async file dialog request. Win32 has a synchronous file picker
@@ -2052,18 +2650,10 @@ pub const Host = struct {
     }
 
     /// Physical device pixels per logical unit at the window's current
-    /// DPI. **Important:** this returns 1.0 today because the process is
-    /// DPI-*unaware* (no `SetProcessDpiAwarenessContext` / manifest) — in
-    /// that mode Windows virtualizes the window's coordinate space and
-    /// bitmap-stretches the framebuffer to the physical resolution, so
-    /// `WM_SIZE` / mouse coords are already in the same 1.0 space the
-    /// renderer draws into (self-consistent, but blurry at scale != 1).
-    /// `GetDpiForWindow` only reports the true monitor factor once
-    /// Per-Monitor(-v2) awareness is declared; that, plus consuming the
-    /// factor to scale fonts + layout, is the render-at-scale follow-up
-    /// documented in docs/features/host.md. Reporting the real ratio here
-    /// keeps this decl honest the moment awareness lands.
+    /// DPI. The process declares per-monitor v2 awareness in `init`, so
+    /// this is the true monitor factor (1.0 at 96 DPI, 2.0 at 192).
     pub fn scaleFactor(self: *const Host) f32 {
+        // (per-monitor v2 is declared in `init`, so this is the real factor)
         const dpi = GetDpiForWindow(self.hwnd);
         if (dpi == 0) return 1.0; // pre-1607 or invalid HWND
         return @as(f32, @floatFromInt(dpi)) / USER_DEFAULT_SCREEN_DPI;
@@ -2083,7 +2673,7 @@ pub const Host = struct {
         }
         if (slot_idx == MAX_FILE_DIALOG_SLOTS) return 0;
 
-        const result = runFileDialog(self, filter, save);
+        const result = runFileDialog(self, filter, save, "");
         const slot = &self.file_dialog_slots[slot_idx];
         slot.active = true;
         if (result) |_| {
@@ -2096,8 +2686,15 @@ pub const Host = struct {
         return @intCast(slot_idx + 1);
     }
 
-    fn runFileDialog(self: *Host, filter: FileDialogFilter, save: bool) FileDialogResult {
+    /// Show the (modal, blocking) picker. `initial_name` prefills the file
+    /// name of a save dialog.
+    fn runFileDialog(self: *Host, filter: FileDialogFilter, save: bool, initial_name: []const u8) FileDialogResult {
         var file_buf: [260]u16 = @splat(0);
+        if (save and initial_name.len > 0) {
+            // Truncate to leave the terminating NUL; an unconvertible name
+            // just opens the dialog empty.
+            _ = std.unicode.utf8ToUtf16Le(file_buf[0 .. file_buf.len - 1], initial_name) catch {};
+        }
 
         // OFN filter format: "Name\0pattern\0Name2\0pattern2\0\0" — a
         // double-null-terminated alternating list. Build it on the stack.
@@ -2138,6 +2735,7 @@ pub const Host = struct {
 
     fn clipRead(ctx: *anyopaque) []const u8 {
         const self: *Host = @ptrCast(@alignCast(ctx));
+        g_paste_requested = false; // claimed: no `pasted_text` for this press
         if (OpenClipboard(null) == 0) return self.clipboard_buf[0..0];
         defer _ = CloseClipboard();
 
@@ -2274,10 +2872,104 @@ test "uia per-node providers: publishA11yTree copies labels into the heap" {
     try std.testing.expectEqual(@as(u32, 1), focused_node.index);
 }
 
-fn gdiWeight(w: teak.FontWeight) c_int {
-    return switch (w) {
-        .regular => FW_NORMAL,
-        .medium => FW_MEDIUM,
-        .bold => FW_BOLD,
+test "DPI helpers: dpiScale and toLogical convert physical client pixels" {
+    const saved = g_scale;
+    defer g_scale = saved;
+    try std.testing.expectEqual(@as(f32, 1.0), dpiScale(0));
+    try std.testing.expectEqual(@as(f32, 1.5), dpiScale(144));
+    g_scale = dpiScale(192);
+    try std.testing.expectEqual(@as(u32, 640), toLogical(1280));
+    try std.testing.expectEqual(@as(u32, 1), toLogical(0));
+    g_scale = dpiScale(144);
+    try std.testing.expectEqual(@as(u32, 800), toLogical(1200));
+}
+
+test "dropped paths queue is bounded and starts empty" {
+    try std.testing.expectEqual(@as(usize, 0), g_drop_count);
+    try std.testing.expect(MAX_PENDING_DROPS > 0);
+}
+
+test "IME: start / composition / commit / end drive imeState like the other hosts" {
+    const host: *const Host = undefined; // imeState reads module state only
+    try std.testing.expect(!host.imeState().active);
+
+    // WM_IME_STARTCOMPOSITION through the real window procedure.
+    const fake_hwnd: HANDLE = @ptrFromInt(0x1000);
+    try std.testing.expectEqual(@as(LRESULT, 0), wndProc(fake_hwnd, WM_IME_STARTCOMPOSITION, 0, 0));
+    try std.testing.expect(host.imeState().active);
+    try std.testing.expectEqual(@as(usize, 0), host.imeState().text.len);
+
+    // Composition "nihon" + one multi-byte char; caret after the 2nd UTF-16 unit.
+    const comp = std.unicode.utf8ToUtf16LeStringLiteral("\u{65e5}\u{672c}go");
+    imeSetComposition(comp, 2);
+    var st = host.imeState();
+    try std.testing.expect(st.active);
+    try std.testing.expectEqualStrings("\u{65e5}\u{672c}go", st.text);
+    try std.testing.expectEqual(@as(usize, 6), st.cursor); // 2 units -> 6 UTF-8 bytes
+
+    // No caret reported: parked at the end.
+    imeSetComposition(comp, -1);
+    try std.testing.expectEqual(host.imeState().text.len, host.imeState().cursor);
+
+    // Commit-only clears the mirror but stays active; end deactivates.
+    imeClearText();
+    st = host.imeState();
+    try std.testing.expect(st.active);
+    try std.testing.expectEqual(@as(usize, 0), st.text.len);
+    try std.testing.expectEqual(@as(LRESULT, 0), wndProc(fake_hwnd, WM_IME_ENDCOMPOSITION, 0, 0));
+    try std.testing.expect(!host.imeState().active);
+}
+
+test "uia patterns: Invoke / Toggle / SetValue queue actions that pollA11yActions delivers" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    if (!g_a11y_lock_initialized) {
+        InitializeCriticalSection(&g_a11y_lock);
+        g_a11y_lock_initialized = true;
+    }
+    initNodeProviderPool();
+    const nodes = [_]A11yNode{
+        .{ .role = .button, .cmd_index = 3, .bounds = .{}, .label = "Save" },
+        .{ .role = .checkbox, .cmd_index = 5, .bounds = .{}, .label = "agree", .state = 1 },
+        .{ .role = .text_input, .cmd_index = 8, .bounds = .{}, .label = "name", .value = "bob" },
+        .{ .role = .button, .cmd_index = 9, .bounds = .{}, .label = "Off", .disabled = true },
+        .{ .role = .text, .cmd_index = 10, .bounds = .{}, .label = "plain" },
     };
+    var host: Host = undefined;
+    host.publishA11yTree(&nodes);
+
+    // GetPatternProvider is role-gated.
+    var p: ?*anyopaque = null;
+    const s0: *SimpleThis = @ptrCast(&g_node_providers[0].vtbl_simple);
+    try std.testing.expectEqual(S_OK, g_node_provider_vtbl_simple.GetPatternProvider(s0, UIA_InvokePatternId, &p));
+    try std.testing.expect(p != null);
+    const inv: *InvokeThis = @ptrCast(@alignCast(p.?));
+    try std.testing.expectEqual(S_OK, g_invoke_vtbl.Invoke(inv));
+    p = null;
+    _ = g_node_provider_vtbl_simple.GetPatternProvider(s0, UIA_TogglePatternId, &p);
+    try std.testing.expect(p == null);
+
+    const tog: *ToggleThis = @ptrCast(&g_node_providers[1].vtbl_toggle);
+    var st: c_int = -1;
+    try std.testing.expectEqual(S_OK, g_toggle_vtbl.get_ToggleState(tog, &st));
+    try std.testing.expectEqual(ToggleState_On, st);
+    try std.testing.expectEqual(S_OK, g_toggle_vtbl.Toggle(tog));
+
+    const val: *ValueThis = @ptrCast(&g_node_providers[2].vtbl_value);
+    const w = std.unicode.utf8ToUtf16LeStringLiteral("alice");
+    try std.testing.expectEqual(S_OK, g_value_vtbl.SetValue(val, w));
+
+    // Disabled elements refuse; non-patterned roles do not hand out patterns.
+    const dis: *InvokeThis = @ptrCast(&g_node_providers[3].vtbl_invoke);
+    try std.testing.expectEqual(UIA_E_ELEMENTNOTENABLED, g_invoke_vtbl.Invoke(dis));
+
+    var out: [8]teak.A11yAction = undefined;
+    const n = host.pollA11yActions(&out);
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqual(teak.A11yActionKind.activate, out[0].kind);
+    try std.testing.expectEqual(@as(u32, 3), out[0].cmd_index);
+    try std.testing.expectEqual(@as(u32, 5), out[1].cmd_index);
+    try std.testing.expectEqual(teak.A11yActionKind.set_value, out[2].kind);
+    try std.testing.expectEqual(@as(u32, 8), out[2].cmd_index);
+    try std.testing.expectEqualStrings("alice", out[2].text);
+    try std.testing.expectEqual(@as(usize, 0), host.pollA11yActions(&out));
 }
