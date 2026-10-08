@@ -328,47 +328,32 @@ the menu. The navigation logic (`Nav`) is pure and exhaustively tested.
 ### Menu shortcuts: one chord, shown and working
 
 `MenuItem.shortcut` is **display text only**: choosing the row dispatches
-`msgs.run(action)`, and pressing the key does nothing by itself. The chord is
-made to work by the command table (`commands`, [commands.md](commands.md)): the
-loop matches `InputState.chords` against it before widget key handling and
-dispatches the row's `msg`. Wire both to the *same* Msg so a click and the
-chord are indistinguishable to `update`:
+`msgs.run(action)`, and pressing the key does nothing by itself. The chord works
+because of the command table (`commands`, [commands.md](commands.md#menu-bar)):
+the loop matches `InputState.chords` against it before widget key handling and
+dispatches the row's `msg`. Keep **one source of truth** for the chord:
 
-```zig
-const Action = enum { save, quit };
-const MB = teak.widgets.menu.MenuBar(Action);
-const save_chord = teak.Chord.ctrl(.s);                       // ONE definition
+1. **Preferred: build the rows from the table.**
+   `teak.commands.menuItems(MB.Item, arena, &list, .pc, &.{ "file.open", "-", "view.fit" })`
+   returns menu rows (label, `Chord.format` shortcut text, `enabled`, action =
+   command index; `"-"` is a separator). Use `MenuBar(u16)`; on `run(i)` close the
+   menu and `update(m, list.items[i].msg)`. Label, shortcut text, enabled state and
+   the chord itself all come from the same `Command`, so they cannot drift
+   (`examples/kerf_viewer`).
+2. **Const trees** (when `keySpecialMsg` needs the same tree without a per-frame
+   arena): define the chord once and derive the text at comptime,
+   `.shortcut = kb.save.text(.pc)` with `commands` using `.shortcut = kb.save`
+   (`examples/gallery`). Give the command the menu's own `run(action)` Msg
+   (`.msg = .{ .run = .save }`) so a click and the chord are indistinguishable to
+   `update`.
+3. A hand-written literal (`.shortcut = "Ctrl+S"`) is only display text; if you
+   must, guard it with a test that formats the command's chord
+   (`Chord.format(&w, .pc)`) and compares.
 
-const file_menu = [_]MB.Item{                                 // const: keySpecialMsg needs the same tree
-    .{ .label = "&Save", .action = .save, .shortcut = "Ctrl+S" },
-    .{ .label = "E&xit", .action = .quit },
-};
-
-pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
-    list.add(.{ .id = "file.save", .label = "Save", .shortcut = save_chord,
-                .enabled = m.dirty, .msg = .{ .run = .save } });   // same Msg as the menu row
-}
-```
-
-(`Chord.ctrl` is the platform's primary modifier: Cmd on macOS, where the host
-folds it. The menu text is the PC spelling; on macOS build it with
-`Chord.format(w, .mac)` instead.) Because the text is a literal, keep the two in
-sync with a test; it is cheap and fails the moment someone edits one side:
-
-```zig
-test "menu shortcut text matches the command table" {
-    var buf: [32]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&buf);
-    try save_chord.format(&w, .pc);
-    try std.testing.expectEqualStrings(file_menu[0].shortcut, w.buffered());
-}
-```
-
-A menu built per frame can instead format straight from the table:
-`cmd.menuLabel(arena, .pc, 20)` for a one-string row ("Save    Ctrl+S"), or
-`Chord.format` into an arena buffer for the item's own `.shortcut`. A
-disabled command (`.enabled = false`) neither runs from its chord nor should
-its menu row be enabled: derive both from the same Model field.
+`Chord.ctrl` is the platform's primary modifier (Cmd on macOS, folded by the
+host); format with `.mac` there. A disabled command (`.enabled = false`) neither
+runs from its chord nor shows an enabled menu row when the rows come from the
+table.
 
 **color_picker.** A saturation / value square and a hue strip (interactive canvases drawn from per-vertex-coloured
 triangles: white -> hue left to right, a transparent -> black overlay top to bottom), a preview, hex / R / G / B fields
