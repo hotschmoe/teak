@@ -146,7 +146,7 @@ const scene_layers: Spec = .{ .clear_decl = "paper", .states = &.{
 } };
 
 const kerf_viewer: Spec = .{ .clear_decl = "paper", .states = &.{
-    .{ .name = "section", .steps = &.{.{ .frames = 3 }} },
+    .{ .name = "section", .steps = &.{.{ .frames = 10 }} },
     .{ .name = "section_hover", .steps = &.{ .{ .frames = 3 }, .{ .click = .{ 542, 350 } }, .{ .move = .{ 470, 505 } }, .{ .frames = 2 } } },
     .{ .name = "three_d", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 547, 66 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 134 } }, .{ .frames = 3 } } },
     .{ .name = "iso", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 1111, 20 } }, .{ .frames = 2 }, .{ .click = .{ 491, 66 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 134 } }, .{ .move = .{ 640, 400 } }, .{ .frames = 2 } } },
