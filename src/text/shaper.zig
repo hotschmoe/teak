@@ -125,9 +125,21 @@ fn isCombining(cp: u21) bool {
         (cp >= 0x0591 and cp <= 0x05BD) or (cp >= 0x064B and cp <= 0x065F);
 }
 
-/// Shape `text` into `out`. Without any font the result is empty (count 0,
-/// width 0, consumed = text.len): there is nothing to draw or measure.
+const use_harfbuzz = @import("text_options").harfbuzz;
+const hb_shaper = if (use_harfbuzz) @import("hb_shaper.zig") else struct {};
+
+/// Shape `text` into `out`: HarfBuzz for complex scripts when built with
+/// `-Dharfbuzz=true`, the built-in shaper otherwise. Without any font the
+/// result is empty (count 0, width 0, consumed = text.len).
 pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
+    if (comptime use_harfbuzz) {
+        if (hb_shaper.needsShaping(text)) return hb_shaper.shape(text, font, out);
+    }
+    return shapeSimple(text, font, out);
+}
+
+/// The built-in shaper (cmap, ligatures, kerning, centred marks), always available.
+pub fn shapeSimple(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     const resolved = face_mod.resolveFace(font.family, font.weight) orelse
         return .{ .count = 0, .width = 0, .consumed = text.len };
     const primary = resolved.face;

@@ -617,7 +617,7 @@ DEFAULT_FONT: FontSpec        // sans 14px
 TextMetrics = struct { width, height, ascent, descent: f32 }
 TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
                         pub fn prefixWidth(text, font, byte_prefix: usize) f32 }
-ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32 }  // logical order; sum(advance)==width
+ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32, y: f32 = 0 }  // logical order (RTL runs from the optional HarfBuzz shaper: visual); y = baseline offset px, down; sum(advance)==width
 ShapeResult = struct { count: usize, width: f32, consumed: usize }   // consumed < text.len only when `out` filled
 Shaper = struct { ctx: *anyopaque, shape_fn; pub fn shape(text, font, out: []ShapedGlyph) ShapeResult }
 TextureHandle = u32

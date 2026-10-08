@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Optional HarfBuzz shaper
+
+- `-Dharfbuzz=true` (library tests) / `.harfbuzz = true` (`NativeWgpuOptions`,
+  `HeadlessOptions`): complex scripts (Arabic joining, Hebrew, Indic reordering and
+  conjuncts, GPOS mark attachment) are shaped by HarfBuzz 11.2.1, built from its
+  single-source `harfbuzz.cc` as a lazy package (default builds fetch nothing and
+  are unchanged). Native only. `ShapedGlyph` gains `y` (baseline offset).
+  Direction is a stand-in until bidi lands. `examples/notes`: "Show scripts".
+  See docs/features/harfbuzz.md.
 ### Fixed
 
 - **SDF quads lost their records when the vertex buffer grew** (visible with `modern_light`: after a dropdown
