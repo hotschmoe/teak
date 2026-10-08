@@ -87,6 +87,9 @@
 
 ### Added
 
+- Toasts slide in from the right and fade (and slide out on expiry / dismiss) with `teak.anim` tweens; the app
+  forwards `animationMsg` frames as `Toast.Msg.frame` and lists `Sub.animation_frame` while `Toast.animating`.
+
 - `ButtonCmd.underline` / `cb.buttonStyledUnderlined`: one underlined character in a button label (a 1 px quad under the
   glyph). Menu bars and panels use it for their `&` mnemonics.
 
