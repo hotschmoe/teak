@@ -186,6 +186,18 @@ pub fn serve(
     }
 }
 
+/// Sequential view of argv without the program name.
+const ArgIter = struct {
+    items: []const [:0]const u8,
+    i: usize = 1,
+
+    fn next(self: *ArgIter) ?[:0]const u8 {
+        if (self.i >= self.items.len) return null;
+        defer self.i += 1;
+        return self.items[self.i];
+    }
+};
+
 /// `argv[1]` of a `pub fn main(init: std.process.Init)` program, or
 /// `default` when absent: the output path of a `zig build shot -- out.png`.
 pub fn pathArg(init: anytype, default: []const u8) []const u8 {
@@ -227,8 +239,8 @@ pub fn shotCli(
     var all_dir: ?[]const u8 = null;
     var opts_base = o;
     var prefix: []const u8 = "shot";
-    var it = init.minimal.args.iterate();
-    _ = it.next();
+    // `toSlice` (not `iterate`, a compile error on Windows).
+    var it: ArgIter = .{ .items = try init.minimal.args.toSlice(init.arena.allocator()) };
     while (it.next()) |a| {
         if (std.mem.eql(u8, a, "--list")) {
             list = true;
