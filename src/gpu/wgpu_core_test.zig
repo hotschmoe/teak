@@ -482,7 +482,7 @@ test "HiDPI scale 2: a 3D scene renders at device resolution (hard edge, no magn
     const idx = [12]u32{ 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
     const mesh = h.gpu.uploadMesh(.{ .vertices = &v, .indices = &idx });
     // Logical (4,4)-(14,14) is device (8,8)-(28,28); the seam falls at device x = 19.
-    h.gpu.renderScenes(&.{sceneAt(mesh, 4, 4, 10, 10, 0)});
+    h.gpu.renderScenes(&.{sceneAt(mesh, 4, 4, 10, 10, 0)}, &.{});
     const f = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(f);
     try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 8, 8)); // red (BGRA)
