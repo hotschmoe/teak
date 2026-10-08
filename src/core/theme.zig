@@ -190,6 +190,9 @@ pub const Theme = struct {
             .min_width = 120,
             .radius = t.radii(.sm),
             .border_width = if (rounded) t.border_width else 2,
+            .disabled_bg = mix(p.bg_sunken, p.bg, 0.5),
+            .disabled_fg = mix(p.fg_muted, p.bg, 0.4),
+            .disabled_border = mix(p.border, p.bg, 0.5),
         };
         return .{
             .tokens = t,
@@ -209,12 +212,16 @@ pub const Theme = struct {
                 .border = if (rounded) p.border else null,
                 .border_width = t.border_width,
                 .soft_shadow = t.shadowAt(1),
+                // flat and dimmed toward the window, in every palette (the
+                // struct defaults are dark-theme greys)
+                .disabled_bg = mix(p.bg_raised, p.bg, 0.55),
+                .disabled_fg = mix(p.fg_muted, p.bg, 0.4),
             },
             .button_primary = .{
                 .bg = p.accent,
                 .hover_bg = lighten(p.accent, 0.10),
                 .press_bg = lighten(p.accent, -0.10),
-                .fg = .{ 1, 1, 1, 1 },
+                .fg = onAccent(p),
                 .radius = t.radii(.md),
                 .soft_shadow = t.shadowAt(1),
             },
@@ -258,6 +265,37 @@ pub const Theme = struct {
     }
 };
 
+/// `a` -> `b` by `t`, alpha from `a`.
+fn mix(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
+    return .{ a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] };
+}
+
+/// WCAG relative luminance of an sRGB colour.
+fn luminance(c: [4]f32) f32 {
+    var l: f32 = 0;
+    const k = [3]f32{ 0.2126, 0.7152, 0.0722 };
+    for (0..3) |i| {
+        const v = c[i];
+        const lin = if (v <= 0.03928) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+        l += k[i] * lin;
+    }
+    return l;
+}
+
+/// WCAG contrast ratio of two colours (1 .. 21).
+pub fn contrast(a: [4]f32, b: [4]f32) f32 {
+    const la = luminance(a);
+    const lb = luminance(b);
+    return (@max(la, lb) + 0.05) / (@min(la, lb) + 0.05);
+}
+
+/// Label colour for a filled accent surface: white, or the window colour
+/// when that reads better (light accents of dark palettes).
+fn onAccent(p: Palette) [4]f32 {
+    const white: [4]f32 = .{ 1, 1, 1, 1 };
+    return if (contrast(white, p.accent) >= contrast(p.bg, p.accent)) white else p.bg;
+}
+
 /// Move a colour toward white (`amount` > 0) or black (< 0), keeping alpha.
 fn lighten(c: [4]f32, amount: f32) [4]f32 {
     const target: f32 = if (amount >= 0) 1 else 0;
@@ -275,7 +313,7 @@ pub const dark_palette: Palette = .{
     .bg_hover = .{ 0.35, 0.35, 0.40, 1.0 },
     .bg_press = .{ 0.15, 0.15, 0.18, 1.0 },
     .fg = .{ 0.92, 0.92, 0.94, 1.0 },
-    .fg_muted = .{ 0.62, 0.62, 0.68, 1.0 },
+    .fg_muted = .{ 0.68, 0.68, 0.74, 1.0 },
     .accent = .{ 0.30, 0.55, 1.00, 1.0 },
     .danger = .{ 0.95, 0.45, 0.40, 1.0 },
     .border = .{ 0.35, 0.35, 0.40, 1.0 },
@@ -289,9 +327,9 @@ pub const light_palette: Palette = .{
     .bg_hover = .{ 0.82, 0.82, 0.88, 1.0 },
     .bg_press = .{ 0.74, 0.74, 0.80, 1.0 },
     .fg = .{ 0.10, 0.10, 0.12, 1.0 },
-    .fg_muted = .{ 0.42, 0.42, 0.48, 1.0 },
-    .accent = .{ 0.18, 0.45, 0.95, 1.0 },
-    .danger = .{ 0.85, 0.25, 0.20, 1.0 },
+    .fg_muted = .{ 0.36, 0.36, 0.42, 1.0 },
+    .accent = .{ 0.12, 0.38, 0.88, 1.0 },
+    .danger = .{ 0.78, 0.18, 0.15, 1.0 },
     .border = .{ 0.72, 0.72, 0.78, 1.0 },
 };
 
@@ -303,9 +341,9 @@ pub const modern_light_palette: Palette = .{
     .bg_hover = .{ 0.945, 0.953, 0.973, 1.0 },
     .bg_press = .{ 0.894, 0.910, 0.941, 1.0 },
     .fg = .{ 0.106, 0.122, 0.165, 1.0 },
-    .fg_muted = .{ 0.420, 0.447, 0.502, 1.0 },
-    .accent = .{ 0.310, 0.420, 0.929, 1.0 },
-    .danger = .{ 0.898, 0.282, 0.302, 1.0 },
+    .fg_muted = .{ 0.390, 0.420, 0.480, 1.0 },
+    .accent = .{ 0.260, 0.360, 0.850, 1.0 },
+    .danger = .{ 0.780, 0.200, 0.220, 1.0 },
     .border = .{ 0.851, 0.863, 0.890, 1.0 },
 };
 
@@ -452,4 +490,38 @@ test "modern preset: radii, borders and elevation flow into the widget styles" {
     // dark and light share the shape tokens
     try std.testing.expectEqual(t.tokens.radius_lg, Theme.modern_dark.tokens.radius_lg);
     try std.testing.expect(Theme.modern_dark.palette.bg[0] < 0.2);
+}
+
+test "palettes: text pairs reach WCAG AA (4.5:1) in every built-in preset" {
+    const presets = [_]struct { name: []const u8, t: Theme }{
+        .{ .name = "dark_default", .t = Theme.dark_default },
+        .{ .name = "light_default", .t = Theme.light_default },
+        .{ .name = "modern_light", .t = Theme.modern_light },
+        .{ .name = "modern_dark", .t = Theme.modern_dark },
+    };
+    for (presets) |pr| {
+        const p = pr.t.palette;
+        const pairs = [_][2][4]f32{
+            .{ p.fg, p.bg },                       .{ p.fg, p.bg_panel },       .{ p.fg, p.bg_raised },
+            .{ p.fg_muted, p.bg },                 .{ p.fg_muted, p.bg_panel }, .{ p.fg_muted, p.bg_raised },
+            .{ p.danger, p.bg },                   .{ p.danger, p.bg_panel },   .{ p.accent, p.bg },
+            .{ pr.t.button_primary.fg, p.accent },
+        };
+        for (pairs, 0..) |pair, i| {
+            const r = contrast(pair[0], pair[1]);
+            std.testing.expect(r >= 4.5) catch |e| {
+                std.debug.print("{s}: pair {d} has contrast {d:.2}\n", .{ pr.name, i, r });
+                return e;
+            };
+        }
+    }
+}
+
+test "derived disabled styles follow the palette (light themes are not near-black)" {
+    const light = Theme.light_default;
+    try std.testing.expect(light.button.disabled_bg[0] > 0.8);
+    try std.testing.expect(light.text_input.disabled_bg[0] > 0.8);
+    try std.testing.expect(contrast(light.button.disabled_fg, light.button.disabled_bg) >= 2.0); // dimmed, not invisible
+    const dark = Theme.dark_default;
+    try std.testing.expect(dark.button.disabled_bg[0] < 0.25);
 }
