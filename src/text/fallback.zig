@@ -27,6 +27,7 @@
 //! The state is module state, like the face table (single-threaded UI).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const face_mod = @import("face.zig");
 
 const Font = face_mod.Font;
@@ -128,6 +129,7 @@ pub fn isInvisible(cp: u21) bool {
 
 fn loadSys(s: *Sys, path: []const u8) void {
     s.tried = true;
+    if (comptime builtin.target.cpu.arch.isWasm()) return; // no filesystem, no libc
     const data = face_mod.readAbsolute(std.heap.page_allocator, path) catch return;
     var font = Font.fromBytes(data) catch {
         std.heap.page_allocator.free(data);
@@ -138,6 +140,7 @@ fn loadSys(s: *Sys, path: []const u8) void {
 }
 
 fn checkEnv() void {
+    if (comptime builtin.target.cpu.arch.isWasm()) return;
     env_checked = true;
     const raw = std.c.getenv("TEAK_FALLBACK_FONTS") orelse return;
     var it = std.mem.splitScalar(u8, std.mem.span(raw), ':');
