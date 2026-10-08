@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.0 — 2026-10-09
+
+First release. Zig 0.17.0. See docs/SESSION-2026-10.md for the full account of this cycle.
+
 ### `pointerMsg` consolidation: one pointer hook, one capture rule (stages 2-3)
 
 - `PointerEvent(Msg)` now carries every pointer fact: `kind` (`hover`, `down`,
