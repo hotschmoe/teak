@@ -30,6 +30,10 @@ pub const FontSpec = struct {
     /// null = the family default: on for `.mono`, off otherwise. Snapped text
     /// also uses one subpixel bin, so every glyph lands on the pixel grid.
     snap_advance: ?bool = null,
+    /// The text is one right-to-left run (an odd bidi level, see `bidi_text`):
+    /// shapers return it in visual order, mirrored where the script requires.
+    /// Set by the renderer per run, not by apps.
+    rtl: bool = false,
     /// A hint that this text changes size continuously (zoomable canvases,
     /// animated scale): its glyphs are rasterized ONCE as signed distance
     /// fields and drawn at any size, instead of once per `size_px`. Crisp from

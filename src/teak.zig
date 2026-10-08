@@ -22,6 +22,8 @@ pub const text = @import("core/text.zig");
 pub const unicode = @import("core/unicode.zig");
 /// UAX #9 bidirectional algorithm: levels, per-line visual runs, visual caret movement, selection spans.
 pub const bidi = @import("core/bidi.zig");
+/// Direction-aware geometry of a wrapped line: runs, caret x, hit-test, selection spans, visual arrows.
+pub const bidi_text = @import("core/bidi_text.zig");
 /// UAX#14-lite line-break opportunities over grapheme clusters.
 pub const linebreak = @import("core/linebreak.zig");
 /// Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.
@@ -59,6 +61,8 @@ pub const tree_list = @import("core/tree_list.zig");
 pub const TreeList = tree_list.TreeList;
 /// `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
 pub const combobox = @import("core/combobox.zig");
+/// Command registry (`CommandList`), shortcuts and the `CommandPalette` (docs/features/commands.md).
+pub const commands = @import("core/commands.zig");
 /// Widgets built from existing Cmd primitives: toggle, progress, tabs, split pane,
 /// tooltip, toast, dialog, menu bar, context menu.
 pub const widgets = @import("core/widgets.zig");
@@ -216,6 +220,9 @@ pub const Modifiers = pointer.Modifiers;
 pub const Button = pointer.Button;
 /// One pointer event on an interactive canvas or scene.
 pub const CanvasEvent = pointer.CanvasEvent;
+/// In-app drag and drop: `GroupStyle.drag_id` / `drop_id`, the App `dragMsg` hook and its event.
+pub const DragEvent = pointer.DragEvent;
+pub const DragPhase = pointer.DragPhase;
 /// What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
 pub const PointerEvent = pointer.PointerEvent;
 /// A window-space rectangle (`PointerEvent.box`).
@@ -326,6 +333,10 @@ pub const indexOfFocusMsg = focus.indexOfFocusMsg;
 pub const focusMsgAt = focus.focusMsgAt;
 /// Host-neutral non-text keys and chords.
 pub const SpecialKey = keys.SpecialKey;
+/// A physical key a shortcut can name, a shortcut (`Chord`: key + primary-modifier/shift/alt) and the label style.
+pub const Key = keys.Key;
+pub const Chord = keys.Chord;
+pub const ShortcutPlatform = keys.Platform;
 /// One accessibility-tree node derived from a cmd.
 pub const A11yNode = a11y.A11yNode;
 /// Semantic role of an `A11yNode`.
@@ -381,6 +392,10 @@ pub const Dropdown = dropdown.Dropdown;
 pub const DropdownViewOpts = dropdown.DropdownViewOpts;
 /// Searchable select component (see `combobox`).
 pub const Combobox = combobox.Combobox;
+pub const Command = commands.Command;
+pub const CommandList = commands.CommandList;
+pub const CommandPalette = commands.CommandPalette;
+pub const PaletteViewOpts = commands.PaletteViewOpts;
 /// Anchor and sizing options for the open combobox list.
 pub const ComboboxViewOpts = combobox.ViewOpts;
 /// Build the app Msg for a typed character into a named field.

@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const unicode = @import("unicode.zig");
+const bidi_text = @import("bidi_text.zig");
 const text_wrap = @import("text_wrap.zig");
 const text_mod = @import("text.zig");
 const keys = @import("../input/keys.zig");
@@ -308,8 +309,8 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             }
             const t = self.content();
             const target: usize = switch (m) {
-                .left => if (self.cursor == 0) 0 else unicode.prevGrapheme(t, self.cursor),
-                .right => if (self.cursor >= self.len) self.len else unicode.nextGrapheme(t, self.cursor),
+                .left => self.visualStep(.left) orelse if (self.cursor == 0) 0 else unicode.prevGrapheme(t, self.cursor),
+                .right => self.visualStep(.right) orelse if (self.cursor >= self.len) self.len else unicode.nextGrapheme(t, self.cursor),
                 .home => lineStart(t, self.cursor),
                 .end => lineEnd(t, self.cursor),
                 .word_left => unicode.prevWordBoundary(t, self.cursor),
@@ -318,6 +319,16 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
                 .doc_end => self.len,
             };
             self.moveToKeepGoal(target, extend);
+        }
+
+        /// Left / Right in visual order over the cursor's hard line when the text
+        /// mixes directions (single-line fields; a text area's runtime resolves
+        /// wrapped lines itself). Null: plain text or already at the visual edge.
+        fn visualStep(self: *Self, arrow: bidi_text.bidi.Arrow) ?usize {
+            const t = self.content();
+            if (!bidi_text.mayBeRtl(t)) return null;
+            var sc: bidi_text.Scratch = .{};
+            return bidi_text.arrowTarget(t, lineStart(t, self.cursor), lineEnd(t, self.cursor), self.cursor, arrow, &sc);
         }
 
         /// Home/End of the *visual* line (the wrapped line the cursor is on).
@@ -1012,4 +1023,29 @@ test "fuzz: edit scripts keep invariants; undo then redo is identity" {
         while (e.redoEdit()) try expectInvariants(e);
         try testing.expectEqualStrings(final_buf[0..final_len], e.content());
     }
+}
+
+test "visual arrows: Left/Right walk a mixed line by position and always progress" {
+    var e: E = .{};
+    e.set("ab \u{5d0}\u{5d1}\u{5d2} cd");
+    e.moveTo(0, false);
+    var seen: [16]usize = undefined;
+    var n: usize = 0;
+    while (n < seen.len) {
+        const before = e.cursor;
+        e.move(.right, false);
+        if (e.cursor == before) break;
+        seen[n] = e.cursor;
+        n += 1;
+    }
+    try testing.expect(n < seen.len); // terminates
+    try testing.expect(n >= 6); // visits (nearly) every position
+    // Left goes back the other way and also terminates.
+    var m: usize = 0;
+    while (m < 16) : (m += 1) {
+        const before = e.cursor;
+        e.move(.left, false);
+        if (e.cursor == before) break;
+    }
+    try testing.expect(m < 16);
 }

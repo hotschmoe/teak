@@ -1,163 +1,131 @@
-# Text measurement + rasterization
+# Text
 
-**Status**: `pub` in `src/teak.zig` as `FontFamily`, `FontWeight`, `FontSpec`,
-`DEFAULT_FONT`, `TextMetrics`, `TextMeasurer`, `TextureHandle`,
-`TEXTURE_HANDLE_NONE`, `monoMeasurer`. WS1 ships the types, Host /
-GPU contract extensions, and stubs; real rasterization lands in WS2
-(native / DirectWrite) and WS4 (web / zunk).
-**Source**: `src/core/text.zig`; Host extension at
-`src/platform/host.zig`; GPU extension at `src/gpu/context.zig`.
-**Tests**: colocated `TextMeasurer` vtable dispatch test in
-`src/core/text.zig`; updated `validateHost` / `validateGpu` stub
-tests cover the new decls.
+**Status**: shipped, with a short queue of open PRs listed per item below (a row says *master* when it is in
+`origin/master`, otherwise *queued* with the PR). `pub` surface: `FontFamily`, `FontWeight`, `FontSpec`,
+`DEFAULT_FONT`, `TextMetrics`, `TextMeasurer`, `ShapedGlyph`, `ShapeResult`, `Shaper`, `monoMeasurer`, `unicode`,
+`linebreak`, `text_wrap`, `editor` (`Editor`), `TextField`, `TextArea`, `TextEvent`, `NumericField`, and the `text` / `text_area` /
+`text_input` Cmds.
+**Source**: `src/core/{text,text_wrap,unicode,linebreak,editor,text_field,text_area,text_event}.zig`,
+`src/text/*` (the `teak-text` module: faces, shaper, measure), `src/gpu/{glyph_atlas,text_stage}.zig`,
+`src/render/build.zig`.
+**Design record**: [text-engine.md](text-engine.md) (decisions, measurements, per-PR plan).
+**Guides**: [text-area.md](text-area.md) (multi-line editing, self-contained), cookbook recipe 23.
 
-Extends the [Host](host.md) and [Gpu](gpu.md) interfaces — not a new
-escape hatch. See [HARDLINE §2 escape hatch 4(d)](../HARDLINE.md#escape-hatch-4-host-layer).
+## The supported subset (read this first)
 
-## Contract
+Teak draws and edits **Latin, Greek, Cyrillic and other left-to-right alphabetic text** (CJK too, given a registered face that covers it; the bundled IBM Plex Mono does not) with proper wrapping,
+kerning, ligatures (fi fl ff ffi ffl), combining marks, grapheme-aware editing and undo. What that means, precisely:
 
-The core vocabulary, usable above the platform layer:
+| Capability | Status |
+|---|---|
+| Grapheme-correct caret, delete, selection (UAX #29), word motion, line breaking (UAX #14 subset), wrap, ellipsis, shrink | **master** |
+| Kerning (kern + GPOS pairs via stb), fi/fl/ffi/ffl ligatures, zero-advance combining marks centred over the base | **master** |
+| One rasterizer everywhere (stb_truetype): Linux native and web; Windows still draws through GDI until the Win32 stb path lands | Linux/web **master**; Windows *queued* ([#31](https://github.com/hotschmoe/teak/pull/31)) |
+| Font fallback chain across registered families, an app chain and system last-resort faces | *queued* ([#44](https://github.com/hotschmoe/teak/pull/44)) |
+| NFC-compose accents when a face lacks U+0301 and friends ("café") | *queued* ([#76](https://github.com/hotschmoe/teak/pull/76)) |
+| Scalable (SDF) text for zooming canvases | *queued* ([#66](https://github.com/hotschmoe/teak/pull/66)) |
+| Colour emoji (RGBA atlas pages; web via canvas 2D) | *queued* ([#71](https://github.com/hotschmoe/teak/pull/71)); until then emoji draw as monochrome/missing glyphs |
+| Bidirectional text (UAX #9): levels, per-line reordering, visual caret | algorithm *queued* ([#74](https://github.com/hotschmoe/teak/pull/74)), rendering + editing *queued* ([#85](https://github.com/hotschmoe/teak/pull/85)); until then right-to-left text is drawn in logical order |
+| Complex-script shaping (Arabic joining, Indic reordering, mark positioning) | optional HarfBuzz, off by default, native only, *queued* ([#77](https://github.com/hotschmoe/teak/pull/77)); the built-in shaper does not join or reorder |
+| IME composition | X11 (XIM) and Win32: **master**; web bridge *queued* ([#49](https://github.com/hotschmoe/teak/pull/49)) |
+
+So the honest statement for an evaluator: **left-to-right scripts that need no shaping are fully supported; Arabic,
+Hebrew and Indic scripts are supported only with the optional HarfBuzz build plus the bidi PRs, and need a face that
+covers them (nothing is shipped but IBM Plex Mono).** There is no subpixel LCD anti-aliasing (grayscale only), no
+system-font discovery by name (faces are registered explicitly), and no vertical text.
+
+## Vocabulary
 
 | Type | Purpose |
 |---|---|
-| `FontFamily` | enum `{ sans, serif, mono }`. Platform maps to a concrete system font. |
-| `FontWeight` | enum `{ regular, medium, bold }`. |
-| `FontSpec` | `{ size_px: f32 = 14, family: FontFamily = .sans, weight: FontWeight = .regular, letter_spacing: f32 = 0 }`. By-value. |
-| `DEFAULT_FONT` | `FontSpec{}` — sans 14px. Field default on text-bearing Cmds. |
-| `TextMetrics` | `{ width, height, ascent, descent: f32 }`. All in pixels. |
-| `TextMeasurer` | `{ ctx: *anyopaque, measure_fn: *const fn(...) TextMetrics }`. Opaque-context vtable. Methods: `measure(text, font) TextMetrics`, `prefixWidth(text, font, byte_prefix) f32`. |
-| `TextureHandle` | `u32` token. Opaque above the GPU layer; each backend maps it to a real resource. |
-| `TEXTURE_HANDLE_NONE` | Sentinel (`0`) for "no texture / stub". WS1 stubs return this; real impls issue non-zero handles. |
-| `monoMeasurer()` | Stateless 10 px/byte (+ `letter_spacing` per byte), 20 px/line fallback. For CLI canaries and framework tests where no Host exists. Not production. |
+| `FontFamily` | `{ sans, serif, mono }`: a slot, mapped to a registered face (or the build's default). |
+| `FontWeight` | `{ regular, medium, bold }`. |
+| `FontSpec` | `{ size_px = 14, family = .sans, weight = .regular, letter_spacing = 0, snap_advance = null }`, by value on every text-bearing Cmd. `size_px` is the em size on every backend. `snap_advance` rounds each advance to a whole pixel (null = on for `.mono`). |
+| `TextMetrics`, `TextMeasurer` | `measure(text, font)` and `prefixWidth`; the layout pass calls the Host's measurer. `monoMeasurer()` is a stateless 10 px/byte stub for tests and CLI canaries. |
+| `Shaper`, `ShapedGlyph`, `ShapeResult` | the shaping interface (below). |
+| `TextDraw` | what render emits per run: rect, content, font, colour, clip. |
 
-### Weight and letter spacing
+Weight and `letter_spacing` travel with the font into `TextDraw`; the measurer and the rasterizer share one face table
+and one shaper, so layout equals pixels (`sum(advance) == width`).
 
-`FontSpec.weight` and `FontSpec.letter_spacing` (pixels added after every glyph) are plain data that travel with the font into `TextDraw.font`. Core only threads them through; the backend interprets them:
+## Architecture in one picture
 
-- **web**: CSS `font-weight` (`regular` 400, `medium` 500, `bold` 700) and canvas `letterSpacing`. The Host measurer and the Gpu rasterizer build the canvas font from one helper (`src/gpu/web_font.zig`), so they agree; the measure cache is keyed on the whole `FontSpec`.
-- **native Linux** (X11 + stb_truetype): face selection by weight from the registered faces (below); spacing added after every code point in both the measurer and the rasterizer. `size_px` is the **em** size on every backend (CSS px = GDI negative height = stb em scale).
-- **native Windows** (stb_truetype, same module as Linux): face selection and `letter_spacing` behave exactly as on Linux; the fallback face is the first of Consolas, Courier New, Lucida Console, Segoe UI, Arial found under `%WINDIR%\Fonts` (`TEAK_FONT` overrides).
-- A backend that cannot honor a field **ignores it**: the text still renders, just regular and untracked. The measurer must agree with the rasterizer so layout matches pixels; `monoMeasurer` adds `letter_spacing` per byte and ignores `weight`.
-- `size_px` and `letter_spacing` change the glyph run (and `size_px` the atlas key), so changing them re-shapes/re-rasterizes instead of reusing a stale glyph.
-
-```zig
-const label: teak.FontSpec = .{ .size_px = 11, .family = .mono, .weight = .bold, .letter_spacing = 1 };
-cb.textStyled("PARTS", label, cb.theme.muted_color);
+```
+view -> Cmd(text | text_input | text_area | rich_text) -> layout (text_wrap: wrap, ellipsis, shrink)
+     -> render/build: one TextDraw per line (per run for mixed direction)
+     -> gpu/text_stage: Shaper -> glyph ids + x  -> GlyphAtlas (R8 pages)  -> one instanced draw per page
 ```
 
-### Custom fonts (IBM Plex Mono and friends)
+- **Atlas** (`src/gpu/glyph_atlas.zig`, pure data): R8 coverage pages of 1024x1024, up to 8, shelf-packed, entries keyed
+  `(face, glyph id, physical size, x-subpixel bin)`, page-granular eviction. Colour travels in a 32-byte instance, not in
+  the texture; one draw per page per layer. Growable instance buffer, no silent cap.
+- **Rasterizer**: stb_truetype on Linux (X11 + wgpu) and web (compiled into the wasm, +25 KB raw / 14 KB gzip). Windows
+  uses the GDI rasterizer until [#31](https://github.com/hotschmoe/teak/pull/31). HiDPI is handled by rasterizing per
+  physical pixel size; text is crisp at any scale factor.
+- **Shaper interface** (`core/text.zig`): `shape(text, font, out []ShapedGlyph) ShapeResult` returns glyph ids, pen x,
+  advance (kerning and `letter_spacing` folded in) and a source `cluster` per glyph; resumable when `out` fills.
+  **SimpleShaper** (`src/text/shaper.zig`): UTF-8 decode, cmap, other registered weights of the family as fallback,
+  ligatures, kerning, combining marks. **HarfBuzz** implements the same interface behind `-Dharfbuzz=true`
+  ([#77](https://github.com/hotschmoe/teak/pull/77); default build stays dependency-free).
+- **Fallback chain** ([#44](https://github.com/hotschmoe/teak/pull/44)): primary face, other weights of the family, other
+  registered families, `registerFallbackFace` chain, then system faces (native only; `TEAK_FALLBACK_FONTS` adds paths).
+  Missing everywhere draws .notdef, one em wide for wide scripts.
+- **Measure caches**: `src/text/measure.zig` caches widths of runs up to 48 bytes in a 1024-slot direct-mapped table keyed
+  on the full text and font, invalidated when the face table changes; `text_stage` caches shaped runs across frames.
+  Layout of an unchanged screen therefore measures almost nothing.
+- **Wrap, ellipsis, shrink** (`core/text_wrap.zig`, pure, allocation-free; [layout.md](layout.md)): `text` takes
+  `wrap = none | word | char | ellipsis`, `max_lines`, `text_align`; groups and scrolls take `shrink`. Layout runs two extra
+  linear passes only for frames that contain wrapped or shrinkable nodes. Emitters: `paragraph`, `paragraphStyled`
+  (wrapped `rich_text` is part of [#44](https://github.com/hotschmoe/teak/pull/44)).
+- **Editing stack**: `Editor(cap, undo_cap)` is the pure model (grapheme-aware cursor and selection, word/line motion,
+  undo/redo with grouping, `applyPointer`); `TextField(cap)` is the single-line component on it; `TextArea(cap)` is the
+  multi-line component ([text-area.md](text-area.md)); `NumericField` parses numbers on top of `TextField`. State lives in
+  the Model; layout facts the view cannot read (click to byte index, visual Up/Down/Home/End, wrapped size, caret rect)
+  are resolved by the run loop into `TextEvent`s and arrive through the optional `textMsg` hook.
+- **IME**: the Host reports the pre-commit string through `imeState()`; render draws it underlined at the caret and the
+  run loop tells the Host where the caret is (`setImeSpot`) so the candidate window sits next to it. X11 uses XIM
+  (over-the-spot), Win32 uses IMM. The web bridge is [#49](https://github.com/hotschmoe/teak/pull/49).
+- **Bidi** ([#74](https://github.com/hotschmoe/teak/pull/74), [#85](https://github.com/hotschmoe/teak/pull/85);
+  docs/features/bidi.md arrives with #74): UAX #9 in core; mixed-direction lines draw run by run in visual order; caret, pointer,
+  selection rects and Left/Right follow the visual layout; word jumps stay logical.
 
-**Web** — register files in the build; they are copied to `dist/fonts/`, declared with `@font-face`, and the app starts only after every face has loaded, so the first measurement already sees the real font:
+## Custom fonts
+
+**Web**: register files in the build; they are copied to `dist/fonts/`, declared with `@font-face`, and the app starts
+after every face has loaded:
 
 ```zig
 teak.linkWebWgpu(b, web_exe, .{ .fonts = &.{
     .{ .family = "IBM Plex Mono", .weight = 400, .path = b.path("assets/IBMPlexMono-Regular.ttf") },
-    .{ .family = "IBM Plex Mono", .weight = 500, .path = b.path("assets/IBMPlexMono-Medium.ttf") },
     .{ .family = "IBM Plex Mono", .weight = 700, .path = b.path("assets/IBMPlexMono-Bold.ttf") },
 } });
 ```
 
-`WebFont.slot` (default `.mono`) says which `FontFamily` the family stands in for; text in that slot is drawn with `"IBM Plex Mono", monospace`. Other slots keep the CSS generic family.
-
-**Native Linux** — the app registers embedded TTFs with the X11 Host before the first frame (up to three weights per family):
+**Native Linux**: register embedded TTFs on the Host before the first frame (up to three weights per family):
 
 ```zig
 try host.registerFont(.mono, .regular, @embedFile("plex-Regular"));
 try host.registerFont(.mono, .bold, @embedFile("plex-Bold"));
 ```
 
-The measurer and the Gpu rasterizer share one face table (`src/text/face.zig`). A request takes the registered weight nearest the one asked for (lighter on a tie); a family with no registered face uses the system monospace TTF (`TEAK_FONT=/path/to.ttf` overrides the search). `examples/fonts` is the working reference for both.
-
-### Host extension
-
-| Decl | Signature | Purpose |
-|---|---|---|
-| `textMeasurer` | `fn(*Host) TextMeasurer` | Returns an interface value the layout pass can call to measure any `[]const u8` in a given `FontSpec`. |
-
-Added to `validateHost`'s required list. The measurer's `ctx`
-points at Host-internal state (font factory, cached text format
-objects); core reaches it only through `measure_fn`.
-
-### GPU extension
-
-| Decl | Signature | Purpose |
-|---|---|---|
-| `rasterizeText` | `fn(*Gpu, []const u8, FontSpec, [4]f32, u32, u32) TextureHandle` | Rasterize `text` in the given font + RGBA color at a `width × height` output bitmap; return a texture handle. |
-
-Added to `validateGpu`'s required list. WS2 replaces the native
-stub with DirectWrite; WS4 replaces the web stub with zunk's
-`rasterizeText`. The detailed contract for feeding the handle into a
-textured-quad pipeline is WS2 scope.
-
-### Cmd field additions
-
-Every text-bearing `Cmd` variant carries a `font: FontSpec = DEFAULT_FONT`:
-
-- `TextCmd`
-- `ButtonCmd(Msg)` (label)
-- `TextInputCmd(Msg)` (content)
-- `CheckboxCmd(Msg)` (label)
-- `RadioCmd(Msg)` (label)
-
-Existing emitter methods (`cb.text`, `cb.button`, etc.) use the
-default. Explicit-font emitters arrive later when a concrete use case
-lands — WS1 doesn't proliferate API.
+A request takes the registered weight nearest the one asked for (lighter on a tie); a family with no registered face uses
+the default face (`TEAK_FONT=/path/to.ttf` overrides the system search). `examples/fonts` is the working reference.
 
 ## Invariants
 
-- **Measurer is ephemeral.** The value returned by
-  `Host.textMeasurer()` is valid only while the Host outlives it.
-  Callers capture it per frame and discard; do not stash across Host
-  lifetimes.
-- **`FontSpec` is by value.** Copied into each `Cmd`. The type is
-  small enough (16 bytes) that this is trivial; no interning needed.
-- **Texture handles are opaque above GPU.** Core / layout / render-
-  build never unpack a `TextureHandle`. The GPU backend is the sole
-  resolver. This mirrors `NativeHandle` and the validateGpu/validateHost
-  "init signature varies per backend" convention.
-- **Measurer fn cannot allocate.** The measure call happens inside
-  the layout pass, which is per-frame arena territory. If a platform
-  needs scratch space for shaping, it allocates out of a measurer-owned
-  fixed buffer; the allocation is never visible to core.
-- **`prefixWidth(text, font, 0)` returns 0 without dispatching.** The
-  vtable short-circuits empty prefixes.
-- **Stubs return numbers compatible with the 10 px/byte stub.** WS1
-  backend stubs (`win32.zig`, `wasm.zig`, `native.zig`, `web.zig`)
-  return `len * 10` for width and `20` for height, so WS1 ships with
-  zero visual drift from pre-WS1 examples.
+- The measurer and the rasterizer use one shaper and one face table: layout width equals drawn width.
+- Core never sees a platform type: text reaches the GPU as `TextDraw` data; the atlas and rasterizer live behind the Gpu
+  and Host interfaces (HARDLINE hatch 4).
+- Editing keeps all state in the Model; the run loop only turns input into data (`TextEvent`), never into mutation.
+- Measure, shaping and wrapping allocate nothing per frame.
 
-## Non-goals / known limits
+## Limits
 
-Pushed out of scope for the text-rendering phase. Flag PRs that
-re-add these concerns as drift from the phase plan:
-
-- **Rich text** (mixed fonts or colors in one span). Every `Cmd.text`
-  carries exactly one `font` + one color.
-- **Complex script shaping** (the bidi algorithm itself is in `teak.bidi`, not yet
-  wired into rendering). Latin and basic Unicode only. Non-Latin runs render with the platform's fallback glyph.
-- **IME composition UI.** Candidate windows, preedit marks — owned
-  by the OS; Teak receives finished code points.
-- **System font discovery by name.** Custom faces are registered
-  explicitly (above); there is no `fc-match` lookup.
-- **Subpixel anti-aliasing.** Grayscale only. Subpixel has per-
-  orientation cost we don't need yet.
-- **Per-glyph atlas packing.** WS2 rasterizes whole strings per
-  `(content, font, color)` key. Glyph-level packing is a v2 cache
-  optimization once the hit pattern is visible.
-- **Animated measurement / metrics change mid-frame.** The measurer
-  returns the same values for the same inputs within one frame.
-
-## Test coverage target
-
-- **Vtable dispatch** (covered): `TextMeasurer.measure` and
-  `prefixWidth` tests in `src/core/text.zig`.
-- **`validateHost` / `validateGpu` gap tests** (missing): one compile-
-  fail test per missing decl — same target as the other two
-  validators.
-- **Stub-returned-number regression** (missing): a test that pins
-  WS1 stubs to `len * 10` width, so a future stub swap doesn't
-  silently drift sizes before WS2 lands.
-- **Backend parity** (long-term, post-WS2): a native + web render of
-  the same string with the same `FontSpec` should produce rect sizes
-  within X% of each other. Blocked on both backends shipping real
-  impls.
+- Atlas: 8 pages of 1024x1024; a frame that needs more evicts the least recently used page.
+- Measure cache covers runs of at most 48 bytes; longer runs measure uncached each frame (the run cache in the text stage
+  still avoids re-shaping across frames).
+- Shaping works in chunks of 256 glyphs; a `TextArea(cap)` / `TextField(cap)` holds at most `cap` bytes; the typed-character
+  queue per frame is bounded (excess typing in one frame is dropped with a warning on web).
+- `TextArea` remembers metrics for 8 areas at once; more are re-reported when they change.
+- No subpixel LCD rendering, no vertical text, no font discovery by name, no hyphenation, no per-run tab stops.
+- Text is UTF-8; invalid bytes decode as U+FFFD one byte at a time and never crash layout or editing (fuzz-tested).

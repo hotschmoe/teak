@@ -22,7 +22,7 @@ const ITERS = 20;
 const SIZES = [_]usize{ 100, 1_000, 10_000, 50_000 };
 
 fn nowNs() u64 {
-    // `std.Io` clock: works on every OS (the raw Linux vDSO call does not build elsewhere).
+    // Portable monotonic clock (std.os.linux is Linux-only).
     return @intCast(std.Io.Clock.awake.now(std.Options.debug_io).nanoseconds);
 }
 

@@ -65,6 +65,13 @@ pub const Download = struct {
     name: []const u8,
     mime: []const u8 = "application/octet-stream",
     bytes: []const u8,
+    /// Native hosts: show a "Save As" dialog (suggesting `name`) instead of
+    /// writing to the output directory straight away; the answer is
+    /// `downloaded{ ok = false }` when the user cancels. The web always
+    /// downloads (the browser owns the prompt) and ignores this.
+    pick: bool = false,
+    /// Dialog title for `pick` (empty: the toolkit's default).
+    title: []const u8 = "",
 };
 
 /// Ask the user to pick a file; result is `file_opened` / `file_cancelled`.
@@ -73,11 +80,22 @@ pub const OpenFile = struct {
     /// Comma-separated accept list, like the HTML `accept` attribute:
     /// ".json,.kerf.json" or "image/*". Native hosts map it to a filter.
     accept: []const u8 = "",
+    /// Native dialog title (empty: the toolkit's default).
+    title: []const u8 = "",
 };
 
 pub const WriteClipboard = struct {
     id: u32,
     text: []const u8,
+};
+
+/// Put a PNG image on the clipboard (fire and forget, like `write_clipboard`).
+/// X11 / Wayland serve it as `image/png` while the window owns the selection;
+/// the web writes a `ClipboardItem` (the browser may require a user gesture).
+pub const WriteClipboardImage = struct {
+    id: u32,
+    /// An encoded PNG.
+    png: []const u8,
 };
 
 /// Persistent key/value storage (browser localStorage / a file under the
@@ -111,6 +129,7 @@ pub const Effect = union(enum) {
     download: Download,
     open_file: OpenFile,
     write_clipboard: WriteClipboard,
+    write_clipboard_image: WriteClipboardImage,
     storage_set: StorageSet,
     storage_get: StorageGet,
     clock: ClockRequest,
@@ -127,7 +146,7 @@ pub const Effect = union(enum) {
     /// result; every other effect is answered exactly once.
     pub fn wantsResult(self: Effect) bool {
         return switch (self) {
-            .storage_set, .write_clipboard => false,
+            .storage_set, .write_clipboard, .write_clipboard_image => false,
             else => true,
         };
     }
@@ -207,7 +226,7 @@ pub fn unsupportedResult(e: Effect) ?EffectResult {
         .storage_get => |r| .{ .storage_value = .{ .id = r.id, .value = null } },
         .clock => |r| .{ .clock = .{ .id = r.id, .unix_ms = 0, .utc_offset_min = 0 } },
         .query_param => |r| .{ .query_value = .{ .id = r.id, .value = null } },
-        .storage_set, .write_clipboard => null,
+        .storage_set, .write_clipboard, .write_clipboard_image => null,
     };
 }
 
@@ -288,6 +307,7 @@ test "Effect.id and wantsResult cover every variant" {
         .{ .storage_get = .{ .id = 6, .key = "k" } },
         .{ .clock = .{ .id = 7 } },
         .{ .query_param = .{ .id = 8, .name = "q" } },
+        .{ .write_clipboard_image = .{ .id = 9, .png = "" } },
     };
     for (effs, 1..) |e, want| {
         try std.testing.expectEqual(@as(u32, @intCast(want)), e.id());
@@ -296,6 +316,7 @@ test "Effect.id and wantsResult cover every variant" {
     }
     try std.testing.expect(!effs[3].wantsResult());
     try std.testing.expect(!effs[4].wantsResult());
+    try std.testing.expect(!effs[8].wantsResult());
 }
 
 test "unsupportedResult answers with the effect's own id" {

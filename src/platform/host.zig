@@ -11,6 +11,7 @@
 const std = @import("std");
 
 pub const SpecialKey = @import("../input/keys.zig").SpecialKey;
+pub const Chord = @import("../input/keys.zig").Chord;
 pub const Buttons = pointer.Buttons;
 pub const Modifiers = pointer.Modifiers;
 
@@ -105,6 +106,8 @@ pub const InjectEvent = union(enum) {
     chars: []const u8,
     key: SpecialKey,
     mods: Modifiers,
+    /// A keyboard shortcut (see `InputState.chords`).
+    chord: Chord,
 };
 
 /// Per-frame input snapshot returned by `Host.pollInputs`.
@@ -148,6 +151,13 @@ pub const InputState = struct {
     wheel_dy: f32,
     chars: []const u8,
     keys: []const SpecialKey,
+    /// Keyboard shortcuts pressed this frame, in order: a letter / digit /
+    /// punctuation / navigation key with Ctrl (Cmd on macOS) or Alt held, or
+    /// an F-key. Delivered IN ADDITION to `keys` (so Ctrl+C is both
+    /// `keys = [.ctrl_c]` and a `Chord{c, mod}`); `teak.run` matches them
+    /// against the App's `commands` table before widget key handling and
+    /// swallows the overlapping special key when a command claims the chord.
+    chords: []const Chord = &.{},
     resized: bool,
     width: u32,
     height: u32,
@@ -216,6 +226,13 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   the current document name. Native hosts call the OS window-title
 ///   API; the web host sets `document.title`. No-op is acceptable for
 ///   headless hosts.
+/// - `setImeSpot(x, y)` / `setImeActive(focused)` (optional): the runtime tells the
+///   Host where the focused text caret's line ends (window logical px) and whether
+///   a text field is focused. Hosts with an out-of-window IME use them: X11's XIM
+///   over-the-spot style, the web's hidden `<textarea>` (focus + candidate window).
+///   Composition arrives as `imeState()` (the preedit, presentation-only, mirrored
+///   into `TransientState`: HARDLINE hatch 2) and the committed text as ordinary
+///   `InputState.chars`, so no host needs a separate commit path.
 /// - `scaleFactor()` reports the number of physical device pixels per
 ///   logical UI unit at the window's current DPI (1.0 = no scaling).
 ///   HARDLINE §4(d) surface extension, but kept **optional** in
@@ -296,6 +313,8 @@ pub fn validateHost(comptime T: type) void {
     // `submit` and `pollEffectResults` come as a pair.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
+        .{ .name = "setImeSpot", .sig = "fn(*Host, i32, i32) void" },
+        .{ .name = "setImeActive", .sig = "fn(*Host, bool) void" },
         // Assistive-technology requests (web DOM mirror, UIA patterns): fills
         // `out` and returns the count; called once per frame before input routing.
         .{ .name = "pollA11yActions", .sig = "fn(*Host, []A11yAction) usize" },

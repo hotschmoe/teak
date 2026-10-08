@@ -59,6 +59,7 @@ pub fn build(b: *std.Build) void {
         teak.linkNativeWgpu(b, ui_exe, .{});
 
         const install_ui = b.addInstallArtifact(ui_exe, .{});
+        b.getInstallStep().dependOn(&install_ui.step);
         const ui_run = b.addRunArtifact(ui_exe);
         ui_run.step.dependOn(&install_ui.step);
         ui_run.addPassthruArgs();
@@ -70,7 +71,7 @@ pub fn build(b: *std.Build) void {
         ui_step.dependOn(&ui_run.step);
     }
 
-    // --- Headless screenshot (no display; needs a Vulkan device) ---
+    // --- Headless screenshot (no display; needs a Vulkan / Metal device) ---
     //
     //   zig build shot -- out.png
 

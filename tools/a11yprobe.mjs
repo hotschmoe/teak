@@ -149,17 +149,20 @@ try {
     let t = await tree(page);
     const areas = t.filter((n) => n.role === 'textbox');
     check(areas.length >= 2, 'two textboxes (notes editor, chat input)');
-    const notes = areas.find((n) => n.multiline) || areas[0];
-    check(notes && /wrap/.test(notes.value || ''), 'notes textbox exposes its multi-line value');
+    // A <textarea> reports its text as the accessible name (and the zunk IME bridge adds an empty hidden one).
+    const textOf = (n) => n.value || n.name || '';
+    const notes = areas.find((n) => n.multiline && /wrap/.test(textOf(n)));
+    check(notes, 'notes textbox (multiline) exposes its text');
     check(find(t, 'button', 'Send  (Enter)') || t.some((n) => n.role === 'button' && /Send/.test(n.name || '')), 'button "Send"');
 
     console.log('notes: type into the chat box through the DOM and send');
     await mirror(page, "const a = [...root.querySelectorAll('textarea,input')]; a[a.length - 1].focus(); return 1;");
     await sleep(500);
     await page.keyboard.type('hello from the DOM', { delay: 25 });
-    t = await until(page, (n) => n.some((x) => x.role === 'textbox' && x.value === 'hello from the DOM'), 'chat text mirrored');
-    check(t.some((n) => n.role === 'textbox' && n.value === 'hello from the DOM'), 'chat textbox value after typing');
-    await page.keyboard.press('Enter');
+    t = await until(page, (n) => n.some((x) => x.role === 'textbox' && (x.value || x.name) === 'hello from the DOM'), 'chat text mirrored');
+    check(t.some((n) => n.role === 'textbox' && (n.value || n.name) === 'hello from the DOM'), 'chat textbox value after typing');
+    // Send through the AT path: activate the mirrored button (Enter in a mirrored <textarea> is a native newline).
+    await mirror(page, "[...root.querySelectorAll('button')].find(b => /Send/.test(b.textContent)).click(); return 1;");
     t = await until(page, (n) => n.some((x) => x.role === 'StaticText' && /hello from the DOM/.test(x.name || '')), 'message sent');
     check(t.some((n) => n.role === 'StaticText' && /hello from the DOM/.test(n.name || '')), 'sent message appears in the chat log');
   } else {

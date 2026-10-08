@@ -169,6 +169,32 @@
 
 ### Added
 
+- **Menus from the command table**: `teak.commands.menuItems` (runtime rows: label, shortcut text, enabled, command index) and comptime `Chord.text`;
+  kerf_viewer gets a File / View / Parts menu bar built from its commands, gallery's menu shortcuts are now real bindings (Ctrl+T, F5, Ctrl+C/V/A) sharing one chord table.
+
+- Bidi in rendering and editing (`teak.bidi_text`): lines of mixed direction draw one run at a time in visual order (`text`, wrapped text, `text_input`, `text_area`), RTL paragraphs right-align, caret / pointer / IME spot / selection rects follow the visual layout, Left/Right arrows move in visual order (runtime for `text_area`, `Editor` for fields); `FontSpec.rtl` makes shapers return a run in visual order.
+- **Native file dialogs** (X11, Wayland via the shared service): `open_file` shows a zenity / kdialog (or `$TEAK_PICKER`) dialog on a worker
+  thread; `download{ pick = true }` is a Save As dialog; `OpenFile.title`, `Download.pick` / `title`; `TEAK_OPEN` still bypasses.
+  **Clipboard image**: new effect `write_clipboard_image{ id, png }` (X11 serves `image/png`; web via zunk `fx.clipboardWriteImage`,
+  hotschmoe/zunk#28 must land first for the web build).
+
+- **In-app drag and drop** (docs/features/drag-drop.md): `GroupStyle.drag_id` / `drop_id`, App hook `dragMsg(*const Model, DragEvent)`
+  (`start` / `move` / `drop` / `cancel`, innermost drop target + pointer fraction); `examples/todo` reorders by mouse (ghost overlay,
+  drop indicator) and by keyboard (Alt+Up/Down via the command table); control command `drag`, `teak-drive drag`, MCP tool `drag`.
+
+- **Commands, shortcuts, command palette** (docs/features/commands.md): App hook `commands(*const Model, *CommandList(Msg))`;
+  `teak.Chord` / `teak.Key`; hosts (X11, Win32, web, headless) report `InputState.chords`; `teak.run` matches them before widget
+  key handling and swallows claimed chords; `teak.CommandPalette(cap)` (fuzzy, built on `Combobox`, new `Match.fuzzy`);
+  `Command.menuLabel` for menu shortcut text; control command `shortcut`; kerf_viewer has Ctrl+K and shortcuts.
+
+- `widgets.color_picker`: SV square + hue strip (canvas triangles), hex / R / G / B fields, swatches.
+- **Web IME.** Composition input (Japanese, Chinese, Korean) works in the browser: zunk's new IME bridge keeps a
+  hidden `<textarea>` focused while a text field is, the preedit shows inline with an underline and the candidate
+  window opens at the caret. New optional Host extension `setImeActive(bool)` next to `setImeSpot`; the preedit
+  stays presentation-only (TransientState, see docs/features/text-engine.md 6.7). `tools/web-ime-test.mjs` is the
+  CDP acceptance test.
+- `widgets.spinner.Spinner`: NumericField with step buttons, arrow / Page / wheel stepping.
+
 - Win32 UIA control patterns (Invoke / Toggle / Value) route AT requests back as input through `teak.A11yActionQueue` and `Host.pollA11yActions`; `ValuePattern` replaces the value-as-Name fallback.
 - Accessibility wiring (M3): `Runtime` builds the a11y tree and publishes it to the Host only when it changed
   (`RunOptions.a11y`, default on); `A11yHint` semantics (tablist, tab, tree, table, menu, status/live, progressbar, ...) on
@@ -310,6 +336,16 @@
   - `zig build test-x11` (live display, skips without `DISPLAY`) drives the
     host with xclip / xdotool and an in-process XDND source.
 
+- **macOS backend** (`src/platform/cocoa.zig`, `objc.zig`, `cocoa_data.zig`,
+  `gpu/surface_cocoa.zig`, `gpu/native_macos.zig`): Cocoa host driven through
+  the Objective-C runtime (libobjc / AppKit / QuartzCore `dlopen`ed, so no SDK
+  and no frameworks are needed to build or cross-compile), Metal through
+  wgpu-native (macOS prebuilts as lazy deps), NSTextInputClient text + IME
+  marked text, Cmd as the primary modifier, precise scrolling, NSPasteboard
+  clipboard, file drops, NSCursor shapes, open/save panels, Retina scale.
+  `teak.hasNativeBackend(.macos)` is true; `teak.linkHeadless` now works on
+  macOS (offscreen Metal screenshots); stb text probes `Menlo.ttc` & friends.
+
 ### Fixed
 
 - X11 host failed to compile on first use under Zig 0.17 (`Xlib.load` still
@@ -325,6 +361,14 @@
   Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;
   render draws one `TextDraw` per line. HARDLINE hatch 3 amended accordingly. Chrome's NOTES panel shows it.
 
+- `text_area` Cmd + `TextArea(cap)` component + `textMsg` hook (text-engine PR11a/PR11b, closes the multi-line half of #6):
+  wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,
+  drag incl. outside, double/triple click, wheel), visual Up/Down/Home/End with a sticky column, layout `metrics` events,
+  `Host.setImeSpot` from the focused caret; `Editor.applyPointer`; `examples/notes`. See docs/features/text-area.md.
+- Wrapped text and flex shrink (text-engine PR8/PR9, closes #8): `text` gains `wrap` (`none|word|char|ellipsis`),
+  `max_lines`, `text_align`; groups/scrolls gain `shrink`; emitters `paragraph`, `paragraphStyled`, `textEllipsis`.
+  Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;
+  render draws one `TextDraw` per line. HARDLINE hatch 3 amended accordingly. Chrome's NOTES panel shows it.
 - `teak.Combobox(cap)`: searchable select (query field + filtered overlay list with scrolling, type-ahead
   highlight, keyboard, "No matches" row), composed from existing primitives; chrome's MATERIAL field uses it (#2).
 - Cookbook recipe 6b + tested `LoadRow`/`LoadApp` example: rows owning several focusable fields (#1).

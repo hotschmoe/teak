@@ -800,6 +800,15 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             if (surface_texture.status != c.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal and
                 surface_texture.status != c.WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal)
             {
+                // Say so (a few times): a surface that never yields a texture
+                // otherwise looks like a blank window.
+                const Seen = struct {
+                    var n: u32 = 0;
+                };
+                if (Seen.n < 5) {
+                    Seen.n += 1;
+                    std.log.warn("teak: wgpuSurfaceGetCurrentTexture status {d} (window {d})", .{ @as(u32, @intCast(surface_texture.status)), window_id });
+                }
                 return;
             }
 

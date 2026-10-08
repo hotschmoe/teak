@@ -21,6 +21,7 @@ const zinput = zunk.web.input;
 const zapp = zunk.web.app;
 const zgpu = zunk.web.gpu;
 const fx = zunk.web.fx;
+const zime = zunk.web.ime;
 const teak_text = @import("teak-text");
 const font_data = @import("teak-web-fontdata");
 
@@ -40,6 +41,53 @@ pub const FileDialogFilter = teak.FileDialogFilter;
 pub const FileDialogPoll = teak.FileDialogPoll;
 
 pub const NativeHandle = struct {};
+
+/// DOM `keyCode` -> shortcut key (see `InputQueue.pushShortcut`); built at
+/// comptime from the key enum so letters, digits and F-keys cost no lines.
+const ShortcutCode = struct { code: u8, key: teak.Key };
+const shortcut_codes = shortcutTable();
+
+fn shortcutTable() [shortcut_count]ShortcutCode {
+    @setEvalBranchQuota(10_000);
+    var out: [shortcut_count]ShortcutCode = undefined;
+    var n: usize = 0;
+    for (0..26) |i| {
+        out[n] = .{ .code = @intCast(65 + i), .key = @fromBackingInt(@intCast(i)) };
+        n += 1;
+    }
+    for (0..10) |i| {
+        out[n] = .{ .code = @intCast(48 + i), .key = @fromBackingInt(@intCast(@backingInt(teak.Key.d0) + i)) };
+        n += 1;
+    }
+    for (0..12) |i| {
+        out[n] = .{ .code = @intCast(112 + i), .key = @fromBackingInt(@intCast(@backingInt(teak.Key.f1) + i)) };
+        n += 1;
+    }
+    for (shortcut_extra) |e| {
+        out[n] = e;
+        n += 1;
+    }
+    return out;
+}
+
+const shortcut_extra = [_]ShortcutCode{
+    .{ .code = 13, .key = .enter },          .{ .code = 9, .key = .tab },
+    .{ .code = 27, .key = .escape },         .{ .code = 32, .key = .space },
+    .{ .code = 8, .key = .backspace },       .{ .code = 46, .key = .delete },
+    .{ .code = 45, .key = .insert },         .{ .code = 37, .key = .left },
+    .{ .code = 39, .key = .right },          .{ .code = 38, .key = .up },
+    .{ .code = 40, .key = .down },           .{ .code = 36, .key = .home },
+    .{ .code = 35, .key = .end },            .{ .code = 33, .key = .page_up },
+    .{ .code = 34, .key = .page_down },      .{ .code = 188, .key = .comma },
+    .{ .code = 190, .key = .period },        .{ .code = 191, .key = .slash },
+    .{ .code = 220, .key = .backslash },     .{ .code = 186, .key = .semicolon },
+    .{ .code = 222, .key = .quote },         .{ .code = 189, .key = .minus },
+    .{ .code = 187, .key = .equal },         .{ .code = 219, .key = .bracket_left },
+    .{ .code = 221, .key = .bracket_right }, .{ .code = 192, .key = .grave },
+};
+const shortcut_count = 26 + 10 + 12 + shortcut_extra.len;
+/// Longest preedit kept (UTF-8 bytes); the runtime's snapshot buffer is smaller still.
+const ime_text_cap = 256;
 
 /// zunk key code -> host-neutral key. Letters only matter as Ctrl chords;
 /// `InputQueue.pushNav` drops them when Ctrl is not held.
@@ -179,7 +227,8 @@ fn wireRole(n: A11yNode) u32 {
         .text => 2,
         .rich_text => 3,
         .button => 4,
-        .text_input, .text_area => 5,
+        .text_input => 5,
+        .text_area => 12,
         .checkbox => 6,
         .radio => 7,
         .slider => 8,
@@ -362,6 +411,13 @@ pub const Host = struct {
     fx_next: usize = 0,
     fx_claimed: u32 = 0,
     fx_polled: bool = false,
+    /// IME composition mirror (`zunk.web.ime`): the live preedit, valid until the
+    /// next `pollInputs`. Commits go to the input queue as typed text.
+    ime_active: bool = false,
+    ime_len: usize = 0,
+    ime_cursor: usize = 0,
+    ime_text: [ime_text_cap]u8 = undefined,
+    ime_scratch: [1024]u8 = undefined,
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         zinput.init();
@@ -412,11 +468,15 @@ pub const Host = struct {
         for (key_mappings) |m| {
             if (zinput.isKeyPressed(m.from)) q.pushNav(m.to);
         }
+        for (shortcut_codes) |m| {
+            if (zinput.isKeyPressed(@fromBackingInt(@intCast(m.code)))) q.pushShortcut(m.key);
+        }
         if (zinput.isKeyReleased(.alt)) q.altUp();
         q.mods = reported;
         // Zunk delivers whole UTF-8 code points and no control codes or
         // Ctrl/Cmd chords; `pushText` re-validates and drops anything else.
         q.pushText(zinput.getTypedChars());
+        self.pollIme(q);
 
         const vp = zinput.getViewportSize();
         const w = if (vp.w != 0) vp.w else self.width;
@@ -488,8 +548,57 @@ pub const Host = struct {
         fx.clipboardWrite(text);
     }
 
-    pub fn imeState(_: *const Host) ImeState {
-        return .{};
+    /// The browser's IME composition. A hidden `<textarea>` (zunk's IME bridge)
+    /// holds focus while a text field is focused, so the OS candidate window and
+    /// composition work; its events are folded in by `pollInputs`.
+    pub fn imeState(self: *const Host) ImeState {
+        return .{ .active = self.ime_active, .text = self.ime_text[0..self.ime_len], .cursor = self.ime_cursor };
+    }
+
+    /// Focus the IME field while the app has a focused text input (optional Host
+    /// extension, called by the runtime on focus transitions).
+    pub fn setImeActive(self: *Host, active: bool) void {
+        _ = self;
+        zime.setActive(active);
+    }
+
+    /// Anchor the candidate window at the caret (CSS px, bottom of the caret line).
+    pub fn setImeSpot(self: *Host, x: i32, y: i32) void {
+        _ = self;
+        zime.setSpot(@floatFromInt(x), @floatFromInt(y - 1), 1);
+    }
+
+    fn pollIme(self: *Host, q: *InputQueue) void {
+        var events: [16]zime.Event = undefined;
+        const n = zime.poll(&events, &self.ime_scratch);
+        for (events[0..n]) |ev| self.applyImeEvent(q, ev.kind, ev.text, ev.cursor);
+    }
+
+    /// One bridge event: start/update replace the preedit, commit clears it and
+    /// types the result (an empty commit is a cancelled composition).
+    fn applyImeEvent(self: *Host, q: *InputQueue, kind: zime.Kind, text: []const u8, cursor: usize) void {
+        switch (kind) {
+            .start => {
+                self.ime_active = true;
+                self.ime_len = 0;
+                self.ime_cursor = 0;
+            },
+            .update => {
+                var n = @min(text.len, ime_text_cap);
+                // Never keep half a code point.
+                while (n > 0 and n < text.len and (text[n] & 0xC0) == 0x80) n -= 1;
+                @memcpy(self.ime_text[0..n], text[0..n]);
+                self.ime_len = n;
+                self.ime_cursor = @min(cursor, n);
+                self.ime_active = true;
+            },
+            .commit => {
+                self.ime_active = false;
+                self.ime_len = 0;
+                self.ime_cursor = 0;
+                q.pushText(text);
+            },
+        }
     }
 
     /// Serialize the per-frame a11y tree into the module-scoped wire
@@ -642,6 +751,7 @@ pub const Host = struct {
             .download => |d| fx.download(d.id, d.name, d.mime, d.bytes),
             .open_file => |o| fx.openFile(o.id, o.accept),
             .write_clipboard => |c| fx.clipboardWrite(c.text),
+            .write_clipboard_image => |c| fx.clipboardWriteImage(c.png),
             .storage_set => |s| fx.storageSet(s.key, s.value),
             .storage_get => |g| fx.storageGet(g.id, g.key),
             .clock => |c| fx.clock(c.id),
@@ -957,6 +1067,37 @@ test "dropOf: image metadata and a thumbnail that matches its width" {
     try std.testing.expectEqual(@as(u32, 0), file.width);
     const text = dropOf(.{ .kind = .dropped, .id = 0, .a = 2, .b = 0, .c = 0, .d = 0, .blobs = .{ "", "text/plain", "hi", "" } });
     try std.testing.expectEqual(teak.DropKind.text, text.kind);
+}
+
+test "IME events: a composition shows as preedit, the commit is typed and clears it" {
+    var h = Host{ .width = 10, .height = 10 };
+    var q: InputQueue = .{};
+    q.beginFrame();
+    h.applyImeEvent(&q, .start, "", 0);
+    try std.testing.expect(h.imeState().active);
+    h.applyImeEvent(&q, .update, "\u{306B}\u{307B}", 3);
+    try std.testing.expectEqualStrings("\u{306B}\u{307B}", h.imeState().text);
+    try std.testing.expectEqual(@as(usize, 3), h.imeState().cursor);
+    h.applyImeEvent(&q, .commit, "\u{65E5}\u{672C}", 0);
+    try std.testing.expect(!h.imeState().active);
+    try std.testing.expectEqual(@as(usize, 0), h.imeState().text.len);
+    const st = q.finish(false, 10, 10);
+    try std.testing.expectEqualStrings("\u{65E5}\u{672C}", st.chars);
+}
+
+test "IME events: a cancelled composition types nothing; an oversized preedit is cut on a boundary" {
+    var h = Host{ .width = 10, .height = 10 };
+    var q: InputQueue = .{};
+    q.beginFrame();
+    h.applyImeEvent(&q, .update, "\u{3042}", 3);
+    h.applyImeEvent(&q, .commit, "", 0);
+    try std.testing.expect(!h.imeState().active);
+    var big: [ime_text_cap + 2]u8 = undefined;
+    for (0..big.len / 3) |i| @memcpy(big[i * 3 ..][0..3], "\u{3042}");
+    h.applyImeEvent(&q, .update, big[0 .. big.len / 3 * 3], 0);
+    try std.testing.expect(h.imeState().text.len <= ime_text_cap and h.imeState().text.len % 3 == 0);
+    const st = q.finish(false, 10, 10);
+    try std.testing.expectEqual(@as(usize, 0), st.chars.len);
 }
 
 test "serializeA11yTree: v2 fields (value, selection, parent, flags, wire roles)" {

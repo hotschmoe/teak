@@ -34,6 +34,30 @@ pub fn themeFor(m: *const Model) teak.Theme {
 // ── Menus ──────────────────────────────────────────────────────────
 
 const Item = MB.Item;
+
+/// One chord per command: the `commands` table binds it (so it works) and the
+/// menu rows below print it (so what they show is what works).
+const C = teak.Chord;
+const kb = struct {
+    const toast = C.ctrl(.t);
+    const refresh = C.plain(.f5);
+    const copy = C.ctrl(.c);
+    const paste = C.ctrl(.v);
+    const select_all = C.ctrl(.a);
+};
+fn sc(comptime chord: C) []const u8 {
+    return chord.text(.pc);
+}
+
+/// The gallery's command table: the shortcuts above, each running the same
+/// `Msg.run` a menu click sends.
+pub fn commands(_: *const Model, list: *teak.CommandList(Msg)) void {
+    list.add(.{ .id = "toast", .label = "Show toast", .shortcut = kb.toast, .msg = .{ .run = .toast_demo } });
+    list.add(.{ .id = "refresh", .label = "Refresh", .shortcut = kb.refresh, .msg = .{ .run = .refresh } });
+    list.add(.{ .id = "copy", .label = "Copy", .shortcut = kb.copy, .msg = .{ .run = .copy } });
+    list.add(.{ .id = "paste", .label = "Paste", .shortcut = kb.paste, .msg = .{ .run = .paste } });
+    list.add(.{ .id = "select_all", .label = "Select all", .shortcut = kb.select_all, .msg = .{ .run = .select_all } });
+}
 const pages_menu = [_]Item{
     .{ .label = "&Controls", .action = .page_controls },
     .{ .label = "&Inputs", .action = .page_inputs },
@@ -44,7 +68,7 @@ const pages_menu = [_]Item{
 };
 const file_menu = [_]Item{
     .{ .label = "&Reset demo...", .action = .reset },
-    .{ .label = "Show &toast", .action = .toast_demo, .shortcut = "Ctrl+T" },
+    .{ .label = "Show &toast", .action = .toast_demo, .shortcut = sc(kb.toast) },
     Item.sep,
     .{ .label = "E&xit", .action = .quit },
 };
@@ -57,7 +81,7 @@ const view_menu = [_]Item{
     .{ .label = "&Go to", .children = &pages_menu },
     .{ .label = "&Theme", .children = &look_menu },
     Item.sep,
-    .{ .label = "Re&fresh", .action = .refresh, .shortcut = "F5" },
+    .{ .label = "Re&fresh", .action = .refresh, .shortcut = sc(kb.refresh) },
 };
 const help_menu = [_]Item{
     .{ .label = "&Keyboard shortcuts", .action = .shortcuts },
@@ -73,9 +97,9 @@ const ctx_props = [_]Item{
     .{ .label = "&Size" },
 };
 pub const context_items = [_]Item{
-    .{ .label = "&Copy", .action = .copy, .shortcut = "Ctrl+C" },
-    .{ .label = "&Paste", .action = .paste, .shortcut = "Ctrl+V" },
-    .{ .label = "Select &all", .action = .select_all, .shortcut = "Ctrl+A" },
+    .{ .label = "&Copy", .action = .copy, .shortcut = sc(kb.copy) },
+    .{ .label = "&Paste", .action = .paste, .shortcut = sc(kb.paste) },
+    .{ .label = "Select &all", .action = .select_all, .shortcut = sc(kb.select_all) },
     Item.sep,
     .{ .label = "&Refresh", .action = .refresh },
     .{ .label = "P&roperties", .children = &ctx_props },
@@ -456,4 +480,16 @@ test "the Inputs page text area takes focus and typed text (Enter makes a new li
     try testing.expect(focusedMsg(&m).?.area == .focus);
     const ev: teak.TextEvent = .{ .id = model_mod.area_id, .kind = .metrics };
     try testing.expect(textMsg(&m, ev) != null);
+}
+
+test "commands: menu shortcut text is the chord that fires the command" {
+    var m: Model = .{};
+    var list: teak.CommandList(Msg) = .{};
+    commands(&m, &list);
+    const c = list.match(teak.Chord.ctrl(.t)).?;
+    try testing.expectEqual(Msg{ .run = .toast_demo }, c.msg);
+    try testing.expectEqualStrings("Ctrl+T", file_menu[1].shortcut);
+    try testing.expectEqualStrings("F5", view_menu[3].shortcut);
+    update(&m, c.msg);
+    try testing.expectEqual(@as(?model_mod.Action, .toast_demo), m.last_action);
 }

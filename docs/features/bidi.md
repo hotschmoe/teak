@@ -35,12 +35,32 @@ wrapped line [start,end) --lineLevels--> L1 levels --visualOrder / lineRuns--> L
 91,707-line file (verified locally, too slow for the default test run). Testdata is `-text` in
 `.gitattributes`, so line endings are preserved on every platform.
 
-## Not done yet (follow-ups)
+## Rendering and editing (`teak.bidi_text`)
 
-- Rendering: `render/build.zig` and the text stage still draw each `text` Cmd as one logical run;
-  they need to split a line with `lineRuns`, shape each run with its direction, and mirror brackets.
-- `Editor` / `TextArea`: arrow keys still move logically; wiring `caretMove` (and a caret that
-  carries `trailing`) is the next small step. Pointer hit-testing (`indexAt`) needs the same
-  per-run treatment.
-- L3/L4 (combining mark reordering, glyph mirroring beyond brackets) and `Bidi_Mirrored` beyond
-  paired brackets belong to the shaper/renderer.
+`core/bidi_text.zig` turns the algorithm into line geometry for the passes that already walk
+`text_wrap` lines. `layoutLine(text, line_start, line_end, font, measurer, wrap_w, &scratch)` returns
+null for plain left-to-right text (one byte scan decides; no cost for Latin) and otherwise a `Layout`:
+the line's directional runs in visual order, each measured whole, with
+`caretX(byte)`, `indexAt(x)` and `selection(lo, hi, out)` (per-run highlight rects).
+
+- **Drawing**: `render/build.zig` emits one `TextDraw` per run for `text`, wrapped text, `text_input`
+  and `text_area` lines. Right-to-left runs carry `FontSpec.rtl = true`; the shaper returns them in
+  visual order (grapheme-reversed, paired brackets mirrored; clusters point back at the source).
+  Lines of a right-to-left paragraph are right-aligned (`wrap_w`, `text_align = .start`).
+- **Caret / hit-test**: `text_wrap.caretPos` and `indexAt` use the layout, so the caret rect, the
+  pointer, the IME spot and the metrics event agree with what is drawn. Caret convention (no extra
+  Model state): the caret at byte `i` sits on the trailing edge of the cluster before `i` (leading edge
+  of the first cluster at the line start). At a direction boundary this chooses one of the two visual
+  places; the other is reached with Home/End or the pointer.
+- **Arrows**: in a focused `text_area` the runtime resolves Left/Right (and Shift) against the wrapped
+  line (`arrowTarget`: nearest position strictly beyond the current visual slot, so repeated presses
+  always progress) and delivers a `move` event; `Editor.move` does the same over the hard line for
+  `TextField`. Word jumps stay logical.
+- **Non-monotonic clusters**: nothing here reads shaped-glyph cluster order. Positions come from
+  measuring whole runs and prefixes, so RTL runs (glyphs in visual order) are safe.
+- **Shaper contract**: `FontSpec.rtl` means "this is one right-to-left run, give me visual order". The
+  built-in shaper implements it; a shaper with its own direction logic (HarfBuzz) must take `rtl` as
+  the buffer direction instead of guessing from the script.
+
+Limits: paragraphs over 2048 bytes and lines with more than 48 runs fall back to logical drawing;
+trailing hang spaces are not reordered; Bidi_Mirrored beyond paired brackets is not mirrored.

@@ -325,6 +325,51 @@ in a monospaced font. Panels clamp to the window. A transparent full-window
 modal "scrim" overlay behind the panels makes a click anywhere else dismiss
 the menu. The navigation logic (`Nav`) is pure and exhaustively tested.
 
+### Menu shortcuts: one chord, shown and working
+
+`MenuItem.shortcut` is **display text only**: choosing the row dispatches
+`msgs.run(action)`, and pressing the key does nothing by itself. The chord works
+because of the command table (`commands`, [commands.md](commands.md#menu-bar)):
+the loop matches `InputState.chords` against it before widget key handling and
+dispatches the row's `msg`. Keep **one source of truth** for the chord:
+
+1. **Preferred: build the rows from the table.**
+   `teak.commands.menuItems(MB.Item, arena, &list, .pc, &.{ "file.open", "-", "view.fit" })`
+   returns menu rows (label, `Chord.format` shortcut text, `enabled`, action =
+   command index; `"-"` is a separator). Use `MenuBar(u16)`; on `run(i)` close the
+   menu and `update(m, list.items[i].msg)`. Label, shortcut text, enabled state and
+   the chord itself all come from the same `Command`, so they cannot drift
+   (`examples/kerf_viewer`).
+2. **Const trees** (when `keySpecialMsg` needs the same tree without a per-frame
+   arena): define the chord once and derive the text at comptime,
+   `.shortcut = kb.save.text(.pc)` with `commands` using `.shortcut = kb.save`
+   (`examples/gallery`). Give the command the menu's own `run(action)` Msg
+   (`.msg = .{ .run = .save }`) so a click and the chord are indistinguishable to
+   `update`.
+3. A hand-written literal (`.shortcut = "Ctrl+S"`) is only display text; if you
+   must, guard it with a test that formats the command's chord
+   (`Chord.format(&w, .pc)`) and compares.
+
+`Chord.ctrl` is the platform's primary modifier (Cmd on macOS, folded by the
+host); format with `.mac` there. A disabled command (`.enabled = false`) neither
+runs from its chord nor shows an enabled menu row when the rows come from the
+table.
+
+**color_picker.** A saturation / value square and a hue strip (interactive canvases drawn from per-vertex-coloured
+triangles: white -> hue left to right, a transparent -> black overlay top to bottom), a preview, hex / R / G / B fields
+and a 16-swatch palette. The colour is HSV in the Model (so dragging hue over a grey does not lose it) plus the text of
+the four fields; dragging or a swatch rewrites the texts, typing a valid value updates the colour and the *other*
+fields (never the one being typed in), and an unparseable field is drawn with a danger border. Route the canvases from
+`canvasMsg` (`color_picker.canvasMsg`), the fields from the app's key hooks (`charMsg(field, c)` / `keyMsg(field, key)`),
+read the result with `rgb(model)` / `rgba(model)`.
+
+**spinner.** `Spinner(.{ .min, .max, .step, .big_step, .precision })` wraps a `NumericField`: its `Msg` *is* the
+NumericField's, so typing routes through `textFieldChar` / `textFieldSpecial` unchanged, and stepping is a function the
+app calls from its own `update` arm (`Spinner.step(&m.qty, .up)`). `keyStep` maps Up / Down / Page Up / Page Down,
+`wheelStep(dy, shift)` maps the wheel (Shift = big step). A step starts from the current value (the minimum when the
+text is empty or invalid), rounds to `precision` (no `0.30000000000000004`), clamps to `[min, max]` and rewrites the
+text; the `-` / `+` buttons disable at the limits.
+
 **date_field.** An ISO text field (`YYYY-MM-DD`) plus a calendar popover: a modal overlay with a month header (`<<` `<`
 `>` `>>`), weekday headings (Monday first), a 6 x 7 grid of day buttons (other-month days muted, today outlined,
 selected inverted, the keyboard cursor in a heavy border) and Today / Clear. The date maths (`widgets.date`: days from

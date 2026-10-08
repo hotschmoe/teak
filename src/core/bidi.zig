@@ -757,6 +757,24 @@ pub fn caretMove(gpa: std.mem.Allocator, text: []const u8, an: Analysis, start: 
     }
 }
 
+/// Visual slot (0 = left edge of the line .. n = right edge) of the caret at
+/// every grapheme boundary of the line `[start, end)`, under the convention
+/// "trailing edge of the cluster before the boundary, leading edge of the first
+/// cluster at the line start". `out` needs `clusters + 1` entries; returns the
+/// filled prefix. `out[k]` belongs to the boundary before cluster k (the last
+/// one is `end`). Used for stateless visual arrow movement.
+pub fn boundarySlots(gpa: std.mem.Allocator, text: []const u8, an: Analysis, start: usize, end: usize, out: []u32) ![]u32 {
+    const cl = try Clusters.init(gpa, text, an, start, end);
+    defer cl.deinit(gpa);
+    const n = cl.start.len;
+    std.debug.assert(out.len >= n + 1);
+    for (0..n + 1) |k| {
+        const idx: usize = if (k < n) cl.start[k] else cl.end;
+        out[k] = @intCast(cl.slotOf(.{ .index = idx, .trailing = idx > start }));
+    }
+    return out[0 .. n + 1];
+}
+
 /// A horizontal span `[x0, x1)` in line-local pixels.
 pub const Span = struct { x0: f32, x1: f32 };
 

@@ -1,6 +1,6 @@
 # Text engine (M1 design)
 
-**Status**: DESIGN SPIKE. Nothing here is implemented; this document is the
+**Status**: DESIGN RECORD (implemented; see the status table below). Written as the
 plan for review milestone M1 ("make-or-break", `docs/REVIEW-2026-10.md`).
 It replaces the "per-string texture" text path described in
 [text.md](text.md) and closes issues
@@ -11,6 +11,32 @@ It replaces the "per-string texture" text path described in
 **Measurements** in this document were taken on the dev box (aarch64 Linux,
 Zig 0.16, `-O2`/`ReleaseFast`/`ReleaseSmall` as stated, DejaVuSansMono).
 Scratch sources are not committed; each number says how to re-measure it.
+
+> **Status (PR18, docs close-out):** this is the design record. The shipped engine and the supported subset are described
+> in [text.md](text.md); the table below maps each planned PR to its GitHub PR and state at the time of writing.
+>
+> | Plan | Shipped as | State |
+> |---|---|---|
+> | PR1 teak-text, Shaper, SimpleShaper | [#18](https://github.com/hotschmoe/teak/pull/18) | merged |
+> | PR2a/2b unicode, linebreak, text_wrap | [#15](https://github.com/hotschmoe/teak/pull/15) | merged |
+> | PR3 GlyphAtlas | [#14](https://github.com/hotschmoe/teak/pull/14) | merged |
+> | PR4 instanced glyph pass (native) | [#28](https://github.com/hotschmoe/teak/pull/28) | merged |
+> | PR7 web on the atlas, stb in wasm, combining marks | [#45](https://github.com/hotschmoe/teak/pull/45) | merged |
+> | PR8/9 wrap, shrink, per-line render | [#35](https://github.com/hotschmoe/teak/pull/35) | merged |
+> | PR10/12 Editor, UndoLog, TextField on Editor | [#20](https://github.com/hotschmoe/teak/pull/20) | merged |
+> | PR11a/b text_area, textMsg, TextArea, notes | [#40](https://github.com/hotschmoe/teak/pull/40) | merged |
+> | PR14 MeasureCache + bench | [#36](https://github.com/hotschmoe/teak/pull/36) | merged |
+> | X11 clipboard / XDND / IME | [#21](https://github.com/hotschmoe/teak/pull/21) | merged |
+> | PR13 web IME bridge | [#49](https://github.com/hotschmoe/teak/pull/49) | open |
+> | PR15 scalable (SDF) text | [#66](https://github.com/hotschmoe/teak/pull/66) | open |
+> | PR16 colour emoji | [#71](https://github.com/hotschmoe/teak/pull/71) | open |
+> | PR17 Windows stb path (+ Win32 parity) | [#31](https://github.com/hotschmoe/teak/pull/31) | open |
+> | Font fallback chain | [#44](https://github.com/hotschmoe/teak/pull/44) | open |
+> | NFC compose | [#76](https://github.com/hotschmoe/teak/pull/76) | open |
+> | HarfBuzz option (section 5.3) | [#77](https://github.com/hotschmoe/teak/pull/77) | open |
+> | Bidi (section 6.6): algorithm, rendering + editing | [#74](https://github.com/hotschmoe/teak/pull/74), [#85](https://github.com/hotschmoe/teak/pull/85) | open |
+>
+> Sections 3.6 (SDF), 5.3 (HarfBuzz) and 6.6 (bidi) describe the original deferral; the PRs above supersede them once merged.
 
 > **Status (fallback):** `src/text/fallback.zig` implements the native fallback chain (risk 2); wrapped `rich_text` reuses `text_wrap` through `RichMeasure` (a measurer over spans). Colour emoji and bidi remain out of scope.
 >
@@ -496,18 +522,32 @@ core editor offers `Editor.applyPointer(ev)` so a component can be written in fo
 
 ### 6.7 IME preedit
 
-* Data: the component Model holds `preedit: [64]u8`, `preedit_len`, `preedit_cursor` (set by `Msg.ime_preedit{ bytes,
-  cursor }`, cleared by commit/cancel); the area draws it inline at the caret with an underline. Commit arrives as
-  ordinary text input (`textFieldReplaceSelection`).
-* Host events: `InputState` gains `ime: ?ImeEvent` (`.preedit{bytes,cursor}`, `.commit{bytes}`, `.cancel`) as
-  data, routed like keys.
-* Host extension: optional `setImeRect(x, y, w, h)` (called from the `.metrics` caret rect) so the OS candidate window
-  and the web hidden `<textarea>` follow the caret. `validateHost` treats it as optional (`@hasDecl`), like
-  `scaleFactor`.
-* Web: zunk adds a visually hidden `<textarea>` bridge (focus follows the focused area `id`), forwards `compositionstart/
-  update/end` and `beforeinput` as the events above; acceptance is Japanese input working in Chrome. X11 XIM/IBus is a
-  later PR (issue #7); Win32 already has IME handling to verify. The design only fixes the data contract so it is not
-  redesigned per host.
+**As built (PR13): the preedit is TransientState, not Model.** The first design put `preedit` in the component
+Model with a `Msg.ime_preedit`. The runtime already mirrors `Host.imeState()` (active, UTF-8 preedit, caret) into
+`TransientState` every frame and the renderers draw it inline at the caret, underlined (`TextInput` and `text_area`).
+That passes hatch 2's three-rule gate: (1) *derivable*: it is a current input (what the OS or browser composition
+holds right now), not state the app owns; (2) *non-logical*: only the render pass reads it, `update`/`view`/layout/
+hit-test never do; (3) *safely losable*: a dropped frame of preedit is a cosmetic flicker, the composition lives in the
+IME. Putting it in the Model would add a `Msg` per keystroke of composition that no `update` acts on, and a
+second source of truth that can disagree with the IME. What *is* logical, the committed text, reaches `update` the
+ordinary way.
+
+* Events: there is no separate `ImeEvent` type. A Host reports the composition snapshot through the existing
+  `imeState()` (`active`, `text`, `cursor` in bytes) and the committed text as `InputState.chars` (whole UTF-8
+  code points), exactly like typed text. A cancelled composition is `active = false` with nothing typed. Every host
+  already speaks this (Win32 WM_IME_*, X11 XIM preedit callbacks + `Xutf8LookupString`); web joins it.
+* Optional Host extensions, `@hasDecl`-checked like `scaleFactor`: `setImeSpot(x, y)` (the caret line's bottom edge,
+  logical px) and `setImeActive(bool)` (a text field is focused). The runtime calls them from the focused
+  `text_input` / `text_area` geometry, on change only.
+* Web (`zunk.web.ime`, `src/gen/js/ime.js`): a visually hidden `<textarea data-zunk-ime>` takes DOM focus while a text
+  field is focused (`setImeActive`), is positioned at the caret (`setImeSpot`, so the candidate window opens beside
+  it), and its `compositionstart/update/end` + `input` events are queued for the wasm to drain once per frame.
+  Double insertion is avoided structurally: zunk's key handler already preventDefault()s printable keys (so no
+  `input` event follows them) and now leaves composition keys (`isComposing`, keyCode 229) alone; paste and drop come
+  through the host-services bridge and the field ignores them. The field reports only IME results and `insertText`
+  from virtual keyboards / automation. Acceptance: `tools/web-ime-test.mjs` drives `Input.imeSetComposition` +
+  `Input.insertText` over CDP against `examples/notes` (TextArea) and `examples/counter_greeter` (TextField).
+* X11: XIM on-the-spot preedit feeds the same snapshot; Win32 already did.
 
 ## 7. Wrap, measure-with-width, flex shrink (issue #8)
 

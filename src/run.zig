@@ -55,7 +55,8 @@
 //!     content and caret rect) on first layout and whenever they change, so
 //!     the app can clamp scroll and reveal the caret. A press captures the
 //!     pointer (drag-select continues outside the rect). The focused caret
-//!     rect also feeds `Host.setImeSpot` when the Host has it.
+//!     rect also feeds `Host.setImeSpot` when the Host has it; `Host.setImeActive`
+//!     (optional) says whether a text field is focused (the web IME bridge needs it).
 //!   - `scrollMsg(*const Model, id, dx, dy) ?Msg`     — wheel over the
 //!     innermost hovered scroll region with `ScrollStyle.id != 0` (a pointer
 //!     canvas inside it wins when it is the innermost).
@@ -94,6 +95,19 @@
 //!     `indexOfFocusMsg` (stable across conditional/reordered widgets)
 //!     to drive the focus ring + cursor blink. Also enables built-in
 //!     Tab / Shift+Tab traversal between focusable widgets.
+//!   - `dragMsg(*const Model, DragEvent) ?Msg` — in-app drag and drop. Groups
+//!     with `GroupStyle.drag_id != 0` are sources, `drop_id != 0` targets; a
+//!     press on a source (that no interactive child claims) plus movement
+//!     starts a drag, and `dragMsg` hears `start` / `move` (every frame, with
+//!     the innermost target under the pointer) / `drop` / `cancel` (Escape).
+//!     Drag state, the ghost overlay and the reorder itself live in the app.
+//!     See docs/features/drag-drop.md.
+//!   - `commands(*const Model, *CommandList(Msg)) void` — the App's command
+//!     table (id, label, shortcut, enabled, Msg), a pure function of the Model.
+//!     The loop matches the frame's key chords (`InputState.chords`) against
+//!     the enabled rows BEFORE widget key handling and dispatches the match's
+//!     Msg; a claimed chord's text / special key (Ctrl+C...) is swallowed. The
+//!     same table feeds menus and `CommandPalette`. See docs/features/commands.md.
 //!   - `submitMsg(*const Model) ?Msg`                 — dispatched on the
 //!     Enter key (takes precedence over `keySpecialMsg` for Enter)
 //!   - `themeFor(*const Model) Theme`                 — per-frame theme
@@ -157,6 +171,8 @@ const pointer = @import("core/pointer.zig");
 const cursor_mod = @import("core/cursor.zig");
 const text_event = @import("core/text_event.zig");
 const text_wrap = @import("core/text_wrap.zig");
+const bidi_text = @import("core/bidi_text.zig");
+const unicode_mod = @import("core/unicode.zig");
 const layout = @import("layout/engine.zig");
 const scroll_extent = @import("layout/scroll_extent.zig");
 const virtual_rows = @import("layout/virtual_rows.zig");
@@ -167,6 +183,8 @@ const render = @import("render/build.zig");
 const vertex = @import("render/vertex.zig");
 const resources = @import("resources.zig");
 const control = @import("control.zig");
+const keys_mod = @import("input/keys.zig");
+const commands_mod = @import("core/commands.zig");
 
 const Rect = layout.Rect;
 const TransientState = transient.TransientState;
@@ -480,6 +498,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         const has_rows_hook = @hasDecl(App, "virtualRowsMsg");
         const has_mods_hook = @hasDecl(App, "modsMsg");
         const has_resources = @hasDecl(App, "resources");
+        const has_commands = @hasDecl(App, "commands");
+        const has_drag = @hasDecl(App, "dragMsg");
         const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView") and
             @hasDecl(Gpu, "openSecondarySurface");
         const has_effects = @hasDecl(App, "effects");
@@ -544,6 +564,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         text_metrics: [8]TextMetricsSlot = @splat(.{}),
         /// Last IME spot pushed to the Host (avoid per-frame calls).
         ime_spot: ?[2]i32 = null,
+        /// Whether the focused widget is a text field (`Host.setImeActive` last told the Host).
+        ime_focused: bool = false,
         /// Last `Host.scaleFactor()` seen (0 = not yet); a change (the window
         /// moved to a monitor with another DPI) is forwarded to `Gpu.setScale`.
         host_scale: f32 = 0,
@@ -552,6 +574,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// if mouseup lands on the same widget; drag-off cancels.
         press_target: ?usize = null,
 
+        /// In-app drag tracking (`GroupStyle.drag_id` / `dragMsg`): loop
+        /// bookkeeping like `press_target`; what is being dragged, where the
+        /// ghost goes and which row is hot live in the app's Model, fed by
+        /// the `DragEvent`s.
+        drag: DragState = .{},
         /// Cmd index last reported to `hoverMsg`; loop bookkeeping like
         /// `press_target` (a lost value only repeats one hover event).
         hover_reported: ?usize = null,
@@ -709,9 +736,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const dispatched_before = self.dispatch_count;
             self.routeA11yActions(prev);
             self.routeMouse(input, prev);
+            self.routeDrag(input, prev);
             self.routePointerHooks(input, prev);
             self.routeCanvasPointer(input, prev);
-            self.routeKeys(input, prev);
+            const swallow = self.routeChords(input);
+            self.routeKeys(input, prev, swallow);
             self.routeWheel(input, prev);
             self.deliverEffectResults();
             self.fireSubs();
@@ -968,6 +997,140 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (self.press_target != null and hover != self.press_target) self.press_target = null;
         }
 
+        /// Pointer travel (px) before a pressed drag source becomes a drag.
+        const drag_threshold: f32 = 4;
+
+        const DragState = struct {
+            phase: enum { idle, armed, active } = .idle,
+            id: u32 = 0,
+            x0: f32 = 0,
+            y0: f32 = 0,
+            grab_dx: f32 = 0,
+            grab_dy: f32 = 0,
+            src: [4]f32 = .{ 0, 0, 0, 0 },
+        };
+
+        /// Drag and drop, against the PREVIOUS frame's layout: a left press on
+        /// a `drag_id` group that no interactive widget claims arms a drag;
+        /// moving past the threshold starts it; every frame reports the drop
+        /// target under the pointer; release drops, Escape cancels.
+        fn routeDrag(self: *Self, input: Input, prev: u1) void {
+            if (comptime !has_drag) return;
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+            const d = &self.drag;
+            switch (d.phase) {
+                .idle => if (input.button_down.left and cmds.len > 0) {
+                    if (hit_test.hoverTest(cmds, rects, input.mouse_x, input.mouse_y) != null) return;
+                    const src = hit_test.dragTargets(cmds, rects, input.mouse_x, input.mouse_y).source orelse return;
+                    const r = rects[src.index];
+                    d.* = .{
+                        .phase = .armed,
+                        .id = src.id,
+                        .x0 = input.mouse_x,
+                        .y0 = input.mouse_y,
+                        .grab_dx = input.mouse_x - r.x,
+                        .grab_dy = input.mouse_y - r.y,
+                        .src = .{ r.x, r.y, r.w, r.h },
+                    };
+                },
+                .armed => {
+                    if (!input.buttons.left or input.button_up.left) {
+                        d.phase = .idle; // a plain press, no drag
+                        return;
+                    }
+                    const dx = input.mouse_x - d.x0;
+                    const dy = input.mouse_y - d.y0;
+                    if (dx * dx + dy * dy < drag_threshold * drag_threshold) return;
+                    d.phase = .active;
+                    self.sendDrag(.start, input, cmds, rects);
+                },
+                .active => {
+                    for (input.keys) |k| if (k == .escape) {
+                        self.sendDrag(.cancel, input, cmds, rects);
+                        d.phase = .idle;
+                        return;
+                    };
+                    if (!input.buttons.left or input.button_up.left) {
+                        self.sendDrag(.drop, input, cmds, rects);
+                        d.phase = .idle;
+                        return;
+                    }
+                    self.sendDrag(.move, input, cmds, rects);
+                },
+            }
+        }
+
+        fn sendDrag(self: *Self, phase: pointer.DragPhase, input: Input, cmds: []const cmd.Cmd(Msg), rects: []const Rect) void {
+            const d = &self.drag;
+            var ev: pointer.DragEvent = .{
+                .phase = phase,
+                .id = d.id,
+                .x = input.mouse_x,
+                .y = input.mouse_y,
+                .grab_dx = d.grab_dx,
+                .grab_dy = d.grab_dy,
+                .src = d.src,
+            };
+            if (phase != .cancel) {
+                if (hit_test.dragTargets(cmds, rects, input.mouse_x, input.mouse_y).target) |t| {
+                    const r = rects[t.index];
+                    ev.over = t.id;
+                    ev.over_rect = .{ r.x, r.y, r.w, r.h };
+                    ev.over_fx = if (r.w > 0) std.math.clamp((input.mouse_x - r.x) / r.w, 0, 1) else 0;
+                    ev.over_fy = if (r.h > 0) std.math.clamp((input.mouse_y - r.y) / r.h, 0, 1) else 0;
+                }
+            }
+            if (App.dragMsg(&self.model, ev)) |m| self.dispatch(m);
+        }
+
+        /// What a claimed shortcut keeps from also reaching widgets this frame.
+        const Swallow = struct {
+            /// Typed text is dropped (a Ctrl/Alt combination never types).
+            text: bool = false,
+            keys: [input_chords_cap]keys_mod.SpecialKey = undefined,
+            n: usize = 0,
+
+            fn add(self: *Swallow, k: keys_mod.SpecialKey) void {
+                if (self.n < self.keys.len) {
+                    self.keys[self.n] = k;
+                    self.n += 1;
+                }
+            }
+            /// Consume one pending occurrence of `k`.
+            fn take(self: *Swallow, k: keys_mod.SpecialKey) bool {
+                for (self.keys[0..self.n], 0..) |have, i| {
+                    if (have != k) continue;
+                    self.keys[i] = self.keys[self.n - 1];
+                    self.n -= 1;
+                    return true;
+                }
+                return false;
+            }
+        };
+        const input_chords_cap = 16;
+
+        /// Match this frame's key chords against the App's `commands` table
+        /// BEFORE widget key handling; a claimed chord dispatches the
+        /// command's Msg and keeps its text / special key from reaching the
+        /// widgets (so Ctrl+S does not also reach a focused text field).
+        /// The table is rebuilt after each dispatch, since the Msg may have
+        /// changed which commands are enabled.
+        fn routeChords(self: *Self, input: Input) Swallow {
+            var sw: Swallow = .{};
+            if (comptime !has_commands) return sw;
+            if (input.chords.len == 0) return sw;
+            for (input.chords) |ch| {
+                var list: commands_mod.CommandList(Msg) = .{};
+                App.commands(&self.model, &list);
+                const c = list.match(ch) orelse continue;
+                sw.text = true;
+                if (ch.special()) |sk| sw.add(sk);
+                self.dispatch(c.msg);
+            }
+            return sw;
+        }
+
         /// `contextMsg` for the Menu key / Shift+F10: the pointer event is anchored at the
         /// focused widget (the navigation focus, else the Model's text focus, else the
         /// mouse), `hit` = that widget's Msg.
@@ -1119,9 +1282,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Characters first, then special keys; clipboard chords route to the
         /// app's own handler with the Host clipboard vtable (the app owns
         /// cut/copy/paste policy).
-        fn routeKeys(self: *Self, input: Input, prev: u1) void {
+        fn routeKeys(self: *Self, input: Input, prev: u1, swallow_in: Swallow) void {
+            var swallow = swallow_in;
             const prev_cmds = self.bufs[prev].cmds.items;
             for (input.chars) |ch| {
+                if (swallow.text) continue; // a command claimed this chord (Ctrl/Alt never types)
                 var handled = false;
                 if (@hasDecl(App, "keyCharMsg")) {
                     if (App.keyCharMsg(&self.model, ch)) |m| {
@@ -1133,6 +1298,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (!handled and ch == ' ') _ = self.navActivate(prev_cmds);
             }
             for (input.keys) |k| {
+                if (swallow.take(k)) continue; // a command claimed this chord
                 // Menu key / Shift+F10: a context-menu request at the keyboard-focused
                 // widget (below its left edge), through the same `contextMsg` hook a
                 // right click uses. Without the hook the key reaches `keySpecialMsg`.
@@ -1682,6 +1848,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// area has focus: resolve against the wrapped layout and deliver a
         /// `move` event instead of the key. Returns true when consumed.
         fn sendTextNav(self: *Self, k: @import("input/keys.zig").SpecialKey, input: Input, prev: u1) bool {
+            if (self.sendTextArrow(k, input, prev)) return true;
             const Nav = struct { kind: text_wrap.NavKind, extend: bool };
             const nav: Nav = switch (k) {
                 .up => .{ .kind = .up, .extend = false },
@@ -1714,6 +1881,55 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .line = r.line,
                 .goal_x = r.goal_x orelse 0,
                 .keep_goal = r.goal_x != null,
+                .mods = mods,
+            };
+            if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
+            return true;
+        }
+
+        /// Left / Right (and Shift) in a focused text area whose text can mix
+        /// directions: the target is the neighbouring caret position in VISUAL
+        /// order on the wrapped line (`bidi_text.arrowTarget`), falling back to the
+        /// logical neighbour at the line's visual edge. Plain text is left to the
+        /// editor (logical, identical). Returns true when consumed.
+        fn sendTextArrow(self: *Self, k: @import("input/keys.zig").SpecialKey, input: Input, prev: u1) bool {
+            const arrow: bidi_text.bidi.Arrow, const extend = switch (k) {
+                .left => .{ .left, false },
+                .shift_left => .{ .left, true },
+                .right => .{ .right, false },
+                .shift_right => .{ .right, true },
+                else => return false,
+            };
+            const cmds = self.bufs[prev].cmds.items;
+            const fi = focusIndex(App, &self.model, cmds) orelse return false;
+            if (fi >= cmds.len or cmds[fi] != .text_area) return false;
+            const ta = cmds[fi].text_area;
+            if (!bidi_text.mayBeRtl(ta.content)) return false;
+            // A collapsing (non-extending) arrow over a selection stays the editor's.
+            if (!extend and ta.selection_anchor != null and ta.selection_anchor.? != ta.cursor) return false;
+            const g = textAreaGeometry(ta, self.rects[prev].items[fi]);
+            var it = text_wrap.LineIter.init(ta.content, ta.font, g.wrap_w, g.mode, 0, self.measurer);
+            var line = it.next() orelse return false;
+            var li: u32 = 0;
+            while (ta.cursor >= line.next) {
+                line = it.next() orelse break;
+                li += 1;
+            }
+            var sc: bidi_text.Scratch = .{};
+            const target = bidi_text.arrowTarget(ta.content, line.start, line.end, ta.cursor, arrow, &sc) orelse blk: {
+                const t = ta.content;
+                break :blk if (arrow == .left)
+                    (if (ta.cursor == 0) 0 else unicode_mod.prevGrapheme(t, ta.cursor))
+                else
+                    (if (ta.cursor >= t.len) t.len else unicode_mod.nextGrapheme(t, ta.cursor));
+            };
+            var mods = input.mods;
+            mods.shift = extend;
+            const ev: text_event.TextEvent = .{
+                .id = ta.id,
+                .kind = .move,
+                .index = @intCast(target),
+                .line = li,
                 .mods = mods,
             };
             if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
@@ -1760,30 +1976,55 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Tell the Host where the focused caret is so an IME candidate
         /// window opens next to it (window logical px, just below the caret).
         fn updateImeSpot(self: *Self, cur: u1) void {
-            if (!@hasDecl(Host, "setImeSpot")) return;
+            const has_spot = comptime @hasDecl(Host, "setImeSpot");
+            const has_active = comptime @hasDecl(Host, "setImeActive");
+            if (comptime !(has_spot or has_active)) return;
             const cmds = self.bufs[cur].cmds.items;
             const rects = self.rects[cur].items;
-            const fi = self.ts.focus_index orelse return;
-            if (fi >= cmds.len) return;
-            var sx: f32 = undefined;
-            var sy: f32 = undefined;
-            switch (cmds[fi]) {
-                .text_area => |ta| {
-                    const g = textAreaGeometry(ta, rects[fi]);
-                    const c = text_wrap.caretPos(ta.content, ta.cursor, ta.font, g.wrap_w, g.mode, 0, self.measurer);
-                    sx = g.inner.x - ta.scroll_x + c.x;
-                    sy = g.inner.y - ta.scroll_y + c.y + text_wrap.lineHeight(ta.font, self.measurer);
-                },
-                .text_input => |ti| {
-                    sx = rects[fi].x + 6 + self.measurer.prefixWidth(ti.content, ti.font, ti.cursor);
-                    sy = rects[fi].y + rects[fi].h;
-                },
-                else => return,
+
+            var sx: f32 = 0;
+            var sy: f32 = 0;
+            const editable = blk: {
+                const fi = self.ts.focus_index orelse break :blk false;
+                if (fi >= cmds.len) break :blk false;
+                switch (cmds[fi]) {
+                    .text_area => |ta| {
+                        const g = textAreaGeometry(ta, rects[fi]);
+                        const c = text_wrap.caretPos(ta.content, ta.cursor, ta.font, g.wrap_w, g.mode, 0, self.measurer);
+                        sx = g.inner.x - ta.scroll_x + c.x;
+                        sy = g.inner.y - ta.scroll_y + c.y + text_wrap.lineHeight(ta.font, self.measurer);
+                    },
+                    .text_input => |ti| {
+                        var sc: bidi_text.Scratch = .{};
+                        const lay = if (bidi_text.mayBeRtl(ti.content) and std.mem.indexOfScalar(u8, ti.content, '\n') == null)
+                            bidi_text.layoutLine(ti.content, 0, ti.content.len, ti.font, self.measurer, std.math.inf(f32), &sc)
+                        else
+                            null;
+                        const px = if (lay) |l| l.caretX(ti.cursor) else self.measurer.prefixWidth(ti.content, ti.font, ti.cursor);
+                        sx = rects[fi].x + 6 + px;
+                        sy = rects[fi].y + rects[fi].h;
+                    },
+                    else => break :blk false,
+                }
+                break :blk true;
+            };
+
+            // Hosts whose IME lives outside the window (the web's hidden field) must
+            // know when a text field has focus; others simply do not declare this.
+            if (has_active and editable != self.ime_focused) {
+                self.ime_focused = editable;
+                self.host.setImeActive(editable);
             }
-            const spot = [2]i32{ @intFromFloat(sx), @intFromFloat(sy) };
-            if (self.ime_spot) |old| if (old[0] == spot[0] and old[1] == spot[1]) return;
-            self.ime_spot = spot;
-            self.host.setImeSpot(spot[0], spot[1]);
+            if (!editable) {
+                self.ime_spot = null; // resend the spot when focus returns
+                return;
+            }
+            if (has_spot) {
+                const spot = [2]i32{ @intFromFloat(sx), @intFromFloat(sy) };
+                if (self.ime_spot) |old| if (old[0] == spot[0] and old[1] == spot[1]) return;
+                self.ime_spot = spot;
+                self.host.setImeSpot(spot[0], spot[1]);
+            }
         }
 
         /// Tell the app about layout results it cannot read from `view`:

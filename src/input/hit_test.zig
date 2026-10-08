@@ -293,6 +293,73 @@ fn wheelTargetLayer(cmds: anytype, rects: []const Rect, x: f32, y: f32, layer: L
     return if (modal_under_point) .blocked else .none;
 }
 
+/// A drag source or drop target found by `dragTargets`.
+pub const DragZone = struct {
+    /// Cmd index of the `push_group`.
+    index: usize,
+    /// Its `drag_id` / `drop_id`.
+    id: u32,
+};
+
+pub const DragHit = struct {
+    source: ?DragZone = null,
+    target: ?DragZone = null,
+};
+
+/// The innermost drag source (`GroupStyle.drag_id != 0`) and innermost drop
+/// target (`drop_id != 0`) containing (x, y), with the same layering as
+/// `hitTest` / `wheelTarget`: overlay-layer zones win over base ones, and a
+/// modal overlay under the point hides everything behind it.
+pub fn dragTargets(cmds: anytype, rects: []const Rect, x: f32, y: f32) DragHit {
+    switch (dragLayer(cmds, rects, x, y, .overlay)) {
+        .hit => |h| return h,
+        .blocked => return .{},
+        .none => {},
+    }
+    return switch (dragLayer(cmds, rects, x, y, .base)) {
+        .hit => |h| h,
+        .blocked, .none => .{},
+    };
+}
+
+const LayerDrag = union(enum) { none, blocked, hit: DragHit };
+
+fn dragLayer(cmds: anytype, rects: []const Rect, x: f32, y: f32, layer: Layer) LayerDrag {
+    var clip: ClipStack = .{};
+    var overlay_depth: u32 = 0;
+    var best: DragHit = .{};
+    var modal_under_point = false;
+
+    for (cmds, 0..) |c, i| {
+        const cur_clip = clip.top();
+        const visible = switch (layer) {
+            .base => overlay_depth == 0,
+            .overlay => overlay_depth > 0,
+        };
+        const inside = rectContains(rects[i], x, y) and rectContains(cur_clip, x, y);
+        switch (c) {
+            .push_group => |g| if (visible and inside) {
+                if (g.drag_id != 0) best.source = .{ .index = i, .id = g.drag_id };
+                if (g.drop_id != 0) best.target = .{ .index = i, .id = g.drop_id };
+            },
+            .push_scroll => clip.push(clipRect(rects[i], cur_clip)),
+            .pop_scroll => clip.pop(),
+            .push_overlay => |ov| {
+                overlay_depth += 1;
+                clip.push(clipRect(rects[i], cur_clip));
+                if (layer == .overlay and ov.modal and inside) modal_under_point = true;
+            },
+            .pop_overlay => {
+                overlay_depth -= 1;
+                clip.pop();
+            },
+            else => {},
+        }
+    }
+    if (best.source != null or best.target != null) return .{ .hit = best };
+    return if (modal_under_point) .blocked else .none;
+}
+
 /// Compute a slider's normalized value [0, 1] from an x position, given
 /// the slider's rect. Intended for the host: after `hitTest` returns a
 /// slider's `grab_msg` + index, the host reads `rects[index]` and calls
@@ -1072,6 +1139,31 @@ test "hitTest: scene3d is interactive only with a click msg or pointer" {
     try testing.expectEqual(@as(?Msg, null), ph.?.msg);
     try testing.expectEqual(@as(?usize, null), hoverTest(cb.cmds.items, rs, rs[1].x + 5, rs[1].y + 5));
     try testing.expectEqual(@as(?usize, 2), hoverTest(cb.cmds.items, rs, rs[2].x + 5, rs[2].y + 5));
+}
+
+test "dragTargets: innermost source and target" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .drag_id = 1, .drop_id = 1, .height = 30, .width = 100 });
+    cb.text("one");
+    cb.popGroup();
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .drag_id = 2, .drop_id = 2, .height = 30, .width = 100 });
+    cb.text("two");
+    cb.popGroup();
+    cb.popGroup();
+    var rects: [16]Rect = undefined;
+    const n = cb.cmds.items.len;
+    layout.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 200, 200, text_mod.monoMeasurer());
+
+    const a = dragTargets(cb.cmds.items, rects[0..n], 10, 10);
+    try testing.expectEqual(@as(u32, 1), a.source.?.id);
+    try testing.expectEqual(@as(u32, 1), a.target.?.id);
+    const b = dragTargets(cb.cmds.items, rects[0..n], 10, 45);
+    try testing.expectEqual(@as(u32, 2), b.source.?.id);
+    try testing.expect(dragTargets(cb.cmds.items, rects[0..n], 150, 10).source == null);
 }
 
 test "text_area: a click returns its focus msg and the area is a pointer target; wheel targets it" {

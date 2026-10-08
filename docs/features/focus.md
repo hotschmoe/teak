@@ -59,7 +59,7 @@ test `examples/gallery/src/focus_audit.zig` asserts reach for every enabled inte
 | Scroll regions | n/a | n/a | n/a | yes: keys the focused widget declines scroll its innermost id-bearing region through `scrollMsg` (arrows a line, PageUp/Down a viewport, Home/End) | n/a | scrolling the focus into view is not done yet |
 | Tooltip | yes: keyboard focus is reported to `hoverMsg` as if the pointer rested on the widget | n/a | n/a | n/a | n/a | clears when focus leaves non-text widgets |
 | Toast | its close button is a Tab stop | yes | Space, Enter | Escape dismisses the newest toast (`Toast.keyMsg`, after menus / dialogs) | n/a | |
-| Date field | N/A: no such widget | | | | | |
+| Date field (`widgets.date_field`, #81) | yes (text field + calendar button) | border | Down opens, Enter commits | open: arrows move by day / week, PageUp/Down by month, Home/End to month start / end, Esc closes (`DateField.keyMsg`); closed: editor keys | yes | the app routes keys to `keyMsg` while the field has the Model focus; not shown in the gallery |
 | Focus after list mutation | yes | | | | | Msg-keyed, tested (insert before the focused widget) |
 | Escape closes overlays | app hooks (`dialog.keyMsg`, `MenuBar.keyMsg`, `ContextMenu.keyMsg`) | | | | | the framework does not know how to close an overlay (no Msg) |
 

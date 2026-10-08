@@ -15,7 +15,8 @@
 //!   mix Latin, Hebrew, Arabic and Devanagari faces.
 //! * Marks and contextual forms: GSUB/GPOS/GDEF run in HarfBuzz; `x_offset`
 //!   folds into `ShapedGlyph.x`, `y_offset` into `ShapedGlyph.y`.
-//! * Direction: a stand-in until UAX#9 bidi lands. Each run takes the direction
+//! * Direction: `FontSpec.rtl` (set per run by the bidi layer, `bidi_text`) forces
+//!   right-to-left. Without it (text not laid out through bidi) each run takes the direction
 //!   of its script (Hebrew/Arabic RTL) and glyphs of an RTL run come out in
 //!   visual order; consecutive RTL runs are emitted in reverse so
 //!   "Arabic Hebrew" reads right to left. Mixed-direction nesting beyond that
@@ -59,6 +60,7 @@ const hb = struct {
     extern fn hb_buffer_add_utf8(b: *Buffer, text: [*]const u8, text_length: c_int, item_offset: c_uint, item_length: c_int) void;
     extern fn hb_buffer_guess_segment_properties(b: *Buffer) void;
     extern fn hb_buffer_get_direction(b: *Buffer) c_int;
+    extern fn hb_buffer_set_direction(b: *Buffer, d: c_int) void;
     extern fn hb_shape(f: *HFont, b: *Buffer, features: ?*const anyopaque, num_features: c_uint) void;
     extern fn hb_buffer_get_length(b: *Buffer) c_uint;
     extern fn hb_buffer_get_glyph_infos(b: *Buffer, length: ?*c_uint) [*]GlyphInfo;
@@ -207,6 +209,9 @@ fn shapeRun(text: []const u8, run: *Run, font: FontSpec, sc: *Scratch) bool {
     hb.hb_buffer_clear_contents(buf);
     hb.hb_buffer_add_utf8(buf, text.ptr, @intCast(text.len), @intCast(run.start), @intCast(run.len));
     hb.hb_buffer_guess_segment_properties(buf);
+    // A run the bidi layer marked right-to-left is shaped RTL whatever its script
+    // guess says (neutrals, digits-free punctuation); glyphs come out in visual order.
+    if (font.rtl) hb.hb_buffer_set_direction(buf, hb.DIRECTION_RTL);
     run.rtl = hb.hb_buffer_get_direction(buf) == hb.DIRECTION_RTL;
     hb.hb_shape(slot.font, buf, null, 0);
 

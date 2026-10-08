@@ -42,6 +42,9 @@ pub const Match = enum {
     substring,
     /// The option must start with the query.
     prefix,
+    /// Fuzzy: the query's characters (spaces ignored) appear in the option
+    /// in order, not necessarily adjacent ("svas" finds "Save As...").
+    fuzzy,
 };
 
 pub const ViewOpts = struct {
@@ -81,6 +84,7 @@ pub fn foldCase(cp: u21) u21 {
 /// True when `option` matches `query` (empty queries match everything).
 pub fn matches(query: []const u8, option: []const u8, mode: Match) bool {
     if (query.len == 0) return true;
+    if (mode == .fuzzy) return fuzzyMatches(query, option);
     var start: usize = 0;
     while (start < option.len) {
         if (matchAt(query, option, start)) return true;
@@ -88,6 +92,24 @@ pub fn matches(query: []const u8, option: []const u8, mode: Match) bool {
         start = unicode.nextGrapheme(option, start);
     }
     return false;
+}
+
+/// Subsequence match over case-folded code points; spaces in `query` are skipped.
+fn fuzzyMatches(query: []const u8, option: []const u8) bool {
+    var qi: usize = 0;
+    var oi: usize = 0;
+    while (qi < query.len) {
+        const q = unicode.utf8DecodeLossy(query, qi);
+        qi += q.len;
+        if (q.cp == ' ') continue;
+        while (true) {
+            if (oi >= option.len) return false;
+            const o = unicode.utf8DecodeLossy(option, oi);
+            oi += o.len;
+            if (foldCase(o.cp) == foldCase(q.cp)) break;
+        }
+    }
+    return true;
 }
 
 fn matchAt(query: []const u8, option: []const u8, start: usize) bool {
@@ -602,4 +624,13 @@ test "compose: Combobox routes through Components" {
     Comp.update(&model, .{ .material = CB.charMsg('o') });
     try testing.expect(model.material.open);
     try testing.expectEqualStrings("o", model.material.query.content());
+}
+
+test "fuzzy match: ordered subsequence, spaces ignored, case-insensitive" {
+    try testing.expect(matches("svas", "Save As...", .fuzzy));
+    try testing.expect(matches("s a", "Save As...", .fuzzy));
+    try testing.expect(matches("OPEN", "File: open recent", .fuzzy));
+    try testing.expect(!matches("vs", "Save", .fuzzy)); // wrong order
+    try testing.expect(!matches("zz", "Save", .fuzzy));
+    try testing.expect(matches("", "x", .fuzzy));
 }

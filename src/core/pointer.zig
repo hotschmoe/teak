@@ -87,6 +87,43 @@ pub const CanvasEvent = struct {
     key: ?@import("../input/keys.zig").SpecialKey = null,
 };
 
+// ── Drag and drop (in-app) ─────────────────────────────────────────
+
+pub const DragPhase = enum {
+    /// The pointer moved past the threshold with a drag source pressed.
+    start,
+    /// Each frame while dragging (the pointer may not have moved).
+    move,
+    /// The button was released: drop on `over` (0 = no target).
+    drop,
+    /// Escape pressed (or the source vanished): drag aborted, nothing dropped.
+    cancel,
+};
+
+/// One step of an in-app drag, delivered to the App's `dragMsg` hook. The
+/// app keeps the drag state in its Model (what is dragged, where the ghost
+/// is, which target is hot) and renders the ghost as an overlay; the loop
+/// only reports pointer facts resolved against the previous frame's layout.
+pub const DragEvent = struct {
+    phase: DragPhase,
+    /// `GroupStyle.drag_id` of the dragged source.
+    id: u32,
+    /// Pointer position, window coordinates.
+    x: f32,
+    y: f32,
+    /// Where inside the source rect the press landed (ghost offset).
+    grab_dx: f32 = 0,
+    grab_dy: f32 = 0,
+    /// The source group's rect at press time: x, y, w, h.
+    src: [4]f32 = .{ 0, 0, 0, 0 },
+    /// `GroupStyle.drop_id` of the innermost drop target under the pointer
+    /// (0 = none), its rect, and the pointer's position inside it, 0..1.
+    over: u32 = 0,
+    over_rect: [4]f32 = .{ 0, 0, 0, 0 },
+    over_fx: f32 = 0,
+    over_fy: f32 = 0,
+};
+
 /// A window-space rectangle (`PointerEvent.box`).
 pub const Box = struct {
     x: f32 = 0,

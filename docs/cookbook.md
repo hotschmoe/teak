@@ -31,6 +31,7 @@ change yields.
 | Add a brand-new widget to the framework | [12. Add a new widget to the framework](#12-add-a-new-widget-to-the-framework) |
 | Call an HTTP API, open / save a file, remember a setting | [13. Effects: HTTP, files, storage](#13-effects-http-files-storage) |
 | Drive my app from an LLM agent (click, type, screenshot, replay) | [15. Drive your app from an LLM agent](#15-drive-your-app-from-an-llm-agent) |
+| Edit multi-line text (wrap, scroll, select, undo, IME) | [23. Add a multi-line TextArea](#23-add-a-multi-line-textarea) |
 
 The mechanical spine underneath every app recipe: **1.** field on `Model`
 · **2.** variant on `Msg` · **3.** arm in `update` · **4.** `cb.*` calls in
@@ -1032,6 +1033,12 @@ Every piece below is `examples/gallery/src/app.zig`.
    // view, late: CM.viewWith(&m.ctx, cb, &context_items, ctx_msgs, .{ .window_w = ..., .window_h = ... });
    ```
 
+5. **Shortcut text vs shortcut behaviour.** `.shortcut = "Ctrl+N"` on a menu item only *draws* text. Build the rows
+   from the command table so the shown chord is the working one:
+   `teak.commands.menuItems(MB.Item, arena, &list, .pc, &.{ "file.new", "-", "file.quit" })` (`MenuBar(u16)`; on `run(i)`
+   close the menu and `update(m, list.items[i].msg)`), or, for a const tree, `.shortcut = kb.new.text(.pc)` from one shared
+   chord constant. Details: [Menu shortcuts](features/widgets.md#menu-shortcuts-one-chord-shown-and-working) and recipe 21.
+
 **Common mistakes:** forgetting `MB.update(&m.menubar, .close)` in the `.run` arm (the menu stays open after a
 choice); building the item tree per frame in `view` but not in `keySpecialMsg` (both must see the same tree: keep
 it `const`); expecting panels to follow measured text (geometry comes from `top_width` / `row_h` / `panel_w`, set them
@@ -1208,3 +1215,139 @@ pub fn main(init: std.process.Init) !void {
    Put a frame between actions that depend on each other (a `click` already runs three frames).
 
 Details, tolerances and the `--update` workflow: [docs/features/visual-regression.md](features/visual-regression.md).
+
+---
+
+## 21. Shortcuts and a command palette
+
+**Goal:** Ctrl+S-style shortcuts, shortcut text in menus, and a Ctrl+K palette that fuzzy-runs any command.
+
+**1. Declare the table** (pure; the runtime matches chords before widget keys and dispatches the Msg):
+
+```zig
+pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
+    list.add(.{ .id = "file.save", .label = "Save", .shortcut = teak.Chord.ctrl(.s), .enabled = m.dirty, .msg = .save });
+    list.add(.{ .id = "palette", .label = "Command Palette", .shortcut = teak.Chord.ctrlShift(.p),
+                .alt_shortcut = teak.Chord.ctrl(.k), .hidden = true, .msg = .{ .palette = .focus } });
+}
+```
+
+**2. The palette**: `const Palette = teak.CommandPalette(24);` with `palette: Palette.Model` in the Model, a `palette: Palette.Msg` and a `palette_run: usize` Msg;
+route `keyCharMsg` / `keySpecialMsg` to it while `m.palette.open`; draw it last in `view` with `Palette.viewPalette`;
+on `palette_run(i)` close it and `update(m, list.paletteCommand(i).?.msg)`. The complete wiring is in `examples/kerf_viewer/src/app.zig`.
+
+**3. Menus**: a menu item's `.shortcut` is display text only. Prefer `teak.commands.menuItems(MB.Item, arena, &list, .pc, ids)` (rows, shortcut text and enabled state all come from the command table; action = command index), or `kb.x.text(.pc)` on a shared chord constant for a const tree. Full recipe: [widgets.md, Menu shortcuts](features/widgets.md#menu-shortcuts-one-chord-shown-and-working).
+
+Test it headlessly with `host.pushChord(.{ .key = .s, .mod = true })` or, against a live app, `teak-drive shortcut ctrl+s`. Depth: [commands.md](features/commands.md).
+
+---
+
+## 22. Drag and drop
+
+**Goal:** drag a list row to reorder it, with a ghost and a drop indicator, plus a keyboard alternative.
+
+1. **Mark the rows**: `cb.pushGroup(.{ ..., .drag_id = id, .drop_id = id })` with `id = index + 1` (non-zero). Put a non-interactive grip (`cb.text("::")`) in the row: pressing a button or checkbox clicks it, pressing the rest of the row drags.
+2. **Hook**: `pub fn dragMsg(_: *const Model, ev: teak.DragEvent) ?Msg { return .{ .drag = ev }; }`.
+3. **Model + update**: `drag: ?Drag` (source, pointer, grab offset, `over`, `after`). `.start` sets it, `.move` follows (`over = ev.over`, `after = ev.over_fy >= 0.5`), `.drop` reorders (insert after when `after`), `.cancel` clears it.
+4. **View**: while `drag != null`, emit `pushOverlay(.{ .x = d.x - d.grab_dx, .y = d.y - d.grab_dy, ... })` with the row's label (the ghost) and give the row where `drag.over == id` a `.border`.
+5. **Keyboard**: a `commands` table with `Chord.altKey(.up/.down)` moving the selected row (recipe 21).
+
+The complete, tested version is `examples/todo`. Agents: `teak-drive drag '{"role":"text","label":"::","nth":0}' '{"role":"text","label":"::","nth":2}'`.
+Depth: [drag-drop.md](features/drag-drop.md).
+## 23. Add a multi-line TextArea
+
+**Goal:** a wrapping, scrolling, selectable, undoable multi-line editor with
+pointer editing, visual Up/Down/Home/End, IME and clipboard, in about 40
+lines of glue. Everything layout-dependent (click to byte offset, visual
+motion, wrapped size, caret rect) is resolved by `teak.run` and handed to you
+as data; `update` stays a pure function.
+
+**You will touch:** your app file only (entry point as in recipe 1).
+
+```zig
+// src/app.zig
+const teak = @import("teak");
+
+const Notes = teak.TextArea(4096);          // capacity in bytes
+
+pub const Model = struct {
+    notes: Notes.Model = .{},
+    focused: bool = false,                  // who owns the keyboard
+};
+pub const Msg = union(enum) { notes: Notes.Msg };
+
+pub fn update(m: *Model, msg: Msg) void {
+    switch (msg) {
+        .notes => |a| {
+            if (a == .focus) m.focused = true;      // a click on the area
+            Notes.update(&m.notes, a);
+        },
+    }
+}
+
+pub fn view(m: *const Model, cb: anytype) void {
+    cb.pushGroup(.{ .padding = 16, .gap = 8, .align_cross = .stretch });
+    cb.heading("NOTES");
+    // `id` must be distinct and non-zero per area; it names the area in events.
+    Notes.viewWith(&m.notes, cb, .{ .focus = Msg{ .notes = .focus } }, .{ .id = 1, .height = 220 });
+    cb.popGroup();
+}
+
+// ── Hooks teak.run looks for (all optional, by declaration) ──────────
+
+/// Pointer, wheel, resolved motion keys and layout metrics: one line per area.
+pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
+    return .{ .notes = Notes.eventMsg(ev) };
+}
+
+/// Typed characters (a UTF-8 byte at a time; the editor assembles them).
+pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    return if (m.focused) Msg{ .notes = Notes.charMsg(c) } else null;
+}
+
+/// Enter, Backspace/Delete, Left/Right, Ctrl+arrows, Ctrl+Z/Y/A, ...
+/// (Up/Down/PageUp/PageDown/Home/End never reach here: they arrive via `textMsg`.)
+pub fn keySpecialMsg(m: *const Model, k: teak.SpecialKey) ?Msg {
+    if (!m.focused) return null;
+    return if (Notes.keyMsg(k)) |a| Msg{ .notes = a } else null;
+}
+
+/// Lets the loop know which area has focus (Tab traversal, caret blink, IME spot).
+pub fn focusedMsg(m: *const Model) ?Msg {
+    return if (m.focused) Msg{ .notes = .focus } else null;
+}
+
+// Clipboard is the app's policy: Ctrl+C / X / V reach you with the Host clipboard.
+pub fn keyNeedsClipboard(k: teak.SpecialKey) bool {
+    return teak.keyNeedsClipboard(k);
+}
+pub fn handleClipboard(m: *Model, k: teak.SpecialKey, clip: teak.Clipboard) void {
+    switch (k) {
+        .ctrl_c => if (m.notes.selectionText().len > 0) clip.write(m.notes.selectionText()),
+        .ctrl_x => if (m.notes.selectionText().len > 0) {
+            clip.write(m.notes.selectionText());
+            update(m, .{ .notes = .{ .key = .backspace } });
+        },
+        .ctrl_v => if (clip.read().len > 0) update(m, .{ .notes = Notes.pasteMsg(clip.read()) }),
+        else => {},
+    }
+}
+```
+
+Options on `viewWith`: `.wrap = .word | .char | .none` (`.none` scrolls
+horizontally), `.height` / `.width` / `.flex`, `.font`, `.style`, `.disabled`.
+Seed or replace the text with `m.notes.set("...")`; read it with
+`m.notes.content()`.
+
+**Common mistakes:**
+
+- Two areas with the same `id`: both receive each other's events. Give every
+  area its own non-zero id and route on `ev.id` in `textMsg`.
+- Forgetting `textMsg`: the area draws and takes typing but ignores the
+  mouse, the wheel, Up/Down and scrolling-to-caret (those all arrive as events).
+- Putting the text in a fixed-height parent without `align_cross = .stretch`:
+  the area fills the width of a stretching parent only.
+
+**Also:** a second area (a chat box) is another `Model` field, `Msg` variant
+and `update` arm; `examples/notes` has two. Full reference:
+[features/text-area.md](features/text-area.md).

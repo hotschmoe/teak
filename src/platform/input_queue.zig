@@ -20,6 +20,7 @@ const Buttons = pointer.Buttons;
 const Button = pointer.Button;
 const Modifiers = pointer.Modifiers;
 const SpecialKey = keys.SpecialKey;
+const Chord = keys.Chord;
 
 /// Synthetic events waiting for the next poll (agent control channel).
 /// Event-driven Hosts apply them to their `InputQueue` right after
@@ -133,6 +134,7 @@ pub const InputQueue = struct {
     /// per frame), never silent.
     pub const CHARS_CAP = 256;
     pub const KEYS_CAP = 64;
+    pub const CHORDS_CAP = 16;
 
     mouse_x: f32 = 0,
     mouse_y: f32 = 0,
@@ -150,6 +152,8 @@ pub const InputQueue = struct {
     chars_len: usize = 0,
     keys: [KEYS_CAP]SpecialKey = undefined,
     keys_len: usize = 0,
+    chords: [CHORDS_CAP]Chord = undefined,
+    chords_len: usize = 0,
     /// First half of a UTF-16 surrogate pair awaiting its partner
     /// (Win32 `WM_CHAR` delivers code units).
     pending_high: u16 = 0,
@@ -165,6 +169,7 @@ pub const InputQueue = struct {
     pub fn beginFrame(self: *InputQueue) void {
         self.chars_len = 0;
         self.keys_len = 0;
+        self.chords_len = 0;
         self.dropped = 0;
     }
 
@@ -226,6 +231,26 @@ pub const InputQueue = struct {
             .chars => |t| self.pushText(t),
             .key => |k| self.pushKey(k),
             .mods => |m| self.mods = m,
+            .chord => |c| self.pushChord(c),
+        }
+    }
+
+    /// The one shortcut policy: key `k` was pressed under the current
+    /// modifiers. It becomes a `Chord` when Ctrl (the primary modifier;
+    /// hosts fold Cmd into `mods.ctrl` where that is the platform's
+    /// convention) or Alt is held, or when it is an F-key; plain and
+    /// Shift-only keys are text or special keys, not shortcuts.
+    pub fn pushShortcut(self: *InputQueue, k: keys.Key) void {
+        const fkey = @backingInt(k) >= @backingInt(keys.Key.f1) and @backingInt(k) <= @backingInt(keys.Key.f12);
+        if (!(self.mods.ctrl or self.mods.alt or fkey)) return;
+        self.pushChord(.{ .key = k, .mod = self.mods.ctrl, .shift = self.mods.shift, .alt = self.mods.alt });
+    }
+
+    /// Queue a keyboard shortcut (see `host.InputState.chords`).
+    pub fn pushChord(self: *InputQueue, c: Chord) void {
+        if (self.chords_len < CHORDS_CAP) {
+            self.chords[self.chords_len] = c;
+            self.chords_len += 1;
         }
     }
 
@@ -288,6 +313,7 @@ pub const InputQueue = struct {
             .wheel_dy = self.wheel_dy,
             .chars = self.chars[0..self.chars_len],
             .keys = self.keys[0..self.keys_len],
+            .chords = self.chords[0..self.chords_len],
             .resized = resized,
             .width = width,
             .height = height,
@@ -436,6 +462,30 @@ test "InputQueue: pushNav uses the live modifiers; keys queue in order" {
     try testing.expectEqualSlices(SpecialKey, &.{ .left, .shift_left, .ctrl_a }, in.keys);
     q.beginFrame();
     try testing.expectEqual(@as(usize, 0), q.finish(false, 1, 1).keys.len);
+}
+
+test "pushShortcut: only Ctrl/Alt combinations and F-keys become chords" {
+    var q: InputQueue = .{};
+    q.beginFrame();
+    q.pushShortcut(.s); // plain: text
+    q.mods = .{ .shift = true };
+    q.pushShortcut(.s); // Shift only: text
+    q.mods = .{ .ctrl = true };
+    q.pushShortcut(.s);
+    q.mods = .{ .ctrl = true, .shift = true };
+    q.pushShortcut(.p);
+    q.mods = .{ .alt = true };
+    q.pushShortcut(.enter);
+    q.mods = .{};
+    q.pushShortcut(.f5);
+    const st = q.finish(false, 1, 1);
+    try std.testing.expectEqual(@as(usize, 4), st.chords.len);
+    try std.testing.expect(st.chords[0].eql(keys.Chord.ctrl(.s)));
+    try std.testing.expect(st.chords[1].eql(keys.Chord.ctrlShift(.p)));
+    try std.testing.expect(st.chords[2].eql(keys.Chord.altKey(.enter)));
+    try std.testing.expect(st.chords[3].eql(keys.Chord.plain(.f5)));
+    q.beginFrame();
+    try std.testing.expectEqual(@as(usize, 0), q.finish(false, 1, 1).chords.len);
 }
 
 test "InputQueue: a bare Alt tap queues alt_tap; Alt plus anything else does not" {

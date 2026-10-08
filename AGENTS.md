@@ -164,9 +164,11 @@ src/                                          -- the library, consumable as a Zi
   core/
     anim.zig                                  -- Model-driven animation: tweens, easing curves and interpolation
     bidi.zig                                  -- UAX #9 Unicode Bidirectional Algorithm (Unicode 16): pure, std only
+    bidi_text.zig                             -- Bidi-aware geometry of one laid-out line (UAX #9 L1/L2 over bidi.zig)
     chart.zig                                 -- teak.chart — pure line-chart primitive builder
     cmd.zig                                   -- Cmd union, CmdBuffer + emitters, arena, validateBalance, OverlayStyle/leafMsg
     combobox.zig                              -- Searchable select ("combobox"): a text input that filters an app-owned option list shown in the
+    commands.zig                              -- Command registry, keyboard shortcuts and the command palette
     component.zig                             -- Components(), validateComponent, buildMsgs: comptime component stitching (hatch 1)
     component_list.zig                        -- ComponentList: a comptime-generated dynamic list of homogeneous sub-components
     cursor.zig                                -- Mouse-cursor shapes and the rule that picks one from the hovered cmd
@@ -208,11 +210,13 @@ src/                                          -- the library, consumable as a Zi
       sort.zig                                -- Depth ordering for blended scene layers (translucent planes, sprites)
       view.zig                                -- The data a viewport3d Cmd carries besides the camera: placed mesh instances (Item) and
     widgets/
+      color_picker.zig                        -- Colour picker: a saturation / value square, a hue strip, a hex field, R / G / B fields and a
       date.zig                                -- Calendar dates: pure proleptic-Gregorian maths, ISO 8601 parse / format, no allocation and no
       date_field.zig                          -- Date field: an ISO text field (YYYY-MM-DD) with a calendar popover
       dialog.zig                              -- Modal dialog helper: a centred card over a dimmed window with a title, a message (or app
       menu.zig                                -- Menus: a menu bar with drop-down menus and nested submenus, and a context (right-click) menu
       progress.zig                            -- Progress bar: determinate (a fraction) and indeterminate (a block sliding across the track)
+      spinner.zig                             -- Number spinner: a NumericField with step buttons, plus arrow-key and wheel stepping
       split.zig                               -- Split pane: two panes separated by a draggable divider, with minimum sizes and a ratio that
       tabs.zig                                -- Tab strip: a row of tabs where exactly one is selected, with keyboard navigation
       toast.zig                               -- Toasts: transient notifications stacked in a corner that dismiss themselves
@@ -225,10 +229,12 @@ src/                                          -- the library, consumable as a Zi
     native.zig                                -- Win32 + wgpu-native GPU backend (the Windows stitch)
     native_headless.zig                       -- Headless native GPU stitch: the wgpu core with no surface provider and the stb_truetype
     native_linux.zig                          -- Linux + wgpu-native GPU backend (the Linux stitch), for the X11 and Wayland hosts
+    native_macos.zig                          -- macOS + wgpu-native (Metal) GPU backend (the macOS stitch)
     overlay.zig                               -- Overlay layering shared by the GPU backends (HARDLINE §2 hatch 5: two levels, base z=0 and
     scene_common.zig                          -- Backend-independent half of 3D scene rendering: uniform packing, target sizing, the
     scene_pass.zig                            -- Backend-neutral plan of what a scene slot draws: the packed per-instance records, the runs of
     slot_table.zig                            -- Fixed-capacity slot table behind the GPU backends' app-owned resource caches (images, meshes)
+    surface_cocoa.zig                         -- Metal-layer surface source for the wgpu backend — the macOS counterpart to surface_win32.zig /
     surface_linux.zig                         -- Linux surface provider: builds the wgpu surface source for whichever backend platform/linux.zig
     surface_win32.zig                         -- Win32 HWND surface source for the wgpu backend
     surface_xlib.zig                          -- Xlib Window surface source for the wgpu backend — the Linux counterpart to surface_win32.zig
@@ -248,7 +254,10 @@ src/                                          -- the library, consumable as a Zi
     scroll_extent.zig                         -- Content extent of a scroll region, measured from the rects the layout passes already produced
     virtual_rows.zig                          -- Measured row extents of a virtual list, read from the rects the layout passes already produced
   platform/
+    cocoa.zig                                 -- macOS host backend (Cocoa, via the Objective-C runtime)
+    cocoa_data.zig                            -- Display-free decoding for the macOS host: virtual key codes, modifier flags, scroll deltas
     control_socket.zig                        -- Unix-domain-socket transport for the agent control channel (docs/features/agent-driver.md): a
+    file_picker.zig                           -- Native file dialogs for Linux hosts (X11 today, Wayland through the same
     headless.zig                              -- Headless Host: scripted input, a fake clock and real text metrics, for running a teak App with
     host.zig                                  -- Host interface: window + input event source
     input_queue.zig                           -- Shared per-window input accumulator for event-driven Hosts (Win32, X11)
@@ -256,6 +265,7 @@ src/                                          -- the library, consumable as a Zi
     linux.zig                                 -- The Linux host: one binary, two backends
     native_drops.zig                          -- Turning pasted / dropped bytes into the EffectResults the web host produces, for native hosts
     native_effects.zig                        -- Declarative-effects service for native hosts (Linux/X11 and Windows): what Host.submit /
+    objc.zig                                  -- A minimal Objective-C runtime binding for the macOS host, loaded with std.DynLib instead of
     wasm.zig                                  -- Wasm host backed by zunk's web.input + web.app modules
     wayland.zig                               -- Wayland host backend: the platform/host.zig contract on top of xdg-shell, the Linux counterpart
     win32.zig                                 -- Win32 host backend
@@ -320,6 +330,7 @@ tools/
   teak_drive.zig                              -- teak-drive: drive a running teak app from a shell or from an LLM agent
   vreg.zig                                    -- vreg: the visual-regression runner. Renders every example's named
   web-frame-bench.mjs                         -- rAF cost of a web example under scrolling: serve a zunk `dist/`, load it in headless Chromium
+  web-ime-test.mjs                            -- Web IME acceptance test: drive an input-method composition into a teak app in
   web-startup.mjs                             -- Web startup profile: serve a zunk `dist/`, load it in headless Chromium and print where the
   webshot.mjs                                 -- Web smoke test: serve a zunk `dist/`, load it in headless Chromium with
 ```

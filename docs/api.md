@@ -24,6 +24,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.unicode`: module `src/core/unicode.zig`; see below
 > UAX #9 bidirectional algorithm: levels, per-line visual runs, visual caret movement, selection spans.
 - `teak.bidi`: module `src/core/bidi.zig`; see below
+> Direction-aware geometry of a wrapped line: runs, caret x, hit-test, selection spans, visual arrows.
+- `teak.bidi_text`: module `src/core/bidi_text.zig`; see below
 > UAX#14-lite line-break opportunities over grapheme clusters.
 - `teak.linebreak`: module `src/core/linebreak.zig`; see below
 > Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.
@@ -62,6 +64,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.TreeList`: `pub const TreeList = tree_list.TreeList`
 > `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
 - `teak.combobox`: module `src/core/combobox.zig`; see below
+> Command registry (`CommandList`), shortcuts and the `CommandPalette` (docs/features/commands.md).
+- `teak.commands`: module `src/core/commands.zig`; see below
 > Widgets built from existing Cmd primitives: toggle, progress, tabs, split pane,
 > tooltip, toast, dialog, menu bar, context menu.
 - `teak.widgets`: module `src/core/widgets.zig`; see below
@@ -132,7 +136,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.CmdBuffer`: `pub const CmdBuffer = cmd.CmdBuffer`
 > Layout and look of a `push_group` container.
 - `teak.GroupStyle` = `cmd.GroupStyle`
-  - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, a11y, bg, border, border_width, radius, gradient, soft_shadow`
+  - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, a11y, bg, border, border_width, drag_id, drop_id, radius, gradient, soft_shadow`
   - `pub fn padX(self: GroupStyle) f32`
   - `pub fn padY(self: GroupStyle) f32`
 > Layout and scroll offsets of a `push_scroll` region.
@@ -288,6 +292,11 @@ Signatures and `///` doc comments of every public declaration reachable from
 > One pointer event on an interactive canvas or scene.
 - `teak.CanvasEvent` = `pointer.CanvasEvent`
   - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h, key`
+> In-app drag and drop: `GroupStyle.drag_id` / `drop_id`, the App `dragMsg` hook and its event.
+- `teak.DragEvent` = `pointer.DragEvent`
+  - fields: `phase, id, x, y, grab_dx, grab_dy, src, over, over_rect, over_fx, over_fy`
+- `teak.DragPhase` = `pointer.DragPhase`
+  - fields: `start, move, drop, cancel`
 > What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
 - `teak.PointerEvent`: `pub const PointerEvent = pointer.PointerEvent`
 > A window-space rectangle (`PointerEvent.box`).
@@ -345,7 +354,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.SceneCmd`: `pub const SceneCmd = cmd.SceneCmd`
 > Data describing an I/O request the Host performs.
 - `teak.Effect` = `effects.Effect`
-  - fields: `http, download, open_file, write_clipboard, storage_set, storage_get, clock, query_param`
+  - fields: `http, download, open_file, write_clipboard, write_clipboard_image, storage_set, storage_get, clock, query_param`
   > The app-chosen request id.
   - `pub fn id(self: Effect) u32`
   > Fire-and-forget effects (`storage_set`, `write_clipboard`) produce no
@@ -463,6 +472,36 @@ Signatures and `///` doc comments of every public declaration reachable from
 > Host-neutral non-text keys and chords.
 - `teak.SpecialKey` = `keys.SpecialKey`
   - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f12, f10, , ...`
+> A physical key a shortcut can name, a shortcut (`Chord`: key + primary-modifier/shift/alt) and the label style.
+- `teak.Key` = `keys.Key`
+  - fields: `a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, enter, tab, escape, space, backspace, delete, insert, left, right, up, down, home, end, page_up, page_down, comma, period, slash, backslash, semicolon, quote, minus, equal, bracket_left, bracket_right, grave`
+  > The key for a lower/upper-case ASCII letter or digit (else null).
+  - `pub fn fromAscii(c: u8) ?Key`
+  > Short display name: `S`, `5`, `F12`, `Enter`, `PgUp`, `,`.
+  - `pub fn label(self: Key) []const u8`
+- `teak.Chord` = `keys.Chord`
+  - fields: `key, mod, shift, alt`
+  > Primary modifier + `k`: `Chord.ctrl(.s)` is "Save" on every platform.
+  - `pub fn ctrl(k: Key) Chord`
+  - `pub fn ctrlShift(k: Key) Chord`
+  - `pub fn altKey(k: Key) Chord`
+  > No modifier (function keys).
+  - `pub fn plain(k: Key) Chord`
+  - `pub fn eql(a: Chord, b: Chord) bool`
+  > `Ctrl+Shift+P` (pc) or `Cmd+Shift+P` (mac); Alt is `Alt` / `Opt`.
+  - `pub fn format(self: Chord, w: *std.Io.Writer, platform: Platform) std.Io.Writer.Error!void`
+  > `format` as a comptime string, for const menu trees:
+  > `.shortcut = teak.Chord.ctrl(.s).text(.pc)`.
+  - `pub fn text(comptime self: Chord, comptime platform: Platform) []const u8`
+  > Parse `ctrl+shift+p` / `cmd+k` / `alt+enter` / `f12` (case-insensitive;
+  > `ctrl`, `cmd`, `mod` and `meta` all mean the primary modifier).
+  - `pub fn parse(s: []const u8) ?Chord`
+  > The `SpecialKey` hosts also deliver for this chord (the text-editing
+  > chords: Ctrl+A/C/X/V/Y/Z, word jumps, ...), so the runtime can
+  > swallow it when a command claims the chord. Null when none.
+  - `pub fn special(self: Chord) ?SpecialKey`
+- `teak.ShortcutPlatform` = `keys.Platform`
+  - fields: `pc, mac`
 > One accessibility-tree node derived from a cmd.
 - `teak.A11yNode` = `a11y.A11yNode`
   - fields: `role, cmd_index, bounds, label, focused, state, disabled, parent, value, sel_start, sel_end, selected, expanded, level, live, modal`
@@ -546,6 +585,11 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, list_max_height, max_visible`
 > Searchable select component (see `combobox`).
 - `teak.Combobox`: `pub const Combobox = combobox.Combobox`
+- `teak.Command`: `pub const Command = commands.Command`
+- `teak.CommandList`: `pub const CommandList = commands.CommandList`
+- `teak.CommandPalette`: `pub const CommandPalette = commands.CommandPalette`
+- `teak.PaletteViewOpts` = `commands.PaletteViewOpts`
+  - fields: `window_w, window_h, width, max_visible, platform, column`
 > Anchor and sizing options for the open combobox list.
 - `teak.ComboboxViewOpts` = `combobox.ViewOpts`
   - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, max_visible, match, input_style`
@@ -612,10 +656,10 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.expectSnapshot`: `pub const expectSnapshot = snapshot.expectSnapshot`
 > Per-frame input snapshot returned by `Host.pollInputs`.
 - `teak.InputState` = `host.InputState`
-  - fields: `mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, resized, width, height`
+  - fields: `mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, chords, resized, width, height`
 > Event accumulator turning native events into an `InputState`.
 - `teak.InputQueue` = `input_queue.InputQueue`
-  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, dropped, alt_clean`
+  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, chords, chords_len, pending_high, dropped, alt_clean`
   > Drop last frame's text and keys. Call once at the top of a poll,
   > before pumping events: the slices handed out by `finish` alias the
   > queue's buffers and stay valid until this runs.
@@ -632,6 +676,14 @@ Signatures and `///` doc comments of every public declaration reachable from
   > Apply one synthetic event (agent control channel) exactly as the
   > matching OS event would be.
   - `pub fn inject(self: *InputQueue, ev: host.InjectEvent) void`
+  > The one shortcut policy: key `k` was pressed under the current
+  > modifiers. It becomes a `Chord` when Ctrl (the primary modifier;
+  > hosts fold Cmd into `mods.ctrl` where that is the platform's
+  > convention) or Alt is held, or when it is an F-key; plain and
+  > Shift-only keys are text or special keys, not shortcuts.
+  - `pub fn pushShortcut(self: *InputQueue, k: keys.Key) void`
+  > Queue a keyboard shortcut (see `host.InputState.chords`).
+  - `pub fn pushChord(self: *InputQueue, c: Chord) void`
   > Resolve a navigation/chord key under the current modifiers and queue it.
   - `pub fn pushNav(self: *InputQueue, k: NavKey) void`
   > Queue one typed code point as UTF-8. Control codes and invalid
@@ -688,7 +740,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `sans, serif, mono`
 > A font request: family, size and weight.
 - `teak.FontSpec` = `text.FontSpec`
-  - fields: `size_px, family, weight, letter_spacing, snap_advance, scalable`
+  - fields: `size_px, family, weight, letter_spacing, snap_advance, rtl, scalable`
   > The resolved `snap_advance` (see the field).
   - `pub fn snapsAdvance(self: FontSpec) bool`
 > Regular or bold.
@@ -763,7 +815,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `enum InputVariant`
   - fields: `boxed, underline`
 - `struct GroupStyle`
-  - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, a11y, bg, border, border_width, radius, gradient, soft_shadow`
+  - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, a11y, bg, border, border_width, drag_id, drop_id, radius, gradient, soft_shadow`
   - `pub fn padX(self: GroupStyle) f32`
   - `pub fn padY(self: GroupStyle) f32`
 - `struct TextCmd`
@@ -944,7 +996,7 @@ Text measurement and rasterization types.
 > (web: CSS `font-weight` + canvas `letterSpacing`; native: face selection).
 > Both take part in the glyph-cache key, so changing them re-rasterizes.
 - `struct FontSpec`
-  - fields: `size_px, family, weight, letter_spacing, snap_advance, scalable`
+  - fields: `size_px, family, weight, letter_spacing, snap_advance, rtl, scalable`
   > The resolved `snap_advance` (see the field).
   - `pub fn snapsAdvance(self: FontSpec) bool`
 - `pub const DEFAULT_FONT: FontSpec = .{}`
@@ -1115,6 +1167,13 @@ UAX #9 Unicode Bidirectional Algorithm (Unicode 16): pure, std only.
 > (the caller moves to the neighbouring line). Word jumps are logical: use
 > `unicode.nextWordBoundary` / `prevWordBoundary` unchanged.
 - `pub fn caretMove(gpa: std.mem.Allocator, text: []const u8, an: Analysis, start: usize, end: usize, caret: Caret, arrow: Arrow) !?Caret`
+> Visual slot (0 = left edge of the line .. n = right edge) of the caret at
+> every grapheme boundary of the line `[start, end)`, under the convention
+> "trailing edge of the cluster before the boundary, leading edge of the first
+> cluster at the line start". `out` needs `clusters + 1` entries; returns the
+> filled prefix. `out[k]` belongs to the boundary before cluster k (the last
+> one is `end`). Used for stateless visual arrow movement.
+- `pub fn boundarySlots(gpa: std.mem.Allocator, text: []const u8, an: Analysis, start: usize, end: usize, out: []u32) ![]u32`
 > A horizontal span `[x0, x1)` in line-local pixels.
 - `struct Span`
   - fields: `x0, x1`
@@ -1123,6 +1182,46 @@ UAX #9 Unicode Bidirectional Algorithm (Unicode 16): pure, std only.
 > logical order. One span per visually contiguous selected stretch (so a
 > selection across an rtl/ltr boundary may yield several). Caller owns the slice.
 - `pub fn selectionSpans(gpa: std.mem.Allocator, text: []const u8, an: Analysis, start: usize, end: usize, advances: []const f32, sel_start: usize, sel_end: usize) ![]Span`
+
+### `teak.bidi_text` (`src/core/bidi_text.zig`)
+
+Bidi-aware geometry of one laid-out line (UAX #9 L1/L2 over `bidi.zig`).
+
+> Longest paragraph (bytes between hard line breaks) analysed; longer ones
+> are drawn and edited in logical order.
+- `pub const MAX_PARA = 2048`
+> Directional runs per line before falling back to logical order.
+- `pub const MAX_RUNS = 48`
+> Stack scratch for one analysis. Not zeroed (`undefined`).
+- `struct Scratch`
+  - fields: `buf`
+> True when `s` may contain right-to-left characters or bidi controls
+> (any UTF-8 lead byte from U+0580 up). A cheap pre-filter, not a decision.
+- `pub fn mayBeRtl(s: []const u8) bool`
+- `pub const Span = bidi.Span`
+- `struct RunGeo`
+  - fields: `start, end, level, x, w`
+  - `pub fn rtl(self: RunGeo) bool`
+- `struct Layout`
+  - fields: `runs, n, ls, le, width, para_rtl, text, font, m`
+  - `pub fn items(self: *const Layout) []const RunGeo`
+  > Line-local x of the caret at byte offset `idx` (see the caret convention).
+  - `pub fn caretX(self: *const Layout, idx: usize) f32`
+  > Byte offset of the caret position nearest to line-local `x` (ties go left).
+  - `pub fn indexAt(self: *const Layout, x: f32) usize`
+  > Highlight spans of the logical selection `[lo, hi)` in visual order,
+  > touching spans merged. At most `out.len` spans (excess merged into the last).
+  - `pub fn selection(self: *const Layout, lo: usize, hi: usize, out: []Span) []Span`
+> Direction-aware layout of the line `[ls, le)` of `text`, or null when the
+> plain left-to-right path applies. `wrap_w` (infinity for none) right-aligns
+> lines of a right-to-left paragraph.
+- `pub fn layoutLine(text: []const u8, ls: usize, le: usize, font: FontSpec, m: TextMeasurer, wrap_w: f32, scratch: *Scratch) ?Layout`
+> Target of a visual Left / Right arrow from byte `cursor` over the line
+> `[ls, le)`, or null when the line is plain LTR or no caret position lies
+> further that way (the caller then moves to the neighbouring line /
+> logically). Stateless: positions are ordered by visual slot under the caret
+> convention, so repeated presses always make progress.
+- `pub fn arrowTarget(text: []const u8, ls: usize, le: usize, cursor: usize, arrow: bidi.Arrow, scratch: *Scratch) ?usize`
 
 ### `teak.linebreak` (`src/core/linebreak.zig`)
 
@@ -1456,7 +1555,7 @@ option list shown in the same modal-overlay list `Dropdown` uses.
 > Label of the disabled row shown when the query matches nothing.
 - `pub const NO_MATCHES = "No matches"`
 - `enum Match`
-  - fields: `substring, prefix`
+  - fields: `substring, prefix, fuzzy`
 - `struct ViewOpts`
   - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, max_visible, match, input_style`
 > Simple case fold: ASCII, Latin-1 Supplement, Latin Extended-A (paired
@@ -1472,6 +1571,43 @@ option list shown in the same modal-overlay list `Dropdown` uses.
 - `pub fn ordinalOf(query: []const u8, options: []const []const u8, mode: Match, index: usize) ?usize`
 > A combobox whose query field holds up to `cap` bytes.
 - `pub fn Combobox(comptime cap: usize) type`
+
+### `teak.commands` (`src/core/commands.zig`)
+
+Command registry, keyboard shortcuts and the command palette.
+
+- `pub const Chord = keys.Chord`
+- `pub const Platform = keys.Platform`
+> Commands one `CommandList` holds.
+- `pub const max_commands = 96`
+- `pub fn Command(comptime Msg: type) type`
+> A fixed-capacity command table, filled by the App's `commands` hook.
+- `pub fn CommandList(comptime Msg: type) type`
+> Build menu rows from the command table, so the shortcut a menu shows is
+> the one that works. `ids` names the commands in order; `"-"` is a
+> separator. Each row's label is the command label, its shortcut text is
+> `Chord.format` of the primary shortcut, `enabled` follows the command, and
+> its action is the command's index in `list` (use `MenuBar(u16)` and run
+> `list.items[index].msg` when it fires). Unknown ids are skipped. Slices
+> live in `arena` (build it in `view`: `cb.arena.allocator()`).
+> ```zig
+> const MB = teak.widgets.menu.MenuBar(u16);
+> const file = commands.menuItems(MB.Item, arena, &list, .pc, &.{ "file.open", "-", "app.quit" });
+> ```
+- `pub fn menuItems( comptime Item: type, arena: std.mem.Allocator, list: anytype, platform: Platform, ids: []const []const u8, ) []const Item`
+- `struct PaletteViewOpts`
+  - fields: `window_w, window_h, width, max_visible, platform, column`
+> The command palette: a modal overlay with a query field and the command
+> table fuzzy-filtered below it; Up/Down move the highlight, Enter runs the
+> highlighted command, Escape or a click outside closes. Built on `Combobox`
+> (same Model / Msg / update; `.focus` opens it, `.select(i)` carries the
+> palette option index), composed from existing primitives (zero new Cmd
+> variants). All state is the `Model`.
+> Wiring (docs/cookbook.md recipe 21): the App keeps a `palette: Palette.Model`,
+> routes chars with `charMsg` and keys with `keyMsg` while `palette.open`,
+> renders with `viewPalette`, and on `.select(i)` closes the palette and runs
+> `list.paletteCommand(i).msg`.
+- `pub fn CommandPalette(comptime cap: usize) type`
 
 ### `teak.widgets` (`src/core/widgets.zig`)
 
@@ -1636,6 +1772,14 @@ and the App.
 > same space as `CanvasPrimitive` coordinates.
 - `struct CanvasEvent`
   - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h, key`
+- `enum DragPhase`
+  - fields: `start, move, drop, cancel`
+> One step of an in-app drag, delivered to the App's `dragMsg` hook. The
+> app keeps the drag state in its Model (what is dragged, where the ghost
+> is, which target is hot) and renders the ghost as an overlay; the loop
+> only reports pointer facts resolved against the previous frame's layout.
+- `struct DragEvent`
+  - fields: `phase, id, x, y, grab_dx, grab_dy, src, over, over_rect, over_fx, over_fy`
 > A window-space rectangle (`PointerEvent.box`).
 - `struct Box`
   - fields: `x, y, w, h`
@@ -1688,12 +1832,17 @@ Declarative effects (HARDLINE §2 escape hatch 7 — the sibling of
 > Offer bytes to the user as a file: browser download / native save to
 > the app's output directory (or a save dialog).
 - `struct Download`
-  - fields: `id, name, mime, bytes`
+  - fields: `id, name, mime, bytes, pick, title`
 > Ask the user to pick a file; result is `file_opened` / `file_cancelled`.
 - `struct OpenFile`
-  - fields: `id, accept`
+  - fields: `id, accept, title`
 - `struct WriteClipboard`
   - fields: `id, text`
+> Put a PNG image on the clipboard (fire and forget, like `write_clipboard`).
+> X11 / Wayland serve it as `image/png` while the window owns the selection;
+> the web writes a `ClipboardItem` (the browser may require a user gesture).
+- `struct WriteClipboardImage`
+  - fields: `id, png`
 > Persistent key/value storage (browser localStorage / a file under the
 > user's config dir on native). `set` with an empty `value` deletes.
 - `struct StorageSet`
@@ -1711,7 +1860,7 @@ Declarative effects (HARDLINE §2 escape hatch 7 — the sibling of
 - `struct QueryParam`
   - fields: `id, name`
 - `union Effect`
-  - fields: `http, download, open_file, write_clipboard, storage_set, storage_get, clock, query_param`
+  - fields: `http, download, open_file, write_clipboard, write_clipboard_image, storage_set, storage_get, clock, query_param`
   > The app-chosen request id.
   - `pub fn id(self: Effect) u32`
   > Fire-and-forget effects (`storage_set`, `write_clipboard`) produce no
@@ -1915,6 +2064,16 @@ passes already produced.
 > overlay under the point blocks everything behind it — the same layering
 > as `hitTest`.
 - `pub fn wheelTarget(cmds: anytype, rects: []const Rect, x: f32, y: f32) ?WheelTarget`
+> A drag source or drop target found by `dragTargets`.
+- `struct DragZone`
+  - fields: `index, id`
+- `struct DragHit`
+  - fields: `source, target`
+> The innermost drag source (`GroupStyle.drag_id != 0`) and innermost drop
+> target (`drop_id != 0`) containing (x, y), with the same layering as
+> `hitTest` / `wheelTarget`: overlay-layer zones win over base ones, and a
+> modal overlay under the point hides everything behind it.
+- `pub fn dragTargets(cmds: anytype, rects: []const Rect, x: f32, y: f32) DragHit`
 > Compute a slider's normalized value [0, 1] from an x position, given
 > the slider's rect. Intended for the host: after `hitTest` returns a
 > slider's `grab_msg` + index, the host reads `rects[index]` and calls
@@ -2022,6 +2181,42 @@ variant here. Hosts map their native key codes onto this enum.
 
 - `enum SpecialKey`
   - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f12, f10, , ...`
+> A physical key a shortcut can name (layout-independent identity for
+> letters, digits, function keys, navigation and common punctuation).
+> Hosts map their native key codes onto this, like `NavKey`.
+- `enum Key`
+  - fields: `a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, enter, tab, escape, space, backspace, delete, insert, left, right, up, down, home, end, page_up, page_down, comma, period, slash, backslash, semicolon, quote, minus, equal, bracket_left, bracket_right, grave`
+  > The key for a lower/upper-case ASCII letter or digit (else null).
+  - `pub fn fromAscii(c: u8) ?Key`
+  > Short display name: `S`, `5`, `F12`, `Enter`, `PgUp`, `,`.
+  - `pub fn label(self: Key) []const u8`
+> Which naming a shortcut label uses for the primary modifier.
+- `enum Platform`
+  - fields: `pc, mac`
+> A keyboard shortcut: `key` with modifiers. `mod` is the platform's
+> primary shortcut modifier: Ctrl on Windows/Linux/X11 and Cmd on macOS
+> (the host decides what it reports), so one table works everywhere.
+- `struct Chord`
+  - fields: `key, mod, shift, alt`
+  > Primary modifier + `k`: `Chord.ctrl(.s)` is "Save" on every platform.
+  - `pub fn ctrl(k: Key) Chord`
+  - `pub fn ctrlShift(k: Key) Chord`
+  - `pub fn altKey(k: Key) Chord`
+  > No modifier (function keys).
+  - `pub fn plain(k: Key) Chord`
+  - `pub fn eql(a: Chord, b: Chord) bool`
+  > `Ctrl+Shift+P` (pc) or `Cmd+Shift+P` (mac); Alt is `Alt` / `Opt`.
+  - `pub fn format(self: Chord, w: *std.Io.Writer, platform: Platform) std.Io.Writer.Error!void`
+  > `format` as a comptime string, for const menu trees:
+  > `.shortcut = teak.Chord.ctrl(.s).text(.pc)`.
+  - `pub fn text(comptime self: Chord, comptime platform: Platform) []const u8`
+  > Parse `ctrl+shift+p` / `cmd+k` / `alt+enter` / `f12` (case-insensitive;
+  > `ctrl`, `cmd`, `mod` and `meta` all mean the primary modifier).
+  - `pub fn parse(s: []const u8) ?Chord`
+  > The `SpecialKey` hosts also deliver for this chord (the text-editing
+  > chords: Ctrl+A/C/X/V/Y/Z, word jumps, ...), so the runtime can
+  > swallow it when a command claims the chord. Null when none.
+  - `pub fn special(self: Chord) ?SpecialKey`
 
 ### `teak.a11y` (`src/input/a11y.zig`)
 
@@ -2145,6 +2340,7 @@ application drives `pollInputs` each frame and hands a
 viewport-agnostic snapshot back.
 
 - `pub const SpecialKey = @import("../input/keys.zig").SpecialKey`
+- `pub const Chord = @import("../input/keys.zig").Chord`
 - `pub const Buttons = pointer.Buttons`
 - `pub const Modifiers = pointer.Modifiers`
 - `pub const TextMeasurer = text.TextMeasurer`
@@ -2199,7 +2395,7 @@ viewport-agnostic snapshot back.
 > the same queue real OS events do, so injected input takes exactly the path
 > real input takes (HARDLINE: no second mutation path).
 - `union InjectEvent`
-  - fields: `move, down, up, wheel, chars, key, mods`
+  - fields: `move, down, up, wheel, chars, key, mods, chord`
 > Per-frame input snapshot returned by `Host.pollInputs`.
 > `mouse_x` / `mouse_y` are the current cursor position (state, not an
 > event), in logical pixels relative to the window's client area.
@@ -2225,7 +2421,7 @@ viewport-agnostic snapshot back.
 > = ~48 px on Win32). Zero when no wheel events arrived this frame. A
 > trackpad pinch on the web arrives as a wheel event with `mods.ctrl` set.
 - `struct InputState`
-  - fields: `mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, resized, width, height`
+  - fields: `mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, chords, resized, width, height`
 > Comptime contract. A Host must expose these declarations; `init`
 > signatures vary per backend and are NOT validated (some hosts take a
 > title, some take a canvas selector, etc.).
@@ -2280,6 +2476,13 @@ viewport-agnostic snapshot back.
 > the current document name. Native hosts call the OS window-title
 > API; the web host sets `document.title`. No-op is acceptable for
 > headless hosts.
+> - `setImeSpot(x, y)` / `setImeActive(focused)` (optional): the runtime tells the
+> Host where the focused text caret's line ends (window logical px) and whether
+> a text field is focused. Hosts with an out-of-window IME use them: X11's XIM
+> over-the-spot style, the web's hidden `<textarea>` (focus + candidate window).
+> Composition arrives as `imeState()` (the preedit, presentation-only, mirrored
+> into `TransientState`: HARDLINE hatch 2) and the committed text as ordinary
+> `InputState.chars`, so no host needs a separate commit path.
 > - `scaleFactor()` reports the number of physical device pixels per
 > logical UI unit at the window's current DPI (1.0 = no scaling).
 > HARDLINE §4(d) surface extension, but kept **optional** in
@@ -2343,7 +2546,7 @@ Shared per-window input accumulator for event-driven Hosts (Win32, X11).
 > with Left/Right/Home/End/Backspace/Delete selects the word/document variants.
 - `pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey`
 - `struct InputQueue`
-  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, dropped, alt_clean`
+  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, chords, chords_len, pending_high, dropped, alt_clean`
   > Drop last frame's text and keys. Call once at the top of a poll,
   > before pumping events: the slices handed out by `finish` alias the
   > queue's buffers and stay valid until this runs.
@@ -2360,6 +2563,14 @@ Shared per-window input accumulator for event-driven Hosts (Win32, X11).
   > Apply one synthetic event (agent control channel) exactly as the
   > matching OS event would be.
   - `pub fn inject(self: *InputQueue, ev: host.InjectEvent) void`
+  > The one shortcut policy: key `k` was pressed under the current
+  > modifiers. It becomes a `Chord` when Ctrl (the primary modifier;
+  > hosts fold Cmd into `mods.ctrl` where that is the platform's
+  > convention) or Alt is held, or when it is an F-key; plain and
+  > Shift-only keys are text or special keys, not shortcuts.
+  - `pub fn pushShortcut(self: *InputQueue, k: keys.Key) void`
+  > Queue a keyboard shortcut (see `host.InputState.chords`).
+  - `pub fn pushChord(self: *InputQueue, c: Chord) void`
   > Resolve a navigation/chord key under the current modifiers and queue it.
   - `pub fn pushNav(self: *InputQueue, k: NavKey) void`
   > Queue one typed code point as UTF-8. Control codes and invalid
