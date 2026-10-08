@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Text perf: 10k runs 8.4 -> ~3.2 ms per warm frame
+
+- teak-text: short pure-ASCII runs measure straight from the face's ASCII tables
+  (no cache probe, no shaper); kern pairs are cached per face; the native measure
+  cache is 4096 slots / 96 bytes. Results are bit-identical to `shape`.
+- `TextStage`: a draw whose geometry, font, colour, clip and text match the same
+  draw index last frame replays its glyph instances (Host-side, losable; guarded
+  by atlas page generation).
+- `tools/bench` compiles again; the chrome `--stress` bench disables idle skip.
+
 ### Optional HarfBuzz shaper
 
 - `-Dharfbuzz=true` (library tests) / `.harfbuzz = true` (`NativeWgpuOptions`,

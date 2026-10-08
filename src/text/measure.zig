@@ -72,8 +72,11 @@ pub fn measure(text: []const u8, font: teak.FontSpec) teak.TextMetrics {
         cache = std.mem.zeroes([cache_slots]Slot);
         cache_epoch = face_mod.epoch;
     }
-    // Pure-ASCII runs cost less than a cache probe: no table, no hashing.
-    if (shaper_mod.asciiWidth(text, font)) |w| return metricsWith(w, font);
+    // Short pure-ASCII runs cost less than a cache probe (a cold cache line each):
+    // no table, no hashing. Longer ones are cheaper to remember.
+    if (text.len <= 16) {
+        if (shaper_mod.asciiWidth(text, font)) |w| return metricsWith(w, font);
+    }
     if (text.len > max_text) return measureUncached(text, font);
     const h = slotHash(text, font);
     var slot = &cache[@as(usize, @intCast(h % cache_slots))];
