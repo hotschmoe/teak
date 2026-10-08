@@ -274,11 +274,11 @@ pub fn TextStage(comptime Raster: type) type {
         fn drawSig(draw: teak.TextDraw, layer: usize) u64 {
             const f = draw.font;
             const words = [_]u32{
-                @bitCast(draw.rect_x),                 @bitCast(draw.rect_y),                 @bitCast(draw.rect_w),
-                @bitCast(draw.rect_h),                 @bitCast(draw.clip_x),                 @bitCast(draw.clip_y),
-                @bitCast(draw.clip_w),                 @bitCast(draw.clip_h),                 @bitCast(draw.color[0]),
-                @bitCast(draw.color[1]),               @bitCast(draw.color[2]),               @bitCast(draw.color[3]),
-                @bitCast(f.size_px),                   @bitCast(f.letter_spacing),
+                @bitCast(draw.rect_x),   @bitCast(draw.rect_y),      @bitCast(draw.rect_w),
+                @bitCast(draw.rect_h),   @bitCast(draw.clip_x),      @bitCast(draw.clip_y),
+                @bitCast(draw.clip_w),   @bitCast(draw.clip_h),      @bitCast(draw.color[0]),
+                @bitCast(draw.color[1]), @bitCast(draw.color[2]),    @bitCast(draw.color[3]),
+                @bitCast(f.size_px),     @bitCast(f.letter_spacing),
                 @as(u32, @backingInt(f.family)) | (@as(u32, @backingInt(f.weight)) << 8) |
                     (@as(u32, if (f.snap_advance) |v| @intFromBool(v) + 1 else 0) << 16) | (@as(u32, @intCast(layer)) << 24),
             };
