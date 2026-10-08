@@ -158,6 +158,14 @@ pub const GroupStyle = struct {
     /// keep `padding >= border_width` so children don't paint over it.
     border: ?[4]f32 = null,
     border_width: f32 = 1,
+    /// In-app drag and drop (docs/features/drag-drop.md). `drag_id != 0`
+    /// makes the group a drag SOURCE: a press on it (that no interactive
+    /// child claims) followed by movement starts a drag, reported to the
+    /// App's `dragMsg`. `drop_id != 0` makes it a drop TARGET: `dragMsg`
+    /// events say which target (innermost) the pointer is over. Ids are the
+    /// app's, per kind (a row is typically both, with one id).
+    drag_id: u32 = 0,
+    drop_id: u32 = 0,
     /// Rounded corners of the fill and border. With any of `radius`,
     /// `gradient` or `soft_shadow` set the group draws as one SDF quad (the
     /// border becomes an inside stroke that follows the corners); with none

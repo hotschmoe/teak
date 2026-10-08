@@ -30,7 +30,7 @@ const section_steps = [_]Step{
 /// flush-psl-2x6's ISO B with a part selected from the table.
 const iso_steps = [_]Step{
     .{ .frames = 2 },
-    .{ .click = .{ 1111, 20 } }, // FLUSH-PSL-2X6
+    .{ .click = .{ 989, 20 } }, // FLUSH-PSL-2X6
     .{ .frames = 2 },
     .{ .click = tab_iso },
     .{ .frames = 2 },

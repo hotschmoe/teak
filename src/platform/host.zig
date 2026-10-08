@@ -11,6 +11,7 @@
 const std = @import("std");
 
 pub const SpecialKey = @import("../input/keys.zig").SpecialKey;
+pub const Chord = @import("../input/keys.zig").Chord;
 pub const Buttons = pointer.Buttons;
 pub const Modifiers = pointer.Modifiers;
 
@@ -105,6 +106,8 @@ pub const InjectEvent = union(enum) {
     chars: []const u8,
     key: SpecialKey,
     mods: Modifiers,
+    /// A keyboard shortcut (see `InputState.chords`).
+    chord: Chord,
 };
 
 /// Per-frame input snapshot returned by `Host.pollInputs`.
@@ -148,6 +151,13 @@ pub const InputState = struct {
     wheel_dy: f32,
     chars: []const u8,
     keys: []const SpecialKey,
+    /// Keyboard shortcuts pressed this frame, in order: a letter / digit /
+    /// punctuation / navigation key with Ctrl (Cmd on macOS) or Alt held, or
+    /// an F-key. Delivered IN ADDITION to `keys` (so Ctrl+C is both
+    /// `keys = [.ctrl_c]` and a `Chord{c, mod}`); `teak.run` matches them
+    /// against the App's `commands` table before widget key handling and
+    /// swallows the overlapping special key when a command claims the chord.
+    chords: []const Chord = &.{},
     resized: bool,
     width: u32,
     height: u32,

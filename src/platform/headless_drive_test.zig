@@ -19,7 +19,7 @@ const App = struct {
         input_len: u8 = 0,
         focused: bool = false,
     };
-    pub const Msg = union(enum) { focus, char: u8, backspace, add, toggle: usize };
+    pub const Msg = union(enum) { focus, char: u8, backspace, add, toggle: usize, drag: teak.DragEvent };
 
     pub fn update(m: *Model, msg: Msg) void {
         switch (msg) {
@@ -40,6 +40,17 @@ const App = struct {
             .toggle => |i| if (i < m.n) {
                 m.items[i].done = !m.items[i].done;
             },
+            .drag => |ev| if (ev.phase == .drop and ev.over != 0 and ev.id != ev.over and ev.id <= m.n and ev.over <= m.n) {
+                const from = ev.id - 1;
+                const to = ev.over - 1;
+                const it = m.items[from];
+                if (from < to) {
+                    std.mem.copyForwards(Item, m.items[from..to], m.items[from + 1 .. to + 1]);
+                } else {
+                    std.mem.copyBackwards(Item, m.items[to + 1 .. from + 1], m.items[to..from]);
+                }
+                m.items[to] = it;
+            },
         }
     }
 
@@ -50,10 +61,19 @@ const App = struct {
         cb.textInput(.focus, m.input[0..m.input_len], m.input_len);
         cb.button(.add, "Add");
         cb.popGroup();
-        for (m.items[0..m.n], 0..) |*it, i| cb.checkbox(.{ .toggle = i }, it.done, it.label[0..it.len]);
+        for (m.items[0..m.n], 0..) |*it, i| {
+            const id: u32 = @intCast(i + 1);
+            cb.pushGroup(.{ .direction = .horizontal, .padding = 2, .gap = 8, .drag_id = id, .drop_id = id });
+            cb.text("::");
+            cb.checkbox(.{ .toggle = i }, it.done, it.label[0..it.len]);
+            cb.popGroup();
+        }
         cb.popGroup();
     }
 
+    pub fn dragMsg(_: *const Model, ev: teak.DragEvent) ?Msg {
+        return .{ .drag = ev };
+    }
     pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
         return if (m.focused) .{ .char = c } else null;
     }
@@ -64,6 +84,9 @@ const App = struct {
             .enter => .add,
             else => null,
         };
+    }
+    pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
+        list.add(.{ .id = "todo.add", .label = "Add item", .shortcut = teak.Chord.ctrl(.enter), .enabled = m.input_len > 0, .msg = .add });
     }
     pub fn debugState(m: *const Model, w: *std.Io.Writer) void {
         w.print("items={d} input={s}", .{ m.n, m.input[0..m.input_len] }) catch {};
@@ -378,4 +401,69 @@ test "idle: a listening control channel caps the quiet wait at one frame; comman
     defer gpa.free(r2);
     try rt.frame();
     try std.testing.expect(rt.bufs[rt.current].cmds.items.len > before);
+}
+
+test "control: the shortcut command presses a chord matched by the app's commands table" {
+    if (comptime !control_socket.supported) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var sock_buf: [96]u8 = undefined;
+    const sock = try tmpPath(&sock_buf, "sc.sock");
+    var host = try testHost();
+    defer host.deinit();
+    var gpu: StubGpu = .{};
+    var rt = try Rt.init(gpa, &host, &gpu, .{ .control_path = sock });
+    defer rt.deinit();
+    try rt.frame();
+    var cl = try control_socket.Client.connect(sock);
+    defer cl.close();
+
+    const a = try ask(&rt, &cl, "{\"cmd\":\"click\",\"selector\":{\"role\":\"text_input\"}}");
+    gpa.free(a);
+    const b = try ask(&rt, &cl, "{\"cmd\":\"type\",\"text\":\"tea\"}");
+    gpa.free(b);
+    // Disabled while empty would not fire; with text, Ctrl+Enter adds the item.
+    const r = try ask(&rt, &cl, "{\"cmd\":\"shortcut\",\"chord\":\"ctrl+enter\"}");
+    defer gpa.free(r);
+    try expectOk(r);
+    try std.testing.expectEqual(@as(usize, 1), rt.model.n);
+    // Again with the input empty: the command is disabled, nothing happens.
+    const r2 = try ask(&rt, &cl, "{\"cmd\":\"shortcut\",\"chord\":\"ctrl+enter\"}");
+    defer gpa.free(r2);
+    try std.testing.expectEqual(@as(usize, 1), rt.model.n);
+    const r3 = try ask(&rt, &cl, "{\"cmd\":\"shortcut\",\"chord\":\"bogus\"}");
+    defer gpa.free(r3);
+    try std.testing.expect(std.mem.indexOf(u8, r3, "\"ok\":false") != null);
+}
+
+test "control: the drag command reorders rows through the real pointer path" {
+    if (comptime !control_socket.supported) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var sock_buf: [96]u8 = undefined;
+    const sock = try tmpPath(&sock_buf, "dr.sock");
+    var host = try testHost();
+    defer host.deinit();
+    var gpu: StubGpu = .{};
+    var rt = try Rt.init(gpa, &host, &gpu, .{ .control_path = sock });
+    defer rt.deinit();
+    try rt.frame();
+    var cl = try control_socket.Client.connect(sock);
+    defer cl.close();
+    const a = try ask(&rt, &cl, "{\"cmd\":\"click\",\"selector\":{\"role\":\"text_input\"}}");
+    gpa.free(a);
+    for ([_][]const u8{ "one", "two", "three" }) |w| {
+        var buf: [64]u8 = undefined;
+        const t = try std.fmt.bufPrint(&buf, "{{\"cmd\":\"type\",\"text\":\"{s}\"}}", .{w});
+        gpa.free(try ask(&rt, &cl, t));
+        gpa.free(try ask(&rt, &cl, "{\"cmd\":\"key\",\"name\":\"enter\"}"));
+    }
+    try std.testing.expectEqual(@as(usize, 3), rt.model.n);
+    // Press the grip ("::", not interactive) of the first row, drop on the third.
+    const r = try ask(&rt, &cl,
+        \\{"cmd":"drag","from":{"role":"text","label":"::","nth":0},"to":{"role":"text","label":"::","nth":2}}
+    );
+    defer gpa.free(r);
+    try expectOk(r);
+    try std.testing.expectEqualStrings("two", rt.model.items[0].label[0..rt.model.items[0].len]);
+    try std.testing.expectEqualStrings("three", rt.model.items[1].label[0..rt.model.items[1].len]);
+    try std.testing.expectEqualStrings("one", rt.model.items[2].label[0..rt.model.items[2].len]);
 }

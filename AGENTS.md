@@ -167,6 +167,7 @@ src/                                          -- the library, consumable as a Zi
     chart.zig                                 -- teak.chart — pure line-chart primitive builder
     cmd.zig                                   -- Cmd union, CmdBuffer + emitters, arena, validateBalance, OverlayStyle/leafMsg
     combobox.zig                              -- Searchable select ("combobox"): a text input that filters an app-owned option list shown in the
+    commands.zig                              -- Command registry, keyboard shortcuts and the command palette
     component.zig                             -- Components(), validateComponent, buildMsgs: comptime component stitching (hatch 1)
     component_list.zig                        -- ComponentList: a comptime-generated dynamic list of homogeneous sub-components
     cursor.zig                                -- Mouse-cursor shapes and the rule that picks one from the hovered cmd
@@ -255,6 +256,7 @@ src/                                          -- the library, consumable as a Zi
     cocoa.zig                                 -- macOS host backend (Cocoa, via the Objective-C runtime)
     cocoa_data.zig                            -- Display-free decoding for the macOS host: virtual key codes, modifier flags, scroll deltas
     control_socket.zig                        -- Unix-domain-socket transport for the agent control channel (docs/features/agent-driver.md): a
+    file_picker.zig                           -- Native file dialogs for Linux hosts (X11 today, Wayland through the same
     headless.zig                              -- Headless Host: scripted input, a fake clock and real text metrics, for running a teak App with
     host.zig                                  -- Host interface: window + input event source
     input_queue.zig                           -- Shared per-window input accumulator for event-driven Hosts (Win32, X11)

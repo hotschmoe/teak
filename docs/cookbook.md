@@ -1208,3 +1208,42 @@ pub fn main(init: std.process.Init) !void {
    Put a frame between actions that depend on each other (a `click` already runs three frames).
 
 Details, tolerances and the `--update` workflow: [docs/features/visual-regression.md](features/visual-regression.md).
+
+---
+
+## 21. Shortcuts and a command palette
+
+**Goal:** Ctrl+S-style shortcuts, shortcut text in menus, and a Ctrl+K palette that fuzzy-runs any command.
+
+**1. Declare the table** (pure; the runtime matches chords before widget keys and dispatches the Msg):
+
+```zig
+pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
+    list.add(.{ .id = "file.save", .label = "Save", .shortcut = teak.Chord.ctrl(.s), .enabled = m.dirty, .msg = .save });
+    list.add(.{ .id = "palette", .label = "Command Palette", .shortcut = teak.Chord.ctrlShift(.p),
+                .alt_shortcut = teak.Chord.ctrl(.k), .hidden = true, .msg = .{ .palette = .focus } });
+}
+```
+
+**2. The palette**: `const Palette = teak.CommandPalette(24);` with `palette: Palette.Model` in the Model, a `palette: Palette.Msg` and a `palette_run: usize` Msg;
+route `keyCharMsg` / `keySpecialMsg` to it while `m.palette.open`; draw it last in `view` with `Palette.viewPalette`;
+on `palette_run(i)` close it and `update(m, list.paletteCommand(i).?.msg)`. The complete wiring is in `examples/kerf_viewer/src/app.zig`.
+
+**3. Menus**: show `cmd.menuLabel(arena, .pc, 20)` (or `Chord.format`) so the displayed shortcut is the working one.
+
+Test it headlessly with `host.pushChord(.{ .key = .s, .mod = true })` or, against a live app, `teak-drive shortcut ctrl+s`. Depth: [commands.md](features/commands.md).
+
+---
+
+## 22. Drag and drop
+
+**Goal:** drag a list row to reorder it, with a ghost and a drop indicator, plus a keyboard alternative.
+
+1. **Mark the rows**: `cb.pushGroup(.{ ..., .drag_id = id, .drop_id = id })` with `id = index + 1` (non-zero). Put a non-interactive grip (`cb.text("::")`) in the row: pressing a button or checkbox clicks it, pressing the rest of the row drags.
+2. **Hook**: `pub fn dragMsg(_: *const Model, ev: teak.DragEvent) ?Msg { return .{ .drag = ev }; }`.
+3. **Model + update**: `drag: ?Drag` (source, pointer, grab offset, `over`, `after`). `.start` sets it, `.move` follows (`over = ev.over`, `after = ev.over_fy >= 0.5`), `.drop` reorders (insert after when `after`), `.cancel` clears it.
+4. **View**: while `drag != null`, emit `pushOverlay(.{ .x = d.x - d.grab_dx, .y = d.y - d.grab_dy, ... })` with the row's label (the ghost) and give the row where `drag.over == id` a `.border`.
+5. **Keyboard**: a `commands` table with `Chord.altKey(.up/.down)` moving the selected row (recipe 21).
+
+The complete, tested version is `examples/todo`. Agents: `teak-drive drag '{"role":"text","label":"::","nth":0}' '{"role":"text","label":"::","nth":2}'`.
+Depth: [drag-drop.md](features/drag-drop.md).

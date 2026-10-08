@@ -22,6 +22,7 @@ const resources_mod = @import("core/resources.zig");
 const host_iface = @import("platform/host.zig");
 const gpu_iface = @import("gpu/context.zig");
 
+const commands_mod = @import("core/commands.zig");
 const Runtime = run_mod.Runtime;
 const SecondaryWindowSpec = run_mod.SecondaryWindowSpec;
 const cmdsEqual = run_mod.cmdsEqual;
@@ -42,6 +43,7 @@ pub const Frame = struct {
     wheel_dy: f32 = 0,
     chars: []const u8 = "",
     keys: []const keys.SpecialKey = &.{},
+    chords: []const keys.Chord = &.{},
     /// Sets the Host clock (`nowMs`) from this frame on.
     clock_ms: ?u64 = null,
     /// Starts / updates an IME composition from this frame on. Written IN
@@ -152,6 +154,7 @@ pub const ScriptHost = struct {
         in.wheel_dy = f.wheel_dy;
         in.chars = f.chars;
         in.keys = f.keys;
+        in.chords = f.chords;
         if (f.fx_result) |r| self.queueResult(r);
         self.a11y_pending = f.a11y;
         return in;
@@ -594,6 +597,245 @@ test "run: routes typed chars + special keys through the optional hooks" {
     try std.testing.expectEqual(@as(u32, 1), t.rt.model.backspaces);
     // `themeFor` reached the view's CmdBuffer.
     try std.testing.expect(std.meta.eql(theme_mod.Theme.light_default, t.rt.bufs[t.rt.current].theme));
+}
+
+// ── Commands: shortcuts + the palette ───────────────────────────────
+
+const CmdApp = struct {
+    const Palette = commands_mod.CommandPalette(16);
+    pub const Model = struct {
+        saves: u32 = 0,
+        dirty: bool = true,
+        copies: u32 = 0,
+        typed: u32 = 0,
+        opened_palette: u32 = 0,
+        palette: Palette.Model = .{},
+        ran: [4]u8 = @splat(0),
+        ran_len: usize = 0,
+    };
+    pub const Msg = union(enum) { save, clear_dirty, copy, typed, palette: Palette.Msg, palette_run: usize };
+
+    pub fn commands(m: *const Model, list: *commands_mod.CommandList(Msg)) void {
+        list.add(.{ .id = "file.save", .label = "Save", .shortcut = keys.Chord.ctrl(.s), .enabled = m.dirty, .msg = .save });
+        list.add(.{ .id = "edit.copy", .label = "Copy", .shortcut = keys.Chord.ctrl(.c), .msg = .copy });
+        list.add(.{ .id = "palette", .label = "Command Palette", .shortcut = keys.Chord.ctrlShift(.p), .alt_shortcut = keys.Chord.ctrl(.k), .hidden = true, .msg = .{ .palette = .focus } });
+        list.add(.{ .id = "file.clean", .label = "Mark Clean", .msg = .clear_dirty });
+    }
+
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .save => m.saves += 1,
+            .clear_dirty => m.dirty = false,
+            .copy => m.copies += 1,
+            .typed => m.typed += 1,
+            .palette => |pm| {
+                if (pm == .focus) m.opened_palette += 1;
+                Palette.update(&m.palette, pm);
+            },
+            .palette_run => |i| {
+                Palette.update(&m.palette, .close);
+                var list: commands_mod.CommandList(Msg) = .{};
+                commands(m, &list);
+                if (list.paletteCommand(i)) |c| {
+                    m.ran[m.ran_len] = c.id[0];
+                    m.ran_len += 1;
+                    update(m, c.msg);
+                }
+            },
+        }
+    }
+    fn selectMsg(i: usize) Msg {
+        return .{ .palette_run = i };
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{});
+        cb.text("app");
+        cb.popGroup();
+        var list: commands_mod.CommandList(Msg) = .{};
+        commands(m, &list);
+        Palette.viewPalette(&m.palette, cb, &list, .{ .focus = Msg{ .palette = .focus }, .close = Msg{ .palette = .close }, .selectMsg = selectMsg }, .{});
+    }
+    pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+        if (m.palette.open) return .{ .palette = Palette.charMsg(c) };
+        return .typed;
+    }
+    pub fn keySpecialMsg(m: *const Model, k: keys.SpecialKey) ?Msg {
+        if (!m.palette.open) return if (k == .ctrl_c) Msg.typed else null;
+        var list: commands_mod.CommandList(Msg) = .{};
+        commands(m, &list);
+        const pm = Palette.keyMsg(&m.palette, k, &list, .{}) orelse return null;
+        // Enter selects: run the command through the app's own Msg.
+        return switch (pm) {
+            .select => |i| Msg{ .palette_run = i },
+            else => Msg{ .palette = pm },
+        };
+    }
+};
+
+test "commands: a matched chord dispatches its Msg and swallows its text and special key" {
+    const C = keys.Chord;
+    const t = try play(CmdApp, &.{
+        .{},
+        .{ .chords = &.{C.ctrl(.s)}, .chars = "q" }, // claimed: no typed text
+        .{ .chords = &.{C.ctrl(.c)}, .keys = &.{.ctrl_c} }, // claimed: ctrl_c swallowed
+        .{ .chords = &.{C.ctrl(.z)}, .keys = &.{.ctrl_z}, .chars = "z" }, // unclaimed: text still types
+        .{ .chords = &.{ C.ctrl(.s), C.ctrl(.s) } }, // two in one frame
+        .{ .keys = &.{.ctrl_c} }, // a bare special key (no chord) still reaches the app
+    });
+    defer t.destroy();
+    const m = t.rt.model;
+    try std.testing.expectEqual(@as(u32, 3), m.saves);
+    try std.testing.expectEqual(@as(u32, 1), m.copies);
+    try std.testing.expectEqual(@as(u32, 2), m.typed); // "z" and the bare ctrl_c
+}
+
+test "commands: a disabled command's chord does nothing" {
+    const C = keys.Chord;
+    const t = try play(CmdApp, &.{
+        .{},
+        .{ .chords = &.{C.ctrl(.s)} },
+        .{ .chords = &.{C.ctrl(.s)} },
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.rt.model.saves);
+    t.rt.model.dirty = false;
+    var p2 = try play(CmdApp, &.{ .{}, .{ .chords = &.{C.ctrl(.s)} } });
+    defer p2.destroy();
+    p2.rt.model.dirty = false;
+    try p2.rt.frame();
+    try std.testing.expectEqual(@as(u32, 1), p2.rt.model.saves);
+}
+
+test "commands: the palette opens from its chords, filters fuzzily, Enter runs the command" {
+    const C = keys.Chord;
+    const t = try play(CmdApp, &.{
+        .{},
+        .{ .chords = &.{C.ctrlShift(.p)} },
+        .{ .chars = "mc" }, // fuzzy: Mark Clean
+        .{},
+        .{ .keys = &.{.enter} },
+        .{},
+        .{ .chords = &.{C.ctrl(.k)} }, // the second binding opens it again
+        .{ .keys = &.{.escape} },
+        .{ .chords = &.{C.ctrl(.s)} }, // Mark Clean ran: Save is disabled now
+    });
+    defer t.destroy();
+    const m = t.rt.model;
+    try std.testing.expectEqual(@as(u32, 2), m.opened_palette);
+    try std.testing.expect(!m.dirty);
+    try std.testing.expectEqualStrings("f", m.ran[0..m.ran_len]);
+    try std.testing.expect(!m.palette.open);
+    try std.testing.expectEqual(@as(u32, 0), m.saves);
+    try std.testing.expectEqual(@as(u32, 0), m.typed); // palette chars never reached the app
+}
+
+// ── In-app drag and drop ────────────────────────────────────────────
+
+const DragApp = struct {
+    pub const Model = struct {
+        starts: u32 = 0,
+        moves: u32 = 0,
+        drops: u32 = 0,
+        cancels: u32 = 0,
+        last_over: u32 = 99,
+        drop_over: u32 = 99,
+        src_id: u32 = 0,
+        grab: [2]f32 = .{ 0, 0 },
+        drop_fy: f32 = -1,
+        clicks: u32 = 0,
+    };
+    pub const Msg = union(enum) { drag: teak_pointer.DragEvent, click };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .click => m.clicks += 1,
+            .drag => |ev| switch (ev.phase) {
+                .start => {
+                    m.starts += 1;
+                    m.src_id = ev.id;
+                    m.grab = .{ ev.grab_dx, ev.grab_dy };
+                },
+                .move => {
+                    m.moves += 1;
+                    m.last_over = ev.over;
+                },
+                .drop => {
+                    m.drops += 1;
+                    m.drop_over = ev.over;
+                    m.drop_fy = ev.over_fy;
+                },
+                .cancel => m.cancels += 1,
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .align_cross = .start });
+        for (0..4) |i| {
+            const id: u32 = @intCast(i + 1);
+            cb.pushGroup(.{ .padding = 0, .gap = 0, .width = 100, .height = 30, .drag_id = id, .drop_id = id });
+            if (i == 0) cb.button(.click, "go"); // an interactive child: a press on it is a click
+            cb.popGroup();
+        }
+        cb.popGroup();
+    }
+    pub fn dragMsg(_: *const Model, ev: teak_pointer.DragEvent) ?Msg {
+        return .{ .drag = ev };
+    }
+};
+const teak_pointer = pointer;
+
+test "drag: press on a source, move past the threshold, hover targets, drop" {
+    const t = try play(DragApp, &.{
+        .{},
+        .{ .x = 80, .y = 45, .held = left, .down = left }, // row 2 (id 2), grab at (80, 15)
+        .{ .x = 82, .y = 46, .held = left }, // within the 4px slop: not a drag yet
+        .{ .x = 70, .y = 100, .held = left }, // row 4: drag starts
+        .{ .x = 70, .y = 110, .held = left }, // move
+        .{ .x = 70, .y = 110, .up = left }, // drop on row 4, lower half
+        .{},
+    });
+    defer t.destroy();
+    const m = t.rt.model;
+    try std.testing.expectEqual(@as(u32, 1), m.starts);
+    try std.testing.expectEqual(@as(u32, 2), m.src_id);
+    try std.testing.expectEqual(@as(f32, 80), m.grab[0]);
+    try std.testing.expect(m.moves >= 1);
+    try std.testing.expectEqual(@as(u32, 4), m.last_over);
+    try std.testing.expectEqual(@as(u32, 1), m.drops);
+    try std.testing.expectEqual(@as(u32, 4), m.drop_over);
+    try std.testing.expect(m.drop_fy > 0.5);
+    try std.testing.expectEqual(@as(u32, 0), m.cancels);
+}
+
+test "drag: a press-release without movement is not a drag; a press on a button is a click" {
+    const t = try play(DragApp, &.{
+        .{},
+        .{ .x = 80, .y = 15, .held = left, .down = left },
+        .{ .x = 80, .y = 15, .up = left },
+        .{ .x = 10, .y = 10 }, // hover the button ("go" sits at the row's top-left)
+        .{ .x = 10, .y = 10, .held = left, .down = left },
+        .{ .x = 10, .y = 10, .up = left },
+        .{},
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 0), t.rt.model.starts);
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.clicks);
+}
+
+test "drag: Escape cancels and later frames report nothing" {
+    const t = try play(DragApp, &.{
+        .{},
+        .{ .x = 80, .y = 45, .held = left, .down = left },
+        .{ .x = 70, .y = 100, .held = left },
+        .{ .x = 70, .y = 100, .held = left, .keys = &.{.escape} },
+        .{ .x = 70, .y = 100, .held = left },
+        .{ .x = 70, .y = 100, .up = left },
+        .{},
+    });
+    defer t.destroy();
+    const m = t.rt.model;
+    try std.testing.expectEqual(@as(u32, 1), m.starts);
+    try std.testing.expectEqual(@as(u32, 1), m.cancels);
+    try std.testing.expectEqual(@as(u32, 0), m.drops);
 }
 
 test "run: the clear colour follows the theme unless RunOptions pins one" {

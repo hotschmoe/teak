@@ -143,6 +143,8 @@ pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view 
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
 pub fn subscribe(*const Model) []const Sub(Msg)       // declarative timers; run services them each
                                                       //   frame via runSubs on Host.nowMs() (§2 hatch 6)
+pub fn dragMsg(*const Model, DragEvent) ?Msg          // in-app drag and drop (GroupStyle.drag_id / drop_id)
+pub fn commands(*const Model, *CommandList(Msg)) void // command table: shortcuts, menu/palette rows (see "Commands")
 pub fn debugState(*const Model, *std.Io.Writer) void  // Model dump for the control channel's `state` command
 pub fn animationMsg(*const Model, dt_ms: u32) ?Msg    // frame time while a Sub.animation_frame is listed
                                                       //   (core/anim.zig; run loop idles when none is listed)
@@ -494,12 +496,14 @@ id-bearing scroll region's viewport + content size (`teak.scrollExtent`) so apps
 // App decls: pub fn effects(*const Model) []const Effect;  pub fn effectMsg(*const Model, EffectResult) ?Msg
 // (effectMsg alone = an app that only wants dropped images / pasted text)
 Effect = union(enum) { http: HttpRequest, download: Download, open_file: OpenFile,
-                       write_clipboard: WriteClipboard, storage_set: StorageSet,
+                       write_clipboard: WriteClipboard, write_clipboard_image: WriteClipboardImage, storage_set: StorageSet,
                        storage_get: StorageGet, clock: ClockRequest, query_param: QueryParam }
     // every payload has `id: u32` (yours, unique per request); Effect.id(), Effect.wantsResult()
 HttpRequest = struct { id: u32, method: HttpMethod, url, headers: []const Header, body: []const u8, timeout_ms: u32 }
 HttpResult = struct { id, status: u16 /*0 = transport failure*/, body, err }
-Download = struct { id, name, mime, bytes }      OpenFile = struct { id, accept: []const u8 /* ".json,image/*" */ }
+Download = struct { id, name, mime, bytes, pick: bool = false /* native: Save As dialog */, title }
+OpenFile = struct { id, accept: []const u8 /* ".json,image/*" */, title: []const u8 = "" }
+WriteClipboardImage = struct { id, png: []const u8 }   // fire and forget; X11 serves image/png, web ClipboardItem
 StorageSet = struct { id, key, value /* "" deletes */ }   StorageGet = struct { id, key }
 QueryParam = struct { id, name }   // web ?name=v ; native --name=v argv or env TEAK_<NAME_UPPER>
 EffectResult = union(enum) { http: HttpResult, file_opened: {id,name,mime,bytes}, file_cancelled: {id},
@@ -518,7 +522,8 @@ delisted (a late result for an unlisted id is dropped = cancellation). Results f
 (`last_msg` names them). Effect slices live for the `submit` call; result slices until the `update` returns.
 Keep the request in `Model` (`effects()` returns a slice of it). 32 ids at once.
 Native: HTTP on worker threads, storage under `$XDG_CONFIG_HOME/teak/<app>/` (`RunOptions.app_name` or the window title), downloads to `$TEAK_OUT`,
-`TEAK_OPEN=path` feeds `open_file`, `query_param` reads `--name=value` / `TEAK_<NAME>`.
+`open_file` / `download{pick=true}` open a native dialog (zenity or kdialog, or `$TEAK_PICKER`) on a worker thread (`file_cancelled` / `downloaded{ok=false}` on cancel or when none is installed),
+`TEAK_OPEN=path` bypasses the dialog for `open_file`, `query_param` reads `--name=value` / `TEAK_<NAME>`.
 
 ### Fonts (docs/features/text.md)
 ```zig
@@ -551,6 +556,33 @@ DebugOverlayOpts = struct { x = 8, y = 8, padding = 8, gap = 2, backdrop, fg: [4
                             font: FontSpec, skip_pops = true, skip_pushes = false,
                             max_lines: usize = 512 }
 appendDebugOverlay(cb, cmds, rects: []const Rect, opts: DebugOverlayOpts) void
+```
+
+### In-app drag and drop (docs/features/drag-drop.md)
+`GroupStyle.drag_id: u32 = 0` (source) / `drop_id: u32 = 0` (target) on `pushGroup`; App hook `dragMsg(*const Model, DragEvent) ?Msg`.
+A left press on a source that no interactive child claims + 4 px of travel starts a drag; ghost, hot-target highlight and the reorder are
+app code driven by the events (state in the Model); Escape cancels.
+```zig
+DragPhase = enum { start, move, drop, cancel }
+DragEvent = struct { phase: DragPhase, id: u32, x, y: f32, grab_dx, grab_dy: f32 = 0, src: [4]f32,
+                     over: u32 = 0, over_rect: [4]f32, over_fx, over_fy: f32 }   // over = innermost drop_id under the pointer (0 none); fx/fy in 0..1 inside it
+hit_test.dragTargets(cmds, rects, x, y) DragHit{ source: ?DragZone, target: ?DragZone }
+```
+
+### Commands, shortcuts, palette (`teak.commands` → core/commands.zig; docs/features/commands.md)
+App hook `commands(*const Model, *CommandList(Msg)) void` (pure); `teak.run` matches `InputState.chords` against enabled rows BEFORE
+widget key handling, dispatches the row's Msg and swallows the chord's text/special key.
+```zig
+Key = enum { a..z, d0..d9, f1..f12, enter, tab, escape, space, backspace, delete, insert, left, right, up, down, home, end,
+             page_up, page_down, comma, period, slash, backslash, semicolon, quote, minus, equal, bracket_left, bracket_right, grave }
+Chord = struct { key: Key, mod: bool = false /* Ctrl (Cmd on mac) */, shift: bool = false, alt: bool = false }
+Chord.ctrl(k) Chord.ctrlShift(k) Chord.altKey(k) Chord.plain(k)   Chord.format(w, ShortcutPlatform{pc,mac}) !void   Chord.parse("ctrl+shift+p") ?Chord
+Command(Msg) = struct { id, label: []const u8, shortcut: ?Chord = null, alt_shortcut: ?Chord = null, enabled = true, hidden = false, msg: Msg }
+Command.menuLabel(arena, platform, column) []const u8        // "Save    Ctrl+S"
+CommandList(Msg): add(Command) / slice() / match(Chord) ?*const Command / byId(id) / paletteOptions(&labels,&map) usize / paletteCommand(option) ?*const Command
+CommandPalette(cap): Model/Msg/update (Combobox-shaped: .focus opens, .select(option_index)), charMsg(c), keyMsg(model,key,&list,PaletteViewOpts) ?Msg,
+                     scrollByMsg, viewPalette(model, cb, &list, .{ .focus, .close, .selectMsg }, PaletteViewOpts{ window_w, window_h, width, max_visible, platform, column })
+Combobox Match gains .fuzzy (in-order subsequence). InputState.chords: []const Chord; Host InjectEvent .chord; headless Host.pushChord.
 ```
 
 ### Agent driver (`teak.control`, `teak.input_record`, `teak.inspector`; docs/features/agent-driver.md)

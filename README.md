@@ -98,6 +98,8 @@ Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no
   session deterministically; `TEAK_INSPECT=1` overlays a widget-tree /
   hover / Msg / timing inspector. See
   [`docs/features/agent-driver.md`](docs/features/agent-driver.md).
+- **Shortcuts + command palette** — a pure `commands` table (id, label, shortcut, enabled, Msg) the loop matches before
+  widget keys; `teak.CommandPalette` (Ctrl+K, fuzzy); see [`docs/features/commands.md`](docs/features/commands.md).
 - [`docs/cookbook.md`](docs/cookbook.md) — intent-oriented recipes
   ("add X to my app"), each verified against `src/`.
 

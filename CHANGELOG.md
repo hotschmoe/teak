@@ -169,6 +169,20 @@
 
 ### Added
 
+- **Native file dialogs** (X11, Wayland via the shared service): `open_file` shows a zenity / kdialog (or `$TEAK_PICKER`) dialog on a worker
+  thread; `download{ pick = true }` is a Save As dialog; `OpenFile.title`, `Download.pick` / `title`; `TEAK_OPEN` still bypasses.
+  **Clipboard image**: new effect `write_clipboard_image{ id, png }` (X11 serves `image/png`; web via zunk `fx.clipboardWriteImage`,
+  hotschmoe/zunk#28 must land first for the web build).
+
+- **In-app drag and drop** (docs/features/drag-drop.md): `GroupStyle.drag_id` / `drop_id`, App hook `dragMsg(*const Model, DragEvent)`
+  (`start` / `move` / `drop` / `cancel`, innermost drop target + pointer fraction); `examples/todo` reorders by mouse (ghost overlay,
+  drop indicator) and by keyboard (Alt+Up/Down via the command table); control command `drag`, `teak-drive drag`, MCP tool `drag`.
+
+- **Commands, shortcuts, command palette** (docs/features/commands.md): App hook `commands(*const Model, *CommandList(Msg))`;
+  `teak.Chord` / `teak.Key`; hosts (X11, Win32, web, headless) report `InputState.chords`; `teak.run` matches them before widget
+  key handling and swallows claimed chords; `teak.CommandPalette(cap)` (fuzzy, built on `Combobox`, new `Match.fuzzy`);
+  `Command.menuLabel` for menu shortcut text; control command `shortcut`; kerf_viewer has Ctrl+K and shortcuts.
+
 - `widgets.color_picker`: SV square + hue strip (canvas triangles), hex / R / G / B fields, swatches.
 - **Web IME.** Composition input (Japanese, Chinese, Korean) works in the browser: zunk's new IME bridge keeps a
   hidden `<textarea>` focused while a text field is, the preedit shows inline with an underline and the candidate

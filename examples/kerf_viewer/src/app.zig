@@ -25,6 +25,8 @@ const doc2d = @import("doc2d.zig");
 const chat = @import("chat.zig");
 
 const scene = teak.scene;
+/// Ctrl+K / Ctrl+Shift+P command palette over `commands` below.
+const Palette = teak.CommandPalette(24);
 const Notes = teak.TextArea(2048);
 const Chat = teak.TextArea(512);
 const notes_id: u32 = 11;
@@ -265,6 +267,9 @@ pub const Model = struct {
     status_buf: [96]u8 = undefined,
     status_len: usize = 0,
     list_scroll: f32 = 0,
+    /// Window size (logical px), centers the palette.
+    win: [2]f32 = .{ 1280, 800 },
+    palette: Palette.Model = .{},
     list_viewport: f32 = 0,
     list_content: f32 = 0,
     /// Which text area has the keyboard (typed letters go there, not to the
@@ -633,6 +638,10 @@ pub const Msg = union(enum) {
     http_done: struct { status: u16, body: []const u8, err: []const u8 },
     list_scroll_by: f32,
     list_extent: [2]f32,
+    window: [2]f32,
+    palette: Palette.Msg,
+    /// Run palette option `i` (see `commands`).
+    palette_run: usize,
     notes: Notes.Msg,
     chat: Chat.Msg,
     send,
@@ -711,6 +720,14 @@ fn step(m: *Model, msg: Msg) void {
             m.list_content = e[1];
             m.list_scroll = clampScroll(m, m.list_scroll);
         },
+        .window => |w| m.win = w,
+        .palette => |pm| Palette.update(&m.palette, pm),
+        .palette_run => |i| {
+            Palette.update(&m.palette, .close);
+            var list: teak.CommandList(Msg) = .{};
+            commands(m, &list);
+            if (list.paletteCommand(i)) |c| update(m, c.msg);
+        },
         .notes => |n| {
             if (n == .focus) m.focus = .notes;
             Notes.update(&m.notes, n);
@@ -739,6 +756,31 @@ fn step(m: *Model, msg: Msg) void {
         .blur => m.focus = .none,
         .noop => {},
     }
+}
+
+/// The command table: shortcuts (matched by `teak.run` before widget keys),
+/// and the palette's option list. Pure function of the Model.
+pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
+    const C = teak.Chord;
+    list.add(.{ .id = "palette", .label = "Command Palette", .shortcut = C.ctrlShift(.p), .alt_shortcut = C.ctrl(.k), .hidden = true, .msg = .{ .palette = .focus } });
+    list.add(.{ .id = "file.open", .label = "Open Mesh...", .shortcut = C.ctrl(.o), .enabled = m.req_len == 0, .msg = .open_file });
+    list.add(.{ .id = "view.front", .label = "View: Front", .shortcut = C.altKey(.d1), .msg = .{ .preset = .front } });
+    list.add(.{ .id = "view.iso", .label = "View: Isometric", .shortcut = C.altKey(.d2), .msg = .{ .preset = .iso } });
+    list.add(.{ .id = "view.top", .label = "View: Top", .shortcut = C.altKey(.d3), .msg = .{ .preset = .top } });
+    list.add(.{ .id = "view.right", .label = "View: Right", .shortcut = C.altKey(.d4), .msg = .{ .preset = .right } });
+    list.add(.{ .id = "view.fit", .label = "Fit to Window", .shortcut = C.ctrl(.d0), .msg = .fit });
+    list.add(.{ .id = "view.ortho", .label = "Toggle Orthographic", .shortcut = C.altKey(.o), .msg = .toggle_ortho });
+    list.add(.{ .id = "view.edges", .label = "Toggle Edges", .shortcut = C.altKey(.e), .msg = .toggle_edges });
+    list.add(.{ .id = "part.next", .label = "Select Next Part", .shortcut = C.plain(.f3), .msg = .{ .select_step = 1 } });
+    list.add(.{ .id = "part.prev", .label = "Select Previous Part", .shortcut = C.plain(.f2), .msg = .{ .select_step = -1 } });
+    list.add(.{ .id = "part.none", .label = "Clear Selection", .msg = .{ .select = 0 } });
+    inline for (fixtures, 0..) |f, i| {
+        list.add(.{ .id = "fixture." ++ f.name, .label = "Load Fixture: " ++ f.name, .msg = .{ .load_fixture = @intCast(i) } });
+    }
+}
+
+fn paletteSelect(i: usize) Msg {
+    return .{ .palette_run = i };
 }
 
 /// One startup parameter has been answered; ask for the next.
@@ -884,6 +926,10 @@ pub fn scrollLayoutMsg(_: *const Model, id: u32, _: f32, vh: f32, _: f32, ch: f3
     return if (id == list_id) Msg{ .list_extent = .{ vh, ch } } else null;
 }
 
+pub fn windowMsg(_: *const Model, w: f32, h: f32) ?Msg {
+    return .{ .window = .{ w, h } };
+}
+
 /// Pointer, wheel, resolved motion and metrics for the text areas.
 pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
     return switch (ev.id) {
@@ -902,6 +948,7 @@ pub fn focusedMsg(m: *const Model) ?Msg {
 }
 
 pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    if (m.palette.open) return .{ .palette = Palette.charMsg(c) };
     switch (m.focus) {
         .notes => return .{ .notes = Notes.charMsg(c) },
         .chat => return .{ .chat = Chat.charMsg(c) },
@@ -931,6 +978,15 @@ pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
 }
 
 pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
+    if (m.palette.open) {
+        var list: teak.CommandList(Msg) = .{};
+        commands(m, &list);
+        const pm = Palette.keyMsg(&m.palette, key, &list, .{}) orelse return null;
+        return switch (pm) {
+            .select => |i| Msg{ .palette_run = i },
+            else => Msg{ .palette = pm },
+        };
+    }
     // Escape leaves an editor; everything else edits (Up/Down/Home/End
     // arrive as `textMsg` move events).
     switch (m.focus) {
@@ -1010,6 +1066,13 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
     statusBar(m, cb);
     cb.popGroup();
+    var list: teak.CommandList(Msg) = .{};
+    commands(m, &list);
+    Palette.viewPalette(&m.palette, cb, &list, .{
+        .focus = Msg{ .palette = .focus },
+        .close = Msg{ .palette = .close },
+        .selectMsg = paletteSelect,
+    }, .{ .window_w = m.win[0], .window_h = m.win[1] });
 }
 
 fn header(m: *const Model, cb: anytype) void {
@@ -1030,6 +1093,7 @@ fn header(m: *const Model, cb: anytype) void {
         cb.buttonStyled(.{ .load_fixture = @intCast(i) }, std.ascii.allocUpperString(a, f.name) catch f.name, header_button);
     }
     cb.buttonStyled(.open_file, "OPEN...", header_button);
+    cb.buttonStyled(.{ .palette = .focus }, "CTRL+K", header_button);
     cb.popGroup();
     // 2px rule under the header (DESIGN section 1).
     cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 2, .bg = ink });
@@ -2176,10 +2240,11 @@ const golden_section =
     \\      group (98,13,6,14) vertical bg
     \\    text (116,10,180,20) "DETAIL WORKSTATION"
     \\    text (308,10,180,20) "DOC: FLUSH-PSL-2X6"
-    \\    group (500,20,310,0) vertical
-    \\    button (822,7,174,26) "PALMER-SD1-LIKE"
-    \\    button (1008,7,154,26) "FLUSH-PSL-2X6"
-    \\    button (1174,7,94,26) "OPEN..."
+    \\    group (500,20,214,0) vertical
+    \\    button (726,7,174,26) "PALMER-SD1-LIKE"
+    \\    button (912,7,154,26) "FLUSH-PSL-2X6"
+    \\    button (1078,7,94,26) "OPEN..."
+    \\    button (1184,7,84,26) "CTRL+K"
     \\  group (0,40,1280,2) vertical bg
     \\  group (0,42,1280,734) horizontal
     \\    group (0,42,360,734) vertical bg border
@@ -2290,10 +2355,11 @@ const golden_iso =
     \\      group (98,13,6,14) vertical bg
     \\    text (116,10,180,20) "DETAIL WORKSTATION"
     \\    text (308,10,180,20) "DOC: FLUSH-PSL-2X6"
-    \\    group (500,20,310,0) vertical
-    \\    button (822,7,174,26) "PALMER-SD1-LIKE"
-    \\    button (1008,7,154,26) "FLUSH-PSL-2X6"
-    \\    button (1174,7,94,26) "OPEN..."
+    \\    group (500,20,214,0) vertical
+    \\    button (726,7,174,26) "PALMER-SD1-LIKE"
+    \\    button (912,7,154,26) "FLUSH-PSL-2X6"
+    \\    button (1078,7,94,26) "OPEN..."
+    \\    button (1184,7,84,26) "CTRL+K"
     \\  group (0,40,1280,2) vertical bg
     \\  group (0,42,1280,734) horizontal
     \\    group (0,42,360,734) vertical bg border
@@ -2399,10 +2465,11 @@ const golden_3d =
     \\      group (98,13,6,14) vertical bg
     \\    text (116,10,180,20) "DETAIL WORKSTATION"
     \\    text (308,10,180,20) "DOC: FLUSH-PSL-2X6"
-    \\    group (500,20,310,0) vertical
-    \\    button (822,7,174,26) "PALMER-SD1-LIKE"
-    \\    button (1008,7,154,26) "FLUSH-PSL-2X6"
-    \\    button (1174,7,94,26) "OPEN..."
+    \\    group (500,20,214,0) vertical
+    \\    button (726,7,174,26) "PALMER-SD1-LIKE"
+    \\    button (912,7,154,26) "FLUSH-PSL-2X6"
+    \\    button (1078,7,94,26) "OPEN..."
+    \\    button (1184,7,84,26) "CTRL+K"
     \\  group (0,40,1280,2) vertical bg
     \\  group (0,42,1280,734) horizontal
     \\    group (0,42,360,734) vertical bg border
@@ -2518,3 +2585,19 @@ const golden_3d =
     \\    text (1158,778,110,20) "CLAUDE DEMO"
     \\
 ;
+
+test "commands: the palette runs a view command and shortcuts resolve" {
+    var m = smallModel();
+    defer m.loaded.?.deinit();
+    var list: teak.CommandList(Msg) = .{};
+    commands(&m, &list);
+    try testing.expectEqual(Msg.toggle_ortho, list.match(teak.Chord.altKey(.o)).?.msg);
+    try testing.expectEqual(Msg{ .palette = .focus }, list.match(teak.Chord.ctrl(.k)).?.msg);
+
+    update(&m, .{ .palette = .focus });
+    try testing.expect(m.palette.open);
+    for ("vtop") |c| update(&m, keyCharMsg(&m, c).?);
+    const enter = keySpecialMsg(&m, .enter).?; // "View: Top" is the only fuzzy match for "vtop"? at least first
+    update(&m, enter);
+    try testing.expect(!m.palette.open);
+}

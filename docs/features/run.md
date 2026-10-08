@@ -237,6 +237,7 @@ the primary window is unaffected on the other backends.
   set from the clock; while idle the loop wakes only at each toggle.
 - `snapshot_path: ?[]const u8` — live-snapshot sink (default `null`).
 - `control_path` / `record_path` / `replay_path: ?[]const u8`, `inspect: bool`, `inspect_hotkey: bool` — agent control socket, input recording / replay, the dev inspector (`TEAK_CONTROL` / `TEAK_RECORD` / `TEAK_REPLAY` / `TEAK_INSPECT` env win); see [agent-driver.md](agent-driver.md).
+- Optional hooks added with `commands` / `dragMsg`: see [commands.md](commands.md) and [drag-drop.md](drag-drop.md).
 - `app_name: []const u8` — names the app for hosts that keep per-app files (native storage under `<config>/teak/<app_name>/`); empty = the window title.
 
 ### Live snapshot sink (`TEAK_SNAPSHOT`)
