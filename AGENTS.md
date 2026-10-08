@@ -314,6 +314,8 @@ tools/
   gen_wayland.zig                             -- Generator for `src/platform/wayland/protocols.zig`
   hot_reload_check.sh                         -- End-to-end hot-reload check on examples/todo (headless backend, Linux)
   release.sh                                  -- Cut a release: bump the ONE version (build.zig.zon .version), commit, tag v<version>, push
+  showcase.py                                 -- one 2x HiDPI crop: device pixels, no resampling
+  showcase.sh                                 -- Regenerate docs/images/showcase/ (see docs/showcase.md). Run after the last merges
   teak_drive.zig                              -- teak-drive: drive a running teak app from a shell or from an LLM agent
   vreg.zig                                    -- vreg: the visual-regression runner. Renders every example's named
   web-frame-bench.mjs                         -- rAF cost of a web example under scrolling: serve a zunk `dist/`, load it in headless Chromium

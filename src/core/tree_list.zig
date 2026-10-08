@@ -256,6 +256,15 @@ pub fn TreeList(comptime cap: usize) type {
             });
             const w = window(m, opts);
             cb.pushVirtualList(.{ .total_count = m.n_visible, .item_extent = opts.row_h, .visible_start = w.first, .visible_end = w.end });
+            // One Tab stop: the selected node's label (else the first row's).
+            var stop_row = w.first;
+            if (m.selected) |sel| {
+                var r = w.first;
+                while (r < w.end) : (r += 1) if (m.visible[r] == sel) {
+                    stop_row = r;
+                    break;
+                };
+            }
             var row = w.first;
             while (row < w.end) : (row += 1) {
                 const node = m.visible[row];
@@ -276,7 +285,7 @@ pub fn TreeList(comptime cap: usize) type {
                 cs.label_align = .center;
                 const kids = node + 1 < m.n_nodes and src.depth(node + 1) > depth;
                 const glyph: []const u8 = if (!kids) " " else if (m.isExpanded(node)) "\u{25BE}" else "\u{25B8}";
-                if (kids) cb.buttonStyled(msgs.toggle(node), glyph, cs) else cb.buttonStyled(msgs.select(node), glyph, cs);
+                if (kids) cb.buttonNav(msgs.toggle(node), glyph, cs, .{ .tab_stop = false }) else cb.buttonNav(msgs.select(node), glyph, cs, .{ .tab_stop = false });
                 var ls = cb.theme.button;
                 ls.bg = if (selected) mix(pal.bg_panel, pal.accent, if (m.focused) 0.55 else 0.3) else pal.bg_panel;
                 ls.hover_bg = if (selected) ls.bg else pal.bg_hover;
@@ -286,7 +295,7 @@ pub fn TreeList(comptime cap: usize) type {
                 ls.h_padding = 6;
                 ls.height = opts.row_h;
                 ls.label_align = .start;
-                cb.buttonStyled(msgs.select(node), src.label(arena, node), ls);
+                cb.buttonNav(msgs.select(node), src.label(arena, node), ls, .{ .tab_stop = row == stop_row });
                 cb.popGroup();
             }
             cb.popVirtualList();

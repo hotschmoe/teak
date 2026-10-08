@@ -498,6 +498,17 @@ pub fn DataTable(comptime cfg: Config) type {
                 .visible_start = win.first,
                 .visible_end = win.end,
             });
+            // One Tab stop for the whole table: the cursor row's first cell (else the
+            // first shown row's). Clicking or Enter on it focuses the table; then the
+            // app's `keyMsg` wiring drives the cursor.
+            var stop_disp = win.first;
+            if (m.has_cursor) {
+                var d = win.first;
+                while (d < win.end) : (d += 1) if (m.order[d] == m.cursor) {
+                    stop_disp = d;
+                    break;
+                };
+            }
             var disp = win.first;
             while (disp < win.end) : (disp += 1) {
                 const row = m.order[disp];
@@ -520,7 +531,7 @@ pub fn DataTable(comptime cfg: Config) type {
                     bs.ellipsis = true; // cut at the pixel with U+2026 by the renderer
                     const label = src.cell(arena, @intCast(i), row);
                     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .width = w, .height = opts.row_h });
-                    cb.buttonStyled(msgs.row(disp), label, bs);
+                    cb.buttonNav(msgs.row(disp), label, bs, .{ .tab_stop = disp == stop_disp and i == 0 });
                     cb.popGroup();
                 }
                 cb.popGroup();

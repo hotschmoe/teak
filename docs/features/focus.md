@@ -49,12 +49,12 @@ test `examples/gallery/src/focus_audit.zig` asserts reach for every enabled inte
 | Text input, NumericField | yes | border | typing | editor keys | yes | focus is the Model's |
 | Text area | yes | border | typing | editor keys, visual Up/Down | yes | |
 | Combobox | yes | border | Enter commits | Up/Down/Page, Esc closes | n/a | wired through `Combo.keyMsg` while focused |
-| Dropdown (button + list) | yes (trigger) | yes | Enter opens | GAP: arrows inside the open list not wired in the gallery (`Dropdown.highlightMsg` exists) | yes | |
+| Dropdown (button + list) | yes (trigger) | yes | Enter opens; focus moves into the list, back to the trigger on close | Up/Down/Home/End/PageUp/PageDown, Enter chooses, Esc closes (`Dropdown.keyMsg`, wired in the gallery) | yes | |
 | Tabs | yes (each tab is a button) | yes | Space, Enter | partial: Left/Right via `Tabs.keyMsg` while the page is shown, not tied to focus; GAP: roving arrows need the a11y `tab` hint | yes | |
 | Menu bar / menus | via F10, mnemonics | highlight | Enter | arrows, Esc | yes | `MenuBar.keyMsg` |
-| Context menu | GAP: opens by right click only | highlight | Enter | arrows, Esc | yes | |
+| Context menu | yes: Menu key / Shift+F10 opens it at the focused widget (`SpecialKey.context_menu` -> `contextMsg`) | highlight | Enter | arrows, Esc | yes | |
 | Dialog | trapped, first widget focused | yes | Enter confirms, Esc cancels | n/a | yes | focus returns to the opener |
-| Data table / list / tree rows | yes (every row is a Tab stop) | yes | Space, Enter | GAP: arrows / Home / End not wired (components have `keyMsg`) | n/a | 26 Tab stops on the data page |
+| Data table / tree list / hand-built list rows | yes: ONE Tab stop per list | yes | Space, Enter (focuses a component list, then its `keyMsg` wiring drives the cursor) | roving buttons: arrows / Home / End / PageUp / PageDown move the focus (see below); components: their `keyMsg` once focused | n/a | gallery data page: 26 Tab stops became 16 |
 | Split pane divider | yes (`Split.dividerFocusable`) | yes | Space, Enter (no-op focus Msg) | arrows resize by `Opts.key_step`, Home / End collapse (via `canvasMsg` `.key` events) | n/a | the plain `divider` stays pointer-only |
 | Scroll regions | n/a | n/a | n/a | yes: keys the focused widget declines scroll its innermost id-bearing region through `scrollMsg` (arrows a line, PageUp/Down a viewport, Home/End) | n/a | scrolling the focus into view is not done yet |
 | Tooltip | yes: keyboard focus is reported to `hoverMsg` as if the pointer rested on the widget | n/a | n/a | n/a | n/a | clears when focus leaves non-text widgets |
@@ -62,6 +62,15 @@ test `examples/gallery/src/focus_audit.zig` asserts reach for every enabled inte
 | Date field | N/A: no such widget | | | | | |
 | Focus after list mutation | yes | | | | | Msg-keyed, tested (insert before the focused widget) |
 | Escape closes overlays | app hooks (`dialog.keyMsg`, `MenuBar.keyMsg`, `ContextMenu.keyMsg`) | | | | | the framework does not know how to close an overlay (no Msg) |
+
+### Lists: one Tab stop, roving arrows
+
+A list of row buttons would otherwise be N Tab stops. `ButtonCmd` carries two options (`cb.buttonNav(msg, label, style, .{ .tab_stop, .roving })`):
+
+- `tab_stop = false`: Tab / Shift+Tab skip the button (clicks, Space, Enter and arrows still work). A list marks every row but its active one, so the whole list is one stop; Tab onto the active row, Shift+Tab leaves it backwards.
+- `roving = .focus | .select`: contiguous roving buttons in one container form a group. Up/Left and Down/Right move the keyboard focus between them (no wrap), PageUp/PageDown by 5, Home / End to the ends; `.select` also dispatches the row's Msg (selection follows focus, like radios), `.focus` only moves the ring (Enter / Space then activate, e.g. toggle a tree folder).
+
+`DataTable` and `TreeList` set `tab_stop` themselves (the cursor row's first cell / the selected node's label, else the first row) and keep their Model-owned focus: Enter or a click on the stop focuses the list and the app's existing `keyMsg` wiring takes over the arrows. The gallery's hand-built tree uses `.roving = .focus`.
 
 The remaining GAP rows are tracked as follow-up PRs.
 

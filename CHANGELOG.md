@@ -169,6 +169,7 @@
 
 ### Added
 
+- Keyboard gaps: lists are one Tab stop with roving arrows (`ButtonNav`, `cb.buttonNav`; `DataTable` / `TreeList` rows; gallery tree), `Dropdown.keyMsg` (arrows / Enter / Esc in the open list), Menu key / Shift+F10 (`SpecialKey.context_menu`) opens the context menu at the focused widget through `contextMsg`.
 - Keyboard gaps closed: a focusable split divider (`Split.dividerFocusable`, arrows / Home / End via new `CanvasEventKind.key` events), keyboard scrolling of the region around the focused widget (arrows, PageUp / PageDown, Home / End through `scrollMsg`), keyboard focus reported to `hoverMsg` (tooltips show for the focused widget), Escape dismisses toasts (`Toast.keyMsg`). `cb.canvasInteractiveFocusable`.
 - **HiDPI scenes.** Native 3D scene targets are rendered at device resolution (logical size x scale) instead of logical-then-magnified; `TEAK_SCALE=2 zig build shot` takes any headless example at 2x. test-gpu pins scene seam position, 1-logical-px line width and 1:1 image texels at scale 2.
 

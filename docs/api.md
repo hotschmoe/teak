@@ -625,7 +625,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - `pub fn finish(self: *InputQueue, resized: bool, width: u32, height: u32) host.InputState`
 > Navigation keys a Host may deliver.
 - `teak.NavKey` = `input_queue.NavKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, a, c, x, v, y, z`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, menu, a, c, x, v, y, z`
 > The one Shift/Ctrl policy: map a key plus modifiers to a `SpecialKey`.
 - `teak.resolveKey`: `pub const resolveKey = input_queue.resolveKey`
 > Host-owned clipboard surface.
@@ -815,6 +815,12 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `struct SceneStyle`
   - fields: `width, height, flex`
 - `pub fn SceneCmd(comptime Msg: type) type`
+> Keyboard grouping of list-row buttons (see docs/features/focus.md).
+- `enum Roving`
+  - fields: `none, focus, select`
+> Keyboard-navigation options of a button (`CmdBuffer.buttonNav`).
+- `struct ButtonNav`
+  - fields: `tab_stop, roving`
 - `pub fn ButtonCmd(comptime Msg: type) type`
 - `pub fn TextInputCmd(comptime Msg: type) type`
 > Multi-line editable text (`text_area`). Layout sizes it like a canvas
@@ -1933,9 +1939,16 @@ translate a resulting cmd index into its own `Model.focused` field.
 > `current` is null (or outside the traversal scope), start from the
 > scope's last index. Wraps at the start of the scope.
 - `pub fn prevFocusable(cmds: anytype, current: ?usize) ?usize`
+> `isNavigable` minus buttons that opted out of Tab (`ButtonCmd.tab_stop = false`).
+- `pub fn isTabStop(c: anytype) bool`
 > A cmd the keyboard can operate: everything `isFocusable` accepts plus
 > enabled buttons, checkboxes, radios and sliders.
 - `pub fn isNavigable(c: anytype) bool`
+> Buttons of the roving group `idx` belongs to (contiguous `roving != .none` buttons
+> sharing one container): the neighbour `delta` steps away (negative = back), clamped to the
+> group (no wrap); `delta` of `minInt`/`maxInt` jumps to the first / last. Null when `idx` is
+> not a roving button or the group has one member.
+- `pub fn rovingTarget(cmds: anytype, idx: usize, delta: i32) ?usize`
 > The next (`forward`) or previous radio of the radio group `idx` belongs to,
 > wrapping inside the group; null when `idx` is not a radio or is alone. A
 > group is the run of radios that share one container (same nesting depth,
@@ -2258,7 +2271,7 @@ Shared per-window input accumulator for event-driven Hosts (Win32, X11).
 > Shift/Ctrl policy once, so the `SpecialKey` variants (shift_left,
 > ctrl_a, ...) are derived in one place instead of per host.
 - `enum NavKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, a, c, x, v, y, z`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, menu, a, c, x, v, y, z`
 > The `SpecialKey` for `k` under `mods`, or null when the combination is
 > not a special key (a plain letter, or Ctrl/Alt/Meta-less letter chord).
 > Shift extends motion keys and reverses Tab; Ctrl+letter is a chord; Ctrl

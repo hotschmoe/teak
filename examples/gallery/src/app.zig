@@ -242,6 +242,7 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     if (MB.keyMsg(&m.menubar, key, &menus, bar_msgs)) |r| return r;
     if (MB.isActive(&m.menubar)) return null;
     if (CM.isOpen(&m.ctx)) return CM.keyMsg(&m.ctx, key, &context_items, ctx_msgs);
+    if (model_mod.Drop.keyMsg(&m.drop, key, page_inputs.sizes.len, .{})) |d| return .{ .drop = d };
     if (model_mod.Toasts.keyMsg(&m.toasts, key)) |t| return .{ .toast = t };
     if (m.page == .layout) if (model_mod.Tabs.keyMsg(&m.tabs, key, tab_labels.len)) |t| return .{ .tabs = t };
     const f = m.focus orelse return null;

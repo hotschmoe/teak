@@ -760,6 +760,24 @@ pub fn SceneCmd(comptime Msg: type) type {
 // Components emit commands using the composed Msg; this keeps routing
 // explicit rather than hiding it behind a per-component wrapper.
 
+/// Keyboard grouping of list-row buttons (see docs/features/focus.md).
+pub const Roving = enum {
+    /// Not part of a group.
+    none,
+    /// Arrow keys move the keyboard focus between the group's buttons; Enter / Space activate.
+    focus,
+    /// As `focus`, and moving onto a button also dispatches its Msg (selection follows focus).
+    select,
+};
+
+/// Keyboard-navigation options of a button (`CmdBuffer.buttonNav`).
+pub const ButtonNav = struct {
+    /// false: Tab / Shift+Tab skip it (clicks, Space, Enter and arrows still work). A list marks
+    /// every row but the active one, so the whole list is ONE Tab stop.
+    tab_stop: bool = true,
+    roving: Roving = .none,
+};
+
 pub fn ButtonCmd(comptime Msg: type) type {
     return struct {
         msg: Msg,
@@ -773,6 +791,9 @@ pub fn ButtonCmd(comptime Msg: type) type {
         /// Byte index into `label` of one ASCII character to underline (a
         /// menu mnemonic: the "F" of "File"). Null = no underline.
         underline: ?u16 = null,
+        /// See `ButtonNav`.
+        tab_stop: bool = true,
+        roving: Roving = .none,
     };
 }
 
@@ -1326,6 +1347,19 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = style,
                 .font = self.theme.typography.body,
+            })) catch oom();
+        }
+
+        /// `buttonStyled` with keyboard-navigation options: list rows pass
+        /// `.{ .tab_stop = false, .roving = .focus }` (all but the active row).
+        pub fn buttonNav(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle, nav: ButtonNav) void {
+            self.cmds.append(self.backing, self.box(.button, .{
+                .msg = msg,
+                .label = label,
+                .style = style,
+                .font = self.theme.typography.body,
+                .tab_stop = nav.tab_stop,
+                .roving = nav.roving,
             })) catch oom();
         }
 

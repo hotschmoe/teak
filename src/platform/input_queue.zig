@@ -82,6 +82,8 @@ pub const NavKey = enum {
     escape,
     f12,
     f10,
+    /// The Menu / Apps key.
+    menu,
     // Letters that form editing chords. Plain letters are text, not keys:
     // they resolve to `null` unless Ctrl is held.
     a,
@@ -113,8 +115,9 @@ pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey {
         .enter => if (shift) .shift_enter else .enter,
         .tab => if (shift) .shift_tab else .tab,
         .escape => .escape,
+        .f10 => if (shift) .context_menu else .f10,
+        .menu => .context_menu,
         .f12 => .f12,
-        .f10 => .f10,
         .a => if (mods.ctrl) .ctrl_a else null,
         .c => if (mods.ctrl) .ctrl_c else null,
         .x => if (mods.ctrl) .ctrl_x else null,

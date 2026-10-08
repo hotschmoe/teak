@@ -141,18 +141,60 @@ const scene3d: Spec = .{ .clear = .{ 0.07, 0.08, 0.1, 1 }, .states = &.{
     .{ .name = "edges_hidden", .steps = &.{ .{ .frames = 40 }, .{ .click = .{ 590, 347 } }, .{ .move = .{ 900, 600 } }, .{ .frames = 3 } } },
 } };
 
-const scene_layers: Spec = .{ .states = &.{
-    .{ .name = "initial", .steps = &.{.{ .frames = 20 }} },
+const scene_layers: Spec = .{ .clear_decl = "paper", .states = &.{
+    .{ .name = "initial", .steps = &.{ .{ .frames = 4 }, .{ .click = .{ 1100, 108 } }, .{ .frames = 2 } } },
 } };
 
 const kerf_viewer: Spec = .{ .clear_decl = "paper", .states = &.{
-    .{ .name = "section", .steps = &.{.{ .frames = 3 }} },
+    .{ .name = "section", .steps = &.{.{ .frames = 10 }} },
     .{ .name = "section_hover", .steps = &.{ .{ .frames = 3 }, .{ .click = .{ 542, 350 } }, .{ .move = .{ 470, 505 } }, .{ .frames = 2 } } },
     .{ .name = "three_d", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 547, 66 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 134 } }, .{ .frames = 3 } } },
+    .{ .name = "iso", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 1111, 20 } }, .{ .frames = 2 }, .{ .click = .{ 491, 66 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 134 } }, .{ .move = .{ 640, 400 } }, .{ .frames = 2 } } },
+    .{ .name = "cut", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 547, 66 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 134 } }, .{ .click = .{ 416, 133 } }, .{ .frames = 4 } } },
+    .{ .name = "chat", .steps = &.{
+        .{ .frames = 2 },
+        .{ .click = .{ 180, 690 } },
+        .{ .chars = "where is the stem wall" },
+        .{ .frames = 1 },
+        .{ .key = .shift_enter },
+        .{ .frames = 1 },
+        .{ .chars = "and highlight it everywhere" },
+        .{ .frames = 1 },
+        .{ .key = .enter },
+        .{ .frames = 100 },
+        .{ .chars = "cut it" },
+        .{ .frames = 1 },
+        .{ .key = .enter },
+        .{ .frames = 100 },
+    } },
 } };
 
+const g_dark: Step = .{ .click = .{ 88, 720 } };
+const g_light: Step = .{ .click = .{ 88, 752 } };
+// page buttons: retro layout, then the dark / light layout (the sidebar shifts a few px)
+const gr = [_]f32{ 78, 110, 142, 174, 206, 238 };
+const gd = [_]f32{ 85, 119, 153, 187, 221, 255 };
+fn gpage(comptime y: f32) Step {
+    return .{ .click = .{ 88, y } };
+}
 const to_data: Step = .{ .click = .{ 88, 142 } };
 const gallery: Spec = .{ .states = &.{
+    .{ .name = "retro_controls", .steps = &.{ .{ .frames = 2 }, gpage(gr[0]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "retro_inputs", .steps = &.{ .{ .frames = 2 }, gpage(gr[1]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "retro_data", .steps = &.{ .{ .frames = 2 }, gpage(gr[2]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "retro_overlays", .steps = &.{ .{ .frames = 2 }, gpage(gr[3]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "retro_layout", .steps = &.{ .{ .frames = 2 }, gpage(gr[4]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "retro_scene", .steps = &.{ .{ .frames = 2 }, gpage(gr[5]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "dark_controls", .clear = null, .steps = &.{ .{ .frames = 2 }, g_dark, gpage(gd[0]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "dark_data", .clear = null, .steps = &.{ .{ .frames = 2 }, g_dark, gpage(gd[2]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "dark_overlays", .clear = null, .steps = &.{ .{ .frames = 2 }, g_dark, gpage(gd[3]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "dark_layout", .clear = null, .steps = &.{ .{ .frames = 2 }, g_dark, gpage(gd[4]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "light_controls", .clear = .{ 0.96, 0.96, 0.97, 1 }, .steps = &.{ .{ .frames = 2 }, g_light, gpage(gd[0]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "light_inputs", .clear = .{ 0.96, 0.96, 0.97, 1 }, .steps = &.{ .{ .frames = 2 }, g_light, gpage(gd[1]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "light_data", .clear = .{ 0.96, 0.96, 0.97, 1 }, .steps = &.{ .{ .frames = 2 }, g_light, gpage(gd[2]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "light_overlays", .clear = .{ 0.96, 0.96, 0.97, 1 }, .steps = &.{ .{ .frames = 2 }, g_light, gpage(gd[3]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "light_layout", .clear = .{ 0.96, 0.96, 0.97, 1 }, .steps = &.{ .{ .frames = 2 }, g_light, gpage(gd[4]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
+    .{ .name = "light_scene", .clear = .{ 0.96, 0.96, 0.97, 1 }, .steps = &.{ .{ .frames = 2 }, g_light, gpage(gd[5]), .{ .move = .{ 900, 700 } }, .{ .frames = 4 } } },
     .{ .name = "controls_dark", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 720 } }, .{ .move = .{ 900, 700 } }, .{ .frames = 2 } } },
     .{ .name = "controls_light", .clear = .{ 0.96, 0.96, 0.97, 1 }, .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 752 } }, .{ .move = .{ 900, 700 } }, .{ .frames = 2 } } },
     .{ .name = "data_light", .clear = .{ 0.96, 0.96, 0.97, 1 }, .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 752 } }, to_data, .{ .move = .{ 900, 700 } }, .{ .frames = 2 } } },
