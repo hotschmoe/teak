@@ -15,7 +15,7 @@ pub fn main() !void {
     var host = try platform.Host.init("Teak effects", 1000, 640);
     defer host.deinit();
 
-    var gpu = try gpu_native.Gpu.init(host.nativeHandle(), 1000, 640);
+    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 1000, 640, .{ .scale = host.scaleFactor() });
     defer gpu.deinit();
 
     try teak.run(App, gpa, &host, &gpu, .{ .clear_color = .{ 0.08, 0.08, 0.1, 1.0 } });
