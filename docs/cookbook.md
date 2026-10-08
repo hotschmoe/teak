@@ -1033,6 +1033,11 @@ Every piece below is `examples/gallery/src/app.zig`.
    // view, late: CM.viewWith(&m.ctx, cb, &context_items, ctx_msgs, .{ .window_w = ..., .window_h = ... });
    ```
 
+5. **Shortcut text vs shortcut behaviour.** `.shortcut = "Ctrl+N"` on a menu item only *draws* the text. To make the chord
+   work, add the same action to the command table with the same Msg (`.msg = .{ .run = .new }`) and keep the literal in
+   sync with a one-line test: see [Menu shortcuts](features/widgets.md#menu-shortcuts-one-chord-shown-and-working) and
+   recipe 21.
+
 **Common mistakes:** forgetting `MB.update(&m.menubar, .close)` in the `.run` arm (the menu stays open after a
 choice); building the item tree per frame in `view` but not in `keySpecialMsg` (both must see the same tree: keep
 it `const`); expecting panels to follow measured text (geometry comes from `top_width` / `row_h` / `panel_w`, set them
@@ -1230,7 +1235,7 @@ pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
 route `keyCharMsg` / `keySpecialMsg` to it while `m.palette.open`; draw it last in `view` with `Palette.viewPalette`;
 on `palette_run(i)` close it and `update(m, list.paletteCommand(i).?.msg)`. The complete wiring is in `examples/kerf_viewer/src/app.zig`.
 
-**3. Menus**: show `cmd.menuLabel(arena, .pc, 20)` (or `Chord.format`) so the displayed shortcut is the working one.
+**3. Menus**: a menu item's `.shortcut` is display text only; give the command the **same Msg** as the menu row (`.msg = .{ .run = .save }`) and show `cmd.menuLabel(arena, .pc, 20)` (or `Chord.format`, or a literal checked by a test) so the displayed shortcut is the working one. Full recipe: [widgets.md, Menu shortcuts](features/widgets.md#menu-shortcuts-one-chord-shown-and-working).
 
 Test it headlessly with `host.pushChord(.{ .key = .s, .mod = true })` or, against a live app, `teak-drive shortcut ctrl+s`. Depth: [commands.md](features/commands.md).
 
