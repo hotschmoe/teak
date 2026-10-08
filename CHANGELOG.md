@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **wgpu-native prebuilts updated v25.0.2.2 -> v29.0.1.1** (all four Windows/Linux deps). No source API fixes were needed (the v25 code already used the StringView / callback-info API); device creation now installs an uncaptured-error callback that logs loudly, and sets the device-lost callback mode explicitly.
+
 ### Changed (breaking)
 
 - **Zig 0.17.0 is now required; 0.16 support is dropped.** See

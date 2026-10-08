@@ -7,26 +7,26 @@
         // wgpu-native prebuilts — per-OS × per-arch, fetched lazily only
         // when a consumer calls `teak.linkNativeWgpu` for that target.
         // Pure-library consumers never pay for these. All four are
-        // gfx-rs/wgpu-native v25.0.2.2; the Windows zips ship
+        // gfx-rs/wgpu-native v29.0.1.1; the Windows zips ship
         // `wgpu_native.dll`, the Linux zips ship `libwgpu_native.{so,a}`.
         .@"wgpu-native-windows-aarch64" = .{
-            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-windows-aarch64-msvc-release.zip",
-            .hash = "N-V-__8AABFHyAO2T8ZpcMlS-0UlZgx3vsCRtVx8IspCf6Ov",
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-windows-aarch64-msvc-release.zip",
+            .hash = "N-V-__8AABCr2gO0rrDPgyURACL0DtGwkRTlbT09AZJ6lBtO",
             .lazy = true,
         },
         .@"wgpu-native-windows-x86_64" = .{
-            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-windows-x86_64-msvc-release.zip",
-            .hash = "N-V-__8AAO0eBwSB7GxV-NB9TuztsaPlUh8rDiZ4-Kr-K_s8",
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-windows-x86_64-msvc-release.zip",
+            .hash = "N-V-__8AAC46GAQ3sxZqmcxtw9OBe44NYXQyRJ7jp8Jy2bMQ",
             .lazy = true,
         },
         .@"wgpu-native-linux-aarch64" = .{
-            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-linux-aarch64-release.zip",
-            .hash = "N-V-__8AAE6bvQM9i14IEHy7OU1T9TbVb3h40nTIvswf_DRO",
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-linux-aarch64-release.zip",
+            .hash = "N-V-__8AACvXrAO11f5LA-Qfgm2C0XyWNhS_0N30HTL-Y5pQ",
             .lazy = true,
         },
         .@"wgpu-native-linux-x86_64" = .{
-            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-linux-x86_64-release.zip",
-            .hash = "N-V-__8AAJLttgMT05WocIA-7lzJ0aXNv39ddKg-uX_jpWd6",
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-linux-x86_64-release.zip",
+            .hash = "N-V-__8AAAVLrgM9jWFLs7n4rHyodpjIYxtBBE1No8nK0pRz",
             .lazy = true,
         },
         // Path dep during zunk co-development. Switch to a
