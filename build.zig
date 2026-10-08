@@ -81,20 +81,6 @@ pub fn build(b: *std.Build) void {
     const platform_wasm_tests = b.addTest(.{ .root_module = platform_wasm_mod });
     test_step.dependOn(&b.addRunArtifact(platform_wasm_tests).step);
 
-    // Win32 platform smoke tests (src/platform/win32.zig). Only
-    // wired when the host target is Windows because the file imports
-    // user32/oleaut32/kernel32/uiautomationcore. Covers the UIA
-    // per-node fragment provider wiring among other host helpers.
-    if (target.result.os.tag == .windows) {
-        const platform_win32_mod = b.createModule(.{
-            .root_source_file = b.path("src/platform/win32.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "teak", .module = mod }},
-        });
-        const platform_win32_tests = b.addTest(.{ .root_module = platform_win32_mod });
-        test_step.dependOn(&b.addRunArtifact(platform_win32_tests).step);
-    }
     // stb_truetype text backend (src/text/text.zig) — the Linux
     // rasterizer + measurer. Like glyph_cache it is gpu-adjacent and not
     // reachable from src/teak.zig, so it gets its own test module. Links
@@ -113,6 +99,23 @@ pub fn build(b: *std.Build) void {
         .file = b.path("src/gpu/vendor/stb_truetype_impl.c"),
         .flags = &.{"-std=c99"},
     });
+    // Win32 platform smoke tests (src/platform/win32.zig). Only
+    // wired when the host target is Windows because the file imports
+    // user32/oleaut32/kernel32/uiautomationcore. Covers the UIA
+    // per-node fragment provider wiring among other host helpers.
+    if (target.result.os.tag == .windows) {
+        const platform_win32_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/win32.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "teak", .module = mod },
+                .{ .name = "teak-text", .module = stbtt_mod },
+            },
+        });
+        const platform_win32_tests = b.addTest(.{ .root_module = platform_win32_mod });
+        test_step.dependOn(&b.addRunArtifact(platform_win32_tests).step);
+    }
     const stbtt_tests = b.addTest(.{ .root_module = stbtt_mod });
     test_step.dependOn(&b.addRunArtifact(stbtt_tests).step);
 
@@ -400,12 +403,16 @@ fn linkWindows(
         .optimize = optimize,
     });
 
+    const text_mod = stbTextModule(b, teak_dep, teak_mod, target, optimize);
+
     const platform_mod = b.createModule(.{
         .root_source_file = teak_dep.path("src/platform/win32.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-text", .module = text_mod },
         },
     });
 
@@ -416,6 +423,7 @@ fn linkWindows(
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
             .{ .name = "teak-shaders", .module = shaders_mod },
+            .{ .name = "teak-text", .module = text_mod },
         },
     });
     gpu_mod.addImport("wgpu-c", translateC(b, teak_dep.path("src/gpu/vendor/wgpu_c.h"), wgpu_dep.path("include/webgpu"), target, optimize));
