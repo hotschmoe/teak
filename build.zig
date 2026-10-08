@@ -1178,8 +1178,11 @@ fn translateC(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
-    // Header-only declarations: no libc, so freestanding (wasm) targets work too.
-    const tc = b.addTranslateC(.{ .root_source_file = header, .target = target, .optimize = optimize, .link_libc = false });
+    // Header-only declarations. Hosted targets get libc's include paths
+    // (webgpu.h includes <math.h>, which a Windows host does not have on the
+    // default search path); freestanding (wasm) has none and needs none.
+    const hosted = target.result.os.tag != .freestanding;
+    const tc = b.addTranslateC(.{ .root_source_file = header, .target = target, .optimize = optimize, .link_libc = hosted });
     if (include_dir) |dir| tc.addIncludePath(dir);
     return tc.createModule();
 }
