@@ -316,6 +316,7 @@ tools/
   release.sh                                  -- Cut a release: bump the ONE version (build.zig.zon .version), commit, tag v<version>, push
   teak_drive.zig                              -- teak-drive: drive a running teak app from a shell or from an LLM agent
   web-frame-bench.mjs                         -- rAF cost of a web example under scrolling: serve a zunk `dist/`, load it in headless Chromium
+  web-startup.mjs                             -- Web startup profile: serve a zunk `dist/`, load it in headless Chromium and print where the
   webshot.mjs                                 -- Web smoke test: serve a zunk `dist/`, load it in headless Chromium with
 ```
 <!-- module-tree:end -->
