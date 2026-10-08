@@ -566,21 +566,21 @@ pub const Host = struct {
     /// retain into the DOM synchronously before returning.
     pub fn publishA11yTree(_: *Host, nodes: []const A11yNode) void {
         const lens = serializeA11yTree(nodes);
-        if (comptime @hasDecl(externs, "__zunk_publish_a11y_tree")) {
-            externs.__zunk_publish_a11y_tree(
-                &g_a11y_records,
-                lens.records_len,
-                &g_a11y_strings,
-                lens.strings_len,
-            );
-        }
+        // (A `@hasDecl(externs, ...)` gate here would be always-false: non-`pub`
+        // decls are invisible to it, which silently disabled the mirror. A build
+        // without the zunk bridge gets a stub import instead.)
+        externs.__zunk_publish_a11y_tree(
+            &g_a11y_records,
+            lens.records_len,
+            &g_a11y_strings,
+            lens.strings_len,
+        );
     }
 
     /// Requests from assistive technology (a screen reader activating a
     /// control, focusing it, setting a text value) queued by the DOM mirror
     /// since the last frame. The run loop turns them into ordinary input.
     pub fn pollA11yActions(_: *Host, out: []teak.A11yAction) usize {
-        if (comptime !@hasDecl(externs, "__zunk_poll_a11y_actions")) return 0;
         const count = externs.__zunk_poll_a11y_actions(
             @ptrCast(&g_a11y_action_recs),
             MAX_A11Y_ACTIONS,

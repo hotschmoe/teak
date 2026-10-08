@@ -119,7 +119,7 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     // Add-item row: input stretches to fill, "Add" pinned to the right.
     cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 0 });
-    cb.textInput(.input_focus, m.input[0..m.input_len], m.input_len);
+    cb.textInputA11y(.input_focus, m.input[0..m.input_len], m.input_len, "New item");
     cb.button(.add_item, "Add");
     cb.popGroup();
 
@@ -134,13 +134,18 @@ pub fn view(m: *const Model, cb: anytype) void {
         .flex = 1,
         .width = 0, // 0 → inherit parent width
         .height = 320,
+        .a11y = .{ .semantic = .list, .label = "Todo items" },
     });
-    for (m.items[0..m.items_len], 0..) |item, i| {
-        cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 4 });
+    // Capture by pointer: `|item|` would copy the Item onto the loop's stack and
+    // the cmds would keep slices of that dead temporary (garbage labels on wasm).
+    for (m.items[0..m.items_len], 0..) |*item, i| {
+        cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 4, .a11y = .{ .semantic = .listitem } });
         cb.checkbox(.{ .toggle = i }, item.done, item.label[0..item.label_len]);
         // Spacer claims the middle so the delete button pins right.
         cb.spacer(1);
-        cb.button(.{ .remove = i }, "x");
+        // The visible label is "x"; screen readers hear "Remove <item>".
+        const remove_name = std.fmt.allocPrint(cb.arena.allocator(), "Remove {s}", .{item.label[0..item.label_len]}) catch "Remove";
+        cb.buttonA11y(.{ .remove = i }, "x", .{ .label = remove_name });
         cb.popGroup();
     }
     cb.popScroll();
@@ -149,10 +154,13 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     // Footer: item count + clear-completed button.
     cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 0 });
+    // The count is a polite live region: AT announces "3 items" as it changes.
+    cb.pushGroup(.{ .direction = .horizontal, .gap = 0, .padding = 0, .a11y = .{ .semantic = .status, .live = .polite } });
     // Allocate from the frame arena — a stack buffer's slice would escape
     // into the cmd buffer and be clobbered before layout reads it.
     const count_str = std.fmt.allocPrint(cb.arena.allocator(), "{d} items", .{m.items_len}) catch "? items";
     cb.text(count_str);
+    cb.popGroup();
     cb.spacer(1);
     cb.button(.clear_completed, "Clear done");
     cb.popGroup();

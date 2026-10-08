@@ -727,6 +727,8 @@ pub fn TextInputCmd(comptime Msg: type) type {
         /// (no focus, selection, or cursor; hit-test/hover skip it). Layout
         /// is unaffected — same rect either way.
         disabled: bool = false,
+        /// Accessible name (an input has no visible label of its own).
+        a11y_label: []const u8 = "",
     };
 }
 
@@ -1217,6 +1219,19 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cursor = cursor,
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
+            } }) catch oom();
+        }
+
+        /// A text input with an accessible name ("New item", "Search"): what a
+        /// screen reader announces for the field.
+        pub fn textInputA11y(self: *Self, focus_msg: Msg, content: []const u8, cursor: usize, label: []const u8) void {
+            self.cmds.append(self.backing, .{ .text_input = .{
+                .focus_msg = focus_msg,
+                .content = content,
+                .cursor = cursor,
+                .style = self.theme.text_input,
+                .font = self.theme.typography.body,
+                .a11y_label = label,
             } }) catch oom();
         }
 

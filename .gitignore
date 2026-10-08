@@ -2,5 +2,5 @@
 zig-out/
 zig-pkg/
 dist/
-tools/node_modules/
+tools/node_modules
 .x11_test/

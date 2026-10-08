@@ -390,6 +390,7 @@ fn collectLayer(
                     .role = .text_input,
                     .cmd_index = @intCast(i),
                     .bounds = b,
+                    .label = ti.a11y_label,
                     .value = ti.content,
                     .sel_start = lo,
                     .sel_end = hi,
