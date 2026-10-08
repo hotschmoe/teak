@@ -187,6 +187,18 @@ pub fn build(b: *std.Build) void {
         },
     });
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = wl_mod })).step);
+    // The runtime-selecting Linux host (comptime-validates both backends).
+    const linux_host_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/linux.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = mod },
+            .{ .name = "teak-text", .module = stbtt_mod },
+        },
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = linux_host_mod })).step);
 
     if (target.result.os.tag == .linux) {
         const wl_live_mod = b.createModule(.{
@@ -493,7 +505,7 @@ fn linkLinux(
     // which requires libc linked (without it the manual ELF loader can't
     // resolve libX11.so.6 and crashes on first call).
     const platform_mod = b.createModule(.{
-        .root_source_file = teak_dep.path("src/platform/x11.zig"),
+        .root_source_file = teak_dep.path("src/platform/linux.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,

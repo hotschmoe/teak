@@ -750,14 +750,25 @@ const offer_listener = wl.wl_data_offer_listener{ .offer = onOffer };
 
 fn onDataOffer(d: ?*anyopaque, _: *wl.wl_data_device, id: *wl.wl_data_offer) callconv(.c) void {
     const s = S(d);
-    // Reuse a free slot; failing that, recycle the oldest not in use.
+    // A free slot; failing that, one that is neither the clipboard
+    // selection nor the drag in progress.
     var slot: usize = 0;
-    for (s.offers, 0..) |o, i| if (o.proxy == null) {
-        slot = i;
-        break;
-    } else if (i != s.selection and i != s.dnd) {
-        slot = i;
-    };
+    var found = false;
+    for (s.offers, 0..) |o, i| {
+        if (o.proxy == null) {
+            slot = i;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        for (0..MAX_OFFERS) |i| {
+            if (i != s.selection and i != s.dnd) {
+                slot = i;
+                break;
+            }
+        }
+    }
     if (s.offers[slot].proxy) |old| wl.wl_data_offer_destroy(old);
     s.offers[slot] = .{ .proxy = id };
     wl.wl_data_offer_add_listener(id, &offer_listener, &s.offers[slot]);
