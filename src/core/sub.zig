@@ -90,6 +90,35 @@ pub fn runSubs(
     }
 }
 
+/// Milliseconds from `now_ms` until the next sub would fire, or null when no
+/// sub is armed (every `.every` has interval 0 and every `.at` deadline has
+/// passed). A Host that blocks while the app is idle uses it as the wait
+/// timeout so timers still fire on time.
+pub fn nextDueMs(comptime Msg: type, subs: []const Sub(Msg), now_ms: u64) ?u64 {
+    var best: ?u64 = null;
+    for (subs) |sub| {
+        const due: u64 = switch (sub) {
+            .every => |e| if (e.interval_ms == 0) continue else e.interval_ms - now_ms % e.interval_ms,
+            .at => |a| if (a.deadline_ms > now_ms) a.deadline_ms - now_ms else continue,
+        };
+        best = if (best) |b| @min(b, due) else due;
+    }
+    return best;
+}
+
+test "nextDueMs: nearest of every/at, null when nothing is armed" {
+    const Msg = union(enum) { t };
+    const subs = [_]Sub(Msg){
+        .{ .every = .{ .interval_ms = 100, .msg = .t } },
+        .{ .at = .{ .deadline_ms = 1030, .msg = .t } },
+        .{ .at = .{ .deadline_ms = 10, .msg = .t } }, // already passed
+        .{ .every = .{ .interval_ms = 0, .msg = .t } },
+    };
+    try std.testing.expectEqual(@as(?u64, 20), nextDueMs(Msg, &subs, 1010)); // every: 1100-1010=90; at: 20
+    try std.testing.expectEqual(@as(?u64, 50), nextDueMs(Msg, &subs, 1050)); // every: 50; at: 0 -> skipped? deadline 1030 passed
+    try std.testing.expectEqual(@as(?u64, null), nextDueMs(Msg, &[_]Sub(Msg){}, 5));
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 test "runSubs: .every fires once per crossed interval" {

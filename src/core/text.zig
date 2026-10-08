@@ -27,10 +27,14 @@ pub const FontSpec = struct {
     letter_spacing: f32 = 0,
     /// Round every glyph advance to a whole pixel (crisp terminal-grid text).
     /// Applied identically by the shaper, the measurer and the rasterizer.
-    /// Default off while the rasterizer still places glyphs from float pens;
-    /// the text-engine plan (docs/features/text-engine.md 3.2) flips it on for
-    /// `.mono` when the atlas path lands.
-    snap_advance: bool = false,
+    /// null = the family default: on for `.mono`, off otherwise. Snapped text
+    /// also uses one subpixel bin, so every glyph lands on the pixel grid.
+    snap_advance: ?bool = null,
+
+    /// The resolved `snap_advance` (see the field).
+    pub fn snapsAdvance(self: FontSpec) bool {
+        return self.snap_advance orelse (self.family == .mono);
+    }
 };
 
 pub const DEFAULT_FONT: FontSpec = .{};
