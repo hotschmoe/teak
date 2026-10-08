@@ -86,6 +86,29 @@ const WHEEL_DELTA: f32 = 120;
 /// DOM convention browsers use when `deltaMode == 0` (pixel deltas).
 const WHEEL_PIXELS_PER_NOTCH: f32 = 48;
 const IDC_ARROW: LPCWSTR = @ptrFromInt(32512);
+const WM_SETCURSOR: UINT = 0x0020;
+const HTCLIENT: usize = 1;
+extern "user32" fn SetCursor(?HANDLE) callconv(WINAPI) ?HANDLE;
+
+/// Standard `IDC_*` resource id for a cursor shape. Win32 has no grab
+/// cursor: `grab` is the hand, `grabbing` the four-way move arrow.
+fn idcFor(shape: teak.CursorShape) usize {
+    return switch (shape) {
+        .arrow => 32512,
+        .ibeam => 32513,
+        .crosshair => 32515,
+        .resize_nwse => 32642,
+        .resize_nesw => 32643,
+        .resize_ew => 32644,
+        .resize_ns => 32645,
+        .move, .grabbing => 32646,
+        .not_allowed => 32648,
+        .pointer, .grab => 32649,
+    };
+}
+
+/// The cursor `WM_SETCURSOR` applies over the client area (null: arrow).
+var g_cursor: ?HANDLE = null;
 
 const VK_BACK: WPARAM = 0x08;
 const VK_TAB: WPARAM = 0x09;
@@ -1381,6 +1404,16 @@ fn utf16OffsetToUtf8(utf8: []const u8, utf16_off: usize) usize {
 
 fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
     switch (msg) {
+        WM_SETCURSOR => {
+            // Only the client area is ours; borders keep the system cursor.
+            if ((@as(usize, @bitCast(lp)) & 0xFFFF) == HTCLIENT) {
+                if (g_cursor) |c| {
+                    _ = SetCursor(c);
+                    return 1;
+                }
+            }
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        },
         WM_DESTROY => {
             g_running = false;
             PostQuitMessage(0);
@@ -1659,6 +1692,13 @@ pub const Host = struct {
     /// conversion: UTF-8 → stack UTF-16 (256 code units) → SetWindowTextW.
     /// A title is cosmetic, so an over-long or invalid string is dropped
     /// rather than erroring.
+    /// Show `shape` over the client area (`WM_SETCURSOR` re-applies it whenever
+    /// Windows asks, so it survives pointer moves).
+    pub fn setCursor(_: *Host, shape: teak.CursorShape) void {
+        g_cursor = LoadCursorW(null, @ptrFromInt(idcFor(shape)));
+        _ = SetCursor(g_cursor);
+    }
+
     pub fn setTitle(self: *Host, title: []const u8) void {
         var title_buf: [256]u16 = undefined;
         const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title) catch return;

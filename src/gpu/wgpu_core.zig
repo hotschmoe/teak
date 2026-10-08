@@ -171,6 +171,11 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// render rewrites the same uniform with its own dims.
         width: u32,
         height: u32,
+        /// Device pixels per logical pixel (`setScale`). `width`/`height`
+        /// and every vertex are logical; the surface, the MSAA target and
+        /// rasterized text are `scale` times larger, so text and quads stay
+        /// crisp on a HiDPI display while layout is unchanged.
+        scale: f32,
 
         // ── Text pass ──────────────────────────────────────────────
         text_pipeline: c.WGPURenderPipeline,
@@ -291,7 +296,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         pub fn readFrame(self: *Self, allocator: std.mem.Allocator) ![]u8 {
             const tex = self.offscreen orelse return error.NotOffscreen;
             const ctx: wgpu_c.DeviceContext = .{ .adapter = self.adapter, .device = self.device, .queue = self.queue };
-            const px = try wgpu_c.readTexture(allocator, ctx, tex, @max(self.width, 1), @max(self.height, 1), 4);
+            const px = try wgpu_c.readTexture(allocator, ctx, tex, self.physical(self.width), self.physical(self.height), 4);
             // The target is BGRA8; PNG and most consumers want RGBA.
             var i: usize = 0;
             while (i + 3 < px.len) : (i += 4) std.mem.swap(u8, &px[i], &px[i + 2]);
@@ -481,6 +486,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 // zero-init here keeps the field set strictly post-init.
                 .width = 0,
                 .height = 0,
+                .scale = 1,
                 .text_pipeline = text_pipeline,
                 .text_bgl = text_bgl,
                 .sampler = sampler,
@@ -588,11 +594,32 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             c.wgpuSurfaceConfigure(surface, &surf_config);
         }
 
+        /// Set the display scale (device pixels per logical pixel; clamped to
+        /// [1, 8]). Call before `resize`: the surface is configured at
+        /// `logical * scale`. Scale 1 is the historical behavior.
+        pub fn setScale(self: *Self, s: f32) void {
+            self.scale = if (s >= 1) @min(s, 8) else 1;
+        }
+
+        /// Size in device pixels of the primary target (what `readFrame`
+        /// returns rows for).
+        pub fn framePixels(self: *const Self) [2]u32 {
+            return .{ self.physical(self.width), self.physical(self.height) };
+        }
+
+        /// A logical extent in device pixels (never 0).
+        fn physical(self: *const Self, logical: u32) u32 {
+            const px: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(logical)) * self.scale));
+            return @max(px, 1);
+        }
+
         pub fn resize(self: *Self, width: u32, height: u32) void {
             self.width = width;
             self.height = height;
-            if (self.surface != null) self.configureSurface(self.surface, width, height);
-            if (self.offscreen != null) self.recreateOffscreen(width, height) catch {};
+            const pw = self.physical(width);
+            const ph = self.physical(height);
+            if (self.surface != null) self.configureSurface(self.surface, pw, ph);
+            if (self.offscreen != null) self.recreateOffscreen(pw, ph) catch {};
 
             const screen_size = [2]f32{ @floatFromInt(width), @floatFromInt(height) };
             c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &screen_size, @sizeOf([2]f32));
@@ -680,7 +707,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         pub fn renderToWindow(self: *Self, window_id: u32, clear_color: ClearColor) void {
             if (self.surface == null and window_id == 0) {
                 // Headless: the primary "window" is the offscreen target.
-                if (self.offscreen) |t| self.renderToTexture(t, self.width, self.height, clear_color);
+                if (self.offscreen) |t| self.renderToTexture(t, self.physical(self.width), self.physical(self.height), clear_color);
                 return;
             }
             const target_w: u32, const target_h: u32, const surface_handle: c.WGPUSurface = blk: {
@@ -697,7 +724,10 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             // — otherwise rendering a secondary leaves its dims in the
             // uniform, scaling the next primary frame to the secondary's
             // viewport. Single 8-byte queue write per frame per window.
-            const screen_size = [2]f32{ @floatFromInt(target_w), @floatFromInt(target_h) };
+            // The primary window's uniform is logical (vertices are logical)
+            // while its target is physical; secondaries are scale 1.
+            const sc: f32 = if (window_id == 0) self.scale else 1;
+            const screen_size = [2]f32{ @as(f32, @floatFromInt(target_w)) / sc, @as(f32, @floatFromInt(target_h)) / sc };
             c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &screen_size, @sizeOf([2]f32));
 
             var surface_texture: c.WGPUSurfaceTexture = undefined;
@@ -711,7 +741,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const texture_view = c.wgpuTextureCreateView(surface_texture.texture, null);
             defer c.wgpuTextureViewRelease(texture_view);
 
-            self.encodeMainPass(texture_view, target_w, target_h, clear_color);
+            const enc_w: u32 = if (window_id == 0) self.physical(target_w) else target_w;
+            const enc_h: u32 = if (window_id == 0) self.physical(target_h) else target_h;
+            self.encodeMainPass(texture_view, enc_w, enc_h, clear_color);
             _ = c.wgpuSurfacePresent(surface_handle);
         }
 
@@ -719,7 +751,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// attachment in the surface format) instead of a window: headless
         /// tests and screenshots. Same pass as `renderFrame`, including MSAA.
         pub fn renderToTexture(self: *Self, texture: c.WGPUTexture, w: u32, h: u32, clear_color: ClearColor) void {
-            const screen_size = [2]f32{ @floatFromInt(w), @floatFromInt(h) };
+            // `w`/`h` are the target's device pixels; vertices are logical.
+            const screen_size = [2]f32{ @as(f32, @floatFromInt(w)) / self.scale, @as(f32, @floatFromInt(h)) / self.scale };
             c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &screen_size, @sizeOf([2]f32));
             const view = c.wgpuTextureCreateView(texture, null);
             defer c.wgpuTextureViewRelease(view);
@@ -945,15 +978,20 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 // UVs land on exact texel boundaries, not fractional offsets
                 // that ClampToEdge would paper over by duplicating the edge
                 // texel (visible as a stray pixel on glyph edges).
-                const r_x = @floor(draw.rect_x);
-                const r_y = @floor(draw.rect_y);
-                const r_w = @ceil(draw.rect_x + draw.rect_w) - r_x;
-                const r_h = @ceil(draw.rect_y + draw.rect_h) - r_y;
+                //
+                // Everything below runs in DEVICE pixels (logical * scale) so
+                // the glyph texture is baked at physical resolution; only the
+                // emitted vertices are divided back to logical units.
+                const sc = self.scale;
+                const r_x = @floor(draw.rect_x * sc);
+                const r_y = @floor(draw.rect_y * sc);
+                const r_w = @ceil((draw.rect_x + draw.rect_w) * sc) - r_x;
+                const r_h = @ceil((draw.rect_y + draw.rect_h) * sc) - r_y;
 
-                const c_x0 = @floor(draw.clip_x);
-                const c_y0 = @floor(draw.clip_y);
-                const c_x1 = @ceil(draw.clip_x + draw.clip_w);
-                const c_y1 = @ceil(draw.clip_y + draw.clip_h);
+                const c_x0 = @floor(draw.clip_x * sc);
+                const c_y0 = @floor(draw.clip_y * sc);
+                const c_x1 = @ceil((draw.clip_x + draw.clip_w) * sc);
+                const c_y1 = @ceil((draw.clip_y + draw.clip_h) * sc);
 
                 const vis_x0 = @max(r_x, c_x0);
                 const vis_y0 = @max(r_y, c_y0);
@@ -965,7 +1003,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 const tex_h: u32 = @intFromFloat(r_h);
                 if (tex_w == 0 or tex_h == 0) continue;
 
-                const handle = self.rasterizeText(draw.content, draw.font, draw.color, tex_w, tex_h);
+                var font = draw.font;
+                font.size_px *= sc;
+                const handle = self.rasterizeText(draw.content, font, draw.color, tex_w, tex_h);
                 if (handle == teak.TEXTURE_HANDLE_NONE) continue;
                 const entry = self.text_cache.entryPtr(handle);
 
@@ -988,12 +1028,16 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 if (offset + 6 > self.text_verts.len) break; // text buffer full
 
                 const verts = &self.text_verts;
-                verts[offset + 0] = .{ .x = vis_x0, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v0 };
-                verts[offset + 1] = .{ .x = vis_x1, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
-                verts[offset + 2] = .{ .x = vis_x0, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
-                verts[offset + 3] = .{ .x = vis_x1, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
-                verts[offset + 4] = .{ .x = vis_x1, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v1 };
-                verts[offset + 5] = .{ .x = vis_x0, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
+                const x0 = vis_x0 / sc;
+                const x1 = vis_x1 / sc;
+                const y0 = vis_y0 / sc;
+                const y1 = vis_y1 / sc;
+                verts[offset + 0] = .{ .x = x0, .y = y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v0 };
+                verts[offset + 1] = .{ .x = x1, .y = y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
+                verts[offset + 2] = .{ .x = x0, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
+                verts[offset + 3] = .{ .x = x1, .y = y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
+                verts[offset + 4] = .{ .x = x1, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v1 };
+                verts[offset + 5] = .{ .x = x0, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
 
                 self.text_vert_count += 6;
                 self.text_draws[self.text_draw_count] = .{
@@ -1150,8 +1194,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             enc_desc.label = wgpuStr("scene-encoder");
             const encoder = c.wgpuDeviceCreateCommandEncoder(self.device, &enc_desc);
 
-            // Native logical pixels are device pixels.
-            const scale: f32 = 1;
+            const scale: f32 = self.scale;
             for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
                 mark.visit(i, self.scene_draw_count);
                 const size = self.scene.renderInto(encoder, i, draw, scale) orelse continue;

@@ -88,6 +88,12 @@
 //!     extension (`uploadMesh`, `releaseMesh`, `renderScenes`,
 //!     `releaseImage`). See `docs/features/scene3d.md`.
 //!
+//!   - `cursorFor(*const Model, HoverKind) ?CursorShape` — override the mouse
+//!     cursor the framework picks from the hovered cmd (button/checkbox/
+//!     radio/slider -> pointer, text_input -> ibeam, canvas -> its `cursor`
+//!     field). Pure data in, data out; `Host.setCursor` is called only when
+//!     the shape changes, and only on hosts that declare it.
+//!
 //! IME composition state (`Host.imeState`) is folded into `TransientState`
 //! every frame with no opt-in — hosts without IME report inactive and it
 //! costs nothing.
@@ -105,6 +111,7 @@ const effects_mod = @import("core/effects.zig");
 const transient = @import("core/transient.zig");
 const text = @import("core/text.zig");
 const pointer = @import("core/pointer.zig");
+const cursor_mod = @import("core/cursor.zig");
 const layout = @import("layout/engine.zig");
 const scroll_extent = @import("layout/scroll_extent.zig");
 const hit_test = @import("input/hit_test.zig");
@@ -453,6 +460,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
         title_len: usize = 0,
+        /// Last cursor shape handed to `Host.setCursor` (change detection).
+        cursor: cursor_mod.CursorShape = .arrow,
 
         /// Loop-owned IME composition buffers. `Host.imeState().text`
         /// aliases the Host's single mutable global, so `ts.ime_text` and
@@ -503,6 +512,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const input = self.host.pollInputs();
             if (self.host.shouldClose()) return;
             if (input.resized) {
+                // Display scale first: the Gpu sizes its surface from it.
+                if (comptime @hasDecl(Gpu, "setScale") and @hasDecl(Host, "scaleFactor"))
+                    self.gpu.setScale(self.host.scaleFactor());
                 self.gpu.resize(input.width, input.height);
                 if (@hasDecl(App, "windowMsg")) {
                     if (App.windowMsg(&self.model, @floatFromInt(input.width), @floatFromInt(input.height))) |m| self.dispatch(m);
@@ -525,6 +537,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const cur_cmds = self.bufs[cur].cmds.items;
             const cur_rects = self.rects[cur].items;
             self.updateTransient(input, cur);
+            self.updateCursor(cur);
             self.pushTitle();
 
             // Frame diff: skip the vertex rebuild + upload when nothing
@@ -928,6 +941,26 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             @memcpy(self.ime_bufs[cur][0..n], ime.text[0..n]);
             self.ts.ime_text = self.ime_bufs[cur][0..n];
             self.ts.ime_cursor = ime.cursor;
+        }
+
+        /// Pick the cursor for whatever the pointer is over and push it to the
+        /// Host when it changed. Compiles away on hosts without `setCursor`.
+        fn updateCursor(self: *Self, cur: u1) void {
+            if (comptime !@hasDecl(Host, "setCursor")) return;
+            const cmds = self.bufs[cur].cmds.items;
+            const hovered: ?usize = self.ts.hover_index;
+            var shape: cursor_mod.CursorShape = .arrow;
+            var kind: cursor_mod.HoverKind = .none;
+            if (hovered) |i| if (i < cmds.len) {
+                kind = cursor_mod.kindOf(cmds[i]);
+                shape = cursor_mod.defaultFor(cmds[i]);
+            };
+            if (comptime @hasDecl(App, "cursorFor")) {
+                if (App.cursorFor(&self.model, kind)) |s| shape = s;
+            }
+            if (shape == self.cursor) return;
+            self.cursor = shape;
+            self.host.setCursor(shape);
         }
 
         /// Push the app's dynamic window title, only on change.

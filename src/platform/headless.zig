@@ -90,6 +90,11 @@ pub const Host = struct {
     injected: [MAX_INJECTED]EffectResult = undefined,
     injected_len: usize = 0,
 
+    /// Display scale reported by `scaleFactor` (set by `headless.shot` from
+    /// `ShotOptions.scale` / `TEAK_SCALE`). The Host's `width`/`height` stay
+    /// logical.
+    scale: f32 = 1,
+
     pub fn init(gpa: std.mem.Allocator, width: u32, height: u32) !Host {
         return .{ .gpa = gpa, .width = width, .height = height };
     }
@@ -279,8 +284,8 @@ pub const Host = struct {
         return self.clock_ms;
     }
 
-    pub fn scaleFactor(_: *const Host) f32 {
-        return 1.0;
+    pub fn scaleFactor(self: *const Host) f32 {
+        return self.scale;
     }
 
     // ── Effects: capture + scripted answers ────────────────────────

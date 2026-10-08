@@ -9,6 +9,35 @@
 - `teak.editor`: `Editor(cap, undo_cap)` with grapheme-aware editing, word jumps, undo/redo (PR10).
 - `SpecialKey`: `ctrl_left/right/home/end` (+ `ctrl_shift_*`), `ctrl_backspace`, `ctrl_delete`,
   `ctrl_shift_z`; `resolveKey` maps them.
+
+- **Cursor shapes**: `teak.CursorShape`, optional `Host.setCursor` (X11, Win32,
+  web), `CanvasCmd.cursor`, App hook `cursorFor(model, HoverKind)`. The runtime
+  picks the shape from the hovered cmd and calls the Host only on change.
+- **X11 HiDPI**: scale from `TEAK_SCALE` / `GDK_SCALE` / `Xft.dpi`; the Host
+  reports logical size and pointer coordinates, `Gpu.setScale` (optional)
+  configures a physical surface and bakes text at device resolution. Headless
+  `shot` honors `TEAK_SCALE`.
+
+- **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
+  - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
+    selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,
+    `STRING`, `TEXT`, `text/plain`); `Clipboard.read` does a bounded
+    synchronous `XConvertSelection` round trip; an unclaimed Ctrl+V becomes
+    `.pasted_text` (or a `.dropped` PNG image) asynchronously, with INCR on
+    receive.
+  - XDND v5 drops: `text/uri-list` files and `UTF8_STRING` text arrive as
+    `.dropped` like the web host.
+  - Input methods: XIM input context with on-the-spot preedit callbacks
+    feeding `imeState()`, `Xutf8LookupString` text (also Compose / dead keys),
+    `Host.setImeSpot` for the over-the-spot style, clean fallback when no IM.
+  - `zig build test-x11` (live display, skips without `DISPLAY`) drives the
+    host with xclip / xdotool and an in-process XDND source.
+
+### Fixed
+
+- X11 host failed to compile on first use under Zig 0.17 (`Xlib.load` still
+  used the removed `@typeInfo(...).fields`).
+
 - `Shaper` / `ShapedGlyph` / `ShapeResult` (core) and `FontSpec.snap_advance` (default false).
 - `teak-text` now ships `SimpleShaper` (stb kerning, fi/fl/ff/ffi/ffl ligatures on proportional
   faces) in `src/text/`; the module root moved from `src/gpu/text_stbtt.zig` to `src/text/text.zig`
