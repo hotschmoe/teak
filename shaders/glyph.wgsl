@@ -1,5 +1,8 @@
 // Instanced glyph quads sampled from an R8 coverage atlas page.
 // One instance = one glyph (see GlyphInstance in src/gpu/glyph_atlas.zig).
+// The instance is read as raw 32-bit words (Float32x2, Uint32x2, Uint32,
+// Uint32x2, Uint32) and unpacked here: zunk's vertex formats are 32-bit only,
+// and the same shader then serves the native and web backends.
 // Positions are physical (device) pixels; `screen` is the LOGICAL size and
 // `scale` device px per logical px, so the clip-space divisor is screen*scale.
 
@@ -31,13 +34,16 @@ const corners = array<vec2f, 6>(
 fn vs_main(
     @builtin(vertex_index) vi: u32,
     @location(0) pos: vec2f,
-    @location(1) size: vec2u,
-    @location(2) uv: vec2u,
-    @location(3) color: vec4f,
-    @location(4) clip_xy: vec2i,
-    @location(5) clip_wh: vec2u,
-    @location(6) flags: u32,
+    @location(1) size_uv: vec2u,    // w | h << 16, u | v << 16
+    @location(2) color_rgba: u32,   // r | g << 8 | b << 16 | a << 24
+    @location(3) clip_words: vec2u, // x | y << 16 (i16 each), w | h << 16
+    @location(4) flags: u32,
 ) -> VOut {
+    let size = vec2u(size_uv.x & 0xffffu, size_uv.x >> 16u);
+    let uv = vec2u(size_uv.y & 0xffffu, size_uv.y >> 16u);
+    let color = unpack4x8unorm(color_rgba);
+    let clip_xy = vec2i(bitcast<i32>(clip_words.x << 16u) >> 16u, bitcast<i32>(clip_words.x) >> 16u);
+    let clip_wh = vec2u(clip_words.y & 0xffffu, clip_words.y >> 16u);
     let c = corners[vi];
     let px = pos + c * vec2f(size);
     let device = u.screen_size * u.scale;
@@ -64,5 +70,6 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
     // The quad is pixel-aligned, so `local` hits texel centres: exact fetch, no filtering.
     let texel = vec2i(in.origin) + vec2i(floor(in.local));
     let cov = textureLoad(atlas, texel, 0).r;
-    return vec4f(in.color.rgb, in.color.a * pow(cov, u.text_gamma));
+    let a = select(pow(cov, u.text_gamma), cov, u.text_gamma == 1.0);
+    return vec4f(in.color.rgb, in.color.a * a);
 }
