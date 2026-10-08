@@ -134,6 +134,11 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// Built lazily for the current `vert_buf` (it is also bound as storage).
         bind_group: c.WGPUBindGroup,
         bind_group_buf: c.WGPUBuffer,
+        /// `vert_buf_size` the bind group was built for. A reallocation always
+        /// changes it, which the handle alone cannot show: a released buffer's
+        /// handle can come back for the new one, leaving a bind group on the
+        /// stale buffer (SDF records read as garbage).
+        bind_group_size: u64,
         solid_bgl: c.WGPUBindGroupLayout,
         uniform_buf: c.WGPUBuffer,
         vert_buf: c.WGPUBuffer,
@@ -486,6 +491,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .pipeline = pipeline,
                 .bind_group = null,
                 .bind_group_buf = null,
+                .bind_group_size = 0,
                 .solid_bgl = bind_group_layout,
                 .uniform_buf = uniform_buf,
                 .vert_buf = null,
@@ -851,6 +857,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             desc.entries = &entries;
             self.bind_group = c.wgpuDeviceCreateBindGroup(self.device, &desc);
             self.bind_group_buf = self.vert_buf;
+            self.bind_group_size = self.vert_buf_size;
         }
 
         /// Solid quads `[from, to)` (vertex indices).
@@ -858,7 +865,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const from, const to = range;
             if (to <= from or self.vert_buf == null) return;
             const draw_byte_size: u64 = @as(u64, self.vert_count) * @sizeOf(Vertex);
-            if (self.bind_group_buf != self.vert_buf) self.rebuildSolidBindGroup();
+            if (self.bind_group_buf != self.vert_buf or self.bind_group_size != self.vert_buf_size) self.rebuildSolidBindGroup();
             c.wgpuRenderPassEncoderSetPipeline(pass, self.pipeline);
             c.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.bind_group, 0, null);
             c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.vert_buf, 0, draw_byte_size);
