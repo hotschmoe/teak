@@ -26,9 +26,8 @@ fn Slim(comptime C: type) type {
 const Lean = Slim(Fat);
 
 fn nowNs() u64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
-    return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+    // Portable monotonic clock (std.os.linux is Linux-only).
+    return @intCast(std.Io.Clock.awake.now(std.Options.debug_io).nanoseconds);
 }
 
 /// Deep equality that follows the out-of-line pointers like inline data
