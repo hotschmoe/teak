@@ -70,6 +70,10 @@ pub const ScriptHost = struct {
     ime_buf: [8]u8 = undefined,
     ime_len: usize = 0,
     ime_on: bool = false,
+    /// Optional IME extensions: how often the runtime called them, and the last state.
+    ime_active_calls: u32 = 0,
+    ime_active_last: bool = false,
+    ime_spot_calls: u32 = 0,
     /// null: no secondary window support (`openSecondaryWindow` returns
     /// null). Otherwise window id 1 opens and its poll yields input this many
     /// times, then null (the user closed it from the OS).
@@ -161,6 +165,13 @@ pub const ScriptHost = struct {
         return "";
     }
     fn writeDiscard(_: *anyopaque, _: []const u8) void {}
+    pub fn setImeActive(self: *ScriptHost, active: bool) void {
+        self.ime_active_calls += 1;
+        self.ime_active_last = active;
+    }
+    pub fn setImeSpot(self: *ScriptHost, _: i32, _: i32) void {
+        self.ime_spot_calls += 1;
+    }
     pub fn imeState(self: *const ScriptHost) host_iface.ImeState {
         return .{ .active = self.ime_on, .text = self.ime_buf[0..self.ime_len], .cursor = self.ime_len };
     }
@@ -465,6 +476,21 @@ test "run: Shift+Tab walks focus backwards" {
     });
     defer t.destroy();
     try std.testing.expectEqual(TabApp.Focus.a, t.rt.model.focus);
+}
+
+test "run: the IME field is activated once while a text input is focused, released when focus leaves" {
+    const t = try play(TabApp, &.{
+        .{},
+        .{ .keys = &.{.tab} }, // none -> a: a text input is focused
+        .{},
+        .{},
+        .{ .keys = &.{.tab} }, // a -> b: still a text input, no new activation
+        .{},
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.host.ime_active_calls);
+    try std.testing.expect(t.host.ime_active_last);
+    try std.testing.expect(t.host.ime_spot_calls >= 2); // the caret moved between inputs
 }
 
 // ── Frame diff: IME aliasing, over-long title ───────────────────────

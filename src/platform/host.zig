@@ -187,6 +187,13 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   the current document name. Native hosts call the OS window-title
 ///   API; the web host sets `document.title`. No-op is acceptable for
 ///   headless hosts.
+/// - `setImeSpot(x, y)` / `setImeActive(focused)` (optional): the runtime tells the
+///   Host where the focused text caret's line ends (window logical px) and whether
+///   a text field is focused. Hosts with an out-of-window IME use them: X11's XIM
+///   over-the-spot style, the web's hidden `<textarea>` (focus + candidate window).
+///   Composition arrives as `imeState()` (the preedit, presentation-only, mirrored
+///   into `TransientState`: HARDLINE hatch 2) and the committed text as ordinary
+///   `InputState.chars`, so no host needs a separate commit path.
 /// - `scaleFactor()` reports the number of physical device pixels per
 ///   logical UI unit at the window's current DPI (1.0 = no scaling).
 ///   HARDLINE §4(d) surface extension, but kept **optional** in
@@ -259,6 +266,8 @@ pub fn validateHost(comptime T: type) void {
     // `submit` and `pollEffectResults` come as a pair.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
+        .{ .name = "setImeSpot", .sig = "fn(*Host, i32, i32) void" },
+        .{ .name = "setImeActive", .sig = "fn(*Host, bool) void" },
         .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
         .{ .name = "pollEffectResults", .sig = "fn(*Host, []EffectResult) usize" },
     };

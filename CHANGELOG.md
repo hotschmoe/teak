@@ -31,6 +31,12 @@
 
 ### Added
 
+- **Web IME.** Composition input (Japanese, Chinese, Korean) works in the browser: zunk's new IME bridge keeps a
+  hidden `<textarea>` focused while a text field is, the preedit shows inline with an underline and the candidate
+  window opens at the caret. New optional Host extension `setImeActive(bool)` next to `setImeSpot`; the preedit
+  stays presentation-only (TransientState, see docs/features/text-engine.md 6.7). `tools/web-ime-test.mjs` is the
+  CDP acceptance test.
+
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
     selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,
