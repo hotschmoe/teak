@@ -325,6 +325,19 @@ The examples' native UI builds on **Linux (X11)** and **Windows**;
 their `ui` step on `teak.hasNativeBackend`. Pixels-on-screen verification on
 a real display is still pending (the CI host is headless + cross-arch).
 
+## Benchmarking the CPU pipeline (`zig build bench`)
+
+`zig build bench` (always ReleaseFast, symbols kept so `perf record` works on
+`.zig-cache/o/*/teak-bench`) times, per frame and averaged over 20 iterations,
+the stages of the loop that run on the CPU: `view` (emit cmds), `layout`,
+`hit` (hit-test), `render` (`buildFrame` -> vertices/draw records) and the
+frame diff `cmdsEq`, for 100 / 1k / 10k / 50k rows (about 5 cmds per row), plus
+a text-heavy "prose" case measured through the real `teak-text` shaper (needs a
+system font; `TEAK_FONT` overrides, else the row prints `n/a`). Output goes to
+stderr as one fixed-width table in milliseconds so two runs diff cleanly.
+Source: `tools/bench/main.zig`. `cmdsEq` compares two equal buffers, which is
+its worst case (a changed frame exits at the first difference).
+
 ## Event-driven idle
 
 With `RunOptions.idle_skip` (default true) a frame in which nothing happened
