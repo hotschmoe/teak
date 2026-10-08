@@ -42,7 +42,6 @@ pub const FileDialogPoll = teak.FileDialogPoll;
 
 pub const NativeHandle = struct {};
 
-<<<<<<< HEAD
 /// DOM `keyCode` -> shortcut key (see `InputQueue.pushShortcut`); built at
 /// comptime from the key enum so letters, digits and F-keys cost no lines.
 const ShortcutCode = struct { code: u8, key: teak.Key };
@@ -87,10 +86,8 @@ const shortcut_extra = [_]ShortcutCode{
     .{ .code = 221, .key = .bracket_right }, .{ .code = 192, .key = .grave },
 };
 const shortcut_count = 26 + 10 + 12 + shortcut_extra.len;
-=======
 /// Longest preedit kept (UTF-8 bytes); the runtime's snapshot buffer is smaller still.
 const ime_text_cap = 256;
->>>>>>> origin/master
 
 /// zunk key code -> host-neutral key. Letters only matter as Ctrl chords;
 /// `InputQueue.pushNav` drops them when Ctrl is not held.
