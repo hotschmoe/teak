@@ -1213,6 +1213,8 @@ fn writePickerScript(dir: []const u8, choice: []const u8, code: u8) !void {
 }
 
 test "open_file runs the native picker off-thread, reads the chosen file; save writes where the user picks" {
+    // The zenity-style picker script is a POSIX feature; Win32 shows its own dialog.
+    if (is_windows) return error.SkipZigTest;
     const dir = "/tmp/teak-native-picker-test";
     const io = std.Options.debug_io;
     try Io.Dir.cwd().createDirPath(io, dir);
