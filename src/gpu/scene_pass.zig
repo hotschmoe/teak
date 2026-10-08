@@ -27,9 +27,15 @@ pub const Packed = extern struct {
 pub const flag_unlit: u32 = 1 << 1;
 pub const flag_no_edges: u32 = 1 << 2;
 pub const flag_highlight: u32 = 1 << 4;
+pub const flag_no_cap: u32 = 1 << 5;
 
 /// Items `first .. first + count` of `Plan.insts` all use backend mesh `mesh`.
 pub const Run = struct { mesh: u32, first: u32, count: u32 };
+
+/// The 3x4 transform of a packed instance.
+pub fn affineOf(p: Packed) mat.Affine {
+    return .{ p.m0[0], p.m0[1], p.m0[2], p.m0[3], p.m1[0], p.m1[1], p.m1[2], p.m1[3], p.m2[0], p.m2[1], p.m2[2], p.m2[3] };
+}
 
 pub fn pack(it: Item) Packed {
     const t = it.transform;
@@ -46,6 +52,8 @@ pub fn pack(it: Item) Packed {
 pub const Plan = struct {
     insts: std.ArrayList(Packed) = .empty,
     runs: std.ArrayList(Run) = .empty,
+    /// Per-instance section-cap colour, parallel to `insts` (alpha 0 = use the cut's colour).
+    caps: std.ArrayList([4]f32) = .empty,
     scratch: std.ArrayList(Keyed) = .empty,
 
     const Keyed = struct { mesh: u32, idx: u32 };
@@ -53,6 +61,7 @@ pub const Plan = struct {
     pub fn deinit(self: *Plan, gpa: std.mem.Allocator) void {
         self.insts.deinit(gpa);
         self.runs.deinit(gpa);
+        self.caps.deinit(gpa);
         self.scratch.deinit(gpa);
     }
 
@@ -66,11 +75,13 @@ pub const Plan = struct {
     pub fn build(self: *Plan, gpa: std.mem.Allocator, draw: SceneDraw, items: []const Item, ctx: anytype) std.mem.Allocator.Error!void {
         self.insts.clearRetainingCapacity();
         self.runs.clearRetainingCapacity();
+        self.caps.clearRetainingCapacity();
         self.scratch.clearRetainingCapacity();
 
         if (draw.item_count == 0 and items.len == 0) {
             if (draw.mesh != 0 and ctx.hasMesh(draw.mesh)) {
                 try self.insts.append(gpa, pack(.{ .mesh = draw.mesh }));
+                try self.caps.append(gpa, .{ 0, 0, 0, 0 });
                 try self.runs.append(gpa, .{ .mesh = draw.mesh, .first = 0, .count = 1 });
             }
             return;
@@ -87,6 +98,7 @@ pub const Plan = struct {
         for (self.scratch.items) |k| {
             const pos: u32 = @intCast(self.insts.items.len);
             try self.insts.append(gpa, pack(items[k.idx]));
+            try self.caps.append(gpa, items[k.idx].cap_color);
             if (self.runs.items.len > 0 and self.runs.items[self.runs.items.len - 1].mesh == k.mesh) {
                 self.runs.items[self.runs.items.len - 1].count += 1;
             } else {
@@ -102,6 +114,7 @@ pub const Plan = struct {
     pub fn contentHash(self: *const Plan, ctx: anytype) u64 {
         var h = std.hash.Wyhash.init(0x5ce9e);
         h.update(std.mem.sliceAsBytes(self.insts.items));
+        h.update(std.mem.sliceAsBytes(self.caps.items));
         for (self.runs.items) |r| {
             h.update(std.mem.asBytes(&r));
             const v: u32 = ctx.meshVersion(r.mesh);
@@ -110,6 +123,52 @@ pub const Plan = struct {
         return h.final();
     }
 };
+
+// ── Section cap ────────────────────────────────────────────────────
+
+/// Corners of a quad lying in the cut plane that covers the world-space
+/// bounds of an item (`lo`/`hi` of its mesh under `xf`), or null when the
+/// whole box is on one side of the plane (nothing to cap). The plane keeps
+/// `dot(n, p) + d <= 0`; `n` need not be exactly unit.
+pub fn capQuad(plane: [4]f32, lo: mat.Vec3, hi: mat.Vec3, xf: mat.Affine) ?[4]mat.Vec3 {
+    const n = mat.normalizeOr(.{ plane[0], plane[1], plane[2] }, .{ 0, 1, 0 });
+    const d = plane[3] / @max(mat.length(.{ plane[0], plane[1], plane[2] }), 1e-12);
+    // plane basis
+    const helper: mat.Vec3 = if (@abs(n[1]) < 0.9) .{ 0, 1, 0 } else .{ 1, 0, 0 };
+    const u = mat.normalize(mat.cross(helper, n));
+    const v = mat.cross(n, u);
+    var min_d: f32 = std.math.inf(f32);
+    var max_d: f32 = -std.math.inf(f32);
+    var lo_u: f32 = std.math.inf(f32);
+    var hi_u: f32 = -std.math.inf(f32);
+    var lo_v: f32 = std.math.inf(f32);
+    var hi_v: f32 = -std.math.inf(f32);
+    for (0..8) |i| {
+        const c = mat.Vec3{
+            if (i & 1 == 0) lo[0] else hi[0],
+            if (i & 2 == 0) lo[1] else hi[1],
+            if (i & 4 == 0) lo[2] else hi[2],
+        };
+        const w = mat.affinePoint(xf, c);
+        const sd = mat.dot(n, w) + d;
+        min_d = @min(min_d, sd);
+        max_d = @max(max_d, sd);
+        lo_u = @min(lo_u, mat.dot(u, w));
+        hi_u = @max(hi_u, mat.dot(u, w));
+        lo_v = @min(lo_v, mat.dot(v, w));
+        hi_v = @max(hi_v, mat.dot(v, w));
+    }
+    if (min_d > 0 or max_d < 0) return null;
+    const origin = mat.scale(n, -d); // a point on the plane
+    const pad = 0.01 * @max(hi_u - lo_u, hi_v - lo_v) + 1e-4;
+    const corners = [4][2]f32{ .{ lo_u - pad, lo_v - pad }, .{ hi_u + pad, lo_v - pad }, .{ hi_u + pad, hi_v + pad }, .{ lo_u - pad, hi_v + pad } };
+    var out: [4]mat.Vec3 = undefined;
+    for (corners, 0..) |c, i| {
+        // origin has zero u,v components along n only; add the in-plane offsets
+        out[i] = mat.add(origin, mat.add(mat.scale(u, c[0] - mat.dot(u, origin)), mat.scale(v, c[1] - mat.dot(v, origin))));
+    }
+    return out;
+}
 
 // ── Grid ───────────────────────────────────────────────────────────
 
@@ -430,4 +489,53 @@ test "gridUniform: plane id, fade derivation, singular camera" {
     d.camera.view_proj = @splat(0);
     try std.testing.expect(gridUniform(d, .{}, 1, 1, 1) == null);
     o.up = .z;
+}
+
+test "capQuad: spans the item on the plane, skipped when the box is on one side" {
+    const lo = mat.Vec3{ 0, 0, 0 };
+    const hi = mat.Vec3{ 2, 1, 4 };
+    // keep y <= 0.5: n = +y, d = -0.5
+    const q = capQuad(.{ 0, 1, 0, -0.5 }, lo, hi, mat.identity_affine).?;
+    for (q) |p| try std.testing.expectApproxEqAbs(@as(f32, 0.5), p[1], 1e-5);
+    var min_x: f32 = 99;
+    var max_x: f32 = -99;
+    var min_z: f32 = 99;
+    var max_z: f32 = -99;
+    for (q) |p| {
+        min_x = @min(min_x, p[0]);
+        max_x = @max(max_x, p[0]);
+        min_z = @min(min_z, p[2]);
+        max_z = @max(max_z, p[2]);
+    }
+    try std.testing.expect(min_x <= 0 and max_x >= 2 and min_z <= 0 and max_z >= 4);
+    try std.testing.expect(capQuad(.{ 0, 1, 0, -2 }, lo, hi, mat.identity_affine) == null); // plane above: all kept
+    try std.testing.expect(capQuad(.{ 0, 1, 0, 1 }, lo, hi, mat.identity_affine) == null); // plane below: all cut away
+    // the item's transform moves the box through the plane
+    const moved = capQuad(.{ 0, 1, 0, -5 }, lo, hi, mat.translation(.{ 0, 4.5, 0 }));
+    try std.testing.expect(moved != null);
+    // a slanted, non-unit plane still yields a planar quad
+    const slanted = capQuad(.{ 2, 2, 0, -3 }, lo, hi, mat.identity_affine).?;
+    for (slanted) |p| try std.testing.expectApproxEqAbs(@as(f32, 0), 2 * p[0] + 2 * p[1] - 3, 1e-4);
+}
+
+test "no_cap flag packs into bit 5 and caps stay parallel to instances" {
+    const gpa = std.testing.allocator;
+    var plan: Plan = .{};
+    defer plan.deinit(gpa);
+    const items = [_]Item{
+        .{ .mesh = 2, .id = 1, .flags = .{ .no_cap = true } },
+        .{ .mesh = 1, .id = 2, .cap_color = .{ 1, 0, 0, 1 } },
+    };
+    var d = draw0();
+    d.item_count = 2;
+    try plan.build(gpa, d, &items, TestCtx{});
+    try std.testing.expectEqual(@as(usize, plan.insts.items.len), plan.caps.items.len);
+    try std.testing.expectEqual(@as(u32, 2), plan.insts.items[0].id); // mesh 1 first
+    try std.testing.expectEqual(@as(f32, 1), plan.caps.items[0][0]);
+    try std.testing.expect(plan.insts.items[1].flags & flag_no_cap != 0);
+    const h1 = plan.contentHash(TestCtx{});
+    var items2 = items;
+    items2[1].cap_color = .{ 0, 1, 0, 1 };
+    try plan.build(gpa, d, &items2, TestCtx{});
+    try std.testing.expect(h1 != plan.contentHash(TestCtx{}));
 }

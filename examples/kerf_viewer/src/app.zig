@@ -108,6 +108,18 @@ const tab_button: teak.ButtonStyle = .{
     .h_padding = 8,
 };
 
+/// The active axis button: inverted ink.
+const tab_button_on: teak.ButtonStyle = .{
+    .bg = ink,
+    .hover_bg = ink,
+    .press_bg = ink,
+    .fg = paper,
+    .label_align = .center,
+    .height = 24,
+    .min_width = 0,
+    .h_padding = 8,
+};
+
 const row_height: f32 = 22;
 const row_button: teak.ButtonStyle = .{
     .bg = clear,
@@ -134,6 +146,7 @@ const row_button_on: teak.ButtonStyle = .{
 
 pub const scene_id: u32 = 7;
 pub const list_id: u32 = 8;
+pub const cut_slider_id: u32 = 9;
 const click_slop_px: f32 = 4;
 const highlight: [4]f32 = .{ 0.114, 0.306, 0.620, 1 };
 
@@ -153,6 +166,17 @@ pub const Model = struct {
     cam: Orbit = .{},
     /// Viewport size in logical px, reported by the scene's `layout` events.
     vp: [2]f32 = .{ 800, 600 },
+    /// Window-space top-left of the viewport (from its `layout` event), for
+    /// anchoring text over the 3D target.
+    vp_origin: [2]f32 = .{ 0, 0 },
+    /// Section cut: a plane through the model perpendicular to an axis.
+    cut_on: bool = false,
+    /// 0 = X, 1 = Y, 2 = Z.
+    cut_axis: u2 = 1,
+    /// Position along the model's extent on that axis, 0..1.
+    cut_t: f32 = 0.5,
+    /// Keep the other side of the plane.
+    cut_flip: bool = false,
     selected: u32 = 0,
     hovered: u32 = 0,
     edges: bool = true,
@@ -297,6 +321,10 @@ pub const Msg = union(enum) {
     toggle_ortho,
     toggle_edges,
     toggle_grid,
+    toggle_cut,
+    cut_axis: u2,
+    cut_set: f32,
+    cut_flip,
     fit,
     load_fixture: u8,
     open_file,
@@ -332,6 +360,10 @@ pub fn update(m: *Model, msg: Msg) void {
         .toggle_ortho => m.cam.toggleProjection(),
         .toggle_edges => m.edges = !m.edges,
         .toggle_grid => m.grid = !m.grid,
+        .toggle_cut => m.cut_on = !m.cut_on,
+        .cut_axis => |a| m.cut_axis = a,
+        .cut_set => |t| m.cut_t = std.math.clamp(t, 0, 1),
+        .cut_flip => m.cut_flip = !m.cut_flip,
         .fit => m.fitView(),
         .load_fixture => |i| if (i < fixtures.len) m.loadBytes(fixtures[i].name, fixtures[i].bytes),
         .open_file => if (m.req_len == 0) {
@@ -387,6 +419,7 @@ fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
     switch (ev.kind) {
         .layout => {
             m.vp = .{ ev.w, ev.h };
+            m.vp_origin = .{ ev.x, ev.y };
             if (m.fit_pending) m.fitView();
         },
         .down => if (ev.button == .left) {
@@ -417,6 +450,11 @@ fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
 // ── Host hooks ─────────────────────────────────────────────────────
 
 pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
+    if (ev.id == cut_slider_id) {
+        // Drag the thumb: press or move with the left button down.
+        const dragging = ev.kind == .down or (ev.kind == .move and ev.buttons.left);
+        return if (dragging and ev.w > 0) Msg{ .cut_set = ev.x / ev.w } else null;
+    }
     return if (ev.id == scene_id) Msg{ .view_event = ev } else null;
 }
 
@@ -448,6 +486,11 @@ pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
         'f', 'F' => .fit,
         'e', 'E' => .toggle_edges,
         'g', 'G' => .toggle_grid,
+        'c', 'C' => .toggle_cut,
+        'x', 'X' => Msg{ .cut_axis = 0 },
+        'y', 'Y' => Msg{ .cut_axis = 1 },
+        'z', 'Z' => Msg{ .cut_axis = 2 },
+        'v', 'V' => .cut_flip,
         else => null,
     };
 }
@@ -559,8 +602,60 @@ fn centerColumn(m: *const Model, cb: anytype) void {
     cb.buttonStyled(.fit, "[FIT]", tab_button);
     cb.popGroup();
 
+    cutBar(m, cb);
     viewport(m, cb);
     cb.popGroup();
+}
+
+/// Section-cut controls: on/off, axis, flip and the offset slider.
+fn cutBar(m: *const Model, cb: anytype) void {
+    const a = cb.arena.allocator();
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 4, .align_cross = .center });
+    cb.buttonStyled(.toggle_cut, if (m.cut_on) "[CUT ON]" else "[CUT OFF]", tab_button);
+    const axes = [_][]const u8{ "[X]", "[Y]", "[Z]" };
+    for (axes, 0..) |label, i| {
+        // the selected axis reads in bold ink; others are plain
+        cb.buttonStyled(.{ .cut_axis = @intCast(i) }, label, if (m.cut_axis == i) tab_button_on else tab_button);
+    }
+    cb.buttonStyled(.cut_flip, if (m.cut_flip) "[FLIP *]" else "[FLIP]", tab_button);
+    cb.canvasInteractive(.{ .width = 220, .height = 24, .bg = clear }, sliderPrims(m, a), cut_slider_id, "cut offset");
+    cb.textMuted(std.fmt.allocPrint(a, "{s}", .{cutLabel(m, a)}) catch "");
+    cb.popGroup();
+}
+
+fn cutLabel(m: *const Model, a: std.mem.Allocator) []const u8 {
+    const l = &(m.loaded orelse return "");
+    const pos = cutPosition(m, l);
+    const names = [_][]const u8{ "X", "Y", "Z" };
+    return std.fmt.allocPrint(a, "{s} = {s}", .{ names[m.cut_axis], kerf.fmtFtIn(a, pos) }) catch "";
+}
+
+/// Thin ink rule with a square thumb (Kerf look); the fill shows the kept side.
+fn sliderPrims(m: *const Model, a: std.mem.Allocator) []const teak.CanvasPrimitive {
+    const w: f32 = 220;
+    const x = m.cut_t * (w - 12) + 6;
+    const prims = a.alloc(teak.CanvasPrimitive, 3) catch return &.{};
+    prims[0] = .{ .filled_rect = .{ .x = 0, .y = 11, .w = w, .h = 2, .color = if (m.cut_on) ink else ink2 } };
+    prims[1] = .{ .filled_rect = .{ .x = 0, .y = 6, .w = 1, .h = 12, .color = ink2 } };
+    prims[2] = .{ .filled_rect = .{ .x = x - 6, .y = 4, .w = 12, .h = 16, .color = if (m.cut_on) blue else ink2 } };
+    return prims;
+}
+
+/// Position of the cut plane along its axis, in model units.
+fn cutPosition(m: *const Model, l: *const kerf.Loaded) f32 {
+    const ax: usize = m.cut_axis;
+    return l.lo[ax] + m.cut_t * (l.hi[ax] - l.lo[ax]);
+}
+
+/// The section plane for the view, `n.p + d <= 0` kept (the side the
+/// negative axis points to; flip keeps the other side), or null when off.
+pub fn cutPlane(m: *const Model) ?[4]f32 {
+    if (!m.cut_on) return null;
+    const l = &(m.loaded orelse return null);
+    var n = [3]f32{ 0, 0, 0 };
+    n[m.cut_axis] = if (m.cut_flip) -1 else 1;
+    const pos = cutPosition(m, l);
+    return .{ n[0], n[1], n[2], -(n[m.cut_axis] * pos) };
 }
 
 /// One `Item` per part, placed at the identity: selection is the
@@ -574,7 +669,10 @@ fn partItems(m: *const Model, arena: std.mem.Allocator) []const teak.SceneItem {
             .mesh = id,
             .id = id,
             .tint = if (m.hovered == id and m.selected != id) .{ 1.18, 1.18, 1.18, 1 } else .{ 1, 1, 1, 1 },
-            .flags = .{ .highlight = m.selected == id, .no_edges = !m.edges },
+            // open shells would streak under stencil parity: outline only
+            .flags = .{ .highlight = m.selected == id, .no_edges = !m.edges, .no_cap = !p.closed },
+            // cap = manila (DESIGN) pulled toward the part's own colour
+            .cap_color = kerf.mix(manila, p.color, 0.35),
         };
     }
     return items;
@@ -606,6 +704,7 @@ fn viewport(m: *const Model, cb: anytype) void {
             .highlight_mix = 0.6,
             .grid = if (m.grid) groundGrid(m) else null,
             .gizmo = if (m.grid) gizmo_view else null,
+            .cut = if (cutPlane(m)) |pl| .{ .plane = pl, .cap_color = manila, .outline_px = 1.5, .outline_color = ink } else null,
         },
         .camera = camera(m),
         .clear = paper,
@@ -617,6 +716,20 @@ fn viewport(m: *const Model, cb: anytype) void {
         .label = "3D model viewport",
     });
     cb.popGroup();
+    gizmoLabels(m, cb);
+}
+
+/// Axis letters over the gizmo: ordinary overlay text anchored at positions
+/// computed from the camera and the viewport's window origin.
+fn gizmoLabels(m: *const Model, cb: anytype) void {
+    if (!m.grid) return;
+    const layout: scene.pick.GizmoLayout = .{ .corner = .bottom_left, .size_px = gizmo_view.size_px, .margin_px = gizmo_view.margin_px };
+    const labels = scene.pick.gizmoLabels(m.cam, layout, m.vp[0], m.vp[1], m.vp_origin[0] + 1, m.vp_origin[1] + 1, 10);
+    for (labels, 0..) |l, i| {
+        cb.pushOverlay(.{ .x = l.x, .y = l.y, .padding = 0, .gap = 0, .anchor_x_frac = 0.5, .anchor_y_frac = 0.5 });
+        cb.textStyled(l.text, plex_bold, gizmo_view.colors[i]);
+        cb.popOverlay();
+    }
 }
 
 fn rightColumn(m: *const Model, cb: anytype) void {
@@ -870,6 +983,69 @@ test "clicking a gizmo cap looks down that axis; elsewhere it still picks" {
     try testing.expectEqual(@as(f32, 0), m.cam.yaw);
 }
 
+test "section cut: plane from axis, offset and flip; caps skip open shells; slider drag" {
+    var m = Model.init(); // palmer: parts 6 (dowel) and 10 (wedge/shank) are open shells
+    defer m.loaded.?.deinit();
+    try testing.expect(cutPlane(&m) == null);
+    update(&m, .toggle_cut);
+    const l = &m.loaded.?;
+    // default: Y axis halfway, keeping the lower half
+    var pl = cutPlane(&m).?;
+    try testing.expectEqual([3]f32{ 0, 1, 0 }, pl[0..3].*);
+    try testing.expectApproxEqAbs((l.lo[1] + l.hi[1]) / 2, -pl[3], 1e-4); // n.p + d = 0 at the mid height
+    update(&m, .{ .cut_axis = 2 });
+    update(&m, .{ .cut_set = 0.25 });
+    update(&m, .cut_flip);
+    pl = cutPlane(&m).?;
+    try testing.expectEqual([3]f32{ 0, 0, -1 }, pl[0..3].*);
+    try testing.expectApproxEqAbs(l.lo[2] + 0.25 * (l.hi[2] - l.lo[2]), pl[3], 1e-4); // -(n*pos) with n = -1
+    update(&m, .{ .cut_set = 7 });
+    try testing.expectEqual(@as(f32, 1), m.cut_t); // clamped
+
+    // the slider canvas maps a press / drag to a fraction of its width
+    const down = canvasMsg(&m, .{ .id = cut_slider_id, .kind = .down, .x = 55, .w = 220 }).?;
+    try testing.expectApproxEqAbs(@as(f32, 0.25), down.cut_set, 1e-6);
+    try testing.expect(canvasMsg(&m, .{ .id = cut_slider_id, .kind = .move, .x = 55, .w = 220 }) == null); // no button: hover
+    const drag = canvasMsg(&m, .{ .id = cut_slider_id, .kind = .move, .x = 110, .w = 220, .buttons = .{ .left = true } }).?;
+    try testing.expectApproxEqAbs(@as(f32, 0.5), drag.cut_set, 1e-6);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const items = partItems(&m, arena.allocator());
+    for (items, 0..) |it, i| try testing.expectEqual(i == 5 or i == 9, it.flags.no_cap);
+    // per-part cap tint: a mix of manila and the part colour, opaque
+    try testing.expect(items[0].cap_color[3] == 1);
+    try testing.expect(!std.meta.eql(items[0].cap_color, items[1].cap_color) or std.meta.eql(l.parts[0].color, l.parts[1].color));
+}
+
+test "gizmo labels follow the viewport's window origin" {
+    var m = smallModel();
+    defer m.loaded.?.deinit();
+    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .layout, .x = 12, .y = 86, .w = 900, .h = 600 } });
+    try testing.expectEqual([2]f32{ 12, 86 }, m.vp_origin);
+    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.theme = theme;
+    view(&m, &cb);
+    var overlays: usize = 0;
+    var first: ?teak.OverlayStyle(Msg) = null;
+    for (cb.cmds.items) |c| switch (c) {
+        .push_overlay => |o| {
+            overlays += 1;
+            if (first == null) first = o;
+        },
+        else => {},
+    };
+    try testing.expectEqual(@as(usize, 3), overlays); // X, Y, Z
+    // bottom-left gizmo: the letters live in the lower-left of the viewport, in window space
+    try testing.expect(first.?.x > 12 and first.?.x < 12 + 140 and first.?.y > 86 + 400);
+    update(&m, .toggle_grid);
+    cb.reset();
+    cb.theme = theme;
+    view(&m, &cb);
+    for (cb.cmds.items) |c| try testing.expect(c != .push_overlay);
+}
+
 test "wheel zoom changes distance; presets and ortho toggle apply" {
     var m = smallModel();
     defer m.loaded.?.deinit();
@@ -1002,8 +1178,22 @@ const golden =
     \\        button (632,54,116,24) "[EDGES ON]"
     \\        button (752,54,106,24) "[GRID ON]"
     \\        button (862,54,66,24) "[FIT]"
-    \\      group (12,86,916,678) vertical bg border
-    \\        scene3d (13,87,914,676) mesh=0 key=2 id=7 items=10 grid gizmo pointer "3D model viewport"
+    \\      group (12,86,916,24) horizontal
+    \\        button (12,86,106,24) "[CUT OFF]"
+    \\        button (122,86,46,24) "[X]"
+    \\        button (172,86,46,24) "[Y]"
+    \\        button (222,86,46,24) "[Z]"
+    \\        button (272,86,76,24) "[FLIP]"
+    \\        canvas (352,86,220,24) prims=3 id=9 pointer "cut offset"
+    \\        text (576,88,130,20) "Y = 4'-0 5/8\""
+    \\      group (12,118,916,646) vertical bg border
+    \\        scene3d (13,119,914,644) mesh=0 key=2 id=7 items=10 grid gizmo pointer "3D model viewport"
+    \\      overlay (95,417,11,20) layer=1
+    \\        text (95,417,11,20) "X"
+    \\      overlay (56,388,11,20) layer=1
+    \\        text (56,388,11,20) "Y"
+    \\      overlay (86,451,11,20) layer=1
+    \\        text (86,451,11,20) "Z"
     \\    group (940,42,340,734) vertical bg border
     \\      group (952,54,316,20) horizontal
     \\        text (952,54,55,20) "PARTS"

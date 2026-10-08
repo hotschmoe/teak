@@ -1209,7 +1209,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         }
 
         /// Tell the app about layout results it cannot read from `view`:
-        /// a pointer canvas's size (`CanvasEvent.layout`) and an id-bearing
+        /// a pointer canvas's rect (`CanvasEvent.layout`: size + window origin) and an id-bearing
         /// scroll region's viewport + content size (`scrollLayoutMsg`), each
         /// on first layout and whenever the value differs from the previous
         /// frame's. The resulting Msg takes effect in the NEXT frame's view.
@@ -1222,8 +1222,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             for (cmds, 0..) |c, i| switch (c) {
                 .canvas, .scene3d => if (has_canvas_hook) if (hit_test.pointerSurface(cmds, i)) |t| {
                     const old = findPointerCanvas(prev_cmds, t.id);
-                    if (old == null or prev_rects[old.?].w != rects[i].w or prev_rects[old.?].h != rects[i].h) {
-                        self.dispatchCanvas(.{ .id = t.id, .kind = .layout, .w = rects[i].w, .h = rects[i].h });
+                    const same = old != null and std.meta.eql(prev_rects[old.?], rects[i]);
+                    if (!same) {
+                        self.dispatchCanvas(.{ .id = t.id, .kind = .layout, .x = rects[i].x, .y = rects[i].y, .w = rects[i].w, .h = rects[i].h });
                     }
                 },
                 .text_area => if (has_text_hook) self.reportTextMetrics(cmds, rects, i),
