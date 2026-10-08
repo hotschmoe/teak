@@ -47,7 +47,7 @@ zig build web-run        # same, then serves dist/ on localhost:8080
 
 Building the Linux UI needs no X11 or Wayland dev packages (libX11, libwayland-client, libxkbcommon are `dlopen`ed at runtime); at runtime it needs `libX11.so.6` (X11) or `libwayland-client.so.0` + `libxkbcommon.so.0` (Wayland), a Vulkan driver, and a monospace TTF (DejaVuSansMono by default; override with `TEAK_FONT`, or register your own with `Host.registerFont`).
 
-Seven examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array), **chrome** (an engineering-workstation shell: header / 360 | flex | 320 columns / status line, bordered cards, bracket tabs, a `teak.Table`, underline fields, hover-inverting buttons, a hard-shadowed overlay, a fully custom `Theme`), **viewport** (an interactive canvas you pan and zoom, plus a scroll list whose scrollbar is sized from `scrollLayoutMsg`), and **effects** (every `teak.Effect` with a visible result: HTTP, download, file open, storage, clock, clipboard, query params, dropped / pasted images), and **fonts** (IBM Plex Mono at three weights with tracking: `linkWebWgpu(.fonts)` on the web, `Host.registerFont` on Linux).
+Examples (the full list is in the tree below; `zig build audit` fails if one is missing): **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array), **chrome** (an engineering-workstation shell: header / 360 | flex | 320 columns / status line, bordered cards, bracket tabs, a `teak.Table`, underline fields, hover-inverting buttons, a hard-shadowed overlay, a fully custom `Theme`), **viewport** (an interactive canvas you pan and zoom, plus a scroll list whose scrollbar is sized from `scrollLayoutMsg`), and **effects** (every `teak.Effect` with a visible result: HTTP, download, file open, storage, clock, clipboard, query params, dropped / pasted images), **fonts** (IBM Plex Mono at three weights with tracking: `linkWebWgpu(.fonts)` on the web, `Host.registerFont` on Linux), **scene3d** (depth-tested meshes and orbit camera through `scene3d` + declarative `resources()`), and **kerf_viewer** (a Kerf `mesh.json` 3D viewer with CPU picking and a parts panel).
 
 **Headless screenshots** (no display): `zig build shot -- out.png` in `examples/chrome` and `examples/scene3d` runs the real App on the native wgpu backend with scripted input and writes a PNG (`teak.linkHeadless`, `teak.headless`; see [`docs/features/headless.md`](docs/features/headless.md)). It needs a Vulkan device and a TTF.
 
@@ -116,10 +116,14 @@ examples/todo/             dynamic-list demo; N rows, Msg-with-index, scroll
 examples/tree/             recursive tree with expand/collapse over flat Model
 examples/chrome/           engineering-workstation chrome: cards, tables, bracket tabs, custom Theme
 examples/viewport/         pan/zoom interactive canvas + scroll list with scrollbar
+examples/scene3d/          depth-tested 3D scene: meshes, camera, declarative resources, headless shot
 examples/kerf_viewer/      Kerf mesh.json 3D viewer: Orbit camera, CPU pick, parts panel (scene3d path)
 examples/scene_layers/     2.5D: tilted drawing sheets, translucent annotation layer and image billboards around a 3D model
 examples/effects/          declarative effects: HTTP, files, storage, clock, clipboard, paste/drop
 examples/fonts/            IBM Plex Mono at three weights + tracking (web .fonts, native registerFont)
+examples/tables/            DataTable / VarList / TreeList / Scroller at 100k rows
+examples/gallery/           every widget in one place
+examples/notes/             multi-line TextArea editor
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)

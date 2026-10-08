@@ -114,7 +114,7 @@ fn stress(init: std.process.Init, o: Opts) !void {
     defer host.deinit();
     var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false, .scale = o.scale, .max_atlas_pages = o.max_pages });
     defer gpu.deinit();
-    var rt = try teak.Runtime(Stress, Host, Gpu).init(gpa, &host, &gpu, .{});
+    var rt = try teak.Runtime(Stress, Host, Gpu).init(gpa, &host, &gpu, .{ .idle_skip = false });
     defer rt.deinit();
     rt.model.cols = cols;
     rt.model.rows = rows;
@@ -128,7 +128,7 @@ fn stress(init: std.process.Init, o: Opts) !void {
     rt.model.labels = labels;
     for (0..3) |_| try rt.frame(); // cold: shaping + rasterizing + atlas uploads
 
-    const frames = 30;
+    const frames = 200;
     const t0 = std.Io.Clock.awake.now(init.io);
     for (0..frames) |_| {
         rt.model.tick +%= 1; // changes the label so the frame is not skipped as identical

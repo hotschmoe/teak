@@ -354,3 +354,25 @@ human review.
       greps for `builtin.os.tag`, `builtin.target`, `@import("builtin")`.
 - [ ] **[auto]** `view` signatures take no `std.mem.Allocator`
       parameter. Audit finds `fn view(` and scans the signature body.
+- [ ] **[auto]** Docs match the code: the `### Escape hatch N` headings
+      here and the numbered §2 list in `llms.txt` agree; every directory
+      under `examples/` appears as `examples/<name>/` in `README.md`; every
+      optional App hook the run loop probes (`@hasDecl(App, "x")` in
+      `src/run.zig`) is named in the hook table in `docs/features/run.md`;
+      every Host / Gpu optional surface (`@hasDecl(Host|Gpu, "x")` in
+      `run.zig`, plus the `validateHost` / `validateGpu` lists) is named in
+      `docs/features/host.md` / `gpu.md`.
+- [ ] **[manual]** Every optional App hook is a function of `*const Model`
+      plus loop-supplied data and returns data (a `Msg`, a spec, a theme);
+      no hook receives a mutable `*Model`, a callback, or a Host handle it
+      may keep. Known deviation: `handleClipboard(*Model, ...)` mutates the
+      Model directly (§1); the fix is a `Msg`-returning clipboard hook plus
+      the `write_clipboard` effect, tracked in `tasks.md`.
+- [ ] **[manual]** Host-side extras (`setCursor`, `setImeSpot`,
+      `waitEvents`, a11y publish, control channel / `injectInput`) are
+      output-only or input-source surfaces: they may not read the Model or
+      invent a second mutation path (input injected by a control channel
+      must arrive as the same `InputState` a real device produces).
+- [ ] **[manual]** Do not `@hasDecl` a *private* (non-`pub`) declaration in
+      `src/platform/*` or `src/gpu/*`: it is always false from outside the
+      file and silently disables the feature.
