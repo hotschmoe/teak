@@ -51,6 +51,8 @@ pub const ImeState = struct {
 
 pub const A11yNode = @import("../input/a11y.zig").A11yNode;
 
+pub const A11yActionKind = @import("../input/a11y.zig").ActionKind;
+pub const A11yAction = @import("../input/a11y.zig").Action;
 const effects = @import("../core/effects.zig");
 pub const Effect = effects.Effect;
 pub const EffectResult = effects.EffectResult;
@@ -259,6 +261,9 @@ pub fn validateHost(comptime T: type) void {
     // `submit` and `pollEffectResults` come as a pair.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
+        // Assistive-technology requests (web DOM mirror, UIA patterns): fills
+        // `out` and returns the count; called once per frame before input routing.
+        .{ .name = "pollA11yActions", .sig = "fn(*Host, []A11yAction) usize" },
         .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
         .{ .name = "pollEffectResults", .sig = "fn(*Host, []EffectResult) usize" },
     };

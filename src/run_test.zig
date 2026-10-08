@@ -52,6 +52,9 @@ pub const Frame = struct {
     /// answer to an effect). Delivered by `pollEffectResults` after the
     /// frame's key routing.
     fx_result: ?host_iface.EffectResult = null,
+    /// Assistive-technology requests the Host reports at the start of this
+    /// frame (delivered by `pollA11yActions`).
+    a11y: []const host_iface.A11yAction = &.{},
 };
 
 const left: pointer.Buttons = .{ .left = true };
@@ -90,6 +93,14 @@ pub const ScriptHost = struct {
     fx_queue: [32]host_iface.EffectResult = undefined,
     fx_queue_n: usize = 0,
 
+    // Recording a11y bridge: every published tree is copied here.
+    a11y_publishes: u32 = 0,
+    a11y_nodes: [64]host_iface.A11yNode = undefined,
+    a11y_count: usize = 0,
+    a11y_bytes: [4096]u8 = undefined,
+    /// Actions the current frame reports.
+    a11y_pending: []const host_iface.A11yAction = &.{},
+
     pub const NativeHandle = struct { tag: u32 = 7 };
     const forever = std.math.maxInt(u32);
 
@@ -124,6 +135,7 @@ pub const ScriptHost = struct {
         in.chars = f.chars;
         in.keys = f.keys;
         if (f.fx_result) |r| self.queueResult(r);
+        self.a11y_pending = f.a11y;
         return in;
     }
     pub fn queueResult(self: *ScriptHost, r: host_iface.EffectResult) void {
@@ -164,7 +176,29 @@ pub const ScriptHost = struct {
     pub fn imeState(self: *const ScriptHost) host_iface.ImeState {
         return .{ .active = self.ime_on, .text = self.ime_buf[0..self.ime_len], .cursor = self.ime_len };
     }
-    pub fn publishA11yTree(_: *ScriptHost, _: []const host_iface.A11yNode) void {}
+    pub fn publishA11yTree(self: *ScriptHost, nodes: []const host_iface.A11yNode) void {
+        self.a11y_publishes += 1;
+        self.a11y_count = @min(nodes.len, self.a11y_nodes.len);
+        var used: usize = 0;
+        for (nodes[0..self.a11y_count], 0..) |n, i| {
+            var c = n;
+            const lo = used;
+            @memcpy(self.a11y_bytes[used..][0..n.label.len], n.label);
+            used += n.label.len;
+            const vo = used;
+            @memcpy(self.a11y_bytes[used..][0..n.value.len], n.value);
+            used += n.value.len;
+            c.label = self.a11y_bytes[lo..vo];
+            c.value = self.a11y_bytes[vo..used];
+            self.a11y_nodes[i] = c;
+        }
+    }
+    pub fn pollA11yActions(self: *ScriptHost, out: []host_iface.A11yAction) usize {
+        const n = @min(out.len, self.a11y_pending.len);
+        @memcpy(out[0..n], self.a11y_pending[0..n]);
+        self.a11y_pending = &.{};
+        return n;
+    }
     pub fn openFileDialog(_: *ScriptHost, _: host_iface.FileDialogFilter) host_iface.FileDialogResult {
         return null;
     }
@@ -1483,4 +1517,146 @@ test "run: windowMsg reports the window size on the first frame" {
     try std.testing.expectEqual(@as(f32, 400), t.rt.model.w);
     try std.testing.expectEqual(@as(f32, 300), t.rt.model.h);
     try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls); // only the first frame resized
+}
+
+// ── Accessibility: publish-on-change and actions as input ───────────
+
+const text_field_mod = @import("core/text_field.zig");
+
+const A11yApp = struct {
+    const TF = text_field_mod.TextField(16);
+    pub const Msg = union(enum) { inc, name: TF.Msg, focus_name, open_modal, close_modal };
+    pub const Model = struct {
+        count: i32 = 0,
+        name: TF.Model = .{},
+        focused: bool = false,
+        modal: bool = false,
+    };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .inc => m.count += 1,
+            .name => |n| TF.update(&m.name, n),
+            .focus_name => m.focused = true,
+            .open_modal => m.modal = true,
+            .close_modal => m.modal = false,
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .a11y = .{ .semantic = .toolbar, .label = "Main" } });
+        const label = std.fmt.allocPrint(cb.arena.allocator(), "Count {d}", .{m.count}) catch "?";
+        cb.button(.inc, label);
+        cb.textInputSelected(.focus_name, m.name.content(), m.name.cursor, m.name.selection_anchor, cb.theme.text_input);
+        cb.buttonA11y(.open_modal, "More", .{ .semantic = .menuitem, .expanded = m.modal });
+        cb.popGroup();
+        if (m.modal) {
+            cb.pushOverlay(.{ .x = 0, .y = 0, .width = 400, .height = 300, .modal = true, .backdrop_msg = Msg.close_modal });
+            cb.text("Dialog");
+            cb.popOverlay();
+        }
+    }
+    pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+        return if (m.focused) Msg{ .name = .{ .char = c } } else null;
+    }
+    pub fn keySpecialMsg(m: *const Model, k: keys.SpecialKey) ?Msg {
+        if (!m.focused) return null;
+        return switch (k) {
+            .ctrl_a => Msg{ .name = .select_all },
+            else => null,
+        };
+    }
+    pub fn focusedMsg(m: *const Model) ?Msg {
+        return if (m.focused) Msg.focus_name else null;
+    }
+};
+
+fn findNode(h: *const ScriptHost, role: @import("input/a11y.zig").Role) ?host_iface.A11yNode {
+    for (h.a11y_nodes[0..h.a11y_count]) |n| if (n.role == role) return n;
+    return null;
+}
+
+test "a11y: the tree is published on the first frame and on change, not on idle frames" {
+    const t = try play(A11yApp, &.{ .{}, .{}, .{}, .{}, .{} });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.host.a11y_publishes);
+    try std.testing.expect(findNode(&t.host, .toolbar) != null); // the group's hint became its role
+    try std.testing.expectEqualStrings("Count 0", findNode(&t.host, .button).?.label);
+}
+
+test "a11y: a model change republishes; focus and hint state are in the tree" {
+    // Frame 2 clicks the first button (at 5,5); its label then reads "Count 1".
+    const t = try play(A11yApp, &.{
+        .{},
+        .{},
+        .{ .x = 5, .y = 5, .held = left, .down = left },
+        .{ .x = 5, .y = 5, .up = left },
+        .{},
+        .{},
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.host.a11y_publishes);
+    try std.testing.expectEqualStrings("Count 1", findNode(&t.host, .button).?.label);
+    // The toolbar semantic arrived as a role with its name, and the input is a
+    // textbox-to-be with an (empty) value.
+    var saw_toolbar = false;
+    for (t.host.a11y_nodes[0..t.host.a11y_count]) |n| {
+        if (n.role == .toolbar) {
+            saw_toolbar = true;
+            try std.testing.expectEqualStrings("Main", n.label);
+        }
+    }
+    try std.testing.expect(saw_toolbar);
+    try std.testing.expect(findNode(&t.host, .text_input) != null);
+}
+
+test "a11y: RunOptions.a11y = false publishes nothing" {
+    const t = try playWith(A11yApp, .{ .script = &.{ .{}, .{} } }, .{ .a11y = false });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 0), t.host.a11y_publishes);
+}
+
+test "a11y actions: activate = click, focus = focus Msg, set_value = Ctrl+A + typing, stale index ignored" {
+    // Node indexes in the published tree's cmd order: 0 group, 1 button, 2 input, 3 menu button.
+    const t = try play(A11yApp, &.{
+        .{},
+        .{ .a11y = &.{.{ .kind = .activate, .cmd_index = 1 }} },
+        .{ .a11y = &.{.{ .kind = .focus, .cmd_index = 2 }} },
+        .{ .a11y = &.{.{ .kind = .set_value, .cmd_index = 2, .text = "hello" }} },
+        .{ .a11y = &.{.{ .kind = .set_value, .cmd_index = 2, .text = "bye" }} },
+        .{ .a11y = &.{.{ .kind = .activate, .cmd_index = 99 }} },
+        .{},
+    });
+    defer t.destroy();
+    const m = &t.rt.model;
+    try std.testing.expectEqual(@as(i32, 1), m.count); // the activation clicked the button
+    try std.testing.expect(m.focused);
+    // The second set_value replaced the first (Ctrl+A selects it, typing replaces).
+    try std.testing.expectEqualStrings("bye", m.name.content());
+}
+
+test "a11y actions: activation respects overlays (a modal swallows what is behind it)" {
+    const open = try play(A11yApp, &.{
+        .{},
+        .{ .a11y = &.{.{ .kind = .activate, .cmd_index = 3 }} }, // "More" opens the modal
+        .{},
+        .{},
+    });
+    defer open.destroy();
+    try std.testing.expect(open.rt.model.modal);
+    try std.testing.expect(findNode(&open.host, .overlay) != null);
+    for (open.host.a11y_nodes[0..open.host.a11y_count]) |n| {
+        if (n.role == .menuitem) try std.testing.expectEqual(@as(?bool, true), n.expanded);
+    }
+
+    // Activating the button behind the open modal is a click on the backdrop:
+    // the count does not move (and, like a mouse click outside, it closes the modal).
+    const behind = try play(A11yApp, &.{
+        .{},
+        .{ .a11y = &.{.{ .kind = .activate, .cmd_index = 3 }} },
+        .{},
+        .{ .a11y = &.{.{ .kind = .activate, .cmd_index = 1 }} },
+        .{},
+    });
+    defer behind.destroy();
+    try std.testing.expectEqual(@as(i32, 0), behind.rt.model.count);
+    try std.testing.expect(!behind.rt.model.modal);
 }

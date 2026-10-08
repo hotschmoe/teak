@@ -108,6 +108,7 @@ const pointer = @import("core/pointer.zig");
 const layout = @import("layout/engine.zig");
 const scroll_extent = @import("layout/scroll_extent.zig");
 const hit_test = @import("input/hit_test.zig");
+const a11y = @import("input/a11y.zig");
 const focus = @import("input/focus.zig");
 const render = @import("render/build.zig");
 const vertex = @import("render/vertex.zig");
@@ -145,6 +146,13 @@ pub const RunOptions = struct {
     /// under `<config>/teak/<app_name>/`). Empty: the Host's default, the
     /// window title. Ignored by hosts without `setAppName`.
     app_name: []const u8 = "",
+    /// Build the accessibility tree and hand it to the Host's
+    /// `publishA11yTree` (UIA on Windows, the DOM mirror on the web), only when
+    /// it changed; and deliver assistive-technology requests as ordinary
+    /// input (`Host.pollA11yActions`). On by default; hosts without an AT
+    /// bridge make the publish a no-op, so the cost is the tree build when
+    /// the frame changes.
+    a11y: bool = true,
 };
 
 /// The target has a host filesystem to mirror snapshots into. Freestanding
@@ -424,6 +432,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// own state still lives in its Model.
         canvas_ptr: CanvasPointer = .{},
 
+        /// The last tree published to the Host (owned copy) and the focus it
+        /// was built with, so unchanged frames publish nothing.
+        a11y_cache: a11y.TreeCache = .{},
+        a11y_focus: ?usize = null,
+
         /// Press model: arm on mousedown over a widget, fire the click only
         /// if mouseup lands on the same widget; drag-off cancels.
         press_target: ?usize = null,
@@ -487,6 +500,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 }
             }
             self.snap.deinit();
+            self.a11y_cache.deinit(self.gpa);
             self.secondary.deinit(self.gpa);
             if (has_resources) self.res_table.deinit(self.gpu);
             self.scene_draws.deinit(self.gpa);
@@ -512,6 +526,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // Input is routed against the PREVIOUS frame's layout — the one
             // the user is looking at — so `prev` is captured before the swap.
             const prev = self.current;
+            self.routeA11yActions(prev);
             self.routeMouse(input, prev);
             self.routeCanvasPointer(input, prev);
             self.routeKeys(input, prev);
@@ -548,6 +563,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 self.uploadFrame(cur_cmds, cur_rects, self.ts);
             }
             self.prev_ts = self.ts;
+            self.publishA11y(cur, diff);
 
             self.gpu.renderFrame(self.opts.clear_color);
 
@@ -578,6 +594,87 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn dispatch(self: *Self, msg: Msg) void {
             self.last_msg = @tagName(std.meta.activeTag(msg));
             App.update(&self.model, msg);
+        }
+
+        /// Hand the accessibility tree to the Host when it changed: any Cmd /
+        /// layout change or a focus move. Unchanged frames build and publish nothing.
+        fn publishA11y(self: *Self, cur: u1, diff: FrameDiff) void {
+            if (!self.opts.a11y) return;
+            if (self.a11y_cache.valid and diff.cmds_same and diff.rects_same and self.a11y_focus == self.ts.focus_index) return;
+            self.a11y_focus = self.ts.focus_index;
+            const arena = self.bufs[cur].arena.allocator();
+            const tree = a11y.buildTree(arena, self.bufs[cur].cmds.items, self.rects[cur].items, self.ts.focus_index) catch return;
+            if (self.a11y_cache.same(tree)) return;
+            self.host.publishA11yTree(tree);
+            self.a11y_cache.store(self.gpa, tree) catch {
+                self.a11y_cache.valid = false;
+            };
+        }
+
+        /// Assistive-technology requests (`Host.pollA11yActions`) become the
+        /// same input a user would produce, resolved against the previous
+        /// frame's layout like a click: an activation is a click at the
+        /// node's centre (so overlays, disabled state and clipping all apply),
+        /// focus is the node's focus Msg (what Tab traversal dispatches),
+        /// a value is focus + Ctrl+A + typed characters, steps are arrow keys.
+        /// There is no second mutation path: everything reaches `update` as
+        /// the Msgs the app's own hooks produce.
+        fn routeA11yActions(self: *Self, prev: u1) void {
+            if (!self.opts.a11y or !@hasDecl(Host, "pollA11yActions")) return;
+            var buf: [16]a11y.Action = undefined;
+            const n = self.host.pollA11yActions(&buf);
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+            for (buf[0..n]) |act| {
+                const idx: usize = act.cmd_index;
+                if (idx >= cmds.len or idx >= rects.len) continue;
+                switch (act.kind) {
+                    .activate => {
+                        // Single-line controls take focus rather than a synthetic click.
+                        if (isFocusTarget(cmds[idx])) {
+                            self.focusNode(cmds, idx);
+                        } else {
+                            const r = rects[idx];
+                            if (hit_test.hitTest(cmds, rects, r.x + r.w * 0.5, r.y + r.h * 0.5)) |hit| {
+                                if (hit.msg) |m| self.dispatch(m);
+                            }
+                        }
+                    },
+                    .focus => self.focusNode(cmds, idx),
+                    .set_value => {
+                        self.focusNode(cmds, idx);
+                        self.injectKey(.ctrl_a);
+                        for (act.text) |c| self.injectChar(c);
+                    },
+                    .increment, .decrement => {
+                        self.focusNode(cmds, idx);
+                        self.injectKey(if (act.kind == .increment) .right else .left);
+                    },
+                }
+            }
+        }
+
+        fn isFocusTarget(c: anytype) bool {
+            return switch (c) {
+                .text_input, .slider => true,
+                else => false,
+            };
+        }
+
+        fn focusNode(self: *Self, cmds: anytype, idx: usize) void {
+            if (focus.focusMsgAt(cmds, idx)) |m| self.dispatch(m);
+        }
+
+        fn injectKey(self: *Self, k: @import("input/keys.zig").SpecialKey) void {
+            if (@hasDecl(App, "keySpecialMsg")) {
+                if (App.keySpecialMsg(&self.model, k)) |m| self.dispatch(m);
+            }
+        }
+
+        fn injectChar(self: *Self, c: u8) void {
+            if (@hasDecl(App, "keyCharMsg")) {
+                if (App.keyCharMsg(&self.model, c)) |m| self.dispatch(m);
+            }
         }
 
         /// Press target + click dispatch against the previous frame.

@@ -140,6 +140,11 @@ pub const focusMsgAt = focus.focusMsgAt;
 pub const SpecialKey = keys.SpecialKey;
 pub const A11yNode = a11y.A11yNode;
 pub const A11yRole = a11y.Role;
+pub const A11yAction = a11y.Action;
+pub const A11yActionKind = a11y.ActionKind;
+pub const A11yHint = cmd.A11yHint;
+pub const A11ySemantic = cmd.A11ySemantic;
+pub const A11yLive = cmd.A11yLive;
 pub const buildA11yTree = a11y.buildTree;
 
 pub const Sub = sub.Sub;
