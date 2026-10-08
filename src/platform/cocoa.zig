@@ -146,6 +146,11 @@ fn defineClasses() void {
         .{ .name = "acceptsFirstResponder", .imp = @ptrCast(&yes), .types = "c@:" },
         .{ .name = "acceptsFirstMouse:", .imp = @ptrCast(&yes1), .types = "c@:@" },
         .{ .name = "isFlipped", .imp = @ptrCast(&yes), .types = "c@:" },
+        // Layer-backed with a CAMetalLayer: AppKit sizes and scales the layer
+        // with the view (the same arrangement MTKView uses).
+        .{ .name = "makeBackingLayer", .imp = @ptrCast(&makeBackingLayer), .types = "@@:" },
+        .{ .name = "wantsUpdateLayer", .imp = @ptrCast(&yes), .types = "c@:" },
+        .{ .name = "updateLayer", .imp = @ptrCast(&noop), .types = "v@:" },
         .{ .name = "keyDown:", .imp = @ptrCast(&keyDown), .types = "v@:@" },
         .{ .name = "keyUp:", .imp = @ptrCast(&ignoreEvent), .types = "v@:@" },
         .{ .name = "flagsChanged:", .imp = @ptrCast(&flagsChanged), .types = "v@:@" },
@@ -192,6 +197,10 @@ fn yes(_: Id, _: Sel) callconv(.c) bool {
 }
 fn yes1(_: Id, _: Sel, _: Id) callconv(.c) bool {
     return true;
+}
+fn noop(_: Id, _: Sel) callconv(.c) void {}
+fn makeBackingLayer(_: Id, _: Sel) callconv(.c) Id {
+    return msg(Id, cls("CAMetalLayer"), sel("layer"), .{});
 }
 fn ignoreEvent(_: Id, _: Sel, _: Id) callconv(.c) void {}
 
@@ -411,20 +420,15 @@ pub const Host = struct {
         if (window == null) return error.CocoaWindowFailed;
         msg(void, window, sel("setReleasedWhenClosed:"), .{false});
         const view = msg(Id, msg(Id, view_class, sel("alloc"), .{}), sel("initWithFrame:"), .{frame});
-        const layer = msg(Id, cls("CAMetalLayer"), sel("layer"), .{});
         const delegate = objc.allocInit(delegate_class);
-        s.* = .{ .app = app, .window = window, .view = view, .layer = layer, .width = width, .height = height, .effects = effects };
+        s.* = .{ .app = app, .window = window, .view = view, .layer = null, .width = width, .height = height, .effects = effects };
         s.debug = std.c.getenv("TEAK_COCOA_DEBUG") != null;
         objc.setState(view, s);
         objc.setState(delegate, s);
 
-        // Layer-hosting: we own the layer, so size it with the view
-        // (width + height sizable) instead of relying on AppKit to.
-        msg(void, layer, sel("setFrame:"), .{frame});
-        msg(void, layer, sel("setAutoresizingMask:"), .{@as(u32, 2 | 16)});
-        msg(void, layer, sel("setOpaque:"), .{true});
-        msg(void, view, sel("setLayer:"), .{layer});
         msg(void, view, sel("setWantsLayer:"), .{true});
+        s.layer = msg(Id, view, sel("layer"), .{}); // our CAMetalLayer (makeBackingLayer)
+        msg(void, s.layer, sel("setOpaque:"), .{true});
         msg(void, window, sel("setContentView:"), .{view});
         msg(void, window, sel("setDelegate:"), .{delegate});
         msg(void, window, sel("setAcceptsMouseMovedEvents:"), .{true});
@@ -470,7 +474,6 @@ pub const Host = struct {
                 msg(void, s.layer, sel("setContentsScale:"), .{@as(f64, scale)});
             }
             s.resized_pending = true;
-            msg(void, s.layer, sel("setFrame:"), .{b});
             std.log.info("teak/cocoa: view {d}x{d} pt, scale {d}", .{ w, h, scale });
         }
     }
@@ -501,12 +504,15 @@ pub const Host = struct {
         s.paste_requested = false;
         // Dispatch everything queued without waiting.
         const mode = objc.nsString("kCFRunLoopDefaultMode");
+        const past = msg(Id, cls("NSDate"), sel("distantPast"), .{});
         while (true) {
-            const ev = msg(Id, s.app, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), .{ NSEventMaskAny, @as(Id, null), mode, true });
+            const ev = msg(Id, s.app, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), .{ NSEventMaskAny, past, mode, true });
             if (ev == null) break;
             msg(void, s.app, sel("sendEvent:"), .{ev});
         }
         msg(void, s.app, sel("updateWindows"), .{});
+        // One non-blocking spin of the run loop so Core Animation commits.
+        _ = msg(bool, msg(Id, cls("NSRunLoop"), sel("currentRunLoop"), .{}), sel("runMode:beforeDate:"), .{ mode, past });
         self.syncGeometry();
         const resized = s.resized_pending or s.first_resize;
         s.first_resize = false;
