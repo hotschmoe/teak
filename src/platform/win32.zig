@@ -73,6 +73,8 @@ const WM_DESTROY: UINT = 0x0002;
 const WM_SIZE: UINT = 0x0005;
 const WM_CHAR: UINT = 0x0102;
 const WM_KEYDOWN: UINT = 0x0100;
+const WM_SYSKEYDOWN: UINT = 0x0104;
+const WM_SYSKEYUP: UINT = 0x0105;
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
@@ -92,6 +94,8 @@ const VK_BACK: WPARAM = 0x08;
 const VK_TAB: WPARAM = 0x09;
 const VK_RETURN: WPARAM = 0x0D;
 const VK_ESCAPE: WPARAM = 0x1B;
+const VK_F10: WPARAM = 0x79;
+const VK_ALT: WPARAM = 0x12; // VK_MENU
 const VK_PRIOR: WPARAM = 0x21; // page up
 const VK_NEXT: WPARAM = 0x22; // page down
 const VK_END: WPARAM = 0x23;
@@ -1309,6 +1313,7 @@ fn navFromVk(vk: WPARAM) ?NavKey {
         VK_RETURN => .enter,
         VK_TAB => .tab,
         VK_ESCAPE => .escape,
+        VK_F10 => .f10,
         VK_A => .a,
         VK_C => .c,
         VK_X => .x,
@@ -1356,6 +1361,24 @@ fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: L
         WM_KEYDOWN => {
             q.mods = currentMods();
             if (navFromVk(wp)) |nk| q.pushNav(nk);
+        },
+        // Alt-modified keys and F10 arrive as "system" keys. Alt alone and F10
+        // are ours (menu-bar activation) and are swallowed so Windows does not
+        // open its own system menu; Alt+other still reaches DefWindowProc
+        // (Alt+F4, Alt+Space), after clearing the pending Alt tap.
+        WM_SYSKEYDOWN => {
+            q.mods = currentMods();
+            if (wp == VK_ALT) {
+                if ((lp & (1 << 30)) == 0) q.altDown(); // ignore auto-repeat
+            } else if (wp == VK_F10) {
+                q.pushNav(.f10);
+            } else {
+                q.alt_clean = false;
+                return false;
+            }
+        },
+        WM_SYSKEYUP => {
+            if (wp == VK_ALT) q.altUp() else if (wp != VK_F10) return false;
         },
         else => return false,
     }

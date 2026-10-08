@@ -37,10 +37,6 @@ pub fn clipRect(a: Rect, b: Rect) Rect {
     return .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
 }
 
-/// Container nesting capacity of every fixed stack in the passes. One value
-/// with `cmd.validateBalance`, so a buffer it accepts can never overflow.
-const MAX_DEPTH = cmd.MAX_BALANCE_DEPTH;
-
 /// The content box of a `text_area` inside its layout rect: inset by the
 /// border and padding. Render, pointer resolution and the metrics event all
 /// use this one function so they agree on where text starts and how wide it
@@ -62,6 +58,10 @@ pub fn textAreaWrapWidth(inner: Rect, ta: anytype) f32 {
         .none, .ellipsis => std.math.inf(f32),
     };
 }
+
+/// Container nesting capacity of every fixed stack in the passes. One value
+/// with `cmd.validateBalance`, so a buffer it accepts can never overflow.
+const MAX_DEPTH = cmd.MAX_BALANCE_DEPTH;
 
 /// Scroll-clip stack shared by hit-test, render and a11y. Fixed depth
 /// (`MAX_DEPTH`, same as the layout stacks) — exceeding it is a bug, not an
@@ -560,7 +560,7 @@ pub const LayoutEngine = struct {
             .push_group => |g| .{ .direction = g.direction, .pad_x = g.padX(), .pad_y = g.padY(), .gap = g.gap, .align_cross = g.align_cross, .can_shrink = true },
             .push_scroll => |sc| .{ .direction = sc.direction, .pad_x = sc.padding, .pad_y = sc.padding, .gap = sc.gap, .align_cross = sc.align_cross, .can_shrink = sc.direction == .vertical },
             .push_overlay => |ov| .{ .direction = ov.direction, .pad_x = ov.padding, .pad_y = ov.padding, .gap = ov.gap, .align_cross = ov.align_cross, .can_shrink = true },
-            else => null,
+            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list, .push_virtual_list, .text, .rich_text, .button, .text_input, .text_area, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas => null,
         };
     }
 

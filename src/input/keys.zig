@@ -62,4 +62,11 @@ pub const SpecialKey = enum {
     ctrl_shift_end,
     ctrl_backspace,
     ctrl_delete,
+
+    // Menu-bar activation (see `teak.MenuBar`). F10 is the portable one; a
+    // bare Alt tap (Alt pressed and released with no other key or button in
+    // between) activates the bar on hosts that can see Alt on its own. Both
+    // are *requests*; the app decides whether a menu bar exists.
+    f10,
+    alt_tap,
 };

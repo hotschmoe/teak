@@ -1123,7 +1123,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .wrap = opts.wrap,
                 .max_lines = opts.max_lines,
                 .text_align = opts.text_align,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// One line of body text truncated with "…" where it does not fit.
@@ -1218,6 +1218,18 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .font = self.theme.typography.body,
                 .disabled = true,
             } }) catch oom();
+        }
+
+        /// `buttonDisabled` with an explicit style (a compact menu row stays
+        /// its own height when disabled).
+        pub fn buttonStyledDisabled(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle) void {
+            self.cmds.append(self.backing, .{ .button = .{
+                .msg = msg,
+                .label = label,
+                .style = style,
+                .font = self.theme.typography.body,
+                .disabled = true,
+            } }) catch unreachable;
         }
 
         pub fn textInput(
@@ -1426,7 +1438,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
         /// Multi-line editable text; see `TextAreaCmd`. The theme's
         /// `text_input` style and body font are used.
         pub fn textArea(self: *Self, c: TextAreaCmd(Msg)) void {
-            self.cmds.append(self.backing, .{ .text_area = c }) catch unreachable;
+            self.cmds.append(self.backing, .{ .text_area = c }) catch oom();
         }
 
         /// `textArea` with the theme's input style + body font filled in.

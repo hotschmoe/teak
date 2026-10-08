@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Animation primitive
+
+- New `teak.anim`: `Tween(T)` (Model-resident), `Ease`/`ease`, `lerp`. New
+  `Sub.animation_frame` and the optional App hook `animationMsg(model, dt_ms)`:
+  while the sub is listed the run loop feeds frame time (capped at 100 ms) to
+  the app and suspends idle skipping. `Sub` gained a variant (exhaustive
+  switches over `Sub` need an arm). `examples/chrome`: sliding QUICK KEYS popover.
+  See docs/features/animation.md.
+
 ### Event-driven idle
 
 - `RunOptions.idle_skip` (default true): a frame with no input, no dispatched
@@ -67,6 +76,20 @@
   `Host.registerFont` now works on Windows.
 
 ### Added
+
+- **Widgets wave 1** (`teak.widgets`, `src/core/widgets/`; zero new Cmd variants): toggle switch,
+  progress bar (determinate + indeterminate), tabs (keyboard), split pane (draggable, min sizes, ratio
+  in the Model), tooltip (hover delay via `Sub.at`), toast stack (tick countdown), modal dialog helper,
+  menu bar with submenus / mnemonics / F10 + Alt activation, and context menu. See
+  `docs/features/widgets.md` and cookbook recipes.
+- App hook `sliderMsg(model, grab_msg, value)`: slider drags under `teak.run` (they were click-only: nothing
+  turned the pointer position into a value).
+- App hooks `hoverMsg` / `contextMsg` (`teak.PointerEvent`, `teak.Box`): the widget under the pointer
+  and its previous-frame rect, as data.
+- `SpecialKey.f10` and `SpecialKey.alt_tap` (a bare Alt press + release), wired in the Win32, X11 and web
+  hosts through `InputQueue.altDown` / `altUp`.
+- Tab traversal (`focus.nextFocusable` / `prevFocusable`) is confined to the topmost modal overlay.
+- `cb.buttonStyledDisabled`.
 
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`

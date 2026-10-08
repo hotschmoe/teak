@@ -57,6 +57,21 @@
 //!     content size of every `ScrollStyle.id != 0` region, on its first layout
 //!     and whenever either changes, so the app can clamp offsets and draw
 //!     scrollbars (the view cannot read layout).
+//!   - `hoverMsg(*const Model, PointerEvent(Msg)) ?Msg` — the interactive widget
+//!     under the pointer changed (entered, left, or replaced by another).
+//!     `ev.hit` is that widget's click Msg, `ev.box` its rect, `ev.now_ms` the
+//!     host clock: enough to drive a tooltip (`teak.Tooltip`) with a
+//!     `Sub.at` delay, all in the Model.
+//!   - `contextMsg(*const Model, PointerEvent(Msg)) ?Msg` — the right button
+//!     went down. `ev.hit` is the Msg of the widget under the cursor (null on
+//!     empty space), so one hook opens a context menu for any region
+//!     (`teak.ContextMenu`); the app maps `hit` to "which row / which panel".
+//!   - `sliderMsg(*const Model, grab: Msg, value: f32) ?Msg` — a `slider` cmd is
+//!     being dragged: `grab` is its `grab_msg` (which slider), `value` the
+//!     0..1 position under the pointer. Fired on press and every frame the
+//!     left button stays down (the pointer is captured: the drag keeps
+//!     working off the track), and the slider's plain click Msg is NOT
+//!     dispatched. Without the hook a slider is click-only.
 //!   - `focusedMsg(*const Model) ?Msg`                — the focus Msg of the
 //!     currently-focused widget; `run` maps it to a cmd index via
 //!     `indexOfFocusMsg` (stable across conditional/reordered widgets)
@@ -81,6 +96,7 @@
 //!     services the returned subs each frame via `runSubs` on the host's
 //!     monotonic clock (`Host.nowMs`) and dispatches any fired `Msg`
 //!     through the normal `update` loop. See `docs/features/subscriptions.md`.
+//!   - `animationMsg(*const Model, dt_ms: u32) ?Msg`   — frame time while a `Sub.animation_frame` is listed (core/anim.zig)
 //!   - `effects(*const Model) []const Effect`         — declarative effects
 //!     (HARDLINE §2 hatch 7): HTTP, downloads, file picker, storage, clock,
 //!     clipboard, query params. Pure; each effect `id` is handed to the host
@@ -468,6 +484,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// if mouseup lands on the same widget; drag-off cancels.
         press_target: ?usize = null,
 
+        /// Cmd index last reported to `hoverMsg`; loop bookkeeping like
+        /// `press_target` (a lost value only repeats one hover event).
+        hover_reported: ?usize = null,
+        hover_seen: bool = false,
+        /// The `grab_msg` of the slider being dragged (`sliderMsg` hook).
+        slider_grab: ?Msg = null,
+
         /// The previous frame's `nowMs`. `runSubs` is stateless — it decides
         /// fire/skip from (last_sub_ms, now_ms, sub data) — so this single
         /// timestamp is all the bookkeeping the loop holds. `null` until the
@@ -502,6 +525,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         last_mouse_x: f32 = -1,
         last_mouse_y: f32 = -1,
         last_buttons: pointer.Buttons = .{},
+        /// A `Sub.animation_frame` is listed: frames must keep flowing.
+        animating: bool = false,
         /// The first frame always builds (nothing to show yet).
         built_once: bool = false,
 
@@ -571,6 +596,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const prev = self.current;
             const dispatched_before = self.dispatch_count;
             self.routeMouse(input, prev);
+            self.routePointerHooks(input, prev);
             self.routeCanvasPointer(input, prev);
             self.routeKeys(input, prev);
             self.routeWheel(input, prev);
@@ -649,6 +675,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (!std.meta.eql(input.buttons, self.last_buttons)) return false;
             if (input.wheel_dx != 0 or input.wheel_dy != 0) return false;
             if (input.chars.len != 0 or input.keys.len != 0) return false;
+            if (self.animating) return false;
             if (self.ts.ime_active or self.host.imeState().active) return false;
             if (self.opts.blink_period > 0 and self.ts.focus_index != null) return false;
             if (has_secondary and App.secondaryWindow(&self.model) != null) return false;
@@ -685,9 +712,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             else
                 null;
 
+            var slider_consumed = false;
+            if (comptime @hasDecl(App, "sliderMsg")) slider_consumed = self.routeSlider(input, prev_cmds, prev_rects, hover);
+
             if (input.mouse_down) self.press_target = hover;
             if (input.mouse_up) {
-                if (self.press_target != null and hover == self.press_target) {
+                if (!slider_consumed and self.press_target != null and hover == self.press_target) {
                     if (hit_test.hitTest(prev_cmds, prev_rects, input.mouse_x, input.mouse_y)) |hit| {
                         // `hit.msg` is null when a modal overlay consumed the
                         // click but asked for no Msg (HARDLINE §2 hatch 5) —
@@ -698,6 +728,78 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 self.press_target = null;
             }
             if (self.press_target != null and hover != self.press_target) self.press_target = null;
+        }
+
+        /// `hoverMsg` / `contextMsg`: both resolve the pointer against the
+        /// previous frame's layout like a click does.
+        fn routePointerHooks(self: *Self, input: Input, prev: u1) void {
+            const has_hover = comptime @hasDecl(App, "hoverMsg");
+            const has_context = comptime @hasDecl(App, "contextMsg");
+            if (!has_hover and !has_context) return;
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+            const hit = if (cmds.len > 0) hit_test.hitTest(cmds, rects, input.mouse_x, input.mouse_y) else null;
+            const under: ?usize = if (hit) |h| h.index else null;
+
+            if (has_hover) {
+                if (!self.hover_seen or under != self.hover_reported) {
+                    const first = !self.hover_seen;
+                    self.hover_seen = true;
+                    self.hover_reported = under;
+                    // Nothing to report before the first frame laid anything out.
+                    if (!(first and under == null)) {
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+                    }
+                }
+            }
+            if (has_context and input.button_down.right) {
+                if (App.contextMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+            }
+        }
+
+        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect) pointer.PointerEvent(Msg) {
+            var ev: pointer.PointerEvent(Msg) = .{
+                .x = input.mouse_x,
+                .y = input.mouse_y,
+                .mods = input.mods,
+                .now_ms = self.host.nowMs(),
+            };
+            if (hit) |h| {
+                // A modal backdrop that swallows the click has no Msg: report it as empty space.
+                ev.hit = h.msg;
+                if (h.msg != null and h.index < rects.len) {
+                    const r = rects[h.index];
+                    ev.box = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
+                }
+            }
+            return ev;
+        }
+
+        /// Slider drag with pointer capture (`sliderMsg`). Returns true when
+        /// this frame's press / release belongs to a slider, so the plain
+        /// click dispatch must be skipped.
+        fn routeSlider(self: *Self, input: Input, cmds: anytype, rects: []const Rect, hover: ?usize) bool {
+            var consumed = false;
+            if (input.mouse_down) {
+                if (hover) |idx| if (idx < cmds.len and idx < rects.len) switch (cmds[idx]) {
+                    .slider => |sl| {
+                        self.slider_grab = sl.grab_msg;
+                        consumed = true;
+                    },
+                    else => {},
+                };
+            }
+            if (self.slider_grab) |grab| {
+                consumed = true;
+                if (focus.indexOfFocusMsg(cmds, grab)) |idx| {
+                    if (idx < rects.len) {
+                        const v = hit_test.sliderValueAt(rects[idx], input.mouse_x);
+                        if (App.sliderMsg(&self.model, grab, v)) |m| self.dispatch(m);
+                    }
+                }
+                if (!input.buttons.left) self.slider_grab = null;
+            }
+            return consumed;
         }
 
         /// Characters first, then special keys; clipboard chords route to the
@@ -1113,8 +1215,16 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             };
             const now_ms = self.host.nowMs();
             const since = self.last_sub_ms orelse now_ms; // first frame: no window, no fire
-            sub_mod.runSubs(Msg, App.subscribe(&self.model), since, now_ms, Dispatch{ .rt = self });
+            const subs = App.subscribe(&self.model);
+            sub_mod.runSubs(Msg, subs, since, now_ms, Dispatch{ .rt = self });
             self.last_sub_ms = now_ms;
+            // `.animation_frame`: feed the frame time to the App while it asks
+            // for it, and keep frames flowing (no idle skip) meanwhile.
+            self.animating = sub_mod.wantsAnimationFrame(Msg, subs);
+            if (self.animating and @hasDecl(App, "animationMsg")) {
+                const dt: u32 = @intCast(@min(now_ms -| since, sub_mod.max_animation_dt_ms));
+                if (App.animationMsg(&self.model, dt)) |m| self.dispatch(m);
+            }
         }
 
         /// Hand the host's finished effect results (and unsolicited drops /
@@ -1486,6 +1596,7 @@ pub fn rectsEqual(a: []const Rect, b: []const Rect) bool {
 test {
     _ = @import("core/eql.zig");
     _ = @import("core/oom.zig");
+    _ = @import("core/anim.zig");
     _ = @import("run_test.zig");
     _ = @import("run_effects_test.zig");
 }
