@@ -295,7 +295,7 @@ fn readFontFileLibc(allocator: std.mem.Allocator) ![]u8 {
 /// threading an `Io` handle from `main` — impractical for a font load
 /// deep inside backend init — so libc `fopen`/`fread` is the pragmatic,
 /// churn-proof choice. Reads in chunks; no `fseek`/`fstat` dependency.
-fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+pub fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     var path_buf: [4096]u8 = undefined;
     if (path.len + 1 > path_buf.len) return error.PathTooLong;
     @memcpy(path_buf[0..path.len], path);

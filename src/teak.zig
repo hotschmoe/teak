@@ -20,6 +20,8 @@ pub const transient = @import("core/transient.zig");
 pub const text = @import("core/text.zig");
 /// UAX#29 graphemes, word boundaries, lossy UTF-8 decoding and Unicode property lookups.
 pub const unicode = @import("core/unicode.zig");
+/// UAX #9 bidirectional algorithm: levels, per-line visual runs, visual caret movement, selection spans.
+pub const bidi = @import("core/bidi.zig");
 /// UAX#14-lite line-break opportunities over grapheme clusters.
 pub const linebreak = @import("core/linebreak.zig");
 /// Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.
@@ -221,6 +223,9 @@ pub const MeshData = scene.MeshData;
 pub const Camera = scene.Camera;
 /// One 3D scene to render this frame.
 pub const SceneDraw = scene.SceneDraw;
+pub const SceneItem = scene.Item;
+pub const SceneItemFlags = scene.ItemFlags;
+pub const SceneView = scene.View;
 
 /// A declared GPU resource (image or mesh) keyed by an app-chosen key.
 pub const Resource = resources.Resource;
