@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZIG_VERSION: 0.17.0
+  ZIG_VERSION: 0.16.0
   # teak depends on zunk by path (../zunk), so every job checks both out as
   # siblings. Bump ZUNK_REF to a branch while a zunk change is unmerged.
   ZUNK_REF: master
