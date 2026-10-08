@@ -3,6 +3,7 @@ const oom = @import("oom.zig").oom;
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
 const scene = @import("scene.zig");
+const CursorShape = @import("cursor.zig").CursorShape;
 const surface = @import("surface.zig");
 
 pub const Radii = surface.Radii;
@@ -652,6 +653,9 @@ pub fn CanvasCmd(comptime Msg: type) type {
         /// Identifies the canvas in `CanvasEvent.id`. Non-zero and distinct
         /// per interactive canvas.
         id: u32 = 0,
+        /// Cursor shown while the pointer is over this (interactive) canvas;
+        /// null keeps the arrow. The App's `cursorFor` hook still wins.
+        cursor: ?CursorShape = null,
     };
 }
 

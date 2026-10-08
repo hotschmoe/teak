@@ -133,6 +133,13 @@
   when either is stale, and when a `docs/migration-*.md` is not linked from `llms.txt`.
 - Toasts slide in from the right and fade (and slide out on expiry / dismiss) with `teak.anim` tweens; the app
   forwards `animationMsg` frames as `Toast.Msg.frame` and lists `Sub.animation_frame` while `Toast.animating`.
+- **Cursor shapes**: `teak.CursorShape`, optional `Host.setCursor` (X11, Win32,
+  web), `CanvasCmd.cursor`, App hook `cursorFor(model, HoverKind)`. The runtime
+  picks the shape from the hovered cmd and calls the Host only on change.
+- **X11 HiDPI**: scale from `TEAK_SCALE` / `GDK_SCALE` / `Xft.dpi`; the Host
+  reports logical size and pointer coordinates, `InitOptions.scale` from `host.scaleFactor()`
+  configures a physical surface and bakes text at device resolution. Headless
+  `shot` takes `ShotOptions.scale`.
 
 - `ButtonCmd.underline` / `cb.buttonStyledUnderlined`: one underlined character in a button label (a 1 px quad under the
   glyph). Menu bars and panels use it for their `&` mnemonics.

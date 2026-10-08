@@ -582,6 +582,11 @@ pub const Host = struct {
 
     /// Update the browser tab title via zunk (sets `document.title`).
     /// Same call `init` uses for the initial title.
+    /// CSS `cursor` on the page body through zunk (`app.setCursor`).
+    pub fn setCursor(_: *Host, shape: teak.CursorShape) void {
+        zapp.setCursor(shape.cssName());
+    }
+
     pub fn setTitle(_: *Host, title: []const u8) void {
         zapp.setTitle(title);
     }
