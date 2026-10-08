@@ -50,6 +50,50 @@ const MeasureCacheEntry = struct {
     last_used: u64,
 };
 
+/// DOM `keyCode` -> shortcut key (see `InputQueue.pushShortcut`); built at
+/// comptime from the key enum so letters, digits and F-keys cost no lines.
+const shortcut_codes = shortcutTable();
+
+fn shortcutTable() [shortcut_count]struct { code: u8, key: teak.Key } {
+    @setEvalBranchQuota(10_000);
+    var out: [shortcut_count]struct { code: u8, key: teak.Key } = undefined;
+    var n: usize = 0;
+    for (0..26) |i| {
+        out[n] = .{ .code = @intCast(65 + i), .key = @fromBackingInt(@intCast(i)) };
+        n += 1;
+    }
+    for (0..10) |i| {
+        out[n] = .{ .code = @intCast(48 + i), .key = @fromBackingInt(@intCast(@backingInt(teak.Key.d0) + i)) };
+        n += 1;
+    }
+    for (0..12) |i| {
+        out[n] = .{ .code = @intCast(112 + i), .key = @fromBackingInt(@intCast(@backingInt(teak.Key.f1) + i)) };
+        n += 1;
+    }
+    for (shortcut_extra) |e| {
+        out[n] = e;
+        n += 1;
+    }
+    return out;
+}
+
+const shortcut_extra = [_]struct { code: u8, key: teak.Key }{
+    .{ .code = 13, .key = .enter },          .{ .code = 9, .key = .tab },
+    .{ .code = 27, .key = .escape },         .{ .code = 32, .key = .space },
+    .{ .code = 8, .key = .backspace },       .{ .code = 46, .key = .delete },
+    .{ .code = 45, .key = .insert },         .{ .code = 37, .key = .left },
+    .{ .code = 39, .key = .right },          .{ .code = 38, .key = .up },
+    .{ .code = 40, .key = .down },           .{ .code = 36, .key = .home },
+    .{ .code = 35, .key = .end },            .{ .code = 33, .key = .page_up },
+    .{ .code = 34, .key = .page_down },      .{ .code = 188, .key = .comma },
+    .{ .code = 190, .key = .period },        .{ .code = 191, .key = .slash },
+    .{ .code = 220, .key = .backslash },     .{ .code = 186, .key = .semicolon },
+    .{ .code = 222, .key = .quote },         .{ .code = 189, .key = .minus },
+    .{ .code = 187, .key = .equal },         .{ .code = 219, .key = .bracket_left },
+    .{ .code = 221, .key = .bracket_right }, .{ .code = 192, .key = .grave },
+};
+const shortcut_count = 26 + 10 + 12 + shortcut_extra.len;
+
 /// zunk key code -> host-neutral key. Letters only matter as Ctrl chords;
 /// `InputQueue.pushNav` drops them when Ctrl is not held.
 const key_mappings = [_]struct { from: zinput.Key, to: NavKey }{
@@ -320,6 +364,9 @@ pub const Host = struct {
         q.mods.ctrl = reported.ctrl or reported.meta;
         for (key_mappings) |m| {
             if (zinput.isKeyPressed(m.from)) q.pushNav(m.to);
+        }
+        for (shortcut_codes) |m| {
+            if (zinput.isKeyPressed(@fromBackingInt(@intCast(m.code)))) q.pushShortcut(m.key);
         }
         q.mods = reported;
         // Zunk delivers whole UTF-8 code points and no control codes or

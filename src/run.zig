@@ -53,6 +53,12 @@
 //!     `indexOfFocusMsg` (stable across conditional/reordered widgets)
 //!     to drive the focus ring + cursor blink. Also enables built-in
 //!     Tab / Shift+Tab traversal between focusable widgets.
+//!   - `commands(*const Model, *CommandList(Msg)) void` — the App's command
+//!     table (id, label, shortcut, enabled, Msg), a pure function of the Model.
+//!     The loop matches the frame's key chords (`InputState.chords`) against
+//!     the enabled rows BEFORE widget key handling and dispatches the match's
+//!     Msg; a claimed chord's text / special key (Ctrl+C...) is swallowed. The
+//!     same table feeds menus and `CommandPalette`. See docs/features/commands.md.
 //!   - `submitMsg(*const Model) ?Msg`                 — dispatched on the
 //!     Enter key (takes precedence over `keySpecialMsg` for Enter)
 //!   - `themeFor(*const Model) Theme`                 — per-frame theme
@@ -114,6 +120,8 @@ const render = @import("render/build.zig");
 const vertex = @import("render/vertex.zig");
 const resources = @import("resources.zig");
 const control = @import("control.zig");
+const keys_mod = @import("input/keys.zig");
+const commands_mod = @import("core/commands.zig");
 
 const Rect = layout.Rect;
 const TransientState = transient.TransientState;
@@ -392,6 +400,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         const has_scroll_hook = @hasDecl(App, "scrollMsg");
         const has_scroll_layout_hook = @hasDecl(App, "scrollLayoutMsg");
         const has_resources = @hasDecl(App, "resources");
+        const has_commands = @hasDecl(App, "commands");
         const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView") and
             @hasDecl(Gpu, "openSecondarySurface");
         const has_effects = @hasDecl(App, "effects");
@@ -540,7 +549,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const prev = self.current;
             self.routeMouse(input, prev);
             self.routeCanvasPointer(input, prev);
-            self.routeKeys(input, prev);
+            const swallow = self.routeChords(input);
+            self.routeKeys(input, prev, swallow);
             self.routeWheel(input, prev);
             self.deliverEffectResults();
             self.fireSubs();
@@ -634,17 +644,66 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (self.press_target != null and hover != self.press_target) self.press_target = null;
         }
 
+        /// What a claimed shortcut keeps from also reaching widgets this frame.
+        const Swallow = struct {
+            /// Typed text is dropped (a Ctrl/Alt combination never types).
+            text: bool = false,
+            keys: [input_chords_cap]keys_mod.SpecialKey = undefined,
+            n: usize = 0,
+
+            fn add(self: *Swallow, k: keys_mod.SpecialKey) void {
+                if (self.n < self.keys.len) {
+                    self.keys[self.n] = k;
+                    self.n += 1;
+                }
+            }
+            /// Consume one pending occurrence of `k`.
+            fn take(self: *Swallow, k: keys_mod.SpecialKey) bool {
+                for (self.keys[0..self.n], 0..) |have, i| {
+                    if (have != k) continue;
+                    self.keys[i] = self.keys[self.n - 1];
+                    self.n -= 1;
+                    return true;
+                }
+                return false;
+            }
+        };
+        const input_chords_cap = 16;
+
+        /// Match this frame's key chords against the App's `commands` table
+        /// BEFORE widget key handling; a claimed chord dispatches the
+        /// command's Msg and keeps its text / special key from reaching the
+        /// widgets (so Ctrl+S does not also reach a focused text field).
+        /// The table is rebuilt after each dispatch, since the Msg may have
+        /// changed which commands are enabled.
+        fn routeChords(self: *Self, input: Input) Swallow {
+            var sw: Swallow = .{};
+            if (comptime !has_commands) return sw;
+            if (input.chords.len == 0) return sw;
+            for (input.chords) |ch| {
+                var list: commands_mod.CommandList(Msg) = .{};
+                App.commands(&self.model, &list);
+                const c = list.match(ch) orelse continue;
+                sw.text = true;
+                if (ch.special()) |sk| sw.add(sk);
+                self.dispatch(c.msg);
+            }
+            return sw;
+        }
+
         /// Characters first, then special keys; clipboard chords route to the
         /// app's own handler with the Host clipboard vtable (the app owns
         /// cut/copy/paste policy).
-        fn routeKeys(self: *Self, input: Input, prev: u1) void {
+        fn routeKeys(self: *Self, input: Input, prev: u1, swallow_in: Swallow) void {
+            var swallow = swallow_in;
             const prev_cmds = self.bufs[prev].cmds.items;
-            if (@hasDecl(App, "keyCharMsg")) {
+            if (@hasDecl(App, "keyCharMsg") and !swallow.text) {
                 for (input.chars) |ch| {
                     if (App.keyCharMsg(&self.model, ch)) |m| self.dispatch(m);
                 }
             }
             for (input.keys) |k| {
+                if (swallow.take(k)) continue; // a command claimed this chord
                 if (k == .f12 and self.opts.inspect_hotkey) {
                     control.toggleInspect(&self.ctl);
                     continue;

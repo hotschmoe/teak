@@ -773,6 +773,15 @@ pub const Host = struct {
         }
         const chars = buf[0..if (n > 0) @intCast(n) else 0];
 
+        // 0. Keyboard shortcuts (Ctrl/Alt combinations, F-keys) for the App's
+        //    `commands` table, IN ADDITION to the special-key / text paths
+        //    below; an Alt combination never types text.
+        if (shortcutFromKeysym(keysym)) |sk| q.pushShortcut(sk);
+        if (q.mods.alt and !q.mods.ctrl) {
+            if (navFromKeysym(keysym)) |nk| q.pushNav(nk);
+            return;
+        }
+
         // 1. Navigation / editing keys (Shift variants resolved by the queue).
         if (navFromKeysym(keysym)) |nk| return q.pushNav(nk);
         // 2. Ctrl chords (their control-char text is not typed).
@@ -1521,6 +1530,41 @@ fn navFromKeysym(keysym: KeySym) ?NavKey {
     };
 }
 
+/// Keysym -> shortcut key (letters fold to lower case).
+fn shortcutFromKeysym(ks: KeySym) ?teak.Key {
+    return switch (ks) {
+        'a'...'z', 'A'...'Z', '0'...'9' => teak.Key.fromAscii(@intCast(ks)),
+        0xffbe...0xffc9 => @as(teak.Key, @fromBackingInt(@intCast(@backingInt(teak.Key.f1) + (ks - 0xffbe)))),
+        XK_Return, XK_KP_Enter => .enter,
+        XK_Tab, XK_ISO_Left_Tab => .tab,
+        XK_Escape => .escape,
+        XK_BackSpace => .backspace,
+        XK_Delete => .delete,
+        0xff63 => .insert,
+        XK_Left => .left,
+        XK_Right => .right,
+        XK_Up => .up,
+        XK_Down => .down,
+        XK_Home => .home,
+        XK_End => .end,
+        XK_Prior => .page_up,
+        XK_Next => .page_down,
+        ' ' => .space,
+        ',' => .comma,
+        '.' => .period,
+        '/' => .slash,
+        '\\' => .backslash,
+        ';' => .semicolon,
+        '\'' => .quote,
+        '-' => .minus,
+        '=' => .equal,
+        '[' => .bracket_left,
+        ']' => .bracket_right,
+        '`' => .grave,
+        else => null,
+    };
+}
+
 /// Letter keysyms that form editing chords (only consulted with Ctrl held).
 fn chordFromKeysym(keysym: KeySym) ?NavKey {
     // Fold A-Z onto a-z so Caps Lock / Shift don't matter.
@@ -1681,4 +1725,14 @@ test "atomsFromBytes decodes a format-32 property" {
     var out: [4]Atom = undefined;
     try std.testing.expectEqual(@as(usize, 3), atomsFromBytes(&raw, &out));
     try std.testing.expectEqual(@as(Atom, 102), out[2]);
+}
+
+test "shortcutFromKeysym maps letters, digits, F-keys and punctuation" {
+    try std.testing.expectEqual(teak.Key.p, shortcutFromKeysym('P').?);
+    try std.testing.expectEqual(teak.Key.d5, shortcutFromKeysym('5').?);
+    try std.testing.expectEqual(teak.Key.f1, shortcutFromKeysym(0xffbe).?);
+    try std.testing.expectEqual(teak.Key.f12, shortcutFromKeysym(XK_F12).?);
+    try std.testing.expectEqual(teak.Key.comma, shortcutFromKeysym(',').?);
+    try std.testing.expectEqual(teak.Key.page_down, shortcutFromKeysym(XK_Next).?);
+    try std.testing.expect(shortcutFromKeysym(0x1234567) == null);
 }

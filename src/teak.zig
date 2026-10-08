@@ -34,6 +34,8 @@ pub const numeric_field = @import("core/numeric_field.zig");
 pub const dropdown = @import("core/dropdown.zig");
 /// `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
 pub const combobox = @import("core/combobox.zig");
+/// Command registry (`CommandList`), shortcuts and the `CommandPalette` (docs/features/commands.md).
+pub const commands = @import("core/commands.zig");
 /// `ComponentList`: a dynamic homogeneous list of components.
 pub const component_list = @import("core/component_list.zig");
 /// `appendDebugOverlay`: dump the frame's cmds and rects as an overlay.
@@ -266,6 +268,10 @@ pub const indexOfFocusMsg = focus.indexOfFocusMsg;
 pub const focusMsgAt = focus.focusMsgAt;
 /// Host-neutral non-text keys and chords.
 pub const SpecialKey = keys.SpecialKey;
+/// A physical key a shortcut can name, a shortcut (`Chord`: key + primary-modifier/shift/alt) and the label style.
+pub const Key = keys.Key;
+pub const Chord = keys.Chord;
+pub const ShortcutPlatform = keys.Platform;
 /// One accessibility-tree node derived from a cmd.
 pub const A11yNode = a11y.A11yNode;
 /// Semantic role of an `A11yNode`.
@@ -301,6 +307,10 @@ pub const Dropdown = dropdown.Dropdown;
 pub const DropdownViewOpts = dropdown.DropdownViewOpts;
 /// Searchable select component (see `combobox`).
 pub const Combobox = combobox.Combobox;
+pub const Command = commands.Command;
+pub const CommandList = commands.CommandList;
+pub const CommandPalette = commands.CommandPalette;
+pub const PaletteViewOpts = commands.PaletteViewOpts;
 /// Anchor and sizing options for the open combobox list.
 pub const ComboboxViewOpts = combobox.ViewOpts;
 /// Build the app Msg for a typed character into a named field.

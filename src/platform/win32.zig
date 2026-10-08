@@ -1295,6 +1295,42 @@ fn currentMods() teak.Modifiers {
     };
 }
 
+/// Virtual-key code -> shortcut key (see `InputQueue.pushShortcut`).
+fn shortcutFromVk(vk: WPARAM) ?teak.Key {
+    return switch (vk) {
+        0x41...0x5A => teak.Key.fromAscii(@intCast(vk)),
+        0x30...0x39 => teak.Key.fromAscii(@intCast(vk)),
+        0x70...0x7B => @as(teak.Key, @fromBackingInt(@intCast(@backingInt(teak.Key.f1) + (vk - 0x70)))),
+        VK_RETURN => .enter,
+        VK_TAB => .tab,
+        VK_ESCAPE => .escape,
+        VK_BACK => .backspace,
+        VK_DELETE => .delete,
+        0x2D => .insert,
+        VK_LEFT => .left,
+        VK_RIGHT => .right,
+        VK_UP => .up,
+        VK_DOWN => .down,
+        VK_HOME => .home,
+        VK_END => .end,
+        VK_PRIOR => .page_up,
+        VK_NEXT => .page_down,
+        0x20 => .space,
+        0xBC => .comma,
+        0xBE => .period,
+        0xBF => .slash,
+        0xDC => .backslash,
+        0xBA => .semicolon,
+        0xDE => .quote,
+        0xBD => .minus,
+        0xBB => .equal,
+        0xDB => .bracket_left,
+        0xDD => .bracket_right,
+        0xC0 => .grave,
+        else => null,
+    };
+}
+
 fn navFromVk(vk: WPARAM) ?NavKey {
     return switch (vk) {
         VK_BACK => .backspace,
@@ -1357,6 +1393,7 @@ fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: L
         WM_CHAR => q.pushUtf16Unit(@truncate(wp)),
         WM_KEYDOWN => {
             q.mods = currentMods();
+            if (shortcutFromVk(wp)) |sk| q.pushShortcut(sk);
             if (navFromVk(wp)) |nk| q.pushNav(nk);
         },
         else => return false,

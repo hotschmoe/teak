@@ -48,6 +48,7 @@ const Event = union(enum) {
     chars: struct { buf: [32]u8, len: u8 },
     key: SpecialKey,
     mods: Modifiers,
+    chord: teak.Chord,
 };
 
 /// A submitted effect, deep-copied so tests can assert on it after the
@@ -139,6 +140,10 @@ pub const Host = struct {
             rest = rest[n..];
         }
     }
+    /// A keyboard shortcut (`InputState.chords`), e.g. `.{ .key = .s, .mod = true }`.
+    pub fn pushChord(self: *Host, c: teak.Chord) void {
+        self.push(.{ .chord = c });
+    }
     pub fn pushKey(self: *Host, k: SpecialKey) void {
         self.push(.{ .key = k });
     }
@@ -208,6 +213,7 @@ pub const Host = struct {
             .chars => |t| self.pushChars(t),
             .key => |k| self.pushKey(k),
             .mods => |m| self.setModifiers(m),
+            .chord => |c| self.pushChord(c),
         }
     }
     /// Make `shouldClose` true (the control `quit` command).
@@ -234,6 +240,7 @@ pub const Host = struct {
             .chars => |ch| q.pushText(ch.buf[0..ch.len]),
             .key => |k| q.pushKey(k),
             .mods => |m| q.mods = m,
+            .chord => |c| q.pushChord(c),
         };
         self.event_count = 0;
 
