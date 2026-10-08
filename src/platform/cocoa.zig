@@ -489,6 +489,12 @@ pub const Host = struct {
         const hidden = msg(bool, s.layer, sel("isHidden"), .{});
         const view_layer = msg(Id, s.view, sel("layer"), .{});
         const win_vis = msg(bool, s.window, sel("isVisible"), .{});
+        const occ = msg(u64, s.window, sel("occlusionState"), .{});
+        const on_space = msg(bool, s.window, sel("isOnActiveSpace"), .{});
+        const has_screen = msg(Id, s.window, sel("screen"), .{}) != null;
+        const active = msg(bool, s.app, sel("isActive"), .{});
+        const key = msg(bool, s.window, sel("isKeyWindow"), .{});
+        std.log.info("teak/cocoa: occlusionState {d} (2 = visible) onActiveSpace {} hasScreen {} appActive {} key {}", .{ occ, on_space, has_screen, active, key });
         std.log.info("teak/cocoa: poll {d}: drawable {d}x{d} frame {d}x{d} device={any} hidden={} view.layer==layer {} window visible {}", .{
             s.polls,        size.w, size.h,                frame.size.w, frame.size.h,
             device != null, hidden, view_layer == s.layer, win_vis,
