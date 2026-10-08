@@ -122,6 +122,21 @@ pub fn MenuItem(comptime Action: type) type {
     };
 }
 
+/// Index of the mnemonic character within `displayLabel(label)`, or null.
+pub fn mnemonicIndex(label: []const u8) ?usize {
+    var shown: usize = 0;
+    var i: usize = 0;
+    while (i < label.len) : (i += 1) {
+        if (label[i] == '&' and i + 1 < label.len) {
+            if (label[i + 1] == '&') {
+                i += 1; // a literal '&'
+            } else return shown;
+        }
+        shown += 1;
+    }
+    return null;
+}
+
 /// `label` without its mnemonic markers (`&x` -> `x`, `&&` -> `&`), in the frame arena.
 pub fn displayLabel(cb: anytype, label: []const u8) []const u8 {
     var out: std.ArrayList(u8) = .empty;
@@ -401,7 +416,7 @@ pub fn Nav(comptime Action: type) type {
             while (level <= st.depth and level < max_depth) : (level += 1) {
                 const items = levelItems(root, st, bar, level);
                 if (items.len == 0) break;
-                const h = rowsHeight(items, o);
+                const h = rowsHeight(items, o) + 2; // rows + the 1 px panel border
                 // Keep the panel on screen.
                 if (x + o.panel_w > o.window_w) x = @max(0, o.window_w - o.panel_w);
                 if (y + h > o.window_h) y = @max(0, o.window_h - h);
@@ -416,16 +431,16 @@ pub fn Nav(comptime Action: type) type {
                     .shadow = .{ 0, 0, 0, 0.35 },
                     .shadow_offset = .{ 3, 3 },
                 });
-                cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .bg = pal.bg_panel, .border = pal.border, .align_cross = .stretch, .width = o.panel_w });
+                cb.pushGroup(.{ .direction = .vertical, .padding = 1, .gap = 0, .bg = pal.bg_panel, .border = pal.border, .align_cross = .stretch, .width = o.panel_w });
                 for (items, 0..) |it, i| {
                     if (it.separator) {
-                        cb.pushGroup(.{ .direction = .vertical, .pad_x = 1, .pad_y = 4, .gap = 0, .align_cross = .stretch });
+                        cb.pushGroup(.{ .direction = .vertical, .pad_x = 0, .pad_y = 4, .gap = 0, .align_cross = .stretch });
                         cb.divider();
                         cb.popGroup();
                         continue;
                     }
                     var style = cb.theme.button;
-                    style.min_width = o.panel_w;
+                    style.min_width = o.panel_w - 2; // inside the 1 px panel border (not over it)
                     style.height = o.row_h;
                     style.label_align = .start;
                     style.bg = pal.bg_panel;
@@ -440,6 +455,7 @@ pub fn Nav(comptime Action: type) type {
                         style.hover_bg = pal.bg_hover;
                     }
                     const label = rowText(cb, it, o);
+                    const mn = if (mnemonicIndex(it.label)) |k| k + 2 else null; // after the 2-char lead
                     if (!it.enabled) {
                         cb.buttonStyledDisabled(msgs.menu(.close), label, style);
                     } else if (it.isSub()) {
@@ -447,9 +463,9 @@ pub fn Nav(comptime Action: type) type {
                         s.depth = @intCast(level + 1);
                         s.sel[level] = @intCast(i);
                         if (level + 1 < max_depth) s.sel[level + 1] = firstSelectable(it.children) orelse 0;
-                        cb.buttonStyled(msgs.menu(.{ .goto = s }), label, style);
+                        cb.buttonStyledUnderlined(msgs.menu(.{ .goto = s }), label, style, mn);
                     } else if (it.action) |a| {
-                        cb.buttonStyled(msgs.run(a), label, style);
+                        cb.buttonStyledUnderlined(msgs.run(a), label, style, mn);
                     } else {
                         cb.buttonStyled(msgs.menu(.close), label, style);
                     }
@@ -459,7 +475,7 @@ pub fn Nav(comptime Action: type) type {
 
                 // Next level opens to the right of this one, level with the parent row.
                 const parent_row = st.sel[level];
-                y += rowOffset(items, parent_row, o);
+                y += rowOffset(items, parent_row, o); // the submenu's own first row lines up with the parent row (both panels inset 1 px)
                 x += o.panel_w;
                 if (x + o.panel_w > o.window_w) x = @max(0, x - 2 * o.panel_w);
             }
@@ -559,7 +575,7 @@ pub fn MenuBar(comptime Action: type) type {
                     // Clicking the open menu's entry closes it; any other opens that menu.
                     const same_open = st.open and st.hot == i;
                     const target: State = if (same_open) .{} else N.openTop(items, st, @intCast(i));
-                    cb.buttonStyled(msgs.menu(.{ .goto = target }), label, style);
+                    cb.buttonStyledUnderlined(msgs.menu(.{ .goto = target }), label, style, mnemonicIndex(it.label));
                 }
             }
             cb.popGroup();
@@ -728,6 +744,15 @@ test "menu: mnemonics and display labels" {
     try testing.expectEqualStrings("Open...", displayLabel(&cb, "&Open..."));
     try testing.expectEqualStrings("A & B", displayLabel(&cb, "A && B"));
     try testing.expectEqualStrings("Trailing&", displayLabel(&cb, "Trailing&"));
+}
+
+test "menu: mnemonicIndex points into the displayed label" {
+    try testing.expectEqual(@as(?usize, 0), mnemonicIndex("&File"));
+    try testing.expectEqual(@as(?usize, 1), mnemonicIndex("E&xit"));
+    try testing.expectEqual(@as(?usize, 2), mnemonicIndex("Re&fresh"));
+    try testing.expectEqual(@as(?usize, 4), mnemonicIndex("A && &B")); // "A & B": the B
+    try testing.expectEqual(@as(?usize, null), mnemonicIndex("Plain"));
+    try testing.expectEqual(@as(?usize, null), mnemonicIndex("Trailing&"));
 }
 
 test "menu: F10 / Alt activate the bar on the first menu; again deactivates" {
@@ -939,18 +964,18 @@ test "menu: snapshot golden - open drop-down with a separator, disabled row, che
     try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
         \\group (0,0,400,300) vertical
         \\  group (0,0,400,28) horizontal bg
-        \\    button (0,0,72,28) "File"
-        \\    button (72,0,72,28) "Edit"
-        \\    button (144,0,72,28) "Help"
+        \\    button (0,0,72,28) "File" underline=0
+        \\    button (72,0,72,28) "Edit" underline=0
+        \\    button (144,0,72,28) "Help" underline=0
         \\  overlay (0,0,400,300) layer=1 [modal]
-        \\  overlay (0,28,244,121) layer=1 shadow
-        \\    group (0,28,244,121) vertical bg border
-        \\      button (0,28,244,28) "  New                Ctrl+N"
-        \\      button (0,56,244,28) "  Open...            Ctrl+O"
-        \\      group (0,84,244,9) vertical
-        \\        divider (1,88,242,1)
-        \\      button (0,93,244,28) "  Save                     " [disabled]
-        \\      button (0,121,244,28) "  Exit                     "
+        \\  overlay (0,28,244,123) layer=1 shadow
+        \\    group (0,28,244,123) vertical bg border
+        \\      button (1,29,242,28) "  New                Ctrl+N" underline=2
+        \\      button (1,57,242,28) "  Open...            Ctrl+O" underline=2
+        \\      group (1,85,242,9) vertical
+        \\        divider (1,89,242,1)
+        \\      button (1,94,242,28) "  Save                     " [disabled]
+        \\      button (1,122,242,28) "  Exit                     " underline=3
         \\
     );
 }
