@@ -155,6 +155,7 @@ new variants). Worked example: [`docs/cookbook.md`](docs/cookbook.md) recipe 12.
 ```
 src/                                          -- the library, consumable as a Zig module
   control.zig                                 -- Agent control channel + input record/replay, driven from Runtime.frame
+  dev.zig                                     -- Hot reload for dev builds (native, Linux): the App compiled as a shared library behind a stable
   headless_run.zig                            -- Tool API for headless runs: script input, run frames, grab pixels, write a PNG
   input_record.zig                            -- Input record / replay file format (TEAK_RECORD / TEAK_REPLAY)
   resources.zig                               -- run-loop resource table (key -> Gpu handle), stageDraws
@@ -311,6 +312,7 @@ tools/
   gen_tree.py                                 -- regenerates the Module Structure tree in CLAUDE.md / AGENTS.md from the files on disk
   gen_unicode.zig                             -- Generator for `src/core/unicode_tables.zig`
   gen_wayland.zig                             -- Generator for `src/platform/wayland/protocols.zig`
+  hot_reload_check.sh                         -- End-to-end hot-reload check on examples/todo (headless backend, Linux)
   release.sh                                  -- Cut a release: bump the ONE version (build.zig.zon .version), commit, tag v<version>, push
   teak_drive.zig                              -- teak-drive: drive a running teak app from a shell or from an LLM agent
   web-frame-bench.mjs                         -- rAF cost of a web example under scrolling: serve a zunk `dist/`, load it in headless Chromium

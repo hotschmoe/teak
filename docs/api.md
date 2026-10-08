@@ -120,6 +120,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.runtime`: module `src/run.zig`; see below
 > Scripted-input headless runs for tests and tooling.
 - `teak.headless`: module `src/headless_run.zig`; see below
+> Hot reload for dev builds: the App as a shared library behind a stable loader (docs/features/hot-reload.md).
+- `teak.dev`: module `src/dev.zig`; see below
 > Agent control channel + input record/replay (docs/features/agent-driver.md).
 - `teak.control`: module `src/control.zig`; see below
 > Input record/replay file format.
@@ -2369,6 +2371,49 @@ docs/features/headless.md.
 > Read back the Gpu's last offscreen frame (`Gpu.readFrame`) and write it
 > to `path` as a PNG.
 - `pub fn writeFramePng(gpu: anytype, gpa: std.mem.Allocator, path: []const u8) !void`
+
+### `teak.dev` (`src/dev.zig`)
+
+Hot reload for dev builds (native, Linux): the App compiled as a shared
+library behind a stable loader executable. See docs/features/hot-reload.md.
+
+> Bump when the exported C ABI below changes.
+- `pub const abi_version: u32 = 1`
+> A 64-bit hash of a type's SHAPE: its name, size, and (recursively) the
+> names, types and offsets of its fields. Pointers hash their own type name
+> only (no recursion through them), so self-referential types terminate.
+- `pub fn typeFingerprint(comptime T: type) u64`
+> Everything the window system and GPU need, created once by the FIRST
+> library and handed to every later one.
+- `pub fn Env(comptime Host: type, comptime Gpu: type) type`
+> Build the exported surface for one App. `Init` supplies construction:
+> ```zig
+> const Init = struct {
+> pub fn host(gpa: std.mem.Allocator) !Host { return Host.init(gpa, 720, 600); }
+> pub fn gpu(host: *Host) !Gpu { return Gpu.initOffscreen(720, 600, .{}); }
+> };
+> comptime { teak.dev.Plugin(App, Host, Gpu, Init).exportAll(); }
+> ```
+- `pub fn Plugin(comptime App: type, comptime Host: type, comptime Gpu: type, comptime Init: type) type`
+- `enum ReloadResult`
+  - fields: `unchanged, kept_model, reset_model, rejected`
+- `struct Loader`
+  - fields: `io, gpa, path, tmp_dir, generation, environ, image, env, rt, last_mtime, loaded, note, note_len`
+  - `pub fn init(gpa: std.mem.Allocator, io: std.Io, path: []const u8, tmp_dir: []const u8, environ: ?[*:null]const ?[*:0]const u8) !Loader`
+  - `pub fn deinit(self: *Loader) void`
+  - `pub fn lastNote(self: *const Loader) []const u8`
+  > Check the file and swap when it changed. Call between frames.
+  - `pub fn pollReload(self: *Loader) ReloadResult`
+  > Load the file at `path` now and swap.
+  - `pub fn reload(self: *Loader) ReloadResult`
+  > One frame of the current build. False: the Host closed or the frame failed.
+  - `pub fn frame(self: *Loader) bool`
+  > After a quiet frame: block in the Host for at most `cap_ms`.
+  - `pub fn idle(self: *Loader, cap_ms: u32) void`
+  - `pub fn closed(self: *Loader) bool`
+> The loader executable's whole job: `pub fn main(init)` calls this with the
+> library path (default `zig-out/lib/libapp.so`).
+- `pub fn runLoader(init: std.process.Init, default_path: []const u8) !void`
 
 ### `teak.control` (`src/control.zig`)
 
