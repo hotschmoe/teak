@@ -2366,6 +2366,35 @@ test "text_area: Up/Down/Home/End resolve against the wrapped layout, with a sti
     try std.testing.expectEqual(@as(usize, 19), m2.ed.selection_anchor.?); // col 4 of that line
 }
 
+test "text_area: mixed Arabic/English round-trip: visual arrows, click, selection" {
+    const content = "ab \u{5d0}\u{5d1}\u{5d2} cd";
+    const c0 = at(0, 0);
+    const R: Frame = .{ .keys = &.{.right} };
+    const t = try playArea(content, &.{
+        .{},
+        .{ .x = c0[0], .y = c0[1], .held = left, .down = left },
+        .{ .x = c0[0], .y = c0[1], .up = left },
+        R, R, R, // over "a", "b", " "
+        R, // the 4th Right enters the Hebrew run: a position inside it, not the end
+    });
+    defer t.destroy();
+    const m = &t.rt.model.area;
+    try std.testing.expect(m.ed.cursor > 3 and m.ed.cursor < content.len);
+
+    // Shift+Right extends from the anchor in visual order; text stays intact.
+    const t2 = try playArea(content, &.{
+        .{},
+        .{ .x = c0[0], .y = c0[1], .held = left, .down = left },
+        .{ .x = c0[0], .y = c0[1], .up = left },
+        .{ .keys = &.{.shift_right} },
+        .{ .keys = &.{.shift_right} },
+        .{ .keys = &.{.shift_right} },
+    });
+    defer t2.destroy();
+    try std.testing.expectEqualStrings("ab ", t2.rt.model.area.selectionText());
+    try std.testing.expectEqualStrings(content, t2.rt.model.area.content());
+}
+
 test "text_area: wheel scrolls; typing at the bottom reveals the caret via metrics" {
     // 12 hard lines = 240 px of content in an inner height of 84.
     const body = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12";

@@ -910,6 +910,12 @@ One paragraph per `analyze` (split at hard breaks). Pure; allocator only for wor
 ```zig
 analyze(gpa, text, Direction(.auto|.ltr|.rtl)) !Analysis{ para_level, levels: []u8, classes: []Class, offsets: []u32 }  // per code point; .deinit(gpa)
 Analysis.isPlainLtr() bool            // skip all bidi work
+// teak.bidi_text: line geometry for drawing / caret / hit-test / selection / visual arrows (docs/features/bidi.md)
+layoutLine(text, ls, le, font, measurer, wrap_w, *Scratch) ?Layout   // null = plain LTR, use the logical path
+Layout.items() []RunGeo{start,end,level,x,w}; .caretX(byte) f32; .indexAt(x) usize; .selection(lo, hi, []Span) []Span; .para_rtl; .width
+arrowTarget(text, ls, le, cursor, .left|.right, *Scratch) ?usize     // visual neighbour position
+mayBeRtl(bytes) bool                    // cheap pre-filter
+FontSpec.rtl: bool                      // set per run by the renderer: shapers return that run in visual order
 Analysis.isRemoved(i) bool            // X9-removed (embeddings, BN); they keep their predecessor's level
 lineLevels(an, start, end, out) []u8  // L1 on a wrapped line (byte range, e.g. text_wrap.Line.start..hang)
 lineRuns(gpa, an, start, end) ![]Run{ start, end, level }   // L2: runs left-to-right as shown; odd level = draw right-to-left

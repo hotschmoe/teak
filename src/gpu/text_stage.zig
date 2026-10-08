@@ -338,13 +338,14 @@ pub fn TextStage(comptime Raster: type) type {
                 (@as(u64, @as(u32, @bitCast(font.letter_spacing))) << 32);
             const tags: u64 = @as(u64, @backingInt(font.family)) | (@as(u64, @backingInt(font.weight)) << 8) |
                 (@as(u64, if (font.snap_advance) |v| @intFromBool(v) + 1 else 0) << 16) |
-                (@as(u64, @intFromBool(font.scalable)) << 24);
+                (@as(u64, @intFromBool(font.rtl)) << 24) |
+                (@as(u64, @intFromBool(font.scalable)) << 25);
             return std.hash.Wyhash.hash(bits ^ std.math.rotl(u64, tags, 40), text);
         }
 
         fn sameFont(a: teak.FontSpec, b: teak.FontSpec) bool {
             return a.size_px == b.size_px and a.family == b.family and a.weight == b.weight and
-                a.letter_spacing == b.letter_spacing and a.snap_advance == b.snap_advance and a.scalable == b.scalable;
+                a.letter_spacing == b.letter_spacing and a.snap_advance == b.snap_advance and a.rtl == b.rtl and a.scalable == b.scalable;
         }
 
         /// Glyphs of `text` in `font` with run-relative logical x positions

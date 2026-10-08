@@ -164,6 +164,7 @@ src/                                          -- the library, consumable as a Zi
   core/
     anim.zig                                  -- Model-driven animation: tweens, easing curves and interpolation
     bidi.zig                                  -- UAX #9 Unicode Bidirectional Algorithm (Unicode 16): pure, std only
+    bidi_text.zig                             -- Bidi-aware geometry of one laid-out line (UAX #9 L1/L2 over bidi.zig)
     chart.zig                                 -- teak.chart — pure line-chart primitive builder
     cmd.zig                                   -- Cmd union, CmdBuffer + emitters, arena, validateBalance, OverlayStyle/leafMsg
     combobox.zig                              -- Searchable select ("combobox"): a text input that filters an app-owned option list shown in the

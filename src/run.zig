@@ -171,6 +171,8 @@ const pointer = @import("core/pointer.zig");
 const cursor_mod = @import("core/cursor.zig");
 const text_event = @import("core/text_event.zig");
 const text_wrap = @import("core/text_wrap.zig");
+const bidi_text = @import("core/bidi_text.zig");
+const unicode_mod = @import("core/unicode.zig");
 const layout = @import("layout/engine.zig");
 const scroll_extent = @import("layout/scroll_extent.zig");
 const virtual_rows = @import("layout/virtual_rows.zig");
@@ -1846,6 +1848,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// area has focus: resolve against the wrapped layout and deliver a
         /// `move` event instead of the key. Returns true when consumed.
         fn sendTextNav(self: *Self, k: @import("input/keys.zig").SpecialKey, input: Input, prev: u1) bool {
+            if (self.sendTextArrow(k, input, prev)) return true;
             const Nav = struct { kind: text_wrap.NavKind, extend: bool };
             const nav: Nav = switch (k) {
                 .up => .{ .kind = .up, .extend = false },
@@ -1878,6 +1881,55 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .line = r.line,
                 .goal_x = r.goal_x orelse 0,
                 .keep_goal = r.goal_x != null,
+                .mods = mods,
+            };
+            if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
+            return true;
+        }
+
+        /// Left / Right (and Shift) in a focused text area whose text can mix
+        /// directions: the target is the neighbouring caret position in VISUAL
+        /// order on the wrapped line (`bidi_text.arrowTarget`), falling back to the
+        /// logical neighbour at the line's visual edge. Plain text is left to the
+        /// editor (logical, identical). Returns true when consumed.
+        fn sendTextArrow(self: *Self, k: @import("input/keys.zig").SpecialKey, input: Input, prev: u1) bool {
+            const arrow: bidi_text.bidi.Arrow, const extend = switch (k) {
+                .left => .{ .left, false },
+                .shift_left => .{ .left, true },
+                .right => .{ .right, false },
+                .shift_right => .{ .right, true },
+                else => return false,
+            };
+            const cmds = self.bufs[prev].cmds.items;
+            const fi = focusIndex(App, &self.model, cmds) orelse return false;
+            if (fi >= cmds.len or cmds[fi] != .text_area) return false;
+            const ta = cmds[fi].text_area;
+            if (!bidi_text.mayBeRtl(ta.content)) return false;
+            // A collapsing (non-extending) arrow over a selection stays the editor's.
+            if (!extend and ta.selection_anchor != null and ta.selection_anchor.? != ta.cursor) return false;
+            const g = textAreaGeometry(ta, self.rects[prev].items[fi]);
+            var it = text_wrap.LineIter.init(ta.content, ta.font, g.wrap_w, g.mode, 0, self.measurer);
+            var line = it.next() orelse return false;
+            var li: u32 = 0;
+            while (ta.cursor >= line.next) {
+                line = it.next() orelse break;
+                li += 1;
+            }
+            var sc: bidi_text.Scratch = .{};
+            const target = bidi_text.arrowTarget(ta.content, line.start, line.end, ta.cursor, arrow, &sc) orelse blk: {
+                const t = ta.content;
+                break :blk if (arrow == .left)
+                    (if (ta.cursor == 0) 0 else unicode_mod.prevGrapheme(t, ta.cursor))
+                else
+                    (if (ta.cursor >= t.len) t.len else unicode_mod.nextGrapheme(t, ta.cursor));
+            };
+            var mods = input.mods;
+            mods.shift = extend;
+            const ev: text_event.TextEvent = .{
+                .id = ta.id,
+                .kind = .move,
+                .index = @intCast(target),
+                .line = li,
                 .mods = mods,
             };
             if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
@@ -1943,7 +1995,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         sy = g.inner.y - ta.scroll_y + c.y + text_wrap.lineHeight(ta.font, self.measurer);
                     },
                     .text_input => |ti| {
-                        sx = rects[fi].x + 6 + self.measurer.prefixWidth(ti.content, ti.font, ti.cursor);
+                        var sc: bidi_text.Scratch = .{};
+                        const lay = if (bidi_text.mayBeRtl(ti.content) and std.mem.indexOfScalar(u8, ti.content, '\n') == null)
+                            bidi_text.layoutLine(ti.content, 0, ti.content.len, ti.font, self.measurer, std.math.inf(f32), &sc)
+                        else
+                            null;
+                        const px = if (lay) |l| l.caretX(ti.cursor) else self.measurer.prefixWidth(ti.content, ti.font, ti.cursor);
+                        sx = rects[fi].x + 6 + px;
                         sy = rects[fi].y + rects[fi].h;
                     },
                     else => break :blk false,

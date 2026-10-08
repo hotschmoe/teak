@@ -910,6 +910,12 @@ One paragraph per `analyze` (split at hard breaks). Pure; allocator only for wor
 ```zig
 analyze(gpa, text, Direction(.auto|.ltr|.rtl)) !Analysis{ para_level, levels: []u8, classes: []Class, offsets: []u32 }  // per code point; .deinit(gpa)
 Analysis.isPlainLtr() bool            // skip all bidi work
+// teak.bidi_text: line geometry for drawing / caret / hit-test / selection / visual arrows (docs/features/bidi.md)
+layoutLine(text, ls, le, font, measurer, wrap_w, *Scratch) ?Layout   // null = plain LTR, use the logical path
+Layout.items() []RunGeo{start,end,level,x,w}; .caretX(byte) f32; .indexAt(x) usize; .selection(lo, hi, []Span) []Span; .para_rtl; .width
+arrowTarget(text, ls, le, cursor, .left|.right, *Scratch) ?usize     // visual neighbour position
+mayBeRtl(bytes) bool                    // cheap pre-filter
+FontSpec.rtl: bool                      // set per run by the renderer: shapers return that run in visual order
 Analysis.isRemoved(i) bool            // X9-removed (embeddings, BN); they keep their predecessor's level
 lineLevels(an, start, end, out) []u8  // L1 on a wrapped line (byte range, e.g. text_wrap.Line.start..hang)
 lineRuns(gpa, an, start, end) ![]Run{ start, end, level }   // L2: runs left-to-right as shown; odd level = draw right-to-left
@@ -1151,6 +1157,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.unicode`: module `src/core/unicode.zig`; see below
 > UAX #9 bidirectional algorithm: levels, per-line visual runs, visual caret movement, selection spans.
 - `teak.bidi`: module `src/core/bidi.zig`; see below
+> Direction-aware geometry of a wrapped line: runs, caret x, hit-test, selection spans, visual arrows.
+- `teak.bidi_text`: module `src/core/bidi_text.zig`; see below
 > UAX#14-lite line-break opportunities over grapheme clusters.
 - `teak.linebreak`: module `src/core/linebreak.zig`; see below
 > Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.
@@ -1862,7 +1870,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `sans, serif, mono`
 > A font request: family, size and weight.
 - `teak.FontSpec` = `text.FontSpec`
-  - fields: `size_px, family, weight, letter_spacing, snap_advance, scalable`
+  - fields: `size_px, family, weight, letter_spacing, snap_advance, rtl, scalable`
   > The resolved `snap_advance` (see the field).
   - `pub fn snapsAdvance(self: FontSpec) bool`
 > Regular or bold.
@@ -2118,7 +2126,7 @@ Text measurement and rasterization types.
 > (web: CSS `font-weight` + canvas `letterSpacing`; native: face selection).
 > Both take part in the glyph-cache key, so changing them re-rasterizes.
 - `struct FontSpec`
-  - fields: `size_px, family, weight, letter_spacing, snap_advance, scalable`
+  - fields: `size_px, family, weight, letter_spacing, snap_advance, rtl, scalable`
   > The resolved `snap_advance` (see the field).
   - `pub fn snapsAdvance(self: FontSpec) bool`
 - `pub const DEFAULT_FONT: FontSpec = .{}`
@@ -2289,6 +2297,13 @@ UAX #9 Unicode Bidirectional Algorithm (Unicode 16): pure, std only.
 > (the caller moves to the neighbouring line). Word jumps are logical: use
 > `unicode.nextWordBoundary` / `prevWordBoundary` unchanged.
 - `pub fn caretMove(gpa: std.mem.Allocator, text: []const u8, an: Analysis, start: usize, end: usize, caret: Caret, arrow: Arrow) !?Caret`
+> Visual slot (0 = left edge of the line .. n = right edge) of the caret at
+> every grapheme boundary of the line `[start, end)`, under the convention
+> "trailing edge of the cluster before the boundary, leading edge of the first
+> cluster at the line start". `out` needs `clusters + 1` entries; returns the
+> filled prefix. `out[k]` belongs to the boundary before cluster k (the last
+> one is `end`). Used for stateless visual arrow movement.
+- `pub fn boundarySlots(gpa: std.mem.Allocator, text: []const u8, an: Analysis, start: usize, end: usize, out: []u32) ![]u32`
 > A horizontal span `[x0, x1)` in line-local pixels.
 - `struct Span`
   - fields: `x0, x1`
@@ -2297,6 +2312,46 @@ UAX #9 Unicode Bidirectional Algorithm (Unicode 16): pure, std only.
 > logical order. One span per visually contiguous selected stretch (so a
 > selection across an rtl/ltr boundary may yield several). Caller owns the slice.
 - `pub fn selectionSpans(gpa: std.mem.Allocator, text: []const u8, an: Analysis, start: usize, end: usize, advances: []const f32, sel_start: usize, sel_end: usize) ![]Span`
+
+### `teak.bidi_text` (`src/core/bidi_text.zig`)
+
+Bidi-aware geometry of one laid-out line (UAX #9 L1/L2 over `bidi.zig`).
+
+> Longest paragraph (bytes between hard line breaks) analysed; longer ones
+> are drawn and edited in logical order.
+- `pub const MAX_PARA = 2048`
+> Directional runs per line before falling back to logical order.
+- `pub const MAX_RUNS = 48`
+> Stack scratch for one analysis. Not zeroed (`undefined`).
+- `struct Scratch`
+  - fields: `buf`
+> True when `s` may contain right-to-left characters or bidi controls
+> (any UTF-8 lead byte from U+0580 up). A cheap pre-filter, not a decision.
+- `pub fn mayBeRtl(s: []const u8) bool`
+- `pub const Span = bidi.Span`
+- `struct RunGeo`
+  - fields: `start, end, level, x, w`
+  - `pub fn rtl(self: RunGeo) bool`
+- `struct Layout`
+  - fields: `runs, n, ls, le, width, para_rtl, text, font, m`
+  - `pub fn items(self: *const Layout) []const RunGeo`
+  > Line-local x of the caret at byte offset `idx` (see the caret convention).
+  - `pub fn caretX(self: *const Layout, idx: usize) f32`
+  > Byte offset of the caret position nearest to line-local `x` (ties go left).
+  - `pub fn indexAt(self: *const Layout, x: f32) usize`
+  > Highlight spans of the logical selection `[lo, hi)` in visual order,
+  > touching spans merged. At most `out.len` spans (excess merged into the last).
+  - `pub fn selection(self: *const Layout, lo: usize, hi: usize, out: []Span) []Span`
+> Direction-aware layout of the line `[ls, le)` of `text`, or null when the
+> plain left-to-right path applies. `wrap_w` (infinity for none) right-aligns
+> lines of a right-to-left paragraph.
+- `pub fn layoutLine(text: []const u8, ls: usize, le: usize, font: FontSpec, m: TextMeasurer, wrap_w: f32, scratch: *Scratch) ?Layout`
+> Target of a visual Left / Right arrow from byte `cursor` over the line
+> `[ls, le)`, or null when the line is plain LTR or no caret position lies
+> further that way (the caller then moves to the neighbouring line /
+> logically). Stateless: positions are ordered by visual slot under the caret
+> convention, so repeated presses always make progress.
+- `pub fn arrowTarget(text: []const u8, ls: usize, le: usize, cursor: usize, arrow: bidi.Arrow, scratch: *Scratch) ?usize`
 
 ### `teak.linebreak` (`src/core/linebreak.zig`)
 
