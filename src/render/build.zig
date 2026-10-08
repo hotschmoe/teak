@@ -1679,7 +1679,9 @@ test "text_area: multi-line selection quads, per-line text, scroll culling, care
     defer scenes.deinit(testing.allocator);
     var items: std.ArrayList(SceneItem) = .empty;
     defer items.deinit(testing.allocator);
-    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, &items, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], ts, text_mod.monoMeasurer());
+    var sprites: std.ArrayList(SceneSprite) = .empty;
+    defer sprites.deinit(testing.allocator);
+    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, &items, &sprites, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], ts, text_mod.monoMeasurer());
 
     // Three wrapped lines of text.
     try testing.expectEqual(@as(usize, 3), text_draws.items.len);
