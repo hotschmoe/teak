@@ -42,6 +42,19 @@ pub const text_field = @import("core/text_field.zig");
 pub const numeric_field = @import("core/numeric_field.zig");
 /// `Dropdown`: a closed button plus an open overlay list.
 pub const dropdown = @import("core/dropdown.zig");
+/// `Scroller`: scroll position with smooth wheel and kinetic fling, as Model data.
+pub const Scroller = @import("core/scroller.zig").Scroller;
+/// `DataTable(cfg)`: virtualized, sortable, resizable, selectable table for 100k+ rows.
+pub const data_table = @import("core/data_table.zig");
+pub const DataTable = data_table.DataTable;
+/// Column definition of a `DataTable`.
+pub const DataTableColumn = data_table.Column;
+/// `VarList(cap)`: virtualized list with per-row heights measured by layout, scroll-anchored.
+pub const var_list = @import("core/var_list.zig");
+pub const VarList = var_list.VarList;
+/// `TreeList(cap)`: virtualized tree over a preorder node set; expand/collapse + keyboard.
+pub const tree_list = @import("core/tree_list.zig");
+pub const TreeList = tree_list.TreeList;
 /// `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
 pub const combobox = @import("core/combobox.zig");
 /// Widgets built from existing Cmd primitives: toggle, progress, tabs, split pane,
@@ -130,6 +143,12 @@ pub const MAX_BALANCE_DEPTH = cmd.MAX_BALANCE_DEPTH;
 pub const ButtonCmd = cmd.ButtonCmd;
 /// Colors, size and alignment of a button.
 pub const ButtonStyle = cmd.ButtonStyle;
+/// Per-corner radii for SDF surfaces.
+pub const Radii = cmd.Radii;
+/// Soft box shadow.
+pub const Shadow = cmd.Shadow;
+/// Two-stop gradient.
+pub const Gradient = cmd.Gradient;
 /// A single-style text leaf.
 pub const TextCmd = cmd.TextCmd;
 /// A single-line text input leaf (cursor, selection, focus Msg).
@@ -300,6 +319,8 @@ pub const runSubs = sub.runSubs;
 pub const Theme = theme.Theme;
 /// Semantic color set of a theme.
 pub const Palette = theme.Palette;
+/// Radii, border width, spacing and shadow elevations of a theme.
+pub const ThemeTokens = theme.Tokens;
 /// Font set of a theme.
 pub const Typography = theme.Typography;
 /// The default dark palette.

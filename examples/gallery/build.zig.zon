@@ -1,0 +1,14 @@
+.{
+    .name = .gallery,
+    .version = "0.0.0",
+    .fingerprint = 0x472b783ada61a686,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .teak = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
