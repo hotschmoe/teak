@@ -39,6 +39,8 @@ const Unit = struct {
     face_id: u16,
     face: *const Font,
     len: usize,
+    /// Advance in font units, or null to ask the face (non-ASCII, ligatures).
+    adv: ?u16 = null,
 };
 
 /// Glyph for `cp`: the primary face, else another registered weight of the same
@@ -87,7 +89,8 @@ fn nextUnit(primary: *const Font, primary_id: u16, text: []const u8, i: usize, f
     }
     const d = decode(text, i);
     const m = mapGlyph(primary, primary_id, font.family, d.cp);
-    return .{ .glyph = m.glyph, .face_id = m.face_id, .face = m.face, .len = d.len };
+    const adv: ?u16 = if (d.cp < 128 and m.face == primary) primary.ascii_adv[d.cp] else null;
+    return .{ .glyph = m.glyph, .face_id = m.face_id, .face = m.face, .len = d.len, .adv = adv };
 }
 
 /// Shape `text` into `out`. Without any font the result is empty (count 0,
@@ -97,6 +100,7 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
         return .{ .count = 0, .width = 0, .consumed = text.len };
     const primary = resolved.face;
     const primary_id = resolved.id;
+    const primary_scale = primary.scaleForEm(font.size_px);
     const ligatures = font.letter_spacing == 0 and font.family != .mono and !primary.isFixedPitch();
 
     var count: usize = 0;
@@ -115,12 +119,12 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
                 const k = u.face.kernUnits(pending_glyph, u.glyph);
                 pending_raw += @as(f32, @floatFromInt(k)) * pending_scale;
             }
-            x += finish(&out[count - 1], pending_raw, font.snap_advance);
+            x += finish(&out[count - 1], pending_raw, font.snapsAdvance());
         }
         if (count == out.len) {
             return .{ .count = count, .width = x, .consumed = pos };
         }
-        const scale = u.face.scaleForEm(font.size_px);
+        const scale = if (u.face == primary) primary_scale else u.face.scaleForEm(font.size_px);
         out[count] = .{
             .glyph = u.glyph,
             .face = u.face_id,
@@ -128,14 +132,14 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
             .x = x,
             .advance = 0,
         };
-        pending_raw = @as(f32, @floatFromInt(u.face.advanceUnits(u.glyph))) * scale + font.letter_spacing;
+        pending_raw = @as(f32, @floatFromInt(u.adv orelse @as(u16, @intCast(@max(0, u.face.advanceUnits(u.glyph)))))) * scale + font.letter_spacing;
         pending_face = u.face;
         pending_glyph = u.glyph;
         pending_scale = scale;
         count += 1;
         pos += u.len;
     }
-    if (count > 0) x += finish(&out[count - 1], pending_raw, font.snap_advance);
+    if (count > 0) x += finish(&out[count - 1], pending_raw, font.snapsAdvance());
     return .{ .count = count, .width = x, .consumed = pos };
 }
 

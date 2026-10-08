@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const teak = @import("teak");
+const text = @import("teak-text");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -1667,18 +1668,23 @@ pub const Host = struct {
         _ = SetWindowTextW(self.hwnd, @ptrCast(&title_buf));
     }
 
-    /// Real GDI measurer. `GetTextExtentPoint32W` on the cached memory
-    /// DC with an HFONT selected in. Caches HFONTs by (family, size_px)
-    /// in an 8-entry fixed array — every in-tree example uses one or
-    /// two FontSpec values.
+    /// The shared stb_truetype measurer (`teak-text`): the same shaper the
+    /// Gpu rasterizes with, so layout and glyphs agree. Faces come from
+    /// `registerFont`, else the system font probe (`TEAK_FONT`, then
+    /// `C:\Windows\Fonts`). The GDI helpers below are retained as a fallback.
     pub fn textMeasurer(self: *Host) TextMeasurer {
-        return .{ .ctx = @ptrCast(self), .measure_fn = gdiMeasure };
+        return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
     }
 
-    /// Fonts come from the system on Windows (GDI picks the face by family
-    /// and weight); a registered TTF is ignored. Present so one `ui_main`
-    /// can call `registerFont` on every OS.
-    pub fn registerFont(_: *Host, _: teak.FontFamily, _: teak.FontWeight, _: []const u8) !void {}
+    fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
+        return text.measure(text_bytes, font);
+    }
+
+    /// Register a TTF for (`family`, `weight`); the bytes are borrowed (pass an
+    /// `@embedFile` slice). Without one the family uses a system font.
+    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
+        try text.registerFace(family, weight, ttf);
+    }
 
     fn gdiMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
         const self: *Host = @ptrCast(@alignCast(ctx));
