@@ -256,9 +256,9 @@ meshes), tilted text on planes via offscreen targets (P5 stretch), stencil caps 
    Win32 drag-in and image paste (unit-tested; live-window CI in #67).
 3. **Size:** ReleaseSmall web builds grew ~3.7x because the text engine moved into the wasm (canvas2D path removed); ReleaseFast shrank 2.3x. A
    lighter "canvas text" mode could return for size-critical apps.
-4. **Surface growth:** many optional App hooks were added; `pointerMsg` stage 1 landed, stages 2–3 (folding canvas/text/slider capture into it) are
-   proposed in `docs/features/pointer-msg.md`.
-5. **No WebGL2 fallback** (Firefox Linux/Android): a friendly in-page message ships; a WebGL2 backend is estimated at 9–10 h (2D) — owner decision.
+4. **Surface growth:** many optional App hooks were added this session; pointer input is now consolidated into one `pointerMsg` (#124), the
+   other hooks remain individually documented in the run.md hook table.
+5. **No WebGL2 fallback** (Firefox Linux/Android): deferred by owner decision; a friendly in-page message ships (estimate if revived: 9–10 h for 2D).
 6. **Bus factor / review debt:** ~120 PRs in a day were reviewed by an orchestrator plus local gates and screenshots, not by a human.
 7. **Flake:** one intermittent, load-dependent test-runner failure was seen ~4 times under heavy load (silenced the only stderr-printing tests; not
    reproduced in isolation).
@@ -275,18 +275,26 @@ meshes), tilted text on planes via offscreen targets (P5 stretch), stencil caps 
 - Environment changes on the dev box: installed xvfb, xdotool, xclip, x11-utils, weston, libwayland/xkbcommon/libdecor, mesa-vulkan-drivers; with the
   owner's OK deleted ~550 GB of stale laminae Zig caches; a disk guard prunes stale caches in `~/github/ws`.
 
-### Releases
+### Releases and follow-up (2026-10-09)
 
-No tags were cut. The owner's versioning standard (`docs/VERSIONING.md`, applied to all four repos this session) makes a release a one-liner
-(`tools/release.sh <semver>`), but teak still depends on zunk by `../zunk` path, so a tagged teak cannot be fetched standalone. Recommended:
-cut zunk v0.16.0, switch teak's zon to the hash-pinned zunk tag (keeping a documented path override for co-development), then cut teak v0.1.0.
+Owner decisions after the report, all executed:
+
+- **Released zunk v0.16.0** (https://github.com/hotschmoe/zunk/releases/tag/v0.16.0) and **teak v0.1.0** (first release; tag `v0.1.0`).
+  teak now pins zunk by url + hash to the v0.16.0 release (#123), so a tagged teak builds standalone; co-develop zunk with
+  `zig build <step> --fork=../zunk`. CI no longer checks out a zunk sibling.
+- **WebGL2 fallback deferred** (WebGPU required on the web; in-page message + `zunkFallback` hook; `docs/features/web-fallback.md`).
+- **Pointer hooks consolidated** (#124): one `pointerMsg(*const Model, PointerEvent(Msg))` with a `Target` union (widget, canvas, text_area
+  with resolved caret, slider, scroll), one capture rule and one routing function; `canvasMsg`/`textMsg`/`sliderMsg`/`scrollMsg`/`hoverMsg`/
+  `contextMsg` survive as deprecated adapters (`docs/migration-pointer-msg.md`), every example migrated, an audit rule keeps it that way.
+- **Cleanup:** all agent worktrees and scratch checkouts removed (unmerged WIP preserved as pushed branches `idle-hosts-wayland`,
+  `wave2-gallery`), this session's stray static servers stopped, build caches cleared.
 
 ### Recommended next session
 
 1. Confirm green CI on every OS for a full week of master pushes; add a nightly ReleaseSafe + ASan-ish lane.
-2. `pointerMsg` stages 2–3 and a HARDLINE review of the hook surface (fewer, more general hooks).
+2. A HARDLINE review of the remaining hook surface; drop the deprecated pointer adapters after one release.
 3. Linux a11y via AccessKit C (AT-SPI) and macOS NSAccessibility; screen-reader passes with Orca/VoiceOver/NVDA.
-4. WebGL2 fallback decision; a size-optimised web text mode.
+4. A size-optimised web text mode (WebGL2 stays deferred unless a product needs it).
 5. Docking, SVG icons, charts beyond lines; GPU ID-buffer picking for large meshes.
 6. Re-run the docs-only app-building eval with a smaller model and fix what it trips on.
-7. Cut regular releases (teak v0.1.x) and pin zunk by tag instead of the `../zunk` path.
+7. Keep cutting releases with `tools/release.sh` (teak v0.1.x, zunk v0.16.x) and bump teak's zunk pin per zunk release.
