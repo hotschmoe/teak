@@ -246,10 +246,13 @@ test "lookup miss, insert, then hit" {
     try std.testing.expectEqual(@as(u32, 2), e.view);
     try std.testing.expectEqual(@as(u32, 3), e.bind_group);
 
-    const s = cache.stats();
-    try std.testing.expectEqual(@as(u32, 1), s.misses);
-    try std.testing.expectEqual(@as(u32, 1), s.hits);
-    try std.testing.expectEqual(@as(u32, 0), s.evictions);
+    // Counters are compiled out of release builds (`track_stats`).
+    if (track_stats) {
+        const s = cache.stats();
+        try std.testing.expectEqual(@as(u32, 1), s.misses);
+        try std.testing.expectEqual(@as(u32, 1), s.hits);
+        try std.testing.expectEqual(@as(u32, 0), s.evictions);
+    }
 }
 
 test "textCacheKey separates weight and letter_spacing" {
@@ -295,7 +298,7 @@ test "LRU eviction picks the oldest untouched entry" {
 
     const before_evictions = cache.stats().evictions;
     cache.evictLRU();
-    try std.testing.expectEqual(before_evictions + 1, cache.stats().evictions);
+    if (track_stats) try std.testing.expectEqual(before_evictions + 1, cache.stats().evictions);
     try std.testing.expectEqual(@as(u32, 1), TestBackend.destroy_count);
 
     _ = cache.insert(fresh_key, @intCast(fresh.len), fresh_hash, 9999, 9999, 9999);
@@ -333,11 +336,13 @@ test "WS5: fixed UI × 200 frames drops to 0 misses after frame 1" {
         }
     }
 
-    const s = cache.stats();
-    // Exactly strings.len misses (all on frame 1), rest are hits.
-    try std.testing.expectEqual(@as(u32, strings.len), s.misses);
-    try std.testing.expectEqual(@as(u32, strings.len * 199), s.hits);
-    try std.testing.expectEqual(@as(u32, 0), s.evictions);
+    if (track_stats) {
+        const s = cache.stats();
+        // Exactly strings.len misses (all on frame 1), rest are hits.
+        try std.testing.expectEqual(@as(u32, strings.len), s.misses);
+        try std.testing.expectEqual(@as(u32, strings.len * 199), s.hits);
+        try std.testing.expectEqual(@as(u32, 0), s.evictions);
+    }
 }
 
 test "clear calls destroyEntry on every entry and resets len" {
