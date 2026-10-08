@@ -196,7 +196,14 @@ pub fn update(m: *Model, msg: Msg) void {
 
 // ── Hooks ───────────────────────────────────────────────────────────
 
-pub fn scrollMsg(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
+/// The one pointer hook: scroll-region wheels and the column-grip canvases.
+pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (ev.asScroll()) |s| return onScroll(m, s.id, s.dx, s.dy);
+    if (ev.asCanvas()) |c| return onCanvas(m, c);
+    return null;
+}
+
+fn onScroll(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
     return switch (id) {
         TABLE_ID => .{ .table = .{ .wheel = dy } },
         LIST_ID => .{ .list = .{ .wheel = dy } },
@@ -219,7 +226,7 @@ pub fn virtualRowsMsg(_: *const Model, id: u32, first: u32, heights: []const f32
     return .{ .list = List.measuredMsg(first, heights) };
 }
 
-pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
+fn onCanvas(_: *const Model, ev: teak.CanvasEvent) ?Msg {
     const g = Table.gripMsg(ev, GRIP_BASE) orelse return null;
     return .{ .table = g };
 }

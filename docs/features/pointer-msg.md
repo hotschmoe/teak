@@ -1,8 +1,21 @@
 # Proposal: one `pointerMsg` hook instead of five pointer hooks
 
-Status: **stage 1 landed** (`pointerMsg` for hover/down/up/context incl. blank-space presses; `canvasMsg` / `textMsg` / `sliderMsg` keep their capture logic and migrate in later stages). The rest is the original **proposal** (drift audit 2026-10). Not implemented: the hooks it would
-replace are still landing in open PRs, and the queue must not break. Revisit once
-`textMsg`, `hoverMsg`, `contextMsg` and `sliderMsg` are on master.
+Status: **landed** (stage 1 in #110, stages 2-3 in the consolidation PR). `pointerMsg` is the
+one pointer hook; `canvasMsg` / `textMsg` / `sliderMsg` / `scrollMsg` / `hoverMsg` / `contextMsg` are
+deprecated adapters (see [../migration-pointer-msg.md](../migration-pointer-msg.md)). The rest of this
+file is the original proposal; where the shipped design differs:
+
+* `enter` is not a kind: `hover` already means "the widget under the pointer changed"
+  (enter + leave in one), and canvases / text areas get `leave`. `key` and `caret` are added for the
+  focused canvas / slider key events and a text area's resolved visual motion.
+* The canvas `layout` event and the text area `metrics` event are both `kind = .layout` (one path):
+  the target says which (`.canvas` -> window rect, `.text_area` -> `TextTarget` metrics).
+  `scrollLayoutMsg` and `virtualRowsMsg` stay separate: they report layout, not pointer input.
+* One routing function: every event leaves the loop through `Runtime.deliver`; the capture state
+  (`canvas_ptr.capture` for canvases + text areas, `slider_grab`) lives in the loop and follows one
+  rule. Widget targets are not captured (a click is armed on press and cancelled by dragging off).
+* The wheel falls through (canvas -> scroll region -> `pointerMsg(.none)` -> `wheelMsg`) when a
+  `pointerMsg` returns `null`; the deprecated hooks keep consuming it.
 
 ## Today
 

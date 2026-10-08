@@ -367,6 +367,15 @@ human review.
       no hook receives a mutable `*Model`, a callback, or a Host handle it
       may keep. (The one historical exception, `handleClipboard(*Model, ...)`, is
       a deprecated one-release adapter over `clipboardMsg` / `clipboardText`.)
+- [ ] **[auto]** Pointer input has ONE hook. `pointerMsg(*const Model,
+      PointerEvent(Msg)) ?Msg` receives every pointer fact (hover, press
+      incl. blank space, drag, wheel, context, layout) as data, with a single
+      capture rule (the target that got `down` receives every event until all
+      buttons are up) and a single delivery function in `src/run.zig`
+      (`deliver`). `canvasMsg` / `textMsg` / `sliderMsg` / `scrollMsg` /
+      `hoverMsg` / `contextMsg` are deprecated adapters over the same events
+      (`deliverDeprecated`); a new pointer surface adds a `Target` variant,
+      never a hook. Audit fails if an example declares a deprecated hook.
 - [ ] **[manual]** Host-side extras (`setCursor`, `setImeSpot`,
       `waitEvents`, a11y publish, control channel / `injectInput`) are
       output-only or input-source surfaces: they may not read the Model or

@@ -76,7 +76,22 @@ const RULE_NO_CHAR_WIDTH = Rule{
     .forbid_any = &.{"CHAR_WIDTH"},
 };
 
+const RULE_NO_DEPRECATED_POINTER_HOOKS = Rule{
+    .name = "examples declare no deprecated pointer hook (pointerMsg is the one)",
+    .reason = "HARDLINE §5 -- pointer input has one hook; canvasMsg/textMsg/sliderMsg/scrollMsg/hoverMsg/contextMsg are adapters slated for removal.",
+    .dirs = &.{"examples"},
+    .forbid_any = &.{
+        "pub fn canvasMsg(",
+        "pub fn textMsg(",
+        "pub fn sliderMsg(",
+        "pub fn scrollMsg(",
+        "pub fn hoverMsg(",
+        "pub fn contextMsg(",
+    },
+};
+
 const simple_rules = [_]Rule{
+    RULE_NO_DEPRECATED_POINTER_HOOKS,
     RULE_NO_PLATFORM_IMPORTS,
     RULE_NO_COND_COMP,
     RULE_CMD_HAS_NO_FN_PTRS,

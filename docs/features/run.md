@@ -89,9 +89,10 @@ table does not name.
 | `focusedMsg` | `(*const Model) ?Msg` | every frame | the focus Msg of the focused widget; enables Tab traversal + the focus ring + caret |
 | `blurMsg` | `(*const Model) ?Msg` | when Tab moves keyboard focus from a text field onto a non-text widget | the Msg that clears the Model's text focus, so the field stops receiving typed characters |
 | `wheelMsg` | `(*const Model, f32) ?Msg` | vertical wheel not claimed by a scroll region / pointer canvas | a Msg |
-| `scrollMsg` | `(*const Model, id, dx, dy) ?Msg` | wheel over the innermost `ScrollStyle.id != 0` region | a Msg |
+| `scrollMsg` | `(*const Model, id, dx, dy) ?Msg` | **deprecated** (use `pointerMsg`, `target = .scroll`): wheel over the innermost `ScrollStyle.id != 0` region | a Msg |
 | `scrollLayoutMsg` | `(*const Model, id, vw, vh, cw, ch) ?Msg` | a scroll region's first layout and each size change | a Msg (the view cannot read layout) |
-| `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer input over interactive canvases / scenes; `layout` events | a Msg |
+| `pointerMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | **the one pointer hook**: hover, press (blank space included), drag, wheel, context, canvas / text-area layout; see "Interactive canvases and scroll regions" | a Msg |
+| `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | **deprecated** (use `pointerMsg`, `target = .canvas`): pointer input over interactive canvases / scenes; `layout` events | a Msg |
 | `windowMsg` | `(*const Model, w: f32, h: f32) ?Msg` | first frame and every resize | a Msg |
 | `windowTitle` | `(*const Model) ?[]const u8` | every frame; `Host.setTitle` only on change | the title |
 | `themeFor` | `(*const Model) Theme` | every frame, before `view` | the theme the emitters use |
@@ -104,9 +105,12 @@ table does not name.
 | `secondaryView` | `(*const Model, *CmdBuffer(Msg)) void` | each frame the second window is open | its view (pure, same rules as `view`) |
 | `secondaryClosedMsg` | `(*const Model) ?Msg` | the user closed the second window from the OS | a Msg |
 
-Hooks in open PRs (`textMsg`, `hoverMsg`, `contextMsg`, `modsMsg`,
-`sliderMsg`, `virtualRowsMsg`, `cursorFor`, `commands`, `debugState`) follow the
-same rules and join this table when they land.
+Hooks in open PRs (`modsMsg`, `virtualRowsMsg`, `cursorFor`, `commands`,
+`debugState`) follow the same rules and join this table when they land.
+`textMsg` (deprecated, `pointerMsg` target `.text_area`; see
+[text-area.md](text-area.md)) is the sixth old pointer hook; declaring any of
+the six logs a one-line startup note (`teak.deprecatedHooks(App)` lists them) and
+keeps working through an adapter in `run.zig`.
 
 ### Interactive canvases and scroll regions
 
@@ -115,32 +119,31 @@ route against the **previous** frame's layout, exactly like hit-testing.
 
 | Decl | Signature | Role |
 |------|-----------|------|
-| `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer events over `CanvasCmd.pointer` canvases: `down` / `move` / `up` / `wheel` / `leave`, and `layout` on first layout and whenever the rect size changes. Semantics in [canvas.md](canvas.md). |
-| `pointerMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | **the one pointer hook for widgets**: `ev.kind` = `hover` (target changed), `down` (any button but right), `up`, `context` (right press); `ev.button` says which. `ev.hit` is the widget's click / focus Msg, or **null for blank space**, so `if (ev.kind == .down and ev.isBlank()) return .clear_focus` clears the app's focus (the loop never invents focus changes for you). `ev.box` / `ev.now_ms` as for `hoverMsg`. `hoverMsg` / `contextMsg` are the same events for one kind each and remain; canvas / text / slider pointer hooks keep their capture semantics (see docs/features/pointer-msg.md for the staged migration). |
-| `hoverMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the interactive widget under the pointer changed (entered, left, replaced). `ev.hit` is that widget's click Msg, `ev.box` its rect (previous frame), `ev.now_ms` the host clock. Drives `widgets.tooltip`. |
-| `contextMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the right button went down; `ev.hit` is the Msg of the widget under the cursor, `null` over empty space. Drives `widgets.menu.ContextMenu`. |
-| `sliderMsg` | `(*const Model, grab: Msg, value: f32) ?Msg` | a `slider` cmd is being dragged: `grab` is its `grab_msg` (which slider), `value` the 0..1 position under the pointer. Fired on press and every frame the left button stays down (pointer captured, so the drag survives leaving the track); the slider's plain click Msg is not dispatched. Without the hook a slider is click-only. |
-| `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over the innermost hovered scroll region whose `ScrollStyle.id != 0`. `dx`/`dy` are DOM-signed px. Return `null` to ignore; the wheel is still consumed. |
+| `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | **deprecated** adapter (`pointerMsg` target `.canvas`, `ev.asCanvas()`): pointer events over `CanvasCmd.pointer` canvases: `down` / `move` / `up` / `wheel` / `leave`, and `layout` on first layout and whenever the rect size changes. Semantics in [canvas.md](canvas.md). |
+| `pointerMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | **the one pointer hook.** `ev.kind` = `hover` / `down` / `move` / `up` / `wheel` / `leave` / `context` / `layout` / `key` / `caret`; `ev.target` = `.widget ?Msg` (blank space = `null`, so `if (ev.kind == .down and ev.isBlank()) return .clear_focus` clears the app's focus) / `.canvas id` / `.text_area {id, offset, line, ...}` / `.slider {grab, value}` / `.scroll id` / `.none`. Coordinates: window `x`/`y`, target-local `local_x`/`local_y`, `dx`/`dy`, `w`/`h`, `button`, `buttons`, `mods`, `clicks`. **One capture rule**: a `down` on a canvas, text area or slider captures the pointer for it until every button is up. Return `null` to decline (a wheel then falls through to `wheelMsg`). Views for the helper widgets: `ev.asCanvas()`, `ev.asText()`, `ev.asSlider()`, `ev.asScroll()`. Migration: [migration-pointer-msg.md](../migration-pointer-msg.md). |
+| `hoverMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | **deprecated** adapter (`pointerMsg` kind `.hover`): the interactive widget under the pointer changed (entered, left, replaced). `ev.hit` is that widget's click Msg, `ev.box` its rect (previous frame), `ev.now_ms` the host clock. Drives `widgets.tooltip`. |
+| `contextMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | **deprecated** adapter (`pointerMsg` kind `.context`): the right button went down; `ev.hit` is the Msg of the widget under the cursor, `null` over empty space. Drives `widgets.menu.ContextMenu`. |
+| `sliderMsg` | `(*const Model, grab: Msg, value: f32) ?Msg` | **deprecated** adapter (`pointerMsg` target `.slider`): a `slider` cmd is being dragged: `grab` is its `grab_msg` (which slider), `value` the 0..1 position under the pointer. Fired on press and every frame the left button stays down (pointer captured, so the drag survives leaving the track); the slider's plain click Msg is not dispatched. Without the hook a slider is click-only. |
+| `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | **deprecated** adapter (`pointerMsg` target `.scroll`): wheel over the innermost hovered scroll region whose `ScrollStyle.id != 0`. `dx`/`dy` are DOM-signed px. Return `null` to ignore; the wheel is still consumed. |
 | `scrollLayoutMsg` | `(*const Model, id: u32, viewport_w, viewport_h, content_w, content_h: f32) ?Msg` | for every `ScrollStyle.id != 0` region, on its first layout and whenever its viewport or content size changes. Content is the extent of its children (`teak.scrollExtent`: nested scroll interiors and overlays excluded), independent of the scroll offset — enough to clamp `scroll_y` and size a scrollbar thumb. |
 
 **Wheel routing**, innermost first: a captured pointer canvas (during a drag,
 wherever the cursor is) → the pointer canvas or `id != 0` scroll region
 innermost under the cursor (`hit_test.wheelTarget`; overlays win, modals block)
-→ plain `wheelMsg`. A wheel handled by `canvasMsg` / `scrollMsg` never also
-reaches `wheelMsg`.
+→ plain `wheelMsg` (with `pointerMsg`, first offered to it with `target = .none`).
+A wheel handled by a canvas / scroll region never also reaches `wheelMsg`.
 
 ```zig
 // A pan/zoom viewport + a scrollable chat list, in one App:
-pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
+pub fn pointerMsg(_: *const Model, pe: teak.PointerEvent(Msg)) ?Msg {
+    if (pe.asScroll()) |s| return if (s.id == chat_scroll) Msg{ .chat_scroll_by = s.dy } else null;
+    const ev = pe.asCanvas() orelse return null;
     return switch (ev.kind) {
         .layout => Msg{ .viewport_size = .{ ev.w, ev.h } },
         .move => if (ev.buttons.middle) Msg{ .pan = .{ ev.dx, ev.dy } } else Msg{ .hover = .{ ev.x, ev.y } },
         .wheel => Msg{ .zoom = .{ ev.dy, ev.x, ev.y } },   // ev.mods.ctrl = pinch
         else => null,
     };
-}
-pub fn scrollMsg(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
-    return if (id == chat_scroll) Msg{ .chat_scroll_by = dy } else null;
 }
 pub fn scrollLayoutMsg(_: *const Model, id: u32, vw: f32, vh: f32, cw: f32, ch: f32) ?Msg {
     return if (id == chat_scroll) Msg{ .chat_extent = .{ vh, ch } } else null;
@@ -263,7 +266,7 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
    Tab/Shift+Tab traversal and Enter→`submitMsg` first (if the app
    exposes the relevant hooks), then clipboard chords via
    `clipboardText` / `clipboardMsg` (or the deprecated `handleClipboard`), else `keySpecialMsg`.
-4. Pointer canvases (`canvasMsg`): hover / move / down / up / leave +
+4. Pointer surfaces (`pointerMsg`; old `canvasMsg`): hover / move / down / up / leave +
    capture. Wheel: pointer canvas -> `scrollMsg` region -> `wheelMsg`.
 5. Effect results (`effectMsg`), then subscriptions: `runSubs(subscribe(model))`
    on `Host.nowMs()`; fired subs dispatch as ordinary Msgs before the view

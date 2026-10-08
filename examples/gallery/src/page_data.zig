@@ -125,7 +125,7 @@ pub fn view(m: *const Model, cb: anytype) void {
 
 const notes = [_][]const u8{
     "A ScrollStyle with an id gets the",
-    "wheel through scrollMsg; its size",
+    "wheel through pointerMsg; its size",
     "comes back through scrollLayoutMsg.",
     "The offset lives in the Model:",
     "no hidden widget state.",

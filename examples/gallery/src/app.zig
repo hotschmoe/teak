@@ -240,7 +240,7 @@ pub fn windowMsg(_: *const Model, w: f32, h: f32) ?Msg {
     return .{ .window = .{ w, h } };
 }
 
-pub fn sliderMsg(_: *const Model, grab: Msg, value: f32) ?Msg {
+fn onSlider(_: *const Model, grab: Msg, value: f32) ?Msg {
     return switch (grab) {
         .slider_grab => |id| .{ .slider_set = .{ .id = id, .v = value } },
         else => null,
@@ -285,10 +285,23 @@ fn dialogKey(m: *const Model, key: teak.SpecialKey) ?Msg {
     return W.dialog.keyMsg(key, .{ .confirm = Msg{ .dialog_confirm = {} }, .cancel = Msg{ .dialog_cancel = {} } }, m.dialog != .about and m.dialog != .shortcuts);
 }
 
-/// A press on blank space clears the text-field focus (the loop reports it as
-/// `kind = .down` with `hit == null`; widgets with a Msg report that instead).
+/// The one pointer hook. A press on blank space clears the text-field focus
+/// (reported as `kind = .down` with `hit == null`; widgets with a Msg report
+/// that instead); the rest is routed by target.
 pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
-    if (ev.kind == .down and ev.isBlank() and m.focus != null) return .focus_clear;
+    switch (ev.target) {
+        .slider => |sl| return onSlider(m, sl.grab, sl.value),
+        .canvas => return if (ev.asCanvas()) |c| onCanvas(m, c) else null,
+        .text_area => return if (ev.asText()) |t| onText(m, t) else null,
+        .scroll => return if (ev.asScroll()) |sr| onScroll(m, sr.id, sr.dx, sr.dy) else null,
+        .widget, .none => {},
+    }
+    switch (ev.kind) {
+        .down => if (ev.isBlank() and m.focus != null) return .focus_clear,
+        .hover => return onHover(m, ev),
+        .context => return onContext(m, ev),
+        else => {},
+    }
     return null;
 }
 
@@ -307,11 +320,11 @@ pub fn blurMsg(m: *const Model) ?Msg {
 }
 
 /// Pointer, wheel, resolved motion and metrics for the text area.
-pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
+fn onText(_: *const Model, ev: teak.TextEvent) ?Msg {
     return if (ev.id == model_mod.area_id) Msg{ .area = model_mod.Area.eventMsg(ev) } else null;
 }
 
-pub fn scrollMsg(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
+fn onScroll(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
     if (id == page_data.list_id) return Msg{ .list_scroll_by = dy };
     if (id == page_data.note_id) return Msg{ .note_scroll_by = dy };
     return null;
@@ -323,18 +336,18 @@ pub fn scrollLayoutMsg(_: *const Model, id: u32, _: f32, vh: f32, _: f32, ch: f3
     return null;
 }
 
-pub fn hoverMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+fn onHover(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
     if (m.dialog != .none or m.menubar.st.open or CM.isOpen(&m.ctx)) return null;
     return .{ .tip = W.tooltip.hoverMsg(Msg, ev, &page_overlays.tip_targets, 550) };
 }
 
-pub fn contextMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+fn onContext(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
     if (m.dialog != .none or m.menubar.st.open) return null;
     if (ev.x < ui.sidebar_w or ev.y < ui.menu_h or ev.y > m.win_h - ui.status_h) return null;
     return .{ .ctx = CM.openAt(ev.x, ev.y) };
 }
 
-pub fn canvasMsg(m: *const Model, ev: teak.CanvasEvent) ?Msg {
+fn onCanvas(m: *const Model, ev: teak.CanvasEvent) ?Msg {
     if (W.split.canvasMsg(&m.split, ev, page_layout.split_opts)) |s| return .{ .split = s };
     return null;
 }
@@ -411,7 +424,7 @@ test "the theme submenu switches the look and a confirm dialog resets the demo" 
 test "tooltips: hovering a target arms Sub.at; the deadline fires and the tip shows" {
     var m: Model = .{};
     const ev: teak.PointerEvent(Msg) = .{ .x = 10, .y = 10, .hit = Msg{ .demo = 0 }, .box = .{ .x = 20, .y = 100, .w = 60, .h = 26 }, .now_ms = 1000 };
-    update(&m, hoverMsg(&m, ev).?);
+    update(&m, onHover(&m, ev).?);
     try testing.expectEqual(@as(usize, 1), subscribe(&m).len);
     try testing.expectEqual(@as(u64, 1550), subscribe(&m)[0].at.deadline_ms);
     update(&m, subscribe(&m)[0].at.msg);
@@ -421,15 +434,15 @@ test "tooltips: hovering a target arms Sub.at; the deadline fires and the tip sh
     try testing.expect(!m.tip.shown);
     // An open menu suppresses new tips.
     update(&m, .{ .menubar = .{ .goto = .{ .active = true, .open = true } } });
-    try testing.expect(hoverMsg(&m, ev) == null);
+    try testing.expect(onHover(&m, ev) == null);
 }
 
 test "right-click opens the context menu only inside the content area" {
     var m: Model = .{};
     const inside: teak.PointerEvent(Msg) = .{ .x = 600, .y = 400 };
-    try testing.expect(contextMsg(&m, inside) != null);
-    try testing.expect(contextMsg(&m, .{ .x = 50, .y = 400 }) == null); // sidebar
-    try testing.expect(contextMsg(&m, .{ .x = 600, .y = 10 }) == null); // menu bar
+    try testing.expect(onContext(&m, inside) != null);
+    try testing.expect(onContext(&m, .{ .x = 50, .y = 400 }) == null); // sidebar
+    try testing.expect(onContext(&m, .{ .x = 600, .y = 10 }) == null); // menu bar
 }
 
 test "subscriptions are listed only while something needs them" {
@@ -447,16 +460,16 @@ test "subscriptions are listed only while something needs them" {
     try testing.expectEqual(@as(f32, 1), m.job);
 }
 
-test "sliders report through sliderMsg; the split drags through canvasMsg" {
+test "sliders report and the split drags through pointerMsg targets" {
     var m: Model = .{};
-    update(&m, sliderMsg(&m, .{ .slider_grab = .mix }, 0.25).?);
+    update(&m, onSlider(&m, .{ .slider_grab = .mix }, 0.25).?);
     try testing.expectEqual(@as(f32, 0.25), m.mix);
-    try testing.expect(sliderMsg(&m, .clicked, 0.5) == null);
+    try testing.expect(onSlider(&m, .clicked, 0.5) == null);
 
     const o = page_layout.split_opts;
-    update(&m, canvasMsg(&m, .{ .id = o.id, .kind = .down, .button = .left }).?);
+    update(&m, onCanvas(&m, .{ .id = o.id, .kind = .down, .button = .left }).?);
     const before = m.split.ratio;
-    update(&m, canvasMsg(&m, .{ .id = o.id, .kind = .move, .dx = 40 }).?);
+    update(&m, onCanvas(&m, .{ .id = o.id, .kind = .move, .dx = 40 }).?);
     try testing.expect(m.split.ratio > before);
 }
 
@@ -479,7 +492,7 @@ test "the Inputs page text area takes focus and typed text (Enter makes a new li
     try testing.expectEqualStrings("hi\n!", m.area.content());
     try testing.expect(focusedMsg(&m).?.area == .focus);
     const ev: teak.TextEvent = .{ .id = model_mod.area_id, .kind = .metrics };
-    try testing.expect(textMsg(&m, ev) != null);
+    try testing.expect(onText(&m, ev) != null);
 }
 
 test "commands: menu shortcut text is the chord that fires the command" {

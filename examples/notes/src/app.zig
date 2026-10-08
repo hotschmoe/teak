@@ -1,7 +1,7 @@
 //! Notes: a multi-line editor and a chat box, both `teak.TextArea`s.
 //!
 //! The wiring per area is the whole story: a Model field, a Msg variant, one
-//! `update` arm, one `viewWith` call, and the shared hooks below -- `textMsg`
+//! `update` arm, one `viewWith` call, and the shared hooks below -- `pointerMsg`
 //! is a one-liner per area because the runtime already resolved clicks,
 //! drags, wheel, Up/Down/Home/End and layout metrics into `TextEvent`s.
 
@@ -145,7 +145,13 @@ fn scriptsLine(cb: anytype) void {
 
 // ── Host integration ───────────────────────────────────────────────
 
-pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
+/// The one pointer hook: pointer, wheel and metrics for the text areas.
+pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (ev.asText()) |t| return onText(m, t);
+    return null;
+}
+
+fn onText(_: *const Model, ev: teak.TextEvent) ?Msg {
     return switch (ev.id) {
         NOTES_ID => .{ .notes = Notes.eventMsg(ev) },
         CHAT_ID => .{ .chat = Chat.eventMsg(ev) },

@@ -225,6 +225,10 @@ pub const DragEvent = pointer.DragEvent;
 pub const DragPhase = pointer.DragPhase;
 /// What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
 pub const PointerEvent = pointer.PointerEvent;
+/// The kinds of `PointerEvent`.
+pub const PointerKind = pointer.PointerKind;
+/// Text-area facts of a `PointerEvent` (`target.text_area`).
+pub const TextTarget = pointer.TextTarget;
 /// A window-space rectangle (`PointerEvent.box`).
 pub const Box = pointer.Box;
 /// Kind of a `CanvasEvent` (press, move, release, wheel, ...).
@@ -490,6 +494,8 @@ pub const run = runtime.run;
 pub const Runtime = runtime.Runtime;
 /// Options for `run` (title, clear color, snapshot sink, ...).
 pub const RunOptions = runtime.RunOptions;
+/// Pointer hooks superseded by `pointerMsg` that `App` still declares.
+pub const deprecatedHooks = runtime.deprecatedHooks;
 /// A second top-level window the app wants open this frame.
 pub const SecondaryWindowSpec = runtime.SecondaryWindowSpec;
 
