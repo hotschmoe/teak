@@ -128,11 +128,32 @@ hand-call pattern `counter_greeter` uses for `greeter.view`.
 > must hand-write the app `view` and call `Picker.viewWith(...)` yourself
 > (see [cookbook recipe 5](../cookbook.md#5-dropdown-with-a-scrolling-list)).
 
+**`cap` is documentation only.** `Dropdown(cap).capacity` exposes it, but nothing
+sizes storage or limits options by it (the Model holds an index, the app owns the
+option slice). Any positive number works; use it to say how long the list may get.
+
+**Setting the selection from code:** `update(&m.picker, .{ .select = i })` works
+while the list is closed (it records `selected = i`, parks the highlight there and
+leaves the list closed), so loading a record or applying a preset needs no
+`toggle` first.
+
+**Positioning the open list.** `list_x` / `list_y` are **window-absolute** pixels
+for the overlay's top-left; the dropdown does not look at where its closed button
+was laid out (a pure `view` cannot read layout). Compute them from your own
+layout (your paddings and fixed widths: the closed button is at the cursor where
+you call `viewWith`), or keep the app's `scrollLayoutMsg` / `canvasMsg` `layout`
+event for the surrounding region in the Model and derive the anchor from it. A
+first-class "anchor from the previous frame's button rect" event is not built yet.
+
 `msgs` carries the composed AppMsgs: `.toggle`, `.close`, and
 `selectMsg` — a **comptime `fn(usize) AppMsg`** the app supplies to build
-the per-index select message. `DropdownViewOpts` positions the open list
-(`list_x`, `list_y`, `list_width`, `list_max_height`) and caps its visible
-height (`max_visible`, see below).
+the per-index select message. `DropdownViewOpts` sizes the open list
+(`list_width`, `list_max_height`) and caps its visible height (`max_visible`,
+see below). **Positioning is automatic** (`auto_anchor`, default true): the list
+is an overlay anchored to the closed button by its `toggle` Msg
+(`OverlayStyle.anchor_msg`), opening below its left edge (`anchor_side` picks
+another side). No coordinates to compute; `list_x` / `list_y` apply only with
+`auto_anchor = false`. See [overlay anchoring](layout.md#overlay-anchoring).
 
 Behavior: **closed** = a button showing the selected option's label
 (placeholder when the slice is empty / index out of range); **open** =
@@ -203,7 +224,7 @@ TextField model, open, selected: ?usize, highlighted, scroll_offset }`,
 scroll_by }`. The option labels are app-owned and passed to `viewWith(model,
 cb, options, msgs, opts)`; `msgs` carries `.focus`, `.close` and a comptime
 `selectMsg(i)` that receives the **original** option index. `ViewOpts`:
-`list_x/list_y/list_width`, `max_visible` (default 8; the list scrolls past
+`list_width`, `auto_anchor` (default true: the list opens under the input; `list_x/list_y` only when false), `anchor_side`, `max_visible` (default 8; the list scrolls past
 it), `match` (`.substring` | `.prefix`), `input_style`.
 
 The view is a `text_input` (query while open, the selected label while
@@ -223,6 +244,145 @@ and the MATERIAL field in `examples/chrome`.
 All state in the Model; the highlight is a match *ordinal* (presentation),
 selection is the original index; Cmds carry data only; filtering is a pure
 function of `(query, options)` recomputed in `view` with no allocation.
+
+---
+
+## Primitive-built widgets (`teak.widgets`)
+
+### Why
+
+A widget that needs a new `Cmd` variant touches every pass over the flat
+buffer. These nine do not: each is a `Model` + `Msg` + `update` and view
+helpers that emit existing cmds (`button`, `canvas`, groups, overlays), in the
+mould of Dropdown and Combobox. Source: `src/core/widgets/*.zig`; tests and
+snapshot goldens sit next to each. They are reached as `teak.widgets.<name>`.
+
+### Shape
+
+| Widget | State (in the app's Model) | Emits |
+|--------|----------------------------|-------|
+| `toggle` | the app's own `bool` | a clickable `canvas` (track + knob) + label |
+| `progress` | `phase` (indeterminate only) | a non-interactive `canvas` |
+| `tabs` | `selected`, `focused` | a row of `button`s + a `divider` |
+| `split` | `ratio`, `dragging` | two sized groups + an interactive `canvas` divider |
+| `tooltip` | `item`, `box`, `deadline`, `shown` | a non-modal `overlay` |
+| `toast` | a ring of `cap` entries with a tick countdown | a non-modal bottom-right `overlay` of cards |
+| `dialog` | the app's own `bool` | a modal `overlay` (dim backdrop + centred card) |
+| `menu.MenuBar` | `State` (active, hot, open, depth, sel) | a button row + modal-scrim + `overlay` panels |
+| `menu.ContextMenu` | `State` + the open point | the same panels at the pointer |
+
+**toggle.** `toggle.view(cb, msg, on, label)`: the click Msg flips the app's
+bool. Square corners (the quad renderer has no radius), so the retro switch is
+a slab with a square knob.
+
+**progress.** `progress.bar(cb, value, style)` is a pure function of a 0..1
+value. `progress.indeterminate(cb, phase, style)` slides a block; advance
+`phase` with `Sub.every(progress.TICK_MS)` while the work runs
+(`Progress.Msg.tick`), never otherwise.
+
+**tabs.** `Tabs.viewWith(model, cb, labels, msgs, opts)` draws the strip (the
+selected tab takes the panel colour and an accent border when the strip has
+focus); the app emits the content for `model.selected`. Clicking a tab focuses
+the strip; `Tabs.keyMsg` then maps Left / Right (wrapping) / Home / End /
+Escape. `msgs.selectMsg(i)` is a comptime fn like Dropdown's.
+
+**split.** `begin` / `divider` / `end` bracket the two panes; the outer size
+comes from the app (`windowMsg`) because `view` cannot read layout. The divider
+is an interactive canvas, so a drag keeps working off the thin strip (pointer
+capture). Route it from the app's `canvasMsg` with `split.canvasMsg`. The ratio
+is clamped to `min_a` / `min_b`; when both minimums cannot fit, the space is
+split in their proportion.
+
+**tooltip.** See "HARDLINE" below. Wiring: `hoverMsg` hook ->
+`Tooltip.hoverMsg(Msg, ev, &targets, delay_ms)`, `subscribe` lists
+`Sub.at(deadline)`, `view` ends with `Tooltip.view`. The popup flips above and
+right-aligns near the window's lower-right so it stays on screen.
+
+**toast.** `Toast(cap, text_cap)`. `Toast.push(&m.toasts, kind, text, ttl)`
+from any `update` arm; `ttl` counts `TICK_MS` ticks (0 = sticky). List
+`Sub.every(TICK_MS)` only while `Toast.active`. A full stack drops its oldest.
+Cards slide in from the right and fade (and out again on expiry or dismiss): a `teak.anim.Tween` per entry,
+advanced by `Toast.Msg.frame` (the app's `animationMsg`) while `Toast.animating`; an app that never forwards frames
+still works (toasts appear shown and are dropped a couple of ticks after they expire). Each card is its own overlay at a
+fixed slot (`ViewOpts.height`), newest at the bottom.
+
+**dialog.** `Dialog.view(cb, opts, .{ .confirm = ..., .cancel = ... })` while
+the app's flag is set; `begin` / `end` wrap custom body content. Enter / Escape
+via `Dialog.keyMsg`. Focus trap: the card is a modal overlay, so clicks outside
+it hit the backdrop, and `focus.nextFocusable` / `prevFocusable` now confine
+Tab traversal to the topmost modal overlay.
+
+**menu.** `MenuBar(Action)` and `ContextMenu(Action)`; the tree is app data
+(`MenuItem`: label with an `&` mnemonic, optional action, shortcut text,
+enabled / checked, separator, children). Choosing a leaf dispatches
+`msgs.run(action)`; the app's `update` for that Msg also closes the menu
+(`MenuBar.update(&m.bar, .close)`). Keyboard: F10 or a bare Alt tap
+(`SpecialKey.f10` / `.alt_tap`) activates the bar, arrows / Enter / Escape
+navigate, a letter is a mnemonic while the bar is active. Mnemonic letters are underlined (`ButtonCmd.underline`). Because `view` cannot
+read layout, geometry is computed from fixed sizes (`top_width`, `row_h`,
+`panel_w`, `SEP_H`); rows pad their text to `cols` columns so shortcuts align
+in a monospaced font. Panels clamp to the window. A transparent full-window
+modal "scrim" overlay behind the panels makes a click anywhere else dismiss
+the menu. The navigation logic (`Nav`) is pure and exhaustively tested.
+
+**color_picker.** A saturation / value square and a hue strip (interactive canvases drawn from per-vertex-coloured
+triangles: white -> hue left to right, a transparent -> black overlay top to bottom), a preview, hex / R / G / B fields
+and a 16-swatch palette. The colour is HSV in the Model (so dragging hue over a grey does not lose it) plus the text of
+the four fields; dragging or a swatch rewrites the texts, typing a valid value updates the colour and the *other*
+fields (never the one being typed in), and an unparseable field is drawn with a danger border. Route the canvases from
+`canvasMsg` (`color_picker.canvasMsg`), the fields from the app's key hooks (`charMsg(field, c)` / `keyMsg(field, key)`),
+read the result with `rgb(model)` / `rgba(model)`.
+
+**spinner.** `Spinner(.{ .min, .max, .step, .big_step, .precision })` wraps a `NumericField`: its `Msg` *is* the
+NumericField's, so typing routes through `textFieldChar` / `textFieldSpecial` unchanged, and stepping is a function the
+app calls from its own `update` arm (`Spinner.step(&m.qty, .up)`). `keyStep` maps Up / Down / Page Up / Page Down,
+`wheelStep(dy, shift)` maps the wheel (Shift = big step). A step starts from the current value (the minimum when the
+text is empty or invalid), rounds to `precision` (no `0.30000000000000004`), clamps to `[min, max]` and rewrites the
+text; the `-` / `+` buttons disable at the limits.
+
+**date_field.** An ISO text field (`YYYY-MM-DD`) plus a calendar popover: a modal overlay with a month header (`<<` `<`
+`>` `>>`), weekday headings (Monday first), a 6 x 7 grid of day buttons (other-month days muted, today outlined,
+selected inverted, the keyboard cursor in a heavy border) and Today / Clear. The date maths (`widgets.date`: days from
+civil, weekday, add days / months with day clamping, strict ISO parse) is pure. **No wall clock in `view`:** "today" is
+Model data set with `Msg.set_today`, typically `date.fromUnixMs(c.unix_ms, c.utc_offset_min)` from a `clock` effect
+result. Typing a full valid date selects it; a partial or impossible one is plain text with a danger border. Keys
+(`keyMsg`): arrows move by day / week, Page Up / Down by month, Home / End to the month's first / last day, Enter picks,
+Escape closes; Down on a closed field opens it.
+
+### Host support for the keys
+
+`SpecialKey.f10` is mapped on Win32 (`WM_SYSKEYDOWN`), X11 (`XK_F10`) and the
+web host; `alt_tap` is produced by `InputQueue.altDown` / `altUp`, which the
+three hosts call from their Alt press / release handling. An Alt press that is
+followed by any other key, text or mouse button is not a tap, so Alt+F4 and
+Alt+letter chords keep working. (Browsers may take a bare Alt for their own
+menu; F10 is the portable activator.)
+
+### Two new App hooks
+
+The tooltip and the context menu need to know what is under the pointer,
+which the view cannot read. `teak.run` therefore offers two optional hooks that
+hand the app a `PointerEvent(Msg)`: `hoverMsg` (the interactive widget under
+the pointer changed) and `contextMsg` (the right button went down). Each event
+carries `hit` (the Msg a left click on that widget would dispatch, which *is*
+the widget's identity: compare it with `std.meta.eql`, no ids), `box` (its rect
+in the previous frame's layout), `mods` and the host clock `now_ms`. Both are
+plain data in, `?Msg` out, like `canvasMsg`.
+
+### HARDLINE
+
+* **State.** Everything above is in the Model and moves only through `Msg`s.
+* **Tooltip hover and the 3-rule gate.** `TransientState` is for presentation
+  that never affects routing *or the Cmd stream* (hover colour, focus ring). A
+  tooltip changes what `view` emits, so it fails the gate and its hover state is
+  Model state, fed by `hoverMsg`. The delay is a declarative `Sub.at`
+  (hatch 6), the anchor comes from the previous frame's rect via the event,
+  and there is no wall-clock read in `view`.
+* **Toast timing.** A tick countdown in the Model, not `now - created`: `update`
+  never sees a clock, and tests are deterministic.
+* **No fn pointers on Cmds.** The comptime `msgs.*Msg(i)` / `msgs.menu` /
+  `msgs.run` fns build Msg *values*; they are never stored on a cmd.
+* **Panels are positioned from constants**, never from measured layout.
 
 ---
 

@@ -21,6 +21,7 @@ const zinput = zunk.web.input;
 const zapp = zunk.web.app;
 const zgpu = zunk.web.gpu;
 const fx = zunk.web.fx;
+const zime = zunk.web.ime;
 const teak_text = @import("teak-text");
 const font_data = @import("teak-web-fontdata");
 
@@ -41,6 +42,53 @@ pub const FileDialogPoll = teak.FileDialogPoll;
 
 pub const NativeHandle = struct {};
 
+/// DOM `keyCode` -> shortcut key (see `InputQueue.pushShortcut`); built at
+/// comptime from the key enum so letters, digits and F-keys cost no lines.
+const ShortcutCode = struct { code: u8, key: teak.Key };
+const shortcut_codes = shortcutTable();
+
+fn shortcutTable() [shortcut_count]ShortcutCode {
+    @setEvalBranchQuota(10_000);
+    var out: [shortcut_count]ShortcutCode = undefined;
+    var n: usize = 0;
+    for (0..26) |i| {
+        out[n] = .{ .code = @intCast(65 + i), .key = @fromBackingInt(@intCast(i)) };
+        n += 1;
+    }
+    for (0..10) |i| {
+        out[n] = .{ .code = @intCast(48 + i), .key = @fromBackingInt(@intCast(@backingInt(teak.Key.d0) + i)) };
+        n += 1;
+    }
+    for (0..12) |i| {
+        out[n] = .{ .code = @intCast(112 + i), .key = @fromBackingInt(@intCast(@backingInt(teak.Key.f1) + i)) };
+        n += 1;
+    }
+    for (shortcut_extra) |e| {
+        out[n] = e;
+        n += 1;
+    }
+    return out;
+}
+
+const shortcut_extra = [_]ShortcutCode{
+    .{ .code = 13, .key = .enter },          .{ .code = 9, .key = .tab },
+    .{ .code = 27, .key = .escape },         .{ .code = 32, .key = .space },
+    .{ .code = 8, .key = .backspace },       .{ .code = 46, .key = .delete },
+    .{ .code = 45, .key = .insert },         .{ .code = 37, .key = .left },
+    .{ .code = 39, .key = .right },          .{ .code = 38, .key = .up },
+    .{ .code = 40, .key = .down },           .{ .code = 36, .key = .home },
+    .{ .code = 35, .key = .end },            .{ .code = 33, .key = .page_up },
+    .{ .code = 34, .key = .page_down },      .{ .code = 188, .key = .comma },
+    .{ .code = 190, .key = .period },        .{ .code = 191, .key = .slash },
+    .{ .code = 220, .key = .backslash },     .{ .code = 186, .key = .semicolon },
+    .{ .code = 222, .key = .quote },         .{ .code = 189, .key = .minus },
+    .{ .code = 187, .key = .equal },         .{ .code = 219, .key = .bracket_left },
+    .{ .code = 221, .key = .bracket_right }, .{ .code = 192, .key = .grave },
+};
+const shortcut_count = 26 + 10 + 12 + shortcut_extra.len;
+/// Longest preedit kept (UTF-8 bytes); the runtime's snapshot buffer is smaller still.
+const ime_text_cap = 256;
+
 /// zunk key code -> host-neutral key. Letters only matter as Ctrl chords;
 /// `InputQueue.pushNav` drops them when Ctrl is not held.
 const key_mappings = [_]struct { from: zinput.Key, to: NavKey }{
@@ -49,6 +97,8 @@ const key_mappings = [_]struct { from: zinput.Key, to: NavKey }{
     .{ .from = .enter, .to = .enter },
     .{ .from = .tab, .to = .tab },
     .{ .from = .escape, .to = .escape },
+    .{ .from = .f12, .to = .f12 },
+    .{ .from = .f10, .to = .f10 },
     .{ .from = .arrow_left, .to = .left },
     .{ .from = .arrow_right, .to = .right },
     .{ .from = .arrow_up, .to = .up },
@@ -81,57 +131,54 @@ const MAX_FILE_DIALOG_SLOTS: usize = 4;
 /// Allocator for transient request encodings (HTTP header text).
 const request_allocator = std.heap.wasm_allocator;
 
-// ── A11y DOM-mirror wire format ────────────────────────────────────
+// ── A11y DOM-mirror wire format (v2) ───────────────────────────────
 //
-// `publishA11yTree` ships the per-frame a11y snapshot to the JS side
-// over two parallel buffers: a fixed-stride record array (one record
-// per node) and a UTF-8 string heap that holds every label back-to-
-// back. The JS shim deserializes both, diffs against last frame, and
-// updates a hidden DOM subtree so NVDA/JAWS/VoiceOver can announce
-// canvas-rendered widgets.
+// `publishA11yTree` ships the a11y snapshot (only when it changed: the run
+// loop diffs) to the JS side over two parallel buffers: a fixed-stride record
+// array (one record per node, parents before children) and a UTF-8 string
+// heap holding every label and value back-to-back. The zunk shim mirrors the
+// tree into a hidden, properly NESTED DOM subtree of ARIA elements, so
+// screen readers can navigate and operate canvas-rendered widgets, and
+// reports what the user does there back through `pollA11yActions`.
 //
-// Per-node record layout (little-endian, native Zig packing —
-// `A11yRecord` is `extern struct` so its layout is fixed):
+// Per-node record layout (little-endian; `extern struct`, 64 bytes):
 //
 //   offset  size  field
-//        0     4  cmd_index      u32  index into the source Cmd buffer
-//        4     4  role           u32  enum tag, 0..11 (see a11y.Role)
+//        0     4  cmd_index      u32  index into the source Cmd buffer (action target)
+//        4     4  role           u32  WIRE ROLE CODE (see `wireRole`, = zunk's table)
 //        8     4  label_offset   u32  byte offset into the string heap
-//       12     4  label_len      u32  label length in bytes
-//       16     4  bounds_x       i32  rounded pixel x
-//       20     4  bounds_y       i32  rounded pixel y
-//       24     4  bounds_w       i32  rounded pixel width
-//       28     4  bounds_h       i32  rounded pixel height
-//       32     4  state          f32  checkbox/radio checked (0/1),
-//                                       slider value [0, 1]
-//       36     4  flags          u32  bit 0 = focused
-//   total: 40 bytes
+//       12     4  label_len      u32
+//       16    16  bounds x,y,w,h i32  rounded window-pixel rect
+//       32     4  state          f32  checkbox/radio 0/1, slider and progressbar [0, 1]
+//       36     4  flags          u32  see A11Y_FLAG_*
+//       40     4  value_offset   u32  editable text / value in the string heap
+//       44     4  value_len      u32
+//       48     4  sel_start      u32  selection inside the value (bytes)
+//       52     4  sel_end        u32
+//       56     4  parent         u32  record index of the enclosing node, 0xFFFFFFFF = root
+//       60     4  level          u32  heading level / tree depth, 0 = unspecified
 //
-// Fixed-size buffers (rather than an arena/general-purpose allocator)
-// because wasm-freestanding has no default heap, the wasm side is
-// single-threaded, and JS reads the buffers synchronously inside the
-// extern call — the next publish-tree call can safely overwrite them.
-// Tunables are bounded to keep wasm size down: 256 nodes × 40 bytes
-// = 10 KB for records, 8 KB string heap. A 256-node frame already
-// exceeds anything a human screen-reader user would meaningfully
-// navigate; nodes past the cap are silently dropped.
+// Wire role codes (ARIA names): 0 generic, 1 region, 2 text, 3 text (rich),
+// 4 button, 5 textbox, 6 checkbox, 7 radio, 8 slider, 9 separator, 10 img,
+// 11 dialog, 12 textbox (multiline), 13 combobox, 14 listbox, 15 option,
+// 16 menu, 17 menuitem, 18 tablist, 19 tab, 20 tree, 21 treeitem, 22 table,
+// 23 row, 24 cell, 25 progressbar, 26 status, 27 alert, 28 list, 29 listitem,
+// 30 toolbar, 31 heading, 32 menubar, 33 columnheader, 34 link.
 //
-// JS shim behavior (separate zunk issue tracks the bridge):
-//   * Maintain a single off-screen container element with ARIA
-//     mirrors for each record.
-//   * Map `role` → ARIA role + apply label / state attributes.
-//   * Diff against the previous frame; add/update/remove DOM nodes.
-//   * If the shim is absent from the build, the extern resolves
-//     away (see `@hasDecl` gate in `publishA11yTree`) and the call
-//     becomes a build-time no-op.
+// Fixed-size buffers (wasm-freestanding has no default heap; single-threaded;
+// JS reads them synchronously inside the extern call): 512 nodes x 64 bytes
+// = 32 KB of records, 32 KB string heap. Nodes past the cap and strings that
+// do not fit are dropped (the record stays, unlabeled).
 //
-// Buffer lifetime: the byte ranges passed to the extern are stable
-// for the duration of that call only. JS must copy any bytes it
-// wants to retain — the buffers are overwritten on the next frame.
+// Actions come back the other way: `pollA11yActions` calls
+// `__zunk_poll_a11y_actions(recs, cap, strings, str_cap) -> count` once per
+// frame; each 16-byte record is `{kind u32, cmd_index u32, str_off u32,
+// str_len u32}` (kind = `a11y.ActionKind` order). The run loop turns them
+// into ordinary input.
 
-const MAX_A11Y_NODES: usize = 256;
-const A11Y_STRING_HEAP_BYTES: usize = 8 * 1024;
-const A11Y_RECORD_BYTES: usize = 40;
+const MAX_A11Y_NODES: usize = 512;
+const A11Y_STRING_HEAP_BYTES: usize = 32 * 1024;
+const A11Y_RECORD_BYTES: usize = 64;
 
 /// One serialized a11y node. `extern struct` pins the field layout so
 /// the JS side can decode by raw offsets without paying for any
@@ -147,6 +194,12 @@ const A11yRecord = extern struct {
     bounds_h: i32,
     state: f32,
     flags: u32,
+    value_offset: u32,
+    value_len: u32,
+    sel_start: u32,
+    sel_end: u32,
+    parent: u32,
+    level: u32,
 
     comptime {
         if (@sizeOf(A11yRecord) != A11Y_RECORD_BYTES) {
@@ -158,6 +211,54 @@ const A11yRecord = extern struct {
 /// Bit positions for `A11yRecord.flags`. Keep the table in sync with
 /// the JS shim — adding a bit is a wire-format change.
 const A11Y_FLAG_FOCUSED: u32 = 1 << 0;
+const A11Y_FLAG_DISABLED: u32 = 1 << 1;
+const A11Y_FLAG_SELECTED: u32 = 1 << 2;
+const A11Y_FLAG_EXPANDABLE: u32 = 1 << 3;
+const A11Y_FLAG_EXPANDED: u32 = 1 << 4;
+const A11Y_FLAG_MODAL: u32 = 1 << 5;
+const A11Y_FLAG_LIVE_POLITE: u32 = 1 << 6;
+const A11Y_FLAG_LIVE_ASSERTIVE: u32 = 1 << 7;
+
+/// The wire role code of a node (the JS table is indexed by it).
+fn wireRole(n: A11yNode) u32 {
+    return switch (n.role) {
+        .group => 0,
+        .scroll => 1,
+        .text => 2,
+        .rich_text => 3,
+        .button => 4,
+        .text_input, .text_area => 5,
+        .checkbox => 6,
+        .radio => 7,
+        .slider => 8,
+        .divider => 9,
+        .image, .canvas => 10,
+        .overlay => if (n.modal) 11 else 1,
+        .dialog => 11,
+        .combobox => 13,
+        .listbox => 14,
+        .option => 15,
+        .menu => 16,
+        .menuitem => 17,
+        .tablist => 18,
+        .tab => 19,
+        .tree => 20,
+        .treeitem => 21,
+        .table => 22,
+        .row => 23,
+        .cell => 24,
+        .progressbar => 25,
+        .status => 26,
+        .alert => 27,
+        .list => 28,
+        .listitem => 29,
+        .toolbar => 30,
+        .heading => 31,
+        .menubar => 32,
+        .columnheader => 33,
+        .link => 34,
+    };
+}
 
 // Module-scoped backing store for the two wire buffers. Single-host
 // wasm process — one publish-tree call at a time, single-threaded,
@@ -165,61 +266,90 @@ const A11Y_FLAG_FOCUSED: u32 = 1 << 0;
 var g_a11y_records: [MAX_A11Y_NODES * A11Y_RECORD_BYTES]u8 align(@alignOf(A11yRecord)) = undefined;
 var g_a11y_strings: [A11Y_STRING_HEAP_BYTES]u8 = undefined;
 
+/// Append `bytes` to the string heap; returns `{offset, len}` (zeros when it does not fit).
+fn putString(used: *u32, bytes: []const u8) struct { off: u32, len: u32 } {
+    if (bytes.len == 0 or bytes.len > A11Y_STRING_HEAP_BYTES - used.*) return .{ .off = 0, .len = 0 };
+    const off = used.*;
+    @memcpy(g_a11y_strings[off..][0..bytes.len], bytes);
+    used.* += @intCast(bytes.len);
+    return .{ .off = off, .len = @intCast(bytes.len) };
+}
+
 /// Serialize an A11yNode slice into the module-scoped record + string
 /// buffers and return the byte lengths actually written. Pure helper —
 /// no zunk / JS calls — so tests can exercise it in isolation.
-///
-/// Truncation rules:
-///   * Drops nodes past `MAX_A11Y_NODES`.
-///   * Drops labels whose bytes wouldn't fit in the remaining string
-///     heap (record is still written with `label_len = 0` so the node
-///     itself stays announceable, just unlabeled).
 fn serializeA11yTree(nodes: []const A11yNode) struct { records_len: u32, strings_len: u32 } {
     const count = @min(nodes.len, MAX_A11Y_NODES);
     var strings_used: u32 = 0;
-
-    // Records and strings live in parallel buffers — write one record
-    // per node, append the label bytes to the heap, and record the
-    // offset+len so JS can slice them back out.
     const records: [*]A11yRecord = @ptrCast(&g_a11y_records);
     for (nodes[0..count], 0..) |node, i| {
-        const label_len_u32: u32 = @intCast(node.label.len);
-        const remaining: u32 = @intCast(A11Y_STRING_HEAP_BYTES - strings_used);
-        var label_offset: u32 = 0;
-        var label_len: u32 = 0;
-        if (label_len_u32 > 0 and label_len_u32 <= remaining) {
-            label_offset = strings_used;
-            label_len = label_len_u32;
-            @memcpy(g_a11y_strings[strings_used..][0..label_len_u32], node.label);
-            strings_used += label_len_u32;
-        }
-
+        const label = putString(&strings_used, node.label);
+        const value = putString(&strings_used, node.value);
         var flags: u32 = 0;
         if (node.focused) flags |= A11Y_FLAG_FOCUSED;
-
+        if (node.disabled) flags |= A11Y_FLAG_DISABLED;
+        if (node.selected) flags |= A11Y_FLAG_SELECTED;
+        if (node.expanded) |e| flags |= A11Y_FLAG_EXPANDABLE | (if (e) A11Y_FLAG_EXPANDED else 0);
+        if (node.modal) flags |= A11Y_FLAG_MODAL;
+        switch (node.live) {
+            .off => {},
+            .polite => flags |= A11Y_FLAG_LIVE_POLITE,
+            .assertive => flags |= A11Y_FLAG_LIVE_ASSERTIVE,
+        }
         records[i] = .{
             .cmd_index = node.cmd_index,
-            .role = @backingInt(node.role),
-            .label_offset = label_offset,
-            .label_len = label_len,
+            .role = wireRole(node),
+            .label_offset = label.off,
+            .label_len = label.len,
             .bounds_x = @intFromFloat(@round(node.bounds.x)),
             .bounds_y = @intFromFloat(@round(node.bounds.y)),
             .bounds_w = @intFromFloat(@round(node.bounds.w)),
             .bounds_h = @intFromFloat(@round(node.bounds.h)),
             .state = node.state,
             .flags = flags,
+            .value_offset = value.off,
+            .value_len = value.len,
+            .sel_start = node.sel_start,
+            .sel_end = node.sel_end,
+            .parent = node.parent,
+            .level = node.level,
         };
     }
+    return .{ .records_len = @intCast(count * A11Y_RECORD_BYTES), .strings_len = strings_used };
+}
 
-    const records_bytes: u32 = @intCast(count * A11Y_RECORD_BYTES);
-    return .{ .records_len = records_bytes, .strings_len = strings_used };
+// ── A11y actions back from the page ────────────────────────────────
+
+const MAX_A11Y_ACTIONS: usize = 16;
+const A11Y_ACTION_BYTES: usize = 16;
+const A11Y_ACTION_TEXT_BYTES: usize = 2048;
+
+const A11yActionRecord = extern struct { kind: u32, cmd_index: u32, str_off: u32, str_len: u32 };
+
+var g_a11y_action_recs: [MAX_A11Y_ACTIONS]A11yActionRecord = undefined;
+var g_a11y_action_text: [A11Y_ACTION_TEXT_BYTES]u8 = undefined;
+
+/// Decode `count` action records (as the JS side wrote them) into `out`.
+fn decodeA11yActions(count: usize, out: []teak.A11yAction) usize {
+    var n: usize = 0;
+    for (g_a11y_action_recs[0..@min(count, MAX_A11Y_ACTIONS)]) |r| {
+        if (n == out.len) break;
+        if (r.kind > @backingInt(teak.A11yActionKind.decrement)) continue;
+        if (r.str_off > A11Y_ACTION_TEXT_BYTES or r.str_len > A11Y_ACTION_TEXT_BYTES - r.str_off) continue;
+        out[n] = .{
+            .kind = @fromBackingInt(@intCast(r.kind)),
+            .cmd_index = r.cmd_index,
+            .text = g_a11y_action_text[r.str_off..][0..r.str_len],
+        };
+        n += 1;
+    }
+    return n;
 }
 
 /// JS-side imports (wired by zunk's resolver — see zunk issue #14 for
 /// the file-dialog shim and zunk issue #15 for the a11y DOM mirror).
-/// Stays in a sub-namespace so `@hasDecl` callers can short-circuit
-/// cleanly when a symbol isn't resolved yet (browser builds where
-/// zunk's bridge hasn't shipped).
+/// Never gate a call on a has-decl check of this namespace: the decls are non-`pub`, so
+/// it is always false (audit rule NO_HASDECL_EXTERNS).
 const externs = struct {
     extern "env" fn __zunk_request_file_dialog(
         id: u32,
@@ -236,6 +366,14 @@ const externs = struct {
         strings_ptr: [*]const u8,
         strings_len: u32,
     ) void;
+
+    /// Drains the DOM mirror's queued AT requests into the buffers; returns the count.
+    extern "env" fn __zunk_poll_a11y_actions(
+        records_ptr: [*]u8,
+        records_cap: u32,
+        strings_ptr: [*]u8,
+        strings_cap: u32,
+    ) u32;
 };
 
 /// Pointer to the live Host so the wasm export callback can write the
@@ -272,6 +410,13 @@ pub const Host = struct {
     fx_next: usize = 0,
     fx_claimed: u32 = 0,
     fx_polled: bool = false,
+    /// IME composition mirror (`zunk.web.ime`): the live preedit, valid until the
+    /// next `pollInputs`. Commits go to the input queue as typed text.
+    ime_active: bool = false,
+    ime_len: usize = 0,
+    ime_cursor: usize = 0,
+    ime_text: [ime_text_cap]u8 = undefined,
+    ime_scratch: [1024]u8 = undefined,
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         zinput.init();
@@ -318,13 +463,19 @@ pub const Host = struct {
         // the reported `mods` keep the real state.
         const reported = q.mods;
         q.mods.ctrl = reported.ctrl or reported.meta;
+        if (zinput.isKeyPressed(.alt)) q.altDown();
         for (key_mappings) |m| {
             if (zinput.isKeyPressed(m.from)) q.pushNav(m.to);
         }
+        for (shortcut_codes) |m| {
+            if (zinput.isKeyPressed(@fromBackingInt(@intCast(m.code)))) q.pushShortcut(m.key);
+        }
+        if (zinput.isKeyReleased(.alt)) q.altUp();
         q.mods = reported;
         // Zunk delivers whole UTF-8 code points and no control codes or
         // Ctrl/Cmd chords; `pushText` re-validates and drops anything else.
         q.pushText(zinput.getTypedChars());
+        self.pollIme(q);
 
         const vp = zinput.getViewportSize();
         const w = if (vp.w != 0) vp.w else self.width;
@@ -396,8 +547,57 @@ pub const Host = struct {
         fx.clipboardWrite(text);
     }
 
-    pub fn imeState(_: *const Host) ImeState {
-        return .{};
+    /// The browser's IME composition. A hidden `<textarea>` (zunk's IME bridge)
+    /// holds focus while a text field is focused, so the OS candidate window and
+    /// composition work; its events are folded in by `pollInputs`.
+    pub fn imeState(self: *const Host) ImeState {
+        return .{ .active = self.ime_active, .text = self.ime_text[0..self.ime_len], .cursor = self.ime_cursor };
+    }
+
+    /// Focus the IME field while the app has a focused text input (optional Host
+    /// extension, called by the runtime on focus transitions).
+    pub fn setImeActive(self: *Host, active: bool) void {
+        _ = self;
+        zime.setActive(active);
+    }
+
+    /// Anchor the candidate window at the caret (CSS px, bottom of the caret line).
+    pub fn setImeSpot(self: *Host, x: i32, y: i32) void {
+        _ = self;
+        zime.setSpot(@floatFromInt(x), @floatFromInt(y - 1), 1);
+    }
+
+    fn pollIme(self: *Host, q: *InputQueue) void {
+        var events: [16]zime.Event = undefined;
+        const n = zime.poll(&events, &self.ime_scratch);
+        for (events[0..n]) |ev| self.applyImeEvent(q, ev.kind, ev.text, ev.cursor);
+    }
+
+    /// One bridge event: start/update replace the preedit, commit clears it and
+    /// types the result (an empty commit is a cancelled composition).
+    fn applyImeEvent(self: *Host, q: *InputQueue, kind: zime.Kind, text: []const u8, cursor: usize) void {
+        switch (kind) {
+            .start => {
+                self.ime_active = true;
+                self.ime_len = 0;
+                self.ime_cursor = 0;
+            },
+            .update => {
+                var n = @min(text.len, ime_text_cap);
+                // Never keep half a code point.
+                while (n > 0 and n < text.len and (text[n] & 0xC0) == 0x80) n -= 1;
+                @memcpy(self.ime_text[0..n], text[0..n]);
+                self.ime_len = n;
+                self.ime_cursor = @min(cursor, n);
+                self.ime_active = true;
+            },
+            .commit => {
+                self.ime_active = false;
+                self.ime_len = 0;
+                self.ime_cursor = 0;
+                q.pushText(text);
+            },
+        }
     }
 
     /// Serialize the per-frame a11y tree into the module-scoped wire
@@ -419,14 +619,25 @@ pub const Host = struct {
     /// retain into the DOM synchronously before returning.
     pub fn publishA11yTree(_: *Host, nodes: []const A11yNode) void {
         const lens = serializeA11yTree(nodes);
-        if (comptime @hasDecl(externs, "__zunk_publish_a11y_tree")) {
-            externs.__zunk_publish_a11y_tree(
-                &g_a11y_records,
-                lens.records_len,
-                &g_a11y_strings,
-                lens.strings_len,
-            );
-        }
+        externs.__zunk_publish_a11y_tree(
+            &g_a11y_records,
+            lens.records_len,
+            &g_a11y_strings,
+            lens.strings_len,
+        );
+    }
+
+    /// Requests from assistive technology (a screen reader activating a
+    /// control, focusing it, setting a text value) queued by the DOM mirror
+    /// since the last frame. The run loop turns them into ordinary input.
+    pub fn pollA11yActions(_: *Host, out: []teak.A11yAction) usize {
+        const count = externs.__zunk_poll_a11y_actions(
+            @ptrCast(&g_a11y_action_recs),
+            MAX_A11Y_ACTIONS,
+            &g_a11y_action_text,
+            A11Y_ACTION_TEXT_BYTES,
+        );
+        return decodeA11yActions(count, out);
     }
 
     // Browser file dialogs go through the showOpenFilePicker API which
@@ -488,10 +699,9 @@ pub const Host = struct {
         self.file_dialog_slots[slot_idx].state = .pending;
         self.file_dialog_slots[slot_idx].path_len = 0;
         const id: u32 = @intCast(slot_idx + 1);
-        // Best-effort dispatch. If zunk hasn't wired the JS shim yet,
-        // the request just stays `.pending` forever (apps treat that
-        // as "no file picker available on this host").
-        if (@hasDecl(externs, "__zunk_request_file_dialog")) {
+        // Unconditional: a has-decl check on the private externs is always false for non-`pub`
+        // decls, which silently dropped every request (audit-enforced).
+        {
             externs.__zunk_request_file_dialog(
                 id,
                 mode,
@@ -540,6 +750,7 @@ pub const Host = struct {
             .download => |d| fx.download(d.id, d.name, d.mime, d.bytes),
             .open_file => |o| fx.openFile(o.id, o.accept),
             .write_clipboard => |c| fx.clipboardWrite(c.text),
+            .write_clipboard_image => |c| fx.clipboardWriteImage(c.png),
             .storage_set => |s| fx.storageSet(s.key, s.value),
             .storage_get => |g| fx.storageGet(g.id, g.key),
             .clock => |c| fx.clock(c.id),
@@ -583,6 +794,11 @@ pub const Host = struct {
 
     /// Update the browser tab title via zunk (sets `document.title`).
     /// Same call `init` uses for the initial title.
+    /// CSS `cursor` on the page body through zunk (`app.setCursor`).
+    pub fn setCursor(_: *Host, shape: teak.CursorShape) void {
+        zapp.setCursor(shape.cssName());
+    }
+
     pub fn setTitle(_: *Host, title: []const u8) void {
         zapp.setTitle(title);
     }
@@ -701,7 +917,7 @@ test "serializeA11yTree: layout matches wire format" {
 
     // Record 0: focused button.
     try testing.expectEqual(@as(u32, 7), records[0].cmd_index);
-    try testing.expectEqual(@as(u32, @backingInt(teak.A11yRole.button)), records[0].role);
+    try testing.expectEqual(@as(u32, 4), records[0].role); // wire code: button
     try testing.expectEqual(@as(u32, 0), records[0].label_offset);
     try testing.expectEqual(@as(u32, 4), records[0].label_len);
     try testing.expectEqual(@as(i32, 10), records[0].bounds_x);
@@ -712,7 +928,7 @@ test "serializeA11yTree: layout matches wire format" {
 
     // Record 1: checked, non-focused checkbox stacked after.
     try testing.expectEqual(@as(u32, 9), records[1].cmd_index);
-    try testing.expectEqual(@as(u32, @backingInt(teak.A11yRole.checkbox)), records[1].role);
+    try testing.expectEqual(@as(u32, 6), records[1].role); // wire code: checkbox
     try testing.expectEqual(@as(u32, 4), records[1].label_offset);
     try testing.expectEqual(@as(u32, 5), records[1].label_len);
     try testing.expectEqual(@as(f32, 1.0), records[1].state);
@@ -776,7 +992,10 @@ test "wasm key table reaches every SpecialKey through the shared policy" {
             if (teak.resolveKey(m.to, mods)) |sk| seen.insert(sk);
         }
     }
-    for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
+    for (std.enums.values(SpecialKey)) |sk| {
+        if (sk == .alt_tap) continue; // synthesized by InputQueue.altUp, not a table key
+        try std.testing.expect(seen.contains(sk));
+    }
 }
 
 test "effectResult maps every completion kind to the contract type" {
@@ -847,4 +1066,84 @@ test "dropOf: image metadata and a thumbnail that matches its width" {
     try std.testing.expectEqual(@as(u32, 0), file.width);
     const text = dropOf(.{ .kind = .dropped, .id = 0, .a = 2, .b = 0, .c = 0, .d = 0, .blobs = .{ "", "text/plain", "hi", "" } });
     try std.testing.expectEqual(teak.DropKind.text, text.kind);
+}
+
+test "IME events: a composition shows as preedit, the commit is typed and clears it" {
+    var h = Host{ .width = 10, .height = 10 };
+    var q: InputQueue = .{};
+    q.beginFrame();
+    h.applyImeEvent(&q, .start, "", 0);
+    try std.testing.expect(h.imeState().active);
+    h.applyImeEvent(&q, .update, "\u{306B}\u{307B}", 3);
+    try std.testing.expectEqualStrings("\u{306B}\u{307B}", h.imeState().text);
+    try std.testing.expectEqual(@as(usize, 3), h.imeState().cursor);
+    h.applyImeEvent(&q, .commit, "\u{65E5}\u{672C}", 0);
+    try std.testing.expect(!h.imeState().active);
+    try std.testing.expectEqual(@as(usize, 0), h.imeState().text.len);
+    const st = q.finish(false, 10, 10);
+    try std.testing.expectEqualStrings("\u{65E5}\u{672C}", st.chars);
+}
+
+test "IME events: a cancelled composition types nothing; an oversized preedit is cut on a boundary" {
+    var h = Host{ .width = 10, .height = 10 };
+    var q: InputQueue = .{};
+    q.beginFrame();
+    h.applyImeEvent(&q, .update, "\u{3042}", 3);
+    h.applyImeEvent(&q, .commit, "", 0);
+    try std.testing.expect(!h.imeState().active);
+    var big: [ime_text_cap + 2]u8 = undefined;
+    for (0..big.len / 3) |i| @memcpy(big[i * 3 ..][0..3], "\u{3042}");
+    h.applyImeEvent(&q, .update, big[0 .. big.len / 3 * 3], 0);
+    try std.testing.expect(h.imeState().text.len <= ime_text_cap and h.imeState().text.len % 3 == 0);
+    const st = q.finish(false, 10, 10);
+    try std.testing.expectEqual(@as(usize, 0), st.chars.len);
+}
+
+test "serializeA11yTree: v2 fields (value, selection, parent, flags, wire roles)" {
+    const testing = std.testing;
+    const nodes = [_]A11yNode{
+        .{ .role = .tablist, .cmd_index = 0, .bounds = .{ .w = 100, .h = 20 }, .label = "Parts" },
+        .{ .role = .tab, .cmd_index = 1, .bounds = .{ .w = 50, .h = 20 }, .label = "A", .selected = true, .parent = 0 },
+        .{ .role = .text_input, .cmd_index = 2, .bounds = .{}, .value = "hello", .sel_start = 1, .sel_end = 3, .focused = true, .disabled = true, .parent = 0 },
+        .{ .role = .treeitem, .cmd_index = 3, .bounds = .{}, .label = "src", .expanded = false, .level = 2, .parent = 0 },
+        .{ .role = .status, .cmd_index = 4, .bounds = .{}, .live = .polite },
+        .{ .role = .overlay, .cmd_index = 5, .bounds = .{}, .modal = true },
+        .{ .role = .overlay, .cmd_index = 6, .bounds = .{} },
+    };
+    const lens = serializeA11yTree(&nodes);
+    try testing.expectEqual(@as(u32, nodes.len * A11Y_RECORD_BYTES), lens.records_len);
+    const r: [*]const A11yRecord = @ptrCast(&g_a11y_records);
+    try testing.expectEqual(@as(u32, 18), r[0].role); // tablist
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), r[0].parent);
+    try testing.expectEqual(@as(u32, 19), r[1].role); // tab
+    try testing.expect(r[1].flags & A11Y_FLAG_SELECTED != 0);
+    try testing.expectEqual(@as(u32, 0), r[1].parent);
+    try testing.expectEqual(@as(u32, 5), r[2].role); // textbox
+    try testing.expectEqualStrings("hello", g_a11y_strings[r[2].value_offset..][0..r[2].value_len]);
+    try testing.expectEqual(@as(u32, 1), r[2].sel_start);
+    try testing.expectEqual(@as(u32, 3), r[2].sel_end);
+    try testing.expect(r[2].flags & (A11Y_FLAG_FOCUSED | A11Y_FLAG_DISABLED) == (A11Y_FLAG_FOCUSED | A11Y_FLAG_DISABLED));
+    try testing.expectEqual(@as(u32, 21), r[3].role); // treeitem
+    try testing.expect(r[3].flags & A11Y_FLAG_EXPANDABLE != 0 and r[3].flags & A11Y_FLAG_EXPANDED == 0);
+    try testing.expectEqual(@as(u32, 2), r[3].level);
+    try testing.expect(r[4].flags & A11Y_FLAG_LIVE_POLITE != 0);
+    try testing.expectEqual(@as(u32, 11), r[5].role); // modal overlay -> dialog
+    try testing.expect(r[5].flags & A11Y_FLAG_MODAL != 0);
+    try testing.expectEqual(@as(u32, 1), r[6].role); // plain overlay -> region
+}
+
+test "decodeA11yActions: maps wire records, rejects bad kinds and out-of-range text" {
+    const testing = std.testing;
+    @memcpy(g_a11y_action_text[0..5], "hello");
+    g_a11y_action_recs[0] = .{ .kind = 0, .cmd_index = 3, .str_off = 0, .str_len = 0 }; // activate
+    g_a11y_action_recs[1] = .{ .kind = 2, .cmd_index = 4, .str_off = 0, .str_len = 5 }; // set_value
+    g_a11y_action_recs[2] = .{ .kind = 99, .cmd_index = 5, .str_off = 0, .str_len = 0 }; // bad kind
+    g_a11y_action_recs[3] = .{ .kind = 2, .cmd_index = 6, .str_off = 2040, .str_len = 100 }; // out of range
+    var out: [8]teak.A11yAction = undefined;
+    const n = decodeA11yActions(4, &out);
+    try testing.expectEqual(@as(usize, 2), n);
+    try testing.expectEqual(teak.A11yActionKind.activate, out[0].kind);
+    try testing.expectEqual(@as(u32, 3), out[0].cmd_index);
+    try testing.expectEqual(teak.A11yActionKind.set_value, out[1].kind);
+    try testing.expectEqualStrings("hello", out[1].text);
 }

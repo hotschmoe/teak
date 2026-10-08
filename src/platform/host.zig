@@ -11,6 +11,7 @@
 const std = @import("std");
 
 pub const SpecialKey = @import("../input/keys.zig").SpecialKey;
+pub const Chord = @import("../input/keys.zig").Chord;
 pub const Buttons = pointer.Buttons;
 pub const Modifiers = pointer.Modifiers;
 
@@ -49,8 +50,12 @@ pub const ImeState = struct {
     cursor: usize = 0,
 };
 
+pub const CursorShape = @import("../core/cursor.zig").CursorShape;
+
 pub const A11yNode = @import("../input/a11y.zig").A11yNode;
 
+pub const A11yActionKind = @import("../input/a11y.zig").ActionKind;
+pub const A11yAction = @import("../input/a11y.zig").Action;
 const effects = @import("../core/effects.zig");
 pub const Effect = effects.Effect;
 pub const EffectResult = effects.EffectResult;
@@ -85,6 +90,24 @@ pub const FileDialogPoll = union(enum) {
     pending: void,
     ok: []const u8,
     cancelled: void,
+};
+
+/// One synthetic input event, injected by the agent control channel
+/// (`src/control.zig`) through the Host's optional `injectInput`. It lands in
+/// the same queue real OS events do, so injected input takes exactly the path
+/// real input takes (HARDLINE: no second mutation path).
+pub const InjectEvent = union(enum) {
+    move: [2]f32,
+    down: pointer.Button,
+    up: pointer.Button,
+    /// DOM sign convention: positive `dy` scrolls content down.
+    wheel: [2]f32,
+    /// UTF-8 text; at most `InputQueue.CHARS_CAP` bytes land per frame.
+    chars: []const u8,
+    key: SpecialKey,
+    mods: Modifiers,
+    /// A keyboard shortcut (see `InputState.chords`).
+    chord: Chord,
 };
 
 /// Per-frame input snapshot returned by `Host.pollInputs`.
@@ -128,6 +151,13 @@ pub const InputState = struct {
     wheel_dy: f32,
     chars: []const u8,
     keys: []const SpecialKey,
+    /// Keyboard shortcuts pressed this frame, in order: a letter / digit /
+    /// punctuation / navigation key with Ctrl (Cmd on macOS) or Alt held, or
+    /// an F-key. Delivered IN ADDITION to `keys` (so Ctrl+C is both
+    /// `keys = [.ctrl_c]` and a `Chord{c, mod}`); `teak.run` matches them
+    /// against the App's `commands` table before widget key handling and
+    /// swallows the overlapping special key when a command claims the chord.
+    chords: []const Chord = &.{},
     resized: bool,
     width: u32,
     height: u32,
@@ -196,6 +226,13 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   the current document name. Native hosts call the OS window-title
 ///   API; the web host sets `document.title`. No-op is acceptable for
 ///   headless hosts.
+/// - `setImeSpot(x, y)` / `setImeActive(focused)` (optional): the runtime tells the
+///   Host where the focused text caret's line ends (window logical px) and whether
+///   a text field is focused. Hosts with an out-of-window IME use them: X11's XIM
+///   over-the-spot style, the web's hidden `<textarea>` (focus + candidate window).
+///   Composition arrives as `imeState()` (the preedit, presentation-only, mirrored
+///   into `TransientState`: HARDLINE hatch 2) and the committed text as ordinary
+///   `InputState.chars`, so no host needs a separate commit path.
 /// - `scaleFactor()` reports the number of physical device pixels per
 ///   logical UI unit at the window's current DPI (1.0 = no scaling).
 ///   HARDLINE §4(d) surface extension, but kept **optional** in
@@ -208,6 +245,14 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   devicePixelRatio backing store internally). Nothing in the
 ///   framework consumes it yet; see docs/features/host.md "DPI and
 ///   scaling" for the end-to-end render-at-scale follow-up.
+///   This is the one scale API: apps pass it to the Gpu as
+///   `InitOptions.scale`, and when it changes at runtime (Win32
+///   `WM_DPICHANGED`) the run loop forwards the new value to `Gpu.setScale`.
+/// - `setCursor(shape)` — **optional**: show the OS mouse cursor for a
+///   `CursorShape`. `teak.run` calls it only when the shape picked from
+///   the hovered cmd (or the App's `cursorFor` hook) changes. X11 maps to
+///   XCursor theme names (font cursors as fallback), Win32 to `IDC_*` via
+///   `WM_SETCURSOR`, web to CSS `cursor` through zunk.
 /// - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
 ///   surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
 ///   a pair** (a Host with neither answers every effect as unsupported;
@@ -268,6 +313,12 @@ pub fn validateHost(comptime T: type) void {
     // `submit` and `pollEffectResults` come as a pair.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
+        .{ .name = "setImeSpot", .sig = "fn(*Host, i32, i32) void" },
+        .{ .name = "setImeActive", .sig = "fn(*Host, bool) void" },
+        // Assistive-technology requests (web DOM mirror, UIA patterns): fills
+        // `out` and returns the count; called once per frame before input routing.
+        .{ .name = "pollA11yActions", .sig = "fn(*Host, []A11yAction) usize" },
+        .{ .name = "setCursor", .sig = "fn(*Host, CursorShape) void" },
         .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
         .{ .name = "pollEffectResults", .sig = "fn(*Host, []EffectResult) usize" },
     };

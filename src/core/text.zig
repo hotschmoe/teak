@@ -34,6 +34,13 @@ pub const FontSpec = struct {
     /// shapers return it in visual order, mirrored where the script requires.
     /// Set by the renderer per run, not by apps.
     rtl: bool = false,
+    /// A hint that this text changes size continuously (zoomable canvases,
+    /// animated scale): its glyphs are rasterized ONCE as signed distance
+    /// fields and drawn at any size, instead of once per `size_px`. Crisp from
+    /// well below 1x to 8x+ with no re-rasterization. Costs a little at small sizes
+    /// (a distance field is softer than a hinted bitmap at 12-16 px), so leave it
+    /// off for UI text. Ignored by backends without an SDF rasterizer.
+    scalable: bool = false,
 
     /// The resolved `snap_advance` (see the field).
     pub fn snapsAdvance(self: FontSpec) bool {
@@ -42,6 +49,22 @@ pub const FontSpec = struct {
 };
 
 pub const DEFAULT_FONT: FontSpec = .{};
+
+pub const RichTextSpan = struct {
+    /// Byte start in the rich_text's content (UTF-8). Spans must be
+    /// non-overlapping and sorted by start.
+    start: u32,
+    /// Byte end (exclusive).
+    end: u32,
+    color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
+    font: FontSpec = DEFAULT_FONT,
+    /// Set on the rendered TextDraw so the text pass can pick a
+    /// bold/italic font face. The Host's text measurer is expected to
+    /// consult these — for now they're advisory (current GDI host
+    /// always picks Regular).
+    bold: bool = false,
+    italic: bool = false,
+};
 
 pub const TextMetrics = struct {
     width: f32,
@@ -80,6 +103,9 @@ pub const ShapedGlyph = extern struct {
     /// Advance in logical px, kerning with the next glyph and letter_spacing included,
     /// so `sum(advance) == ShapeResult.width`.
     advance: f32,
+    /// Vertical offset from the baseline in logical px, positive down (mark
+    /// attachment from a complex-script shaper; 0 for the built-in shaper).
+    y: f32 = 0,
 };
 
 pub const ShapeResult = struct {

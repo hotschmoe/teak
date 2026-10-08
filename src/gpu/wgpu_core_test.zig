@@ -23,17 +23,47 @@ const NoSurface = struct {
 const BoxRaster = struct {
     const GlyphBitmap = struct { pixels: []const u8, width: u32, height: u32, bearing_x: i32, bearing_y: i32 };
     pixels: [6 * 8]u8 = @splat(255),
+    sdf: [16 * 16]u8 = undefined,
+    rgba: [12 * 12 * 4]u8 = undefined,
 
     pub fn init(_: std.mem.Allocator) !BoxRaster {
         return .{};
     }
     pub fn deinit(_: *BoxRaster) void {}
     pub fn shape(_: *BoxRaster, text: []const u8, _: teak.FontSpec, out: []teak.ShapedGlyph) teak.ShapeResult {
-        const n = @min(text.len, out.len);
-        for (text[0..n], 0..) |ch, i| {
-            out[i] = .{ .glyph = ch, .face = 0, .cluster = @intCast(i), .x = @floatFromInt(i * 8), .advance = 8 };
+        // One glyph per byte (advance 8); a 4-byte UTF-8 sequence is ONE unmapped glyph (an
+        // emoji: glyph 0, advance 16).
+        var n: usize = 0;
+        var i: usize = 0;
+        var x: f32 = 0;
+        while (i < text.len and n < out.len) : (n += 1) {
+            const emoji = text[i] >= 0xF0 and i + 4 <= text.len;
+            const adv: f32 = if (emoji) 16 else 8;
+            out[n] = .{ .glyph = if (emoji) 0 else text[i], .face = 0, .cluster = @intCast(i), .x = x, .advance = adv };
+            x += adv;
+            i += if (emoji) 4 else 1;
         }
-        return .{ .count = n, .width = @floatFromInt(n * 8), .consumed = n };
+        return .{ .count = n, .width = x, .consumed = i };
+    }
+    /// A 16x16 distance field of an 8x8 box (texels 4..12): byte = 128 + 16 * signed distance.
+    pub const sdf_em: f32 = 16;
+    pub fn rasterizeSdf(self: *BoxRaster, _: u16, gid: u16) ?GlyphBitmap {
+        if (gid == ' ') return .{ .pixels = &.{}, .width = 0, .height = 0, .bearing_x = 0, .bearing_y = 0 };
+        for (0..16) |y| for (0..16) |x| {
+            const fx: f32 = @as(f32, @floatFromInt(x)) + 0.5;
+            const fy: f32 = @as(f32, @floatFromInt(y)) + 0.5;
+            const inside = @min(@min(fx - 4, 12 - fx), @min(fy - 4, 12 - fy));
+            self.sdf[y * 16 + x] = @intFromFloat(std.math.clamp(128 + 16 * inside, 0, 255));
+        };
+        return .{ .pixels = &self.sdf, .width = 16, .height = 16, .bearing_x = 0, .bearing_y = -12 };
+    }
+    /// A 12x12 colour glyph: left half red, right half green, fully opaque (straight alpha RGBA).
+    pub fn rasterizeColor(self: *BoxRaster, _: []const u8, _: teak.FontSpec, _: f32) ?GlyphBitmap {
+        for (0..12) |y| for (0..12) |x| {
+            const o = (y * 12 + x) * 4;
+            self.rgba[o..][0..4].* = if (x < 6) .{ 255, 0, 0, 255 } else .{ 0, 255, 0, 255 };
+        };
+        return .{ .pixels = &self.rgba, .width = 12, .height = 12, .bearing_x = 0, .bearing_y = -12 };
     }
     pub fn ascent(_: *BoxRaster, _: teak.FontSpec, _: f32) f32 {
         return 8; // device px: the box glyph is a fixed size at any scale
@@ -172,7 +202,7 @@ test "a scene is rendered offscreen and composited at its rect, honouring clip" 
     try std.testing.expect(mesh != teak.MESH_HANDLE_NONE);
 
     // A 32x32 scene at (16, 16); its red quad covers the whole target.
-    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 0)});
+    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 0)}, .{});
     const full = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(full);
     try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(full, 30, 30)); // scene (red, BGRA)
@@ -182,14 +212,14 @@ test "a scene is rendered offscreen and composited at its rect, honouring clip" 
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(full, 15, 15));
 
     // Same scene clipped by a scroll container starting at x = 32.
-    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 32)});
+    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 32)}, .{});
     const clipped = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(clipped);
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(clipped, 20, 30)); // clipped away
     try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(clipped, 40, 30)); // still visible
 
     // No scenes staged: nothing composited.
-    h.gpu.renderScenes(&.{});
+    h.gpu.renderScenes(&.{}, .{});
     const none = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(none);
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(none, 30, 30));
@@ -222,6 +252,20 @@ test "images upload, draw and release (slot reuse)" {
     h.gpu.releaseImage(img);
     const again = h.gpu.uploadImage(std.mem.asBytes(&red_px), 2, 2);
     try std.testing.expectEqual(img, again);
+}
+
+test "setScale re-derives the device size from the logical size and ignores bad factors" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    try std.testing.expectEqual(@as(f32, 1.0), h.gpu.scale);
+    h.gpu.setScale(2.0);
+    try std.testing.expectEqual(@as(f32, 2.0), h.gpu.scale);
+    try std.testing.expectEqual(px * 2, h.gpu.width);
+    h.gpu.setScale(0); // rejected
+    h.gpu.setScale(1000); // rejected
+    try std.testing.expectEqual(@as(f32, 2.0), h.gpu.scale);
+    h.gpu.setScale(1.0);
+    try std.testing.expectEqual(px, h.gpu.width);
 }
 
 test "the image cache grows past 64 slots and every image draws in one frame" {
@@ -458,4 +502,395 @@ test "atlas text: scale 2 places glyphs in device pixels and scales solids as ve
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 5, 9));
     try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, at(f, 50, 50)); // blue (BGRA) quad scaled 2x
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 35, 50));
+}
+
+test "HiDPI scale 2: a 3D scene renders at device resolution (hard edge, no magnification blur)" {
+    var h = try Harness.init(.{ .scale = 2, .scene_msaa = false });
+    defer h.deinit();
+    // Two quads meeting at x = 0.12 (an odd fraction of the target), red on
+    // the left, green on the right: only a device-resolution target puts the
+    // seam at device x = 19; a logical target magnified 2x puts it at 20.
+    const n = [3]f32{ 0, 0, 1 };
+    const red = [4]f32{ 1, 0, 0, 1 };
+    const green = [4]f32{ 0, 1, 0, 1 };
+    const v = [8]teak.MeshVertex{
+        .{ .pos = .{ -1, -1, 0.5 }, .normal = n, .color = red },
+        .{ .pos = .{ 0.12, -1, 0.5 }, .normal = n, .color = red },
+        .{ .pos = .{ 0.12, 1, 0.5 }, .normal = n, .color = red },
+        .{ .pos = .{ -1, 1, 0.5 }, .normal = n, .color = red },
+        .{ .pos = .{ 0.12, -1, 0.5 }, .normal = n, .color = green },
+        .{ .pos = .{ 1, -1, 0.5 }, .normal = n, .color = green },
+        .{ .pos = .{ 1, 1, 0.5 }, .normal = n, .color = green },
+        .{ .pos = .{ 0.12, 1, 0.5 }, .normal = n, .color = green },
+    };
+    const idx = [12]u32{ 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+    const mesh = h.gpu.uploadMesh(.{ .vertices = &v, .indices = &idx });
+    // Logical (4,4)-(14,14) is device (8,8)-(28,28); the seam falls at device x = 19.
+    h.gpu.renderScenes(&.{sceneAt(mesh, 4, 4, 10, 10, 0)}, .{});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 8, 8)); // red (BGRA)
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 18, 20)); // last red column
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 19, 20)); // first green column
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 27, 27));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 7, 8)); // outside the scene
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 28, 27));
+}
+
+test "HiDPI scale 2: a 1-logical-px line is exactly 2 device px wide with hard edges" {
+    var h = try Harness.init(.{ .scale = 2 });
+    defer h.deinit();
+    var line: [6]teak.Vertex = undefined;
+    solidQuad(&line, 10, 4, 11, 28, .{ 1, 1, 1 }); // logical x 10..11 -> device 20..22
+    h.gpu.uploadVertices(&line);
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    const white = [4]u8{ 255, 255, 255, 255 };
+    const bg = [4]u8{ 0, 0, 0, 255 };
+    try std.testing.expectEqual(bg, at(f, 19, 30));
+    try std.testing.expectEqual(white, at(f, 20, 30));
+    try std.testing.expectEqual(white, at(f, 21, 30));
+    try std.testing.expectEqual(bg, at(f, 22, 30));
+}
+
+test "HiDPI scale 2: an image drawn 1 texel per device pixel keeps every texel sharp" {
+    var h = try Harness.init(.{ .scale = 2 });
+    defer h.deinit();
+    // 4x4 checker of pure red / green texels (RGBA).
+    var rgba: [4 * 4 * 4]u8 = undefined;
+    for (0..16) |i| {
+        const red = ((i % 4) + (i / 4)) % 2 == 0;
+        rgba[i * 4 ..][0..4].* = if (red) .{ 255, 0, 0, 255 } else .{ 0, 255, 0, 255 };
+    }
+    const img = h.gpu.uploadImage(&rgba, 4, 4);
+    try std.testing.expect(img != teak.TEXTURE_HANDLE_NONE);
+    // 2x2 logical px at (4,4) = 4x4 device px at (8,8): exactly 1:1.
+    h.gpu.uploadImages(&.{.{
+        .rect_x = 4,
+        .rect_y = 4,
+        .rect_w = 2,
+        .rect_h = 2,
+        .handle = img,
+        .tint = .{ 1, 1, 1, 1 },
+        .clip_x = 0,
+        .clip_y = 0,
+        .clip_w = 32,
+        .clip_h = 32,
+    }});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    for (0..4) |y| {
+        for (0..4) |x| {
+            const want: [4]u8 = if ((x + y) % 2 == 0) .{ 0, 0, 255, 255 } else .{ 0, 255, 0, 255 }; // BGRA
+            try std.testing.expectEqual(want, at(f, @intCast(8 + x), @intCast(8 + y)));
+        }
+    }
+}
+
+fn scalable(d: teak.TextDraw, size: f32) teak.TextDraw {
+    var out = d;
+    out.font = .{ .size_px = size, .scalable = true };
+    out.rect_w = 64;
+    out.rect_h = 64;
+    return out;
+}
+
+test "scalable text: one distance field, crisp edges at 2x and 4x, placed by the zoom" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    // size 32 -> k = 2: the 8x8 box becomes 16x16 at x 4+8..4+24, y (48-24)+8..(48-24)+24.
+    h.gpu.uploadText(&.{scalable(textAt(4, 40, 0, 0, "a"), 32)});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 20, 40)); // inside
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 8, 40)); // left of the box
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 20, 28)); // above it
+    try std.testing.expect(at(f, 11, 40)[0] < 60); // one pixel outside the edge: almost nothing
+    try std.testing.expect(at(f, 13, 40)[0] > 195); // one pixel inside: almost full
+    const at_2x = h.gpu.text.atlas.pageCount();
+
+    // 4x: the SAME atlas entry (no new glyph), edges still one pixel wide.
+    h.gpu.uploadText(&.{scalable(textAt(4, 40, 0, 0, "a"), 64)});
+    const g = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(g);
+    try std.testing.expectEqual(at_2x, h.gpu.text.atlas.pageCount());
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(g, 30, 30));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(g, 12, 30));
+    try std.testing.expect(at(g, 19, 30)[0] < 60); // box edge at x = 4 + 16 = 20
+    try std.testing.expect(at(g, 21, 30)[0] > 195);
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.text.dropped);
+}
+
+test "scalable text keeps its clip, and a non-scalable draw of the same glyph still uses bitmaps" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    var d = scalable(textAt(4, 40, 0, 0, "a"), 32);
+    d.clip_w = 20; // clip x 0..20 cuts the box (12..28) at 20
+    var bitmap = textAt(4, 8, 16, 8, "b");
+    bitmap.color = .{ 0, 1, 0, 1 };
+    h.gpu.uploadText(&.{ d, bitmap });
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 16, 40));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 22, 40)); // beyond the clip
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 6, 10)); // the 6x8 box bitmap glyph
+}
+
+test "colour glyphs: an emoji draws from an RGBA page with its own colours, next to coverage text" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    // "a" + a 4-byte sequence: glyph boxes at x 4.., the emoji (12x12, bearing -12 on baseline 16) at x 12.
+    const content = "a\xF0\x9F\x98\x80";
+    var d = textAt(4, 8, 64, 8, content);
+    d.color = .{ 0.2, 0.4, 1, 1 }; // the coverage glyph is tinted; the emoji must not be
+    h.gpu.uploadText(&.{d});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 102, 51, 255 }, at(f, 6, 10)); // 'a' box in the draw colour (BGRA)
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 14, 8)); // emoji left half: red (BGRA)
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 20, 8)); // right half: green
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 26, 8)); // past the emoji
+    try std.testing.expectEqual(@as(usize, 1), h.gpu.text.colorPageCount());
+    // Same frame twice: cached, no new page.
+    h.gpu.uploadText(&.{d});
+    try std.testing.expectEqual(@as(usize, 1), h.gpu.text.colorPageCount());
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.text.dropped);
+}
+
+test "colour glyphs honour the clip and the instance alpha" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    var d = textAt(4, 8, 64, 8, "\xF0\x9F\x98\x80");
+    d.clip_w = 10; // x 0..10 cuts the 12 px emoji at 10 (it starts at 4)
+    d.color = .{ 1, 1, 1, 0.5 };
+    h.gpu.uploadText(&.{d});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    const pix = at(f, 6, 8);
+    try std.testing.expect(pix[2] > 120 and pix[2] < 136); // red at half opacity over black
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 12, 8)); // beyond the clip
+}
+
+// ── SDF quads: rounded rects, borders, gradients, soft shadows ─────
+
+const sdf = teak.render.sdf;
+const full_clip = teak.Rect{ .x = 0, .y = 0, .w = px, .h = px };
+
+fn stage(h: *Harness, specs: []const sdf.Spec) !void {
+    var verts: std.ArrayList(teak.Vertex) = .empty;
+    defer verts.deinit(std.testing.allocator);
+    for (specs) |sp| sdf.emitRect(&verts, std.testing.allocator, sp, full_clip);
+    h.gpu.uploadVertices(verts.items);
+}
+
+fn sdfFrame(options: teak.gpu.InitOptions, clear: [4]f32, specs: []const sdf.Spec) ![]u8 {
+    var h = try Harness.init(options);
+    defer h.deinit();
+    try stage(&h, specs);
+    return h.frame(clear);
+}
+
+test "sdf: corner radius cuts the corner with an antialiased arc; edges stay crisp" {
+    const pixels = try sdfFrame(.{}, .{ 0, 0, 0, 1 }, &.{.{
+        .rect = .{ .x = 8, .y = 8, .w = 40, .h = 40 },
+        .radii = teak.Radii.all(12),
+        .fill = .{ 1, 1, 1, 1 },
+    }});
+    defer std.testing.allocator.free(pixels);
+    try std.testing.expectEqual(@as(u8, 0), at(pixels, 8, 8)[1]); // the square corner is gone
+    try std.testing.expectEqual(@as(u8, 0), at(pixels, 10, 10)[1]);
+    try std.testing.expectEqual(@as(u8, 255), at(pixels, 14, 14)[1]); // inside the arc
+    try std.testing.expectEqual(@as(u8, 255), at(pixels, 28, 28)[1]);
+    // straight edges: full coverage right up to the rect, none outside
+    try std.testing.expectEqual(@as(u8, 255), at(pixels, 8, 28)[1]);
+    try std.testing.expectEqual(@as(u8, 0), at(pixels, 7, 28)[1]);
+    try std.testing.expectEqual(@as(u8, 255), at(pixels, 47, 28)[1]);
+    try std.testing.expectEqual(@as(u8, 0), at(pixels, 48, 28)[1]);
+    // pixel (11, 11): its centre is ~0.02 px outside the r=12 arc -> about half coverage
+    const edge = at(pixels, 11, 11)[1];
+    try std.testing.expect(edge > 60 and edge < 200);
+    // per-corner radii: only the top-left rounded
+    const mixed = try sdfFrame(.{}, .{ 0, 0, 0, 1 }, &.{.{
+        .rect = .{ .x = 8, .y = 8, .w = 40, .h = 40 },
+        .radii = .{ .tl = 16 },
+        .fill = .{ 1, 1, 1, 1 },
+    }});
+    defer std.testing.allocator.free(mixed);
+    try std.testing.expectEqual(@as(u8, 0), at(mixed, 8, 8)[1]);
+    try std.testing.expectEqual(@as(u8, 255), at(mixed, 47, 8)[1]); // top-right stays square
+    try std.testing.expectEqual(@as(u8, 255), at(mixed, 8, 47)[1]);
+    try std.testing.expectEqual(@as(u8, 255), at(mixed, 47, 47)[1]);
+}
+
+test "sdf: border is an inside stroke of the requested width over the fill" {
+    const pixels = try sdfFrame(.{}, .{ 0, 0, 0, 1 }, &.{.{
+        .rect = .{ .x = 8, .y = 8, .w = 40, .h = 40 },
+        .radii = teak.Radii.all(8),
+        .fill = .{ 1, 1, 1, 1 },
+        .border_width = 4,
+        .border = .{ 1, 0, 0, 1 },
+    }});
+    defer std.testing.allocator.free(pixels);
+    // BGRA: red border = (0, 0, 255); the stroke is x = 8..12 on the straight left edge
+    for ([_]u32{ 8, 9, 10, 11 }) |x| try std.testing.expectEqual(@as([3]u8, .{ 0, 0, 255 }), at(pixels, x, 28)[0..3].*);
+    try std.testing.expectEqual(@as([3]u8, .{ 255, 255, 255 }), at(pixels, 12, 28)[0..3].*); // fill resumes
+    try std.testing.expectEqual(@as(u8, 0), at(pixels, 7, 28)[1]); // nothing outside
+    // along the top edge too
+    try std.testing.expectEqual(@as([3]u8, .{ 0, 0, 255 }), at(pixels, 28, 10)[0..3].*);
+    try std.testing.expectEqual(@as([3]u8, .{ 255, 255, 255 }), at(pixels, 28, 12)[0..3].*);
+}
+
+test "sdf: soft shadow falls off with distance, stays outside the rect, offsets and spreads" {
+    const clear = [4]f32{ 1, 1, 1, 1 };
+    const rect = teak.Rect{ .x = 20, .y = 20, .w = 24, .h = 24 };
+    const pixels = try sdfFrame(.{}, clear, &.{.{
+        .rect = rect,
+        .radii = teak.Radii.all(4),
+        .fill = .{ 1, 1, 1, 1 },
+        .shadow = .{ .dx = 0, .dy = 0, .blur = 16, .color = .{ 0, 0, 0, 1 } },
+    }});
+    defer std.testing.allocator.free(pixels);
+    // sample a column going right from the rect's right edge (x = 44) at mid height
+    var prev: u8 = 0;
+    for ([_]u32{ 44, 46, 48, 52, 56, 62 }) |x| {
+        const v = at(pixels, x, 32)[1];
+        try std.testing.expect(v >= prev); // brightens (shadow fades) monotonically
+        prev = v;
+    }
+    try std.testing.expect(at(pixels, 44, 32)[1] < 150); // dark next to the edge (about half of the colour)
+    try std.testing.expect(at(pixels, 62, 32)[1] > 235); // almost gone ~2 sigma away... clear colour
+    try std.testing.expectEqual(@as(u8, 255), at(pixels, 32, 32)[1]); // inside: the fill, shadow clipped out
+
+    // offset moves it: a +8 px dy shadow is darker below than above
+    const off = try sdfFrame(.{}, clear, &.{.{
+        .rect = rect,
+        .fill = .{ 1, 1, 1, 1 },
+        .shadow = .{ .dx = 0, .dy = 8, .blur = 8, .color = .{ 0, 0, 0, 1 } },
+    }});
+    defer std.testing.allocator.free(off);
+    try std.testing.expect(at(off, 32, 46)[1] + 40 < at(off, 32, 17)[1]);
+    // spread grows it
+    const spread = try sdfFrame(.{}, clear, &.{.{
+        .rect = rect,
+        .fill = .{ 1, 1, 1, 1 },
+        .shadow = .{ .dx = 0, .dy = 0, .blur = 2, .spread = 6, .color = .{ 0, 0, 0, 1 } },
+    }});
+    defer std.testing.allocator.free(spread);
+    try std.testing.expect(at(spread, 47, 32)[1] < 40); // 3 px outside the rect, still inside the 6 px spread
+    try std.testing.expect(at(spread, 56, 32)[1] > 240);
+}
+
+test "sdf: linear gradient runs from the first stop to the second across the rect" {
+    const pixels = try sdfFrame(.{}, .{ 0, 0, 0, 1 }, &.{ .{
+        .rect = .{ .x = 4, .y = 4, .w = 24, .h = 56 },
+        .gradient = teak.Gradient.vertical(.{ 1, 0, 0, 1 }, .{ 0, 0, 1, 1 }),
+    }, .{
+        .rect = .{ .x = 34, .y = 4, .w = 26, .h = 56 },
+        .gradient = teak.Gradient.horizontal(.{ 0, 1, 0, 1 }, .{ 1, 1, 1, 1 }),
+    } });
+    defer std.testing.allocator.free(pixels);
+    // BGRA. Vertical: red at the top row, blue at the bottom row, purple mid-way
+    const top = at(pixels, 16, 4);
+    const bot = at(pixels, 16, 59);
+    const mid = at(pixels, 16, 32);
+    try std.testing.expect(top[2] > 245 and top[0] < 12);
+    try std.testing.expect(bot[0] > 245 and bot[2] < 12);
+    try std.testing.expect(mid[2] > 100 and mid[2] < 155 and mid[0] > 100 and mid[0] < 155);
+    // Horizontal green -> white: left column has no red, right column nearly white
+    try std.testing.expect(at(pixels, 34, 30)[2] < 12);
+    try std.testing.expect(at(pixels, 59, 30)[2] > 245);
+    try std.testing.expect(at(pixels, 47, 30)[2] > 100 and at(pixels, 47, 30)[2] < 155);
+}
+
+test "sdf: radial gradient is the first stop at the centre and the second at the edge" {
+    const pixels = try sdfFrame(.{}, .{ 0, 0, 0, 1 }, &.{.{
+        .rect = .{ .x = 4, .y = 4, .w = 56, .h = 56 },
+        .gradient = .{ .from = .{ 1, 1, 1, 1 }, .to = .{ 0, 0, 0, 1 }, .kind = .radial },
+    }});
+    defer std.testing.allocator.free(pixels);
+    try std.testing.expect(at(pixels, 32, 32)[1] > 240);
+    try std.testing.expect(at(pixels, 5, 32)[1] < 25);
+    try std.testing.expect(at(pixels, 20, 32)[1] > at(pixels, 10, 32)[1]);
+}
+
+test "sdf: keeps painter's order with plain quads on both sides, honours alpha" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    var verts: std.ArrayList(teak.Vertex) = .empty;
+    defer verts.deinit(std.testing.allocator);
+    // plain green quad, then a rounded red rect over it, then a plain blue quad over both
+    teak.vertex.emitQuad(&verts, std.testing.allocator, .{ .x = 0, .y = 0, .w = 40, .h = 40 }, .{ 0, 1, 0, 1 });
+    sdf.emitRect(&verts, std.testing.allocator, .{ .rect = .{ .x = 10, .y = 10, .w = 40, .h = 40 }, .radii = teak.Radii.all(6), .fill = .{ 1, 0, 0, 1 } }, full_clip);
+    teak.vertex.emitQuad(&verts, std.testing.allocator, .{ .x = 30, .y = 30, .w = 10, .h = 10 }, .{ 0, 0, 1, 1 });
+    h.gpu.uploadVertices(verts.items);
+    const pixels = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(pixels);
+    try std.testing.expectEqual(@as([3]u8, .{ 0, 255, 0 }), at(pixels, 4, 4)[0..3].*); // plain green only
+    try std.testing.expectEqual(@as([3]u8, .{ 0, 0, 255 }), at(pixels, 20, 20)[0..3].*); // red over green
+    try std.testing.expectEqual(@as([3]u8, .{ 255, 0, 0 }), at(pixels, 35, 35)[0..3].*); // blue over red
+    try std.testing.expectEqual(@as(u8, 0), at(pixels, 60, 60)[1]);
+
+    // half-transparent fill blends with what is underneath
+    verts.clearRetainingCapacity();
+    teak.vertex.emitQuad(&verts, std.testing.allocator, .{ .x = 0, .y = 0, .w = 64, .h = 64 }, .{ 1, 1, 1, 1 });
+    sdf.emitRect(&verts, std.testing.allocator, .{ .rect = .{ .x = 10, .y = 10, .w = 40, .h = 40 }, .radii = teak.Radii.all(6), .fill = .{ 0, 0, 0, 0.5 } }, full_clip);
+    h.gpu.uploadVertices(verts.items);
+    const half = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(half);
+    const g = at(half, 30, 30)[1];
+    try std.testing.expect(g > 120 and g < 135);
+}
+
+test "sdf: MSAA does not change fully covered or empty pixels" {
+    const pixels = try sdfFrame(.{ .msaa = true }, .{ 0, 0, 0, 1 }, &.{.{
+        .rect = .{ .x = 8, .y = 8, .w = 40, .h = 40 },
+        .radii = teak.Radii.all(12),
+        .fill = .{ 1, 1, 1, 1 },
+        .border_width = 2,
+        .border = .{ 1, 1, 1, 1 },
+    }});
+    defer std.testing.allocator.free(pixels);
+    try std.testing.expectEqual(@as(u8, 255), at(pixels, 28, 28)[1]);
+    try std.testing.expectEqual(@as(u8, 0), at(pixels, 2, 2)[1]);
+    try std.testing.expectEqual(@as(u8, 255), at(pixels, 8, 28)[1]);
+}
+
+test "sdf: records survive the vertex buffer growing and shrinking between frames (overlay open / close)" {
+    // The SDF records are read back from the vertex buffer through a storage
+    // bind group. When the buffer is reallocated (a dropdown opens: more
+    // vertices) the bind group must follow it, even if the new buffer comes
+    // back with the old one's handle; otherwise rects drawn after the growth
+    // read records from a stale buffer (missing fills, shifted rects, stray dots).
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    const counts = [_]usize{ 2, 7, 30, 64, 1, 64, 12, 64, 3 };
+    for (counts, 0..) |n, frame| {
+        var verts: std.ArrayList(teak.Vertex) = .empty;
+        defer verts.deinit(std.testing.allocator);
+        // a plain quad under everything so the vertex count also moves in odd steps
+        teak.vertex.emitQuad(&verts, std.testing.allocator, .{ .x = 0, .y = 0, .w = 1, .h = 1 }, .{ 0, 0, 0, 1 });
+        for (0..n) |i| {
+            const cx: f32 = @floatFromInt((i % 8) * 8);
+            const cy: f32 = @floatFromInt((i / 8) * 8);
+            const shade: f32 = @as(f32, @floatFromInt(40 + (i * 3) % 200)) / 255.0;
+            sdf.emitRect(&verts, std.testing.allocator, .{
+                .rect = .{ .x = cx + 1, .y = cy + 1, .w = 6, .h = 6 },
+                .radii = teak.Radii.all(1),
+                .fill = .{ shade, 1 - shade, 0.5, 1 },
+            }, full_clip);
+        }
+        h.gpu.uploadVertices(verts.items);
+        const pixels = try h.frame(.{ 0, 0, 0, 1 });
+        defer std.testing.allocator.free(pixels);
+        for (0..n) |i| {
+            const x: u32 = @intCast((i % 8) * 8 + 4);
+            const y: u32 = @intCast((i / 8) * 8 + 4);
+            const want_r: i32 = @intCast(@as(u32, @intFromFloat(@round((@as(f32, @floatFromInt(40 + (i * 3) % 200)) / 255.0) * 255.0))));
+            const got = at(pixels, x, y); // BGRA
+            std.testing.expect(@abs(@as(i32, got[2]) - want_r) <= 2 and got[3] == 255) catch |e| {
+                std.debug.print("frame {d} ({d} rects): rect {d} at ({d},{d}) read {any}, wanted r={d}\n", .{ frame, n, i, x, y, got, want_r });
+                return e;
+            };
+        }
+    }
 }

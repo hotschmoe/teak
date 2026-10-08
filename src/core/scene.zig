@@ -100,6 +100,33 @@ pub const SceneDraw = struct {
     edge_color: [4]f32 = .{ 1, 1, 1, 1 },
     /// Line width in logical pixels.
     edge_px: f32 = 1.5,
+    /// This scene's placed items are `items[item_first..][0..item_count]` of
+    /// the flat list `buildFrame` produced, with `Item.mesh` already remapped
+    /// to a backend handle by `stageDraws`. `item_count == 0` means the
+    /// legacy single-mesh scene: draw `mesh` once with an identity transform.
+    item_first: u32 = 0,
+    item_count: u32 = 0,
+    /// Scene-level options of a `viewport3d` (see `scene/view.zig`).
+    grid: ?view.Grid = null,
+    gizmo: ?view.Gizmo = null,
+    cut: ?view.Cut = null,
+    material: view.Material = .lambert,
+    highlight_color: [4]f32 = .{ 0.114, 0.306, 0.62, 1 },
+    highlight_mix: f32 = 0.6,
+    /// Plane layers: a read-only slice of the Cmd's own arena data (no key
+    /// remapping is needed, so no copy is made).
+    planes: []const view.Plane = &.{},
+    /// This scene's sprites are `sprites[sprite_first..][0..sprite_count]` of
+    /// the flat list (image keys remapped to handles by `stageDraws`).
+    sprite_first: u32 = 0,
+    sprite_count: u32 = 0,
+};
+
+/// The flat per-frame lists `buildFrame` collects for all scenes; what the
+/// Gpu's `renderScenes` reads (mutable so `stageDraws` can remap keys).
+pub const SceneData = struct {
+    items: []Item = &.{},
+    sprites: []Sprite = &.{},
 };
 
 test "MeshData.validate rejects bad indices and partial triangles" {
@@ -125,6 +152,17 @@ pub const mat = @import("scene/mat.zig");
 pub const camera = @import("scene/camera.zig");
 pub const pick = @import("scene/pick.zig");
 pub const section = @import("scene/section.zig");
+pub const view = @import("scene/view.zig");
+pub const sort = @import("scene/sort.zig");
+pub const Item = view.Item;
+pub const ItemFlags = view.ItemFlags;
+pub const View = view.View;
+pub const Grid = view.Grid;
+pub const Gizmo = view.Gizmo;
+pub const Cut = view.Cut;
+pub const Material = view.Material;
+pub const Plane = view.Plane;
+pub const Sprite = view.Sprite;
 pub const Orbit = camera.Orbit;
 pub const Projection = camera.Projection;
 pub const Bounds = camera.Bounds;
@@ -137,4 +175,6 @@ test {
     _ = camera;
     _ = pick;
     _ = section;
+    _ = view;
+    _ = sort;
 }

@@ -12,6 +12,7 @@ const chunk = 256;
 
 /// Width of `text` in `font`, in px.
 pub fn width(text: []const u8, font: teak.FontSpec) f32 {
+    if (shaper_mod.asciiWidth(text, font)) |w| return w;
     var buf: [chunk]teak.ShapedGlyph = undefined;
     var total: f32 = 0;
     var pos: usize = 0;
@@ -32,8 +33,12 @@ pub fn width(text: []const u8, font: teak.FontSpec) f32 {
 // every font field (the hash only picks the slot) and are dropped wholesale when
 // the face table changes. Runs longer than `max_text` bypass the cache.
 
-const max_text = 48;
-const cache_slots = 1024;
+//
+// Native builds size the table for a 10k-run screen (2-way set associative);
+// wasm keeps it small (its linear memory is the budget).
+const small = @import("builtin").cpu.arch.isWasm();
+const max_text = if (small) 48 else 96;
+const cache_slots = if (small) 1024 else 4096;
 
 const Slot = struct {
     used: bool,
@@ -68,10 +73,24 @@ pub fn measure(text: []const u8, font: teak.FontSpec) teak.TextMetrics {
         cache = std.mem.zeroes([cache_slots]Slot);
         cache_epoch = face_mod.epoch;
     }
+    // Short pure-ASCII runs cost less than a cache probe (a cold cache line each):
+    // no table, no hashing. Longer ones are cheaper to remember.
+    if (text.len <= 16) {
+        if (shaper_mod.asciiWidth(text, font)) |w| return metricsWith(w, font);
+    }
     if (text.len > max_text) return measureUncached(text, font);
-    const slot = &cache[@as(usize, @intCast(slotHash(text, font) % cache_slots))];
+    const h = slotHash(text, font);
+    var slot = &cache[@as(usize, @intCast(h % cache_slots))];
     if (slot.used and slot.len == text.len and sameFont(slot.font, font) and std.mem.eql(u8, slot.text[0..slot.len], text)) {
         return slot.metrics;
+    }
+    if (!small) {
+        // Second way: the neighbouring slot.
+        const other = &cache[@as(usize, @intCast(h % cache_slots)) ^ 1];
+        if (other.used and other.len == text.len and sameFont(other.font, font) and std.mem.eql(u8, other.text[0..other.len], text)) {
+            return other.metrics;
+        }
+        if (slot.used and (!other.used or (h >> 40) & 1 == 1)) slot = other;
     }
     const m = measureUncached(text, font);
     slot.used = true;
@@ -83,11 +102,15 @@ pub fn measure(text: []const u8, font: teak.FontSpec) teak.TextMetrics {
 }
 
 fn measureUncached(text: []const u8, font: teak.FontSpec) teak.TextMetrics {
+    return metricsWith(width(text, font), font);
+}
+
+fn metricsWith(w: f32, font: teak.FontSpec) teak.TextMetrics {
     const resolved = face_mod.resolveFace(font.family, font.weight) orelse
         return .{ .width = 0, .height = font.size_px, .ascent = font.size_px * 0.75, .descent = font.size_px * 0.25 };
     const vm = resolved.face.vMetrics(font.size_px);
     return .{
-        .width = width(text, font),
+        .width = w,
         .height = vm.ascent + vm.descent,
         .ascent = vm.ascent,
         .descent = vm.descent,
@@ -103,4 +126,28 @@ test "measure caches by full key: same text and font agree, different font does 
     const big = measure("hello", .{ .size_px = 28, .family = .mono });
     try std.testing.expect(big.width > a.width * 1.9);
     try std.testing.expect(measure("hello!", .{ .size_px = 14, .family = .mono }).width > a.width);
+}
+
+test "ascii fast width matches the shaper (kerning, snapping, ligature bail)" {
+    defer face_mod.releaseFaces();
+    const fonts = [_]teak.FontSpec{
+        .{ .size_px = 13, .family = .sans },
+        .{ .size_px = 11.5, .family = .mono },
+        .{ .size_px = 17, .family = .sans, .letter_spacing = 0.5 },
+        .{ .size_px = 12, .family = .sans, .snap_advance = true },
+    };
+    const texts = [_][]const u8{ "", "A", "AV To Wa", "r123c45", "office fi ffl", "The quick brown fox, 0123456789 [AVAWAY]" };
+    for (fonts) |f| for (texts) |t| {
+        const fast = shaper_mod.asciiWidth(t, f) orelse continue;
+        var buf: [chunk]teak.ShapedGlyph = undefined;
+        var total: f32 = 0;
+        var pos: usize = 0;
+        while (pos < t.len) {
+            const r = shaper_mod.shape(t[pos..], f, &buf);
+            total += r.width;
+            if (r.consumed == 0) break;
+            pos += r.consumed;
+        }
+        try std.testing.expectEqual(total, fast);
+    };
 }

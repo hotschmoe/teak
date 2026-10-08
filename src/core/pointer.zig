@@ -51,10 +51,16 @@ pub const CanvasEventKind = enum {
     /// The cursor left the canvas and no capture is active.
     leave,
     /// Delivered when the canvas is first laid out and whenever its rect
-    /// SIZE changes. `w`/`h` carry the new size; `x`/`y` are 0. Lets the
-    /// app keep the viewport size in its Model (the view cannot read
-    /// layout results).
+    /// SIZE or POSITION changes. `w`/`h` carry the size and `x`/`y` the
+    /// rect's top-left in WINDOW coordinates (not canvas-local like every
+    /// other event). Lets the app keep the viewport size and origin in its
+    /// Model (the view cannot read layout results), e.g. to anchor overlay
+    /// text over a 3D viewport.
     layout,
+    /// A key pressed while the canvas has the keyboard focus (a focusable
+    /// canvas, `canvasInteractiveFocusable`) and the app's own key hooks
+    /// declined it. `CanvasEvent.key` names the key. Return a Msg to consume it.
+    key,
 };
 
 /// One pointer event on an interactive canvas / scene. Coordinates are
@@ -77,4 +83,92 @@ pub const CanvasEvent = struct {
     /// Canvas rect size in logical px.
     w: f32 = 0,
     h: f32 = 0,
+    /// For `key`: which key.
+    key: ?@import("../input/keys.zig").SpecialKey = null,
 };
+
+// ── Drag and drop (in-app) ─────────────────────────────────────────
+
+pub const DragPhase = enum {
+    /// The pointer moved past the threshold with a drag source pressed.
+    start,
+    /// Each frame while dragging (the pointer may not have moved).
+    move,
+    /// The button was released: drop on `over` (0 = no target).
+    drop,
+    /// Escape pressed (or the source vanished): drag aborted, nothing dropped.
+    cancel,
+};
+
+/// One step of an in-app drag, delivered to the App's `dragMsg` hook. The
+/// app keeps the drag state in its Model (what is dragged, where the ghost
+/// is, which target is hot) and renders the ghost as an overlay; the loop
+/// only reports pointer facts resolved against the previous frame's layout.
+pub const DragEvent = struct {
+    phase: DragPhase,
+    /// `GroupStyle.drag_id` of the dragged source.
+    id: u32,
+    /// Pointer position, window coordinates.
+    x: f32,
+    y: f32,
+    /// Where inside the source rect the press landed (ghost offset).
+    grab_dx: f32 = 0,
+    grab_dy: f32 = 0,
+    /// The source group's rect at press time: x, y, w, h.
+    src: [4]f32 = .{ 0, 0, 0, 0 },
+    /// `GroupStyle.drop_id` of the innermost drop target under the pointer
+    /// (0 = none), its rect, and the pointer's position inside it, 0..1.
+    over: u32 = 0,
+    over_rect: [4]f32 = .{ 0, 0, 0, 0 },
+    over_fx: f32 = 0,
+    over_fy: f32 = 0,
+};
+
+/// A window-space rectangle (`PointerEvent.box`).
+pub const Box = struct {
+    x: f32 = 0,
+    y: f32 = 0,
+    w: f32 = 0,
+    h: f32 = 0,
+};
+
+/// What the App's `hoverMsg` / `contextMsg` hooks receive: where the pointer
+/// is and which interactive widget is under it. `hit` is the Msg that widget
+/// would dispatch on a left click (its identity: the app compares it with
+/// `std.meta.eql`, no id hashing); `null` over empty or non-interactive
+/// space. `box` is that widget's rect from the previous frame's layout (the
+/// view cannot read layout, so this is how a tooltip or menu learns where to
+/// anchor); all zero when `hit` is null. `now_ms` is the host's monotonic
+/// clock, so the app can derive deadlines for `Sub.at`.
+pub fn PointerEvent(comptime Msg: type) type {
+    return struct {
+        pub const Kind = enum {
+            /// The interactive widget under the pointer changed (`hit` is the
+            /// new one, null = empty space). Also what `hoverMsg` receives.
+            hover,
+            /// A button went down. `hit` is the widget under the pointer or
+            /// null for **blank space** (the way an app clears its own focus).
+            down,
+            /// A button was released (`hit` as for `down`).
+            up,
+            /// The right button went down (what `contextMsg` receives).
+            context,
+        };
+
+        /// True when the pointer is over no interactive widget (a click here
+        /// should clear the app's focus / selection / open menus).
+        pub fn isBlank(self: @This()) bool {
+            return self.hit == null;
+        }
+
+        kind: Kind = .hover,
+        /// Which button changed (`down` / `up` / `context`); `.none` for hover.
+        button: Button = .none,
+        x: f32,
+        y: f32,
+        hit: ?Msg = null,
+        box: Box = .{},
+        mods: Modifiers = .{},
+        now_ms: u64 = 0,
+    };
+}

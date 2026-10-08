@@ -29,6 +29,7 @@
 const std = @import("std");
 const teak = @import("teak");
 const text = @import("teak-text");
+const control_socket = @import("control_socket.zig");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -47,6 +48,7 @@ const Event = union(enum) {
     chars: struct { buf: [32]u8, len: u8 },
     key: SpecialKey,
     mods: Modifiers,
+    chord: teak.Chord,
 };
 
 /// A submitted effect, deep-copied so tests can assert on it after the
@@ -89,6 +91,9 @@ pub const Host = struct {
     clip: [4096]u8 = undefined,
     clip_len: usize = 0,
 
+    /// Agent control channel (`controlListen`); inactive unless listened.
+    ctl: control_socket.Server = .{},
+
     captured: std.ArrayList(Captured) = .empty,
     injected: [MAX_INJECTED]EffectResult = undefined,
     injected_len: usize = 0,
@@ -98,6 +103,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        self.ctl.deinit();
         for (self.captured.items) |c| freeCaptured(self.gpa, c);
         self.captured.deinit(self.gpa);
     }
@@ -136,6 +142,10 @@ pub const Host = struct {
             self.push(ev);
             rest = rest[n..];
         }
+    }
+    /// A keyboard shortcut (`InputState.chords`), e.g. `.{ .key = .s, .mod = true }`.
+    pub fn pushChord(self: *Host, c: teak.Chord) void {
+        self.push(.{ .chord = c });
     }
     pub fn pushKey(self: *Host, k: SpecialKey) void {
         self.push(.{ .key = k });
@@ -181,6 +191,39 @@ pub const Host = struct {
         return self.title_buf[0..self.title_len];
     }
 
+    // ── Agent control channel (optional Host surface; src/control.zig) ──
+
+    /// Start listening on the Unix socket `path`. False: unsupported OS or
+    /// the socket could not be created.
+    pub fn controlListen(self: *Host, path: []const u8) bool {
+        return self.ctl.listen(path);
+    }
+    /// The next complete protocol line from the client, or null. Never blocks.
+    pub fn controlRecv(self: *Host, out: []u8) ?[]u8 {
+        return self.ctl.recvLine(out);
+    }
+    pub fn controlSend(self: *Host, bytes: []const u8) void {
+        self.ctl.send(bytes);
+    }
+    /// Queue a synthetic event: same queue, same path as the scripted
+    /// `push*` API (applied by the next `pollInputs`).
+    pub fn injectInput(self: *Host, ev: teak.host.InjectEvent) void {
+        switch (ev) {
+            .move => |p| self.pushMouseMove(p[0], p[1]),
+            .down => |b| self.pushMouseDown(b),
+            .up => |b| self.pushMouseUp(b),
+            .wheel => |w| self.pushWheel(w[0], w[1]),
+            .chars => |t| self.pushChars(t),
+            .key => |k| self.pushKey(k),
+            .mods => |m| self.setModifiers(m),
+            .chord => |c| self.pushChord(c),
+        }
+    }
+    /// Make `shouldClose` true (the control `quit` command).
+    pub fn requestClose(self: *Host) void {
+        self.close();
+    }
+
     // ── validateHost surface ───────────────────────────────────────
 
     pub fn nativeHandle(_: *Host) void {}
@@ -212,6 +255,7 @@ pub const Host = struct {
             .chars => |ch| q.pushText(ch.buf[0..ch.len]),
             .key => |k| q.pushKey(k),
             .mods => |m| q.mods = m,
+            .chord => |c| q.pushChord(c),
         };
         self.event_count = 0;
 
@@ -334,6 +378,10 @@ pub const Host = struct {
             },
             .open_file => |o| c.name = try a.dupe(u8, o.accept),
             .write_clipboard => |w| c.name = try a.dupe(u8, w.text),
+            .write_clipboard_image => |w| {
+                c.name = try a.dupe(u8, "image/png");
+                c.bytes = try a.dupe(u8, w.png);
+            },
             .storage_set => |s| {
                 c.name = try a.dupe(u8, s.key);
                 c.bytes = try a.dupe(u8, s.value);
@@ -451,10 +499,13 @@ test "effects are accepted and captured by deep copy; results come only from inj
     try std.testing.expectEqual(EffectSubmit.accepted, h.submit(.{ .http = .{ .id = 1, .method = .post, .url = &url, .body = "payload" } }));
     try std.testing.expectEqual(EffectSubmit.accepted, h.submit(.{ .download = .{ .id = 2, .name = "out.dxf", .mime = "image/vnd.dxf", .bytes = "0\nSECTION" } }));
     try std.testing.expectEqual(EffectSubmit.accepted, h.submit(.{ .storage_set = .{ .id = 3, .key = "k", .value = "v" } }));
+    try std.testing.expectEqual(EffectSubmit.accepted, h.submit(.{ .write_clipboard_image = .{ .id = 4, .png = "\x89PNG" } }));
+    try std.testing.expectEqual(@as(usize, 1), h.countEffects(.write_clipboard_image));
+    try std.testing.expectEqualStrings("\x89PNG", h.submittedEffects()[h.submittedEffects().len - 1].bytes);
     @memset(&url, 'X'); // the host must not alias the caller's slice
 
     const got = h.submittedEffects();
-    try std.testing.expectEqual(@as(usize, 3), got.len);
+    try std.testing.expectEqual(@as(usize, 4), got.len);
     try std.testing.expectEqualStrings("https://example.test/a", got[0].name);
     try std.testing.expectEqualStrings("payload", got[0].bytes);
     try std.testing.expectEqual(teak.HttpMethod.post, got[0].method);
@@ -498,4 +549,8 @@ test "waitEvents jumps the fake clock by the timeout (minus the next poll's fram
     try std.testing.expectEqual(@as(u64, 100), h.nowMs());
     h.waitEvents(5); // shorter than a frame: nothing to skip
     try std.testing.expectEqual(@as(u64, 100), h.nowMs());
+}
+
+test {
+    _ = @import("headless_drive_test.zig");
 }

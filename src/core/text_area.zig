@@ -160,7 +160,7 @@ pub fn TextArea(comptime cap: usize) type {
         /// from the runtime, not as keys; clipboard chords belong to the host).
         pub fn keyMsg(key: keys.SpecialKey) ?Msg {
             return switch (key) {
-                .enter => .newline,
+                .enter, .shift_enter => .newline,
                 .tab => null,
                 .backspace, .delete, .left, .right, .shift_left, .shift_right, .ctrl_left, .ctrl_right, .ctrl_shift_left, .ctrl_shift_right, .ctrl_home, .ctrl_end, .ctrl_shift_home, .ctrl_shift_end, .ctrl_backspace, .ctrl_delete, .ctrl_a, .ctrl_z, .ctrl_y, .ctrl_shift_z, .escape => .{ .key = key },
                 else => null,

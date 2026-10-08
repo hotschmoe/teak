@@ -14,6 +14,7 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
 
 struct VOut {
     @builtin(position) pos: vec4f,
@@ -23,6 +24,7 @@ struct VOut {
     @location(3) @interpolate(flat) clip_min: vec2f,
     @location(4) @interpolate(flat) clip_max: vec2f,
     @location(5) @interpolate(flat) clipped: u32,
+    @location(6) @interpolate(flat) mode: u32,
 };
 
 const corners = array<vec2f, 6>(
@@ -45,7 +47,11 @@ fn vs_main(
     let clip_xy = vec2i(bitcast<i32>(clip_words.x << 16u) >> 16u, bitcast<i32>(clip_words.x) >> 16u);
     let clip_wh = vec2u(clip_words.y & 0xffffu, clip_words.y >> 16u);
     let c = corners[vi];
-    let px = pos + c * vec2f(size);
+    // flags: bits 0-1 mode (0 = coverage bitmap, 1 = signed distance field, 2 = RGBA colour texels),
+    // bits 16-31 quad scale in 1/256 units (SDF glyphs are drawn at any size).
+    let mode = flags & 3u;
+    let k = select(1.0, f32(flags >> 16u) / 256.0, mode == 1u);
+    let px = pos + c * vec2f(size) * k;
     let device = u.screen_size * u.scale;
     let clip = vec2f(px.x / device.x * 2.0 - 1.0, 1.0 - px.y / device.y * 2.0);
     var o: VOut;
@@ -55,21 +61,35 @@ fn vs_main(
     o.local = c * vec2f(size);
     o.clip_min = vec2f(clip_xy);
     o.clip_max = vec2f(clip_xy) + vec2f(clip_wh);
+    o.mode = mode;
     o.clipped = select(0u, 1u, clip_wh.x != 0u || clip_wh.y != 0u);
     return o;
 }
 
 @fragment
 fn fs_main(in: VOut) -> @location(0) vec4f {
+    // Both samples are taken before any discard (derivatives need uniform control flow).
+    // Coverage bitmaps: the quad is pixel-aligned, so `local` hits texel centres: exact fetch.
+    let texel = vec2i(in.origin) + vec2i(floor(in.local));
+    let texel_rgba = textureLoad(atlas, texel, 0);
+    let cov_bitmap = texel_rgba.r;
+    // Distance fields: bilinear sample, then a one-pixel-wide smoothstep around the edge value,
+    // sized by the screen-space derivative so the edge stays crisp at any scale.
+    let uv = (vec2f(in.origin) + in.local) / vec2f(textureDimensions(atlas));
+    let d = textureSample(atlas, samp, uv).r;
+    let w = max(fwidth(d) * 0.7, 0.0005);
+    let cov_sdf = smoothstep(0.502 - w, 0.502 + w, d);
     if (in.clipped != 0u) {
         let p = in.pos.xy;
         if (p.x < in.clip_min.x || p.y < in.clip_min.y || p.x >= in.clip_max.x || p.y >= in.clip_max.y) {
             discard;
         }
     }
-    // The quad is pixel-aligned, so `local` hits texel centres: exact fetch, no filtering.
-    let texel = vec2i(in.origin) + vec2i(floor(in.local));
-    let cov = textureLoad(atlas, texel, 0).r;
+    // Mode 2: an RGBA page of colour glyphs (emoji): the texel's own colour, instance alpha as opacity.
+    if (in.mode == 2u) {
+        return vec4f(texel_rgba.rgb, texel_rgba.a * in.color.a);
+    }
+    let cov = select(cov_bitmap, cov_sdf, in.mode == 1u);
     let a = select(pow(cov, u.text_gamma), cov, u.text_gamma == 1.0);
     return vec4f(in.color.rgb, in.color.a * a);
 }

@@ -42,11 +42,18 @@ pub const Match = enum {
     substring,
     /// The option must start with the query.
     prefix,
+    /// Fuzzy: the query's characters (spaces ignored) appear in the option
+    /// in order, not necessarily adjacent ("svas" finds "Save As...").
+    fuzzy,
 };
 
 pub const ViewOpts = struct {
-    /// Window-absolute top-left of the open list (typically the bottom-left of
-    /// the input's previous-frame rect).
+    /// Open the list against the input automatically (anchored to the
+    /// `msgs.focus` input, below its left edge; resolved by layout in the same
+    /// frame). `list_x` / `list_y` are then ignored; false = place it yourself.
+    auto_anchor: bool = true,
+    anchor_side: cmd.AnchorSide = .below_start,
+    /// Window-absolute top-left of the open list when `auto_anchor` is false.
     list_x: f32 = 0,
     list_y: f32 = 0,
     list_width: f32 = 200,
@@ -77,6 +84,7 @@ pub fn foldCase(cp: u21) u21 {
 /// True when `option` matches `query` (empty queries match everything).
 pub fn matches(query: []const u8, option: []const u8, mode: Match) bool {
     if (query.len == 0) return true;
+    if (mode == .fuzzy) return fuzzyMatches(query, option);
     var start: usize = 0;
     while (start < option.len) {
         if (matchAt(query, option, start)) return true;
@@ -84,6 +92,24 @@ pub fn matches(query: []const u8, option: []const u8, mode: Match) bool {
         start = unicode.nextGrapheme(option, start);
     }
     return false;
+}
+
+/// Subsequence match over case-folded code points; spaces in `query` are skipped.
+fn fuzzyMatches(query: []const u8, option: []const u8) bool {
+    var qi: usize = 0;
+    var oi: usize = 0;
+    while (qi < query.len) {
+        const q = unicode.utf8DecodeLossy(query, qi);
+        qi += q.len;
+        if (q.cp == ' ') continue;
+        while (true) {
+            if (oi >= option.len) return false;
+            const o = unicode.utf8DecodeLossy(option, oi);
+            oi += o.len;
+            if (foldCase(o.cp) == foldCase(q.cp)) break;
+        }
+    }
+    return true;
 }
 
 fn matchAt(query: []const u8, option: []const u8, start: usize) bool {
@@ -328,6 +354,8 @@ pub fn Combobox(comptime cap: usize) type {
             cb.pushOverlay(.{
                 .x = opts.list_x,
                 .y = opts.list_y,
+                .anchor_msg = if (opts.auto_anchor) msgs.focus else null,
+                .anchor_side = opts.anchor_side,
                 .width = opts.list_width,
                 .height = viewport_h,
                 .modal = true,
@@ -349,13 +377,18 @@ pub fn Combobox(comptime cap: usize) type {
                 cb.pushGroup(.{ .direction = .vertical, .bg = cb.theme.panel_bg, .padding = 0, .gap = 0 });
             }
             if (n == 0) {
-                cb.buttonDisabled(msgs.close, NO_MATCHES);
+                var row = cb.theme.button;
+                row.min_width = opts.list_width;
+                row.height = ITEM_HEIGHT;
+                cb.buttonStyledDisabled(msgs.close, NO_MATCHES, row);
             } else {
                 var ordinal: usize = 0;
                 for (options, 0..) |opt, i| {
                     if (!matches(q, opt, opts.match)) continue;
                     var row = cb.theme.button;
                     row.min_width = opts.list_width;
+                    // The scroll math counts ITEM_HEIGHT rows whatever the theme's button height is.
+                    row.height = ITEM_HEIGHT;
                     if (ordinal == model.highlighted) {
                         row.bg = cb.theme.button.hover_bg;
                         row.fg = cb.theme.button.hover_fg orelse cb.theme.button.fg;
@@ -554,7 +587,7 @@ test "snapshot golden: open list filtered by 'a'" {
     var m: CB.Model = .{};
     CB.update(&m, .focus);
     typeStr(&m, "a");
-    try renderSnapshot(&m, .{ .list_x = 20, .list_y = 40, .list_width = 120, .max_visible = 4 },
+    try renderSnapshot(&m, .{ .auto_anchor = false, .list_x = 20, .list_y = 40, .list_width = 120, .max_visible = 4 },
         \\group (0,0,400,400) vertical
         \\  text_input (0,0,400,28) "a" cursor=1
         \\  overlay (20,40,120,144) layer=1 [modal]
@@ -567,6 +600,23 @@ test "snapshot golden: open list filtered by 'a'" {
     );
 }
 
+test "snapshot golden: auto_anchor opens the list under the input, no coordinates" {
+    var m: CB.Model = .{};
+    CB.update(&m, .focus);
+    typeStr(&m, "a");
+    try renderSnapshot(&m, .{ .list_width = 120, .max_visible = 4 },
+        \\group (0,0,400,400) vertical
+        \\  text_input (0,0,400,28) "a" cursor=1
+        \\  overlay (0,28,120,144) layer=1 [modal]
+        \\    group (0,28,120,144) vertical bg
+        \\      button (0,28,120,36) "Oak"
+        \\      button (0,64,120,36) "Maple"
+        \\      button (0,100,120,36) "Cedar"
+        \\      button (0,136,120,36) "Ash"
+        \\
+    );
+}
+
 test "compose: Combobox routes through Components" {
     const Comp = component.Components(.{ .material = CB }, null);
     var model: Comp.Model = .{};
@@ -574,4 +624,13 @@ test "compose: Combobox routes through Components" {
     Comp.update(&model, .{ .material = CB.charMsg('o') });
     try testing.expect(model.material.open);
     try testing.expectEqualStrings("o", model.material.query.content());
+}
+
+test "fuzzy match: ordered subsequence, spaces ignored, case-insensitive" {
+    try testing.expect(matches("svas", "Save As...", .fuzzy));
+    try testing.expect(matches("s a", "Save As...", .fuzzy));
+    try testing.expect(matches("OPEN", "File: open recent", .fuzzy));
+    try testing.expect(!matches("vs", "Save", .fuzzy)); // wrong order
+    try testing.expect(!matches("zz", "Save", .fuzzy));
+    try testing.expect(matches("", "x", .fuzzy));
 }

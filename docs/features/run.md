@@ -66,12 +66,47 @@ pub fn run(comptime App: type, gpa: Allocator, host: anytype, gpu: anytype, opts
 `view(*const Model, *CmdBuffer(Msg))`. `Model.init()` is used for the
 initial state if present, else `.{}`.
 
-Optional App decls, each detected with `@hasDecl` — present only what you
-need (full table in [consuming-teak.md §5](../consuming-teak.md)):
-`keyCharMsg`, `keySpecialMsg`, `keyNeedsClipboard` + `handleClipboard`,
-`wheelMsg`, `windowMsg` (window size on the first frame and each resize), `canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
-`secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`),
-`subscribe`.
+Optional App decls are detected with `@hasDecl` — present only what you need.
+See [App hooks](#app-hooks-the-one-table) for every one.
+
+## App hooks (the one table)
+
+Every optional decl `teak.run` / `Runtime` probes on the App. **Rules for all of
+them** (HARDLINE §1-§3): a hook is a plain function of `*const Model` (never
+`*Model`) plus data the loop supplies; it returns data (a `Msg`, a spec, a
+theme) and never calls back; the only state change is the returned `Msg`
+going through `update`. `zig build audit` fails if the loop probes a hook this
+table does not name.
+
+| Hook | Signature | Called | May return / do |
+|---|---|---|---|
+| `keyCharMsg` | `(*const Model, u8) ?Msg` | each typed character, in order | a Msg (null = ignore) |
+| `keySpecialMsg` | `(*const Model, SpecialKey) ?Msg` | each non-text key / chord | a Msg |
+| `clipboardText` | `(*const Model, SpecialKey) ?[]const u8` | Ctrl+C / Ctrl+X, before `clipboardMsg` | the text to copy (a pure query; the loop writes the Host clipboard) |
+| `clipboardMsg` | `(*const Model, SpecialKey, paste: []const u8) ?Msg` | Ctrl+C / Ctrl+X / Ctrl+V; `paste` is the clipboard text for Ctrl+V (an empty paste is not delivered) | a Msg (Ctrl+X: the cut, after the copy) |
+| `keyNeedsClipboard` + `handleClipboard` | `(SpecialKey) bool` / `(*Model, SpecialKey, Clipboard) void` | **deprecated**; only when neither new hook exists | mutates the Model outside `update` (HARDLINE §1); removed next release, see [migration-clipboard.md](../migration-clipboard.md) |
+| `submitMsg` | `(*const Model) ?Msg` | Enter key (before `keySpecialMsg`) | a Msg |
+| `focusedMsg` | `(*const Model) ?Msg` | every frame | the focus Msg of the focused widget; enables Tab traversal + the focus ring + caret |
+| `blurMsg` | `(*const Model) ?Msg` | when Tab moves keyboard focus from a text field onto a non-text widget | the Msg that clears the Model's text focus, so the field stops receiving typed characters |
+| `wheelMsg` | `(*const Model, f32) ?Msg` | vertical wheel not claimed by a scroll region / pointer canvas | a Msg |
+| `scrollMsg` | `(*const Model, id, dx, dy) ?Msg` | wheel over the innermost `ScrollStyle.id != 0` region | a Msg |
+| `scrollLayoutMsg` | `(*const Model, id, vw, vh, cw, ch) ?Msg` | a scroll region's first layout and each size change | a Msg (the view cannot read layout) |
+| `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer input over interactive canvases / scenes; `layout` events | a Msg |
+| `windowMsg` | `(*const Model, w: f32, h: f32) ?Msg` | first frame and every resize | a Msg |
+| `windowTitle` | `(*const Model) ?[]const u8` | every frame; `Host.setTitle` only on change | the title |
+| `themeFor` | `(*const Model) Theme` | every frame, before `view` | the theme the emitters use |
+| `subscribe` | `(*const Model) []const Sub(Msg)` | every frame | timers (`every`, `at`) and `animation_frame` |
+| `animationMsg` | `(*const Model, dt_ms: u32) ?Msg` | every frame while a `Sub.animation_frame` is listed | a Msg (see [animation.md](animation.md)) |
+| `effects` | `(*const Model) []const Effect` | every frame | effects to hand the Host once each (HARDLINE hatch 7) |
+| `effectMsg` | `(*const Model, EffectResult) ?Msg` | each effect result and each unsolicited drop / paste | a Msg |
+| `resources` | `(*const Model) []const Resource` | every frame | GPU meshes / images by (key, rev) (hatch 8) |
+| `secondaryWindow` | `(*const Model) ?SecondaryWindowSpec` | every frame | open / close the second window |
+| `secondaryView` | `(*const Model, *CmdBuffer(Msg)) void` | each frame the second window is open | its view (pure, same rules as `view`) |
+| `secondaryClosedMsg` | `(*const Model) ?Msg` | the user closed the second window from the OS | a Msg |
+
+Hooks in open PRs (`textMsg`, `hoverMsg`, `contextMsg`, `modsMsg`,
+`sliderMsg`, `virtualRowsMsg`, `cursorFor`, `commands`, `debugState`) follow the
+same rules and join this table when they land.
 
 ### Interactive canvases and scroll regions
 
@@ -81,6 +116,10 @@ route against the **previous** frame's layout, exactly like hit-testing.
 | Decl | Signature | Role |
 |------|-----------|------|
 | `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer events over `CanvasCmd.pointer` canvases: `down` / `move` / `up` / `wheel` / `leave`, and `layout` on first layout and whenever the rect size changes. Semantics in [canvas.md](canvas.md). |
+| `pointerMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | **the one pointer hook for widgets**: `ev.kind` = `hover` (target changed), `down` (any button but right), `up`, `context` (right press); `ev.button` says which. `ev.hit` is the widget's click / focus Msg, or **null for blank space**, so `if (ev.kind == .down and ev.isBlank()) return .clear_focus` clears the app's focus (the loop never invents focus changes for you). `ev.box` / `ev.now_ms` as for `hoverMsg`. `hoverMsg` / `contextMsg` are the same events for one kind each and remain; canvas / text / slider pointer hooks keep their capture semantics (see docs/features/pointer-msg.md for the staged migration). |
+| `hoverMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the interactive widget under the pointer changed (entered, left, replaced). `ev.hit` is that widget's click Msg, `ev.box` its rect (previous frame), `ev.now_ms` the host clock. Drives `widgets.tooltip`. |
+| `contextMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the right button went down; `ev.hit` is the Msg of the widget under the cursor, `null` over empty space. Drives `widgets.menu.ContextMenu`. |
+| `sliderMsg` | `(*const Model, grab: Msg, value: f32) ?Msg` | a `slider` cmd is being dragged: `grab` is its `grab_msg` (which slider), `value` the 0..1 position under the pointer. Fired on press and every frame the left button stays down (pointer captured, so the drag survives leaving the track); the slider's plain click Msg is not dispatched. Without the hook a slider is click-only. |
 | `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over the innermost hovered scroll region whose `ScrollStyle.id != 0`. `dx`/`dy` are DOM-signed px. Return `null` to ignore; the wheel is still consumed. |
 | `scrollLayoutMsg` | `(*const Model, id: u32, viewport_w, viewport_h, content_w, content_h: f32) ?Msg` | for every `ScrollStyle.id != 0` region, on its first layout and whenever its viewport or content size changes. Content is the extent of its children (`teak.scrollExtent`: nested scroll interiors and overlays excluded), independent of the scroll offset — enough to clamp `scroll_y` and size a scrollbar thumb. |
 
@@ -192,11 +231,13 @@ and run everywhere but the second window only actually opens on Windows;
 the primary window is unaffected on the other backends.
 
 `RunOptions`:
-- `clear_color: [4]f32` — scene clear color (default dark).
-- `blink_period: u32` — frames between forced rebuilds while a widget is
-  focused, so the text cursor blinks (default 30; matches the renderer's
-  cursor phase). Apps with no text input pay nothing.
+- `clear_color: ?[4]f32` — scene clear color; `null` (default) follows `theme.palette.bg`, so `themeFor` apps switch background with the theme.
+- `blink_half_ms: u32` — text-cursor blink half-period in Host-clock ms
+  (default 500; 0 = no blinking). The caret phase is `TransientState.blink_on`,
+  set from the clock; while idle the loop wakes only at each toggle.
 - `snapshot_path: ?[]const u8` — live-snapshot sink (default `null`).
+- `control_path` / `record_path` / `replay_path: ?[]const u8`, `inspect: bool`, `inspect_hotkey: bool` — agent control socket, input recording / replay, the dev inspector (`TEAK_CONTROL` / `TEAK_RECORD` / `TEAK_REPLAY` / `TEAK_INSPECT` env win); see [agent-driver.md](agent-driver.md).
+- Optional hooks added with `commands` / `dragMsg`: see [commands.md](commands.md) and [drag-drop.md](drag-drop.md).
 - `app_name: []const u8` — names the app for hosts that keep per-app files (native storage under `<config>/teak/<app_name>/`); empty = the window title.
 
 ### Live snapshot sink (`TEAK_SNAPSHOT`)
@@ -221,7 +262,7 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
 3. Keyboard: chars via `keyCharMsg`; then special keys — built-in
    Tab/Shift+Tab traversal and Enter→`submitMsg` first (if the app
    exposes the relevant hooks), then clipboard chords via
-   `handleClipboard`, else `keySpecialMsg`.
+   `clipboardText` / `clipboardMsg` (or the deprecated `handleClipboard`), else `keySpecialMsg`.
 4. Pointer canvases (`canvasMsg`): hover / move / down / up / leave +
    capture. Wheel: pointer canvas -> `scrollMsg` region -> `wheelMsg`.
 5. Effect results (`effectMsg`), then subscriptions: `runSubs(subscribe(model))`
@@ -341,16 +382,28 @@ With `RunOptions.idle_skip` (default true) a frame in which nothing happened
 does no pipeline work at all: no view, layout, diff, upload or present. A
 frame is *quiet* when, after routing, there was no input event (pointer
 moved / button / wheel / key / char / resize), no Msg was dispatched (so no
-sub fired, no effect result or window hook arrived), no text input is
-focused (the cursor blink needs frames; `blink_period = 0` lifts this), no
-IME composition, no secondary window, and it is not the first frame.
+sub fired, no effect result or window hook arrived), no
+IME composition, no secondary window, and it is not the first frame. A focused
+text input does not prevent idling: the loop sleeps until the caret's next
+toggle (`RunOptions.blink_half_ms`) and then re-uploads vertices for the last
+built frame with the new phase (`TransientState.blink_on`) — no view or layout.
 `Runtime.quiet` reports it, and `run` then calls the Host's optional
 `waitEvents(timeout_ms)` (documented in `platform/host.zig`) with the time to
-the next due `Sub` (`sub.nextDueMs`; 16 ms while an effect is outstanding,
-else at most 1 s). The web loop stays rAF-driven but skips the same work.
+the nearer of the next due `Sub` (`sub.nextDueMs`) and the next caret toggle
+(16 ms while an effect is outstanding, else at most 1 s). Implemented by the
+X11 (`XPending` + `poll` on the connection fd), Win32
+(`MsgWaitForMultipleObjectsEx`) and headless Hosts; Expose / WM_PAINT surface as
+`InputState.resized` so an uncovered window repaints. The web loop stays
+rAF-driven but skips the same work: a quiet rAF tick costs about 0.2 ms
+in headless Chromium (median, including the JS tick), against 0.8 ms median
+(and heavy tails) with `idle_skip = false` for the chrome example.
 
 Consequences: `ts.frame_counter` and the snapshot `frame=` header count
 frames that actually built; an app that animates must do it through a `Sub`
 (a model field advanced by `.every`), which is the HARDLINE way anyway.
 Measured (headless, 600 identical frames, an 8k-cmd view, ReleaseFast): 337 ms
 without idle skip, 30 ms with it (all of it the one real first frame).
+Idle CPU on a live X11 Host (Xvfb, `TEAK_IDLE_PROBE=1 zig build test-x11
+-Doptimize=ReleaseFast`, a 1000-cmd view with a focused input, 10 s): 6.5% of a
+core with `idle_skip = false` (vsync-paced at 60 Hz) -> 0.05% with it (21 renders:
+the 20 caret toggles plus the first frame).

@@ -15,6 +15,7 @@ const scene = @import("../core/scene.zig");
 const MeshData = scene.MeshData;
 const MeshHandle = scene.MeshHandle;
 const SceneDraw = scene.SceneDraw;
+const SceneData = scene.SceneData;
 const OverlaySplit = @import("../render/build.zig").OverlaySplit;
 
 pub const ClearColor = [4]f32;
@@ -93,7 +94,7 @@ pub fn validateGpu(comptime T: type) void {
     const scene_block = [_]GpuDecl{
         .{ .name = "uploadMesh", .sig = "fn(*Gpu, MeshData) MeshHandle" },
         .{ .name = "releaseMesh", .sig = "fn(*Gpu, MeshHandle) void" },
-        .{ .name = "renderScenes", .sig = "fn(*Gpu, []const SceneDraw) void" },
+        .{ .name = "renderScenes", .sig = "fn(*Gpu, []const SceneDraw, SceneData) void" },
     };
     comptime var present = 0;
     inline for (scene_block) |d| {
@@ -109,6 +110,10 @@ pub fn validateGpu(comptime T: type) void {
             "uploadMesh, releaseMesh and renderScenes come together");
     // Optional overlay layering: where the overlay layer starts in each
     // staged list. Called before the uploads of a frame.
+    // Optional HiDPI hook: render at `scale` physical pixels per logical unit.
+    if (@hasDecl(T, "setScale") and @typeInfo(@TypeOf(T.setScale)) != .@"fn")
+        @compileError("Gpu '" ++ tn ++ "'.setScale must be a function " ++
+            "(expected fn(*Gpu, f32) void)");
     if (@hasDecl(T, "setOverlayStart") and @typeInfo(@TypeOf(T.setOverlayStart)) != .@"fn")
         @compileError("Gpu '" ++ tn ++ "'.setOverlayStart must be a function " ++
             "(expected fn(*Gpu, OverlaySplit) void)");
@@ -167,7 +172,7 @@ test "validateGpu accepts the full scene extension" {
             return scene.MESH_HANDLE_NONE;
         }
         pub fn releaseMesh(_: *@This(), _: MeshHandle) void {}
-        pub fn renderScenes(_: *@This(), _: []const SceneDraw) void {}
+        pub fn renderScenes(_: *@This(), _: []const SceneDraw, _: SceneData) void {}
     };
     comptime validateGpu(Stub);
 }
