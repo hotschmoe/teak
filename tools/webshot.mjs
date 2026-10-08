@@ -66,7 +66,7 @@ const browser = await puppeteer.launch({ dumpio: process.env.WEBSHOT_DUMPIO === 
   args: ['--no-sandbox', '--disable-dev-shm-usage', '--hide-scrollbars', `--window-size=${width},${height}`,
     '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--enable-webgpu-developer-features',
     '--enable-unsafe-swiftshader', '--enable-features=Vulkan,WebGPU', '--use-vulkan=swiftshader',
-    '--use-webgpu-adapter=swiftshader', '--use-angle=vulkan', ...(opt('--args', '').split(/\s+/).filter(Boolean))],
+    '--use-webgpu-adapter=swiftshader', '--use-angle=swiftshader', ...(opt('--args', '').split(/\s+/).filter(Boolean))],
 });
 const problems = [];
 try {
