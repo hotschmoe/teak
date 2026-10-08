@@ -87,6 +87,8 @@
 
 ### Added
 
+- `widgets.color_picker`: SV square + hue strip (canvas triangles), hex / R / G / B fields, swatches.
+
 - **SDF surfaces**: `Radii` (per-corner), soft `Shadow` (blur / spread / offset, CSS semantics), two-stop `Gradient` (linear /
   radial) on `GroupStyle`, `ButtonStyle`, `OverlayStyle`, `TextInputStyle` (`radius`, `gradient`, `soft_shadow`). A rect using
   any of them is one signed-distance quad in the solid vertex stream (`render/sdf.zig`; `shaders/quad.wgsl` reads its record
