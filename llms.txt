@@ -862,6 +862,9 @@ cb.textInputA11y(focus_msg, content, cursor, accessible_name)
 A11yNode = struct { role: A11yRole, cmd_index, bounds, label, value, sel_start, sel_end, focused, disabled, state, selected,
                     expanded: ?bool, level, live, modal, parent: u32 /*NO_PARENT*/ }
 A11yAction = struct { kind: A11yActionKind(.activate|.focus|.set_value|.increment|.decrement), cmd_index: u32, text: []const u8 }
+A11yActionQueue: fixed queue (push / drain) a Host fills from another thread (Win32 UIA patterns) and drains in pollA11yActions
+```
+
 ### Bidi (`teak.bidi`, UAX #9; core/bidi.zig, docs/features/bidi.md)
 One paragraph per `analyze` (split at hard breaks). Pure; allocator only for working storage / results.
 ```zig

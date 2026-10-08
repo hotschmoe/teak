@@ -475,6 +475,14 @@ Signatures and `///` doc comments of every public declaration reachable from
 > The kind of an `A11yAction`.
 - `teak.A11yActionKind` = `a11y.ActionKind`
   - fields: `activate, focus, set_value, increment, decrement`
+> Thread-safe-by-caller queue for AT requests that arrive off the run-loop thread (UIA worker).
+- `teak.A11yActionQueue` = `a11y.ActionQueue`
+  - fields: `entries, len, text, text_used`
+  > Queue a request. False when full or the text does not fit (dropped).
+  - `pub fn push(self: *ActionQueue, kind: ActionKind, cmd_index: u32, text: []const u8) bool`
+  > Move up to `out.len` requests into `out` (texts copied into `text_buf`,
+  > which must hold `TEXT_CAP` bytes); the rest stay queued. Returns the count.
+  - `pub fn drain(self: *ActionQueue, out: []Action, text_buf: []u8) usize`
 > Accessibility semantics attached to a group, scroll or button.
 - `teak.A11yHint` = `cmd.A11yHint`
   - fields: `semantic, label, value, level, selected, expanded, live`
@@ -2061,6 +2069,18 @@ Accessibility tree builder.
   - `pub fn same(self: *const TreeCache, tree: []const A11yNode) bool`
   > Replace the cache with a deep copy of `tree`.
   - `pub fn store(self: *TreeCache, gpa: std.mem.Allocator, tree: []const A11yNode) std.mem.Allocator.Error!void`
+> Fixed-capacity queue of assistive-technology requests that arrive on
+> another thread (UIA worker). The producer calls `push` under its own lock;
+> the run-loop thread calls `drain` (under the same lock), which moves the
+> requests into caller-owned storage so their `text` stays valid after the
+> queue is reused. Pure data: the Win32 provider owns the lock.
+- `struct ActionQueue`
+  - fields: `entries, len, text, text_used`
+  > Queue a request. False when full or the text does not fit (dropped).
+  - `pub fn push(self: *ActionQueue, kind: ActionKind, cmd_index: u32, text: []const u8) bool`
+  > Move up to `out.len` requests into `out` (texts copied into `text_buf`,
+  > which must hold `TEXT_CAP` bytes); the rest stay queued. Returns the count.
+  - `pub fn drain(self: *ActionQueue, out: []Action, text_buf: []u8) usize`
 
 ### `teak.render` (`src/render/build.zig`)
 

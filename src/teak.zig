@@ -334,6 +334,8 @@ pub const A11yRole = a11y.Role;
 pub const A11yAction = a11y.Action;
 /// The kind of an `A11yAction`.
 pub const A11yActionKind = a11y.ActionKind;
+/// Thread-safe-by-caller queue for AT requests that arrive off the run-loop thread (UIA worker).
+pub const A11yActionQueue = a11y.ActionQueue;
 /// Accessibility semantics attached to a group, scroll or button.
 pub const A11yHint = cmd.A11yHint;
 /// The semantic of an `A11yHint` (tablist, tree, table, status, ...).
