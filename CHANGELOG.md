@@ -87,6 +87,8 @@
 
 ### Added
 
+- `widgets.spinner.Spinner`: NumericField with step buttons, arrow / Page / wheel stepping.
+
 - **Widgets wave 1** (`teak.widgets`, `src/core/widgets/`; zero new Cmd variants): toggle switch,
   progress bar (determinate + indeterminate), tabs (keyboard), split pane (draggable, min sizes, ratio
   in the Model), tooltip (hover delay via `Sub.at`), toast stack (tick countdown), modal dialog helper,

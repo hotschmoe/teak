@@ -645,6 +645,10 @@ widgets.toast.Toast(cap, text_cap): Model{items,len,next_id}; Msg{push: Push{kin
   Kind = enum { info, success, warning, danger };  TICK_MS; default_ttl
 widgets.dialog: view(cb, Opts{window_w, window_h, title, message, confirm_label, cancel_label: ?[]const u8, width, danger,
   dismiss_on_backdrop, scrim}, msgs /*.confirm .cancel*/); begin / end (own body between); keyMsg(key, msgs, has_cancel) ?AppMsg
+widgets.spinner.Spinner(cfg{capacity,min,max,step,big_step,precision,invalid_message}) type: NumericField + step buttons;
+  Model/Msg = NumericField's (drive with textFieldChar/Special); Step = enum{up,down,page_up,page_down};
+  step(model, Step) (call from your update); setValue(model, f64); keyStep(key) ?Step; wheelStep(dy, shift) ?Step;
+  value/isValid/content; viewWith(model, cb, .{ .focus, .up, .down } AppMsgs) draws [-] [field] [+]
 widgets.menu.MenuBar(Action) type: Item (= MenuItem(Action){label "&File" mnemonic, action: ?Action, shortcut, enabled, checked,
     separator, children}; Item.sep); Model{st: State}; Msg{goto: State, close}; update; isActive(model);
     viewWith(model, cb, items, msgs /*.menu(Msg) .run(Action)*/, ViewOpts{x,y,window_w,window_h,top_width,bar_height,panel_w,row_h,cols,bar_bg});
