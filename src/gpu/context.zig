@@ -15,7 +15,7 @@ const scene = @import("../core/scene.zig");
 const MeshData = scene.MeshData;
 const MeshHandle = scene.MeshHandle;
 const SceneDraw = scene.SceneDraw;
-const SceneItem = scene.Item;
+const SceneData = scene.SceneData;
 const OverlaySplit = @import("../render/build.zig").OverlaySplit;
 
 pub const ClearColor = [4]f32;
@@ -85,7 +85,7 @@ pub fn validateGpu(comptime T: type) void {
     const scene_block = [_]GpuDecl{
         .{ .name = "uploadMesh", .sig = "fn(*Gpu, MeshData) MeshHandle" },
         .{ .name = "releaseMesh", .sig = "fn(*Gpu, MeshHandle) void" },
-        .{ .name = "renderScenes", .sig = "fn(*Gpu, []const SceneDraw, []const SceneItem) void" },
+        .{ .name = "renderScenes", .sig = "fn(*Gpu, []const SceneDraw, SceneData) void" },
     };
     comptime var present = 0;
     inline for (scene_block) |d| {
@@ -161,7 +161,7 @@ test "validateGpu accepts the full scene extension" {
             return scene.MESH_HANDLE_NONE;
         }
         pub fn releaseMesh(_: *@This(), _: MeshHandle) void {}
-        pub fn renderScenes(_: *@This(), _: []const SceneDraw, _: []const SceneItem) void {}
+        pub fn renderScenes(_: *@This(), _: []const SceneDraw, _: SceneData) void {}
     };
     comptime validateGpu(Stub);
 }

@@ -15,11 +15,13 @@ const CanvasPrimitive = cmd_types.CanvasPrimitive;
 const scene_types = @import("../core/scene.zig");
 pub const SceneDraw = scene_types.SceneDraw;
 pub const SceneItem = scene_types.Item;
+pub const SceneSprite = scene_types.Sprite;
+pub const SceneData = scene_types.SceneData;
 const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
 const emitQuadCorners = vertex.emitQuadCorners;
-const canvas_tess = @import("canvas_tess.zig");
+pub const canvas_tess = @import("canvas_tess.zig");
 const emit = canvas_tess.emit;
 const emitCanvasPrimitive = canvas_tess.emitCanvasPrimitive;
 const clipSegment = canvas_tess.clipSegment;
@@ -125,6 +127,7 @@ pub fn buildFrame(
     image_draws: *std.ArrayList(ImageDraw),
     scene_draws: *std.ArrayList(SceneDraw),
     scene_items: *std.ArrayList(SceneItem),
+    scene_sprites: *std.ArrayList(SceneSprite),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
@@ -136,15 +139,16 @@ pub fn buildFrame(
     image_draws.clearRetainingCapacity();
     scene_draws.clearRetainingCapacity();
     scene_items.clearRetainingCapacity();
+    scene_sprites.clearRetainingCapacity();
 
-    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, alloc, cmds, rects, transient, measurer, .base);
+    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites, alloc, cmds, rects, transient, measurer, .base);
     const split: OverlaySplit = .{
         .verts = @intCast(verts.items.len),
         .text = @intCast(text_draws.items.len),
         .images = @intCast(image_draws.items.len),
         .scenes = @intCast(scene_draws.items.len),
     };
-    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, alloc, cmds, rects, transient, measurer, .overlay);
+    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites, alloc, cmds, rects, transient, measurer, .overlay);
     return split;
 }
 
@@ -165,7 +169,9 @@ pub fn buildVertices(
     defer scenes.deinit(alloc);
     var items: std.ArrayList(SceneItem) = .empty;
     defer items.deinit(alloc);
-    _ = buildFrame(verts, text_draws, image_draws, &scenes, &items, alloc, cmds, rects, transient, measurer);
+    var sprites: std.ArrayList(SceneSprite) = .empty;
+    defer sprites.deinit(alloc);
+    _ = buildFrame(verts, text_draws, image_draws, &scenes, &items, &sprites, alloc, cmds, rects, transient, measurer);
 }
 
 const Layer = enum { base, overlay };
@@ -176,6 +182,7 @@ fn buildLayer(
     image_draws: *std.ArrayList(ImageDraw),
     scene_draws: *std.ArrayList(SceneDraw),
     scene_items: *std.ArrayList(SceneItem),
+    scene_sprites: *std.ArrayList(SceneSprite),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
@@ -293,6 +300,10 @@ fn buildLayer(
                 if (!visible) continue;
                 if (rect.w <= 0 or rect.h <= 0) continue;
                 const item_first: u32 = @intCast(scene_items.items.len);
+                const sprite_first: u32 = @intCast(scene_sprites.items.len);
+                for (sc.view.sprites) |sp| {
+                    if (!sp.flags.hidden) scene_sprites.append(alloc, sp) catch {};
+                }
                 for (sc.view.items) |it| {
                     if (!it.flags.hidden) scene_items.append(alloc, it) catch {};
                 }
@@ -300,6 +311,9 @@ fn buildLayer(
                     .mesh = sc.mesh,
                     .item_first = item_first,
                     .item_count = @as(u32, @intCast(scene_items.items.len)) - item_first,
+                    .sprite_first = sprite_first,
+                    .sprite_count = @as(u32, @intCast(scene_sprites.items.len)) - sprite_first,
+                    .planes = sc.view.planes,
                     .grid = sc.view.grid,
                     .gizmo = sc.view.gizmo,
                     .cut = sc.view.cut,
@@ -1053,6 +1067,7 @@ const TestFrame = struct {
     images: std.ArrayList(ImageDraw) = .empty,
     scenes: std.ArrayList(SceneDraw) = .empty,
     items: std.ArrayList(SceneItem) = .empty,
+    sprites: std.ArrayList(SceneSprite) = .empty,
     split: OverlaySplit = .{},
 
     fn deinit(self: *TestFrame, alloc: std.mem.Allocator) void {
@@ -1061,6 +1076,7 @@ const TestFrame = struct {
         self.images.deinit(alloc);
         self.scenes.deinit(alloc);
         self.items.deinit(alloc);
+        self.sprites.deinit(alloc);
     }
 };
 
@@ -1070,7 +1086,7 @@ fn buildTestFrame(alloc: std.mem.Allocator, cb: anytype) !TestFrame {
     defer alloc.free(rects);
     layout.LayoutEngine.doLayout(rects, cb.cmds.items, 1000, 1000, text_mod.monoMeasurer());
     var f: TestFrame = .{};
-    f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, &f.items, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
+    f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, &f.items, &f.sprites, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
     return f;
 }
 

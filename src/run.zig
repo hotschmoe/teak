@@ -409,6 +409,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         image_draws: std.ArrayList(render.ImageDraw) = .empty,
         scene_draws: std.ArrayList(render.SceneDraw) = .empty,
         scene_items: std.ArrayList(render.SceneItem) = .empty,
+        scene_sprites: std.ArrayList(render.SceneSprite) = .empty,
 
         /// Declarative GPU resources (HARDLINE §2 hatch 8): which
         /// (kind, key, rev) is resident and under which Gpu handle. Loop
@@ -492,6 +493,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (has_resources) self.res_table.deinit(self.gpu);
             self.scene_draws.deinit(self.gpa);
             self.scene_items.deinit(self.gpa);
+            self.scene_sprites.deinit(self.gpa);
             self.image_draws.deinit(self.gpa);
             self.text_draws.deinit(self.gpa);
             self.verts.deinit(self.gpa);
@@ -948,13 +950,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         }
 
         fn uploadFrame(self: *Self, cmds: []const cmd.Cmd(Msg), rects: []const Rect, ts: TransientState) void {
-            const split = render.buildFrame(&self.verts, &self.text_draws, &self.image_draws, &self.scene_draws, &self.scene_items, self.gpa, cmds, rects, ts, self.measurer);
+            const split = render.buildFrame(&self.verts, &self.text_draws, &self.image_draws, &self.scene_draws, &self.scene_items, &self.scene_sprites, self.gpa, cmds, rects, ts, self.measurer);
             // Tell a layering-aware Gpu where the overlay layer starts, so an
             // opaque overlay hides the base layer's text and images.
             if (comptime @hasDecl(Gpu, "setOverlayStart")) self.gpu.setOverlayStart(split);
             self.gpu.uploadVertices(self.verts.items);
             self.gpu.uploadText(self.text_draws.items);
-            resources.stageDraws(self.gpu, if (has_resources) &self.res_table else null, self.image_draws.items, self.scene_draws.items, self.scene_items.items);
+            resources.stageDraws(self.gpu, if (has_resources) &self.res_table else null, self.image_draws.items, self.scene_draws.items, .{ .items = self.scene_items.items, .sprites = self.scene_sprites.items });
         }
 
         /// What the secondary window did this frame, for the snapshot gate.

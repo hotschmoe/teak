@@ -40,6 +40,7 @@ var text_draws: std.ArrayList(teak.TextDraw) = .empty;
 var image_draws: std.ArrayList(teak.ImageDraw) = .empty;
 var scene_draws: std.ArrayList(teak.SceneDraw) = .empty;
 var scene_items: std.ArrayList(teak.SceneItem) = .empty;
+var scene_sprites: std.ArrayList(teak.SceneSprite) = .empty;
 
 var transient_state: teak.TransientState = .{};
 var press_target: ?usize = null;
@@ -108,10 +109,10 @@ export fn frame(_: f32) void {
     transient_state.frame_counter +%= 1;
 
     _ = resources.sync(&gpu, App.resources(&model));
-    const split = teak.buildFrame(&verts, &text_draws, &image_draws, &scene_draws, &scene_items, alloc, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state, host.textMeasurer());
+    const split = teak.buildFrame(&verts, &text_draws, &image_draws, &scene_draws, &scene_items, &scene_sprites, alloc, cur_cmds, rects_store[cur][0..cur_cmds.len], transient_state, host.textMeasurer());
     gpu.setOverlayStart(split);
     gpu.uploadVertices(verts.items);
     gpu.uploadText(text_draws.items);
-    teak.stageDraws(&gpu, &resources, image_draws.items, scene_draws.items, scene_items.items);
+    teak.stageDraws(&gpu, &resources, image_draws.items, scene_draws.items, .{ .items = scene_items.items, .sprites = scene_sprites.items });
     gpu.renderFrame(.{ 0.07, 0.08, 0.1, 1 });
 }

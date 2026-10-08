@@ -354,6 +354,108 @@ pub fn items(ray: Ray, list: []const Item, meshes: []const MeshRef, opt: Options
     return best;
 }
 
+// ---------------------------------------------------------------- layers
+
+pub const PlaneHit = struct {
+    id: u32,
+    /// Index into the `planes` slice.
+    index: u32,
+    t: f32,
+    point: Vec3,
+    /// Plane-local coordinates of the hit (the units of `Plane.content`).
+    local: [2]f32,
+};
+
+/// Nearest plane hit by `ray`: ray-plane intersection then a rect test in
+/// plane-local space. Skips `hidden` / `no_pick` planes and, for
+/// `double_sided = false`, hits on the back.
+pub fn planes(ray: Ray, list: []const scene.Plane) ?PlaneHit {
+    var best: ?PlaneHit = null;
+    for (list, 0..) |pl, i| {
+        if (pl.flags.hidden or pl.flags.no_pick) continue;
+        const n = mat.cross(pl.u, pl.v);
+        const denom = mat.dot(n, ray.dir);
+        const n2 = mat.dot(n, n);
+        if (!(n2 > 1e-20) or @abs(denom) < 1e-9 * @sqrt(n2) * mat.length(ray.dir)) continue;
+        if (!pl.double_sided and denom > 0) continue; // ray travels along the front normal: from behind
+        const t = mat.dot(n, mat.sub(pl.origin, ray.origin)) / denom;
+        if (t < 0 or (best != null and t >= best.?.t)) continue;
+        const point = mat.add(ray.origin, mat.scale(ray.dir, t));
+        const w = mat.sub(point, pl.origin);
+        const x = mat.dot(mat.cross(w, pl.v), n) / n2;
+        const y = mat.dot(mat.cross(pl.u, w), n) / n2;
+        if (x < 0 or y < 0 or x > pl.size[0] or y > pl.size[1]) continue;
+        best = .{ .id = pl.id, .index = @intCast(i), .t = t, .point = point, .local = .{ x, y } };
+    }
+    return best;
+}
+
+pub const SpriteHit = struct {
+    id: u32,
+    index: u32,
+    /// NDC depth of the sprite's anchor point (smaller = nearer).
+    depth: f32,
+};
+
+/// Corners of a sprite's quad in viewport px, in order bottom-left,
+/// bottom-right, top-right, top-left, plus the anchor's NDC depth; null when
+/// the anchor is behind the camera. `screen_px` camera-facing sprites are
+/// exact rects; the other modes project their world-space quad.
+pub fn spriteCorners(cam: camera.Camera, w: f32, h: f32, sp: scene.Sprite) ?struct { c: [4][2]f32, depth: f32 } {
+    const a = camera.project(cam, w, h, sp.pos) orelse return null;
+    const ax = sp.anchor[0];
+    const ay = sp.anchor[1];
+    if (sp.mode == .camera_facing and sp.size_in == .screen_px) {
+        const x0 = a[0] - ax * sp.size[0];
+        const y1 = a[1] + ay * sp.size[1]; // screen y is down
+        return .{ .c = .{ .{ x0, y1 }, .{ x0 + sp.size[0], y1 }, .{ x0 + sp.size[0], y1 - sp.size[1] }, .{ x0, y1 - sp.size[1] } }, .depth = a[2] };
+    }
+    const axes = camera.viewAxes(cam);
+    var right: Vec3 = axes.right;
+    var up: Vec3 = axes.up;
+    switch (sp.mode) {
+        .camera_facing => {},
+        .axis_locked_y => {
+            right = mat.normalizeOr(.{ axes.right[0], 0, axes.right[2] }, .{ 1, 0, 0 });
+            up = .{ 0, 1, 0 };
+        },
+        .fixed => {
+            right = .{ 1, 0, 0 };
+            up = .{ 0, 1, 0 };
+        },
+    }
+    const corners = [4][2]f32{ .{ -ax, -ay }, .{ 1 - ax, -ay }, .{ 1 - ax, 1 - ay }, .{ -ax, 1 - ay } };
+    var out: [4][2]f32 = undefined;
+    for (corners, 0..) |c, i| {
+        const p = mat.add(sp.pos, mat.add(mat.scale(right, c[0] * sp.size[0]), mat.scale(up, c[1] * sp.size[1])));
+        const s = camera.project(cam, w, h, p) orelse return null;
+        out[i] = .{ s[0], s[1] };
+    }
+    return .{ .c = out, .depth = a[2] };
+}
+
+/// Nearest sprite under viewport-local px `(x, y)`, by quad containment.
+pub fn sprites(cam: camera.Camera, w: f32, h: f32, x: f32, y: f32, list: []const scene.Sprite) ?SpriteHit {
+    var best: ?SpriteHit = null;
+    for (list, 0..) |sp, i| {
+        if (sp.flags.hidden or sp.flags.no_pick) continue;
+        const q = spriteCorners(cam, w, h, sp) orelse continue;
+        if (best != null and q.depth >= best.?.depth) continue;
+        // inside a convex quad: all edge cross products share a sign
+        var pos: u32 = 0;
+        var neg: u32 = 0;
+        for (0..4) |k| {
+            const a = q.c[k];
+            const b = q.c[(k + 1) % 4];
+            const cr = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+            if (cr > 0) pos += 1 else if (cr < 0) neg += 1;
+        }
+        if (pos != 0 and neg != 0) continue;
+        best = .{ .id = sp.id, .index = @intCast(i), .depth = q.depth };
+    }
+    return best;
+}
+
 // ---------------------------------------------------------------- gizmo
 
 pub const Corner = enum { top_left, top_right, bottom_left, bottom_right };
@@ -677,6 +779,73 @@ test "end to end: click pixel -> ray -> item" {
     const s = camera.project(cam, 800, 600, h.point).?;
     try approx(@as(f32, 400), s[0], 0.05);
     try approx(@as(f32, 300), s[1], 0.05);
+}
+
+test "planes: nearest hit, local coords, back-face and flags" {
+    const none: [0]scene.Plane = .{};
+    try testing.expect(planes(.{ .origin = .{ 0, 0, 5 }, .dir = .{ 0, 0, -1 } }, &none) == null);
+    var list = [_]scene.Plane{
+        // 4x2 sheet in the XY plane at z = 0, +z front
+        .{ .origin = .{ 0, 0, 0 }, .u = .{ 1, 0, 0 }, .v = .{ 0, 1, 0 }, .size = .{ 4, 2 }, .id = 1 },
+        // a nearer one at z = 1
+        .{ .origin = .{ 0, 0, 1 }, .u = .{ 1, 0, 0 }, .v = .{ 0, 1, 0 }, .size = .{ 4, 2 }, .id = 2 },
+    };
+    const down = Ray{ .origin = .{ 3, 1.5, 10 }, .dir = .{ 0, 0, -1 } };
+    const h = planes(down, &list).?;
+    try testing.expectEqual(@as(u32, 2), h.id);
+    try approx(@as(f32, 9), h.t, 1e-5);
+    try approx(@as(f32, 3), h.local[0], 1e-5);
+    try approx(@as(f32, 1.5), h.local[1], 1e-5);
+    // off the sheet
+    try testing.expect(planes(.{ .origin = .{ 5, 1, 10 }, .dir = .{ 0, 0, -1 } }, &list) == null);
+    // hidden / no_pick: fall through to the one behind
+    list[1].flags.hidden = true;
+    try testing.expectEqual(@as(u32, 1), planes(down, &list).?.id);
+    list[1].flags.hidden = false;
+    list[1].flags.no_pick = true;
+    try testing.expectEqual(@as(u32, 1), planes(down, &list).?.id);
+    // one-sided: a ray from behind misses, from the front hits
+    list[0].double_sided = false;
+    list[1].flags.no_pick = false;
+    list[1].flags.hidden = true;
+    try testing.expect(planes(.{ .origin = .{ 3, 1.5, -10 }, .dir = .{ 0, 0, 1 } }, &list) == null);
+    try testing.expect(planes(down, &list) != null);
+    // a tilted sheet: local coordinates follow the axes
+    const tilt = [_]scene.Plane{.{ .origin = .{ 0, 0, 0 }, .u = .{ 0, 0, 1 }, .v = .{ 0, 1, 0 }, .size = .{ 10, 10 } }};
+    const th = planes(.{ .origin = .{ 5, 2, 3 }, .dir = .{ -1, 0, 0 } }, &tilt).?;
+    try approx(@as(f32, 3), th.local[0], 1e-5);
+    try approx(@as(f32, 2), th.local[1], 1e-5);
+}
+
+test "sprites: screen_px rects, anchor, nearest, billboards in world size" {
+    var o = camera.Orbit{ .dist = 10 };
+    o.setPreset(.front);
+    const cam = o.camera(400, 400, null);
+    const centre = camera.project(cam, 400, 400, .{ 0, 0, 0 }).?;
+    var list = [_]scene.Sprite{
+        .{ .pos = .{ 0, 0, 0 }, .image = 1, .size = .{ 40, 20 }, .id = 7 },
+        // anchored at its bottom-left: extends right and up from its position
+        .{ .pos = .{ 0, 0, 0 }, .image = 1, .size = .{ 40, 20 }, .anchor = .{ 0, 0 }, .id = 8 },
+    };
+    // inside only the first (centred): left of the anchor
+    try testing.expectEqual(@as(u32, 7), sprites(cam, 400, 400, centre[0] - 15, centre[1], &list).?.id);
+    // up-right of the anchor point is inside both; equal depth keeps the first found
+    try testing.expect(sprites(cam, 400, 400, centre[0] + 15, centre[1] - 5, &list) != null);
+    // below-right is inside neither anchored rect... (rect 2 is above the anchor)
+    try testing.expectEqual(@as(u32, 7), sprites(cam, 400, 400, centre[0] + 15, centre[1] + 5, &list).?.id);
+    try testing.expect(sprites(cam, 400, 400, centre[0] + 60, centre[1], &list) == null);
+    // nearer sprite wins
+    list[1] = .{ .pos = .{ 0, 0, 3 }, .image = 1, .size = .{ 40, 20 }, .id = 9 };
+    try testing.expectEqual(@as(u32, 9), sprites(cam, 400, 400, centre[0], centre[1], &list).?.id);
+    // world-size billboard: 2 units wide is wider than the 1 unit one
+    const world = [_]scene.Sprite{.{ .pos = .{ 0, 0, 0 }, .image = 1, .size = .{ 2, 2 }, .size_in = .world, .id = 5 }};
+    const px_per_unit = (camera.project(cam, 400, 400, .{ 1, 0, 0 }).?[0] - centre[0]);
+    try testing.expectEqual(@as(u32, 5), sprites(cam, 400, 400, centre[0] + 0.9 * px_per_unit, centre[1], &world).?.id);
+    try testing.expect(sprites(cam, 400, 400, centre[0] + 1.2 * px_per_unit, centre[1], &world) == null);
+    // hidden and no_pick are skipped
+    list[0].flags.no_pick = true;
+    list[1].flags.hidden = true;
+    try testing.expect(sprites(cam, 400, 400, centre[0], centre[1], &list) == null);
 }
 
 test "gizmoLabels: positive caps pushed outward and offset by the viewport origin" {
