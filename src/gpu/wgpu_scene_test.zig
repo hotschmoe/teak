@@ -36,9 +36,17 @@ const Fixture = struct {
 
     /// Render `draw` into scene slot 0 and read its pixels back (BGRA).
     fn render(self: *Fixture, draw: teak.SceneDraw) ![]u8 {
+        return self.renderItems(draw, &.{});
+    }
+
+    /// Same with placed items (`draw.item_count` is set from the slice).
+    fn renderItems(self: *Fixture, draw_in: teak.SceneDraw, items: []const teak.SceneItem) ![]u8 {
+        var draw = draw_in;
+        draw.item_first = 0;
+        draw.item_count = @intCast(items.len);
         var enc_desc = std.mem.zeroes(c.WGPUCommandEncoderDescriptor);
         const encoder = c.wgpuDeviceCreateCommandEncoder(self.ctx.device, &enc_desc);
-        const size = self.renderer.renderInto(encoder, 0, draw, 1) orelse return error.NoTarget;
+        const size = self.renderer.renderInto(encoder, 0, draw, items, 1) orelse return error.NoTarget;
         var cb_desc = std.mem.zeroes(c.WGPUCommandBufferDescriptor);
         const cmd = c.wgpuCommandEncoderFinish(encoder, &cb_desc);
         c.wgpuCommandEncoderRelease(encoder);
@@ -178,6 +186,114 @@ test "a scene with no mesh renders just its clear colour" {
     try expectNear(px(pixels, 60, 60), .{ 0, 128, 0 }, 3);
 }
 
+/// A +z facing quad centred on the origin covering x,y in [-h, h], white.
+fn quadMesh(fx: *Fixture, h: f32, rgb: [3]f32, lines: []const teak.LineVertex) teak.MeshHandle {
+    const verts = [_]teak.MeshVertex{ vert(-h, -h, 0.5, rgb), vert(h, -h, 0.5, rgb), vert(h, h, 0.5, rgb), vert(-h, h, 0.5, rgb) };
+    return fx.renderer.uploadMesh(.{ .vertices = &verts, .indices = &.{ 0, 1, 2, 0, 2, 3 }, .lines = lines });
+}
+
+fn shift(x: f32, y: f32) [12]f32 {
+    return .{ 1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, 0 };
+}
+
+test "items: one mesh placed twice by transform (one instanced draw), gap stays clear" {
+    var fx = try Fixture.init(false);
+    defer fx.deinit();
+    const mesh = quadMesh(&fx, 0.25, .{ 1, 1, 1 }, &.{});
+    const items = [_]teak.SceneItem{
+        .{ .mesh = mesh, .transform = shift(-0.5, 0) },
+        .{ .mesh = mesh, .transform = shift(0.5, 0) },
+    };
+    const pixels = try fx.renderItems(drawFor(0), &items);
+    defer std.testing.allocator.free(pixels);
+    try expectNear(px(pixels, 16, 32), .{ 255, 255, 255 }, 3); // x = -0.5 -> px 16
+    try expectNear(px(pixels, 48, 32), .{ 255, 255, 255 }, 3);
+    try expectNear(px(pixels, 32, 32), .{ 0, 0, 0 }, 3); // between them
+    try expectNear(px(pixels, 16, 8), .{ 0, 0, 0 }, 3); // outside vertically
+}
+
+test "items: tint multiplies, highlight blends, unlit skips shading, hidden is skipped" {
+    var fx = try Fixture.init(false);
+    defer fx.deinit();
+    const mesh = quadMesh(&fx, 0.2, .{ 1, 1, 1 }, &.{});
+    var d = drawFor(0);
+    d.highlight_color = .{ 0, 0, 1, 1 };
+    d.highlight_mix = 1;
+    d.camera.light_dir = .{ 0, 0, 1 }; // travels away from the viewer: faces get ambient only (0.35)
+    const items = [_]teak.SceneItem{
+        .{ .mesh = mesh, .transform = shift(-0.6, 0.5), .tint = .{ 1, 0, 0, 1 }, .flags = .{ .unlit = true } }, // pure red
+        .{ .mesh = mesh, .transform = shift(0.0, 0.5), .flags = .{ .highlight = true, .unlit = true } }, // pure blue
+        .{ .mesh = mesh, .transform = shift(0.6, 0.5) }, // lit: 0.35 grey
+        .{ .mesh = mesh, .transform = shift(0.0, -0.5), .flags = .{ .hidden = true } },
+    };
+    const pixels = try fx.renderItems(d, &items);
+    defer std.testing.allocator.free(pixels);
+    try expectNear(px(pixels, 13, 16), .{ 0, 0, 255 }, 3); // bgr of red
+    try expectNear(px(pixels, 32, 16), .{ 255, 0, 0 }, 3); // blue
+    try expectNear(px(pixels, 51, 16), .{ 89, 89, 89 }, 4); // 0.35 * 255
+    try expectNear(px(pixels, 32, 48), .{ 0, 0, 0 }, 3); // hidden item draws nothing
+
+    // Flat material applies to every item without the per-item flag.
+    d.material = .flat;
+    const flat = try fx.renderItems(d, items[2..3]);
+    defer std.testing.allocator.free(flat);
+    try expectNear(px(flat, 51, 16), .{ 255, 255, 255 }, 3);
+}
+
+test "items: section plane discards the cut-away half of faces and edges" {
+    var fx = try Fixture.init(false);
+    defer fx.deinit();
+    const green = [4]f32{ 0, 1, 0, 1 };
+    const lines = [_]teak.LineVertex{ .{ .pos = .{ -0.8, 0.5, 0.05 }, .color = green }, .{ .pos = .{ 0.8, 0.5, 0.05 }, .color = green } };
+    const mesh = quadMesh(&fx, 0.9, .{ 1, 1, 1 }, &lines);
+    var d = drawFor(0);
+    const items = [_]teak.SceneItem{.{ .mesh = mesh }};
+    // keep x <= 0 (n = +x, d = 0)
+    d.cut = .{ .plane = .{ 1, 0, 0, 0 } };
+    const pixels = try fx.renderItems(d, &items);
+    defer std.testing.allocator.free(pixels);
+    try expectNear(px(pixels, 16, 48), .{ 255, 255, 255 }, 3); // kept half
+    try expectNear(px(pixels, 48, 48), .{ 0, 0, 0 }, 3); // cut half
+    try expectNear(px(pixels, 16, 16), .{ 0, 255, 0 }, 4); // edge on the kept side
+    try expectNear(px(pixels, 48, 16), .{ 0, 0, 0 }, 3); // edge cut away too
+}
+
+test "items: edges follow the item transform; no_edges skips an item's lines" {
+    var fx = try Fixture.init(false);
+    defer fx.deinit();
+    const green = [4]f32{ 0, 1, 0, 1 };
+    const lines = [_]teak.LineVertex{ .{ .pos = .{ -0.2, 0, 0.05 }, .color = green }, .{ .pos = .{ 0.2, 0, 0.05 }, .color = green } };
+    const mesh = quadMesh(&fx, 0.01, .{ 0, 0, 0 }, &lines);
+    const items = [_]teak.SceneItem{
+        .{ .mesh = mesh, .transform = shift(-0.5, 0.5) },
+        .{ .mesh = mesh, .transform = shift(0.5, 0.5), .flags = .{ .no_edges = true } },
+        .{ .mesh = mesh, .transform = shift(0.5, -0.5) },
+    };
+    const pixels = try fx.renderItems(drawFor(0), &items);
+    defer std.testing.allocator.free(pixels);
+    try expectNear(px(pixels, 16, 16), .{ 0, 255, 0 }, 4); // item 0 line at (-0.5, 0.5)
+    try expectNear(px(pixels, 48, 16), .{ 0, 0, 0 }, 3); // item 1 has no_edges
+    try expectNear(px(pixels, 48, 48), .{ 0, 255, 0 }, 4); // item 2 line at (0.5, -0.5)
+    try expectNear(px(pixels, 16, 48), .{ 0, 0, 0 }, 3);
+}
+
+test "items: re-placing an item changes the signature; an identical frame does not" {
+    var fx = try Fixture.init(false);
+    defer fx.deinit();
+    const mesh = quadMesh(&fx, 0.2, .{ 1, 1, 1 }, &.{});
+    var items = [_]teak.SceneItem{.{ .mesh = mesh }};
+    const a = try fx.renderItems(drawFor(0), &items);
+    std.testing.allocator.free(a);
+    const sig = fx.renderer.target(0).?.signature;
+    const b = try fx.renderItems(drawFor(0), &items);
+    std.testing.allocator.free(b);
+    try std.testing.expectEqual(sig, fx.renderer.target(0).?.signature);
+    items[0].flags.highlight = true;
+    const c2 = try fx.renderItems(drawFor(0), &items);
+    std.testing.allocator.free(c2);
+    try std.testing.expect(sig != fx.renderer.target(0).?.signature);
+}
+
 test "scene_common is linked into the gpu test" {
-    try std.testing.expectEqual(@as(usize, 128), @sizeOf(common.Globals));
+    try std.testing.expectEqual(@as(usize, 176), @sizeOf(common.Globals));
 }
