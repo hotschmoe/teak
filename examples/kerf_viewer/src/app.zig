@@ -156,6 +156,8 @@ pub const Model = struct {
     selected: u32 = 0,
     hovered: u32 = 0,
     edges: bool = true,
+    /// Ground grid (at the model's lowest Y) and the corner axis gizmo.
+    grid: bool = true,
     /// Re-frame on the first `layout` event (the real viewport size).
     fit_pending: bool = true,
     /// Document revision: stamped on every part's mesh resource (so a new
@@ -294,6 +296,7 @@ pub const Msg = union(enum) {
     preset: Orbit.Preset,
     toggle_ortho,
     toggle_edges,
+    toggle_grid,
     fit,
     load_fixture: u8,
     open_file,
@@ -328,6 +331,7 @@ pub fn update(m: *Model, msg: Msg) void {
         .preset => |p| m.cam.setPreset(p),
         .toggle_ortho => m.cam.toggleProjection(),
         .toggle_edges => m.edges = !m.edges,
+        .toggle_grid => m.grid = !m.grid,
         .fit => m.fitView(),
         .load_fixture => |i| if (i < fixtures.len) m.loadBytes(fixtures[i].name, fixtures[i].bytes),
         .open_file => if (m.req_len == 0) {
@@ -365,6 +369,20 @@ fn clampScroll(m: *const Model, y: f32) f32 {
     return std.math.clamp(y, 0, @max(0, m.list_content - m.list_viewport));
 }
 
+/// Placement of the axis gizmo (shared by the view and its hit test).
+const gizmo_view: teak.scene.Gizmo = .{
+    .corner = .bottom_left,
+    .size_px = 100,
+    .margin_px = 10,
+    // X / Y / Z in Kerf's red, green and blue
+    .colors = .{ .{ 0.784, 0.063, 0.180, 1 }, .{ 0.180, 0.490, 0.196, 1 }, .{ 0.114, 0.306, 0.620, 1 } },
+};
+
+fn gizmoHit(m: *const Model, x: f32, y: f32, w: f32, h: f32) ?scene.pick.GizmoAxis {
+    const layout: scene.pick.GizmoLayout = .{ .corner = .bottom_left, .size_px = gizmo_view.size_px, .margin_px = gizmo_view.margin_px };
+    return scene.pick.gizmoHit(m.cam, layout, w, h, x, y);
+}
+
 fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
     switch (ev.kind) {
         .layout => {
@@ -382,7 +400,13 @@ fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
             }
         },
         .up => if (ev.button == .left and m.drag_px < click_slop_px and !ev.mods.shift) {
-            m.selectPart(m.pickAt(ev.x, ev.y, ev.w, ev.h));
+            // A click on a gizmo cap looks down that axis; anywhere else it picks a part.
+            const axis = if (m.grid) gizmoHit(m, ev.x, ev.y, ev.w, ev.h) else null;
+            if (axis) |a| {
+                m.cam.setPreset(a.preset(m.cam.up));
+            } else {
+                m.selectPart(m.pickAt(ev.x, ev.y, ev.w, ev.h));
+            }
         },
         .leave => m.hovered = 0,
         .wheel => {},
@@ -423,6 +447,7 @@ pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
         'o', 'O' => .toggle_ortho,
         'f', 'F' => .fit,
         'e', 'E' => .toggle_edges,
+        'g', 'G' => .toggle_grid,
         else => null,
     };
 }
@@ -530,6 +555,7 @@ fn centerColumn(m: *const Model, cb: anytype) void {
     cb.spacer(1);
     cb.buttonStyled(.toggle_ortho, if (m.cam.projection == .ortho) "[ORTHO]" else "[PERSP]", tab_button);
     cb.buttonStyled(.toggle_edges, if (m.edges) "[EDGES ON]" else "[EDGES OFF]", tab_button);
+    cb.buttonStyled(.toggle_grid, if (m.grid) "[GRID ON]" else "[GRID OFF]", tab_button);
     cb.buttonStyled(.fit, "[FIT]", tab_button);
     cb.popGroup();
 
@@ -554,11 +580,33 @@ fn partItems(m: *const Model, arena: std.mem.Allocator) []const teak.SceneItem {
     return items;
 }
 
+/// DESIGN section 4: ground grid in `grid-2` / `grid` on the paper, in feet
+/// (the mesh units are inches), sitting on the model's lowest point.
+fn groundGrid(m: *const Model) teak.scene.Grid {
+    const floor_y: f32 = if (m.loaded) |l| l.lo[1] else 0;
+    return .{
+        .plane = .xz,
+        .offset = floor_y,
+        .spacing = 12,
+        .major_every = 5,
+        .minor = .{ 0.827, 0.878, 0.933, 1 }, // #D3E0EE
+        .major = .{ 0.663, 0.757, 0.867, 1 }, // #A9C1DD
+        .axis_a = .{ 0.784, 0.063, 0.180, 0.8 },
+        .axis_b = .{ 0.114, 0.306, 0.620, 0.8 },
+    };
+}
+
 fn viewport(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 1, .gap = 0, .flex = 1, .border = ink, .bg = paper, .align_cross = .stretch });
     cb.viewport3d(.{
         .style = .{ .width = 480, .height = 320, .flex = 1 },
-        .view = .{ .items = partItems(m, cb.arena.allocator()), .highlight_color = highlight, .highlight_mix = 0.6 },
+        .view = .{
+            .items = partItems(m, cb.arena.allocator()),
+            .highlight_color = highlight,
+            .highlight_mix = 0.6,
+            .grid = if (m.grid) groundGrid(m) else null,
+            .gizmo = if (m.grid) gizmo_view else null,
+        },
         .camera = camera(m),
         .clear = paper,
         .edge_color = .{ 1, 1, 1, 1 },
@@ -803,6 +851,25 @@ test "click picks the part under the cursor; a drag orbits instead" {
     try testing.expect(m.cam.yaw != yaw);
 }
 
+test "clicking a gizmo cap looks down that axis; elsewhere it still picks" {
+    var m = smallModel();
+    defer m.loaded.?.deinit();
+    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .layout, .w = 900, .h = 600 } });
+    m.cam.setPreset(.front);
+    // front view: the +x cap sits right of the gizmo centre (bottom-left corner)
+    const layout: scene.pick.GizmoLayout = .{ .corner = .bottom_left, .size_px = gizmo_view.size_px, .margin_px = gizmo_view.margin_px };
+    const tips = scene.pick.gizmoTips(m.cam, layout, 900, 600);
+    const plus_x = tips[0];
+    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .up, .button = .left, .x = plus_x.x, .y = plus_x.y, .w = 900, .h = 600 } });
+    try testing.expectApproxEqAbs(@as(f32, std.math.pi / 2.0), m.cam.yaw, 1e-4); // `right` preset
+    try testing.expectEqual(@as(u32, 0), m.selected);
+    // with the grid (and gizmo) off the same click is just a pick
+    update(&m, .toggle_grid);
+    m.cam.setPreset(.front);
+    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .up, .button = .left, .x = plus_x.x, .y = plus_x.y, .w = 900, .h = 600 } });
+    try testing.expectEqual(@as(f32, 0), m.cam.yaw);
+}
+
 test "wheel zoom changes distance; presets and ortho toggle apply" {
     var m = smallModel();
     defer m.loaded.?.deinit();
@@ -930,12 +997,13 @@ const golden =
     \\        button (102,54,66,24) "[ISO]"
     \\        button (172,54,66,24) "[TOP]"
     \\        button (242,54,86,24) "[RIGHT]"
-    \\        group (332,66,316,0) vertical
-    \\        button (652,54,86,24) "[PERSP]"
-    \\        button (742,54,116,24) "[EDGES ON]"
+    \\        group (332,66,206,0) vertical
+    \\        button (542,54,86,24) "[PERSP]"
+    \\        button (632,54,116,24) "[EDGES ON]"
+    \\        button (752,54,106,24) "[GRID ON]"
     \\        button (862,54,66,24) "[FIT]"
     \\      group (12,86,916,678) vertical bg border
-    \\        scene3d (13,87,914,676) mesh=0 key=2 id=7 items=10 pointer "3D model viewport"
+    \\        scene3d (13,87,914,676) mesh=0 key=2 id=7 items=10 grid gizmo pointer "3D model viewport"
     \\    group (940,42,340,734) vertical bg border
     \\      group (952,54,316,20) horizontal
     \\        text (952,54,55,20) "PARTS"

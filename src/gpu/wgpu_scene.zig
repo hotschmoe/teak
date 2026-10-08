@@ -15,6 +15,7 @@ const common = @import("scene_common.zig");
 const scene_pass = @import("scene_pass.zig");
 const SlotTable = @import("slot_table.zig").SlotTable;
 const scene_wgsl = @import("teak-shaders").scene_wgsl;
+const scene_grid_wgsl = @import("teak-shaders").scene_grid_wgsl;
 
 const c = wgpu_c.c;
 const MeshData = teak.MeshData;
@@ -64,11 +65,23 @@ pub const Target = struct {
     /// Packed per-item instance records (`scene_pass.Packed`), grown on demand.
     inst_buf: c.WGPUBuffer = null,
     inst_cap: usize = 0,
+    /// Grid pass uniforms (`scene_pass.GridUniform`) + bind group.
+    grid_buf: c.WGPUBuffer,
+    grid_bg: c.WGPUBindGroup,
+    /// Gizmo pass: its own `Globals`, bind group and line-segment vertices.
+    gizmo_ubo: c.WGPUBuffer,
+    gizmo_bg: c.WGPUBindGroup,
+    gizmo_lines: c.WGPUBuffer,
     signature: u64,
     generation: u32,
 
     fn release(self: Target) void {
         if (self.inst_buf) |b| c.wgpuBufferRelease(b);
+        c.wgpuBufferRelease(self.gizmo_lines);
+        c.wgpuBindGroupRelease(self.gizmo_bg);
+        c.wgpuBufferRelease(self.gizmo_ubo);
+        c.wgpuBindGroupRelease(self.grid_bg);
+        c.wgpuBufferRelease(self.grid_buf);
         c.wgpuBindGroupRelease(self.bind_group);
         c.wgpuBufferRelease(self.uniform_buf);
         c.wgpuTextureViewRelease(self.depth_view);
@@ -89,6 +102,12 @@ pub const Renderer = struct {
     bgl: c.WGPUBindGroupLayout,
     mesh_pipeline: c.WGPURenderPipeline,
     line_pipeline: c.WGPURenderPipeline,
+    /// Line pipeline that ignores the depth buffer, for the gizmo overlay.
+    gizmo_pipeline: c.WGPURenderPipeline,
+    grid_bgl: c.WGPUBindGroupLayout,
+    grid_pipeline: c.WGPURenderPipeline,
+    /// One identity `Packed` record bound at stride 0 for gizmo lines.
+    ident_buf: c.WGPUBuffer,
 
     meshes: SlotTable(MeshEntry, MESH_CAPACITY) = .{},
     next_version: u32 = 1,
@@ -193,6 +212,53 @@ pub const Renderer = struct {
             .samples = samples,
         }) orelse return error.PipelineCreateFailed;
 
+        const gizmo_pipeline = wgpu_c.createPipeline(device, .{
+            .label = "scene-gizmo-pipeline",
+            .layout = layout,
+            .module = shader,
+            .vs_entry = "vs_line",
+            .fs_entry = "fs_line",
+            .vertex_buffers = &line_layout,
+            .format = format,
+            .depth = wgpu_c.depthState(depth_format, false, c.WGPUCompareFunction_Always),
+            .samples = samples,
+        }) orelse return error.PipelineCreateFailed;
+
+        // Grid: fullscreen triangle, its own uniform block.
+        const grid_shader = try wgpu_c.createShader(device, "scene-grid-shader", scene_grid_wgsl);
+        defer c.wgpuShaderModuleRelease(grid_shader);
+        var grid_entry = std.mem.zeroes(c.WGPUBindGroupLayoutEntry);
+        grid_entry.binding = 0;
+        grid_entry.visibility = c.WGPUShaderStage_Vertex | c.WGPUShaderStage_Fragment;
+        grid_entry.buffer.type = c.WGPUBufferBindingType_Uniform;
+        grid_entry.buffer.minBindingSize = @sizeOf(scene_pass.GridUniform);
+        var grid_bgl_desc = std.mem.zeroes(c.WGPUBindGroupLayoutDescriptor);
+        grid_bgl_desc.label = wgpu_c.wgpuStr("scene-grid-bgl");
+        grid_bgl_desc.entryCount = 1;
+        grid_bgl_desc.entries = &grid_entry;
+        const grid_bgl = c.wgpuDeviceCreateBindGroupLayout(device, &grid_bgl_desc) orelse return error.BglCreateFailed;
+        var grid_pl_desc = std.mem.zeroes(c.WGPUPipelineLayoutDescriptor);
+        grid_pl_desc.label = wgpu_c.wgpuStr("scene-grid-pipeline-layout");
+        grid_pl_desc.bindGroupLayoutCount = 1;
+        grid_pl_desc.bindGroupLayouts = &grid_bgl;
+        const grid_layout = c.wgpuDeviceCreatePipelineLayout(device, &grid_pl_desc) orelse return error.PipelineLayoutFailed;
+        defer c.wgpuPipelineLayoutRelease(grid_layout);
+        const grid_pipeline = wgpu_c.createPipeline(device, .{
+            .label = "scene-grid-pipeline",
+            .layout = grid_layout,
+            .module = grid_shader,
+            .vs_entry = "vs_grid",
+            .fs_entry = "fs_grid",
+            .vertex_buffers = &.{},
+            .format = format,
+            .depth = wgpu_c.depthState(depth_format, false, c.WGPUCompareFunction_LessEqual),
+            .samples = samples,
+        }) orelse return error.PipelineCreateFailed;
+
+        const ident_buf = wgpu_c.createBuffer(device, "scene-identity", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, @sizeOf(scene_pass.Packed)) orelse return error.GpuResource;
+        const ident = scene_pass.pack(.{ .mesh = 1 });
+        c.wgpuQueueWriteBuffer(queue, ident_buf, 0, &ident, @sizeOf(scene_pass.Packed));
+
         return .{
             .device = device,
             .queue = queue,
@@ -201,6 +267,10 @@ pub const Renderer = struct {
             .bgl = bgl,
             .mesh_pipeline = mesh_pipeline,
             .line_pipeline = line_pipeline,
+            .gizmo_pipeline = gizmo_pipeline,
+            .grid_bgl = grid_bgl,
+            .grid_pipeline = grid_pipeline,
+            .ident_buf = ident_buf,
         };
     }
 
@@ -209,6 +279,10 @@ pub const Renderer = struct {
         var it = self.meshes.iterator();
         while (it.next()) |m| m.release();
         for (self.targets) |t| if (t) |tt| tt.release();
+        c.wgpuBufferRelease(self.ident_buf);
+        c.wgpuRenderPipelineRelease(self.grid_pipeline);
+        c.wgpuBindGroupLayoutRelease(self.grid_bgl);
+        c.wgpuRenderPipelineRelease(self.gizmo_pipeline);
         c.wgpuRenderPipelineRelease(self.line_pipeline);
         c.wgpuRenderPipelineRelease(self.mesh_pipeline);
         c.wgpuBindGroupLayoutRelease(self.bgl);
@@ -289,6 +363,19 @@ pub const Renderer = struct {
         return if (self.targets[index]) |*t| t else null;
     }
 
+    fn uniformBindGroup(self: *Renderer, layout: c.WGPUBindGroupLayout, buf: c.WGPUBuffer, size: usize) c.WGPUBindGroup {
+        var entry = std.mem.zeroes(c.WGPUBindGroupEntry);
+        entry.binding = 0;
+        entry.buffer = buf;
+        entry.size = size;
+        var desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
+        desc.label = wgpu_c.wgpuStr("scene-bg");
+        desc.layout = layout;
+        desc.entryCount = 1;
+        desc.entries = &entry;
+        return c.wgpuDeviceCreateBindGroup(self.device, &desc);
+    }
+
     fn createTarget(self: *Renderer, size: TargetSize) error{GpuResource}!Target {
         const sampled = c.WGPUTextureUsage_RenderAttachment | c.WGPUTextureUsage_TextureBinding | c.WGPUTextureUsage_CopySrc;
         const color = wgpu_c.createTexture2D(self.device, "scene-color", .{ .width = size.w, .height = size.h, .format = self.format, .usage = sampled }) orelse return error.GpuResource;
@@ -317,16 +404,17 @@ pub const Renderer = struct {
         const uniform_buf = wgpu_c.createBuffer(self.device, "scene-uniforms", c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst, @sizeOf(common.Globals)) orelse return error.GpuResource;
         errdefer c.wgpuBufferRelease(uniform_buf);
 
-        var bg_entry = std.mem.zeroes(c.WGPUBindGroupEntry);
-        bg_entry.binding = 0;
-        bg_entry.buffer = uniform_buf;
-        bg_entry.size = @sizeOf(common.Globals);
-        var bg_desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
-        bg_desc.label = wgpu_c.wgpuStr("scene-bg");
-        bg_desc.layout = self.bgl;
-        bg_desc.entryCount = 1;
-        bg_desc.entries = &bg_entry;
-        const bind_group = c.wgpuDeviceCreateBindGroup(self.device, &bg_desc) orelse return error.GpuResource;
+        const bind_group = self.uniformBindGroup(self.bgl, uniform_buf, @sizeOf(common.Globals)) orelse return error.GpuResource;
+        errdefer c.wgpuBindGroupRelease(bind_group);
+        const grid_buf = wgpu_c.createBuffer(self.device, "scene-grid-uniforms", c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst, @sizeOf(scene_pass.GridUniform)) orelse return error.GpuResource;
+        errdefer c.wgpuBufferRelease(grid_buf);
+        const grid_bg = self.uniformBindGroup(self.grid_bgl, grid_buf, @sizeOf(scene_pass.GridUniform)) orelse return error.GpuResource;
+        errdefer c.wgpuBindGroupRelease(grid_bg);
+        const gizmo_ubo = wgpu_c.createBuffer(self.device, "scene-gizmo-uniforms", c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst, @sizeOf(common.Globals)) orelse return error.GpuResource;
+        errdefer c.wgpuBufferRelease(gizmo_ubo);
+        const gizmo_bg = self.uniformBindGroup(self.bgl, gizmo_ubo, @sizeOf(common.Globals)) orelse return error.GpuResource;
+        errdefer c.wgpuBindGroupRelease(gizmo_bg);
+        const gizmo_lines = wgpu_c.createBuffer(self.device, "scene-gizmo-lines", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, scene_pass.gizmo_segments * 2 * @sizeOf(LineVertex)) orelse return error.GpuResource;
 
         const gen = self.next_generation;
         self.next_generation +%= 1;
@@ -340,6 +428,11 @@ pub const Renderer = struct {
             .depth_view = depth_view,
             .uniform_buf = uniform_buf,
             .bind_group = bind_group,
+            .grid_buf = grid_buf,
+            .grid_bg = grid_bg,
+            .gizmo_ubo = gizmo_ubo,
+            .gizmo_bg = gizmo_bg,
+            .gizmo_lines = gizmo_lines,
             .signature = 0,
             .generation = gen,
         };
@@ -421,6 +514,36 @@ pub const Renderer = struct {
                     c.wgpuRenderPassEncoderDraw(pass, 6, m.segment_count, 0, 0);
                 }
             }
+        }
+
+        // Grid: depth-tested against everything drawn above, blended over it.
+        if (draw.grid) |grid| if (scene_pass.gridUniform(draw, grid, size.w, size.h, scale)) |gu| {
+            c.wgpuQueueWriteBuffer(self.queue, t.grid_buf, 0, &gu, @sizeOf(scene_pass.GridUniform));
+            c.wgpuRenderPassEncoderSetPipeline(pass, self.grid_pipeline);
+            c.wgpuRenderPassEncoderSetBindGroup(pass, 0, t.grid_bg, 0, null);
+            c.wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+        };
+
+        // Gizmo: axis triad in a corner sub-viewport, always on top.
+        if (draw.gizmo) |gz| {
+            const r = scene_pass.gizmoRect(gz, size.w, size.h, scale);
+            const lines = scene_pass.gizmoLines(draw.camera.view_proj, gz);
+            c.wgpuQueueWriteBuffer(self.queue, t.gizmo_lines, 0, &lines, @sizeOf(@TypeOf(lines)));
+            var gg = common.globals(draw, .{ .w = @intFromFloat(r[2]), .h = @intFromFloat(r[3]) }, scale);
+            gg.view_proj = scene_pass.gizmoProjection();
+            gg.edge_color = .{ 1, 1, 1, 1 };
+            gg.viewport[2] = 2 * scale;
+            gg.viewport[3] = 0;
+            gg.clip = .{ 0, 0, 0, 0 };
+            gg.misc = .{ 0, 0, 0, 0 };
+            c.wgpuQueueWriteBuffer(self.queue, t.gizmo_ubo, 0, &gg, @sizeOf(common.Globals));
+            c.wgpuRenderPassEncoderSetViewport(pass, r[0], r[1], r[2], r[3], 0, 1);
+            c.wgpuRenderPassEncoderSetScissorRect(pass, @intFromFloat(r[0]), @intFromFloat(r[1]), @intFromFloat(r[2]), @intFromFloat(r[3]));
+            c.wgpuRenderPassEncoderSetPipeline(pass, self.gizmo_pipeline);
+            c.wgpuRenderPassEncoderSetBindGroup(pass, 0, t.gizmo_bg, 0, null);
+            c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, t.gizmo_lines, 0, c.WGPU_WHOLE_SIZE);
+            c.wgpuRenderPassEncoderSetVertexBuffer(pass, 1, self.ident_buf, 0, @sizeOf(scene_pass.Packed));
+            c.wgpuRenderPassEncoderDraw(pass, 6, scene_pass.gizmo_segments, 0, 0);
         }
 
         c.wgpuRenderPassEncoderEnd(pass);
