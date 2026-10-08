@@ -43,3 +43,16 @@ yourself.
 - `std.EnumSet(E).initEmpty()` is now `.empty`.
 - `@enumFromInt` / `@intFromEnum` are `@fromBackingInt` / `@backingInt` (run
   `zig fmt` and it upgrades them).
+
+## Cleanup renames
+
+The core cleanup renamed no public declarations (names already follow the Zig
+style guide). Behaviour changes to know about:
+
+- `SceneCmd.eql` was removed; use `core/eql.zig`'s `deepEql(SceneCmd(Msg), a, b)`
+  (or `teak.runtime.cmdsEqual` on a slice).
+- `teak.MAX_BALANCE_DEPTH` is 64 (was 32).
+- Unbalanced / too-deep cmd buffers now panic in release builds too (the
+  per-frame balance check used to be Debug-only); a stray `popFormRow` panics
+  instead of being ignored.
+

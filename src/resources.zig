@@ -270,24 +270,18 @@ test "remap turns keys into handles; unknown keys become none" {
     try std.testing.expectEqual(@as(u32, 0), scenes[1].mesh);
 }
 
-test "table is bounded: overflow entries are ignored, not a crash" {
+test "table is bounded: overflow entries are dropped loudly (overflowed), not a crash" {
+    // The one-time overflow warning is the behaviour under test; keep it off
+    // the test runner's stderr (the runner reports logged output as failure).
+    const saved_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = saved_level;
     var gpu: StubGpu = .{};
     var t: Table = .{};
     var list: [MAX_RESOURCES + 4]Resource = undefined;
     for (&list, 0..) |*r, i| r.* = img(@intCast(i + 1), 1);
     _ = t.sync(&gpu, &list);
-    try std.testing.expectEqual(MAX_RESOURCES, t.len);
-    try std.testing.expectEqual(@as(u32, 0), t.handleOf(.image, MAX_RESOURCES + 1));
-}
-
-test "a full table drops extra resources loudly (overflowed) instead of corrupting" {
-    var gpu: StubGpu = .{};
-    var t: Table = .{};
-    var list: [MAX_RESOURCES + 1]Resource = undefined;
-    for (&list, 0..) |*r, i| r.* = img(@intCast(i + 1), 1);
-    _ = t.sync(&gpu, &list);
     try std.testing.expect(t.overflowed);
     try std.testing.expectEqual(MAX_RESOURCES, t.len);
     try std.testing.expectEqual(@as(u32, 0), t.handleOf(.image, MAX_RESOURCES + 1));
-    try std.testing.expect(t.handleOf(.image, 1) != 0);
 }

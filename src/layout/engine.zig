@@ -387,7 +387,7 @@ pub const LayoutEngine = struct {
                             total_w += m.width;
                             max_h = @max(max_h, m.height);
                         }
-                        const end = @min(sp.end, @as(u32, @intCast(rt.content.len)));
+                        const end = @min(sp.end, std.math.lossyCast(u32, rt.content.len));
                         if (end > sp.start) {
                             const m = measurer.measure(rt.content[sp.start..end], sp.font);
                             total_w += m.width;
