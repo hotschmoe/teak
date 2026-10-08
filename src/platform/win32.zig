@@ -74,8 +74,15 @@ const CS_HREDRAW: UINT = 0x0002;
 const CS_VREDRAW: UINT = 0x0001;
 const WM_DESTROY: UINT = 0x0002;
 const WM_SIZE: UINT = 0x0005;
+const WM_PAINT: UINT = 0x000F;
+/// `MsgWaitForMultipleObjectsEx`: wake on any queued input / message, and
+/// also when one was already queued before the call.
+const QS_ALLINPUT: DWORD = 0x04FF;
+const MWMO_INPUTAVAILABLE: DWORD = 0x0004;
 const WM_CHAR: UINT = 0x0102;
 const WM_KEYDOWN: UINT = 0x0100;
+const WM_SYSKEYDOWN: UINT = 0x0104;
+const WM_SYSKEYUP: UINT = 0x0105;
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
@@ -95,6 +102,8 @@ const VK_BACK: WPARAM = 0x08;
 const VK_TAB: WPARAM = 0x09;
 const VK_RETURN: WPARAM = 0x0D;
 const VK_ESCAPE: WPARAM = 0x1B;
+const VK_F10: WPARAM = 0x79;
+const VK_ALT: WPARAM = 0x12; // VK_MENU
 const VK_PRIOR: WPARAM = 0x21; // page up
 const VK_NEXT: WPARAM = 0x22; // page down
 const VK_END: WPARAM = 0x23;
@@ -108,6 +117,7 @@ const VK_DELETE: WPARAM = 0x2E;
 extern "user32" fn RegisterClassExW(*const WNDCLASSEXW) callconv(WINAPI) u16;
 extern "user32" fn CreateWindowExW(DWORD, LPCWSTR, LPCWSTR, DWORD, c_int, c_int, c_int, c_int, ?HANDLE, ?HANDLE, ?HANDLE, ?*anyopaque) callconv(WINAPI) ?HANDLE;
 extern "user32" fn ShowWindow(HANDLE, c_int) callconv(WINAPI) BOOL;
+extern "user32" fn MsgWaitForMultipleObjectsEx(DWORD, ?*const HANDLE, DWORD, DWORD, DWORD) callconv(WINAPI) DWORD;
 extern "user32" fn PeekMessageW(*MSG, ?HANDLE, UINT, UINT, UINT) callconv(WINAPI) BOOL;
 extern "user32" fn TranslateMessage(*const MSG) callconv(WINAPI) BOOL;
 extern "user32" fn DispatchMessageW(*const MSG) callconv(WINAPI) LRESULT;
@@ -1242,7 +1252,7 @@ fn controlTypeForRole(role: A11yRole) c_long {
         .text => UIA_TextControlTypeId,
         .rich_text => UIA_TextControlTypeId,
         .button => UIA_ButtonControlTypeId,
-        .text_input => UIA_EditControlTypeId,
+        .text_input, .text_area => UIA_EditControlTypeId,
         .checkbox => UIA_CheckBoxControlTypeId,
         .radio => UIA_RadioButtonControlTypeId,
         .slider => UIA_SliderControlTypeId,
@@ -1258,7 +1268,7 @@ fn controlTypeForRole(role: A11yRole) c_long {
 
 fn isFocusableRole(role: A11yRole) bool {
     return switch (role) {
-        .button, .text_input, .checkbox, .radio, .slider => true,
+        .button, .text_input, .text_area, .checkbox, .radio, .slider => true,
         else => false,
     };
 }
@@ -1585,6 +1595,7 @@ fn navFromVk(vk: WPARAM) ?NavKey {
         VK_RETURN => .enter,
         VK_TAB => .tab,
         VK_ESCAPE => .escape,
+        VK_F10 => .f10,
         VK_A => .a,
         VK_C => .c,
         VK_X => .x,
@@ -1635,6 +1646,24 @@ fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: L
                 q.pushNav(nk);
                 if (nk == .v and q.mods.ctrl) g_paste_requested = true;
             }
+        },
+        // Alt-modified keys and F10 arrive as "system" keys. Alt alone and F10
+        // are ours (menu-bar activation) and are swallowed so Windows does not
+        // open its own system menu; Alt+other still reaches DefWindowProc
+        // (Alt+F4, Alt+Space), after clearing the pending Alt tap.
+        WM_SYSKEYDOWN => {
+            q.mods = currentMods();
+            if (wp == VK_ALT) {
+                if ((lp & (1 << 30)) == 0) q.altDown(); // ignore auto-repeat
+            } else if (wp == VK_F10) {
+                q.pushNav(.f10);
+            } else {
+                q.alt_clean = false;
+                return false;
+            }
+        },
+        WM_SYSKEYUP => {
+            if (wp == VK_ALT) q.altUp() else if (wp != VK_F10) return false;
         },
         else => return false,
     }
@@ -1714,6 +1743,12 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             _ = SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             g_resized = true;
             return 0;
+        },
+        // An uncovered / invalidated area: the idle loop skips frames, so
+        // force the next one. DefWindowProc validates the region.
+        WM_PAINT => {
+            g_resized = true;
+            return DefWindowProcW(hwnd, msg, wp, lp);
         },
         WM_IME_STARTCOMPOSITION => {
             imeStart();
@@ -2274,6 +2309,12 @@ pub const Host = struct {
     /// Monotonic milliseconds since some arbitrary epoch. Uses Zig's
     /// the `std.Io` awake clock, which is fine for sub-driven cadence
     /// — subs compare deltas, not absolute values.
+    /// Event-driven idle: block until a message is queued for this thread
+    /// (input, paint, resize, IME) or `timeout_ms` passes.
+    pub fn waitEvents(_: *Host, timeout_ms: u32) void {
+        _ = MsgWaitForMultipleObjectsEx(0, null, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+
     pub fn nowMs(_: *const Host) u64 {
         // Monotonic milliseconds (clocks live behind `std.Io`).
         const now = std.Io.Clock.awake.now(std.Options.debug_io);
