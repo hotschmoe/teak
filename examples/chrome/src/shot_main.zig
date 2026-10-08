@@ -71,6 +71,13 @@ fn stress(init: std.process.Init, o: Opts) !void {
     rt.model.cols = cols;
     rt.model.rows = rows;
     rt.model.size_px = size_px;
+    // Format the labels once so the frame time is the framework's, not `allocPrint`'s.
+    const labels = try gpa.alloc([]const u8, rows * cols);
+    defer gpa.free(labels);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    for (labels, 0..) |*l, i| l.* = try std.fmt.allocPrint(arena.allocator(), "r{d}c{d}", .{ i / cols, i % cols });
+    rt.model.labels = labels;
     for (0..3) |_| try rt.frame(); // cold: shaping + rasterizing + atlas uploads
 
     const frames = 30;
@@ -81,8 +88,8 @@ fn stress(init: std.process.Init, o: Opts) !void {
     }
     const ns: u64 = @intCast(t0.durationTo(std.Io.Clock.awake.now(init.io)).nanoseconds);
     std.debug.print("stress: {d} runs, {d}x{d} px, atlas pages {d}, dropped {d}; warm frame CPU {d:.3} ms\n", .{
-        o.stress,              w,                 h,
-        gpu.atlas.pageCount(), gpu.atlas_dropped, @as(f64, @floatFromInt(ns)) / frames / 1e6,
+        o.stress,                   w,                h,
+        gpu.text.atlas.pageCount(), gpu.text.dropped, @as(f64, @floatFromInt(ns)) / frames / 1e6,
     });
     try teak.headless.writeFramePng(&gpu, gpa, o.path);
     std.debug.print("wrote {s}\n", .{o.path});

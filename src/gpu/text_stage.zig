@@ -1,0 +1,460 @@
+//! Backend-neutral text staging for the glyph-atlas path (shared by the wgpu
+//! core and the web backend). Pure CPU: no GPU types, no logging.
+//!
+//! `stage` shapes every `TextDraw` (through the Raster provider, reusing the
+//! shaped run of identical text from earlier frames), packs the glyphs the atlas
+//! has not seen into CPU staging pages, and appends one `GlyphInstance` per
+//! visible glyph to per-(page, layer) lists. The backend then
+//!   * creates GPU textures for any new pages (`pageCount`),
+//!   * uploads `takeDirty` rects out of `pageStaging`,
+//!   * writes the instance lists (`finish` assigns each its `first` offset),
+//!   * draws one instanced call per non-empty list.
+//!
+//! The Raster provider supplies (see `text/raster.zig` for the native one):
+//!   init-free `shape`, `ascent`, `rasterizeGlyph`, optional `epoch` (bumped when
+//!   faces change, invalidating the shaped-run cache) and optional
+//!   `rasterizeCluster(utf8, FontSpec, size_px) ?GlyphBitmap` for code points no
+//!   face has (the web backend asks canvas2D).
+
+const std = @import("std");
+const teak = @import("teak");
+const glyph_atlas = @import("glyph_atlas.zig");
+
+const GlyphInstance = glyph_atlas.GlyphInstance;
+pub const atlas_dim: u32 = glyph_atlas.page_size;
+
+/// Face id of canvas-rasterized fallback clusters (the shaper never produces it).
+pub const cluster_face: u16 = 0xFFFF;
+
+/// A draw's clip rect in device px, clamped to what the instance's 16-bit clip fields hold.
+const DeviceClip = struct { x0: f32, y0: f32, x1: f32, y1: f32, xy: [2]i16, wh: [2]u16 };
+
+pub fn TextStage(comptime Raster: type) type {
+    return struct {
+        const Self = @This();
+
+        pub const PageInstances = struct {
+            list: [2]std.ArrayList(GlyphInstance) = .{ .empty, .empty },
+            first: [2]u32 = .{ 0, 0 },
+        };
+
+        /// One cached shaped run: the glyphs of `text` in `font`.
+        const Run = struct {
+            hash: u64,
+            text_off: u32,
+            text_len: u32,
+            glyph_off: u32,
+            glyph_len: u32,
+            width: f32,
+            font: teak.FontSpec,
+            used: bool = false,
+        };
+
+        gpa: std.mem.Allocator,
+        raster: Raster,
+        atlas: glyph_atlas.GlyphAtlas,
+        /// CPU copy of each atlas page (`atlas_dim^2` bytes).
+        pages: std.ArrayList([]u8) = .empty,
+        insts: std.ArrayList(PageInstances) = .empty,
+        /// Device pixels per logical pixel.
+        scale: f32,
+        /// Glyphs dropped in the latest `stage` (every atlas page was in use).
+        dropped: u32 = 0,
+        frame_no: u64 = 0,
+        log_frame: u64 = 0,
+
+        // Shaped-run cache (open addressing; cleared wholesale when the pools fill).
+        runs: []Run = &.{},
+        run_count: usize = 0,
+        run_glyphs: std.ArrayList(teak.ShapedGlyph) = .empty,
+        /// Atlas entry last resolved for each cached glyph (snapped text only: bin 0).
+        run_entries: std.ArrayList(?glyph_atlas.Entry) = .empty,
+        entries_scale: f32 = 0,
+        run_text: std.ArrayList(u8) = .empty,
+        epoch: u64 = 0,
+
+        /// Fallback clusters: code point -> synthetic glyph id.
+        cluster_ids: std.AutoHashMapUnmanaged(u21, u16) = .empty,
+
+        const max_pool_glyphs = 1 << 20;
+        const max_pool_text = 1 << 22;
+
+        pub fn init(gpa: std.mem.Allocator, raster: Raster, max_pages: u8, scale: f32) !Self {
+            var atlas = try glyph_atlas.GlyphAtlas.init(gpa, @max(max_pages, 1));
+            errdefer atlas.deinit();
+            const runs = try gpa.alloc(Run, 256);
+            for (runs) |*r| r.used = false;
+            return .{ .gpa = gpa, .raster = raster, .atlas = atlas, .scale = scale, .runs = runs };
+        }
+
+        pub fn deinit(self: *Self) void {
+            for (self.pages.items) |p| self.gpa.free(p);
+            self.pages.deinit(self.gpa);
+            for (self.insts.items) |*pi| for (&pi.list) |*l| l.deinit(self.gpa);
+            self.insts.deinit(self.gpa);
+            self.atlas.deinit();
+            self.gpa.free(self.runs);
+            self.run_glyphs.deinit(self.gpa);
+            self.run_entries.deinit(self.gpa);
+            self.run_text.deinit(self.gpa);
+            self.cluster_ids.deinit(self.gpa);
+            if (@hasDecl(Raster, "deinit")) self.raster.deinit();
+        }
+
+        pub fn pageCount(self: *const Self) usize {
+            return self.pages.items.len;
+        }
+
+        pub fn pageStaging(self: *const Self, page: usize) []const u8 {
+            return self.pages.items[page];
+        }
+
+        pub fn takeDirty(self: *Self, page: usize) ?glyph_atlas.Rect {
+            return self.atlas.takeDirty(@intCast(page));
+        }
+
+        /// True once per ~60 frames while glyphs are being dropped: the caller logs.
+        pub fn shouldReportDrops(self: *Self) bool {
+            if (self.dropped == 0) return false;
+            if (self.log_frame != 0 and self.frame_no - self.log_frame < 60) return false;
+            self.log_frame = self.frame_no;
+            return true;
+        }
+
+        /// Assign every (page, layer) list its first-instance offset; returns the total.
+        pub fn finish(self: *Self) u32 {
+            var total: u32 = 0;
+            for (0..2) |layer| {
+                for (self.insts.items) |*pi| {
+                    pi.first[layer] = total;
+                    total += @intCast(pi.list[layer].items.len);
+                }
+            }
+            return total;
+        }
+
+        /// Shape, pack and emit this frame's text. `overlay_start` is the index of
+        /// the first overlay-layer draw (`draws.len` = none).
+        pub fn stage(self: *Self, draws: []const teak.TextDraw, overlay_start: usize) void {
+            self.atlas.beginFrame();
+            self.frame_no += 1;
+            self.dropped = 0;
+            for (self.insts.items) |*pi| for (&pi.list) |*l| l.clearRetainingCapacity();
+            if (@hasDecl(Raster, "epoch")) {
+                const e = self.raster.epoch();
+                if (e != self.epoch) {
+                    self.epoch = e;
+                    self.clearRuns();
+                }
+            }
+
+            const scale = self.scale;
+            if (scale != self.entries_scale) {
+                self.entries_scale = scale;
+                self.clearRuns(); // cached atlas entries are for one device size
+            }
+            var last_font: teak.FontSpec = undefined;
+            var have_last = false;
+            var ascent: f32 = 0;
+
+            for (draws, 0..) |draw, di| {
+                const layer: usize = if (di >= overlay_start) 1 else 0;
+                // Cull runs entirely outside their clip (logical px).
+                const vx0 = @max(draw.rect_x, draw.clip_x);
+                const vy0 = @max(draw.rect_y, draw.clip_y);
+                const vx1 = @min(draw.rect_x + draw.rect_w, draw.clip_x + draw.clip_w);
+                const vy1 = @min(draw.rect_y + draw.rect_h, draw.clip_y + draw.clip_h);
+                if (vx1 <= vx0 or vy1 <= vy0) continue;
+
+                const font = draw.font;
+                const size_q = quantizeSize(font.size_px * scale);
+                if (size_q == 0) continue;
+                const snap = font.snapsAdvance();
+                if (!have_last or !std.meta.eql(last_font, font)) {
+                    last_font = font;
+                    have_last = true;
+                    ascent = self.raster.ascent(font, scale);
+                }
+                const baseline = @floor(draw.rect_y * scale) + @round(ascent);
+                const base_x = if (snap) @floor(draw.rect_x * scale) else draw.rect_x * scale;
+                const clip = deviceClip(draw, scale);
+                const color = packColor(draw.color);
+
+                const run = self.runFor(draw.content, font) orelse continue;
+                const glyphs = self.run_glyphs.items[run.off..][0..run.len];
+                // Snapped glyphs always use bin 0, so their atlas entry can be reused
+                // from the previous frame while its page generation is unchanged.
+                const entries = self.run_entries.items[run.off..][0..run.len];
+                for (glyphs, entries) |g, *cached| {
+                    self.emitGlyph(layer, draw.content, font, g, if (snap) cached else null, base_x + g.x * scale, baseline, size_q, snap, color, clip);
+                }
+            }
+        }
+
+        // ── Shaped-run cache ───────────────────────────────────────
+
+        fn clearRuns(self: *Self) void {
+            for (self.runs) |*r| r.used = false;
+            self.run_count = 0;
+            self.run_glyphs.clearRetainingCapacity();
+            self.run_entries.clearRetainingCapacity();
+            self.run_text.clearRetainingCapacity();
+        }
+
+        fn runHash(text: []const u8, font: teak.FontSpec) u64 {
+            const bits: u64 = @as(u64, @as(u32, @bitCast(font.size_px))) |
+                (@as(u64, @as(u32, @bitCast(font.letter_spacing))) << 32);
+            const tags: u64 = @as(u64, @backingInt(font.family)) | (@as(u64, @backingInt(font.weight)) << 8) |
+                (@as(u64, if (font.snap_advance) |v| @intFromBool(v) + 1 else 0) << 16);
+            return std.hash.Wyhash.hash(bits ^ std.math.rotl(u64, tags, 40), text);
+        }
+
+        fn sameFont(a: teak.FontSpec, b: teak.FontSpec) bool {
+            return a.size_px == b.size_px and a.family == b.family and a.weight == b.weight and
+                a.letter_spacing == b.letter_spacing and a.snap_advance == b.snap_advance;
+        }
+
+        /// Glyphs of `text` in `font` with run-relative logical x positions
+        /// (summed across shaper chunks). Cached across frames; valid until the next
+        /// `runFor`.
+        fn runFor(self: *Self, text: []const u8, font: teak.FontSpec) ?struct { off: usize, len: usize } {
+            if (text.len == 0) return .{ .off = 0, .len = 0 };
+            const h = runHash(text, font);
+            const mask = self.runs.len - 1;
+            var i: usize = @intCast(h & mask);
+            while (self.runs[i].used) : (i = (i + 1) & mask) {
+                const r = &self.runs[i];
+                if (r.hash == h and r.text_len == text.len and sameFont(r.font, font) and
+                    std.mem.eql(u8, self.run_text.items[r.text_off..][0..r.text_len], text))
+                {
+                    return .{ .off = r.glyph_off, .len = r.glyph_len };
+                }
+            }
+            // Miss: shape, then record.
+            if (self.run_glyphs.items.len > max_pool_glyphs or self.run_text.items.len > max_pool_text or
+                (self.run_count + 1) * 2 > self.runs.len)
+            {
+                if ((self.run_count + 1) * 2 > self.runs.len and self.run_glyphs.items.len <= max_pool_glyphs and self.run_text.items.len <= max_pool_text) {
+                    self.growRuns() catch return null;
+                } else self.clearRuns();
+                return self.runFor(text, font);
+            }
+            const goff = self.run_glyphs.items.len;
+            var buf: [128]teak.ShapedGlyph = undefined;
+            var pos: usize = 0;
+            var run_x: f32 = 0;
+            while (pos < text.len) {
+                const res = self.raster.shape(text[pos..], font, &buf);
+                if (res.consumed == 0) break;
+                self.run_glyphs.ensureUnusedCapacity(self.gpa, res.count) catch return null;
+                self.run_entries.ensureUnusedCapacity(self.gpa, res.count) catch return null;
+                for (buf[0..res.count]) |g| {
+                    self.run_entries.appendAssumeCapacity(null);
+                    var gg = g;
+                    gg.x += run_x;
+                    gg.cluster += @intCast(pos);
+                    self.run_glyphs.appendAssumeCapacity(gg);
+                }
+                run_x += res.width;
+                pos += res.consumed;
+            }
+            const toff = self.run_text.items.len;
+            self.run_text.appendSlice(self.gpa, text) catch return null;
+            self.runs[i] = .{
+                .hash = h,
+                .text_off = @intCast(toff),
+                .text_len = @intCast(text.len),
+                .glyph_off = @intCast(goff),
+                .glyph_len = @intCast(self.run_glyphs.items.len - goff),
+                .width = run_x,
+                .font = font,
+                .used = true,
+            };
+            self.run_count += 1;
+            return .{ .off = goff, .len = self.run_glyphs.items.len - goff };
+        }
+
+        fn growRuns(self: *Self) !void {
+            const old = self.runs;
+            const fresh = try self.gpa.alloc(Run, old.len * 2);
+            for (fresh) |*r| r.used = false;
+            const mask = fresh.len - 1;
+            for (old) |r| {
+                if (!r.used) continue;
+                var i: usize = @intCast(r.hash & mask);
+                while (fresh[i].used) i = (i + 1) & mask;
+                fresh[i] = r;
+            }
+            self.runs = fresh;
+            self.gpa.free(old);
+        }
+
+        // ── Emission ───────────────────────────────────────────────
+
+        fn emitGlyph(
+            self: *Self,
+            layer: usize,
+            text: []const u8,
+            font: teak.FontSpec,
+            g: teak.ShapedGlyph,
+            cached: ?*?glyph_atlas.Entry,
+            pen_x: f32,
+            baseline: f32,
+            size_q: u16,
+            snap: bool,
+            color: u32,
+            clip: DeviceClip,
+        ) void {
+            const fx = @floor(pen_x);
+            var key: glyph_atlas.GlyphKey = .{
+                .face = g.face,
+                .glyph = g.glyph,
+                .size_q = size_q,
+                .bin = if (snap) 0 else @intCast(@min(3, @as(u32, @intFromFloat((pen_x - fx) * 4)))),
+            };
+            if (cached) |c| {
+                if (c.*) |ce| {
+                    if (self.atlas.stillValid(&ce)) {
+                        self.atlas.touch(&ce);
+                        self.appendInstance(layer, ce, fx, baseline, color, clip);
+                        return;
+                    }
+                }
+            }
+            var cluster_cp: u21 = 0;
+            if (@hasDecl(Raster, "rasterizeCluster") and g.glyph == 0 and g.cluster < text.len) {
+                const d = decodeAt(text, g.cluster);
+                if (d != 0xFFFD and d != ' ') {
+                    cluster_cp = d;
+                    const id = self.clusterId(d) orelse return;
+                    key = .{ .face = cluster_face, .glyph = id, .size_q = size_q, .bin = 0 };
+                }
+            }
+            const e = self.atlas.lookup(key) orelse self.pack(key, font, cluster_cp) orelse return;
+            if (cached) |c| c.* = e;
+            self.appendInstance(layer, e, fx, baseline, color, clip);
+        }
+
+        fn appendInstance(self: *Self, layer: usize, e: glyph_atlas.Entry, fx: f32, baseline: f32, color: u32, clip: DeviceClip) void {
+            if (e.rect.w == 0 or e.rect.h == 0) return;
+
+            const gx = fx + @as(f32, @floatFromInt(e.bearing_x));
+            const gy = baseline + @as(f32, @floatFromInt(e.bearing_y));
+            const gw: f32 = @floatFromInt(e.rect.w);
+            const gh: f32 = @floatFromInt(e.rect.h);
+            if (gx + gw <= clip.x0 or gy + gh <= clip.y0 or gx >= clip.x1 or gy >= clip.y1) return;
+            const inside = gx >= clip.x0 and gy >= clip.y0 and gx + gw <= clip.x1 and gy + gh <= clip.y1;
+
+            while (self.insts.items.len <= e.page) {
+                self.insts.append(self.gpa, .{}) catch return;
+            }
+            self.insts.items[e.page].list[layer].append(self.gpa, .{
+                .x = gx,
+                .y = gy,
+                .w = e.rect.w,
+                .h = e.rect.h,
+                .u = e.rect.x,
+                .v = e.rect.y,
+                .color = color,
+                // A glyph fully inside its clip skips the fragment test.
+                .clip_xy = if (inside) .{ 0, 0 } else clip.xy,
+                .clip_wh = if (inside) .{ 0, 0 } else clip.wh,
+            }) catch return;
+        }
+
+        fn clusterId(self: *Self, cp: u21) ?u16 {
+            if (self.cluster_ids.get(cp)) |id| return id;
+            const next = self.cluster_ids.count() + 1;
+            if (next > std.math.maxInt(u16)) return null;
+            self.cluster_ids.put(self.gpa, cp, @intCast(next)) catch return null;
+            return @intCast(next);
+        }
+
+        /// Rasterize `key`'s glyph and place it in the atlas (staging copy + dirty
+        /// rect). Null when the glyph cannot be shown this frame; blank and
+        /// unrasterizable glyphs are cached as empty so they are not retried.
+        fn pack(self: *Self, key: glyph_atlas.GlyphKey, font: teak.FontSpec, cluster_cp: u21) ?glyph_atlas.Entry {
+            const size_px = @as(f32, @floatFromInt(key.size_q)) / 4.0;
+            const bmp = blk: {
+                if (@hasDecl(Raster, "rasterizeCluster") and key.face == cluster_face) {
+                    var utf8: [4]u8 = undefined;
+                    const n = std.unicode.utf8Encode(cluster_cp, &utf8) catch 0;
+                    break :blk self.raster.rasterizeCluster(utf8[0..n], font, size_px);
+                }
+                break :blk self.raster.rasterizeGlyph(key.face, key.glyph, size_px, key.bin);
+            } orelse {
+                _ = self.atlas.insert(key, 0, 0, 0, 0) catch {};
+                return null;
+            };
+            const too_big = bmp.width > atlas_dim - 2 or bmp.height > atlas_dim - 2;
+            const w: u16 = if (too_big) 0 else @intCast(bmp.width);
+            const h: u16 = if (too_big) 0 else @intCast(bmp.height);
+            const bx: i16 = @intCast(std.math.clamp(bmp.bearing_x, -32768, 32767));
+            const by: i16 = @intCast(std.math.clamp(bmp.bearing_y, -32768, 32767));
+            const e = self.atlas.insert(key, w, h, bx, by) catch |err| {
+                if (err == error.AllPagesPinned) self.dropped += 1;
+                return null;
+            };
+            if (w == 0 or h == 0) return e;
+            if (!self.ensurePage(e.page)) return null;
+            // Zero the padded cell, then copy the glyph rows into it.
+            const staging = self.pages.items[e.page];
+            const x: usize = e.rect.x;
+            const y: usize = e.rect.y;
+            for (y - 1..y + h + 1) |row| @memset(staging[row * atlas_dim + x - 1 ..][0 .. w + 2], 0);
+            for (0..h) |row| @memcpy(staging[(y + row) * atlas_dim + x ..][0..w], bmp.pixels[row * w ..][0..w]);
+            return e;
+        }
+
+        fn ensurePage(self: *Self, page: u8) bool {
+            while (self.pages.items.len <= page) {
+                const buf = self.gpa.alloc(u8, atlas_dim * atlas_dim) catch return false;
+                @memset(buf, 0);
+                self.pages.append(self.gpa, buf) catch {
+                    self.gpa.free(buf);
+                    return false;
+                };
+            }
+            return true;
+        }
+    };
+}
+
+fn decodeAt(text: []const u8, i: usize) u21 {
+    const n = std.unicode.utf8ByteSequenceLength(text[i]) catch return 0xFFFD;
+    if (i + n > text.len) return 0xFFFD;
+    return std.unicode.utf8Decode(text[i .. i + n]) catch 0xFFFD;
+}
+
+/// Glyph size in quarter pixels (the atlas key unit); 0 for non-drawable sizes.
+pub fn quantizeSize(size_px: f32) u16 {
+    if (!(size_px > 0)) return 0;
+    return @intFromFloat(@min(@round(size_px * 4), 65535));
+}
+
+/// RGBA8 in memory order r, g, b, a (read back as one word by the shader).
+pub fn packColor(color: [4]f32) u32 {
+    var out: u32 = 0;
+    inline for (0..4) |i| {
+        const v: u32 = @intFromFloat(@round(std.math.clamp(color[i], 0, 1) * 255));
+        out |= v << (8 * i);
+    }
+    return out;
+}
+
+fn deviceClip(draw: teak.TextDraw, scale: f32) DeviceClip {
+    const lo: f32 = -32768;
+    const hi: f32 = 32767;
+    const x0 = std.math.clamp(@floor(draw.clip_x * scale), lo, hi);
+    const y0 = std.math.clamp(@floor(draw.clip_y * scale), lo, hi);
+    const x1 = std.math.clamp(@ceil((draw.clip_x + draw.clip_w) * scale), lo, hi);
+    const y1 = std.math.clamp(@ceil((draw.clip_y + draw.clip_h) * scale), lo, hi);
+    return .{
+        .x0 = x0,
+        .y0 = y0,
+        .x1 = x1,
+        .y1 = y1,
+        .xy = .{ @intFromFloat(x0), @intFromFloat(y0) },
+        .wh = .{ @intFromFloat(@max(x1 - x0, 1)), @intFromFloat(@max(y1 - y0, 1)) },
+    };
+}

@@ -154,16 +154,21 @@ const Registry = struct {
 
 var registry: Registry = .{};
 
+/// Bumped whenever the face table changes; caches of shaped text compare it.
+pub var epoch: u64 = 1;
+
 /// Register `ttf` as the face for (`family`, `weight`), replacing an earlier
 /// one. The bytes are borrowed: keep them alive (an `@embedFile` slice is).
 pub fn registerFace(family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) error{FontInitFailed}!void {
     registry.faces[@backingInt(family)][@backingInt(weight)] = Font.fromBytes(ttf) catch return error.FontInitFailed;
+    epoch += 1;
 }
 
 /// Forget every registered face and the loaded fallback.
 pub fn releaseFaces() void {
     if (registry.fallback) |*f| f.deinit();
     registry = .{};
+    epoch += 1;
 }
 
 /// Face-table index of (`family`, `weight`); also the `ShapedGlyph.face` value.

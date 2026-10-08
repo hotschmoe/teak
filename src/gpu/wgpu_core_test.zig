@@ -371,9 +371,9 @@ test "atlas text: glyph boxes land at the pen, take the draw colour, and are sci
     try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 13, 5)); // second glyph inside the clip
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 16, 5)); // second glyph beyond the clip
     try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 6, 33)); // per-glyph colour
-    try std.testing.expectEqual(@as(u32, 0), h.gpu.atlas_dropped);
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.text.dropped);
     // Repeating the same glyphs hits the atlas: no new page, no regrowth.
-    try std.testing.expectEqual(@as(usize, 1), h.gpu.atlas.pageCount());
+    try std.testing.expectEqual(@as(usize, 1), h.gpu.text.atlas.pageCount());
 }
 
 test "atlas text: exhausting max_atlas_pages drops glyphs, keeps rendering, and recovers next frame" {
@@ -388,13 +388,13 @@ test "atlas text: exhausting max_atlas_pages drops glyphs, keeps rendering, and 
         d.font.size_px = 10 + @as(f32, @floatFromInt(i)) * 0.25;
     }
     h.gpu.uploadText(&draws);
-    try std.testing.expect(h.gpu.atlas_dropped > 0);
+    try std.testing.expect(h.gpu.text.dropped > 0);
     const f = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(f);
     try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 2, 2)); // still drew what fit
     // A calm frame afterwards recycles the page (gen bump) and renders again.
     h.gpu.uploadText(&.{textAt(4, 4, 16, 8, "a")});
-    try std.testing.expectEqual(@as(u32, 0), h.gpu.atlas_dropped);
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.text.dropped);
     const g = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(g);
     try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(g, 5, 5));
