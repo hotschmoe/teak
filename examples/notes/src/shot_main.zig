@@ -19,6 +19,13 @@ pub fn main(init: std.process.Init) !void {
     const steps = if (faces.len > 0) &[_]teak.headless.Step{
         .{ .frames = 3 },
         .{ .click = .{ 60, 765 } },
+        .{ .click = .{ 140, 126 } },
+        .{ .chars = "Hello \u{0645}\u{0631}\u{062D}\u{0628}\u{0627} \u{0628}\u{0627}\u{0644}\u{0639}\u{0627}\u{0644}\u{0645} and (\u{05E9}\u{05DC}\u{05D5}\u{05DD} \u{05E2}\u{05D5}\u{05DC}\u{05DD}) costs 123 dollars today, then \u{0928}\u{092E}\u{0938}\u{094D}\u{0924}\u{0947}.\nSecond line in English only." },
+        .{ .frames = 2 },
+        .{ .key = .home },
+        .{ .key = .right },
+        .{ .key = .right },
+        .{ .drag = .{ .{ 60, 126 }, .{ 330, 126 } } },
         .{ .frames = 2 },
     } else &[_]teak.headless.Step{
         .{ .frames = 3 },
