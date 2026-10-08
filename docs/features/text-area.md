@@ -62,7 +62,7 @@ sticky column), the wheel scrolls (clamped to the content), and `metrics` clamps
 4. **Clipboard** is the app's policy: copy with `clip.write(m.area.selectionText())`, cut = copy then
    `update(m, .{ .area = .{ .key = .backspace } })`, paste with `Area.pasteMsg(clip.read())`.
 
-The complete, compiled version of exactly this is [cookbook recipe 19](../cookbook.md#19-add-a-multi-line-textarea)
+The complete, compiled version of exactly this is [cookbook recipe 23](../cookbook.md#23-add-a-multi-line-textarea)
 (it is a test in `src/run_test.zig`, so it cannot drift); `examples/notes` has two areas, a chat log and Send/Clear.
 
 Motion: Left/Right and Shift variants go to the `Editor` (grapheme-aware; word jumps with Ctrl). Up/Down/Home/End/PageUp/

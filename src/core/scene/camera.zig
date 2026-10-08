@@ -268,6 +268,18 @@ fn isPerspective(cam: Camera) bool {
     return cam.view_proj[11] != 0;
 }
 
+/// World-space right and up vectors of the camera (the first two rows of the
+/// view rotation, recovered from `view_proj`: they are the projection's x / y
+/// scale times the unit rotation rows, so normalising them is exact for
+/// perspective and orthographic cameras alike).
+pub fn viewAxes(cam: Camera) struct { right: Vec3, up: Vec3 } {
+    const m = cam.view_proj;
+    return .{
+        .right = mat.normalizeOr(.{ m[0], m[4], m[8] }, .{ 1, 0, 0 }),
+        .up = mat.normalizeOr(.{ m[1], m[5], m[9] }, .{ 0, 1, 0 }),
+    };
+}
+
 /// Unit-direction ray through viewport-local logical px `(x, y)` of a
 /// `w x h` viewport (y down). Perspective rays start at the eye; ortho rays
 /// start on the near plane. Returns a ray along -Z if the matrix is singular.
@@ -326,6 +338,17 @@ test "project/unproject round trip, both projections and up axes" {
                 try expectVec(p, back, 2e-3);
             }
         }
+    }
+}
+
+test "viewAxes matches the orbit basis (persp and ortho)" {
+    var o = Orbit{ .yaw = 0.9, .pitch = 0.3, .dist = 9 };
+    for ([_]bool{ false, true }) |ortho| {
+        o.projection = if (ortho) .ortho else .{ .perspective = .{} };
+        const bs = o.basis();
+        const ax = viewAxes(o.camera(640, 480, null));
+        try expectVec(bs.right, ax.right, 1e-4);
+        try expectVec(bs.up, ax.up, 1e-4);
     }
 }
 

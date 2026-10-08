@@ -50,3 +50,7 @@ If a proposed field fails any rule, it goes in `Model`.
 
 - **Rule-violation sentinel.** A comment block in `src/core/transient.zig` showing the three most likely bad additions (`scroll_offset`, `cursor_pos`, `drag_start`) with a note on why each fails the gate. Not testable in code — a PR reviewer's checklist.
 - **Bypass test.** An integration test asserting that changes to hover/press between frames do NOT change `buildVertices` output when the underlying `Model` + `[]Cmd` are identical. Confirms `update` stays untouched.
+
+## Keyboard navigation focus
+
+`nav_index`, `ring_color` and `ring_width` mirror the run loop's keyboard focus (buttons, checkboxes, radios, sliders, clickable canvases) so render can draw the focus ring. The focus itself lives in `Runtime` (keyed by the leaf's Msg), never in the Model; see [focus.md](focus.md).

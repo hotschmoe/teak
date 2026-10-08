@@ -128,11 +128,32 @@ hand-call pattern `counter_greeter` uses for `greeter.view`.
 > must hand-write the app `view` and call `Picker.viewWith(...)` yourself
 > (see [cookbook recipe 5](../cookbook.md#5-dropdown-with-a-scrolling-list)).
 
+**`cap` is documentation only.** `Dropdown(cap).capacity` exposes it, but nothing
+sizes storage or limits options by it (the Model holds an index, the app owns the
+option slice). Any positive number works; use it to say how long the list may get.
+
+**Setting the selection from code:** `update(&m.picker, .{ .select = i })` works
+while the list is closed (it records `selected = i`, parks the highlight there and
+leaves the list closed), so loading a record or applying a preset needs no
+`toggle` first.
+
+**Positioning the open list.** `list_x` / `list_y` are **window-absolute** pixels
+for the overlay's top-left; the dropdown does not look at where its closed button
+was laid out (a pure `view` cannot read layout). Compute them from your own
+layout (your paddings and fixed widths: the closed button is at the cursor where
+you call `viewWith`), or keep the app's `scrollLayoutMsg` / `canvasMsg` `layout`
+event for the surrounding region in the Model and derive the anchor from it. A
+first-class "anchor from the previous frame's button rect" event is not built yet.
+
 `msgs` carries the composed AppMsgs: `.toggle`, `.close`, and
 `selectMsg` — a **comptime `fn(usize) AppMsg`** the app supplies to build
-the per-index select message. `DropdownViewOpts` positions the open list
-(`list_x`, `list_y`, `list_width`, `list_max_height`) and caps its visible
-height (`max_visible`, see below).
+the per-index select message. `DropdownViewOpts` sizes the open list
+(`list_width`, `list_max_height`) and caps its visible height (`max_visible`,
+see below). **Positioning is automatic** (`auto_anchor`, default true): the list
+is an overlay anchored to the closed button by its `toggle` Msg
+(`OverlayStyle.anchor_msg`), opening below its left edge (`anchor_side` picks
+another side). No coordinates to compute; `list_x` / `list_y` apply only with
+`auto_anchor = false`. See [overlay anchoring](layout.md#overlay-anchoring).
 
 Behavior: **closed** = a button showing the selected option's label
 (placeholder when the slice is empty / index out of range); **open** =
@@ -203,7 +224,7 @@ TextField model, open, selected: ?usize, highlighted, scroll_offset }`,
 scroll_by }`. The option labels are app-owned and passed to `viewWith(model,
 cb, options, msgs, opts)`; `msgs` carries `.focus`, `.close` and a comptime
 `selectMsg(i)` that receives the **original** option index. `ViewOpts`:
-`list_x/list_y/list_width`, `max_visible` (default 8; the list scrolls past
+`list_width`, `auto_anchor` (default true: the list opens under the input; `list_x/list_y` only when false), `anchor_side`, `max_visible` (default 8; the list scrolls past
 it), `match` (`.substring` | `.prefix`), `input_style`.
 
 The view is a `text_input` (query while open, the selected label while
@@ -303,6 +324,30 @@ read layout, geometry is computed from fixed sizes (`top_width`, `row_h`,
 in a monospaced font. Panels clamp to the window. A transparent full-window
 modal "scrim" overlay behind the panels makes a click anywhere else dismiss
 the menu. The navigation logic (`Nav`) is pure and exhaustively tested.
+
+**color_picker.** A saturation / value square and a hue strip (interactive canvases drawn from per-vertex-coloured
+triangles: white -> hue left to right, a transparent -> black overlay top to bottom), a preview, hex / R / G / B fields
+and a 16-swatch palette. The colour is HSV in the Model (so dragging hue over a grey does not lose it) plus the text of
+the four fields; dragging or a swatch rewrites the texts, typing a valid value updates the colour and the *other*
+fields (never the one being typed in), and an unparseable field is drawn with a danger border. Route the canvases from
+`canvasMsg` (`color_picker.canvasMsg`), the fields from the app's key hooks (`charMsg(field, c)` / `keyMsg(field, key)`),
+read the result with `rgb(model)` / `rgba(model)`.
+
+**spinner.** `Spinner(.{ .min, .max, .step, .big_step, .precision })` wraps a `NumericField`: its `Msg` *is* the
+NumericField's, so typing routes through `textFieldChar` / `textFieldSpecial` unchanged, and stepping is a function the
+app calls from its own `update` arm (`Spinner.step(&m.qty, .up)`). `keyStep` maps Up / Down / Page Up / Page Down,
+`wheelStep(dy, shift)` maps the wheel (Shift = big step). A step starts from the current value (the minimum when the
+text is empty or invalid), rounds to `precision` (no `0.30000000000000004`), clamps to `[min, max]` and rewrites the
+text; the `-` / `+` buttons disable at the limits.
+
+**date_field.** An ISO text field (`YYYY-MM-DD`) plus a calendar popover: a modal overlay with a month header (`<<` `<`
+`>` `>>`), weekday headings (Monday first), a 6 x 7 grid of day buttons (other-month days muted, today outlined,
+selected inverted, the keyboard cursor in a heavy border) and Today / Clear. The date maths (`widgets.date`: days from
+civil, weekday, add days / months with day clamping, strict ISO parse) is pure. **No wall clock in `view`:** "today" is
+Model data set with `Msg.set_today`, typically `date.fromUnixMs(c.unix_ms, c.utc_offset_min)` from a `clock` effect
+result. Typing a full valid date selects it; a partial or impossible one is plain text with a danger border. Keys
+(`keyMsg`): arrows move by day / week, Page Up / Down by month, Home / End to the month's first / last day, Enter picks,
+Escape closes; Down on a closed field opens it.
 
 ### Host support for the keys
 

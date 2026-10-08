@@ -9,6 +9,14 @@ pub const TransientState = struct {
     /// Visual focus mirror — kept in sync with the Model's focus field by
     /// the main loop. Used by the renderer to draw the focus ring.
     focus_index: ?usize = null,
+    /// Keyboard-navigation focus (Tab / arrows on buttons, checkboxes, radios,
+    /// sliders): the widget the focus ring is drawn around. Owned by the run
+    /// loop, not the Model; null while a text field has the focus.
+    nav_index: ?usize = null,
+    /// Focus ring colour (`Palette.accent`) and thickness (`Tokens.focus_ring_width`),
+    /// copied from the frame's theme by the run loop.
+    ring_color: [4]f32 = .{ 0.35, 0.55, 1.0, 1.0 },
+    ring_width: f32 = 2,
     /// Frame counter, incremented once per built frame.
     frame_counter: u32 = 0,
     /// Caret phase: true = the text cursor is drawn. Set by the run loop

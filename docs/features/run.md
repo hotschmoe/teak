@@ -66,12 +66,47 @@ pub fn run(comptime App: type, gpa: Allocator, host: anytype, gpu: anytype, opts
 `view(*const Model, *CmdBuffer(Msg))`. `Model.init()` is used for the
 initial state if present, else `.{}`.
 
-Optional App decls, each detected with `@hasDecl` — present only what you
-need (full table in [consuming-teak.md §5](../consuming-teak.md)):
-`keyCharMsg`, `keySpecialMsg`, `keyNeedsClipboard` + `handleClipboard`,
-`wheelMsg`, `windowMsg` (window size on the first frame and each resize), `canvasMsg`, `hoverMsg`, `contextMsg`, `sliderMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
-`secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`),
-`subscribe`.
+Optional App decls are detected with `@hasDecl` — present only what you need.
+See [App hooks](#app-hooks-the-one-table) for every one.
+
+## App hooks (the one table)
+
+Every optional decl `teak.run` / `Runtime` probes on the App. **Rules for all of
+them** (HARDLINE §1-§3): a hook is a plain function of `*const Model` (never
+`*Model`) plus data the loop supplies; it returns data (a `Msg`, a spec, a
+theme) and never calls back; the only state change is the returned `Msg`
+going through `update`. `zig build audit` fails if the loop probes a hook this
+table does not name.
+
+| Hook | Signature | Called | May return / do |
+|---|---|---|---|
+| `keyCharMsg` | `(*const Model, u8) ?Msg` | each typed character, in order | a Msg (null = ignore) |
+| `keySpecialMsg` | `(*const Model, SpecialKey) ?Msg` | each non-text key / chord | a Msg |
+| `clipboardText` | `(*const Model, SpecialKey) ?[]const u8` | Ctrl+C / Ctrl+X, before `clipboardMsg` | the text to copy (a pure query; the loop writes the Host clipboard) |
+| `clipboardMsg` | `(*const Model, SpecialKey, paste: []const u8) ?Msg` | Ctrl+C / Ctrl+X / Ctrl+V; `paste` is the clipboard text for Ctrl+V (an empty paste is not delivered) | a Msg (Ctrl+X: the cut, after the copy) |
+| `keyNeedsClipboard` + `handleClipboard` | `(SpecialKey) bool` / `(*Model, SpecialKey, Clipboard) void` | **deprecated**; only when neither new hook exists | mutates the Model outside `update` (HARDLINE §1); removed next release, see [migration-clipboard.md](../migration-clipboard.md) |
+| `submitMsg` | `(*const Model) ?Msg` | Enter key (before `keySpecialMsg`) | a Msg |
+| `focusedMsg` | `(*const Model) ?Msg` | every frame | the focus Msg of the focused widget; enables Tab traversal + the focus ring + caret |
+| `blurMsg` | `(*const Model) ?Msg` | when Tab moves keyboard focus from a text field onto a non-text widget | the Msg that clears the Model's text focus, so the field stops receiving typed characters |
+| `wheelMsg` | `(*const Model, f32) ?Msg` | vertical wheel not claimed by a scroll region / pointer canvas | a Msg |
+| `scrollMsg` | `(*const Model, id, dx, dy) ?Msg` | wheel over the innermost `ScrollStyle.id != 0` region | a Msg |
+| `scrollLayoutMsg` | `(*const Model, id, vw, vh, cw, ch) ?Msg` | a scroll region's first layout and each size change | a Msg (the view cannot read layout) |
+| `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer input over interactive canvases / scenes; `layout` events | a Msg |
+| `windowMsg` | `(*const Model, w: f32, h: f32) ?Msg` | first frame and every resize | a Msg |
+| `windowTitle` | `(*const Model) ?[]const u8` | every frame; `Host.setTitle` only on change | the title |
+| `themeFor` | `(*const Model) Theme` | every frame, before `view` | the theme the emitters use |
+| `subscribe` | `(*const Model) []const Sub(Msg)` | every frame | timers (`every`, `at`) and `animation_frame` |
+| `animationMsg` | `(*const Model, dt_ms: u32) ?Msg` | every frame while a `Sub.animation_frame` is listed | a Msg (see [animation.md](animation.md)) |
+| `effects` | `(*const Model) []const Effect` | every frame | effects to hand the Host once each (HARDLINE hatch 7) |
+| `effectMsg` | `(*const Model, EffectResult) ?Msg` | each effect result and each unsolicited drop / paste | a Msg |
+| `resources` | `(*const Model) []const Resource` | every frame | GPU meshes / images by (key, rev) (hatch 8) |
+| `secondaryWindow` | `(*const Model) ?SecondaryWindowSpec` | every frame | open / close the second window |
+| `secondaryView` | `(*const Model, *CmdBuffer(Msg)) void` | each frame the second window is open | its view (pure, same rules as `view`) |
+| `secondaryClosedMsg` | `(*const Model) ?Msg` | the user closed the second window from the OS | a Msg |
+
+Hooks in open PRs (`textMsg`, `hoverMsg`, `contextMsg`, `modsMsg`,
+`sliderMsg`, `virtualRowsMsg`, `cursorFor`, `commands`, `debugState`) follow the
+same rules and join this table when they land.
 
 ### Interactive canvases and scroll regions
 
@@ -81,6 +116,7 @@ route against the **previous** frame's layout, exactly like hit-testing.
 | Decl | Signature | Role |
 |------|-----------|------|
 | `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer events over `CanvasCmd.pointer` canvases: `down` / `move` / `up` / `wheel` / `leave`, and `layout` on first layout and whenever the rect size changes. Semantics in [canvas.md](canvas.md). |
+| `pointerMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | **the one pointer hook for widgets**: `ev.kind` = `hover` (target changed), `down` (any button but right), `up`, `context` (right press); `ev.button` says which. `ev.hit` is the widget's click / focus Msg, or **null for blank space**, so `if (ev.kind == .down and ev.isBlank()) return .clear_focus` clears the app's focus (the loop never invents focus changes for you). `ev.box` / `ev.now_ms` as for `hoverMsg`. `hoverMsg` / `contextMsg` are the same events for one kind each and remain; canvas / text / slider pointer hooks keep their capture semantics (see docs/features/pointer-msg.md for the staged migration). |
 | `hoverMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the interactive widget under the pointer changed (entered, left, replaced). `ev.hit` is that widget's click Msg, `ev.box` its rect (previous frame), `ev.now_ms` the host clock. Drives `widgets.tooltip`. |
 | `contextMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the right button went down; `ev.hit` is the Msg of the widget under the cursor, `null` over empty space. Drives `widgets.menu.ContextMenu`. |
 | `sliderMsg` | `(*const Model, grab: Msg, value: f32) ?Msg` | a `slider` cmd is being dragged: `grab` is its `grab_msg` (which slider), `value` the 0..1 position under the pointer. Fired on press and every frame the left button stays down (pointer captured, so the drag survives leaving the track); the slider's plain click Msg is not dispatched. Without the hook a slider is click-only. |
@@ -195,11 +231,12 @@ and run everywhere but the second window only actually opens on Windows;
 the primary window is unaffected on the other backends.
 
 `RunOptions`:
-- `clear_color: [4]f32` — scene clear color (default dark).
+- `clear_color: ?[4]f32` — scene clear color; `null` (default) follows `theme.palette.bg`, so `themeFor` apps switch background with the theme.
 - `blink_half_ms: u32` — text-cursor blink half-period in Host-clock ms
   (default 500; 0 = no blinking). The caret phase is `TransientState.blink_on`,
   set from the clock; while idle the loop wakes only at each toggle.
 - `snapshot_path: ?[]const u8` — live-snapshot sink (default `null`).
+- `control_path` / `record_path` / `replay_path: ?[]const u8`, `inspect: bool`, `inspect_hotkey: bool` — agent control socket, input recording / replay, the dev inspector (`TEAK_CONTROL` / `TEAK_RECORD` / `TEAK_REPLAY` / `TEAK_INSPECT` env win); see [agent-driver.md](agent-driver.md).
 - `app_name: []const u8` — names the app for hosts that keep per-app files (native storage under `<config>/teak/<app_name>/`); empty = the window title.
 
 ### Live snapshot sink (`TEAK_SNAPSHOT`)
@@ -224,7 +261,7 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
 3. Keyboard: chars via `keyCharMsg`; then special keys — built-in
    Tab/Shift+Tab traversal and Enter→`submitMsg` first (if the app
    exposes the relevant hooks), then clipboard chords via
-   `handleClipboard`, else `keySpecialMsg`.
+   `clipboardText` / `clipboardMsg` (or the deprecated `handleClipboard`), else `keySpecialMsg`.
 4. Pointer canvases (`canvasMsg`): hover / move / down / up / leave +
    capture. Wheel: pointer canvas -> `scrollMsg` region -> `wheelMsg`.
 5. Effect results (`effectMsg`), then subscriptions: `runSubs(subscribe(model))`

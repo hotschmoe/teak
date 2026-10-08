@@ -9,7 +9,7 @@
 `src/text/*` (the `teak-text` module: faces, shaper, measure), `src/gpu/{glyph_atlas,text_stage}.zig`,
 `src/render/build.zig`.
 **Design record**: [text-engine.md](text-engine.md) (decisions, measurements, per-PR plan).
-**Guides**: [text-area.md](text-area.md) (multi-line editing, self-contained), cookbook recipe 19.
+**Guides**: [text-area.md](text-area.md) (multi-line editing, self-contained), cookbook recipe 23.
 
 ## The supported subset (read this first)
 

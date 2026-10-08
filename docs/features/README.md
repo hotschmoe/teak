@@ -55,6 +55,7 @@ tests; names the gaps.
 | Host interface (window + input) | [host.md](host.md) |
 | Gpu interface (frame structure, MSAA, scenes, images) | [gpu.md](gpu.md) |
 | Headless native runs: scripted input -> PNG | [headless.md](headless.md) |
+| Visual regression (golden screenshots, `zig build vreg`) | [visual-regression.md](visual-regression.md) |
 | Hit-test + hover-test | [hit-test.md](hit-test.md) |
 | Layout engine | [layout.md](layout.md) |
 | Focus traversal | [focus.md](focus.md) |

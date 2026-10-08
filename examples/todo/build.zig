@@ -67,6 +67,94 @@ pub fn build(b: *std.Build) void {
         ui_step.dependOn(&ui_run.step);
     }
 
+    // --- Headless screenshot (no display; needs a Vulkan device) ---
+    //
+    //   zig build shot -- out.png [--state <name>]   (-- --list prints the states)
+
+    if (target.result.os.tag == .linux) {
+        const shot_exe = b.addExecutable(.{
+            .name = "todo-shot",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/shot_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        teak.linkHeadless(b, shot_exe, .{});
+        const shot_run = b.addRunArtifact(shot_exe);
+        shot_run.addPassthruArgs();
+        const shot_step = b.step("shot", "Render a headless PNG screenshot: zig build shot -- out.png [--state name]");
+        shot_step.dependOn(&shot_run.step);
+    }
+
+    // --- Headless agent driver (Linux): the same App, offscreen, controlled
+    // over TEAK_CONTROL by `teak-drive` (docs/features/agent-driver.md). ---
+
+    if (target.result.os.tag == .linux) {
+        const drive_step = b.step("drive", "Build the agent-driver binaries (zig-out/bin/todo-drive headless, todo-ui windowed)");
+        if (teak.hasNativeBackend(target.result.os.tag)) {
+            const ui_drive = b.addExecutable(.{
+                .name = "todo-ui",
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("src/ui_main.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                }),
+            });
+            teak.linkNativeWgpu(b, ui_drive, .{});
+            drive_step.dependOn(&b.addInstallArtifact(ui_drive, .{}).step);
+        }
+        const drive_exe = b.addExecutable(.{
+            .name = "todo-drive",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/drive_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        teak.linkHeadless(b, drive_exe, .{});
+        drive_step.dependOn(&b.addInstallArtifact(drive_exe, .{}).step);
+    }
+
+    // --- Hot reload (Linux, dev builds): `libapp.so` + a stable loader. ---
+    // `zig build dev [--watch] [-Dbackend=headless]`, then run
+    // `zig-out/bin/todo-dev`; every rebuild of libapp.so is swapped in with
+    // the Model kept (docs/features/hot-reload.md).
+
+    if (target.result.os.tag == .linux) {
+        const dev_backend: []const u8 = b.option([]const u8, "backend", "dev backend: native (window) or headless") orelse "native";
+        const dev_headless = std.mem.eql(u8, dev_backend, "headless");
+        const dev_step = b.step("dev", "Build libapp.so + the todo-dev loader for hot reload");
+        const lib = b.addLibrary(.{
+            .name = "app",
+            .linkage = .dynamic,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(if (dev_headless) "src/dev_lib_headless.zig" else "src/dev_lib_native.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        if (dev_headless) {
+            teak.linkHeadless(b, lib, .{});
+        } else if (teak.hasNativeBackend(target.result.os.tag)) {
+            teak.linkNativeWgpu(b, lib, .{});
+        }
+        dev_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
+
+        const loader = b.addExecutable(.{
+            .name = "todo-dev",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/dev_main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+                .imports = &.{.{ .name = "teak", .module = teak_mod }},
+            }),
+        });
+        dev_step.dependOn(&b.addInstallArtifact(loader, .{}).step);
+    }
+
     // --- Web (wasm + zunk) ---
 
     const wasm_target = b.resolveTargetQuery(.{

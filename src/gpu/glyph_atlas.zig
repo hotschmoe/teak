@@ -182,6 +182,11 @@ pub fn GlyphAtlasWith(comptime hashFn: fn (GlyphKey) u64) type {
         }
 
         /// Pin `e`'s page for the current frame, as a `lookup` hit does.
+        /// Pin `page` for this frame (reused instances keep pointing into it).
+        pub fn pinPage(self: *Self, page: u8) void {
+            self.pages.items[page].last_used_frame = self.frame;
+        }
+
         pub fn touch(self: *Self, e: *const Entry) void {
             if (e.rect.w != 0 and e.rect.h != 0) self.pages.items[e.page].last_used_frame = self.frame;
         }

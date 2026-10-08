@@ -74,6 +74,16 @@ regressions automatically.
 
 ---
 
+### 5. `&someFn()` of a returned struct is a stack temporary
+
+**Shape**: a hook (`subscribe`, `effects`, `commands`, a `Sub` list, a canvas primitive list) that returns `&buildThing(...)` works in Debug and returns garbage in ReleaseFast, or the list shows stale / corrupt entries a frame later.
+
+**Detection**: only under optimisation, or with a debugger watching the slice's address: the pointer lies in the callee's dead stack frame. `zig build test -Doptimize=ReleaseSafe` plus a test that calls the hook twice and compares catches it.
+
+**Root cause**: `return &makeList();` takes the address of the *temporary the call produced*. A temporary only outlives the statement when it is a comptime-known constant; a runtime-built value lives in the function's frame and dies on return. Slices returned from `view`-adjacent hooks must point into the Model, a `static const`/comptime value, or the per-frame arena (`cb.arena.allocator()`).
+
+**Fix**: return a slice of `Model` storage, or a comptime constant (`const list = [_]Sub(Msg){...}; return &list;`), or allocate from the frame arena. Never `&runtimeCall()`.
+
 ## Canary test categories
 
 Every new feature ships with at least one of each that's applicable.

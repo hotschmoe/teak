@@ -20,8 +20,21 @@ Every arrow is an explicit function call with typed inputs and outputs. No globa
 
 ## Status
 
-- **Proto-2 shipped** on three hosts: **Windows** (Win32 + wgpu-native), **Linux** (X11 + wgpu-native), and **WebAssembly** (WebGPU via [zunk](https://github.com/hotschmoe/zunk)). One `linkNativeWgpu` call picks the native backend by target OS. *(Linux X11 runs under XWayland; a native Wayland backend is not yet implemented.)*
-- **Text engine shipped** ([`docs/features/text.md`](docs/features/text.md)): one stb_truetype rasterizer feeding an instanced glyph atlas (native Linux and web; Windows via GDI until its stb path lands), a `Shaper` interface with a built-in shaper (kerning, ligatures, combining marks), word / char / ellipsis wrapping and flex shrink, grapheme-aware `Editor` / `TextField` / multi-line `TextArea` with undo, selection, clipboard and IME (X11, Win32; web bridge in review). **Supported subset:** left-to-right alphabetic scripts are fully supported with the bundled face (CJK needs a face that covers it; the fallback chain is in review); Arabic, Hebrew and Indic scripts need the optional HarfBuzz build and the bidi work now in review (see the table in `text.md`); no subpixel LCD AA, no font discovery by name.
+- **Proto-2 shipped** on three hosts: **Windows** (Win32 + wgpu-native), **Linux** (Wayland or X11 + wgpu-native), **macOS** (Cocoa + Metal via wgpu-native, no SDK needed to build), and **WebAssembly** (WebGPU via [zunk](https://github.com/hotschmoe/zunk)). One `linkNativeWgpu` call picks the native backend by target OS. *(Linux picks **Wayland** when `WAYLAND_DISPLAY` is set and its libraries load, else X11/XWayland, at runtime from one binary; `TEAK_BACKEND=x11|wayland` forces one.)*
+At a glance (verified against master `4f898c0`; the open list is [`tasks.md`](tasks.md), the competitor matrix [`docs/PARITY.md`](docs/PARITY.md)):
+
+| | Ships on master | In review / not yet |
+|---|---|---|
+| **Platforms** | Windows (Win32 + wgpu, x86_64 and native ARM64), Linux (Wayland or X11 from one binary), web (WebGPU via zunk), headless | macOS (#54), web WebGL2 fallback (evaluated only) |
+| **Text** | glyph atlas, built-in shaper + optional HarfBuzz, wrapping, grapheme / line-break / bidi algorithms, multi-line `TextArea`, undo, IME on X11 / Win32 | bidi rendering, font fallback, colour emoji, SDF text, web IME |
+| **Rendering** | SDF rounded rects / borders / gradients / soft shadows, images, canvas + charts, `scene3d` (camera, picking, instancing, grid, section cuts, layers) | SVG, subpixel LCD AA |
+| **Widgets** | button, checkbox, radio, slider, dropdown, combobox, numeric + date field, toggle, progress, tabs, split, tooltip, toast, dialog, menus, `DataTable`, `VarList`, `TreeList` | colour picker, number spinner, whole-UI keyboard navigation |
+| **Loop** | event-driven idle, `Sub` timers, `teak.anim` tweens, declarative effects + GPU resources, `pointerMsg` | commands / shortcuts / drag and drop |
+| **Tooling** | `zig build audit` / `bench` / `shot` / `api`, `TEAK_SNAPSHOT`, golden snapshots, generated API reference | agent driver + MCP (#46), hot reload (#79), visual regression (#32), a11y publishing (#58) |
+
+Examples: `chrome`, `counter_greeter`, `effects`, `fonts`, `gallery`, `kerf_viewer`, `notes`, `scene3d`, `scene_layers`, `tables`, `todo`, `tree`, `viewport`.
+
+- **Text rendering shipped.** Both backends rasterize glyph-accurate text into a texture atlas and draw via `uploadText` / `renderFrame`.
 - **Functional-gaps push landed** on `functional_gaps_yolo`: overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs surface, virtual list, a11y tree, rich text. See [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md).
 - **Declarative effects:** `effects` / `effectMsg` (HARDLINE hatch 7) — HTTP, downloads, file open, storage, clock, clipboard, query params, plus pasted / dropped images and files; see [`docs/features/effects.md`](docs/features/effects.md).
 - **Agent DX + consumer gaps landed:** `canvas` widget + line-chart helper, declarative subscriptions (`Sub` / `subscribe`, serviced by `teak.run`), golden snapshot tests + live `TEAK_SNAPSHOT` streaming, ComponentList stable-key per-item focus, Dropdown open-list scrolling, and the audit-enforced [`llms.txt`](llms.txt) + [`docs/cookbook.md`](docs/cookbook.md).
@@ -45,9 +58,9 @@ zig build web            # wasm + WebGPU via zunk — writes dist/
 zig build web-run        # same, then serves dist/ on localhost:8080
 ```
 
-Building the Linux UI needs no X11 dev package (libX11 is `dlopen`ed at runtime); at runtime it needs `libX11.so.6`, a Vulkan driver, and a monospace TTF (DejaVuSansMono by default; override with `TEAK_FONT`, or register your own with `Host.registerFont`).
+Building the Linux UI needs no X11 or Wayland dev packages (libX11, libwayland-client, libxkbcommon are `dlopen`ed at runtime); at runtime it needs `libX11.so.6` (X11) or `libwayland-client.so.0` + `libxkbcommon.so.0` (Wayland), a Vulkan driver, and a monospace TTF (DejaVuSansMono by default; override with `TEAK_FONT`, or register your own with `Host.registerFont`).
 
-Seven examples so far: **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array), **chrome** (an engineering-workstation shell: header / 360 | flex | 320 columns / status line, bordered cards, bracket tabs, a `teak.Table`, underline fields, hover-inverting buttons, a hard-shadowed overlay, a fully custom `Theme`), **viewport** (an interactive canvas you pan and zoom, plus a scroll list whose scrollbar is sized from `scrollLayoutMsg`), and **effects** (every `teak.Effect` with a visible result: HTTP, download, file open, storage, clock, clipboard, query params, dropped / pasted images), and **fonts** (IBM Plex Mono at three weights with tracking: `linkWebWgpu(.fonts)` on the web, `Host.registerFont` on Linux).
+Examples (the full list is in the tree below; `zig build audit` fails if one is missing): **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array), **chrome** (an engineering-workstation shell: header / 360 | flex | 320 columns / status line, bordered cards, bracket tabs, a `teak.Table`, underline fields, hover-inverting buttons, a hard-shadowed overlay, a fully custom `Theme`), **viewport** (an interactive canvas you pan and zoom, plus a scroll list whose scrollbar is sized from `scrollLayoutMsg`), and **effects** (every `teak.Effect` with a visible result: HTTP, download, file open, storage, clock, clipboard, query params, dropped / pasted images), **fonts** (IBM Plex Mono at three weights with tracking: `linkWebWgpu(.fonts)` on the web, `Host.registerFont` on Linux), **scene3d** (depth-tested meshes and orbit camera through `scene3d` + declarative `resources()`), and **kerf_viewer** (a Kerf `mesh.json` 3D viewer with CPU picking and a parts panel).
 
 **Headless screenshots** (no display): `zig build shot -- out.png` in `examples/chrome` and `examples/scene3d` runs the real App on the native wgpu backend with scripted input and writes a PNG (`teak.linkHeadless`, `teak.headless`; see [`docs/features/headless.md`](docs/features/headless.md)). It needs a Vulkan device and a TTF.
 
@@ -56,6 +69,7 @@ Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no
 ## Where to read next
 
 - [`docs/HARDLINE.md`](docs/HARDLINE.md) — the non-negotiable rules. Start here.
+- [`docs/showcase.md`](docs/showcase.md) — screenshots of the examples, native and web, retro / modern / dark / light, with the PR behind each feature.
 - [`docs/consuming-teak.md`](docs/consuming-teak.md) — **build an app**: `build.zig.zon` → `teak.run` in a few steps.
 - [`docs/cookbook.md`](docs/cookbook.md) — **add X to my app**: ~12 intent-oriented recipes (modal, dropdown, chart, golden test, second window, new widget…).
 - [`CLAUDE.md`](CLAUDE.md) — orientation for LLMs and new contributors.
@@ -77,6 +91,13 @@ Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no
   `teak.run` mirrors each changed frame to that file as `tag (x,y,w,h)
   payload` text, so an agent driving the app reads the **GUI as data**
   instead of pixels. See [`docs/features/snapshot.md`](docs/features/snapshot.md).
+- **Agent driver** — `TEAK_CONTROL=<socket>` lets an agent read (snapshot,
+  a11y tree, Msg log, screenshot) and operate (click by role+label, type, key)
+  a running app through the real input path; `tools/teak-drive` is the CLI
+  and an MCP server (`teak-drive mcp`); `TEAK_RECORD` / `TEAK_REPLAY` replay a
+  session deterministically; `TEAK_INSPECT=1` overlays a widget-tree /
+  hover / Msg / timing inspector. See
+  [`docs/features/agent-driver.md`](docs/features/agent-driver.md).
 - [`docs/cookbook.md`](docs/cookbook.md) — intent-oriented recipes
   ("add X to my app"), each verified against `src/`.
 
@@ -86,6 +107,7 @@ Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no
 src/
 ├── teak.zig              public library root, re-exports
 ├── run.zig               teak.run / Runtime — canonical host loop (tests: run_test.zig)
+├── control.zig           agent control channel + TEAK_RECORD/REPLAY, driven from run.zig
 ├── core/
 │   ├── cmd.zig           Cmd union, CmdBuffer, arena mgmt (incl. disabled, canvas, validateBalance)
 │   ├── component.zig     Components(), validateComponent, buildMsgs
@@ -97,6 +119,7 @@ src/
 │   ├── sub.zig           Sub(Msg) declarative timers + runSubs
 │   ├── chart.zig         lineChartPrimitives — canvas chart helper
 │   ├── snapshot.zig      []Cmd+[]Rect → text; golden tests + TEAK_SNAPSHOT
+│   ├── inspector.zig     dev inspector panel (tree, hover, Msgs, timings) as overlay cmds
 │   └── transient.zig     hover/press/focus presentation state
 ├── layout/
 │   ├── engine.zig        measure + position passes
@@ -108,7 +131,7 @@ src/
 ├── render/
 │   ├── vertex.zig        Vertex struct, emitQuad
 │   └── build.zig         []Cmd + []Rect + TransientState → vertex buffer
-├── platform/             Host interface, InputQueue + Win32 / X11 / wasm backends
+├── platform/             Host interface, InputQueue + Win32 / X11 / Cocoa / wasm backends
 └── gpu/                  Gpu interface + wgpu-native (Win32+GDI / X11+stb_truetype) / zunk
 
 examples/counter_greeter/  proto-2 demo; composed Components + focus routing
@@ -116,9 +139,14 @@ examples/todo/             dynamic-list demo; N rows, Msg-with-index, scroll
 examples/tree/             recursive tree with expand/collapse over flat Model
 examples/chrome/           engineering-workstation chrome: cards, tables, bracket tabs, custom Theme
 examples/viewport/         pan/zoom interactive canvas + scroll list with scrollbar
+examples/scene3d/          depth-tested 3D scene: meshes, camera, declarative resources, headless shot
 examples/kerf_viewer/      Kerf mesh.json 3D viewer: Orbit camera, CPU pick, parts panel (scene3d path)
+examples/scene_layers/     2.5D: tilted drawing sheets, translucent annotation layer and image billboards around a 3D model
 examples/effects/          declarative effects: HTTP, files, storage, clock, clipboard, paste/drop
 examples/fonts/            IBM Plex Mono at three weights + tracking (web .fonts, native registerFont)
+examples/tables/            DataTable / VarList / TreeList / Scroller at 100k rows
+examples/gallery/           every widget in one place
+examples/notes/             multi-line TextArea editor
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)
