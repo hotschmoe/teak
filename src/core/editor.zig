@@ -235,7 +235,7 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
         /// Replace the whole content (truncated at capacity on a grapheme
         /// boundary), cursor at the end, history cleared.
         pub fn set(self: *Self, s: []const u8) void {
-            var n = @min(s.len, cap);
+            var n: usize = @min(s.len, cap);
             if (n < s.len) n = unicode.snapBackward(s, n);
             @memcpy(self.buf[0..n], s[0..n]);
             self.len = n;
