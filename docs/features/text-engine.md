@@ -788,3 +788,12 @@ Dep: PR11b. Accept: `zig build audit` green; the example runs on native and web.
 8. **Defects found while reading the current path** (all removed by this design, listed so they are not fixed twice):
    silent 256-run drop (`wgpu_core.zig:988`, `web.zig:44`), content-blind cache key and integer-truncated size
    (`glyph_cache.zig:textCacheKey`), per-string texture + bind group churn, GDI ignoring `letter_spacing`.
+
+## 12. Orchestrator decisions (2026-10-08)
+
+* **S1 approved:** the `textMsg` pointer/metrics hook ships as specified in 6.4 (same shape as `canvasMsg`). PR11b adds the
+  one-line HARDLINE §2 hatch 4(d) mention.
+* **S2 approved:** hatch 3 becomes "two to four O(n) linear passes; passes 2-3 run only when the frame has wrapped or
+  shrinkable nodes". PR8 amends HARDLINE and `docs/features/layout.md`.
+* **SDF deferred** as recommended; coverage atlas at physical pixel size. **stb everywhere** (web included) is the default
+  rasterizer; GDI and canvas2D become fallbacks.
