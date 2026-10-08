@@ -135,7 +135,7 @@ pub fn view(m: *const Model, cb: anytype) void {
         .width = 0, // 0 → inherit parent width
         .height = 320,
     });
-    for (m.items[0..m.items_len], 0..) |item, i| {
+    for (m.items[0..m.items_len], 0..) |*item, i| {
         cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 4 });
         cb.checkbox(.{ .toggle = i }, item.done, item.label[0..item.label_len]);
         // Spacer claims the middle so the delete button pins right.
