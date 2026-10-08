@@ -416,7 +416,7 @@ pub fn Nav(comptime Action: type) type {
             while (level <= st.depth and level < max_depth) : (level += 1) {
                 const items = levelItems(root, st, bar, level);
                 if (items.len == 0) break;
-                const h = rowsHeight(items, o);
+                const h = rowsHeight(items, o) + 2; // rows + the 1 px panel border
                 // Keep the panel on screen.
                 if (x + o.panel_w > o.window_w) x = @max(0, o.window_w - o.panel_w);
                 if (y + h > o.window_h) y = @max(0, o.window_h - h);
@@ -431,16 +431,16 @@ pub fn Nav(comptime Action: type) type {
                     .shadow = .{ 0, 0, 0, 0.35 },
                     .shadow_offset = .{ 3, 3 },
                 });
-                cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .bg = pal.bg_panel, .border = pal.border, .align_cross = .stretch, .width = o.panel_w });
+                cb.pushGroup(.{ .direction = .vertical, .padding = 1, .gap = 0, .bg = pal.bg_panel, .border = pal.border, .align_cross = .stretch, .width = o.panel_w });
                 for (items, 0..) |it, i| {
                     if (it.separator) {
-                        cb.pushGroup(.{ .direction = .vertical, .pad_x = 1, .pad_y = 4, .gap = 0, .align_cross = .stretch });
+                        cb.pushGroup(.{ .direction = .vertical, .pad_x = 0, .pad_y = 4, .gap = 0, .align_cross = .stretch });
                         cb.divider();
                         cb.popGroup();
                         continue;
                     }
                     var style = cb.theme.button;
-                    style.min_width = o.panel_w;
+                    style.min_width = o.panel_w - 2; // inside the 1 px panel border (not over it)
                     style.height = o.row_h;
                     style.label_align = .start;
                     style.bg = pal.bg_panel;
@@ -475,7 +475,7 @@ pub fn Nav(comptime Action: type) type {
 
                 // Next level opens to the right of this one, level with the parent row.
                 const parent_row = st.sel[level];
-                y += rowOffset(items, parent_row, o);
+                y += rowOffset(items, parent_row, o); // the submenu's own first row lines up with the parent row (both panels inset 1 px)
                 x += o.panel_w;
                 if (x + o.panel_w > o.window_w) x = @max(0, x - 2 * o.panel_w);
             }
@@ -968,14 +968,14 @@ test "menu: snapshot golden - open drop-down with a separator, disabled row, che
         \\    button (72,0,72,28) "Edit" underline=0
         \\    button (144,0,72,28) "Help" underline=0
         \\  overlay (0,0,400,300) layer=1 [modal]
-        \\  overlay (0,28,244,121) layer=1 shadow
-        \\    group (0,28,244,121) vertical bg border
-        \\      button (0,28,244,28) "  New                Ctrl+N" underline=2
-        \\      button (0,56,244,28) "  Open...            Ctrl+O" underline=2
-        \\      group (0,84,244,9) vertical
-        \\        divider (1,88,242,1)
-        \\      button (0,93,244,28) "  Save                     " [disabled]
-        \\      button (0,121,244,28) "  Exit                     " underline=3
+        \\  overlay (0,28,244,123) layer=1 shadow
+        \\    group (0,28,244,123) vertical bg border
+        \\      button (1,29,242,28) "  New                Ctrl+N" underline=2
+        \\      button (1,57,242,28) "  Open...            Ctrl+O" underline=2
+        \\      group (1,85,242,9) vertical
+        \\        divider (1,89,242,1)
+        \\      button (1,94,242,28) "  Save                     " [disabled]
+        \\      button (1,122,242,28) "  Exit                     " underline=3
         \\
     );
 }
