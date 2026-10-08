@@ -6,6 +6,10 @@
 //! — a consumer's build.zig picks a Host + Gpu backend module and wires
 //! them up. See `docs/archive/tasks-file-struct.md` for the load-bearing rationale.
 
+/// Library version (semver), derived from `build.zig.zon` `.version` at build
+/// time; `-Dversion-meta=<str>` appends `+<str>`. See docs/VERSIONING.md.
+pub const version: []const u8 = @import("build_options").version;
+
 /// The flat `Cmd` union, `CmdBuffer` and balance validation.
 pub const cmd = @import("core/cmd.zig");
 /// Comptime component composition (`Components`, `validateComponent`).
@@ -28,6 +32,8 @@ pub const text_event = @import("core/text_event.zig");
 pub const text_area = @import("core/text_area.zig");
 /// Declarative subscriptions (`Sub`): timers serviced by the run loop.
 pub const sub = @import("core/sub.zig");
+/// Model-driven animation: `Tween(T)`, easing curves and `lerp`.
+pub const anim = @import("core/anim.zig");
 /// `Theme`, `Palette` and `Typography` presets consulted by the theme-aware emitters.
 pub const theme = @import("core/theme.zig");
 /// `TextField`: the canonical text-input component and its key-dispatch helpers.
@@ -431,4 +437,15 @@ pub const monoMeasurer = text.monoMeasurer;
 
 test {
     @import("std").testing.refAllDecls(@This());
+}
+
+test "version is semver and matches build.zig.zon" {
+    const std = @import("std");
+    const opts = @import("build_options");
+    const parsed = try std.SemanticVersion.parse(version);
+    const manifest = try std.SemanticVersion.parse(opts.manifest_version);
+    try std.testing.expectEqual(manifest.major, parsed.major);
+    try std.testing.expectEqual(manifest.minor, parsed.minor);
+    try std.testing.expectEqual(manifest.patch, parsed.patch);
+    try std.testing.expectEqualStrings(manifest.pre orelse "", parsed.pre orelse "");
 }

@@ -81,6 +81,7 @@
 //!     services the returned subs each frame via `runSubs` on the host's
 //!     monotonic clock (`Host.nowMs`) and dispatches any fired `Msg`
 //!     through the normal `update` loop. See `docs/features/subscriptions.md`.
+//!   - `animationMsg(*const Model, dt_ms: u32) ?Msg`   — frame time while a `Sub.animation_frame` is listed (core/anim.zig)
 //!   - `effects(*const Model) []const Effect`         — declarative effects
 //!     (HARDLINE §2 hatch 7): HTTP, downloads, file picker, storage, clock,
 //!     clipboard, query params. Pure; each effect `id` is handed to the host
@@ -500,6 +501,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         last_mouse_x: f32 = -1,
         last_mouse_y: f32 = -1,
         last_buttons: pointer.Buttons = .{},
+        /// A `Sub.animation_frame` is listed: frames must keep flowing.
+        animating: bool = false,
         /// The first frame always builds (nothing to show yet).
         built_once: bool = false,
 
@@ -645,6 +648,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (!std.meta.eql(input.buttons, self.last_buttons)) return false;
             if (input.wheel_dx != 0 or input.wheel_dy != 0) return false;
             if (input.chars.len != 0 or input.keys.len != 0) return false;
+            if (self.animating) return false;
             if (self.ts.ime_active or self.host.imeState().active) return false;
             if (self.opts.blink_period > 0 and self.ts.focus_index != null) return false;
             if (has_secondary and App.secondaryWindow(&self.model) != null) return false;
@@ -1108,8 +1112,16 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             };
             const now_ms = self.host.nowMs();
             const since = self.last_sub_ms orelse now_ms; // first frame: no window, no fire
-            sub_mod.runSubs(Msg, App.subscribe(&self.model), since, now_ms, Dispatch{ .rt = self });
+            const subs = App.subscribe(&self.model);
+            sub_mod.runSubs(Msg, subs, since, now_ms, Dispatch{ .rt = self });
             self.last_sub_ms = now_ms;
+            // `.animation_frame`: feed the frame time to the App while it asks
+            // for it, and keep frames flowing (no idle skip) meanwhile.
+            self.animating = sub_mod.wantsAnimationFrame(Msg, subs);
+            if (self.animating and @hasDecl(App, "animationMsg")) {
+                const dt: u32 = @intCast(@min(now_ms -| since, sub_mod.max_animation_dt_ms));
+                if (App.animationMsg(&self.model, dt)) |m| self.dispatch(m);
+            }
         }
 
         /// Hand the host's finished effect results (and unsolicited drops /
@@ -1481,6 +1493,7 @@ pub fn rectsEqual(a: []const Rect, b: []const Rect) bool {
 test {
     _ = @import("core/eql.zig");
     _ = @import("core/oom.zig");
+    _ = @import("core/anim.zig");
     _ = @import("run_test.zig");
     _ = @import("run_effects_test.zig");
 }

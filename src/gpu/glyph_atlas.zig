@@ -176,6 +176,16 @@ pub fn GlyphAtlasWith(comptime hashFn: fn (GlyphKey) u64) type {
             return self.slots.len - 1;
         }
 
+        /// Whether `e` (an entry returned earlier) still describes live texels.
+        pub fn stillValid(self: *const Self, e: *const Entry) bool {
+            return self.isValid(e);
+        }
+
+        /// Pin `e`'s page for the current frame, as a `lookup` hit does.
+        pub fn touch(self: *Self, e: *const Entry) void {
+            if (e.rect.w != 0 and e.rect.h != 0) self.pages.items[e.page].last_used_frame = self.frame;
+        }
+
         /// Find a live entry. A hit pins its page for the current frame.
         pub fn lookup(self: *Self, key: GlyphKey) ?Entry {
             var i: usize = @intCast(hashFn(key) & self.mask());

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Animation primitive
+
+- New `teak.anim`: `Tween(T)` (Model-resident), `Ease`/`ease`, `lerp`. New
+  `Sub.animation_frame` and the optional App hook `animationMsg(model, dt_ms)`:
+  while the sub is listed the run loop feeds frame time (capped at 100 ms) to
+  the app and suspends idle skipping. `Sub` gained a variant (exhaustive
+  switches over `Sub` need an arm). `examples/chrome`: sliding QUICK KEYS popover.
+  See docs/features/animation.md.
+
 ### Event-driven idle
 
 - `RunOptions.idle_skip` (default true): a frame with no input, no dispatched
@@ -40,6 +49,19 @@
   naming the offending cmd index. The resource table logs once when full
   (`Table.overflowed`).
 ### Changed
+
+- Web text now uses the same glyph atlas as native: stb_truetype compiled into the wasm
+  (`src/text/stb_wasm_impl.c` + a malloc/libm shim) shapes and rasterizes glyphs, the web Host
+  measures with `teak-text` (layout == render, and chrome's web render is pixel-identical to
+  native), and glyphs no shipped face has (CJK, symbols) are rasterized by canvas 2D one cluster
+  at a time. The `.fonts` files are embedded in the wasm (and still copied to `dist/fonts/` for
+  the canvas fallback); a small Plex Mono subset is embedded as the default face. Text is
+  vertically centred in buttons on web now. `glyph_cache.zig`, `textured_quad.wgsl` and the old
+  `rasterizeText` web path are removed. Chrome's wasm grows ~23 KB gzip (ReleaseFast, stripped; ~21 KB with ReleaseSmall), 5.5 KB of it the embedded default face, which apps that ship `.fonts` do not pay.
+- Combining marks (U+0300 block and friends) take no advance and are centred over the preceding base glyph (`cafe` + U+0301 measures like `café`); a mark the face lacks is dropped instead of drawn as a missing-glyph box.
+- `shaders/glyph.wgsl` reads the instance as raw 32-bit words (shared by native and web, since
+  zunk vertex formats are 32-bit). `TextStage` (src/gpu/text_stage.zig) holds the backend-neutral
+  staging code with a shaped-run cache; `teak-text`'s `measure` has a small result cache.
 
 - **Image cache is growable** (native + web): the fixed 64-slot table and 64-draw/frame limit are gone (65536 live images, log at the ceiling on native). `releaseImage` is now a required `Gpu` declaration (`validateGpu`). `resources.MAX_RESOURCES` 128 -> 1024 and overflow now logs a warning and counts `Table.dropped`. Part of #7.
 - Native text (Linux, Windows) is drawn from a glyph atlas: shaped glyphs are packed into R8
