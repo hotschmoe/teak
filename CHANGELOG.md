@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- `teak.unicode`, `teak.linebreak`, `teak.text_wrap`: UAX#29 graphemes, word classes, UAX#14-lite line
+  breaking, wrapping/measure/caret mapping (text-engine PR2a/b).
+- `teak.editor`: `Editor(cap, undo_cap)` with grapheme-aware editing, word jumps, undo/redo (PR10).
+- `SpecialKey`: `ctrl_left/right/home/end` (+ `ctrl_shift_*`), `ctrl_backspace`, `ctrl_delete`,
+  `ctrl_shift_z`; `resolveKey` maps them.
+
+### Changed
+
+- `TextField(N)` is now built on `Editor`: backspace/Delete remove whole grapheme clusters, multi-byte
+  characters typed byte-wise are inserted atomically, and it gains `delete`, `home`/`end`, word jumps,
+  `undo`/`redo` Msgs (the `Model` field names `len`/`cursor`/`selection_anchor` are unchanged; the byte array is now `buf`).
+
 ### Changed (breaking)
 
 - **Zig 0.17.0 is now required; 0.16 support is dropped.** See
