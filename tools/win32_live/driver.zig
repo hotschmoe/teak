@@ -594,6 +594,19 @@ fn nudge(lx: f32, ly: f32) void {
     }
 }
 
+var drag_effect: DWORD = 0;
+var drag_hr: HRESULT = 0;
+var drag_done = std.atomic.Value(bool).init(false);
+
+/// The drag runs on its own thread (with its own OLE apartment) so a wedged
+/// OLE loop becomes a failed check, not a hung job.
+fn dragThread() void {
+    _ = OleInitialize(null);
+    log("DoDragDrop: calling", .{});
+    drag_hr = DoDragDrop(&data_object, &drop_source, 1, &drag_effect);
+    drag_done.store(true, .release);
+}
+
 /// Drag `path` over the window and drop it through OLE, as Explorer would.
 fn dragFile(path: []const u8, over_lx: f32, over_ly: f32) bool {
     drop_path_len = std.unicode.utf8ToUtf16Le(drop_path_w[0..299], path) catch return false;
@@ -601,18 +614,20 @@ fn dragFile(path: []const u8, over_lx: f32, over_ly: f32) bool {
     drag_polls = 0;
     moveTo(over_lx, over_ly);
     mouse(2); // hold the left button like a real drag
-    // OLE's drag loop only polls the source on input; keep nudging the cursor.
     drag_deadline = GetTickCount64() + 1500;
     drag_running.store(true, .release);
     const nudger = std.Thread.spawn(.{}, nudge, .{ over_lx, over_ly }) catch null;
-    var effect: DWORD = 0;
-    const hr = DoDragDrop(&data_object, &drop_source, 1, &effect);
+    const drag = std.Thread.spawn(.{}, dragThread, .{}) catch return false;
+    const give_up = GetTickCount64() + 20_000;
+    while (!drag_done.load(.acquire) and GetTickCount64() < give_up) sleepMs(50);
+    const finished = drag_done.load(.acquire);
     drag_running.store(false, .release);
     if (nudger) |t| t.join();
     mouse(4);
-    log("DoDragDrop hr=0x{x} effect={d}", .{ @as(u32, @bitCast(hr)), effect });
+    if (finished) drag.join() else drag.detach();
+    log("DoDragDrop finished={} hr=0x{x} effect={d} polls={d}", .{ finished, @as(u32, @bitCast(drag_hr)), drag_effect, drag_polls });
     sleepMs(300);
-    return effect == 1;
+    return finished and drag_effect == 1;
 }
 
 // ── Process ────────────────────────────────────────────────────────
