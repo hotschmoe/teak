@@ -19,6 +19,12 @@
   shells), exact cut outlines from a CPU copy of each uploaded mesh (`section.outlinePositions`). Scene targets now use
   `Depth24PlusStencil8`. The canvas `layout` event also carries the rect's window origin (`x`, `y`) and fires when it moves;
   `pick.gizmoLabels` turns that into axis-letter anchors for overlay text.
+- 2.5D layers in `viewport3d`: `View.planes` (`ScenePlane`: tilted sheets drawn from `CanvasPrimitive`s through the shared
+  canvas tessellator, now `render/canvas_tess.zig`; `layer` depth bias, opacity, background, double-sided) and `View.sprites`
+  (`SceneSprite`: camera-facing / axis-locked / fixed billboards from image resources, `screen_px` or world size). Opaque
+  planes write depth; blended planes and sprites sort back to front (`scene.sort.byDepth`). CPU picking: `pick.planes`,
+  `pick.sprites`. `Globals` is 208 B; `Gpu.renderScenes` / `stageDraws` take `SceneData{ items, sprites }` and
+  `buildFrame` a `scene_sprites` list. New example `examples/scene_layers`.
 - `viewport3d` grid and gizmo: `shaders/scene_grid.wgsl` ray-intersects a world plane per pixel (anti-aliased minor / major
   lines, two axis lines, distance and far-plane fade, depth-tested), and a corner axis triad is drawn in a sub-viewport
   from the camera's own rotation. Hit-testing the gizmo is `scene.pick.gizmoHit` (S2).

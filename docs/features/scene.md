@@ -1,6 +1,17 @@
-# `teak.scene` — Viewport3D and 2.5D layers (design)
+# `teak.scene` — Viewport3D and 2.5D layers
 
-**Status**: partly shipped (S1/S2 camera, pick, section math; S3 View payload; S4 instanced items with tint / highlight / flat; the rest is design). Builds on the shipped `scene3d` Cmd
+**Status**: M1 and M2 shipped except the optional ID-buffer pick (M1b) and
+text/offscreen planes (M2c). Shipped: camera, picking and section math (S1/S2),
+the `View` payload (S3), instanced items with tint / highlight / flat (S4),
+ground grid and axis gizmo (S5), section cuts with stencil caps and exact
+outlines (S6), planes, sprites, depth sorting and their picking (P1-P3), and
+the examples `kerf_viewer` and `scene_layers` (S7 / P4). How-to:
+[cookbook recipe 14](../cookbook.md). Sections below keep the original design
+rationale; where the implementation differs it is noted inline: the packed
+instance record is 80 bytes, `Globals` is 208 bytes, scene targets are
+`Depth24PlusStencil8`, `renderScenes` takes `SceneData{items, sprites}`, planes
+are plane-local canvas primitives placed by `origin + x*u + y*v` (so +y of the
+content maps to `v`), and sprite `screen_px` sizes apply to `camera_facing`. Builds on the shipped `scene3d` Cmd
 ([scene3d.md](scene3d.md)); nothing here changes the existing contract, it
 extends it. Consumers: Kerf's teak app (CAD model view, section cuts, picking),
 diagram / sheet previews (M2).
