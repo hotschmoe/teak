@@ -184,7 +184,7 @@ Emitters (all `catch unreachable` on arena OOM):
 - text: `text(s)`, `heading(s)`, `textMuted(s)`, `textDanger(s)`, `textMono(s)`,
   `textStyled(s, font, color)`, `mixedText(parts: []const MixedPart)`
 - `divider()`, `dividerStyled(DividerStyle)`
-- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`
+- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`, `buttonStyledUnderlined(msg, label, ButtonStyle, at: ?usize)` (one underlined ASCII char: a mnemonic hint; `ButtonCmd.underline: ?u16`)
 - `textInput(focus_msg, content, cursor)`, `textInputStyled(...)`, `textInputDisabled(...)`,
   `textInputSelected(focus_msg, content, cursor, ?selection_anchor, TextInputStyle)`
 - `checkbox(msg, checked, label)`, `radio(msg, selected, label)`, `slider(grab_msg, value)`
@@ -229,7 +229,7 @@ ButtonStyle = struct { bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg: [4]
                        press_offset_y: f32 = 0, label_align: TextAlign = .start,
                        h_padding: f32 = 8, min_width: f32 = 60, height: f32 = 36, flex: f32 = 0 }
                        // corners are square (no corner_radius: the quad renderer has no rounding)
-ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false }
+ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false, underline: ?u16 = null }
 TextCmd = struct { content: []const u8, font: FontSpec, color: [4]f32 }
 TextInputStyle = struct { bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg,
                        disabled_border, selection_bg: [4]f32, variant: InputVariant = .boxed,
@@ -696,7 +696,7 @@ widgets.menu.MenuBar(Action) type: Item (= MenuItem(Action){label "&File" mnemon
     viewWith(model, cb, items, msgs /*.menu(Msg) .run(Action)*/, ViewOpts{x,y,window_w,window_h,top_width,bar_height,panel_w,row_h,cols,bar_bg});
     keyMsg(model, SpecialKey, items, msgs) ?AppMsg (F10/Alt activate; arrows, Enter, Escape); charMsg(model, u8, items, msgs) ?AppMsg (mnemonics)
 widgets.menu.ContextMenu(Action) type: Model{x,y,st}; Msg{open_at, goto, close}; openAt(x, y) Msg; isOpen; viewWith / keyMsg / charMsg as MenuBar
-widgets.menu.State{active, hot, open, depth, sel[4]}; menu.displayLabel(cb, label); menu.max_depth; menu.SEP_H
+widgets.menu.State{active, hot, open, depth, sel[4]}; menu.displayLabel(cb, label); menu.mnemonicIndex(label) ?usize; menu.max_depth; menu.SEP_H
 ```
 Choosing a leaf dispatches `msgs.run(action)`; the app's update also runs `MenuBar.update(&m.bar, .close)`.
 Tab traversal (`focus.nextFocusable` / `prevFocusable`) stays inside the topmost modal overlay (dialogs, menus).

@@ -122,6 +122,21 @@ pub fn MenuItem(comptime Action: type) type {
     };
 }
 
+/// Index of the mnemonic character within `displayLabel(label)`, or null.
+pub fn mnemonicIndex(label: []const u8) ?usize {
+    var shown: usize = 0;
+    var i: usize = 0;
+    while (i < label.len) : (i += 1) {
+        if (label[i] == '&' and i + 1 < label.len) {
+            if (label[i + 1] == '&') {
+                i += 1; // a literal '&'
+            } else return shown;
+        }
+        shown += 1;
+    }
+    return null;
+}
+
 /// `label` without its mnemonic markers (`&x` -> `x`, `&&` -> `&`), in the frame arena.
 pub fn displayLabel(cb: anytype, label: []const u8) []const u8 {
     var out: std.ArrayList(u8) = .empty;
@@ -440,6 +455,7 @@ pub fn Nav(comptime Action: type) type {
                         style.hover_bg = pal.bg_hover;
                     }
                     const label = rowText(cb, it, o);
+                    const mn = if (mnemonicIndex(it.label)) |k| k + 2 else null; // after the 2-char lead
                     if (!it.enabled) {
                         cb.buttonStyledDisabled(msgs.menu(.close), label, style);
                     } else if (it.isSub()) {
@@ -447,9 +463,9 @@ pub fn Nav(comptime Action: type) type {
                         s.depth = @intCast(level + 1);
                         s.sel[level] = @intCast(i);
                         if (level + 1 < max_depth) s.sel[level + 1] = firstSelectable(it.children) orelse 0;
-                        cb.buttonStyled(msgs.menu(.{ .goto = s }), label, style);
+                        cb.buttonStyledUnderlined(msgs.menu(.{ .goto = s }), label, style, mn);
                     } else if (it.action) |a| {
-                        cb.buttonStyled(msgs.run(a), label, style);
+                        cb.buttonStyledUnderlined(msgs.run(a), label, style, mn);
                     } else {
                         cb.buttonStyled(msgs.menu(.close), label, style);
                     }
@@ -559,7 +575,7 @@ pub fn MenuBar(comptime Action: type) type {
                     // Clicking the open menu's entry closes it; any other opens that menu.
                     const same_open = st.open and st.hot == i;
                     const target: State = if (same_open) .{} else N.openTop(items, st, @intCast(i));
-                    cb.buttonStyled(msgs.menu(.{ .goto = target }), label, style);
+                    cb.buttonStyledUnderlined(msgs.menu(.{ .goto = target }), label, style, mnemonicIndex(it.label));
                 }
             }
             cb.popGroup();
@@ -728,6 +744,15 @@ test "menu: mnemonics and display labels" {
     try testing.expectEqualStrings("Open...", displayLabel(&cb, "&Open..."));
     try testing.expectEqualStrings("A & B", displayLabel(&cb, "A && B"));
     try testing.expectEqualStrings("Trailing&", displayLabel(&cb, "Trailing&"));
+}
+
+test "menu: mnemonicIndex points into the displayed label" {
+    try testing.expectEqual(@as(?usize, 0), mnemonicIndex("&File"));
+    try testing.expectEqual(@as(?usize, 1), mnemonicIndex("E&xit"));
+    try testing.expectEqual(@as(?usize, 2), mnemonicIndex("Re&fresh"));
+    try testing.expectEqual(@as(?usize, 4), mnemonicIndex("A && &B")); // "A & B": the B
+    try testing.expectEqual(@as(?usize, null), mnemonicIndex("Plain"));
+    try testing.expectEqual(@as(?usize, null), mnemonicIndex("Trailing&"));
 }
 
 test "menu: F10 / Alt activate the bar on the first menu; again deactivates" {
@@ -939,18 +964,18 @@ test "menu: snapshot golden - open drop-down with a separator, disabled row, che
     try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
         \\group (0,0,400,300) vertical
         \\  group (0,0,400,28) horizontal bg
-        \\    button (0,0,72,28) "File"
-        \\    button (72,0,72,28) "Edit"
-        \\    button (144,0,72,28) "Help"
+        \\    button (0,0,72,28) "File" underline=0
+        \\    button (72,0,72,28) "Edit" underline=0
+        \\    button (144,0,72,28) "Help" underline=0
         \\  overlay (0,0,400,300) layer=1 [modal]
         \\  overlay (0,28,244,121) layer=1 shadow
         \\    group (0,28,244,121) vertical bg border
-        \\      button (0,28,244,28) "  New                Ctrl+N"
-        \\      button (0,56,244,28) "  Open...            Ctrl+O"
+        \\      button (0,28,244,28) "  New                Ctrl+N" underline=2
+        \\      button (0,56,244,28) "  Open...            Ctrl+O" underline=2
         \\      group (0,84,244,9) vertical
         \\        divider (1,88,242,1)
         \\      button (0,93,244,28) "  Save                     " [disabled]
-        \\      button (0,121,244,28) "  Exit                     "
+        \\      button (0,121,244,28) "  Exit                     " underline=3
         \\
     );
 }
