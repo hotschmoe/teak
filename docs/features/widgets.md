@@ -325,6 +325,51 @@ in a monospaced font. Panels clamp to the window. A transparent full-window
 modal "scrim" overlay behind the panels makes a click anywhere else dismiss
 the menu. The navigation logic (`Nav`) is pure and exhaustively tested.
 
+### Menu shortcuts: one chord, shown and working
+
+`MenuItem.shortcut` is **display text only**: choosing the row dispatches
+`msgs.run(action)`, and pressing the key does nothing by itself. The chord is
+made to work by the command table (`commands`, [commands.md](commands.md)): the
+loop matches `InputState.chords` against it before widget key handling and
+dispatches the row's `msg`. Wire both to the *same* Msg so a click and the
+chord are indistinguishable to `update`:
+
+```zig
+const Action = enum { save, quit };
+const MB = teak.widgets.menu.MenuBar(Action);
+const save_chord = teak.Chord.ctrl(.s);                       // ONE definition
+
+const file_menu = [_]MB.Item{                                 // const: keySpecialMsg needs the same tree
+    .{ .label = "&Save", .action = .save, .shortcut = "Ctrl+S" },
+    .{ .label = "E&xit", .action = .quit },
+};
+
+pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
+    list.add(.{ .id = "file.save", .label = "Save", .shortcut = save_chord,
+                .enabled = m.dirty, .msg = .{ .run = .save } });   // same Msg as the menu row
+}
+```
+
+(`Chord.ctrl` is the platform's primary modifier: Cmd on macOS, where the host
+folds it. The menu text is the PC spelling; on macOS build it with
+`Chord.format(w, .mac)` instead.) Because the text is a literal, keep the two in
+sync with a test; it is cheap and fails the moment someone edits one side:
+
+```zig
+test "menu shortcut text matches the command table" {
+    var buf: [32]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try save_chord.format(&w, .pc);
+    try std.testing.expectEqualStrings(file_menu[0].shortcut, w.buffered());
+}
+```
+
+A menu built per frame can instead format straight from the table:
+`cmd.menuLabel(arena, .pc, 20)` for a one-string row ("Save    Ctrl+S"), or
+`Chord.format` into an arena buffer for the item's own `.shortcut`. A
+disabled command (`.enabled = false`) neither runs from its chord nor should
+its menu row be enabled: derive both from the same Model field.
+
 **color_picker.** A saturation / value square and a hue strip (interactive canvases drawn from per-vertex-coloured
 triangles: white -> hue left to right, a transparent -> black overlay top to bottom), a preview, hex / R / G / B fields
 and a 16-swatch palette. The colour is HSV in the Model (so dragging hue over a grey does not lose it) plus the text of
