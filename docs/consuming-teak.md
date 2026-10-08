@@ -23,6 +23,32 @@ In your `build.zig.zon`, add Teak (pin a tag/commit + hash via
 },
 ```
 
+The whole file, as `zig init` would generate it plus the Teak dependency:
+
+```zig
+.{
+    .name = .myapp,                              // enum literal, not a string (Zig 0.17)
+    .version = "0.0.0",
+    .fingerprint = 0x0123456789abcdef,           // REQUIRED; run `zig build` once and copy the value
+                                                 // the error message prints, then never change it
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // URL form (a published teak):
+        .teak = .{ .url = "git+https://github.com/hotschmoe/teak.git#<commit>", .hash = "..." },
+        // or, for a local checkout, a RELATIVE path (absolute paths are rejected
+        // by the package manager; use `../teak` or `../../teak`):
+        // .teak = .{ .path = "../teak" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}
+```
+
+Rules that bite: `.path` must be **relative** to the directory holding this file
+(an absolute path is an error); `.fingerprint` is mandatory and must stay
+stable; with `.url` you need the matching `.hash` (`zig fetch --save <url>`
+writes both). Teak itself depends on `zunk` (web) by relative path, so when
+you use a local checkout keep `zunk` next to it (`../zunk` from teak).
+
 A pure-library consumer pays for nothing else. The `wgpu-native`
 prebuilts are **lazy** deps of Teak — they're fetched only when you call
 `teak.linkNativeWgpu` (the native UI path), never for `zig build test`.
@@ -83,12 +109,143 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-`teak.linkWebWgpu(b, exe, .{})` is the wasm + WebGPU equivalent; it
-registers `web` / `web-run` steps. The browser owns the frame loop, so the
-web entry builds a `teak.Runtime` once and calls `runtime.frame()` from its
-exported `frame` — the same loop `teak.run` runs natively (see
-[features/run.md](features/run.md#runtime--the-loop-body-one-frame-at-a-time)
-and any example's `src/web_main.zig`, ~30 lines).
+### Entry points, complete
+
+Everything below is the whole file: copy it, replace `app.zig`'s `App`.
+Import names are fixed by the link helpers: `teak`, `teak-platform-native` /
+`teak-gpu-native` (native), `teak-platform-wasm` / `teak-gpu-web` (web),
+`teak-platform-headless` / `teak-gpu-headless` (headless).
+
+**Native window** (`src/ui_main.zig`; wired by `teak.linkNativeWgpu` above):
+
+```zig
+const std = @import("std");
+const teak = @import("teak");
+const platform = @import("teak-platform-native");
+const gpu_native = @import("teak-gpu-native");
+const App = @import("app.zig");
+
+pub fn main() !void {
+    var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_impl.deinit();
+    const gpa = gpa_impl.allocator();
+
+    var host = try platform.Host.init("My App", 900, 600);
+    defer host.deinit();
+    var gpu = try gpu_native.Gpu.init(host.nativeHandle(), 900, 600);
+    defer gpu.deinit();
+
+    try teak.run(App, gpa, &host, &gpu, .{});
+}
+```
+
+**Web** (`src/web_main.zig`). The browser owns the frame loop (zunk calls the
+three exports below), so build a `teak.Runtime` once and call `frame()` per
+tick; `teak.run` is the same loop in a `while`:
+
+```zig
+const std = @import("std");
+const teak = @import("teak");
+const platform = @import("teak-platform-wasm");
+const gpu_web = @import("teak-gpu-web");
+const App = @import("app.zig");
+
+/// REQUIRED: the default std.log sink does not compile for wasm32-freestanding.
+pub const std_options: std.Options = .{ .logFn = platform.logFn };
+
+const Host = platform.Host;
+const Gpu = gpu_web.Gpu;
+const Runtime = teak.Runtime(App, Host, Gpu);
+
+comptime {
+    teak.validateHost(Host);
+    teak.validateGpu(Gpu);
+}
+
+// Exports cannot close over a struct, so the three live in module-level vars.
+var host: Host = undefined;
+var gpu: Gpu = undefined;
+var runtime: Runtime = undefined;
+
+export fn init() void {
+    host = Host.init("My App", 900, 600) catch @panic("host init failed");
+    host.activate();
+    gpu = Gpu.init(host.nativeHandle(), 900, 600) catch @panic("gpu init failed");
+    runtime = Runtime.init(std.heap.wasm_allocator, &host, &gpu, .{}) catch @panic("runtime init failed");
+}
+
+export fn resize(w: u32, h: u32) void {
+    gpu.resize(w, h);
+}
+
+export fn frame(_: f32) void {
+    runtime.frame() catch @panic("teak: frame failed (out of memory)");
+}
+```
+
+and in `build.zig` (after the native block; `teak.linkWebWgpu` registers the
+`web` and `web-run` steps, output in `dist/`):
+
+```zig
+    const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding, .abi = .none });
+    const web_exe = b.addExecutable(.{
+        .name = "myapp-web",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/web_main.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    teak.linkWebWgpu(b, web_exe, .{}); // .{ .fonts = ..., .strip = true } are the options
+```
+
+**Headless screenshot / tests** (no display; needs a Vulkan device and a TTF).
+`build.zig`:
+
+```zig
+    if (target.result.os.tag == .linux) {
+        const shot_exe = b.addExecutable(.{
+            .name = "myapp-shot",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/shot_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        teak.linkHeadless(b, shot_exe, .{});
+        const shot_run = b.addRunArtifact(shot_exe);
+        shot_run.addPassthruArgs();
+        b.step("shot", "zig build shot -- out.png").dependOn(&shot_run.step);
+    }
+```
+
+`src/shot_main.zig`:
+
+```zig
+const std = @import("std");
+const teak = @import("teak");
+const Host = @import("teak-platform-headless").Host;
+const Gpu = @import("teak-gpu-headless").Gpu;
+const App = @import("app.zig");
+
+pub fn main(init: std.process.Init) !void {
+    const path = teak.headless.pathArg(init, "shot.png");
+    try teak.headless.shot(App, Host, Gpu, init.gpa, path, .{
+        .width = 900,
+        .height = 600,
+        .steps = &.{
+            .{ .frames = 2 },
+            .{ .click = .{ 120, 80 } },     // move, press, release (a frame between each)
+            .{ .chars = "hello" },
+            .{ .frames = 1 },
+        },
+    });
+}
+```
+
+Script ordering: inside one frame the headless Host delivers all queued
+**characters before special keys** (that is how a real `InputState` is shaped:
+`chars` then `keys`). To interleave, put a `.frames = 1` between the steps.
 
 > **Web logging.** The default `std.log` sink does not compile for
 > `wasm32-freestanding` (it pulls in `std.Io.Threaded`), and teak itself logs
@@ -203,7 +360,7 @@ are required; an app without them just doesn't get that behavior.
 |------|-----------|---------|
 | `keyCharMsg` | `(*const Model, u8) ?Msg` | typed characters → Msg |
 | `keySpecialMsg` | `(*const Model, SpecialKey) ?Msg` | arrows/backspace/etc → Msg |
-| `keyNeedsClipboard` + `handleClipboard` | `(SpecialKey) bool` / `(*Model, SpecialKey, Clipboard) void` | cut/copy/paste |
+| `clipboardText` + `clipboardMsg` | `(*const Model, SpecialKey) ?[]const u8` / `(*const Model, SpecialKey, paste: []const u8) ?Msg` | cut/copy/paste (replaces the deprecated `keyNeedsClipboard` + `handleClipboard`) |
 | `wheelMsg` | `(*const Model, f32) ?Msg` | mouse-wheel scroll (when no canvas / scroll region took it) |
 | `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pan / zoom / drag over `cb.canvasInteractive` canvases — see [features/canvas.md](features/canvas.md#interactive-canvases-pan--zoom--drag) |
 | `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over a `ScrollStyle.id != 0` region |

@@ -233,6 +233,7 @@ pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
         .search => teak.textFieldChar(Msg, "search", c),
         .qty => teak.textFieldChar(Msg, "qty", c),
         .combo => .{ .combo = model_mod.Combo.charMsg(c) },
+        .area => .{ .area = model_mod.Area.charMsg(c) },
     };
 }
 
@@ -249,6 +250,7 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
         .search => teak.textFieldSpecial(Msg, "search", key),
         .qty => teak.textFieldSpecial(Msg, "qty", key),
         .combo => if (model_mod.Combo.keyMsg(&m.combo, key, &page_inputs.woods, page_inputs.combo_key_opts)) |c| Msg{ .combo = c } else null,
+        .area => if (model_mod.Area.keyMsg(key)) |a| Msg{ .area = a } else null,
     };
 }
 
@@ -258,10 +260,18 @@ fn dialogKey(m: *const Model, key: teak.SpecialKey) ?Msg {
     return W.dialog.keyMsg(key, .{ .confirm = Msg{ .dialog_confirm = {} }, .cancel = Msg{ .dialog_cancel = {} } }, m.dialog != .about and m.dialog != .shortcuts);
 }
 
+/// A press on blank space clears the text-field focus (the loop reports it as
+/// `kind = .down` with `hit == null`; widgets with a Msg report that instead).
+pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (ev.kind == .down and ev.isBlank() and m.focus != null) return .focus_clear;
+    return null;
+}
+
 pub fn focusedMsg(m: *const Model) ?Msg {
     const f = m.focus orelse return null;
     return switch (f) {
         .combo => .{ .combo = .focus },
+        .area => .{ .area = .focus },
         else => .{ .focus_set = f },
     };
 }
@@ -269,6 +279,11 @@ pub fn focusedMsg(m: *const Model) ?Msg {
 /// Tab moved the keyboard focus off the text fields: stop typing into them.
 pub fn blurMsg(m: *const Model) ?Msg {
     return if (m.focus != null) .blur else null;
+}
+
+/// Pointer, wheel, resolved motion and metrics for the text area.
+pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
+    return if (ev.id == model_mod.area_id) Msg{ .area = model_mod.Area.eventMsg(ev) } else null;
 }
 
 pub fn scrollMsg(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
@@ -426,4 +441,18 @@ test "the virtual list window follows the scroll offset and clamps at the end" {
     try testing.expectEqual(m.list_content - m.list_viewport, m.list_scroll);
     update(&m, .{ .list_scroll_by = -1e9 });
     try testing.expectEqual(@as(f32, 0), m.list_scroll);
+}
+
+test "the Inputs page text area takes focus and typed text (Enter makes a new line)" {
+    var m: Model = .{};
+    update(&m, .{ .go = .inputs });
+    update(&m, .{ .area = .focus });
+    try testing.expectEqual(model_mod.Field.area, m.focus.?);
+    for ("hi") |c| update(&m, keyCharMsg(&m, c).?);
+    update(&m, keySpecialMsg(&m, .enter).?);
+    update(&m, keyCharMsg(&m, '!').?);
+    try testing.expectEqualStrings("hi\n!", m.area.content());
+    try testing.expect(focusedMsg(&m).?.area == .focus);
+    const ev: teak.TextEvent = .{ .id = model_mod.area_id, .kind = .metrics };
+    try testing.expect(textMsg(&m, ev) != null);
 }
