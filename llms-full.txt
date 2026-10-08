@@ -785,6 +785,10 @@ widgets.toast.Toast(cap, text_cap): Model{items,len,next_id}; Msg{push: Push{kin
   Kind = enum { info, success, warning, danger };  TICK_MS; default_ttl
 widgets.dialog: view(cb, Opts{window_w, window_h, title, message, confirm_label, cancel_label: ?[]const u8, width, danger,
   dismiss_on_backdrop, scrim}, msgs /*.confirm .cancel*/); begin / end (own body between); keyMsg(key, msgs, has_cancel) ?AppMsg
+widgets.color_picker: Rgb{r,g,b: u8}; Hsv{h,s,v}; Field = enum{hex,r,g,b}; swatches[16]; hsvToRgb / rgbToHsv / parseHex("#rgb"|"#rrggbb") ?Rgb / formatHex;
+  Model{h,s,v,texts,dragging}; init(Rgb) Model; Msg{drag, release, swatch: u8, set: Rgb, edit: {field, TextField.Msg}}; update;
+  rgb(model) Rgb; rgba(model) [4]f32; fieldValid / fieldText(model, Field); charMsg(Field, u8) / keyMsg(Field, key) ?Msg / pasteMsg;
+  canvasMsg(model, CanvasEvent, Opts{sv_w,sv_h,hue_h,sv_id,hue_id}) ?Msg; viewWith(model, cb, .{ .focus(Field) .swatch(i) } fns, Opts)
 widgets.spinner.Spinner(cfg{capacity,min,max,step,big_step,precision,invalid_message}) type: NumericField + step buttons;
   Model/Msg = NumericField's (drive with textFieldChar/Special); Step = enum{up,down,page_up,page_down};
   step(model, Step) (call from your update); setValue(model, f64); keyStep(key) ?Step; wheelStep(dy, shift) ?Step;

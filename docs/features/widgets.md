@@ -325,6 +325,14 @@ in a monospaced font. Panels clamp to the window. A transparent full-window
 modal "scrim" overlay behind the panels makes a click anywhere else dismiss
 the menu. The navigation logic (`Nav`) is pure and exhaustively tested.
 
+**color_picker.** A saturation / value square and a hue strip (interactive canvases drawn from per-vertex-coloured
+triangles: white -> hue left to right, a transparent -> black overlay top to bottom), a preview, hex / R / G / B fields
+and a 16-swatch palette. The colour is HSV in the Model (so dragging hue over a grey does not lose it) plus the text of
+the four fields; dragging or a swatch rewrites the texts, typing a valid value updates the colour and the *other*
+fields (never the one being typed in), and an unparseable field is drawn with a danger border. Route the canvases from
+`canvasMsg` (`color_picker.canvasMsg`), the fields from the app's key hooks (`charMsg(field, c)` / `keyMsg(field, key)`),
+read the result with `rgb(model)` / `rgba(model)`.
+
 **spinner.** `Spinner(.{ .min, .max, .step, .big_step, .precision })` wraps a `NumericField`: its `Msg` *is* the
 NumericField's, so typing routes through `textFieldChar` / `textFieldSpecial` unchanged, and stepping is a function the
 app calls from its own `update` arm (`Spinner.step(&m.qty, .up)`). `keyStep` maps Up / Down / Page Up / Page Down,

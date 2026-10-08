@@ -208,6 +208,7 @@ src/                                          -- the library, consumable as a Zi
       sort.zig                                -- Depth ordering for blended scene layers (translucent planes, sprites)
       view.zig                                -- The data a viewport3d Cmd carries besides the camera: placed mesh instances (Item) and
     widgets/
+      color_picker.zig                        -- Colour picker: a saturation / value square, a hue strip, a hex field, R / G / B fields and a
       date.zig                                -- Calendar dates: pure proleptic-Gregorian maths, ISO 8601 parse / format, no allocation and no
       date_field.zig                          -- Date field: an ISO text field (YYYY-MM-DD) with a calendar popover
       dialog.zig                              -- Modal dialog helper: a centred card over a dimmed window with a title, a message (or app
