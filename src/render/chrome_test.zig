@@ -160,7 +160,7 @@ test "button: disabled ignores hover/press colors and keeps its border" {
     var cb = Buf.init(std.testing.allocator);
     defer cb.deinit();
     cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.cmds.append(cb.backing, .{ .button = .{ .msg = .a, .label = "OK", .style = inkButton(), .disabled = true } }) catch unreachable;
+    cb.cmds.append(cb.backing, cb.box(.button, .{ .msg = .a, .label = "OK", .style = inkButton(), .disabled = true })) catch unreachable;
     cb.popGroup();
     var f: Frame = .{};
     defer f.deinit();
