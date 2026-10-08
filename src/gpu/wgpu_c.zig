@@ -109,6 +109,11 @@ pub fn requestDevice(instance: c.WGPUInstance, surface: ?c.WGPUSurface) error{ A
     adapter_opts.compatibleSurface = surface orelse null;
     adapter_opts.powerPreference = c.WGPUPowerPreference_HighPerformance;
     adapter_opts.featureLevel = c.WGPUFeatureLevel_Core;
+    // `TEAK_GPU_FALLBACK=1` asks for a software adapter (DX12 WARP, lavapipe,
+    // SwiftShader): CI runners and containers without a GPU.
+    if (std.c.getenv("TEAK_GPU_FALLBACK")) |v| {
+        if (std.mem.span(v).len > 0 and v[0] != '0') adapter_opts.forceFallbackAdapter = 1;
+    }
 
     var adapter_cb = std.mem.zeroes(c.WGPURequestAdapterCallbackInfo);
     adapter_cb.mode = c.WGPUCallbackMode_AllowSpontaneous;
@@ -239,6 +244,8 @@ pub const PipelineOptions = struct {
     /// null = write the shader output unblended.
     blend: ?*const c.WGPUBlendState = &alpha_blend,
     cull_mode: c.WGPUCullMode = c.WGPUCullMode_None,
+    /// Colour channels written; `WGPUColorWriteMask_None` for stencil-only passes.
+    write_mask: c.WGPUColorWriteMask = c.WGPUColorWriteMask_All,
     /// null = no depth attachment in the pass.
     depth: ?c.WGPUDepthStencilState = null,
     samples: u32 = 1,
@@ -249,7 +256,7 @@ pub fn createPipeline(device: c.WGPUDevice, o: PipelineOptions) c.WGPURenderPipe
     var color_target = std.mem.zeroes(c.WGPUColorTargetState);
     color_target.format = o.format;
     color_target.blend = if (o.blend) |b| b else null;
-    color_target.writeMask = c.WGPUColorWriteMask_All;
+    color_target.writeMask = o.write_mask;
 
     var frag = std.mem.zeroes(c.WGPUFragmentState);
     frag.module = o.module;

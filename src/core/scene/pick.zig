@@ -434,6 +434,44 @@ pub fn gizmoTips(orbit: camera.Orbit, l: GizmoLayout, w: f32, h: f32) [6]GizmoTi
     return out;
 }
 
+/// An axis letter to draw as ordinary 2D text over the 3D viewport.
+pub const GizmoLabel = struct {
+    text: []const u8,
+    /// Centre of the letter in the coordinate space of the `origin` passed to
+    /// `gizmoLabels` (window space when that is the canvas's window origin).
+    x: f32,
+    y: f32,
+    axis: u2,
+};
+
+/// Letters for the three positive gizmo caps, pushed `gap_px` outward from the
+/// gizmo centre past the arrow tip. `origin` is the viewport's top-left in the
+/// space the app draws text in: the window origin delivered by the canvas
+/// `layout` event, so the result can be emitted as overlay text:
+///
+///     for (pick.gizmoLabels(cam, layout, w, h, ox, oy, 9)) |l|
+///         { cb.pushOverlay(.{ .x = l.x - 4, .y = l.y - 9, ... }); cb.text(l.text); cb.popOverlay(); }
+///
+/// Labels of axes pointing at the camera (their cap sits on the centre) are
+/// kept at the cap, so they never fly off in a random direction.
+pub fn gizmoLabels(orbit: camera.Orbit, l: GizmoLayout, w: f32, h: f32, ox: f32, oy: f32, gap_px: f32) [3]GizmoLabel {
+    const r = gizmoRect(l, w, h);
+    const cx = r[0] + r[2] * 0.5;
+    const cy = r[1] + r[3] * 0.5;
+    const tips = gizmoTips(orbit, l, w, h);
+    const names = [3][]const u8{ "X", "Y", "Z" };
+    var out: [3]GizmoLabel = undefined;
+    for (0..3) |a| {
+        const tip = tips[a * 2];
+        const dx = tip.x - cx;
+        const dy = tip.y - cy;
+        const len = @sqrt(dx * dx + dy * dy);
+        const k = if (len > 1e-3) gap_px / len else 0;
+        out[a] = .{ .text = names[a], .x = ox + tip.x + dx * k, .y = oy + tip.y + dy * k, .axis = @intCast(a) };
+    }
+    return out;
+}
+
 /// Which gizmo cap (if any) is under viewport px `(x, y)`. Overlapping caps
 /// resolve to the one nearest the camera.
 pub fn gizmoHit(orbit: camera.Orbit, l: GizmoLayout, w: f32, h: f32, x: f32, y: f32) ?GizmoAxis {
@@ -639,6 +677,24 @@ test "end to end: click pixel -> ray -> item" {
     const s = camera.project(cam, 800, 600, h.point).?;
     try approx(@as(f32, 400), s[0], 0.05);
     try approx(@as(f32, 300), s[1], 0.05);
+}
+
+test "gizmoLabels: positive caps pushed outward and offset by the viewport origin" {
+    var o = camera.Orbit{};
+    o.setPreset(.front);
+    const l = GizmoLayout{};
+    const tips = gizmoTips(o, l, 800, 600);
+    const labels = gizmoLabels(o, l, 800, 600, 100, 50, 10);
+    try testing.expectEqualStrings("X", labels[0].text);
+    try testing.expectEqualStrings("Z", labels[2].text);
+    // +x points right: its label sits 10px further right than the cap, at the same height
+    try approx(100 + tips[0].x + 10, labels[0].x, 1e-3);
+    try approx(50 + tips[0].y, labels[0].y, 1e-3);
+    // +y points up: label above the cap
+    try approx(50 + tips[2].y - 10, labels[1].y, 1e-3);
+    // +z faces the camera (cap at the centre): the label stays on the cap
+    try approx(100 + tips[4].x, labels[2].x, 1e-3);
+    try approx(50 + tips[4].y, labels[2].y, 1e-3);
 }
 
 test "gizmo: layout, hit and presets" {

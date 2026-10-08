@@ -208,6 +208,13 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   devicePixelRatio backing store internally). Nothing in the
 ///   framework consumes it yet; see docs/features/host.md "DPI and
 ///   scaling" for the end-to-end render-at-scale follow-up.
+/// - `renderScale()` (optional) is the factor between the *logical* pixels
+///   this Host reports in `InputState` (mouse, width, height) and the
+///   physical framebuffer. A Host that declares it hands the run loop
+///   logical coordinates and expects `gpu.setScale(renderScale())` (when the
+///   Gpu has it) so the swap-chain is physical-sized. Win32 (per-monitor
+///   DPI v2) declares it; X11 and wasm report physical / CSS pixels and do
+///   not. Distinct from `scaleFactor`, which is informational only.
 /// - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
 ///   surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
 ///   a pair** (a Host with neither answers every effect as unsupported;
@@ -268,6 +275,7 @@ pub fn validateHost(comptime T: type) void {
     // `submit` and `pollEffectResults` come as a pair.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
+        .{ .name = "renderScale", .sig = "fn(*const Host) f32" },
         .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
         .{ .name = "pollEffectResults", .sig = "fn(*Host, []EffectResult) usize" },
     };

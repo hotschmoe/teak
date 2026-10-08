@@ -18,23 +18,34 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 const Stress = @import("textstress.zig");
 
-const Opts = struct { path: []const u8, scale: f32 = 1, stress: usize = 0, max_pages: u8 = 8, plain: bool = false, anim: ?u32 = null };
+const Opts = struct { path: []const u8, scale: f32 = 1, stress: usize = 0, max_pages: u8 = 8, plain: bool = false, anim: ?u32 = null, modern: bool = false };
 
 fn parseArgs(init: std.process.Init) Opts {
     var o: Opts = .{ .path = "chrome.png" };
-    var it = init.minimal.args.iterate();
-    _ = it.next();
-    while (it.next()) |a| {
+    // `toSlice` (not `iterate`) so this also builds for Windows.
+    const args = init.minimal.args.toSlice(init.arena.allocator()) catch return o;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        const next: ?[]const u8 = if (i + 1 < args.len) args[i + 1] else null;
         if (std.mem.eql(u8, a, "--scale")) {
-            o.scale = std.fmt.parseFloat(f32, it.next() orelse "1") catch 1;
+            i += 1;
+            o.scale = std.fmt.parseFloat(f32, next orelse "1") catch 1;
         } else if (std.mem.eql(u8, a, "--stress")) {
-            o.stress = std.fmt.parseInt(usize, it.next() orelse "640", 10) catch 640;
+            i += 1;
+            o.stress = std.fmt.parseInt(usize, next orelse "640", 10) catch 640;
+        } else if (std.mem.eql(u8, a, "--state")) {
+            // `--state modern` shoots the modern look (the retro one is the default)
+            i += 1;
+            o.modern = std.mem.eql(u8, next orelse "", "modern");
         } else if (std.mem.eql(u8, a, "--plain")) {
             o.plain = true; // no input script: the state a browser loads first
         } else if (std.mem.eql(u8, a, "--max-pages")) {
-            o.max_pages = std.fmt.parseInt(u8, it.next() orelse "8", 10) catch 8;
+            i += 1;
+            o.max_pages = std.fmt.parseInt(u8, next orelse "8", 10) catch 8;
         } else if (std.mem.eql(u8, a, "--anim")) {
-            o.anim = std.fmt.parseInt(u32, it.next() orelse "8", 10) catch 8;
+            i += 1;
+            o.anim = std.fmt.parseInt(u32, next orelse "8", 10) catch 8;
         } else o.path = a;
     }
     return o;
@@ -58,6 +69,23 @@ pub fn main(init: std.process.Init) !void {
             },
         });
         std.debug.print("wrote {s} ({d} frames into the slide-in)\n", .{ o.path, n });
+        return;
+    }
+    if (o.modern) {
+        try teak.headless.shot(App, Host, Gpu, init.gpa, o.path, .{
+            .width = 1280,
+            .height = 800,
+            .scale = o.scale,
+            .run = .{ .clear_color = App.modern_theme.palette.bg },
+            .steps = &.{
+                .{ .frames = 2 },
+                .{ .chars = "m" }, // flip to the modern look
+                .{ .frames = 40 }, // let the help popover settle
+                .{ .move = .{ 640, 500 } },
+                .{ .frames = 1 },
+            },
+        });
+        std.debug.print("wrote {s} (modern)\n", .{o.path});
         return;
     }
     try teak.headless.shot(App, Host, Gpu, init.gpa, o.path, .{

@@ -412,6 +412,58 @@ pub fn indexAt(text: []const u8, x: f32, y: f32, font: FontSpec, max_w: f32, mod
     return best;
 }
 
+/// Visual motion keys resolved against the wrapped layout.
+pub const NavKind = enum { up, down, page_up, page_down, line_start, line_end };
+
+pub const NavResult = struct {
+    index: usize,
+    /// The sticky column to carry (set by vertical motion, null for edges).
+    goal_x: ?f32,
+    line: u32,
+};
+
+/// Where the caret goes for a visual-motion key. `goal_x` is the Model's
+/// sticky column (null = use the caret's own x). `page_lines` is the page
+/// size for PageUp/PageDown. Up/Down past the first/last line go to the start/
+/// end of the text; line_end stops before a soft wrap's hanging spaces.
+pub fn resolveNav(text: []const u8, cursor: usize, goal_x: ?f32, kind: NavKind, page_lines: u32, font: FontSpec, max_w: f32, mode: Wrap, m: TextMeasurer) NavResult {
+    const c = caretPos(text, cursor, font, max_w, mode, 0, m);
+    switch (kind) {
+        .line_start, .line_end => {
+            var it = LineIter.init(text, font, max_w, mode, 0, m);
+            var cur = it.next().?;
+            var li: u32 = 0;
+            while (cursor >= cur.next) {
+                cur = it.next() orelse break;
+                li += 1;
+            }
+            const soft = !cur.hard_break and cur.next < text.len;
+            const idx: usize = if (kind == .line_start) cur.start else if (soft) cur.end else cur.hang;
+            return .{ .index = idx, .goal_x = null, .line = li };
+        },
+        else => {
+            const x = goal_x orelse c.x;
+            const total = measureWrapped(text, font, max_w, mode, 0, m).lines;
+            const step: i64 = switch (kind) {
+                .up => -1,
+                .down => 1,
+                .page_up => -@as(i64, @max(page_lines, 1)),
+                else => @as(i64, @max(page_lines, 1)),
+            };
+            const target = @as(i64, c.line) + step;
+            if (target < 0) return .{ .index = 0, .goal_x = x, .line = 0 };
+            if (target >= total) return .{ .index = text.len, .goal_x = x, .line = total - 1 };
+            const lh = lineHeight(font, m);
+            const tl: u32 = @intCast(target);
+            return .{
+                .index = indexAt(text, x, (@as(f32, @floatFromInt(tl)) + 0.5) * lh, font, max_w, mode, 0, m),
+                .goal_x = x,
+                .line = tl,
+            };
+        },
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────
 
 const testing = std.testing;
@@ -683,4 +735,23 @@ test "minContentFor per mode" {
     try testing.expectEqual(@as(f32, 30), minContentFor("hello world", F, .ellipsis, mono()));
     try testing.expectEqual(@as(f32, 110), minContentFor("hello world", F, .none, mono()));
     try testing.expectEqual(@as(f32, 30), minContentFor("e\u{0301}", F, .char, mono())); // one cluster
+}
+
+test "resolveNav: vertical keeps the sticky column, edges use visual lines" {
+    const s = "hello world\nab\nlonger line here";
+    const f = F;
+    // Line 0, column 4 -> down clamps to "ab" end, goal stays 40 -> next line column 4.
+    const r1 = resolveNav(s, 4, null, .down, 1, f, 1000, .word, mono());
+    try testing.expectEqual(@as(usize, 14), r1.index);
+    try testing.expectEqual(@as(?f32, 40), r1.goal_x);
+    const r2 = resolveNav(s, 14, r1.goal_x, .down, 1, f, 1000, .word, mono());
+    try testing.expectEqual(@as(usize, 19), r2.index);
+    // Past the ends.
+    try testing.expectEqual(@as(usize, 0), resolveNav(s, 2, null, .up, 1, f, 1000, .word, mono()).index);
+    try testing.expectEqual(s.len, resolveNav(s, 20, null, .page_down, 9, f, 1000, .word, mono()).index);
+    // Wrapped "hello " / "world": edges of the second visual line.
+    const w = "hello world";
+    try testing.expectEqual(@as(usize, 6), resolveNav(w, 8, null, .line_start, 1, f, 60, .word, mono()).index);
+    try testing.expectEqual(@as(usize, 11), resolveNav(w, 8, null, .line_end, 1, f, 60, .word, mono()).index);
+    try testing.expectEqual(@as(usize, 5), resolveNav(w, 2, null, .line_end, 1, f, 60, .word, mono()).index);
 }
