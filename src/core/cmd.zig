@@ -1,7 +1,9 @@
 const std = @import("std");
+const oom = @import("oom.zig").oom;
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
 const scene = @import("scene.zig");
+const eql = @import("eql.zig");
 
 pub const FontSpec = text.FontSpec;
 const DEFAULT_FONT = text.DEFAULT_FONT;
@@ -608,7 +610,7 @@ pub fn SceneCmd(comptime Msg: type) type {
         /// Multiplied into each line vertex's colour; line width in px.
         edge_color: [4]f32 = .{ 1, 1, 1, 1 },
         edge_px: f32 = 1.5,
-        /// Content revision. The frame diff compares the whole struct, but
+        /// Content revision. The frame diff (`core/eql.zig`) compares the whole struct, but
         /// the mesh's *contents* live behind `mesh` — bump `key` when the
         /// geometry behind an unchanged handle/key changes (typically the
         /// resource `rev`), or the frame is skipped as unchanged.
@@ -622,15 +624,6 @@ pub fn SceneCmd(comptime Msg: type) type {
         msg: ?Msg = null,
         /// Accessible name for the a11y tree.
         label: []const u8 = "",
-
-        /// Content equality for the frame diff.
-        pub fn eql(a: @This(), b: @This()) bool {
-            return std.meta.eql(a.style, b.style) and a.mesh == b.mesh and
-                std.meta.eql(a.camera, b.camera) and std.meta.eql(a.clear, b.clear) and
-                std.meta.eql(a.edge_color, b.edge_color) and a.edge_px == b.edge_px and
-                a.key == b.key and a.id == b.id and a.pointer == b.pointer and
-                std.meta.eql(a.msg, b.msg) and std.mem.eql(u8, a.label, b.label);
-        }
     };
 }
 
@@ -805,7 +798,7 @@ pub const BalanceError = struct {
         mismatched_pop,
         /// Container nesting exceeded the validator's fixed depth
         /// (`MAX_BALANCE_DEPTH`, mirroring LayoutEngine's
-        /// `FixedStack(_, 32)`); deeper input would also overflow the
+        /// `MAX_BALANCE_DEPTH`); deeper input would also overflow the
         /// layout stack. Reported instead of panicked so the caller gets
         /// a named error. `open_kind` / `open_index` name the push that
         /// overflowed.
@@ -826,11 +819,13 @@ pub const BalanceError = struct {
     close_index: usize = 0,
 };
 
-/// Validator depth cap. Mirrors LayoutEngine's `FixedStack(_, 32)` — a
-/// buffer nesting deeper than this would overflow the layout stack
-/// anyway, so the validator flags it as `depth_overflow` rather than
-/// silently accepting it.
-pub const MAX_BALANCE_DEPTH = 32;
+/// Container nesting cap for the whole framework: the layout passes' stacks
+/// and the hit-test / render / a11y clip stacks are all sized to it. A
+/// buffer nesting deeper is rejected by `validateBalance` as
+/// `depth_overflow` (the run loop checks every frame, in every optimize
+/// mode), and the stacks themselves `@panic` on overflow rather than write
+/// out of bounds.
+pub const MAX_BALANCE_DEPTH = 64;
 
 /// `.group` / `.scroll` / … if `c` opens a container, else `null`.
 /// `anytype` so it works for any `Cmd(Msg)` instantiation (the tag set
@@ -1014,11 +1009,11 @@ pub fn CmdBuffer(comptime Msg: type) type {
         // ── Convenience emitters ───────────────────────────────────
 
         pub fn pushGroup(self: *Self, style: GroupStyle) void {
-            self.cmds.append(self.backing, .{ .push_group = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_group = style }) catch oom();
         }
 
         pub fn popGroup(self: *Self) void {
-            self.cmds.append(self.backing, .pop_group) catch unreachable;
+            self.cmds.append(self.backing, .pop_group) catch oom();
         }
 
         /// Invisible flex filler: an empty zero-padding group with the given
@@ -1035,7 +1030,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.body,
                 .color = self.theme.text_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Body text in the theme's heading color/size — for section
@@ -1045,7 +1040,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.heading,
                 .color = self.theme.heading_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Body text in the theme's "muted" color — placeholders, units,
@@ -1055,7 +1050,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.small,
                 .color = self.theme.muted_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Body text in the theme's danger color — validation messages.
@@ -1064,7 +1059,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.small,
                 .color = self.theme.danger_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Monospace text in body color — column data, code, numerics.
@@ -1073,7 +1068,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.mono,
                 .color = self.theme.text_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Text with explicit font + color, bypassing theme defaults.
@@ -1084,15 +1079,15 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = font,
                 .color = color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn divider(self: *Self) void {
-            self.cmds.append(self.backing, .{ .divider = self.theme.divider }) catch unreachable;
+            self.cmds.append(self.backing, .{ .divider = self.theme.divider }) catch oom();
         }
 
         pub fn dividerStyled(self: *Self, style: DividerStyle) void {
-            self.cmds.append(self.backing, .{ .divider = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .divider = style }) catch oom();
         }
 
         pub fn button(self: *Self, msg: Msg, label: []const u8) void {
@@ -1101,7 +1096,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = self.theme.button,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn buttonStyled(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle) void {
@@ -1110,7 +1105,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a greyed-out, non-interactive button. Same as `button`
@@ -1124,7 +1119,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = self.theme.button,
                 .font = self.theme.typography.body,
                 .disabled = true,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// `buttonDisabled` with an explicit style (a compact menu row stays
@@ -1151,7 +1146,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cursor = cursor,
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn textInputStyled(
@@ -1167,7 +1162,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cursor = cursor,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a greyed-out, non-interactive text input. Same as
@@ -1186,15 +1181,15 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
                 .disabled = true,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn pushScroll(self: *Self, style: ScrollStyle) void {
-            self.cmds.append(self.backing, .{ .push_scroll = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_scroll = style }) catch oom();
         }
 
         pub fn popScroll(self: *Self) void {
-            self.cmds.append(self.backing, .pop_scroll) catch unreachable;
+            self.cmds.append(self.backing, .pop_scroll) catch oom();
         }
 
         pub fn checkbox(self: *Self, msg: Msg, checked: bool, label: []const u8) void {
@@ -1204,7 +1199,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = self.theme.checkbox,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn radio(self: *Self, msg: Msg, selected: bool, label: []const u8) void {
@@ -1214,7 +1209,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = self.theme.radio,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn slider(self: *Self, grab_msg: Msg, value: f32) void {
@@ -1222,32 +1217,32 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .grab_msg = grab_msg,
                 .value = value,
                 .style = self.theme.slider,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         // ── Overlay / virtual list / image / rich text ─────────────
 
         pub fn pushOverlay(self: *Self, style: OverlayStyle(Msg)) void {
-            self.cmds.append(self.backing, .{ .push_overlay = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_overlay = style }) catch oom();
         }
 
         pub fn popOverlay(self: *Self) void {
-            self.cmds.append(self.backing, .pop_overlay) catch unreachable;
+            self.cmds.append(self.backing, .pop_overlay) catch oom();
         }
 
         pub fn pushVirtualList(self: *Self, style: VirtualListStyle) void {
-            self.cmds.append(self.backing, .{ .push_virtual_list = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_virtual_list = style }) catch oom();
         }
 
         pub fn popVirtualList(self: *Self) void {
-            self.cmds.append(self.backing, .pop_virtual_list) catch unreachable;
+            self.cmds.append(self.backing, .pop_virtual_list) catch oom();
         }
 
         pub fn image(self: *Self, handle: TextureHandle, style: ImageStyle) void {
             self.cmds.append(self.backing, .{ .image = .{
                 .handle = handle,
                 .style = style,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a non-interactive canvas. `style` carries size + optional
@@ -1257,7 +1252,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .canvas = .{
                 .style = style,
                 .primitives = primitives,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Canvas with an accessibility label (announced by the a11y tree)
@@ -1272,7 +1267,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = style,
                 .primitives = primitives,
                 .label = label,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Clickable canvas: `msg` fires on click. The app pairs it with
@@ -1290,13 +1285,13 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .primitives = primitives,
                 .msg = msg,
                 .label = label,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a 3D scene leaf; see `SceneCmd`. Typical use:
         /// `cb.scene3d(.{ .style = .{ .width = 480, .height = 360 }, .mesh = key, .camera = cam, .key = rev })`.
         pub fn scene3d(self: *Self, cmd: SceneCmd(Msg)) void {
-            self.cmds.append(self.backing, .{ .scene3d = cmd }) catch unreachable;
+            self.cmds.append(self.backing, .{ .scene3d = cmd }) catch oom();
         }
 
         /// Interactive canvas: pointer input over it (down/move/up/wheel/
@@ -1317,7 +1312,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .pointer = true,
                 .id = id,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn textInputSelected(
@@ -1335,7 +1330,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .selection_anchor = selection_anchor,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn richText(
@@ -1346,11 +1341,11 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .rich_text = .{
                 .content = content,
                 .spans = spans,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn richTextStyled(self: *Self, c: RichTextCmd) void {
-            self.cmds.append(self.backing, .{ .rich_text = c }) catch unreachable;
+            self.cmds.append(self.backing, .{ .rich_text = c }) catch oom();
         }
 
         /// Begin a form row. Emits an outer vertical group + an inner
@@ -1366,25 +1361,25 @@ pub fn CmdBuffer(comptime Msg: type) type {
             // Cap of 8 in-flight form rows; deeper nesting is a bug, not
             // a growth trigger. Assert mirrors the layout stacks: loud
             // crash in Debug/ReleaseSafe, zero cost in ReleaseFast.
-            std.debug.assert(self.form_row_depth < self.form_row_stack.len);
+            if (self.form_row_depth >= self.form_row_stack.len) @panic("teak: pushFormRow nested deeper than 8 (form_row_stack capacity)");
             // Outer vertical (content row + validation message).
             self.cmds.append(self.backing, .{ .push_group = .{
                 .direction = .vertical,
                 .padding = 0,
                 .gap = opts.validation_gap,
-            } }) catch unreachable;
+            } }) catch oom();
             // Inner horizontal (label + content + units).
             self.cmds.append(self.backing, .{ .push_group = .{
                 .direction = .horizontal,
                 .padding = 0,
                 .gap = opts.gap,
-            } }) catch unreachable;
+            } }) catch oom();
             if (opts.label.len > 0) {
                 self.cmds.append(self.backing, .{ .text = .{
                     .content = opts.label,
                     .font = self.theme.typography.body,
                     .color = self.theme.text_color,
-                } }) catch unreachable;
+                } }) catch oom();
             }
             self.form_row_stack[self.form_row_depth] = .{
                 .units = opts.units,
@@ -1398,7 +1393,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
         /// validation message (if any), then closes the outer vertical
         /// group.
         pub fn popFormRow(self: *Self) void {
-            if (self.form_row_depth == 0) return;
+            if (self.form_row_depth == 0) @panic("teak: popFormRow without a matching pushFormRow");
             self.form_row_depth -= 1;
             const pending = self.form_row_stack[self.form_row_depth];
             if (pending.units.len > 0) {
@@ -1406,17 +1401,17 @@ pub fn CmdBuffer(comptime Msg: type) type {
                     .content = pending.units,
                     .font = self.theme.typography.small,
                     .color = self.theme.muted_color,
-                } }) catch unreachable;
+                } }) catch oom();
             }
-            self.cmds.append(self.backing, .pop_group) catch unreachable;
+            self.cmds.append(self.backing, .pop_group) catch oom();
             if (pending.validation.len > 0) {
                 self.cmds.append(self.backing, .{ .text = .{
                     .content = pending.validation,
                     .font = self.theme.typography.small,
                     .color = self.theme.danger_color,
-                } }) catch unreachable;
+                } }) catch oom();
             }
-            self.cmds.append(self.backing, .pop_group) catch unreachable;
+            self.cmds.append(self.backing, .pop_group) catch oom();
         }
 
         /// Build a RichTextCmd from a slice of MixedPart, baking content
@@ -1436,8 +1431,8 @@ pub fn CmdBuffer(comptime Msg: type) type {
             var total_len: usize = 0;
             for (parts) |p| total_len += p.text.len;
 
-            const content = arena_alloc.alloc(u8, total_len) catch unreachable;
-            const spans = arena_alloc.alloc(RichTextSpan, parts.len) catch unreachable;
+            const content = arena_alloc.alloc(u8, total_len) catch oom();
+            const spans = arena_alloc.alloc(RichTextSpan, parts.len) catch oom();
 
             var cursor: usize = 0;
             for (parts, 0..) |p, i| {
@@ -1458,7 +1453,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .spans = spans,
                 .default_font = self.theme.typography.body,
                 .default_color = self.theme.text_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
     };
 }
@@ -1925,7 +1920,7 @@ test "formatBalanceError: each tag renders an actionable line" {
         }, &buf),
     );
     try testing.expectEqualStrings(
-        "push_scroll at cmd #33 exceeds the max container nesting depth (32)",
+        "push_scroll at cmd #33 exceeds the max container nesting depth (64)",
         formatBalanceError(.{ .tag = .depth_overflow, .open_kind = .scroll, .open_index = 33 }, &buf),
     );
 }
@@ -2031,7 +2026,7 @@ test "CmdBuffer.scene3d emits a scene3d cmd with defaults" {
     try testing.expectEqual(@as(?Msg, Msg.poke), b.msg);
 }
 
-test "SceneCmd.eql compares content (label by value) and the revision key" {
+test "SceneCmd: deepEql compares content (label by value) and the revision key" {
     const testing = std.testing;
     const Msg = union(enum) { poke };
     const S = SceneCmd(Msg);
@@ -2039,15 +2034,15 @@ test "SceneCmd.eql compares content (label by value) and the revision key" {
     var label_b = [_]u8{ 'a', 'b' };
     const x: S = .{ .label = &label_a, .key = 1 };
     var y: S = .{ .label = &label_b, .key = 1 };
-    try testing.expect(x.eql(y)); // different addresses, same content
+    try testing.expect(eql.deepEql(S, x, y)); // different addresses, same content
     y.key = 2;
-    try testing.expect(!x.eql(y)); // geometry behind the handle changed
+    try testing.expect(!eql.deepEql(S, x, y)); // geometry behind the handle changed
     y.key = 1;
     y.camera.eye[1] = 4;
-    try testing.expect(!x.eql(y));
+    try testing.expect(!eql.deepEql(S, x, y));
     y.camera.eye[1] = 0;
     y.msg = .poke;
-    try testing.expect(!x.eql(y));
+    try testing.expect(!eql.deepEql(S, x, y));
 }
 
 test "CanvasPrimitive.eql: batches compare by key (or by bytes when key is 0)" {
@@ -2084,4 +2079,28 @@ test "CanvasPrimitive.eql: batches compare by key (or by bytes when key is 0)" {
     try testing.expect(l1.eql(l1));
     try testing.expect(!l1.eql(l2));
     try testing.expect(!l1.eql(pa));
+}
+
+test "validateBalance: nesting at MAX_BALANCE_DEPTH passes, one deeper is depth_overflow (every optimize mode)" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    var i: usize = 0;
+    while (i < MAX_BALANCE_DEPTH) : (i += 1) cb.pushGroup(.{});
+    i = 0;
+    while (i < MAX_BALANCE_DEPTH) : (i += 1) cb.popGroup();
+    try testing.expect(validateBalance(cb.cmds.items) == null);
+
+    // One more level: reported with the offending cmd index, not a crash.
+    cb.reset();
+    i = 0;
+    while (i <= MAX_BALANCE_DEPTH) : (i += 1) cb.pushGroup(.{});
+    const err = validateBalance(cb.cmds.items).?;
+    try testing.expectEqual(BalanceError.Tag.depth_overflow, err.tag);
+    try testing.expectEqual(@as(usize, MAX_BALANCE_DEPTH), err.open_index);
+    var buf: [128]u8 = undefined;
+    const msg = formatBalanceError(err, &buf);
+    try testing.expect(std.mem.indexOf(u8, msg, "cmd #64") != null);
 }

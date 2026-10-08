@@ -1357,6 +1357,7 @@ const PlainGpu = struct {
     pub fn uploadImage(_: *PlainGpu, _: []const u8, _: u32, _: u32) text.TextureHandle {
         return text.TEXTURE_HANDLE_NONE;
     }
+    pub fn releaseImage(_: *PlainGpu, _: text.TextureHandle) void {}
 };
 
 test "a Gpu without the scene extension still runs scene-bearing apps" {
@@ -1550,4 +1551,168 @@ test "run: windowMsg reports the window size on the first frame" {
     try std.testing.expectEqual(@as(f32, 400), t.rt.model.w);
     try std.testing.expectEqual(@as(f32, 300), t.rt.model.h);
     try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls); // only the first frame resized
+}
+
+// Equivalence proof for the reflection-derived diff: for EVERY variant of
+// `Cmd`, build a sample payload by reflection, then change each leaf field
+// in turn (ints, floats, bools, enums, every slice element, every nested
+// optional / union / array) and assert `cmdsEqual` notices. A field added
+// to any payload later is covered automatically; one the diff cannot see
+// fails here. Unions are exercised for every variant index (`pick`).
+const mutation = struct {
+    const Alloc = std.mem.Allocator;
+
+    /// Deterministic non-trivial value of `T`. Every union picks field
+    /// `pick % n`. A field named `key` stays 0 so canvas batches compare
+    /// by content (a non-zero key deliberately short-circuits the diff).
+    fn sample(comptime T: type, a: Alloc, pick: usize, comptime name: []const u8) !T {
+        switch (@typeInfo(T)) {
+            .void => return {},
+            .bool => return false,
+            .int => return if (comptime std.mem.eql(u8, name, "key")) 0 else @truncate(3 + pick),
+            .float => return 1.5,
+            .@"enum" => |i| return @fromBackingInt(@intCast(i.field_values[0])),
+            .optional => |i| return try sample(i.child, a, pick, name),
+            .array => |i| {
+                var out: T = undefined;
+                for (&out) |*e| e.* = try sample(i.child, a, pick, name);
+                return out;
+            },
+            .@"struct" => |i| {
+                var out: T = undefined;
+                inline for (i.field_names, i.field_types) |n, F| {
+                    @field(out, n) = try sample(F, a, pick, n);
+                }
+                return out;
+            },
+            .@"union" => |i| {
+                switch (pick % i.field_names.len) {
+                    inline 0...i.field_names.len - 1 => |idx| {
+                        const F = i.field_types[idx];
+                        return @unionInit(T, i.field_names[idx], try sample(F, a, pick, name));
+                    },
+                    else => unreachable,
+                }
+            },
+            .pointer => |i| {
+                comptime std.debug.assert(i.size == .slice);
+                const buf = try a.alloc(i.child, 2);
+                for (buf) |*e| e.* = try sample(i.child, a, pick, name);
+                return buf;
+            },
+            else => @compileError("mutation.sample: unsupported " ++ @typeName(T)),
+        }
+    }
+
+    /// Change the `k`-th leaf (in walk order) of `v`; true once applied.
+    fn mutate(comptime T: type, v: *T, k: *usize) bool {
+        switch (@typeInfo(T)) {
+            .void => return false,
+            .bool => {
+                if (k.* != 0) {
+                    k.* -= 1;
+                    return false;
+                }
+                v.* = !v.*;
+                return true;
+            },
+            .int => {
+                if (k.* != 0) {
+                    k.* -= 1;
+                    return false;
+                }
+                v.* +%= 1;
+                return true;
+            },
+            .float => {
+                if (k.* != 0) {
+                    k.* -= 1;
+                    return false;
+                }
+                v.* += 1;
+                return true;
+            },
+            .@"enum" => |i| {
+                if (i.field_values.len < 2) return false;
+                if (k.* != 0) {
+                    k.* -= 1;
+                    return false;
+                }
+                v.* = @fromBackingInt(@intCast(i.field_values[1]));
+                return true;
+            },
+            .optional => |i| {
+                if (v.*) |*p| return mutate(i.child, p, k);
+                return false;
+            },
+            .array => |i| {
+                for (&v.*) |*e| if (mutate(i.child, e, k)) return true;
+                return false;
+            },
+            .@"struct" => |i| {
+                inline for (i.field_names, i.field_types) |n, F| {
+                    if (mutate(F, &@field(v.*, n), k)) return true;
+                }
+                return false;
+            },
+            .@"union" => switch (v.*) {
+                inline else => |*payload| return mutate(@TypeOf(payload.*), payload, k),
+            },
+            .pointer => |i| {
+                for (@constCast(v.*)) |*e| if (mutate(i.child, e, k)) return true;
+                return false;
+            },
+            else => unreachable,
+        }
+    }
+};
+
+test "cmdsEqual: every field of every Cmd variant is observed by the diff" {
+    // Msg with a scalar, a slice and a nested struct, so the generic Msg
+    // compare (not just tag equality) is covered too.
+    const Msg = union(enum) { a, b: u32, c: []const u8, d: struct { f: f32, on: bool } };
+    const C = cmd.Cmd(Msg);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var checked: usize = 0;
+    inline for (@typeInfo(C).@"union".field_names, @typeInfo(C).@"union".field_types) |vname, P| {
+        var pick: usize = 0;
+        while (pick < 9) : (pick += 1) {
+            const pa = try mutation.sample(P, arena, pick, vname);
+            const pb = try mutation.sample(P, arena, pick, vname);
+            const ca = [_]C{@unionInit(C, vname, pa)};
+            const cb = [_]C{@unionInit(C, vname, pb)};
+            // Equal content at distinct addresses must compare equal.
+            try std.testing.expect(cmdsEqual(Msg, &ca, &cb));
+
+            var idx: usize = 0;
+            while (true) : (idx += 1) {
+                var mutated = try mutation.sample(P, arena, pick, vname);
+                var k = idx;
+                if (!mutation.mutate(P, &mutated, &k)) break;
+                const cm = [_]C{@unionInit(C, vname, mutated)};
+                std.testing.expect(!cmdsEqual(Msg, &ca, &cm)) catch |e| {
+                    std.debug.print("variant {s} pick {d}: leaf #{d} change not detected\n", .{ vname, pick, idx });
+                    return e;
+                };
+                checked += 1;
+            }
+        }
+    }
+    try std.testing.expect(checked > 150);
+}
+
+test "cmdsEqual: Msg slices compare by content; variant swaps are detected" {
+    const Msg = union(enum) { a, b: []const u8 };
+    const C = cmd.Cmd(Msg);
+    const x = [_]C{.{ .button = .{ .msg = .{ .b = "k1" }, .label = "L" } }};
+    var buf = "k1".*;
+    const same = [_]C{.{ .button = .{ .msg = .{ .b = &buf }, .label = "L" } }};
+    const diff = [_]C{.{ .button = .{ .msg = .{ .b = "k2" }, .label = "L" } }};
+    const other_tag = [_]C{.{ .checkbox = .{ .msg = .a, .checked = false, .label = "L" } }};
+    try std.testing.expect(cmdsEqual(Msg, &x, &same));
+    try std.testing.expect(!cmdsEqual(Msg, &x, &diff));
+    try std.testing.expect(!cmdsEqual(Msg, &x, &other_tag));
 }

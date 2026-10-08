@@ -224,6 +224,47 @@ test "images upload, draw and release (slot reuse)" {
     try std.testing.expectEqual(img, again);
 }
 
+test "the image cache grows past 64 slots and every image draws in one frame" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+
+    // 200 distinct 1x1 images, each a different red level, drawn as a
+    // 14x14 grid of 4px cells (cell i at column i%14, row i/14).
+    const n = 200;
+    var handles: [n]teak.TextureHandle = undefined;
+    var draws: [n]teak.ImageDraw = undefined;
+    for (0..n) |i| {
+        const rgba = [4]u8{ @intCast(50 + i), 0, 0, 255 };
+        handles[i] = h.gpu.uploadImage(&rgba, 1, 1);
+        try std.testing.expect(handles[i] != teak.TEXTURE_HANDLE_NONE);
+        draws[i] = .{
+            .rect_x = @floatFromInt((i % 14) * 4),
+            .rect_y = @floatFromInt((i / 14) * 4),
+            .rect_w = 4,
+            .rect_h = 4,
+            .handle = handles[i],
+            .tint = .{ 1, 1, 1, 1 },
+            .clip_x = 0,
+            .clip_y = 0,
+            .clip_w = 64,
+            .clip_h = 64,
+        };
+    }
+    h.gpu.uploadImages(&draws);
+    const pixels = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(pixels);
+    for (0..n) |i| {
+        const got = at(pixels, @intCast((i % 14) * 4 + 2), @intCast((i / 14) * 4 + 2));
+        try std.testing.expectEqual(@as(u8, @intCast(50 + i)), got[2]); // red channel (BGRA)
+    }
+
+    // Releasing in the middle and re-uploading reuses the freed slot.
+    h.gpu.releaseImage(handles[100]);
+    const again = h.gpu.uploadImage(&[4]u8{ 1, 2, 3, 255 }, 1, 1);
+    try std.testing.expectEqual(handles[100], again);
+    for (handles) |hd| h.gpu.releaseImage(hd);
+}
+
 fn textAt(x: f32, y: f32, w: f32, h: f32, content: []const u8) teak.TextDraw {
     return .{
         .rect_x = x,
