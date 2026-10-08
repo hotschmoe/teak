@@ -77,6 +77,8 @@ pub const CanvasPoint = cmd.CanvasPoint;
 pub const Direction = cmd.Direction;
 pub const Align = cmd.Align;
 pub const TextAlign = cmd.TextAlign;
+pub const Wrap = cmd.Wrap;
+pub const ParagraphOpts = cmd.ParagraphOpts;
 pub const InputVariant = cmd.InputVariant;
 pub const Justify = cmd.Justify;
 

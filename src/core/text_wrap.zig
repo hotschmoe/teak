@@ -180,7 +180,15 @@ pub fn nextLine(text: []const u8, start: usize, font: FontSpec, max_w: f32, mode
         }
         if (!any and tw > max_w) {
             // Unbreakable token wider than the line: cut it at graphemes.
-            return charLine(text, start, tr.content, font, max_w, m);
+            var cut = charLine(text, start, tr.content, font, max_w, m);
+            if (cut.end == tr.content) {
+                // The last piece of the token: its trailing spaces hang here
+                // instead of becoming a blank line of their own.
+                cut.hang = @intCast(tr.hang);
+                cut.next = @intCast(b.end);
+                cut.hard_break = b.kind == .hard;
+            }
+            return cut;
         }
         any = true;
         line.end = @intCast(tr.content);
@@ -294,6 +302,27 @@ pub fn minContent(text: []const u8, font: FontSpec, m: TextMeasurer) f32 {
         seg_start = b.end;
     }
     return best;
+}
+
+/// Min-content width for a wrap mode: the narrowest width layout may shrink
+/// the text to. `.word` = widest unbreakable segment, `.char` = widest
+/// grapheme, `.ellipsis` = the ellipsis glyph, `.none` = never shrinks.
+pub fn minContentFor(text: []const u8, font: FontSpec, mode: Wrap, m: TextMeasurer) f32 {
+    switch (mode) {
+        .none => return maxContent(text, font, m),
+        .word => return minContent(text, font, m),
+        .ellipsis => return widthOf(ELLIPSIS, font, m),
+        .char => {
+            var best: f32 = 0;
+            var p: usize = 0;
+            while (p < text.len) {
+                const e = unicode.nextGrapheme(text, p);
+                best = @max(best, widthOf(text[p..e], font, m));
+                p = e;
+            }
+            return best;
+        },
+    }
 }
 
 /// Unwrapped width of the longest hard line.
@@ -455,6 +484,13 @@ test "word wrap: long token breaks at graphemes, ZWSP breaks" {
     try expectLines("abc", 5, .word, 0, &.{ "a", "b", "c" });
     try expectLines("abc", 0, .word, 0, &.{ "a", "b", "c" });
     try expectLines("one\u{200B}two\u{200B}three", 60, .word, 0, &.{ "one\u{200B}two", "three" });
+}
+
+test "overlong token's trailing spaces hang instead of forming a blank line" {
+    var it = LineIter.init("abcdefgh  x", F, 50, .word, 0, mono());
+    var n: usize = 0;
+    while (it.next()) |l| : (n += 1) try testing.expect(l.end > l.start);
+    try testing.expectEqual(@as(usize, 3), n); // abcde / fgh / x
 }
 
 test "char wrap and none" {
@@ -639,4 +675,12 @@ test "RTL, invalid UTF-8 and mixed text never crash or escape the text" {
             i = unicode.nextGrapheme(s, i);
         }
     }
+}
+
+test "minContentFor per mode" {
+    try testing.expectEqual(@as(f32, 50), minContentFor("hello world", F, .word, mono()));
+    try testing.expectEqual(@as(f32, 10), minContentFor("hello world", F, .char, mono()));
+    try testing.expectEqual(@as(f32, 30), minContentFor("hello world", F, .ellipsis, mono()));
+    try testing.expectEqual(@as(f32, 110), minContentFor("hello world", F, .none, mono()));
+    try testing.expectEqual(@as(f32, 30), minContentFor("e\u{0301}", F, .char, mono())); // one cluster
 }

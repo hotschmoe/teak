@@ -2,8 +2,12 @@ const std = @import("std");
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
 const scene = @import("scene.zig");
+const text_wrap = @import("text_wrap.zig");
 
 pub const FontSpec = text.FontSpec;
+
+/// How a `text` Cmd breaks into lines: `none | word | char | ellipsis`.
+pub const Wrap = text_wrap.Wrap;
 const DEFAULT_FONT = text.DEFAULT_FONT;
 const TextureHandle = text.TextureHandle;
 
@@ -32,6 +36,13 @@ pub const Justify = enum { start, center, end, space_between };
 /// Horizontal placement of a label inside its box (button labels).
 pub const TextAlign = enum { start, center, end };
 
+/// Options for `CmdBuffer.paragraphStyled`.
+pub const ParagraphOpts = struct {
+    wrap: Wrap = .word,
+    max_lines: u16 = 0,
+    text_align: TextAlign = .start,
+};
+
 /// Look of a `text_input`.
 pub const InputVariant = enum {
     /// A filled, bordered box (`bg`, `border` / `focus_border`, `border_width`).
@@ -53,6 +64,11 @@ pub const GroupStyle = struct {
     /// child's own size (flex-basis auto). Flex never shrinks a group below
     /// its content; wrap overflowing content in a scroll.
     flex: f32 = 0,
+    /// 0 = never shrinks (the default). >0 = shrink weight: when a horizontal
+    /// parent overflows, the deficit is shared among shrinkable children in
+    /// proportion to `shrink * width`, down to each child's min-content width
+    /// (wrapped text inside it re-wraps). Wrapped `text` shrinks implicitly.
+    shrink: f32 = 0,
     /// Fixed OUTER size (padding included) on that axis; 0 = measured from
     /// children. A fixed size is the flex basis and beats `align_cross`
     /// stretch from the parent.
@@ -93,6 +109,18 @@ pub const TextCmd = struct {
     /// Foreground color for the rendered glyphs. Default is light grey
     /// suitable for the dark scene bg that examples currently use.
     color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
+    /// Line breaking. `.none` (default) keeps the single-line behaviour
+    /// (hard newlines are NOT interpreted unless wrapping is on). `.word` /
+    /// `.char` wrap to the width layout resolves; `.ellipsis` truncates one
+    /// line with U+2026. See docs/features/text-engine.md section 7.
+    wrap: Wrap = .none,
+    /// Visible line cap for wrapped text (0 = unlimited); the last visible
+    /// line is ellipsized when text remains.
+    max_lines: u16 = 0,
+    /// Horizontal placement of each line inside the text's rect. Anything but
+    /// `.start` makes a wrapped paragraph fill its parent's cross axis so the
+    /// alignment has room to act.
+    text_align: TextAlign = .start,
 };
 
 pub const ButtonStyle = struct {
@@ -206,6 +234,9 @@ pub const ScrollStyle = struct {
     /// space (its content may be taller and is clipped), instead of growing
     /// to fit its content and pushing siblings out of the window.
     flex: f32 = 0,
+    /// Shrink weight, as `GroupStyle.shrink` (a vertical scroll shrinks to
+    /// its min-content width; a horizontal scroll never shrinks its content).
+    shrink: f32 = 0,
     /// Fixed viewport sizes; they win over `align_cross` stretch. 0 means
     /// "measured from children" (in which case overflow scrolling is
     /// pointless, but the shape still works).
@@ -1036,6 +1067,30 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .font = self.theme.typography.body,
                 .color = self.theme.text_color,
             } }) catch unreachable;
+        }
+
+        /// Wrapped body text (`wrap = .word`): breaks at UAX #14 opportunities
+        /// to the width layout gives it, shrinks with its row, grows its
+        /// height to the line count. Long unbreakable tokens break at graphemes.
+        pub fn paragraph(self: *Self, content: []const u8) void {
+            self.paragraphStyled(content, self.theme.typography.body, self.theme.text_color, .{});
+        }
+
+        /// `paragraph` with an explicit font, color and options.
+        pub fn paragraphStyled(self: *Self, content: []const u8, font: FontSpec, color: [4]f32, opts: ParagraphOpts) void {
+            self.cmds.append(self.backing, .{ .text = .{
+                .content = content,
+                .font = font,
+                .color = color,
+                .wrap = opts.wrap,
+                .max_lines = opts.max_lines,
+                .text_align = opts.text_align,
+            } }) catch unreachable;
+        }
+
+        /// One line of body text truncated with "…" where it does not fit.
+        pub fn textEllipsis(self: *Self, content: []const u8) void {
+            self.paragraphStyled(content, self.theme.typography.body, self.theme.text_color, .{ .wrap = .ellipsis });
         }
 
         /// Body text in the theme's heading color/size — for section

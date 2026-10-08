@@ -170,6 +170,9 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writeRect(writer, r);
             try writer.writeByte(' ');
             try writeQuoted(writer, t.content);
+            if (t.wrap != .none) try writer.print(" wrap={s}", .{@tagName(t.wrap)});
+            if (t.max_lines != 0) try writer.print(" max_lines={d}", .{t.max_lines});
+            if (t.text_align != .start) try writer.print(" align={s}", .{@tagName(t.text_align)});
         },
         .rich_text => |rt| {
             // Flattened text = the full content string; spans index into it.

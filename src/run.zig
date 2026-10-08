@@ -1184,6 +1184,7 @@ pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd
                 const o = cb.text;
                 if (!std.mem.eql(u8, t.content, o.content)) return false;
                 if (!std.meta.eql(t.font, o.font) or !std.meta.eql(t.color, o.color)) return false;
+                if (t.wrap != o.wrap or t.max_lines != o.max_lines or t.text_align != o.text_align) return false;
             },
             .button => |x| {
                 // Compare the FULL payload: label (slice) by content, then
