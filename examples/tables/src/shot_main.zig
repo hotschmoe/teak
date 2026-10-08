@@ -13,7 +13,7 @@ const Host = @import("teak-platform-headless").Host;
 const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 
-const Opts = struct { path: []const u8 = "tables.png", tab: App.Tab = .table, bench: bool = false, sort: bool = false };
+const Opts = struct { path: []const u8 = "tables.png", tab: App.Tab = .table, bench: bool = false, sort: bool = false, narrow: bool = false };
 
 fn parseArgs(init: std.process.Init) Opts {
     var o: Opts = .{};
@@ -24,6 +24,8 @@ fn parseArgs(init: std.process.Init) Opts {
             o.tab = std.meta.stringToEnum(App.Tab, it.next() orelse "table") orelse .table;
         } else if (std.mem.eql(u8, a, "--bench")) {
             o.bench = true;
+        } else if (std.mem.eql(u8, a, "--narrow")) {
+            o.narrow = true;
         } else if (std.mem.eql(u8, a, "--sort")) {
             o.sort = true;
         } else o.path = a;
@@ -44,6 +46,10 @@ pub fn main(init: std.process.Init) !void {
     defer rt.deinit();
 
     rt.model.tab = o.tab;
+    if (o.narrow) {
+        rt.model.table.widths[1] = 84; // narrower than most names: they are cut at the pixel
+        rt.model.table.widths[2] = 70;
+    }
     for (0..4) |_| try rt.frame();
     if (o.sort) {
         App.update(&rt.model, .{ .table = .{ .sort = 4 } });

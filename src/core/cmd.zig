@@ -181,6 +181,9 @@ pub const ButtonStyle = struct {
     soft_shadow: ?Shadow = null,
     /// Flex weight on the parent's main axis (see `GroupStyle.flex`).
     flex: f32 = 0,
+    /// Fixed-width label: the button is exactly `min_width` wide whatever the label,
+    /// and a label that does not fit is cut with U+2026 at the pixel (table cells).
+    ellipsis: bool = false,
 };
 
 pub const TextInputStyle = struct {
