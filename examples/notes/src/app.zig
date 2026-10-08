@@ -37,6 +37,8 @@ pub const Model = struct {
     log: [LOG_CAP][MSG_CAP]u8 = undefined,
     log_len: [LOG_CAP]u8 = @splat(0),
     log_n: u8 = 0,
+    /// Show the complex-script line (Arabic / Hebrew / Devanagari).
+    scripts: bool = false,
 
     pub fn logItem(self: *const Model, i: usize) []const u8 {
         return self.log[i][0..self.log_len[i]];
@@ -55,6 +57,7 @@ pub const Msg = union(enum) {
     chat: Chat.Msg,
     send,
     clear_chat,
+    toggle_scripts,
 };
 
 pub fn update(m: *Model, msg: Msg) void {
@@ -85,6 +88,7 @@ pub fn update(m: *Model, msg: Msg) void {
             m.chat.set("");
         },
         .clear_chat => m.chat.set(""),
+        .toggle_scripts => m.scripts = !m.scripts,
     }
 }
 
@@ -96,6 +100,8 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.heading("NOTES");
     Notes.viewWith(&m.notes, cb, .{ .focus = Msg{ .notes = .focus } }, .{ .id = NOTES_ID, .flex = 1, .height = 200 });
     cb.textMuted("Click, drag, double/triple-click, Up/Down/Home/End, Ctrl+arrows, Ctrl+Z/Y, Ctrl+C/X/V");
+    cb.button(.toggle_scripts, if (m.scripts) "Hide scripts" else "Show scripts");
+    if (m.scripts) scriptsLine(cb);
     cb.popGroup();
 
     // Right: chat log + multi-line input.
@@ -112,6 +118,20 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
     cb.popGroup();
 
+    cb.popGroup();
+}
+
+/// One run per script, each in its own family (so the registered face is the
+/// primary one): Arabic (serif regular), Hebrew (serif bold), Devanagari (serif
+/// medium). Needs faces that cover them (see docs/features/harfbuzz.md); with
+/// HarfBuzz built in (`-Dharfbuzz=true`) joining, mark placement and
+/// reordering are applied, otherwise the glyphs are the nominal cmap forms.
+fn scriptsLine(cb: anytype) void {
+    const ink = cb.theme.palette.fg;
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 24, .align_cross = .center });
+    cb.textStyled("\u{0645}\u{0631}\u{062D}\u{0628}\u{0627} \u{0628}\u{064E}\u{0627}\u{0644}\u{0639}\u{0627}\u{0644}\u{0645}", .{ .size_px = 28, .family = .serif, .weight = .regular, .snap_advance = false }, ink);
+    cb.textStyled("\u{05E9}\u{05B8}\u{05C1}\u{05DC}\u{05D5}\u{05B9}\u{05DD} \u{05E2}\u{05D5}\u{05DC}\u{05DD}", .{ .size_px = 28, .family = .serif, .weight = .bold, .snap_advance = false }, ink);
+    cb.textStyled("\u{0928}\u{092E}\u{0938}\u{094D}\u{0924}\u{0947} \u{0915}\u{093F}\u{0924}\u{093E}\u{092C} \u{0915}\u{094D}\u{0937}\u{0924}\u{094D}\u{0930}", .{ .size_px = 28, .family = .serif, .weight = .medium, .snap_advance = false }, ink);
     cb.popGroup();
 }
 
@@ -141,12 +161,13 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     };
 }
 
-/// Enter sends from the chat box and inserts a newline in the notes.
+/// Enter sends from the chat box. In the notes (a `text_area`) the loop does
+/// not call this: Enter reaches `keySpecialMsg` as a key and `Notes.keyMsg`
+/// turns it into a newline.
 pub fn submitMsg(m: *const Model) ?Msg {
     return switch (m.focus) {
         .chat => .send,
-        .notes => .{ .notes = .newline },
-        .none => null,
+        .notes, .none => null,
     };
 }
 
@@ -201,7 +222,7 @@ test "notes: Enter inserts a newline; view is balanced" {
     update(&m, .{ .notes = .focus });
     update(&m, .{ .notes = .{ .key = .ctrl_end } });
     const before = m.notes.content().len;
-    update(&m, submitMsg(&m).?);
+    update(&m, keySpecialMsg(&m, .enter).?); // Enter in a text_area is a key, not a submit
     try std.testing.expectEqual(before + 1, m.notes.content().len);
 
     var cb = teak.CmdBuffer(Msg).init(std.testing.allocator);

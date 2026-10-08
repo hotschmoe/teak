@@ -207,6 +207,11 @@ fn sidebar(m: *const Model, cb: anytype) void {
 
 // ── Hooks ──────────────────────────────────────────────────────────
 
+/// Frame time while a toast is sliding in or out.
+pub fn animationMsg(_: *const Model, dt_ms: u32) ?Msg {
+    return .{ .toast = .{ .frame = dt_ms } };
+}
+
 pub fn windowMsg(_: *const Model, w: f32, h: f32) ?Msg {
     return .{ .window = .{ w, h } };
 }
@@ -385,6 +390,8 @@ test "subscriptions are listed only while something needs them" {
     var m: Model = .{};
     try testing.expectEqual(@as(usize, 0), subscribe(&m).len);
     update(&m, .{ .toast_push = .{ .kind = .info } });
+    try testing.expectEqual(@as(usize, 2), subscribe(&m).len); // the tick + the slide-in animation
+    update(&m, animationMsg(&m, 400).?); // slide finished
     try testing.expectEqual(@as(usize, 1), subscribe(&m).len);
     update(&m, .job_start);
     try testing.expectEqual(@as(usize, 3), subscribe(&m).len);

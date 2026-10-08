@@ -2249,3 +2249,51 @@ test "animation_frame: dt is capped so a stalled frame cannot skip an animation"
     while (!host.shouldClose()) try rt.frame();
     try std.testing.expectEqual(@as(f32, 100), rt.model.tween.value()); // advanced by the 100 ms cap, not 5000
 }
+
+// ── Enter in a focused text_area is a key, not a submit ─────────────
+
+const EnterApp = struct {
+    pub const Model = struct { area_focused: bool = true, submits: u32 = 0, newlines: u32 = 0 };
+    pub const Msg = union(enum) { focus_area, focus_in, submit, newline };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .submit => m.submits += 1,
+            .newline => m.newlines += 1,
+            else => {},
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{});
+        if (m.area_focused) {
+            cb.textArea(.{ .focus_msg = .focus_area, .id = 1, .content = "", .cursor = 0, .height = 60 });
+        } else {
+            cb.textInput(.focus_in, "", 0);
+        }
+        cb.popGroup();
+    }
+    pub fn focusedMsg(m: *const Model) ?Msg {
+        return if (m.area_focused) .focus_area else .focus_in;
+    }
+    pub fn submitMsg(_: *const Model) ?Msg {
+        return .submit;
+    }
+    pub fn keySpecialMsg(_: *const Model, k: keys.SpecialKey) ?Msg {
+        return if (k == .enter) .newline else null;
+    }
+};
+
+test "Enter: a focused text_area gets it as a key (keySpecialMsg), a text_input still submits" {
+    const t = try play(EnterApp, &.{ .{}, .{ .keys = &.{.enter} } });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.newlines);
+    try std.testing.expectEqual(@as(u32, 0), t.rt.model.submits);
+
+    var host: ScriptHost = .{ .script = &.{ .{}, .{ .keys = &.{.enter} } } };
+    var gpu: StubGpu = .{};
+    var rt = try Runtime(EnterApp, ScriptHost, StubGpu).init(std.testing.allocator, &host, &gpu, .{});
+    defer rt.deinit();
+    rt.model.area_focused = false;
+    while (!host.shouldClose()) try rt.frame();
+    try std.testing.expectEqual(@as(u32, 1), rt.model.submits);
+    try std.testing.expectEqual(@as(u32, 0), rt.model.newlines);
+}

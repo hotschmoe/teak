@@ -128,6 +128,23 @@ hand-call pattern `counter_greeter` uses for `greeter.view`.
 > must hand-write the app `view` and call `Picker.viewWith(...)` yourself
 > (see [cookbook recipe 5](../cookbook.md#5-dropdown-with-a-scrolling-list)).
 
+**`cap` is documentation only.** `Dropdown(cap).capacity` exposes it, but nothing
+sizes storage or limits options by it (the Model holds an index, the app owns the
+option slice). Any positive number works; use it to say how long the list may get.
+
+**Setting the selection from code:** `update(&m.picker, .{ .select = i })` works
+while the list is closed (it records `selected = i`, parks the highlight there and
+leaves the list closed), so loading a record or applying a preset needs no
+`toggle` first.
+
+**Positioning the open list.** `list_x` / `list_y` are **window-absolute** pixels
+for the overlay's top-left; the dropdown does not look at where its closed button
+was laid out (a pure `view` cannot read layout). Compute them from your own
+layout (your paddings and fixed widths: the closed button is at the cursor where
+you call `viewWith`), or keep the app's `scrollLayoutMsg` / `canvasMsg` `layout`
+event for the surrounding region in the Model and derive the anchor from it. A
+first-class "anchor from the previous frame's button rect" event is not built yet.
+
 `msgs` carries the composed AppMsgs: `.toggle`, `.close`, and
 `selectMsg` — a **comptime `fn(usize) AppMsg`** the app supplies to build
 the per-index select message. `DropdownViewOpts` positions the open list
@@ -280,7 +297,10 @@ right-aligns near the window's lower-right so it stays on screen.
 **toast.** `Toast(cap, text_cap)`. `Toast.push(&m.toasts, kind, text, ttl)`
 from any `update` arm; `ttl` counts `TICK_MS` ticks (0 = sticky). List
 `Sub.every(TICK_MS)` only while `Toast.active`. A full stack drops its oldest.
-No slide / fade yet (it needs the animation layer); cards appear and vanish.
+Cards slide in from the right and fade (and out again on expiry or dismiss): a `teak.anim.Tween` per entry,
+advanced by `Toast.Msg.frame` (the app's `animationMsg`) while `Toast.animating`; an app that never forwards frames
+still works (toasts appear shown and are dropped a couple of ticks after they expire). Each card is its own overlay at a
+fixed slot (`ViewOpts.height`), newest at the bottom.
 
 **dialog.** `Dialog.view(cb, opts, .{ .confirm = ..., .cancel = ... })` while
 the app's flag is set; `begin` / `end` wrap custom body content. Enter / Escape
@@ -294,12 +314,21 @@ enabled / checked, separator, children). Choosing a leaf dispatches
 `msgs.run(action)`; the app's `update` for that Msg also closes the menu
 (`MenuBar.update(&m.bar, .close)`). Keyboard: F10 or a bare Alt tap
 (`SpecialKey.f10` / `.alt_tap`) activates the bar, arrows / Enter / Escape
-navigate, a letter is a mnemonic while the bar is active. Because `view` cannot
+navigate, a letter is a mnemonic while the bar is active. Mnemonic letters are underlined (`ButtonCmd.underline`). Because `view` cannot
 read layout, geometry is computed from fixed sizes (`top_width`, `row_h`,
 `panel_w`, `SEP_H`); rows pad their text to `cols` columns so shortcuts align
 in a monospaced font. Panels clamp to the window. A transparent full-window
 modal "scrim" overlay behind the panels makes a click anywhere else dismiss
 the menu. The navigation logic (`Nav`) is pure and exhaustively tested.
+
+**date_field.** An ISO text field (`YYYY-MM-DD`) plus a calendar popover: a modal overlay with a month header (`<<` `<`
+`>` `>>`), weekday headings (Monday first), a 6 x 7 grid of day buttons (other-month days muted, today outlined,
+selected inverted, the keyboard cursor in a heavy border) and Today / Clear. The date maths (`widgets.date`: days from
+civil, weekday, add days / months with day clamping, strict ISO parse) is pure. **No wall clock in `view`:** "today" is
+Model data set with `Msg.set_today`, typically `date.fromUnixMs(c.unix_ms, c.utc_offset_min)` from a `clock` effect
+result. Typing a full valid date selects it; a partial or impossible one is plain text with a danger border. Keys
+(`keyMsg`): arrows move by day / week, Page Up / Down by month, Home / End to the month's first / last day, Enter picks,
+Escape closes; Down on a closed field opens it.
 
 ### Host support for the keys
 

@@ -887,9 +887,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     }
                 }
                 // Enter-to-submit — apps opt in with `submitMsg`. Takes
-                // precedence over `keySpecialMsg` for the Enter key only.
+                // precedence over `keySpecialMsg` for the Enter key only,
+                // EXCEPT while a `text_area` has focus: Enter is a key there
+                // (a newline), delivered through `keySpecialMsg`.
                 if (@hasDecl(App, "submitMsg")) {
-                    if (k == .enter) {
+                    if (k == .enter and !focusIsTextArea(App, &self.model, prev_cmds)) {
                         if (App.submitMsg(&self.model)) |m| self.dispatch(m);
                         continue;
                     }
@@ -1631,6 +1633,12 @@ fn checkBalance(cmds: anytype, view_name: []const u8) void {
             view_name, cmd.formatBalanceError(bal_err, &buf),
         });
     }
+}
+
+/// The focused widget (by `focusedMsg`) is a `text_area`.
+fn focusIsTextArea(comptime App: type, model: *const App.Model, cmds: anytype) bool {
+    const i = focusIndex(App, model, cmds) orelse return false;
+    return cmds[i] == .text_area;
 }
 
 /// Resolve the focused widget's cmd index for this frame. Apps that

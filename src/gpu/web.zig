@@ -150,6 +150,9 @@ pub const Gpu = struct {
     /// Built lazily for the current `vert_buf` (it is also bound as storage).
     bind_group: ?zgpu.BindGroup,
     bind_group_buf: ?zgpu.Buffer,
+    /// `vert_buf_size` the bind group was built for (a reallocation can hand
+    /// back the same buffer id, so the handle alone cannot show it).
+    bind_group_size: u32,
     solid_bgl: zgpu.BindGroupLayout,
     uniform_buf: zgpu.Buffer,
     vert_buf: ?zgpu.Buffer,
@@ -298,6 +301,7 @@ pub const Gpu = struct {
             .pipeline = pipeline,
             .bind_group = null,
             .bind_group_buf = null,
+            .bind_group_size = 0,
             .solid_bgl = bgl,
             .uniform_buf = uniform_buf,
             .vert_buf = null,
@@ -509,13 +513,14 @@ pub const Gpu = struct {
             zgpu.BindGroupEntry.initBufferFull(1, self.vert_buf.?, self.vert_buf_size),
         });
         self.bind_group_buf = self.vert_buf;
+        self.bind_group_size = self.vert_buf_size;
     }
 
     fn drawSolids(self: *Gpu, pass: zgpu.RenderPassEncoder, range: struct { usize, usize }) void {
         const from, const to = range;
         if (to <= from or self.vert_buf == null) return;
         const draw_bytes: u64 = @as(u64, self.vert_count) * @sizeOf(Vertex);
-        if (self.bind_group_buf == null or self.bind_group_buf.? != self.vert_buf.?) self.rebuildSolidBindGroup();
+        if (self.bind_group_buf == null or self.bind_group_buf.? != self.vert_buf.? or self.bind_group_size != self.vert_buf_size) self.rebuildSolidBindGroup();
         zgpu.renderPassSetPipeline(pass, self.pipeline);
         zgpu.renderPassSetBindGroup(pass, 0, self.bind_group.?);
         zgpu.renderPassSetVertexBuffer(pass, 0, self.vert_buf.?, 0, draw_bytes);
