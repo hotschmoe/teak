@@ -148,7 +148,9 @@ extern "user32" fn TranslateMessage(*const MSG) callconv(WINAPI) BOOL;
 extern "user32" fn DispatchMessageW(*const MSG) callconv(WINAPI) LRESULT;
 extern "user32" fn DefWindowProcW(HANDLE, UINT, WPARAM, LPARAM) callconv(WINAPI) LRESULT;
 extern "user32" fn PostQuitMessage(c_int) callconv(WINAPI) void;
-extern "user32" fn LoadCursorW(?HANDLE, LPCWSTR) callconv(WINAPI) ?HANDLE;
+// The name is a MAKEINTRESOURCE integer (often odd), not a real pointer, so it
+// must not claim `u16` alignment.
+extern "user32" fn LoadCursorW(?HANDLE, ?*align(1) const anyopaque) callconv(WINAPI) ?HANDLE;
 extern "user32" fn GetKeyState(c_int) callconv(WINAPI) i16;
 extern "user32" fn SetCapture(HANDLE) callconv(WINAPI) ?HANDLE;
 extern "user32" fn ReleaseCapture() callconv(WINAPI) BOOL;
