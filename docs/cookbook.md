@@ -30,6 +30,7 @@ change yields.
 | Fire a Msg on a timer | [11. Timer / subscription](#11-timer--subscription) |
 | Add a brand-new widget to the framework | [12. Add a new widget to the framework](#12-add-a-new-widget-to-the-framework) |
 | Call an HTTP API, open / save a file, remember a setting | [13. Effects: HTTP, files, storage](#13-effects-http-files-storage) |
+| Edit multi-line text (wrap, scroll, select, undo, IME) | [19. Add a multi-line TextArea](#19-add-a-multi-line-textarea) |
 
 The mechanical spine underneath every app recipe: **1.** field on `Model`
 · **2.** variant on `Msg` · **3.** arm in `update` · **4.** `cb.*` calls in
@@ -1063,3 +1064,103 @@ const Rows = struct {                       // the app's data, passed per call: 
 **Common mistake:** keeping the rows in the Model and copying them on sort. `DataTable` sorts an *index permutation* (`order`); the
 selection is keyed by the *data* row so it survives sorting. For rows of different heights use `VarList` (heights are measured by layout and fed back
 through `virtualRowsMsg`); for hierarchies `TreeList` (preorder + depth, no pointers).
+
+---
+
+## 19. Add a multi-line TextArea
+
+**Goal:** a wrapping, scrolling, selectable, undoable multi-line editor with
+pointer editing, visual Up/Down/Home/End, IME and clipboard, in about 40
+lines of glue. Everything layout-dependent (click to byte offset, visual
+motion, wrapped size, caret rect) is resolved by `teak.run` and handed to you
+as data; `update` stays a pure function.
+
+**You will touch:** your app file only (entry point as in recipe 1).
+
+```zig
+// src/app.zig
+const teak = @import("teak");
+
+const Notes = teak.TextArea(4096);          // capacity in bytes
+
+pub const Model = struct {
+    notes: Notes.Model = .{},
+    focused: bool = false,                  // who owns the keyboard
+};
+pub const Msg = union(enum) { notes: Notes.Msg };
+
+pub fn update(m: *Model, msg: Msg) void {
+    switch (msg) {
+        .notes => |a| {
+            if (a == .focus) m.focused = true;      // a click on the area
+            Notes.update(&m.notes, a);
+        },
+    }
+}
+
+pub fn view(m: *const Model, cb: anytype) void {
+    cb.pushGroup(.{ .padding = 16, .gap = 8, .align_cross = .stretch });
+    cb.heading("NOTES");
+    // `id` must be distinct and non-zero per area; it names the area in events.
+    Notes.viewWith(&m.notes, cb, .{ .focus = Msg{ .notes = .focus } }, .{ .id = 1, .height = 220 });
+    cb.popGroup();
+}
+
+// ── Hooks teak.run looks for (all optional, by declaration) ──────────
+
+/// Pointer, wheel, resolved motion keys and layout metrics: one line per area.
+pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
+    return .{ .notes = Notes.eventMsg(ev) };
+}
+
+/// Typed characters (a UTF-8 byte at a time; the editor assembles them).
+pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    return if (m.focused) Msg{ .notes = Notes.charMsg(c) } else null;
+}
+
+/// Enter, Backspace/Delete, Left/Right, Ctrl+arrows, Ctrl+Z/Y/A, ...
+/// (Up/Down/PageUp/PageDown/Home/End never reach here: they arrive via `textMsg`.)
+pub fn keySpecialMsg(m: *const Model, k: teak.SpecialKey) ?Msg {
+    if (!m.focused) return null;
+    return if (Notes.keyMsg(k)) |a| Msg{ .notes = a } else null;
+}
+
+/// Lets the loop know which area has focus (Tab traversal, caret blink, IME spot).
+pub fn focusedMsg(m: *const Model) ?Msg {
+    return if (m.focused) Msg{ .notes = .focus } else null;
+}
+
+// Clipboard is the app's policy: Ctrl+C / X / V reach you with the Host clipboard.
+pub fn keyNeedsClipboard(k: teak.SpecialKey) bool {
+    return teak.keyNeedsClipboard(k);
+}
+pub fn handleClipboard(m: *Model, k: teak.SpecialKey, clip: teak.Clipboard) void {
+    switch (k) {
+        .ctrl_c => if (m.notes.selectionText().len > 0) clip.write(m.notes.selectionText()),
+        .ctrl_x => if (m.notes.selectionText().len > 0) {
+            clip.write(m.notes.selectionText());
+            update(m, .{ .notes = .{ .key = .backspace } });
+        },
+        .ctrl_v => if (clip.read().len > 0) update(m, .{ .notes = Notes.pasteMsg(clip.read()) }),
+        else => {},
+    }
+}
+```
+
+Options on `viewWith`: `.wrap = .word | .char | .none` (`.none` scrolls
+horizontally), `.height` / `.width` / `.flex`, `.font`, `.style`, `.disabled`.
+Seed or replace the text with `m.notes.set("...")`; read it with
+`m.notes.content()`.
+
+**Common mistakes:**
+
+- Two areas with the same `id`: both receive each other's events. Give every
+  area its own non-zero id and route on `ev.id` in `textMsg`.
+- Forgetting `textMsg`: the area draws and takes typing but ignores the
+  mouse, the wheel, Up/Down and scrolling-to-caret (those all arrive as events).
+- Putting the text in a fixed-height parent without `align_cross = .stretch`:
+  the area fills the width of a stretching parent only.
+
+**Also:** a second area (a chat box) is another `Model` field, `Msg` variant
+and `update` arm; `examples/notes` has two. Full reference:
+[features/text-area.md](features/text-area.md).

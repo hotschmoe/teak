@@ -58,8 +58,9 @@ tests; names the gaps.
 | Hit-test + hover-test | [hit-test.md](hit-test.md) |
 | Layout engine | [layout.md](layout.md) |
 | Focus traversal | [focus.md](focus.md) |
-| Text measurement (`TextMeasurer` / `FontSpec`) | [text.md](text.md) |
-| Text engine (M1 design: glyph atlas, shaper, wrap, editor) | [text-engine.md](text-engine.md) |
+| Text: engine overview, supported subset, fonts, shaping, editing, IME (`FontSpec`, `TextMeasurer`, `Shaper`) | [text.md](text.md) |
+| Multi-line editing (`text_area`, `TextArea`, `textMsg`) | [text-area.md](text-area.md) |
+| Text engine design record (glyph atlas, shaper, wrap, editor; PR status table) | [text-engine.md](text-engine.md) |
 | Golden snapshot tests + live `TEAK_SNAPSHOT` | [snapshot.md](snapshot.md) |
 | Ergonomic helpers (Theme, mixedText, ComponentList, …) | [ergonomic-helpers.md](ergonomic-helpers.md) |
 | Functional gaps (8 features) — yolo push | [functional-gaps.md](functional-gaps.md) |

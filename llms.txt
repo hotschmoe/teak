@@ -898,7 +898,7 @@ More worked examples and idioms: **docs/cookbook.md**.
 - `docs/features/hit-test.md` — hit-test + hover-test.
 - `docs/features/focus.md` — Msg-keyed stable focus traversal.
 - `docs/features/transient-state.md` — presentation-only state.
-- `docs/features/text.md` — TextMeasurer + FontSpec.
+- `docs/features/text.md` — the text engine: supported subset, fonts, shaping, editing, IME; `docs/features/text-area.md` — multi-line editing wiring.
 - `docs/features/host.md` — Host interface (window + input; DPI/scaling notes).
 - `docs/features/headless.md` — headless native runs: scripted input -> PNG (`linkHeadless`, `teak.headless`).
 - `docs/features/gpu.md` — Gpu interface (vertex upload + present).

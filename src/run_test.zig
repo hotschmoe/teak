@@ -2272,3 +2272,90 @@ test "animation_frame: dt is capped so a stalled frame cannot skip an animation"
     while (!host.shouldClose()) try rt.frame();
     try std.testing.expectEqual(@as(f32, 100), rt.model.tween.value()); // advanced by the 100 ms cap, not 5000
 }
+
+// Verbatim copy of docs/cookbook.md recipe 19 (keeps the doc honest).
+const Recipe19 = struct {
+    const teak = @import("teak.zig");
+
+    const Notes = teak.TextArea(4096); // capacity in bytes
+
+    pub const Model = struct {
+        notes: Notes.Model = .{},
+        focused: bool = false, // who owns the keyboard
+    };
+    pub const Msg = union(enum) { notes: Notes.Msg };
+
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .notes => |a| {
+                if (a == .focus) m.focused = true; // a click on the area
+                Notes.update(&m.notes, a);
+            },
+        }
+    }
+
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 16, .gap = 8, .align_cross = .stretch });
+        cb.heading("NOTES");
+        // `id` must be distinct and non-zero per area; it names the area in events.
+        Notes.viewWith(&m.notes, cb, .{ .focus = Msg{ .notes = .focus } }, .{ .id = 1, .height = 220 });
+        cb.popGroup();
+    }
+
+    // ── Hooks teak.run looks for (all optional, by declaration) ──────────
+
+    /// Pointer, wheel, resolved motion keys and layout metrics: one line per area.
+    pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
+        return .{ .notes = Notes.eventMsg(ev) };
+    }
+
+    /// Typed characters (a UTF-8 byte at a time; the editor assembles them).
+    pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+        return if (m.focused) Msg{ .notes = Notes.charMsg(c) } else null;
+    }
+
+    /// Enter, Backspace/Delete, Left/Right, Ctrl+arrows, Ctrl+Z/Y/A, ...
+    /// (Up/Down/PageUp/PageDown/Home/End never reach here: they arrive via `textMsg`.)
+    pub fn keySpecialMsg(m: *const Model, k: teak.SpecialKey) ?Msg {
+        if (!m.focused) return null;
+        return if (Notes.keyMsg(k)) |a| Msg{ .notes = a } else null;
+    }
+
+    /// Lets the loop know which area has focus (Tab traversal, caret blink, IME spot).
+    pub fn focusedMsg(m: *const Model) ?Msg {
+        return if (m.focused) Msg{ .notes = .focus } else null;
+    }
+
+    // Clipboard is the app's policy: Ctrl+C / X / V reach you with the Host clipboard.
+    pub fn keyNeedsClipboard(k: teak.SpecialKey) bool {
+        return teak.keyNeedsClipboard(k);
+    }
+    pub fn handleClipboard(m: *Model, k: teak.SpecialKey, clip: teak.Clipboard) void {
+        switch (k) {
+            .ctrl_c => if (m.notes.selectionText().len > 0) clip.write(m.notes.selectionText()),
+            .ctrl_x => if (m.notes.selectionText().len > 0) {
+                clip.write(m.notes.selectionText());
+                update(m, .{ .notes = .{ .key = .backspace } });
+            },
+            .ctrl_v => if (clip.read().len > 0) update(m, .{ .notes = Notes.pasteMsg(clip.read()) }),
+            else => {},
+        }
+    }
+};
+
+test "cookbook recipe 19: a TextArea app wired exactly as documented edits text" {
+    const R = Recipe19;
+    const p = try begin(R, .{ .script = &.{
+        .{},
+        .{ .x = 20, .y = 70, .held = left, .down = left },
+        .{ .x = 20, .y = 70, .up = left },
+        .{ .chars = "hello" },
+        .{ .keys = &.{.enter} },
+        .{ .chars = "world" },
+        .{},
+    } }, .{});
+    defer p.destroy();
+    while (!p.host.shouldClose()) try p.rt.frame();
+    try std.testing.expectEqualStrings("hello\nworld", p.rt.model.notes.content());
+    try std.testing.expect(p.rt.model.focused);
+}
