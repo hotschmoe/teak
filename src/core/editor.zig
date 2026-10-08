@@ -28,6 +28,7 @@ const unicode = @import("unicode.zig");
 const text_wrap = @import("text_wrap.zig");
 const text_mod = @import("text.zig");
 const keys = @import("../input/keys.zig");
+const text_event = @import("text_event.zig");
 
 const SpecialKey = keys.SpecialKey;
 const FontSpec = text_mod.FontSpec;
@@ -321,39 +322,46 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
 
         /// Home/End of the *visual* line (the wrapped line the cursor is on).
         pub fn moveLineEdge(self: *Self, edge: enum { start, end }, extend: bool, font: FontSpec, max_w: f32, mode: text_wrap.Wrap, m: TextMeasurer) void {
-            const t = self.content();
-            var it = text_wrap.LineIter.init(t, font, max_w, mode, 0, m);
-            var cur = it.next().?;
-            while (self.cursor >= cur.next) {
-                cur = it.next() orelse break;
-            }
-            const soft = !cur.hard_break and cur.next < t.len;
-            const target: usize = switch (edge) {
-                .start => cur.start,
-                .end => if (soft) cur.end else cur.hang,
-            };
-            self.moveTo(target, extend);
+            const r = text_wrap.resolveNav(self.content(), self.cursor, null, if (edge == .start) .line_start else .line_end, 1, font, max_w, mode, m);
+            self.moveTo(r.index, extend);
         }
 
         /// Up/Down/Page: move `lines` visual lines (negative = up), keeping the
         /// sticky column in `goal_x`. Past the first/last line the cursor goes
         /// to the start/end of the text.
         pub fn moveVertical(self: *Self, lines: i32, extend: bool, font: FontSpec, max_w: f32, mode: text_wrap.Wrap, m: TextMeasurer) void {
-            const t = self.content();
-            const c = text_wrap.caretPos(t, self.cursor, font, max_w, mode, 0, m);
-            const x = self.goal_x orelse c.x;
-            const total = text_wrap.measureWrapped(t, font, max_w, mode, 0, m).lines;
-            const target_line = @as(i64, c.line) + lines;
-            const dest: usize = if (target_line < 0)
-                0
-            else if (target_line >= total)
-                self.len
-            else blk: {
-                const lh = text_wrap.lineHeight(font, m);
-                break :blk text_wrap.indexAt(t, x, (@as(f32, @floatFromInt(target_line)) + 0.5) * lh, font, max_w, mode, 0, m);
-            };
-            self.moveToKeepGoal(dest, extend);
-            self.goal_x = x;
+            const kind: text_wrap.NavKind = if (lines < 0) (if (lines == -1) .up else .page_up) else (if (lines == 1) .down else .page_down);
+            const page: u32 = @intCast(@abs(lines));
+            const r = text_wrap.resolveNav(self.content(), self.cursor, self.goal_x, kind, page, font, max_w, mode, m);
+            self.moveToKeepGoal(r.index, extend);
+            self.goal_x = r.goal_x;
+        }
+
+        /// Apply a pointer / navigation `TextEvent` (core/text_event.zig):
+        /// click sets the caret (Shift extends), drag extends from the press
+        /// point, double click selects the word, triple click the hard line,
+        /// and a resolved `move` goes to its target keeping the sticky column.
+        /// Wheel / metrics concern scrolling and are the caller's (see
+        /// `TextArea`). Returns true when the event was a caret / selection one.
+        pub fn applyPointer(self: *Self, ev: text_event.TextEvent) bool {
+            switch (ev.kind) {
+                .down => self.moveTo(ev.index, ev.mods.shift),
+                .drag => self.moveTo(ev.index, true),
+                .double_click => self.selectWordAt(ev.index),
+                .triple_click => {
+                    const t = self.content();
+                    const lo = lineStart(t, ev.index);
+                    var hi = lineEnd(t, ev.index);
+                    if (hi < t.len) hi = unicode.nextGrapheme(t, hi); // include the newline
+                    self.setSelection(lo, hi);
+                },
+                .move => {
+                    self.moveToKeepGoal(ev.index, ev.mods.shift);
+                    self.goal_x = if (ev.keep_goal) ev.goal_x else null;
+                },
+                .up, .wheel, .metrics, .leave => return false,
+            }
+            return true;
         }
 
         // ── Editing ───────────────────────────────────────────────

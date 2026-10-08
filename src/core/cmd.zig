@@ -3,9 +3,13 @@ const oom = @import("oom.zig").oom;
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
 const scene = @import("scene.zig");
+const text_wrap = @import("text_wrap.zig");
 const eql = @import("eql.zig");
 
 pub const FontSpec = text.FontSpec;
+
+/// How a `text` Cmd breaks into lines: `none | word | char | ellipsis`.
+pub const Wrap = text_wrap.Wrap;
 const DEFAULT_FONT = text.DEFAULT_FONT;
 const TextureHandle = text.TextureHandle;
 
@@ -34,6 +38,13 @@ pub const Justify = enum { start, center, end, space_between };
 /// Horizontal placement of a label inside its box (button labels).
 pub const TextAlign = enum { start, center, end };
 
+/// Options for `CmdBuffer.paragraphStyled`.
+pub const ParagraphOpts = struct {
+    wrap: Wrap = .word,
+    max_lines: u16 = 0,
+    text_align: TextAlign = .start,
+};
+
 /// Look of a `text_input`.
 pub const InputVariant = enum {
     /// A filled, bordered box (`bg`, `border` / `focus_border`, `border_width`).
@@ -55,6 +66,11 @@ pub const GroupStyle = struct {
     /// child's own size (flex-basis auto). Flex never shrinks a group below
     /// its content; wrap overflowing content in a scroll.
     flex: f32 = 0,
+    /// 0 = never shrinks (the default). >0 = shrink weight: when a horizontal
+    /// parent overflows, the deficit is shared among shrinkable children in
+    /// proportion to `shrink * width`, down to each child's min-content width
+    /// (wrapped text inside it re-wraps). Wrapped `text` shrinks implicitly.
+    shrink: f32 = 0,
     /// Fixed OUTER size (padding included) on that axis; 0 = measured from
     /// children. A fixed size is the flex basis and beats `align_cross`
     /// stretch from the parent.
@@ -95,6 +111,18 @@ pub const TextCmd = struct {
     /// Foreground color for the rendered glyphs. Default is light grey
     /// suitable for the dark scene bg that examples currently use.
     color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
+    /// Line breaking. `.none` (default) keeps the single-line behaviour
+    /// (hard newlines are NOT interpreted unless wrapping is on). `.word` /
+    /// `.char` wrap to the width layout resolves; `.ellipsis` truncates one
+    /// line with U+2026. See docs/features/text-engine.md section 7.
+    wrap: Wrap = .none,
+    /// Visible line cap for wrapped text (0 = unlimited); the last visible
+    /// line is ellipsized when text remains.
+    max_lines: u16 = 0,
+    /// Horizontal placement of each line inside the text's rect. Anything but
+    /// `.start` makes a wrapped paragraph fill its parent's cross axis so the
+    /// alignment has room to act.
+    text_align: TextAlign = .start,
 };
 
 pub const ButtonStyle = struct {
@@ -208,6 +236,9 @@ pub const ScrollStyle = struct {
     /// space (its content may be taller and is clipped), instead of growing
     /// to fit its content and pushing siblings out of the window.
     flex: f32 = 0,
+    /// Shrink weight, as `GroupStyle.shrink` (a vertical scroll shrinks to
+    /// its min-content width; a horizontal scroll never shrinks its content).
+    shrink: f32 = 0,
     /// Fixed viewport sizes; they win over `align_cross` stretch. 0 means
     /// "measured from children" (in which case overflow scrolling is
     /// pointless, but the shape still works).
@@ -669,6 +700,45 @@ pub fn TextInputCmd(comptime Msg: type) type {
     };
 }
 
+/// Multi-line editable text (`text_area`). Layout sizes it like a canvas
+/// (`width`/`min_width`, `height`, `flex`; it fills a stretching parent's
+/// cross axis); render wraps `content` to the inner width, draws the
+/// selection across lines, the caret, and the IME composition (from
+/// `TransientState`) clipped to the box. Pointer input over it becomes
+/// `TextEvent`s for the app's `textMsg` hook (see `core/text_event.zig`) -- the
+/// framework never builds a Msg from a pointer, and nothing here is a callback.
+pub fn TextAreaCmd(comptime Msg: type) type {
+    return struct {
+        /// Msg emitted when the area is clicked (the app sets its focus).
+        focus_msg: Msg,
+        /// Distinct non-zero id: `TextEvent.id` names the target.
+        id: u32,
+        content: []const u8,
+        cursor: usize = 0,
+        selection_anchor: ?usize = null,
+        /// Scroll offsets into the wrapped content, from the Model.
+        scroll_x: f32 = 0,
+        scroll_y: f32 = 0,
+        /// Sticky x for Up/Down (from the Model); lets the runtime resolve
+        /// vertical motion against the real layout.
+        goal_x: ?f32 = null,
+        /// `.word` / `.char` wrap to the inner width; `.none` scrolls
+        /// horizontally. (`.ellipsis` behaves like `.none`.)
+        wrap: Wrap = .word,
+        font: FontSpec = DEFAULT_FONT,
+        style: TextInputStyle = .{},
+        /// Box sizing: `width > 0` fixes the width, else `min_width` (or the
+        /// parent's cross extent when it stretches); `flex` grows the main axis.
+        width: f32 = 0,
+        min_width: f32 = 120,
+        height: f32 = 120,
+        flex: f32 = 0,
+        /// Inner padding inside the border.
+        padding: f32 = 6,
+        disabled: bool = false,
+    };
+}
+
 pub fn CheckboxCmd(comptime Msg: type) type {
     return struct {
         /// Msg fired on click. The app flips `Model.checked` in its
@@ -727,6 +797,7 @@ pub fn Cmd(comptime Msg: type) type {
         image: ImageCmd,
         button: ButtonCmd(Msg),
         text_input: TextInputCmd(Msg),
+        text_area: TextAreaCmd(Msg),
         checkbox: CheckboxCmd(Msg),
         radio: RadioCmd(Msg),
         slider: SliderCmd(Msg),
@@ -1033,6 +1104,30 @@ pub fn CmdBuffer(comptime Msg: type) type {
             } }) catch oom();
         }
 
+        /// Wrapped body text (`wrap = .word`): breaks at UAX #14 opportunities
+        /// to the width layout gives it, shrinks with its row, grows its
+        /// height to the line count. Long unbreakable tokens break at graphemes.
+        pub fn paragraph(self: *Self, content: []const u8) void {
+            self.paragraphStyled(content, self.theme.typography.body, self.theme.text_color, .{});
+        }
+
+        /// `paragraph` with an explicit font, color and options.
+        pub fn paragraphStyled(self: *Self, content: []const u8, font: FontSpec, color: [4]f32, opts: ParagraphOpts) void {
+            self.cmds.append(self.backing, .{ .text = .{
+                .content = content,
+                .font = font,
+                .color = color,
+                .wrap = opts.wrap,
+                .max_lines = opts.max_lines,
+                .text_align = opts.text_align,
+            } }) catch oom();
+        }
+
+        /// One line of body text truncated with "…" where it does not fit.
+        pub fn textEllipsis(self: *Self, content: []const u8) void {
+            self.paragraphStyled(content, self.theme.typography.body, self.theme.text_color, .{ .wrap = .ellipsis });
+        }
+
         /// Body text in the theme's heading color/size — for section
         /// titles. Saves an explicit FontSpec at every call site.
         pub fn heading(self: *Self, content: []const u8) void {
@@ -1331,6 +1426,25 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = style,
                 .font = self.theme.typography.body,
             } }) catch oom();
+        }
+
+        /// Multi-line editable text; see `TextAreaCmd`. The theme's
+        /// `text_input` style and body font are used.
+        pub fn textArea(self: *Self, c: TextAreaCmd(Msg)) void {
+            self.cmds.append(self.backing, .{ .text_area = c }) catch oom();
+        }
+
+        /// `textArea` with the theme's input style + body font filled in.
+        pub fn textAreaThemed(self: *Self, focus_msg: Msg, id: u32, content: []const u8, cursor: usize, selection_anchor: ?usize) void {
+            self.textArea(.{
+                .focus_msg = focus_msg,
+                .id = id,
+                .content = content,
+                .cursor = cursor,
+                .selection_anchor = selection_anchor,
+                .style = self.theme.text_input,
+                .font = self.theme.typography.body,
+            });
         }
 
         pub fn richText(
