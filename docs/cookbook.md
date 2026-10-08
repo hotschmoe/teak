@@ -327,7 +327,8 @@ of drawing a mile-long menu.
    pub fn view(m: *const App.Model, cb: anytype) void {
        cb.pushGroup(.{ .direction = .vertical, .padding = 16, .gap = 8 });
        Picker.viewWith(&m.picker, cb, &options, picker_msgs, .{
-           .list_x = 16, .list_y = 52,   // anchor: usually last frame's closed-button rect
+                                         // (the list anchors itself under the closed button;
+                                         //  `.auto_anchor = false` + list_x/list_y to place it by hand)
            .list_width = 200,
            .max_visible = 8,             // > 8 options → the open list scrolls
        });
@@ -884,7 +885,7 @@ the MATERIAL field in `examples/chrome`.
 
 ```zig
 const Material = teak.Combobox(24);            // 24 = query capacity (bytes)
-const opts: teak.ComboboxViewOpts = .{ .list_x = 12, .list_y = 390, .list_width = 336, .max_visible = 6 };
+const opts: teak.ComboboxViewOpts = .{ .list_width = 336, .max_visible = 6 }; // anchors under the input
 // Model:  material: Material.Model = .{ .selected = 0 },
 // Msg:    material: Material.Msg,
 // update: .material => |mm| Material.update(&m.material, mm),
@@ -920,8 +921,9 @@ sets `material.open = false` (see chrome's `.focus_name`).
 
 **Common mistake:** treating the `selectMsg` index as the filtered ordinal —
 it is the index into *your* options slice, so `m.material.selected` is always
-a valid index into it. `list_x/list_y` are window coordinates (the previous
-frame's rect of the input, as for `Dropdown`).
+a valid index into it. The list anchors itself under the input
+(`auto_anchor`); `list_x/list_y` are window coordinates used only with
+`auto_anchor = false`.
 
 ---
 
@@ -1063,3 +1065,67 @@ const Rows = struct {                       // the app's data, passed per call: 
 **Common mistake:** keeping the rows in the Model and copying them on sort. `DataTable` sorts an *index permutation* (`order`); the
 selection is keyed by the *data* row so it survives sorting. For rows of different heights use `VarList` (heights are measured by layout and fed back
 through `virtualRowsMsg`); for hierarchies `TreeList` (preorder + depth, no pointers).
+
+---
+
+## 19. Add a 3D viewport
+
+**You want** a model on screen you can orbit, click, section and annotate.
+
+State lives in the `Model`; the viewport is one `viewport3d` Cmd whose `View`
+you rebuild every frame from it. Meshes are resources (uploaded once by key),
+placement is per-frame data.
+
+```zig
+const scene = teak.scene;
+
+pub const Model = struct {
+    cam: scene.Orbit = .{},
+    vp: [2]f32 = .{ 800, 600 }, // from the viewport's `layout` event
+    selected: u32 = 0,
+    cut_on: bool = false,
+};
+pub const Msg = union(enum) { view_event: teak.CanvasEvent };
+
+// 1. mesh data, once, through the resources hook (key = your part id)
+pub fn resources(m: *const Model) []const teak.Resource { return m.mesh_resources; }
+
+// 2. pointer events: orbit / pan / zoom-to-cursor, click to pick
+pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg { return if (ev.id == 7) .{ .view_event = ev } else null; }
+pub fn update(m: *Model, msg: Msg) void {
+    switch (msg) {
+        .view_event => |ev| {
+            if (ev.kind == .layout) m.vp = .{ ev.w, ev.h };
+            if (ev.kind == .up and ev.button == .left) {
+                const ray = scene.pickRay(m.cam.camera(ev.w, ev.h, null), ev.w, ev.h, ev.x, ev.y);
+                if (scene.pick.items(ray, m.pick_items, m.pick_meshes, .{})) |hit| m.selected = hit.id;
+            }
+            _ = m.cam.onEvent(ev, .{});
+        },
+    }
+}
+
+// 3. the view: one Item per part, selection is a flag, not geometry
+pub fn view(m: *const Model, cb: anytype) void {
+    const items = cb.arena.allocator().alloc(teak.SceneItem, parts.len) catch return;
+    for (items, parts, 1..) |*it, p, id| it.* = .{ .mesh = p.key, .id = @intCast(id), .flags = .{ .highlight = m.selected == id } };
+    cb.viewport3d(.{
+        .style = .{ .width = 480, .height = 320, .flex = 1 },
+        .camera = m.cam.camera(m.vp[0], m.vp[1], bounds),
+        .id = 7, .pointer = true, .label = "3D model",
+        .view = .{ .items = items, .grid = .{}, .gizmo = .{}, .cut = if (m.cut_on) .{ .plane = .{ 0, 1, 0, -20 } } else null },
+    });
+}
+```
+
+- `scene.pick.items` is pure CPU ray picking (BVH optional); no GPU readback, so `update` stays a pure function of (Model, Msg).
+- A `cut` discards one side of the plane and caps closed parts by stencil parity (`Item.cap_color`, hatch); give open shells `no_cap`
+  (outline only). `scene.section.isClosed` tells you which they are.
+- 2.5D: `View.planes` (tilted sheets drawn from `CanvasPrimitive`s) and `View.sprites` (billboards from image resources) live in the
+  same pass; see `examples/scene_layers`. Labels in 3D are ordinary overlay text at `scene.project(...)` plus the viewport's window
+  origin from the `layout` event (`pick.gizmoLabels` does it for the axis gizmo).
+- Examples: `examples/kerf_viewer` (parts panel, cut controls, picking) and `examples/scene_layers`.
+
+**Common mistakes:** forgetting `.pointer = true` / an `id` (no events arrive); rebuilding the *mesh resource* on every selection
+change (use item flags); using `Item.mesh` with a key that is not in `resources()` (it draws nothing); expecting `screen_px` sprite
+sizes in non-camera-facing modes; a plane whose `u`/`v` are not unit-length changes its world size (it is a scale).

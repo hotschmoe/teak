@@ -133,8 +133,8 @@ re-add these concerns as drift from the phase plan:
 
 - **Rich text** (mixed fonts or colors in one span). Every `Cmd.text`
   carries exactly one `font` + one color.
-- **Bidi / RTL / complex script shaping.** Latin and basic Unicode
-  only. Non-Latin runs render with the platform's fallback glyph.
+- **Complex script shaping** (the bidi algorithm itself is in `teak.bidi`, not yet
+  wired into rendering). Latin and basic Unicode only. Non-Latin runs render with the platform's fallback glyph.
 - **IME composition UI.** Candidate windows, preedit marks — owned
   by the OS; Teak receives finished code points.
 - **System font discovery by name.** Custom faces are registered

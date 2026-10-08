@@ -210,6 +210,11 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   devicePixelRatio backing store internally). Nothing in the
 ///   framework consumes it yet; see docs/features/host.md "DPI and
 ///   scaling" for the end-to-end render-at-scale follow-up.
+/// - `setCursor(shape)` — **optional**: show the OS mouse cursor for a
+///   `CursorShape`. `teak.run` calls it only when the shape picked from
+///   the hovered cmd (or the App's `cursorFor` hook) changes. X11 maps to
+///   XCursor theme names (font cursors as fallback), Win32 to `IDC_*` via
+///   `WM_SETCURSOR`, web to CSS `cursor` through zunk.
 /// - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
 ///   surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
 ///   a pair** (a Host with neither answers every effect as unsupported;

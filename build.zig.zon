@@ -45,6 +45,14 @@
         // `git+https://github.com/hotschmoe/zunk.git#<sha>` + hash once zunk
         // cuts a release tag teak CI can pin to.
         .zunk = .{ .path = "../zunk" },
+        // HarfBuzz 11.2.1 (MIT) — the optional complex-script shaper. Fetched
+        // only when a build asks for it (`-Dharfbuzz=true` /
+        // `.harfbuzz = true`); default builds never touch it.
+        .harfbuzz = .{
+            .url = "https://codeload.github.com/harfbuzz/harfbuzz/tar.gz/refs/tags/11.2.1",
+            .hash = "N-V-__8AAIitgQX-ChthNa-95TToUjOgawzsR4ENvt80Btdy",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

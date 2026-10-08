@@ -118,3 +118,12 @@ Same App, same layout engine, same shaders, same MSAA path, so geometry, colours
 - One primary window; secondary windows are not simulated.
 - `zig build shot` runs the GPU for real: it needs a Vulkan driver (no software fallback is guaranteed) and exits with an error where none opens.
 - The PNG writer stores uncompressed blocks; run an external optimizer if size matters.
+
+## Step ordering inside one frame
+
+A real `InputState` carries `chars` and `keys` as two separate lists, and the
+run loop handles all characters first, then all special keys. The scripted
+steps (`.chars`, `.key`, `.click`, ...) queue into the same shape, so within a
+single `.frames` batch **characters are delivered before special keys** no matter
+the order you wrote them in. To interleave (type, Enter, type), put a
+`.frames = 1` between the steps.

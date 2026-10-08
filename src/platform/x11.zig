@@ -319,6 +319,9 @@ pub const Xlib = struct {
     XFree: *const fn (?*anyopaque) callconv(.c) c_int,
     XExtendedMaxRequestSize: *const fn (*Display) callconv(.c) c_long,
     XMaxRequestSize: *const fn (*Display) callconv(.c) c_long,
+    // Cursors.
+    XCreateFontCursor: *const fn (*Display, c_uint) callconv(.c) c_ulong,
+    XDefineCursor: *const fn (*Display, Window, c_ulong) callconv(.c) c_int,
     // Input methods.
     XSupportsLocale: *const fn () callconv(.c) c_int,
     XSetLocaleModifiers: *const fn ([*:0]const u8) callconv(.c) ?[*:0]const u8,
@@ -591,6 +594,11 @@ pub const Host = struct {
     xim: ?*anyopaque,
     xic: ?*anyopaque,
     ime: *ImeCtx,
+    /// Optional libXcursor (themed cursors with CSS-style names); null when
+    /// absent, in which case classic font cursors are used.
+    xcursor: ?*XcursorLib,
+    /// Created cursors per `CursorShape` (0 = not created yet).
+    cursors: [std.enums.values(teak.CursorShape).len]c_ulong,
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         var lib = std.DynLib.open("libX11.so.6") catch return error.X11LoadFailed;
@@ -600,9 +608,15 @@ pub const Host = struct {
         const display = x.XOpenDisplay(null) orelse return error.X11OpenDisplayFailed;
         errdefer _ = x.XCloseDisplay(display);
 
+        // Display scale: TEAK_SCALE, else GDK_SCALE, else Xft.dpi / 96 (see
+        // `pickScale`). Needed before the window exists: `width`/`height`
+        // are logical, the X window is `scale` times larger.
+        const xrm: ?[]const u8 = if (x.XResourceManagerString(display)) |rm| std.mem.span(rm) else null;
+        const scale = pickScale(envSlice("TEAK_SCALE"), envSlice("GDK_SCALE"), xrm);
+
         const screen = x.XDefaultScreen(display);
         const root = x.XRootWindow(display, screen);
-        const window = x.XCreateSimpleWindow(display, root, 0, 0, width, height, 0, 0, 0);
+        const window = x.XCreateSimpleWindow(display, root, 0, 0, physicalOf(width, scale), physicalOf(height, scale), 0, 0, 0);
 
         setWindowTitle(&x, display, window, title);
         const atoms = Atoms.intern(&x, display);
@@ -640,12 +654,6 @@ pub const Host = struct {
         _ = x.XMapWindow(display, window);
         _ = x.XFlush(display);
 
-        // Desktop scale from Xft.dpi (xrdb). Absent / unparsable → 1.0.
-        const scale = if (x.XResourceManagerString(display)) |rm|
-            scaleFromXrm(std.mem.span(rm))
-        else
-            1.0;
-
         const effects = try native_effects.Service.create(title);
 
         return .{
@@ -671,6 +679,8 @@ pub const Host = struct {
             .xim = im.xim,
             .xic = im.ic,
             .ime = ime,
+            .xcursor = loadXcursor(),
+            .cursors = @splat(0),
         };
     }
 
@@ -685,6 +695,11 @@ pub const Host = struct {
         self.effects.destroy();
         _ = self.x.XDestroyWindow(self.display, self.window);
         _ = self.x.XCloseDisplay(self.display);
+        // libXcursor hooks display close: unload it only after the display.
+        if (self.xcursor) |xc| {
+            xc.lib.close();
+            gpa.destroy(xc);
+        }
         self.lib.close();
     }
 
@@ -703,11 +718,11 @@ pub const Host = struct {
             switch (ev.kind) {
                 MotionNotify => {
                     q.mods = modsFromState(ev.xmotion.state);
-                    q.pointerMoved(@floatFromInt(ev.xmotion.x), @floatFromInt(ev.xmotion.y));
+                    q.pointerMoved(self.logical(ev.xmotion.x), self.logical(ev.xmotion.y));
                 },
                 ButtonPress => {
                     q.mods = modsFromState(ev.xbutton.state);
-                    q.pointerMoved(@floatFromInt(ev.xbutton.x), @floatFromInt(ev.xbutton.y));
+                    q.pointerMoved(self.logical(ev.xbutton.x), self.logical(ev.xbutton.y));
                     switch (ev.xbutton.button) {
                         1 => q.buttonDown(.left),
                         2 => q.buttonDown(.middle),
@@ -723,7 +738,7 @@ pub const Host = struct {
                 },
                 ButtonRelease => {
                     q.mods = modsFromState(ev.xbutton.state);
-                    q.pointerMoved(@floatFromInt(ev.xbutton.x), @floatFromInt(ev.xbutton.y));
+                    q.pointerMoved(self.logical(ev.xbutton.x), self.logical(ev.xbutton.y));
                     switch (ev.xbutton.button) {
                         1 => q.buttonUp(.left),
                         2 => q.buttonUp(.middle),
@@ -737,8 +752,8 @@ pub const Host = struct {
                     const w = ev.xconfigure.width;
                     const h = ev.xconfigure.height;
                     if (w > 0 and h > 0) {
-                        const uw: u32 = @intCast(w);
-                        const uh: u32 = @intCast(h);
+                        const uw = logicalOf(@intCast(w), self.scale);
+                        const uh = logicalOf(@intCast(h), self.scale);
                         if (uw != self.width or uh != self.height) {
                             self.width = uw;
                             self.height = uh;
@@ -1242,12 +1257,35 @@ pub const Host = struct {
         if (list) |l| _ = self.x.XFree(l);
     }
 
+    /// A device-pixel pointer coordinate in logical units.
+    fn logical(self: *const Host, v: c_int) f32 {
+        return @as(f32, @floatFromInt(v)) / self.scale;
+    }
+
     pub fn shouldClose(self: *const Host) bool {
         return !self.running;
     }
 
     pub fn nativeHandle(self: *const Host) NativeHandle {
         return .{ .display = @ptrCast(self.display), .window = @intCast(self.window) };
+    }
+
+    /// Show `shape` over the window. Cursors are created once and cached;
+    /// libXcursor's themed names are tried first, then the classic cursor
+    /// font, so a bare X server still gets a sensible glyph.
+    pub fn setCursor(self: *Host, shape: teak.CursorShape) void {
+        const idx = @backingInt(shape);
+        if (self.cursors[idx] == 0) {
+            var cur: c_ulong = 0;
+            if (self.xcursor) |xc| {
+                const name = xcursorName(shape);
+                cur = xc.load(self.display, name.ptr);
+            }
+            if (cur == 0) cur = self.x.XCreateFontCursor(self.display, fontCursorId(shape));
+            self.cursors[idx] = cur;
+        }
+        _ = self.x.XDefineCursor(self.display, self.window, self.cursors[idx]);
+        _ = self.x.XFlush(self.display);
     }
 
     pub fn setTitle(self: *Host, title: []const u8) void {
@@ -1476,6 +1514,81 @@ fn initIme(x: *const Xlib, display: *Display, window: Window, ctx: *ImeCtx) ImeH
     return .{ .xim = xim, .ic = ic };
 }
 
+const XcursorLib = struct {
+    lib: std.DynLib,
+    load: *const fn (*Display, [*:0]const u8) callconv(.c) c_ulong,
+};
+
+/// libXcursor is optional and dlopened like libX11; any failure just means
+/// font cursors.
+fn loadXcursor() ?*XcursorLib {
+    var lib = std.DynLib.open("libXcursor.so.1") catch return null;
+    const f = lib.lookup(*const fn (*Display, [*:0]const u8) callconv(.c) c_ulong, "XcursorLibraryLoadCursor") orelse {
+        lib.close();
+        return null;
+    };
+    const xc = gpa.create(XcursorLib) catch {
+        lib.close();
+        return null;
+    };
+    xc.* = .{ .lib = lib, .load = f };
+    return xc;
+}
+
+/// Cursor-theme name (freedesktop / CSS spelling) for a shape.
+fn xcursorName(shape: teak.CursorShape) [:0]const u8 {
+    return shape.cssName();
+}
+
+/// Classic `cursorfont.h` glyph for a shape (the no-theme fallback).
+fn fontCursorId(shape: teak.CursorShape) c_uint {
+    return switch (shape) {
+        .arrow => 68, // XC_left_ptr
+        .pointer => 60, // XC_hand2
+        .ibeam => 152, // XC_xterm
+        .crosshair => 34, // XC_crosshair
+        .move, .grabbing => 52, // XC_fleur
+        .resize_ew => 108, // XC_sb_h_double_arrow
+        .resize_ns => 116, // XC_sb_v_double_arrow
+        .resize_nwse => 14, // XC_bottom_right_corner
+        .resize_nesw => 12, // XC_bottom_left_corner
+        .not_allowed => 0, // XC_X_cursor
+        .grab => 58, // XC_hand1
+    };
+}
+
+/// Logical extent -> device pixels (never 0).
+fn physicalOf(logical_px: u32, scale: f32) u32 {
+    return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(logical_px)) * scale))));
+}
+
+/// Device pixels -> logical extent (never 0).
+fn logicalOf(device_px: u32, scale: f32) u32 {
+    return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(device_px)) / scale))));
+}
+
+fn envSlice(name: [*:0]const u8) ?[]const u8 {
+    const v = std.c.getenv(name) orelse return null;
+    return std.mem.span(v);
+}
+
+/// Parse a scale override ("2", "1.5"); null when absent, malformed or
+/// outside [0.5, 8].
+fn parseScaleEnv(v: ?[]const u8) ?f32 {
+    const t = std.mem.trim(u8, v orelse return null, " \t");
+    const f = std.fmt.parseFloat(f32, t) catch return null;
+    if (!(f >= 0.5 and f <= 8)) return null;
+    return f;
+}
+
+/// The display scale: `TEAK_SCALE` wins, then `GDK_SCALE` (an integer toolkit
+/// convention), then `Xft.dpi / 96` from the X resource string, else 1.0.
+fn pickScale(teak_scale: ?[]const u8, gdk_scale: ?[]const u8, xrm: ?[]const u8) f32 {
+    if (parseScaleEnv(teak_scale)) |s| return s;
+    if (parseScaleEnv(gdk_scale)) |s| return s;
+    return scaleFromXrm(xrm orelse "");
+}
+
 /// Parse the `Xft.dpi` value out of an X resource-manager string — the
 /// newline-separated `key:\tvalue` dump from `XResourceManagerString`.
 /// Returns the DPI (e.g. 192) or null when the key is absent/malformed.
@@ -1671,4 +1784,29 @@ test "atomsFromBytes decodes a format-32 property" {
     var out: [4]Atom = undefined;
     try std.testing.expectEqual(@as(usize, 3), atomsFromBytes(&raw, &out));
     try std.testing.expectEqual(@as(Atom, 102), out[2]);
+}
+
+test "pickScale: TEAK_SCALE beats GDK_SCALE beats Xft.dpi; junk falls through" {
+    const xrm = "Xft.dpi:\t144\n";
+    try std.testing.expectEqual(@as(f32, 2), pickScale("2", "3", xrm));
+    try std.testing.expectEqual(@as(f32, 3), pickScale(null, "3", xrm));
+    try std.testing.expectEqual(@as(f32, 1.5), pickScale(null, null, xrm));
+    try std.testing.expectEqual(@as(f32, 1.5), pickScale("banana", "0", xrm));
+    try std.testing.expectEqual(@as(f32, 1), pickScale(null, null, null));
+    try std.testing.expectEqual(@as(f32, 1), pickScale("99", null, null)); // out of range ignored
+}
+
+test "logical <-> device pixel conversion round-trips and never hits 0" {
+    try std.testing.expectEqual(@as(u32, 800), physicalOf(400, 2));
+    try std.testing.expectEqual(@as(u32, 400), logicalOf(800, 2));
+    try std.testing.expectEqual(@as(u32, 600), physicalOf(400, 1.5));
+    try std.testing.expectEqual(@as(u32, 400), logicalOf(600, 1.5));
+    try std.testing.expectEqual(@as(u32, 1), logicalOf(0, 2));
+}
+
+test "every cursor shape maps to a font cursor and a theme name" {
+    for (std.enums.values(teak.CursorShape)) |sh| {
+        try std.testing.expect(xcursorName(sh).len > 0);
+        try std.testing.expect(fontCursorId(sh) % 2 == 0); // cursorfont glyph ids are even
+    }
 }
