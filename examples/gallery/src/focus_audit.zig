@@ -10,6 +10,7 @@ const model_mod = @import("model.zig");
 fn interactive(c: anytype) bool {
     return switch (c) {
         .button, .checkbox, .radio, .slider, .text_input, .text_area => true,
+        .canvas => |cv| cv.msg != null, // the toggle switch
         else => false,
     };
 }
