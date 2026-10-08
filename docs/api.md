@@ -299,6 +299,12 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `start, move, drop, cancel`
 > What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
 - `teak.PointerEvent`: `pub const PointerEvent = pointer.PointerEvent`
+> The kinds of `PointerEvent`.
+- `teak.PointerKind` = `pointer.PointerKind`
+  - fields: `hover, down, move, up, wheel, leave, context, layout, key, caret`
+> Text-area facts of a `PointerEvent` (`target.text_area`).
+- `teak.TextTarget` = `pointer.TextTarget`
+  - fields: `id, offset, line, goal_x, keep_goal, viewport_w, viewport_h, content_w, content_h, caret_x, caret_y, caret_h`
 > A window-space rectangle (`PointerEvent.box`).
 - `teak.Box` = `pointer.Box`
   - fields: `x, y, w, h`
@@ -732,6 +738,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 > Options for `run` (title, clear color, snapshot sink, ...).
 - `teak.RunOptions` = `runtime.RunOptions`
   - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip`
+> Pointer hooks superseded by `pointerMsg` that `App` still declares.
+- `teak.deprecatedHooks`: `pub const deprecatedHooks = runtime.deprecatedHooks`
 > A second top-level window the app wants open this frame.
 - `teak.SecondaryWindowSpec` = `runtime.SecondaryWindowSpec`
   - fields: `title, width, height`
@@ -1783,14 +1791,30 @@ and the App.
 > A window-space rectangle (`PointerEvent.box`).
 - `struct Box`
   - fields: `x, y, w, h`
-> What the App's `hoverMsg` / `contextMsg` hooks receive: where the pointer
-> is and which interactive widget is under it. `hit` is the Msg that widget
-> would dispatch on a left click (its identity: the app compares it with
-> `std.meta.eql`, no id hashing); `null` over empty or non-interactive
-> space. `box` is that widget's rect from the previous frame's layout (the
-> view cannot read layout, so this is how a tooltip or menu learns where to
-> anchor); all zero when `hit` is null. `now_ms` is the host's monotonic
-> clock, so the app can derive deadlines for `Sub.at`.
+> Text-area facts carried by a `Target.text_area` event: the caret byte the
+> runtime resolved against the wrapped layout (the measurer lives in the
+> loop, not the app), plus -- for `kind = .layout` -- the layout metrics the
+> view cannot read.
+- `struct TextTarget`
+  - fields: `id, offset, line, goal_x, keep_goal, viewport_w, viewport_h, content_w, content_h, caret_x, caret_y, caret_h`
+> The kinds of `PointerEvent` (shared by every `Msg` instantiation).
+- `enum PointerKind`
+  - fields: `hover, down, move, up, wheel, leave, context, layout, key, caret`
+> What the App's `pointerMsg` hook receives (and, through the deprecated
+> adapters, what `hoverMsg` / `contextMsg` receive): one record per pointer
+> fact, resolved against the previous frame's layout. `target` says what the
+> fact is about; every `down` on a canvas, text area or slider CAPTURES the
+> pointer for that target -- it then receives every event until all buttons
+> are up, wherever the cursor goes. `x`/`y` are window coordinates,
+> `local_x`/`local_y` are relative to the target's rect.
+> `hit` is the Msg the widget under the pointer would dispatch on a left
+> click (its identity: compare with `std.meta.eql`, no id hashing); `null`
+> over empty or non-interactive space. `box` is that widget's rect from the
+> previous frame's layout (the view cannot read layout, so this is how a
+> tooltip or menu learns where to anchor); all zero when `hit` is null.
+> `now_ms` is the host's monotonic clock, so the app can derive deadlines
+> for `Sub.at`. For widget-level kinds (`hover`, `down`, `up`, `context`)
+> `target == .widget` carries the same Msg as `hit`.
 - `pub fn PointerEvent(comptime Msg: type) type`
 
 ### `teak.cursor` (`src/core/cursor.zig`)
@@ -2639,6 +2663,13 @@ Canonical application loop — the `teak.run` wrapper.
 > it; none does today, but keep it in one place (a local or a module-level
 > `var`, as the web entry does).
 - `pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type`
+> Pointer hooks superseded by `pointerMsg`: still honoured through a thin
+> adapter (`Runtime.deliverDeprecated`), slated for removal. `wheelMsg` and
+> `scrollLayoutMsg` are not on the list: the first is `pointerMsg`'s
+> "nothing claimed it" fallback, the second reports layout, not pointer input.
+- `pub const deprecated_pointer_hooks = [_][]const u8{ "canvasMsg", "textMsg", "hoverMsg", "contextMsg", "sliderMsg", "scrollMsg" }`
+> Which of `deprecated_pointer_hooks` the App declares.
+- `pub fn deprecatedHooks(comptime App: type) []const []const u8`
 > True if two cmd buffers would render identically. Derived by comptime
 > reflection over `Cmd(Msg)` (`core/eql.zig`): every field of every
 > variant participates, so a new widget or a new style field can never be

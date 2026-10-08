@@ -157,7 +157,13 @@ fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
     _ = m.cam.onEvent(ev, .{});
 }
 
-pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
+/// The one pointer hook: the scene viewport.
+pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (ev.asCanvas()) |c| return onCanvas(m, c);
+    return null;
+}
+
+fn onCanvas(_: *const Model, ev: teak.CanvasEvent) ?Msg {
     return if (ev.id == scene_id) Msg{ .view_event = ev } else null;
 }
 

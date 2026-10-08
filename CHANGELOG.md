@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### `pointerMsg` consolidation: one pointer hook, one capture rule (stages 2-3)
+
+- `PointerEvent(Msg)` now carries every pointer fact: `kind` (`hover`, `down`,
+  `move`, `up`, `wheel`, `leave`, `context`, `layout`, `key`, `caret`), a
+  `target` union (`none` / `widget ?Msg` / `canvas id` / `text_area` with the
+  resolved caret byte / `slider {grab, value}` / `scroll id`), window and
+  target-local coordinates, deltas, `buttons`, `clicks`. Views for the helper
+  widgets: `asCanvas()`, `asText()`, `asSlider()`, `asScroll()`. One capture
+  rule (a `down` on a canvas, text area or slider captures until all buttons
+  are up), one delivery function in `run.zig`.
+- **Deprecated:** `canvasMsg`, `textMsg`, `sliderMsg`, `scrollMsg`, `hoverMsg`,
+  `contextMsg`. They still work through an adapter and log one startup note
+  (`teak.deprecatedHooks(App)`); removed next release. Every example and the
+  run-loop tests now use `pointerMsg` (the deprecated paths keep dedicated
+  tests). See docs/migration-pointer-msg.md.
+- Behaviour: a surface that returns `null` for a `wheel` lets it bubble to the
+  next consumer and finally `wheelMsg`; `pointerMsg` also receives keyboard-focus
+  hovers and the Menu-key context request. `zig build audit` fails when an
+  example declares a deprecated hook.
+
 ### `pointerMsg`: one pointer hook, blank-space clicks delivered
 
 - New optional App hook `pointerMsg(*const Model, PointerEvent(Msg)) ?Msg`.

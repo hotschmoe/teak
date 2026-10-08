@@ -919,7 +919,15 @@ fn sheetEvent(m: *Model, ev: teak.CanvasEvent) void {
 
 // ── Host hooks ─────────────────────────────────────────────────────
 
-pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
+/// The one pointer hook: canvases (scene, sheet, cut slider), scroll wheels and text areas.
+pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (ev.asCanvas()) |c| return onCanvas(m, c);
+    if (ev.asScroll()) |s| return onScroll(m, s.id, s.dx, s.dy);
+    if (ev.asText()) |t| return onText(m, t);
+    return null;
+}
+
+fn onCanvas(_: *const Model, ev: teak.CanvasEvent) ?Msg {
     if (ev.id == cut_slider_id) {
         // Drag the thumb: press or move with the left button down.
         const dragging = ev.kind == .down or (ev.kind == .move and ev.buttons.left);
@@ -929,7 +937,7 @@ pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
     return if (ev.id == scene_id) Msg{ .view_event = ev } else null;
 }
 
-pub fn scrollMsg(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
+fn onScroll(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
     if (id == chat_scroll_id) return Msg{ .chat_scroll_by = dy };
     return if (id == list_id) Msg{ .list_scroll_by = dy } else null;
 }
@@ -944,7 +952,7 @@ pub fn windowMsg(_: *const Model, w: f32, h: f32) ?Msg {
 }
 
 /// Pointer, wheel, resolved motion and metrics for the text areas.
-pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
+fn onText(_: *const Model, ev: teak.TextEvent) ?Msg {
     return switch (ev.id) {
         notes_id => Msg{ .notes = Notes.eventMsg(ev) },
         chat_id => Msg{ .chat = Chat.eventMsg(ev) },
@@ -1048,7 +1056,7 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
         };
     }
     // Escape leaves an editor; everything else edits (Up/Down/Home/End
-    // arrive as `textMsg` move events).
+    // arrive as `pointerMsg` move events).
     switch (m.focus) {
         .notes => {
             if (key == .escape) return Msg.blur;
@@ -1957,10 +1965,10 @@ test "section cut: plane from axis, offset and flip; caps skip open shells; slid
     try testing.expectEqual(@as(f32, 1), m.cut_t); // clamped
 
     // the slider canvas maps a press / drag to a fraction of its width
-    const down = canvasMsg(&m, .{ .id = cut_slider_id, .kind = .down, .x = 55, .w = 220 }).?;
+    const down = onCanvas(&m, .{ .id = cut_slider_id, .kind = .down, .x = 55, .w = 220 }).?;
     try testing.expectApproxEqAbs(@as(f32, 0.25), down.cut_set, 1e-6);
-    try testing.expect(canvasMsg(&m, .{ .id = cut_slider_id, .kind = .move, .x = 55, .w = 220 }) == null); // no button: hover
-    const drag = canvasMsg(&m, .{ .id = cut_slider_id, .kind = .move, .x = 110, .w = 220, .buttons = .{ .left = true } }).?;
+    try testing.expect(onCanvas(&m, .{ .id = cut_slider_id, .kind = .move, .x = 55, .w = 220 }) == null); // no button: hover
+    const drag = onCanvas(&m, .{ .id = cut_slider_id, .kind = .move, .x = 110, .w = 220, .buttons = .{ .left = true } }).?;
     try testing.expectApproxEqAbs(@as(f32, 0.5), drag.cut_set, 1e-6);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

@@ -3653,6 +3653,7 @@ const PmApp = struct {
                     .up => m.ups += 1,
                     .context => m.contexts += 1,
                     .hover => m.hovers += 1,
+                    else => {},
                 }
             },
             .a, .b => {},
@@ -3693,4 +3694,212 @@ test "pointerMsg: the right button arrives as kind=context with button=right" {
     defer t.destroy();
     try std.testing.expectEqual(@as(u32, 1), t.rt.model.contexts);
     try std.testing.expectEqual(pointer.Button.right, t.rt.model.last_button);
+}
+
+// ── pointerMsg: capture across target kinds, wheel fallback, adapters ──
+
+/// One app with every pointer surface (canvas 7, slider, text area 1, scroll
+/// region 3, a button), logging each `PointerEvent` it receives. Declares ONLY
+/// `pointerMsg` (+ `wheelMsg`, the fallback).
+const PmSurf = struct {
+    const TA = text_area_mod.TextArea(1024);
+    pub const Tag = enum { none, widget, canvas, text, slider, scroll };
+    pub const Seen = struct { kind: pointer.PointerKind, tag: Tag, id: u32 = 0, x: f32 = 0, value: f32 = 0, offset: u32 = 0, clicks: u8 = 1 };
+    pub const Msg = union(enum) { seen: Seen, wheel: f32, area: TA.Msg, grab, click };
+    pub const Model = struct {
+        log: [96]Seen = undefined,
+        n: usize = 0,
+        wheels: u32 = 0,
+        area: TA.Model = .{},
+        /// What `pointerMsg` answers for a `wheel` (null = decline, bubble on).
+        claim_wheel: bool = false,
+        /// `pointerMsg` declines slider events (the slider stays a plain click).
+        ignore_slider: bool = false,
+        grabs: u32 = 0,
+        fn items(self: *const Model) []const Seen {
+            return self.log[0..self.n];
+        }
+        fn count(self: *const Model, kind: pointer.PointerKind, tag: Tag) usize {
+            var c: usize = 0;
+            for (self.items()) |s| c += @intFromBool(s.kind == kind and s.tag == tag);
+            return c;
+        }
+    };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .seen => |s| if (m.n < m.log.len) {
+                m.log[m.n] = s;
+                m.n += 1;
+            },
+            .wheel => m.wheels += 1,
+            .area => |a| TA.update(&m.area, a),
+            .grab => m.grabs += 1,
+            .click => {},
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+        cb.canvasInteractive(.{ .width = 200, .height = 100 }, &.{}, 7, "c"); // y 0..100
+        cb.slider(.grab, 0.5); // y 100..
+        TA.viewWith(&m.area, cb, .{ .focus = Msg{ .area = .focus } }, .{ .id = 1, .width = 200, .height = 100 });
+        cb.pushScroll(.{ .id = 3, .width = 200, .height = 80, .padding = 0 });
+        cb.button(.click, "row");
+        cb.popScroll();
+        cb.popGroup();
+    }
+    pub fn pointerMsg(m: *const Model, ev: pointer.PointerEvent(Msg)) ?Msg {
+        if (ev.kind == .wheel and !m.claim_wheel and ev.target == .none) return null;
+        if (m.ignore_slider and ev.target == .slider) return null;
+        const s: Seen = switch (ev.target) {
+            .none => .{ .kind = ev.kind, .tag = .none },
+            .widget => .{ .kind = ev.kind, .tag = .widget },
+            .canvas => |id| .{ .kind = ev.kind, .tag = .canvas, .id = id, .x = ev.local_x },
+            .text_area => |t| .{ .kind = ev.kind, .tag = .text, .id = t.id, .offset = t.offset, .clicks = ev.clicks },
+            .slider => |sl| .{ .kind = ev.kind, .tag = .slider, .value = sl.value },
+            .scroll => |id| .{ .kind = ev.kind, .tag = .scroll, .id = id },
+        };
+        if (ev.target == .text_area) {
+            if (ev.asText()) |te| return .{ .area = TA.eventMsg(te) };
+        }
+        return .{ .seen = s };
+    }
+    pub fn wheelMsg(_: *const Model, dy: f32) ?Msg {
+        return .{ .wheel = dy };
+    }
+};
+
+fn playSurf(initial: []const u8, host: ScriptHost) !*Played(PmSurf) {
+    const p = try begin(PmSurf, host, .{});
+    errdefer p.destroy();
+    p.rt.model.area.set(initial);
+    p.rt.model.area.ed.cursor = 0;
+    while (!p.host.shouldClose()) try p.rt.frame();
+    return p;
+}
+
+test "pointerMsg capture: a canvas press owns the pointer through a drag over other surfaces" {
+    const t = try playSurf("", .{
+        .script = &.{
+            .{},
+            .{ .x = 50, .y = 50, .held = left, .down = left }, // press the canvas
+            .{ .x = 300, .y = 110, .held = left }, // dragged over the slider and off the canvas
+            .{ .x = 100, .y = 150, .held = left }, // ... then over the text area
+            .{ .x = 100, .y = 150, .up = left }, // released over the text area
+        },
+    });
+    defer t.destroy();
+    const m = &t.rt.model;
+    try std.testing.expectEqual(@as(usize, 1), m.count(.down, .canvas));
+    try std.testing.expectEqual(@as(usize, 1), m.count(.up, .canvas));
+    try std.testing.expect(m.count(.move, .canvas) >= 3);
+    // Nobody else saw the drag: no slider event, no text-area down, no click.
+    try std.testing.expectEqual(@as(usize, 0), m.count(.down, .slider) + m.count(.move, .slider) + m.count(.up, .slider));
+    try std.testing.expectEqual(@as(u32, 0), m.grabs);
+    try std.testing.expect(m.area.selectionText().len == 0);
+    // Captured moves report target-local coordinates past the canvas edge.
+    var far = false;
+    for (m.items()) |s| far = far or (s.kind == .move and s.tag == .canvas and s.x == 300);
+    try std.testing.expect(far);
+}
+
+test "pointerMsg capture: a slider press owns the drag (canvas below the cursor is not poked)" {
+    const t = try playSurf("", .{
+        .script = &.{
+            .{},
+            .{ .x = 100, .y = 110, .held = left, .down = left }, // press the slider
+            .{ .x = 300, .y = 50, .held = left }, // dragged over the canvas
+            .{ .x = 300, .y = 50, .up = left },
+        },
+    });
+    defer t.destroy();
+    const m = &t.rt.model;
+    try std.testing.expectEqual(@as(usize, 1), m.count(.down, .slider));
+    try std.testing.expectEqual(@as(usize, 1), m.count(.up, .slider));
+    try std.testing.expect(m.count(.move, .slider) >= 1);
+    for (m.items()) |s| try std.testing.expect(!(s.tag == .canvas and (s.kind == .move or s.kind == .down)));
+    try std.testing.expectEqual(@as(u32, 0), m.grabs); // the plain click was not dispatched
+    // A slider press `pointerMsg` declines is NOT captured: it stays a plain click.
+    var p2 = try begin(PmSurf, .{ .script = &.{
+        .{},
+        .{ .x = 100, .y = 110, .held = left, .down = left },
+        .{ .x = 100, .y = 110, .up = left },
+    } }, .{});
+    defer p2.destroy();
+    p2.rt.model.ignore_slider = true;
+    while (!p2.host.shouldClose()) try p2.rt.frame();
+    try std.testing.expectEqual(@as(u32, 1), p2.rt.model.grabs);
+}
+
+test "pointerMsg capture: a text-area drag selects past the rect; clicks count 2 and 3" {
+    const base = [2]f32{ 8, 124 + 8 };
+    const word = [2]f32{ base[0] + 6 * 10 + 1, base[1] + 5 }; // inside "world"
+    const t = try playSurf("hello world\nsecond line", .{
+        .script = &.{
+            .{ .clock_ms = 1000 },
+            .{ .x = base[0] + 1, .y = base[1] + 5, .held = left, .down = left, .clock_ms = 1000 },
+            .{ .x = 390, .y = 280, .held = left, .clock_ms = 1010 }, // dragged below and right of the area: still captured
+            .{ .x = 390, .y = 280, .up = left, .clock_ms = 1020 },
+        },
+    });
+    defer t.destroy();
+    try std.testing.expectEqualStrings("hello world\nsecond line", t.rt.model.area.selectionText());
+    // Nothing below the area (the scroll region's button) was clicked or hovered into a press.
+    try std.testing.expectEqual(@as(usize, 0), t.rt.model.count(.down, .canvas));
+
+    const t2 = try playSurf("hello world\nsecond line", .{ .script = &.{
+        .{ .clock_ms = 1000 },
+        .{ .x = word[0], .y = word[1], .held = left, .down = left, .clock_ms = 1000 },
+        .{ .x = word[0], .y = word[1], .up = left, .clock_ms = 1050 },
+        .{ .x = word[0], .y = word[1], .held = left, .down = left, .clock_ms = 1100 },
+        .{ .x = word[0], .y = word[1], .up = left, .clock_ms = 1150 },
+    } });
+    defer t2.destroy();
+    try std.testing.expectEqualStrings("world", t2.rt.model.area.selectionText()); // clicks = 2 -> word
+}
+
+test "pointerMsg wheel: canvas, scroll region, then pointerMsg(.none), then wheelMsg" {
+    const t = try playSurf("", .{
+        .script = &.{
+            .{},
+            .{ .x = 50, .y = 50, .wheel_dy = 10 }, // canvas: claimed
+            .{ .x = 50, .y = 240, .wheel_dy = 20, .wheel_dx = 3 }, // scroll region 3: claimed
+            .{ .x = 300, .y = 170 }, // blank space (right of the text area)
+            .{ .x = 300, .y = 170, .wheel_dy = 30 }, // nobody claims: pointerMsg(.none) declines -> wheelMsg
+        },
+    });
+    defer t.destroy();
+    const m = &t.rt.model;
+    try std.testing.expectEqual(@as(usize, 1), m.count(.wheel, .canvas));
+    try std.testing.expectEqual(@as(usize, 1), m.count(.wheel, .scroll));
+    try std.testing.expectEqual(@as(u32, 1), m.wheels); // exactly the blank-space one
+    for (m.items()) |s| if (s.kind == .wheel and s.tag == .scroll) try std.testing.expectEqual(@as(u32, 3), s.id);
+
+    // When pointerMsg claims the unclaimed wheel, wheelMsg is not called.
+    var p2 = try begin(PmSurf, .{ .script = &.{ .{}, .{ .x = 300, .y = 170, .wheel_dy = 30 } } }, .{});
+    defer p2.destroy();
+    p2.rt.model.claim_wheel = true;
+    while (!p2.host.shouldClose()) try p2.rt.frame();
+    try std.testing.expectEqual(@as(u32, 0), p2.rt.model.wheels);
+    try std.testing.expectEqual(@as(usize, 1), p2.rt.model.count(.wheel, .none));
+}
+
+test "pointerMsg: blank presses reach the hook even over a canvas; widget events carry target .widget" {
+    const t = try playSurf("", .{
+        .script = &.{
+            .{},
+            .{ .x = 300, .y = 170, .held = left, .down = left }, // blank space
+            .{ .x = 300, .y = 170, .up = left },
+        },
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(usize, 1), t.rt.model.count(.down, .widget));
+    try std.testing.expectEqual(@as(usize, 1), t.rt.model.count(.up, .widget));
+}
+
+test "deprecatedHooks names the old pointer hooks an App still declares" {
+    const names = comptime run_mod.deprecatedHooks(PointerApp);
+    try std.testing.expectEqual(@as(usize, 1), names.len);
+    try std.testing.expectEqualStrings("canvasMsg", names[0]);
+    try std.testing.expectEqual(@as(usize, 0), comptime run_mod.deprecatedHooks(PmSurf).len);
+    try std.testing.expectEqual(@as(usize, 2), comptime run_mod.deprecatedHooks(HookApp).len);
 }

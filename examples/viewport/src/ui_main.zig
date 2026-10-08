@@ -1,5 +1,5 @@
 //! Native entry for the viewport example. `teak.run` owns the host loop; the
-//! app supplies `canvasMsg` (pan / zoom), `scrollMsg` + `scrollLayoutMsg`
+//! app supplies `pointerMsg` (pan / zoom), `pointerMsg` (scroll target) + `scrollLayoutMsg`
 //! (scroll list + scrollbar). Backends (X11 / Win32 + wgpu) are picked by the
 //! build under the stable import names below.
 

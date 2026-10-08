@@ -489,11 +489,26 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// for apps that opt in AND a Gpu that supports secondary surfaces —
         /// the web Gpu has none (and its Host never opens a second window),
         /// so the hooks compile away there.
-        const has_canvas_hook = @hasDecl(App, "canvasMsg");
-        const has_text_hook = @hasDecl(App, "textMsg");
+        /// `pointerMsg` is THE pointer hook; the older per-surface hooks
+        /// (`canvasMsg`, `textMsg`, `sliderMsg`, `hoverMsg`, `contextMsg`,
+        /// `scrollMsg`) are deprecated adapters over the same events
+        /// (`deliver` / `deliverDeprecated`). A surface is routed when either
+        /// the unified hook or its old hook exists.
+        const has_pm = @hasDecl(App, "pointerMsg");
+        /// The deprecated pointer hooks `App` still declares (a note logged at
+        /// startup, never a compile error; see `deprecatedHooks`).
+        const deprecated_hooks = deprecatedHooks(App);
+        const deprecated_names = blk: {
+            var joined: []const u8 = "";
+            for (deprecated_hooks) |h| joined = joined ++ (if (joined.len > 0) ", " else "") ++ h;
+            break :blk joined;
+        };
+        const has_canvas_hook = has_pm or @hasDecl(App, "canvasMsg");
+        const has_text_hook = has_pm or @hasDecl(App, "textMsg");
+        const has_slider_hook = has_pm or @hasDecl(App, "sliderMsg");
         /// Any hook that consumes pointer input over id-bearing surfaces.
         const has_pointer_hook = has_canvas_hook or has_text_hook;
-        const has_scroll_hook = @hasDecl(App, "scrollMsg");
+        const has_scroll_hook = has_pm or @hasDecl(App, "scrollMsg");
         const has_scroll_layout_hook = @hasDecl(App, "scrollLayoutMsg");
         const has_rows_hook = @hasDecl(App, "virtualRowsMsg");
         const has_mods_hook = @hasDecl(App, "modsMsg");
@@ -583,8 +598,6 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// `press_target` (a lost value only repeats one hover event).
         hover_reported: ?usize = null,
         hover_seen: bool = false,
-        pm_hover_reported: ?usize = null,
-        pm_hover_seen: bool = false,
         /// The `grab_msg` of the slider being dragged (`sliderMsg` hook).
         slider_grab: ?Msg = null,
         /// Keyboard-navigation focus on a non-text leaf (button, checkbox, radio,
@@ -661,6 +674,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         pub fn init(gpa: std.mem.Allocator, host: *Host, gpu: *Gpu, opts: RunOptions) !Self {
             if (comptime @hasDecl(Host, "setAppName")) {
                 if (opts.app_name.len > 0) host.setAppName(opts.app_name);
+            }
+            if (comptime deprecated_hooks.len > 0 and !builtin.is_test) {
+                std.log.warn("teak: App declares deprecated pointer hooks {s}; migrate to `pointerMsg` (docs/migration-pointer-msg.md)", .{deprecated_names});
             }
             var ctl = control.State.init(gpa);
             control.start(&ctl, host, opts);
@@ -976,7 +992,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 null;
 
             var slider_consumed = false;
-            if (comptime @hasDecl(App, "sliderMsg")) slider_consumed = self.routeSlider(input, prev_cmds, prev_rects, hover);
+            if (comptime has_slider_hook) slider_consumed = self.routeSlider(input, prev_cmds, prev_rects, hover);
 
             if (input.mouse_down) self.press_target = hover;
             if (input.mouse_up) {
@@ -1131,14 +1147,114 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             return sw;
         }
 
-        /// `contextMsg` for the Menu key / Shift+F10: the pointer event is anchored at the
+        const PE = pointer.PointerEvent(Msg);
+
+        /// What `deliver` did with one event.
+        const Delivery = struct {
+            /// Some hook returned a Msg (it was dispatched).
+            msg: bool = false,
+            /// The surface's hook consumed the event: `msg`, or a deprecated
+            /// per-surface hook is declared (those always consumed their
+            /// events, even when they returned null).
+            claimed: bool = false,
+        };
+
+        /// THE one place a pointer event leaves the loop: to `pointerMsg`, and
+        /// -- through `deliverDeprecated` -- to the old per-surface hook that
+        /// matches the event's target, if the App still declares one.
+        fn deliver(self: *Self, ev: PE) Delivery {
+            var d: Delivery = .{};
+            if (comptime has_pm) {
+                if (App.pointerMsg(&self.model, ev)) |m| {
+                    self.dispatch(m);
+                    d.msg = true;
+                    d.claimed = true;
+                }
+            }
+            const old = self.deliverDeprecated(ev);
+            return .{ .msg = d.msg or old.msg, .claimed = d.claimed or old.claimed };
+        }
+
+        /// The thin adapter for apps that still declare `canvasMsg`, `textMsg`,
+        /// `sliderMsg`, `scrollMsg`, `hoverMsg` or `contextMsg`: translates a
+        /// `PointerEvent` back to that hook's event type (`asCanvas`, `asText`,
+        /// `asSlider`, `asScroll`). Removed with the hooks.
+        fn deliverDeprecated(self: *Self, ev: PE) Delivery {
+            var d: Delivery = .{};
+            switch (ev.target) {
+                .none => {},
+                .widget => {
+                    if (comptime @hasDecl(App, "hoverMsg")) {
+                        if (ev.kind == .hover) if (App.hoverMsg(&self.model, ev)) |m| self.dispatch(m);
+                    }
+                    if (comptime @hasDecl(App, "contextMsg")) {
+                        if (ev.kind == .context) {
+                            d.claimed = true;
+                            if (App.contextMsg(&self.model, ev)) |m| {
+                                self.dispatch(m);
+                                d.msg = true;
+                            }
+                        }
+                    }
+                },
+                .canvas => if (comptime @hasDecl(App, "canvasMsg")) {
+                    d.claimed = true;
+                    if (ev.asCanvas()) |ce| if (App.canvasMsg(&self.model, ce)) |m| {
+                        self.dispatch(m);
+                        d.msg = true;
+                    };
+                },
+                .text_area => if (comptime @hasDecl(App, "textMsg")) {
+                    d.claimed = true;
+                    if (ev.asText()) |te| if (App.textMsg(&self.model, te)) |m| {
+                        self.dispatch(m);
+                        d.msg = true;
+                    };
+                },
+                .slider => if (comptime @hasDecl(App, "sliderMsg")) {
+                    d.claimed = true;
+                    if (ev.asSlider()) |sl| if (App.sliderMsg(&self.model, sl.grab, sl.value)) |m| {
+                        self.dispatch(m);
+                        d.msg = true;
+                    };
+                },
+                .scroll => if (comptime @hasDecl(App, "scrollMsg")) {
+                    d.claimed = true;
+                    if (ev.asScroll()) |sc| if (App.scrollMsg(&self.model, sc.id, sc.dx, sc.dy)) |m| {
+                        self.dispatch(m);
+                        d.msg = true;
+                    };
+                },
+            }
+            return d;
+        }
+
+        /// A window-space event on `target`, with the pointer state of this frame.
+        fn eventAt(self: *Self, input: Input, kind: PE.Kind, target: PE.Target, rect: Rect, button: pointer.Button) PE {
+            return .{
+                .kind = kind,
+                .target = target,
+                .button = button,
+                .buttons = input.buttons,
+                .x = input.mouse_x,
+                .y = input.mouse_y,
+                .local_x = input.mouse_x - rect.x,
+                .local_y = input.mouse_y - rect.y,
+                .w = rect.w,
+                .h = rect.h,
+                .mods = input.mods,
+                .now_ms = self.host.nowMs(),
+            };
+        }
+
+        /// `context` for the Menu key / Shift+F10: the pointer event is anchored at the
         /// focused widget (the navigation focus, else the Model's text focus, else the
-        /// mouse), `hit` = that widget's Msg.
-        fn sendContextKey(self: *Self, input: Input, prev: u1) void {
+        /// mouse), `hit` = that widget's Msg. True when a hook consumed it.
+        fn sendContextKey(self: *Self, input: Input, prev: u1) bool {
             const cmds = self.bufs[prev].cmds.items;
             const rects = self.rects[prev].items;
             const idx: ?usize = self.navResolve(cmds) orelse focusIndex(App, &self.model, cmds);
-            var ev: pointer.PointerEvent(Msg) = .{ .x = input.mouse_x, .y = input.mouse_y, .mods = input.mods, .now_ms = self.host.nowMs() };
+            var ev: PE = .{ .kind = .context, .x = input.mouse_x, .y = input.mouse_y, .mods = input.mods, .now_ms = self.host.nowMs() };
             if (idx) |i| if (i < rects.len) {
                 const r = rects[i];
                 ev.x = r.x;
@@ -1146,22 +1262,23 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 ev.hit = focus.activationMsg(cmds[i]);
                 ev.box = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
             };
-            if (App.contextMsg(&self.model, ev)) |m| self.dispatch(m);
+            ev.target = .{ .widget = ev.hit };
+            return self.deliver(ev).claimed;
         }
 
-        /// `hoverMsg` / `contextMsg`: both resolve the pointer against the
-        /// previous frame's layout like a click does.
+        /// Widget-level pointer facts -- hover changes, presses (blank space
+        /// included: `hit == null`), releases and the right-button `context`
+        /// press -- resolved against the previous frame's layout like a click.
         fn routePointerHooks(self: *Self, input: Input, prev: u1) void {
-            const has_hover = comptime @hasDecl(App, "hoverMsg");
-            const has_context = comptime @hasDecl(App, "contextMsg");
-            const has_pm = comptime @hasDecl(App, "pointerMsg");
-            if (!has_hover and !has_context and !has_pm) return;
+            const has_hover = comptime has_pm or @hasDecl(App, "hoverMsg");
+            const has_context = comptime has_pm or @hasDecl(App, "contextMsg");
+            if (!has_hover and !has_context) return;
             const cmds = self.bufs[prev].cmds.items;
             const rects = self.rects[prev].items;
             const hit = if (cmds.len > 0) hit_test.hitTest(cmds, rects, input.mouse_x, input.mouse_y) else null;
             const under: ?usize = if (hit) |h| h.index else null;
 
-            // Keyboard focus is reported to `hoverMsg` like a pointer resting on the
+            // Keyboard focus is reported as a hover like a pointer resting on the
             // focused widget (so a tooltip shows for it); leaving non-text focus
             // reports "nothing". The pointer's own reports are unaffected.
             if (has_hover and self.opts.keyboard_nav) {
@@ -1172,10 +1289,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     const NavHit = struct { index: usize, msg: ?Msg };
                     if (ni) |i| {
                         const nh: ?NavHit = .{ .index = i, .msg = focus.activationMsg(cmds[i]) };
-                        if (App.hoverMsg(&self.model, self.pointerEvent(input, nh, rects, .hover, .none))) |m| self.dispatch(m);
+                        _ = self.deliver(self.pointerEvent(input, nh, rects, .hover, .none));
                     } else if (was != null) {
                         const none: ?NavHit = null;
-                        if (App.hoverMsg(&self.model, self.pointerEvent(input, none, rects, .hover, .none))) |m| self.dispatch(m);
+                        _ = self.deliver(self.pointerEvent(input, none, rects, .hover, .none));
                     }
                 }
             }
@@ -1185,57 +1302,36 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     self.hover_seen = true;
                     self.hover_reported = under;
                     // Nothing to report before the first frame laid anything out.
-                    if (!(first and under == null)) {
-                        const ev = self.pointerEvent(input, hit, rects, .hover, .none);
-                        if (App.hoverMsg(&self.model, ev)) |m| self.dispatch(m);
-                    }
+                    if (!(first and under == null)) _ = self.deliver(self.pointerEvent(input, hit, rects, .hover, .none));
                 }
             }
-            if (has_context and input.button_down.right) {
-                const ev = self.pointerEvent(input, hit, rects, .context, .right);
-                if (App.contextMsg(&self.model, ev)) |m| self.dispatch(m);
-            }
-            if (has_pm) self.routePointerMsg(input, hit, rects, under);
-        }
-
-        /// The unified `pointerMsg` hook: hover changes, every press (blank
-        /// space included: `hit == null`), every release, and the right-button
-        /// `context` press. Resolved against the previous frame like a click.
-        fn routePointerMsg(self: *Self, input: Input, hit: anytype, rects: []const Rect, under: ?usize) void {
-            // Hover changes (tracked separately from `hoverMsg`'s bookkeeping so
-            // an app may use either, or both).
-            if (!self.pm_hover_seen or under != self.pm_hover_reported) {
-                const first = !self.pm_hover_seen;
-                self.pm_hover_seen = true;
-                self.pm_hover_reported = under;
-                if (!(first and under == null)) {
-                    if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, .hover, .none))) |m| self.dispatch(m);
-                }
-            }
-            const downs = [_]struct { on: bool, button: pointer.Button, kind: pointer.PointerEvent(Msg).Kind }{
+            const downs = [_]struct { on: bool, button: pointer.Button, kind: PE.Kind }{
                 .{ .on = input.button_down.left, .button = .left, .kind = .down },
                 .{ .on = input.button_down.middle, .button = .middle, .kind = .down },
                 .{ .on = input.button_down.right, .button = .right, .kind = .context },
             };
             for (downs) |d| {
-                if (!d.on) continue;
-                if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, d.kind, d.button))) |m| self.dispatch(m);
+                if (!d.on or (!has_pm and d.kind != .context)) continue;
+                _ = self.deliver(self.pointerEvent(input, hit, rects, d.kind, d.button));
             }
-            const ups = [_]struct { on: bool, button: pointer.Button }{
-                .{ .on = input.button_up.left, .button = .left },
-                .{ .on = input.button_up.middle, .button = .middle },
-                .{ .on = input.button_up.right, .button = .right },
-            };
-            for (ups) |u| {
-                if (!u.on) continue;
-                if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, .up, u.button))) |m| self.dispatch(m);
+            if (comptime has_pm) {
+                const ups = [_]struct { on: bool, button: pointer.Button }{
+                    .{ .on = input.button_up.left, .button = .left },
+                    .{ .on = input.button_up.middle, .button = .middle },
+                    .{ .on = input.button_up.right, .button = .right },
+                };
+                for (ups) |u| {
+                    if (!u.on) continue;
+                    _ = self.deliver(self.pointerEvent(input, hit, rects, .up, u.button));
+                }
             }
         }
 
-        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect, kind: pointer.PointerEvent(Msg).Kind, button: pointer.Button) pointer.PointerEvent(Msg) {
-            var ev: pointer.PointerEvent(Msg) = .{
+        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect, kind: PE.Kind, button: pointer.Button) PE {
+            var ev: PE = .{
                 .kind = kind,
                 .button = button,
+                .buttons = input.buttons,
                 .x = input.mouse_x,
                 .y = input.mouse_y,
                 .mods = input.mods,
@@ -1247,21 +1343,32 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (h.msg != null and h.index < rects.len) {
                     const r = rects[h.index];
                     ev.box = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
+                    ev.local_x = input.mouse_x - r.x;
+                    ev.local_y = input.mouse_y - r.y;
+                    ev.w = r.w;
+                    ev.h = r.h;
                 }
             }
+            ev.target = .{ .widget = ev.hit };
             return ev;
         }
 
-        /// Slider drag with pointer capture (`sliderMsg`). Returns true when
-        /// this frame's press / release belongs to a slider, so the plain
-        /// click dispatch must be skipped.
+        /// Slider drag with pointer capture. The press starts the capture when
+        /// the slider is claimed (`sliderMsg` declared, or `pointerMsg`
+        /// returned a Msg for it); then every frame until the left button is up
+        /// delivers one event -- `down` on the press frame, `up` on the release
+        /// frame, `move` between. Returns true when this frame's press /
+        /// release belongs to the slider, so the plain click dispatch must be
+        /// skipped.
         fn routeSlider(self: *Self, input: Input, cmds: anytype, rects: []const Rect, hover: ?usize) bool {
             var consumed = false;
+            var pressed = false;
             if (input.mouse_down) {
                 if (hover) |idx| if (idx < cmds.len and idx < rects.len) switch (cmds[idx]) {
                     .slider => |sl| {
                         self.slider_grab = sl.grab_msg;
                         consumed = true;
+                        pressed = true;
                     },
                     else => {},
                 };
@@ -1271,7 +1378,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (focus.indexOfFocusMsg(cmds, grab)) |idx| {
                     if (idx < rects.len) {
                         const v = hit_test.sliderValueAt(rects[idx], input.mouse_x);
-                        if (App.sliderMsg(&self.model, grab, v)) |m| self.dispatch(m);
+                        const kind: PE.Kind = if (pressed) .down else if (!input.buttons.left) .up else .move;
+                        const ev = self.eventAt(input, kind, .{ .slider = .{ .grab = grab, .value = v } }, rects[idx], if (kind == .move) .none else .left);
+                        // A press nobody claimed is a plain click on the slider.
+                        if (!self.deliver(ev).claimed and pressed) {
+                            self.slider_grab = null;
+                            consumed = false;
+                        }
                     }
                 }
                 if (!input.buttons.left) self.slider_grab = null;
@@ -1302,11 +1415,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 // Menu key / Shift+F10: a context-menu request at the keyboard-focused
                 // widget (below its left edge), through the same `contextMsg` hook a
                 // right click uses. Without the hook the key reaches `keySpecialMsg`.
-                if (comptime @hasDecl(App, "contextMsg")) {
-                    if (k == .context_menu) {
-                        self.sendContextKey(input, prev);
-                        continue;
-                    }
+                if (comptime has_pm or @hasDecl(App, "contextMsg")) {
+                    if (k == .context_menu and self.sendContextKey(input, prev)) continue; // consumed
                 }
                 if (k == .f12 and self.opts.inspect_hotkey) {
                     control.toggleInspect(&self.ctl);
@@ -1527,11 +1637,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .canvas => |cv| {
                     // A focusable pointer canvas (split divider...) gets the key as an event.
                     if (cv.pointer and cv.id != 0 and has_canvas_hook) {
-                        const ev: pointer.CanvasEvent = .{ .id = cv.id, .kind = .key, .key = k };
-                        if (App.canvasMsg(&self.model, ev)) |m| {
-                            self.dispatch(m);
-                            return true;
-                        }
+                        const ev: PE = .{ .kind = .key, .x = 0, .y = 0, .key = k, .target = .{ .canvas = cv.id }, .now_ms = self.host.nowMs() };
+                        if (self.deliver(ev).msg) return true;
                     }
                     if (k == .enter) return self.navActivate(cmds);
                     return self.navScroll(cmds, prev, idx, k);
@@ -1550,7 +1657,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     return true;
                 },
                 .slider => |sl| {
-                    if (comptime !@hasDecl(App, "sliderMsg")) return false;
+                    if (comptime !has_slider_hook) return false;
                     var v = self.sliderValue(sl);
                     switch (k) {
                         .left, .down => v -= 0.05,
@@ -1562,8 +1669,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         else => return self.navScroll(cmds, prev, idx, k),
                     }
                     v = std.math.clamp(v, 0, 1);
-                    if (App.sliderMsg(&self.model, sl.grab_msg, v)) |m| self.dispatch(m);
-                    return true;
+                    var ev: PE = .{ .kind = .key, .x = 0, .y = 0, .key = k, .target = .{ .slider = .{ .grab = sl.grab_msg, .value = v } } };
+                    ev.now_ms = self.host.nowMs();
+                    return self.deliver(ev).claimed;
                 },
                 else => return false,
             }
@@ -1614,11 +1722,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (along == 0) return false;
             const dx: f32 = if (horiz) along else 0;
             const dy: f32 = if (horiz) 0 else along;
-            if (App.scrollMsg(&self.model, sc.id, dx, dy)) |m| {
-                self.dispatch(m);
-                return true;
-            }
-            return false;
+            // Keyboard scrolling reaches the hook as a synthetic wheel on the region.
+            const ev: PE = .{ .kind = .wheel, .x = 0, .y = 0, .dx = dx, .dy = dy, .target = .{ .scroll = sc.id }, .now_ms = self.host.nowMs() };
+            return self.deliver(ev).msg;
         }
 
         fn sliderValue(_: *Self, sl: anytype) f32 {
@@ -1655,16 +1761,28 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
             if (has_pointer_hook) {
                 // A captured canvas takes every wheel event, wherever the cursor is.
-                if (self.canvas_ptr.capture) |id| return self.sendCanvasEvent(id, .wheel, input, prev, .none);
+                if (self.canvas_ptr.capture) |id| if (self.sendCanvasEvent(id, .wheel, input, prev, .none)) return;
             }
             if (has_pointer_hook or has_scroll_hook) {
                 if (hit_test.wheelTarget(cmds, rects, input.mouse_x, input.mouse_y)) |target| switch (target) {
-                    .canvas => |c| if (has_pointer_hook) return self.sendCanvasEvent(c.id, .wheel, input, prev, .none),
+                    .canvas => |c| if (has_pointer_hook) {
+                        if (self.sendCanvasEvent(c.id, .wheel, input, prev, .none)) return;
+                    },
                     .scroll => |sc| if (has_scroll_hook) {
-                        if (App.scrollMsg(&self.model, sc.id, input.wheel_dx, input.wheel_dy)) |m| self.dispatch(m);
-                        return;
+                        const r = if (sc.index < rects.len) rects[sc.index] else Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                        var ev = self.eventAt(input, .wheel, .{ .scroll = sc.id }, r, .none);
+                        ev.dx = input.wheel_dx;
+                        ev.dy = input.wheel_dy;
+                        if (self.deliver(ev).claimed) return;
                     },
                 };
+            }
+            // Nothing claimed it: the unified hook sees it with no target, then `wheelMsg`.
+            if (comptime has_pm) {
+                var ev = self.eventAt(input, .wheel, .none, .{ .x = 0, .y = 0, .w = 0, .h = 0 }, .none);
+                ev.dx = input.wheel_dx;
+                ev.dy = input.wheel_dy;
+                if (self.deliver(ev).msg) return;
             }
             if (@hasDecl(App, "wheelMsg")) {
                 if (App.wheelMsg(&self.model, input.wheel_dy)) |m| self.dispatch(m);
@@ -1696,7 +1814,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 const pressed_elsewhere = heldBeforeFrame(input).any();
                 const want: ?u32 = if (under != null and !pressed_elsewhere) under.?.id else null;
                 if (p.hover != want) {
-                    if (p.hover) |old| self.sendCanvasEvent(old, .leave, input, prev, .none);
+                    if (p.hover) |old| _ = self.sendCanvasEvent(old, .leave, input, prev, .none);
                     p.hover = want;
                     p.has_last = false;
                 }
@@ -1722,11 +1840,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     p.capture = u.id;
                     p.hover = u.id;
                 }
-                self.sendCanvasEvent(p.capture.?, .down, input, prev, b);
+                _ = self.sendCanvasEvent(p.capture.?, .down, input, prev, b);
             }
             for (buttons) |b| {
                 if (!buttonSet(input.button_up, b)) continue;
-                if (p.capture) |id| self.sendCanvasEvent(id, .up, input, prev, b);
+                if (p.capture) |id| _ = self.sendCanvasEvent(id, .up, input, prev, b);
             }
 
             // Capture ends with the last release; if the cursor is no longer
@@ -1735,7 +1853,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (!input.buttons.any()) {
                     p.capture = null;
                     if (under == null or under.?.id != id) {
-                        self.sendCanvasEvent(id, .leave, input, prev, .none);
+                        _ = self.sendCanvasEvent(id, .leave, input, prev, .none);
                         p.hover = null;
                         p.has_last = false;
                     }
@@ -1746,30 +1864,37 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn sendCanvasMove(self: *Self, id: u32, input: Input, prev: u1, dx: f32, dy: f32) void {
             const cmds = self.bufs[prev].cmds.items;
             const idx = findPointerCanvas(cmds, id) orelse return;
-            if (cmds[idx] == .text_area) return self.sendTextPointer(idx, .move, input, prev, .none);
-            var ev = canvasEventAt(id, .move, input, self.rects[prev].items[idx], .none);
+            if (cmds[idx] == .text_area) {
+                _ = self.sendTextPointer(idx, .move, input, prev, .none);
+                return;
+            }
+            var ev = self.eventAt(input, .move, .{ .canvas = id }, self.rects[prev].items[idx], .none);
             ev.dx = dx;
             ev.dy = dy;
-            self.dispatchCanvas(ev);
+            _ = self.dispatchCanvas(ev);
         }
 
         /// Deliver one event to canvas `id`, located in the previous frame's
-        /// layout. A canvas no longer in that layout is skipped.
-        fn sendCanvasEvent(self: *Self, id: u32, kind: pointer.CanvasEventKind, input: Input, prev: u1, button: pointer.Button) void {
+        /// layout. A canvas no longer in that layout is skipped. True when the
+        /// event was consumed (the wheel falls through to the next consumer
+        /// otherwise).
+        fn sendCanvasEvent(self: *Self, id: u32, kind: pointer.CanvasEventKind, input: Input, prev: u1, button: pointer.Button) bool {
             const cmds = self.bufs[prev].cmds.items;
-            const idx = findPointerCanvas(cmds, id) orelse return;
+            const idx = findPointerCanvas(cmds, id) orelse return false;
             if (cmds[idx] == .text_area) return self.sendTextPointer(idx, kind, input, prev, button);
-            var ev = canvasEventAt(id, kind, input, self.rects[prev].items[idx], button);
+            var ev = self.eventAt(input, canvasKind(kind), .{ .canvas = id }, self.rects[prev].items[idx], button);
             if (kind == .wheel) {
                 ev.dx = input.wheel_dx;
                 ev.dy = input.wheel_dy;
             }
-            self.dispatchCanvas(ev);
+            return self.dispatchCanvas(ev);
         }
 
-        fn dispatchCanvas(self: *Self, ev: pointer.CanvasEvent) void {
-            if (!has_canvas_hook) return;
-            if (App.canvasMsg(&self.model, ev)) |m| self.dispatch(m);
+        /// Route a canvas event. With no canvas consumer at all (an app that
+        /// only hooks text areas) the event is swallowed, as it always was.
+        fn dispatchCanvas(self: *Self, ev: PE) bool {
+            if (!has_canvas_hook) return true;
+            return self.deliver(ev).claimed;
         }
 
         // ── text_area routing ──────────────────────────────────────────
@@ -1786,8 +1911,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
         /// A pointer event over (or captured by) text area `idx`, resolved
         /// against the previous frame's layout into a `TextEvent`.
-        fn sendTextPointer(self: *Self, idx: usize, kind: pointer.CanvasEventKind, input: Input, prev: u1, button: pointer.Button) void {
-            if (!has_text_hook) return;
+        fn sendTextPointer(self: *Self, idx: usize, kind: pointer.CanvasEventKind, input: Input, prev: u1, button: pointer.Button) bool {
+            if (!has_text_hook) return true;
             const ta = self.bufs[prev].cmds.items[idx].text_area;
             const rect = self.rects[prev].items[idx];
             const g = textAreaGeometry(ta, rect);
@@ -1800,7 +1925,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             };
             switch (kind) {
                 .down => {
-                    if (button != .left) return;
+                    if (button != .left) return false;
                     const now = self.host.nowMs();
                     const c = &self.text_click;
                     const near = @abs(input.mouse_x - c.x) <= 4 and @abs(input.mouse_y - c.y) <= 4;
@@ -1816,11 +1941,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     };
                 },
                 .move => {
-                    if (!input.buttons.left) return;
+                    if (!input.buttons.left) return false;
                     ev.kind = .drag;
                 },
                 .up => {
-                    if (button != .left) return;
+                    if (button != .left) return false;
                     ev.kind = .up;
                 },
                 .wheel => {
@@ -1829,7 +1954,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     ev.dy = input.wheel_dy;
                 },
                 .leave => ev.kind = .leave,
-                .layout, .key => return,
+                .layout, .key => return false,
             }
             switch (ev.kind) {
                 .down, .drag, .double_click, .triple_click, .up => {
@@ -1841,7 +1966,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 },
                 else => {},
             }
-            if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
+            const pe = PE.fromText(ev, input.mouse_x, input.mouse_y, input.buttons, switch (ev.kind) {
+                .down, .double_click, .triple_click, .up => .left,
+                else => .none,
+            });
+            return self.deliver(pe).claimed;
         }
 
         /// Up/Down/PageUp/PageDown/Home/End (and Shift variants) while a text
@@ -1883,7 +2012,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .keep_goal = r.goal_x != null,
                 .mods = mods,
             };
-            if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
+            _ = self.deliver(PE.fromText(ev, input.mouse_x, input.mouse_y, input.buttons, .none));
             return true;
         }
 
@@ -1932,7 +2061,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .line = li,
                 .mods = mods,
             };
-            if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
+            _ = self.deliver(PE.fromText(ev, input.mouse_x, input.mouse_y, input.buttons, .none));
             return true;
         }
 
@@ -1970,7 +2099,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             } else if (free) |s| {
                 self.text_metrics[s] = .{ .id = ev.id, .ev = ev };
             }
-            if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
+            _ = self.deliver(PE.fromText(ev, 0, 0, .{}, .none));
         }
 
         /// Tell the Host where the focused caret is so an IME candidate
@@ -2043,7 +2172,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     const old = findPointerCanvas(prev_cmds, t.id);
                     const same = old != null and std.meta.eql(prev_rects[old.?], rects[i]);
                     if (!same) {
-                        self.dispatchCanvas(.{ .id = t.id, .kind = .layout, .x = rects[i].x, .y = rects[i].y, .w = rects[i].w, .h = rects[i].h });
+                        _ = self.dispatchCanvas(.{ .kind = .layout, .target = .{ .canvas = t.id }, .x = rects[i].x, .y = rects[i].y, .w = rects[i].w, .h = rects[i].h, .now_ms = self.host.nowMs() });
                     }
                 },
                 .text_area => if (has_text_hook) self.reportTextMetrics(cmds, rects, i),
@@ -2429,18 +2558,34 @@ fn findScroll(cmds: anytype, id: u32) ?usize {
     return null;
 }
 
-/// A `CanvasEvent` for the cursor's current position, canvas-local.
-fn canvasEventAt(id: u32, kind: pointer.CanvasEventKind, input: anytype, rect: Rect, button: pointer.Button) pointer.CanvasEvent {
-    return .{
-        .id = id,
-        .kind = kind,
-        .x = input.mouse_x - rect.x,
-        .y = input.mouse_y - rect.y,
-        .button = button,
-        .buttons = input.buttons,
-        .mods = input.mods,
-        .w = rect.w,
-        .h = rect.h,
+/// Pointer hooks superseded by `pointerMsg`: still honoured through a thin
+/// adapter (`Runtime.deliverDeprecated`), slated for removal. `wheelMsg` and
+/// `scrollLayoutMsg` are not on the list: the first is `pointerMsg`'s
+/// "nothing claimed it" fallback, the second reports layout, not pointer input.
+pub const deprecated_pointer_hooks = [_][]const u8{ "canvasMsg", "textMsg", "hoverMsg", "contextMsg", "sliderMsg", "scrollMsg" };
+
+/// Which of `deprecated_pointer_hooks` the App declares.
+pub fn deprecatedHooks(comptime App: type) []const []const u8 {
+    comptime {
+        var out: []const []const u8 = &.{};
+        for (deprecated_pointer_hooks) |h| {
+            if (@hasDecl(App, h)) out = out ++ &[_][]const u8{h};
+        }
+        return out;
+    }
+}
+
+/// The `PointerEvent` kind of a canvas event kind (the routing code keeps
+/// speaking `CanvasEventKind`; the two enums share their names).
+fn canvasKind(k: pointer.CanvasEventKind) pointer.PointerKind {
+    return switch (k) {
+        .down => .down,
+        .move => .move,
+        .up => .up,
+        .wheel => .wheel,
+        .leave => .leave,
+        .layout => .layout,
+        .key => .key,
     };
 }
 

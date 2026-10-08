@@ -122,12 +122,12 @@ pub fn clipboardMsg(*const Model, SpecialKey, paste: []const u8) ?Msg  // Ctrl+C
 pub fn keyNeedsClipboard(SpecialKey) bool             // DEPRECATED, pairs with handleClipboard
 pub fn handleClipboard(*Model, SpecialKey, Clipboard) void   // DEPRECATED: mutates Model outside update
 pub fn wheelMsg(*const Model, f32) ?Msg               // vertical wheel delta → Msg (when no canvas / scroll region took it)
-pub fn canvasMsg(*const Model, CanvasEvent) ?Msg      // pointer events over CanvasCmd.pointer canvases and SceneCmd.pointer scenes (shared id space) (see "Pointer events")
-pub fn pointerMsg(*const Model, PointerEvent(Msg)) ?Msg   // one hook: kind hover/down/up/context, hit=null on blank space (ev.isBlank())
-pub fn hoverMsg(*const Model, PointerEvent(Msg)) ?Msg     // the interactive widget under the pointer OR on keyboard focus changed (drives Tooltip)
-pub fn sliderMsg(*const Model, grab: Msg, value: f32) ?Msg     // a `slider` cmd is dragged (pointer captured); value 0..1; without it a slider is click-only
-pub fn contextMsg(*const Model, PointerEvent(Msg)) ?Msg   // right button down; ev.hit = Msg of the widget under the cursor (drives ContextMenu)
-pub fn scrollMsg(*const Model, id: u32, dx: f32, dy: f32) ?Msg   // wheel over innermost hovered ScrollStyle.id != 0 region
+pub fn canvasMsg(*const Model, CanvasEvent) ?Msg      // DEPRECATED (use pointerMsg, ev.asCanvas()): pointer events over CanvasCmd.pointer canvases and SceneCmd.pointer scenes (shared id space) (see "Pointer events")
+pub fn pointerMsg(*const Model, PointerEvent(Msg)) ?Msg   // THE pointer hook: kind hover/down/move/up/wheel/leave/context/layout/key/caret; target widget/canvas/text_area/slider/scroll/none; one capture rule; hit=null on blank space (ev.isBlank()); docs/migration-pointer-msg.md
+pub fn hoverMsg(*const Model, PointerEvent(Msg)) ?Msg     // DEPRECATED (pointerMsg kind .hover): the interactive widget under the pointer OR on keyboard focus changed (drives Tooltip)
+pub fn sliderMsg(*const Model, grab: Msg, value: f32) ?Msg     // DEPRECATED (pointerMsg target .slider): a `slider` cmd is dragged (pointer captured); value 0..1; without it a slider is click-only
+pub fn contextMsg(*const Model, PointerEvent(Msg)) ?Msg   // DEPRECATED (pointerMsg kind .context): right button down; ev.hit = Msg of the widget under the cursor (drives ContextMenu)
+pub fn scrollMsg(*const Model, id: u32, dx: f32, dy: f32) ?Msg   // DEPRECATED (pointerMsg target .scroll): wheel over innermost hovered ScrollStyle.id != 0 region
 pub fn scrollLayoutMsg(*const Model, id: u32, viewport_w: f32, viewport_h: f32,
                        content_w: f32, content_h: f32) ?Msg      // id != 0 scroll region: first layout + on size change
 pub fn focusedMsg(*const Model) ?Msg                  // focus Msg of focused widget;
@@ -479,16 +479,25 @@ CanvasEvent = struct { id: u32, kind: CanvasEventKind, x, y, dx, dy: f32, button
 ```
 ```zig
 Box = struct { x, y, w, h: f32 }
-PointerEvent(Msg) = struct { x, y: f32, hit: ?Msg /*click Msg of the widget under the cursor; its identity*/,
+PointerKind = enum { hover, down, move, up, wheel, leave, context, layout, key, caret }
+PointerEvent(Msg) = struct { kind: PointerKind, target: Target, button: Button, buttons: Buttons,
+                             x, y: f32 /*window*/, local_x, local_y: f32 /*target-local*/, dx, dy, w, h: f32, clicks: u8,
+                             key: ?SpecialKey, hit: ?Msg /*click Msg of the widget under the cursor; its identity*/,
                              box: Box /*that widget's rect, previous frame*/, mods: Modifiers, now_ms: u64 }
+Target = union(enum) { none, widget: ?Msg, canvas: u32, text_area: TextTarget, slider: struct { grab: Msg, value: f32 }, scroll: u32 }
+TextTarget = struct { id, offset /*resolved caret byte*/, line, goal_x, keep_goal, viewport_w/h, content_w/h, caret_x/y/h }
+ev.isBlank(); ev.asCanvas() ?CanvasEvent; ev.asText() ?TextEvent; ev.asSlider(); ev.asScroll()  // views the helper widgets consume
+teak.deprecatedHooks(App) []const []const u8   // which old pointer hooks the App still declares (startup note, never an error)
 ```
-`PointerEvent` is what the `hoverMsg` / `contextMsg` App hooks receive (see Widgets below).
+`PointerEvent` is what the `pointerMsg` App hook receives (and what the deprecated `hoverMsg` / `contextMsg` adapters forward).
+ONE capture rule: a `down` on a canvas / text area / slider captures the pointer until every button is up. Migrating from the
+old hooks: docs/migration-pointer-msg.md.
 An interactive canvas is `cb.canvasInteractive(style, prims, id, label)` (`CanvasCmd.pointer = true`, `id != 0`);
-its events arrive through `pub fn canvasMsg(*const Model, CanvasEvent) ?Msg`. `down` starts a capture (move/up keep
+its events arrive through `pointerMsg` (`ev.asCanvas()` gives the `CanvasEvent`; the old `canvasMsg` still works as a deprecated adapter). `down` starts a capture (move/up keep
 going to that canvas, even off its rect, until all buttons release); `move` while hovering; a wheel over it is a
 `wheel` event INSTEAD of `wheelMsg`/`scrollMsg`; `leave` when the cursor exits with no capture; `layout` (w/h) on
 first layout and whenever its size changes. Overlays and modals in front of a canvas win. Wheel routing, innermost
-first: pointer canvas -> `ScrollStyle.id != 0` region (`scrollMsg`) -> `wheelMsg`. `scrollLayoutMsg` reports each
+first: pointer canvas -> `ScrollStyle.id != 0` region (`pointerMsg` target `.scroll`) -> `wheelMsg`. `scrollLayoutMsg` reports each
 id-bearing scroll region's viewport + content size (`teak.scrollExtent`) so apps can clamp offsets / draw scrollbars.
 
 ### Declarative effects (`teak.effects` -> core/effects.zig; HARDLINE hatch 7, sibling of Sub; docs/features/effects.md)

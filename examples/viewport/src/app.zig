@@ -1,10 +1,10 @@
 //! Viewport example: a pan / zoom canvas and a scrollable list with a
 //! scrollbar — the two interaction patterns `teak.run` routes for you.
 //!
-//! * `canvasMsg` turns pointer input over the interactive canvas into Msgs:
+//! * `pointerMsg` turns pointer input over the interactive canvas into Msgs:
 //!   drag (left or middle button) pans, the wheel zooms about the cursor, and
 //!   the canvas reports its own size (`layout`) so the Model knows the viewport.
-//! * `scrollMsg` / `scrollLayoutMsg` scroll the list with the wheel and report
+//! * `pointerMsg` (scroll target) / `scrollLayoutMsg` scroll the list with the wheel and report
 //!   its viewport + content size, enough to clamp the offset and size a
 //!   scrollbar thumb. The view never reads layout; the Model holds the numbers.
 
@@ -82,7 +82,14 @@ fn clampScroll(m: *const Model, y: f32) f32 {
     return std.math.clamp(y, 0, @max(0, m.list_content - m.list_viewport));
 }
 
-pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
+/// The one pointer hook: the pan/zoom canvas and the scrolling list.
+pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (ev.asScroll()) |s| return onScroll(m, s.id, s.dx, s.dy);
+    if (ev.asCanvas()) |c| return onCanvas(m, c);
+    return null;
+}
+
+fn onCanvas(_: *const Model, ev: teak.CanvasEvent) ?Msg {
     return switch (ev.kind) {
         .layout => Msg{ .view_size = .{ ev.w, ev.h } },
         .move => if (ev.buttons.left or ev.buttons.middle)
@@ -95,7 +102,7 @@ pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
     };
 }
 
-pub fn scrollMsg(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
+fn onScroll(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
     return if (id == LIST_ID) Msg{ .list_scroll_by = dy } else null;
 }
 
@@ -198,14 +205,14 @@ test "zoom keeps the world point under the cursor fixed" {
     try std.testing.expectApproxEqAbs(wy, (120 - m.pan_y) / m.zoom, 0.001);
 }
 
-test "canvasMsg: drag pans, hover tracks, wheel zooms, layout sizes" {
+test "pointerMsg canvas: drag pans, hover tracks, wheel zooms, layout sizes" {
     const m = Model{};
-    const drag = canvasMsg(&m, .{ .id = CANVAS_ID, .kind = .move, .dx = 3, .dy = -2, .buttons = .{ .left = true } }).?;
+    const drag = onCanvas(&m, .{ .id = CANVAS_ID, .kind = .move, .dx = 3, .dy = -2, .buttons = .{ .left = true } }).?;
     try std.testing.expectEqual(@as(f32, 3), drag.pan[0]);
-    const hover = canvasMsg(&m, .{ .id = CANVAS_ID, .kind = .move, .x = 9, .y = 8 }).?;
+    const hover = onCanvas(&m, .{ .id = CANVAS_ID, .kind = .move, .x = 9, .y = 8 }).?;
     try std.testing.expectEqual(@as(f32, 9), hover.hover.?[0]);
-    try std.testing.expect(canvasMsg(&m, .{ .id = CANVAS_ID, .kind = .down }) == null);
-    const lay = canvasMsg(&m, .{ .id = CANVAS_ID, .kind = .layout, .w = 560, .h = 460 }).?;
+    try std.testing.expect(onCanvas(&m, .{ .id = CANVAS_ID, .kind = .down }) == null);
+    const lay = onCanvas(&m, .{ .id = CANVAS_ID, .kind = .layout, .w = 560, .h = 460 }).?;
     try std.testing.expectEqual(@as(f32, 460), lay.view_size[1]);
 }
 
