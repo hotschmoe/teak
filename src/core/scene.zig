@@ -119,3 +119,22 @@ test "vertex layouts are tightly packed" {
     try std.testing.expectEqual(@as(usize, 40), @sizeOf(MeshVertex));
     try std.testing.expectEqual(@as(usize, 28), @sizeOf(LineVertex));
 }
+
+// ---- teak.scene helpers (camera, picking, section): see docs/features/scene.md
+pub const mat = @import("scene/mat.zig");
+pub const camera = @import("scene/camera.zig");
+pub const pick = @import("scene/pick.zig");
+pub const section = @import("scene/section.zig");
+pub const Orbit = camera.Orbit;
+pub const Projection = camera.Projection;
+pub const Bounds = camera.Bounds;
+pub const Ray = camera.Ray;
+pub const pickRay = camera.pickRay;
+pub const project = camera.project;
+
+test {
+    _ = mat;
+    _ = camera;
+    _ = pick;
+    _ = section;
+}
