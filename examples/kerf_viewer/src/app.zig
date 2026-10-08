@@ -602,7 +602,7 @@ pub const Model = struct {
 };
 
 /// Query-param request ids: base + step (mesh, tab, select).
-const param_id_base: u32 = 1000;
+pub const param_id_base: u32 = 1000;
 
 const greeting =
     "DEMO MODE: no network, no key. I am a script. Try **section**, **iso**, **3d**, **cut**, or the name of a part.";
@@ -1862,7 +1862,7 @@ test "gizmo labels follow the viewport's window origin" {
     for (cb.cmds.items) |c| switch (c) {
         .push_overlay => |o| {
             overlays += 1;
-            if (first == null) first = o;
+            if (first == null) first = o.*;
         },
         else => {},
     };
