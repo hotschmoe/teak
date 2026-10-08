@@ -582,6 +582,68 @@ test "run: Shift+Tab walks focus backwards" {
     try std.testing.expectEqual(TabApp.Focus.a, t.rt.model.focus);
 }
 
+// ── Measured rows + modifier reports ────────────────────────────────
+
+const RowsApp = struct {
+    pub const Model = struct { got: [4]f32 = @splat(0), n: usize = 0, first: u32 = 99, calls: u32 = 0, shift: bool = false, mods_calls: u32 = 0 };
+    pub const Msg = union(enum) { rows: struct { first: u32, n: u8, h: [4]f32 }, mods: pointer.Modifiers };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .rows => |r| {
+                m.calls += 1;
+                m.first = r.first;
+                m.n = r.n;
+                m.got = r.h;
+            },
+            .mods => |mm| {
+                m.shift = mm.shift;
+                m.mods_calls += 1;
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushScroll(.{ .padding = 0, .gap = 0, .width = 200, .height = 100, .id = 1 });
+        cb.pushVirtualList(.{ .total_extent = 1000, .start_offset = 300, .visible_start = 7, .visible_end = 9, .id = 4, .align_cross = .stretch });
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 20 });
+        cb.popGroup();
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 30 });
+        cb.popGroup();
+        cb.popVirtualList();
+        cb.popScroll();
+    }
+    pub fn virtualRowsMsg(_: *const Model, id: u32, first: u32, heights: []const f32) ?Msg {
+        if (id != 4) return null;
+        var h: [4]f32 = @splat(0);
+        @memcpy(h[0..heights.len], heights);
+        return .{ .rows = .{ .first = first, .n = @intCast(heights.len), .h = h } };
+    }
+    pub fn modsMsg(_: *const Model, mods: pointer.Modifiers) ?Msg {
+        return .{ .mods = mods };
+    }
+};
+
+test "run: virtualRowsMsg reports the measured row heights once, and again only when they change" {
+    const t = try playWith(RowsApp, .{ .script = &.{ .{}, .{}, .{}, .{} } }, .{ .idle_skip = false });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls);
+    try std.testing.expectEqual(@as(u32, 7), t.rt.model.first);
+    try std.testing.expectEqual(@as(usize, 2), t.rt.model.n);
+    try std.testing.expectEqual(@as(f32, 20), t.rt.model.got[0]);
+    try std.testing.expectEqual(@as(f32, 30), t.rt.model.got[1]);
+}
+
+test "run: modsMsg fires when the modifier keys change, not every frame" {
+    const t = try playWith(RowsApp, .{ .script = &.{
+        .{},
+        .{ .mods = .{ .shift = true } },
+        .{ .mods = .{ .shift = true } },
+        .{},
+    } }, .{ .idle_skip = false });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.rt.model.mods_calls); // shift down, shift up
+    try std.testing.expect(!t.rt.model.shift);
+}
+
 // ── Frame diff: IME aliasing, over-long title ───────────────────────
 
 const NoopApp = struct {
@@ -604,7 +666,7 @@ test "run: a same-length IME composition change forces a rebuild" {
             .{ .ime = "ab" }, // composition starts
             .{ .ime = "cd" }, // same length, written over "ab" in the Host's one shared buffer
         },
-    }, .{ .blink_period = 0 });
+    }, .{ .blink_half_ms = 0 });
     defer t.destroy();
     // Frame 1: first content. Frame 2: IME activates. Frame 3: "cd" — a
     // rebuild ONLY if the loop copies each frame's composition into its own
@@ -2078,6 +2140,70 @@ test "idle: a fired sub, a moved mouse and a click each wake the pipeline; idle_
     const never = try runIdle(&.{ .{}, .{}, .{}, .{} }, .{ .idle_skip = false });
     try std.testing.expectEqual(@as(u32, 4), never.renders);
     try std.testing.expectEqual(@as(u32, 0), never.waits);
+}
+
+// ── Blink-aware idle ────────────────────────────────────────────────
+
+const FocusApp = struct {
+    pub const Model = struct {};
+    pub const Msg = union(enum) { focus, noop };
+    pub fn update(_: *Model, _: Msg) void {}
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.textInput(.focus, "ab", 2);
+        cb.popGroup();
+    }
+    pub fn focusedMsg(_: *const Model) ?Msg {
+        return .focus;
+    }
+};
+
+test "idle + blink: a focused input idles, toggling the caret with a vertex-only re-render" {
+    // Half-period 500 ms: caret on at t=0..499, off at 500..999, on at 1000.
+    const t = try playWith(FocusApp, .{
+        .script = &.{
+            .{ .clock_ms = 0 }, // builds (caret on)
+            .{ .clock_ms = 100 }, // idle, same phase: nothing
+            .{ .clock_ms = 499 }, // idle, same phase: nothing
+            .{ .clock_ms = 500 }, // toggles off: re-render, still no view
+            .{ .clock_ms = 700 }, // idle
+            .{ .clock_ms = 1000 }, // toggles on
+        },
+    }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.ts.frame_counter); // only the first frame ran view/layout
+    try std.testing.expectEqual(@as(u32, 3), t.gpu.upload_vert_calls); // build + off + on
+    try std.testing.expect(t.rt.ts.blink_on);
+    try std.testing.expect(t.rt.quiet);
+}
+
+test "idle + blink: the wait timeout is the nearer of the next caret toggle and the next sub" {
+    var host: ScriptHost = .{ .script = &.{ .{ .clock_ms = 0 }, .{ .clock_ms = 120 } } };
+    var gpu: PlainGpu = .{};
+    try run_mod.run(FocusApp, std.testing.allocator, &host, &gpu, .{});
+    try std.testing.expectEqual(@as(u32, 380), host.last_wait_ms); // 500 - 120
+    // With blink off the same app has no focus timer: it waits the 1 s cap.
+    var host2: ScriptHost = .{ .script = &.{ .{ .clock_ms = 0 }, .{ .clock_ms = 120 } } };
+    var gpu2: PlainGpu = .{};
+    try run_mod.run(FocusApp, std.testing.allocator, &host2, &gpu2, .{ .blink_half_ms = 0 });
+    try std.testing.expectEqual(@as(u32, 1000), host2.last_wait_ms);
+}
+
+test "idle + blink: a sub due before the toggle wins the timeout" {
+    const FocusSub = struct {
+        pub const Model = FocusApp.Model;
+        pub const Msg = FocusApp.Msg;
+        pub const update = FocusApp.update;
+        pub const view = FocusApp.view;
+        pub const focusedMsg = FocusApp.focusedMsg;
+        pub fn subscribe(_: *const Model) []const sub_mod.Sub(Msg) {
+            return &.{.{ .every = .{ .interval_ms = 100, .msg = .noop } }};
+        }
+    };
+    var host: ScriptHost = .{ .script = &.{ .{ .clock_ms = 10 }, .{ .clock_ms = 20 } } };
+    var gpu: PlainGpu = .{};
+    try run_mod.run(FocusSub, std.testing.allocator, &host, &gpu, .{});
+    try std.testing.expectEqual(@as(u32, 80), host.last_wait_ms); // sub at 100 vs caret at 500
 }
 
 const AnimApp = struct {

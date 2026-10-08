@@ -53,6 +53,13 @@
 //!   - `scrollMsg(*const Model, id, dx, dy) ?Msg`     — wheel over the
 //!     innermost hovered scroll region with `ScrollStyle.id != 0` (a pointer
 //!     canvas inside it wins when it is the innermost).
+//!   - `virtualRowsMsg(*const Model, id, first_row, heights: []const f32) ?Msg` —
+//!     measured main-axis extents of the rows a `VirtualListStyle.id != 0`
+//!     list emitted (direct children, from `visible_start`), whenever they
+//!     change: how a variable-height list learns real heights from layout.
+//!   - `modsMsg(*const Model, mods: Modifiers) ?Msg`  — the modifier keys
+//!     (Shift/Ctrl/Alt/Meta) whenever they change, dispatched before the
+//!     frame's pointer and key routing, so a click Msg can read them from the Model.
 //!   - `scrollLayoutMsg(*const Model, id, vw, vh, cw, ch) ?Msg` — viewport and
 //!     content size of every `ScrollStyle.id != 0` region, on its first layout
 //!     and whenever either changes, so the app can clamp offsets and draw
@@ -135,6 +142,7 @@ const text_event = @import("core/text_event.zig");
 const text_wrap = @import("core/text_wrap.zig");
 const layout = @import("layout/engine.zig");
 const scroll_extent = @import("layout/scroll_extent.zig");
+const virtual_rows = @import("layout/virtual_rows.zig");
 const hit_test = @import("input/hit_test.zig");
 const focus = @import("input/focus.zig");
 const render = @import("render/build.zig");
@@ -153,11 +161,12 @@ const effect_batch = 16;
 pub const RunOptions = struct {
     /// Scene clear color passed to `Gpu.renderFrame` each frame.
     clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },
-    /// Frames between forced vertex rebuilds while a widget is focused,
-    /// so the text cursor blink animates. 0 disables the blink tick
-    /// (apps with no text input pay nothing). The renderer toggles the
-    /// cursor on a 30-frame phase, so 30 matches it.
-    blink_period: u32 = 30,
+    /// Text-cursor blink half-period in ms of the Host clock (500 = 500 ms on,
+    /// 500 ms off). 0 disables blinking (the caret stays on). While a text
+    /// input is focused the loop wakes at each toggle and re-renders only the
+    /// caret change (vertices from the last built frame; no view/layout), so
+    /// a focused field costs two cheap frames per second when idle.
+    blink_half_ms: u32 = 500,
     /// Live-snapshot sink. When non-null (or the `TEAK_SNAPSHOT` env var is
     /// set — env wins), `run` mirrors the current frame's snapshot text to
     /// this file every time the frame content changes, so an LLM agent
@@ -175,8 +184,8 @@ pub const RunOptions = struct {
     app_name: []const u8 = "",
     /// Event-driven idle. When true, a frame in which nothing happened (no
     /// input event, no Msg dispatched by a sub / effect result / window hook,
-    /// no focused text input blinking, no secondary window, not the first
-    /// frame) skips view, layout, diff, upload and present entirely —
+    /// secondary window, not the first frame; a caret toggle is a cheap
+    /// re-render of the last frame, see `blink_half_ms`) skips view, layout, diff, upload and present entirely —
     /// `Runtime.quiet` reports it — and `run` then blocks in the Host's
     /// optional `waitEvents(timeout_ms)` until input or the next sub is due.
     /// Set false for an app that needs a frame every tick. The web Host stays
@@ -418,6 +427,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         const has_pointer_hook = has_canvas_hook or has_text_hook;
         const has_scroll_hook = @hasDecl(App, "scrollMsg");
         const has_scroll_layout_hook = @hasDecl(App, "scrollLayoutMsg");
+        const has_rows_hook = @hasDecl(App, "virtualRowsMsg");
+        const has_mods_hook = @hasDecl(App, "modsMsg");
         const has_resources = @hasDecl(App, "resources");
         const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView") and
             @hasDecl(Gpu, "openSecondarySurface");
@@ -494,6 +505,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// timestamp is all the bookkeeping the loop holds. `null` until the
         /// first frame binds it: no sub fires on the opening tick.
         last_sub_ms: ?u64 = null,
+        /// Modifier state last reported through `modsMsg`.
+        last_mods: pointer.Modifiers = .{},
 
         /// Effect ids handed to the host and still listed by the app.
         issued: effects_mod.IssuedTable(max_issued_effects) = .{},
@@ -587,6 +600,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 }
             }
 
+            if (has_mods_hook and !std.meta.eql(input.mods, self.last_mods)) {
+                self.last_mods = input.mods;
+                if (App.modsMsg(&self.model, input.mods)) |m| self.dispatch(m);
+            }
+
             // Input is routed against the PREVIOUS frame's layout — the one
             // the user is looking at — so `prev` is captured before the swap.
             const prev = self.current;
@@ -606,7 +624,18 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
-            if (self.quiet) return;
+            if (self.quiet) {
+                // Idle, but the caret may be due to toggle: redraw the last
+                // built frame with the new phase (no view / layout / diff).
+                if (self.blinkDue()) {
+                    self.ts.blink_on = !self.ts.blink_on;
+                    const last = self.current;
+                    self.uploadFrame(self.bufs[last].cmds.items, self.rects[last].items, self.ts);
+                    self.prev_ts = self.ts;
+                    self.gpu.renderFrame(self.opts.clear_color);
+                }
+                return;
+            }
             self.built_once = true;
 
             const cur = try self.buildView(input);
@@ -626,15 +655,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .rects_same = rectsEqual(cur_rects, self.rects[prev].items),
                 .ts_same = transientSame(self.ts, self.prev_ts),
             };
-            const blink_tick = self.opts.blink_period > 0 and self.ts.focus_index != null and
-                (self.ts.frame_counter % self.opts.blink_period == 0);
             // A live secondary window re-uploads into the shared Gpu scratch
             // buffers after the primary present, so the primary must rebuild
             // its own vertices every frame while it's open.
             const secondary_open = has_secondary and App.secondaryWindow(&self.model) != null;
             // A resource upload/release changes the handles the draws map to
             // even when no Cmd changed, so it forces a re-stage too.
-            if (diff.changed() or blink_tick or secondary_open or res_changed) {
+            if (diff.changed() or secondary_open or res_changed) {
                 self.uploadFrame(cur_cmds, cur_rects, self.ts);
             }
             self.prev_ts = self.ts;
@@ -673,10 +700,22 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (input.chars.len != 0 or input.keys.len != 0) return false;
             if (self.animating) return false;
             if (self.ts.ime_active or self.host.imeState().active) return false;
-            if (self.opts.blink_period > 0 and self.ts.focus_index != null) return false;
             if (has_secondary and App.secondaryWindow(&self.model) != null) return false;
             if (has_secondary and self.secondary.window_id != null) return false;
             return true;
+        }
+
+        /// The caret phase the Host clock says should be showing right now.
+        fn blinkPhase(self: *Self) bool {
+            const half = self.opts.blink_half_ms;
+            if (half == 0) return true;
+            return (self.host.nowMs() / half) & 1 == 0;
+        }
+
+        /// A focused text input's caret is showing the wrong phase.
+        fn blinkDue(self: *Self) bool {
+            if (self.opts.blink_half_ms == 0 or self.ts.focus_index == null) return false;
+            return self.blinkPhase() != self.ts.blink_on;
         }
 
         /// How long the Host may block after a quiet frame: until the next
@@ -685,9 +724,17 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // Effect results arrive from the Host asynchronously; poll them
             // at frame rate while any effect is outstanding.
             const cap: u32 = if (self.issued.len != 0) 16 else 1000;
-            if (!@hasDecl(App, "subscribe")) return cap;
-            const due = sub_mod.nextDueMs(Msg, App.subscribe(&self.model), self.host.nowMs()) orelse return cap;
-            return @intCast(@min(due, cap));
+            var wait: u32 = cap;
+            const now = self.host.nowMs();
+            if (self.opts.blink_half_ms != 0 and self.ts.focus_index != null) {
+                // Sleep until the caret's next toggle.
+                const half = self.opts.blink_half_ms;
+                wait = @min(wait, @as(u32, @intCast(half - now % half)));
+            }
+            if (@hasDecl(App, "subscribe")) {
+                if (sub_mod.nextDueMs(Msg, App.subscribe(&self.model), now)) |due| wait = @intCast(@min(due, wait));
+            }
+            return wait;
         }
 
         /// Every Msg is routed through here so the live snapshot's header can
@@ -1165,7 +1212,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// on first layout and whenever the value differs from the previous
         /// frame's. The resulting Msg takes effect in the NEXT frame's view.
         fn reportLayout(self: *Self, prev: u1, cur: u1) void {
-            if (!has_pointer_hook and !has_scroll_layout_hook) return;
+            if (!has_pointer_hook and !has_scroll_layout_hook and !has_rows_hook) return;
             const cmds = self.bufs[cur].cmds.items;
             const rects = self.rects[cur].items;
             const prev_cmds = self.bufs[prev].cmds.items;
@@ -1186,6 +1233,20 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         false;
                     if (!unchanged) {
                         if (App.scrollLayoutMsg(&self.model, sc.id, now.viewport_w, now.viewport_h, now.content_w, now.content_h)) |m| self.dispatch(m);
+                    }
+                },
+                .push_virtual_list => |vl| if (has_rows_hook and vl.id != 0) {
+                    var now: [max_reported_rows]f32 = undefined;
+                    const n = virtual_rows.rowExtents(cmds, rects, i, &now);
+                    var unchanged = false;
+                    if (findVirtualList(prev_cmds, vl.id)) |old| {
+                        var was: [max_reported_rows]f32 = undefined;
+                        const pn = virtual_rows.rowExtents(prev_cmds, prev_rects, old, &was);
+                        unchanged = prev_cmds[old].push_virtual_list.visible_start == vl.visible_start and
+                            std.mem.eql(f32, now[0..n], was[0..pn]);
+                    }
+                    if (!unchanged) {
+                        if (App.virtualRowsMsg(&self.model, vl.id, vl.visible_start, now[0..n])) |m| self.dispatch(m);
                     }
                 },
                 else => {},
@@ -1311,6 +1372,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.ts.mouse_x = input.mouse_x;
             self.ts.mouse_y = input.mouse_y;
             self.ts.frame_counter +%= 1;
+            self.ts.blink_on = self.blinkPhase();
 
             // Folded in unconditionally: inactive/empty on hosts without IME.
             const ime = self.host.imeState();
@@ -1491,6 +1553,18 @@ fn findPointerCanvas(cmds: anytype, id: u32) ?usize {
     return null;
 }
 
+/// Most rows one `virtualRowsMsg` carries.
+const max_reported_rows = 256;
+
+/// Cmd index of the `push_virtual_list` with `id`, if the buffer has one.
+fn findVirtualList(cmds: anytype, id: u32) ?usize {
+    for (cmds, 0..) |c, i| switch (c) {
+        .push_virtual_list => |vl| if (vl.id == id) return i,
+        else => {},
+    };
+    return null;
+}
+
 /// Cmd index of the `push_scroll` with `id`, if the buffer has one.
 fn findScroll(cmds: anytype, id: u32) ?usize {
     for (cmds, 0..) |c, i| switch (c) {
@@ -1534,6 +1608,7 @@ fn transientSame(a: TransientState, b: TransientState) bool {
     return a.hover_index == b.hover_index and
         a.press_index == b.press_index and
         a.focus_index == b.focus_index and
+        a.blink_on == b.blink_on and
         a.ime_active == b.ime_active and
         a.ime_cursor == b.ime_cursor and
         std.mem.eql(u8, a.ime_text, b.ime_text);
