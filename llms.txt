@@ -150,6 +150,10 @@ Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 dropdown debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
 
+### Version (`teak.version`)
+`teak.version: []const u8` — library semver, derived from `build.zig.zon` `.version` (plus `+<meta>` when built with
+`-Dversion-meta=<meta>`); the single source is documented in docs/VERSIONING.md.
+
 ### Commands & CmdBuffer (`teak.cmd` → core/cmd.zig)
 ```zig
 Cmd(comptime Msg: type) type          // tagged union: push_group/pop_group, push_scroll/pop_scroll,
