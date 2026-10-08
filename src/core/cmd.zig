@@ -1460,14 +1460,14 @@ pub fn CmdBuffer(comptime Msg: type) type {
         /// A text input with an accessible name ("New item", "Search"): what a
         /// screen reader announces for the field.
         pub fn textInputA11y(self: *Self, focus_msg: Msg, content: []const u8, cursor: usize, label: []const u8) void {
-            self.cmds.append(self.backing, .{ .text_input = .{
+            self.cmds.append(self.backing, self.box(.text_input, .{
                 .focus_msg = focus_msg,
                 .content = content,
                 .cursor = cursor,
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
                 .a11y_label = label,
-            } }) catch oom();
+            })) catch oom();
         }
 
         pub fn textInputStyled(
