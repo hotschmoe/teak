@@ -14,7 +14,7 @@ type` — the full wgpu lifecycle (instance, adapter, device, the quad /
 text / image pipelines, the glyph cache) parameterized over two seams:
 
 - **`Surface`** — a *surface provider* exposing `Handle` + `createSurface(WGPUInstance, anytype) !WGPUSurface`. `surface_win32.zig` wraps an HWND pair; `surface_xlib.zig` wraps an X11 `Display*` + `Window` XID. `createSurface` takes the handle as `anytype`, so the Host's structurally-identical `NativeHandle` coerces without the platform layer importing the gpu layer.
-- **`Rasterizer`** — a *rasterizer provider* exposing `init(Allocator)` / `deinit` / `rasterize(bytes, FontSpec, [4]f32, w, h) ?Bitmap`, returning a **BGRA8, top-down** `Bitmap` (`[b, g, r, coverage]` per pixel) ready for a `BGRA8Unorm` texture upload. `raster_gdi.GdiRasterizer` uses Win32/GDI; `text_stbtt.StbttRasterizer` uses vendored stb_truetype.
+- **`Rasterizer`** — a *rasterizer provider* exposing `init(Allocator)` / `deinit` / `rasterize(bytes, FontSpec, [4]f32, w, h) ?Bitmap`, returning a **BGRA8, top-down** `Bitmap` (`[b, g, r, coverage]` per pixel) ready for a `BGRA8Unorm` texture upload. `raster_gdi.GdiRasterizer` uses Win32/GDI; `raster.StbttRasterizer` uses vendored stb_truetype.
 
 The OS stitch files bind the concrete pair and `validateGpu` it:
 
@@ -41,7 +41,7 @@ mint a distinct `WGPUSurface` and the seam wouldn't typecheck.
 
 **Text differs per OS, layout doesn't.** On Windows the GDI rasterizer
 backs rendering and the Win32 Host's GDI measurer backs layout. On Linux
-the `teak-text` module (`text_stbtt.zig`) provides **both** the GPU
+the `teak-text` module (`src/text/`) provides **both** the GPU
 rasterizer *and* the X11 Host's `TextMeasurer` from the **same** loaded
 font, so measure-vs-render metrics can't drift. v1 loads one monospace
 face (DejaVuSansMono by default; override with `TEAK_FONT`) and ignores

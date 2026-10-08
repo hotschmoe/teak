@@ -198,12 +198,13 @@ src/                           -- the library, consumable as a Zig module
     raster_gdi.zig             -- GDI glyph rasterizer        } native.zig
     native.zig                 -- Gpu(surface_win32, GdiRasterizer) + validateGpu
     surface_xlib.zig           -- Xlib Window surface provider } Linux stitch:
-    text_stbtt.zig             -- stb_truetype Font+measure+rasterizer (teak-text module;
-                               --   shared with the X11 Host so layout == render)
     native_linux.zig           -- Gpu(surface_xlib, StbttRasterizer) + validateGpu
     web.zig                    -- zunk WebGPU backend (wasm)
     glyph_cache.zig            -- GlyphCache(Backend): shared LRU glyph-texture cache
     vendor/stb_truetype.h(.c)  -- vendored public-domain rasterizer (Linux text)
+  text/                        -- teak-text module (stb; shared by X11 Host measurer + Gpu rasterizer)
+    text.zig                   -- module root; face.zig (Font + face table), shaper.zig (SimpleShaper:
+                               --   kerning, fi/fl ligatures), measure.zig (width == sum of advances), raster.zig
   platform/                    -- Host backends (window + input; outside core)
     host.zig                   -- validateHost contract + InputState/Clipboard/etc.
     input_queue.zig            -- InputQueue (events -> InputState for Win32/X11), NavKey +

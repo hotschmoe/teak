@@ -540,11 +540,14 @@ section.chain(gpa, []const Segment) !Loops;  section.isClosed(gpa, MeshData) !bo
 FontFamily = enum { sans, serif, mono }
 FontWeight = enum { regular, medium, bold }
 FontSpec = struct { size_px: f32 = 14, family: FontFamily = .sans, weight: FontWeight = .regular,
-                    letter_spacing: f32 = 0 }   // px per glyph; backends that can't honor weight/spacing ignore them
+                    letter_spacing: f32 = 0, snap_advance: bool = false }   // px per glyph; snap_advance rounds advances to whole px
 DEFAULT_FONT: FontSpec        // sans 14px
 TextMetrics = struct { width, height, ascent, descent: f32 }
 TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
                         pub fn prefixWidth(text, font, byte_prefix: usize) f32 }
+ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32 }  // logical order; sum(advance)==width
+ShapeResult = struct { count: usize, width: f32, consumed: usize }   // consumed < text.len only when `out` filled
+Shaper = struct { ctx: *anyopaque, shape_fn; pub fn shape(text, font, out: []ShapedGlyph) ShapeResult }
 TextureHandle = u32
 TEXTURE_HANDLE_NONE: TextureHandle = 0
 TextDraw = struct { rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x..clip_h }
