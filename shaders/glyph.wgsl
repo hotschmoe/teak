@@ -47,7 +47,7 @@ fn vs_main(
     let clip_xy = vec2i(bitcast<i32>(clip_words.x << 16u) >> 16u, bitcast<i32>(clip_words.x) >> 16u);
     let clip_wh = vec2u(clip_words.y & 0xffffu, clip_words.y >> 16u);
     let c = corners[vi];
-    // flags: bits 0-1 mode (0 = coverage bitmap, 1 = signed distance field),
+    // flags: bits 0-1 mode (0 = coverage bitmap, 1 = signed distance field, 2 = RGBA colour texels),
     // bits 16-31 quad scale in 1/256 units (SDF glyphs are drawn at any size).
     let mode = flags & 3u;
     let k = select(1.0, f32(flags >> 16u) / 256.0, mode == 1u);
@@ -71,7 +71,8 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
     // Both samples are taken before any discard (derivatives need uniform control flow).
     // Coverage bitmaps: the quad is pixel-aligned, so `local` hits texel centres: exact fetch.
     let texel = vec2i(in.origin) + vec2i(floor(in.local));
-    let cov_bitmap = textureLoad(atlas, texel, 0).r;
+    let texel_rgba = textureLoad(atlas, texel, 0);
+    let cov_bitmap = texel_rgba.r;
     // Distance fields: bilinear sample, then a one-pixel-wide smoothstep around the edge value,
     // sized by the screen-space derivative so the edge stays crisp at any scale.
     let uv = (vec2f(in.origin) + in.local) / vec2f(textureDimensions(atlas));
@@ -83,6 +84,10 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
         if (p.x < in.clip_min.x || p.y < in.clip_min.y || p.x >= in.clip_max.x || p.y >= in.clip_max.y) {
             discard;
         }
+    }
+    // Mode 2: an RGBA page of colour glyphs (emoji): the texel's own colour, instance alpha as opacity.
+    if (in.mode == 2u) {
+        return vec4f(texel_rgba.rgb, texel_rgba.a * in.color.a);
     }
     let cov = select(cov_bitmap, cov_sdf, in.mode == 1u);
     let a = select(pow(cov, u.text_gamma), cov, u.text_gamma == 1.0);

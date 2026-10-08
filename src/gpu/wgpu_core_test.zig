@@ -24,17 +24,26 @@ const BoxRaster = struct {
     const GlyphBitmap = struct { pixels: []const u8, width: u32, height: u32, bearing_x: i32, bearing_y: i32 };
     pixels: [6 * 8]u8 = @splat(255),
     sdf: [16 * 16]u8 = undefined,
+    rgba: [12 * 12 * 4]u8 = undefined,
 
     pub fn init(_: std.mem.Allocator) !BoxRaster {
         return .{};
     }
     pub fn deinit(_: *BoxRaster) void {}
     pub fn shape(_: *BoxRaster, text: []const u8, _: teak.FontSpec, out: []teak.ShapedGlyph) teak.ShapeResult {
-        const n = @min(text.len, out.len);
-        for (text[0..n], 0..) |ch, i| {
-            out[i] = .{ .glyph = ch, .face = 0, .cluster = @intCast(i), .x = @floatFromInt(i * 8), .advance = 8 };
+        // One glyph per byte (advance 8); a 4-byte UTF-8 sequence is ONE unmapped glyph (an
+        // emoji: glyph 0, advance 16).
+        var n: usize = 0;
+        var i: usize = 0;
+        var x: f32 = 0;
+        while (i < text.len and n < out.len) : (n += 1) {
+            const emoji = text[i] >= 0xF0 and i + 4 <= text.len;
+            const adv: f32 = if (emoji) 16 else 8;
+            out[n] = .{ .glyph = if (emoji) 0 else text[i], .face = 0, .cluster = @intCast(i), .x = x, .advance = adv };
+            x += adv;
+            i += if (emoji) 4 else 1;
         }
-        return .{ .count = n, .width = @floatFromInt(n * 8), .consumed = n };
+        return .{ .count = n, .width = x, .consumed = i };
     }
     /// A 16x16 distance field of an 8x8 box (texels 4..12): byte = 128 + 16 * signed distance.
     pub const sdf_em: f32 = 16;
@@ -47,6 +56,14 @@ const BoxRaster = struct {
             self.sdf[y * 16 + x] = @intFromFloat(std.math.clamp(128 + 16 * inside, 0, 255));
         };
         return .{ .pixels = &self.sdf, .width = 16, .height = 16, .bearing_x = 0, .bearing_y = -12 };
+    }
+    /// A 12x12 colour glyph: left half red, right half green, fully opaque (straight alpha RGBA).
+    pub fn rasterizeColor(self: *BoxRaster, _: []const u8, _: teak.FontSpec, _: f32) ?GlyphBitmap {
+        for (0..12) |y| for (0..12) |x| {
+            const o = (y * 12 + x) * 4;
+            self.rgba[o..][0..4].* = if (x < 6) .{ 255, 0, 0, 255 } else .{ 0, 255, 0, 255 };
+        };
+        return .{ .pixels = &self.rgba, .width = 12, .height = 12, .bearing_x = 0, .bearing_y = -12 };
     }
     pub fn ascent(_: *BoxRaster, _: teak.FontSpec, _: f32) f32 {
         return 8; // device px: the box glyph is a fixed size at any scale
@@ -534,6 +551,41 @@ test "scalable text keeps its clip, and a non-scalable draw of the same glyph st
     try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 16, 40));
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 22, 40)); // beyond the clip
     try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 6, 10)); // the 6x8 box bitmap glyph
+}
+
+test "colour glyphs: an emoji draws from an RGBA page with its own colours, next to coverage text" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    // "a" + a 4-byte sequence: glyph boxes at x 4.., the emoji (12x12, bearing -12 on baseline 16) at x 12.
+    const content = "a\xF0\x9F\x98\x80";
+    var d = textAt(4, 8, 64, 8, content);
+    d.color = .{ 0.2, 0.4, 1, 1 }; // the coverage glyph is tinted; the emoji must not be
+    h.gpu.uploadText(&.{d});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 102, 51, 255 }, at(f, 6, 10)); // 'a' box in the draw colour (BGRA)
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 14, 8)); // emoji left half: red (BGRA)
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 20, 8)); // right half: green
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 26, 8)); // past the emoji
+    try std.testing.expectEqual(@as(usize, 1), h.gpu.text.colorPageCount());
+    // Same frame twice: cached, no new page.
+    h.gpu.uploadText(&.{d});
+    try std.testing.expectEqual(@as(usize, 1), h.gpu.text.colorPageCount());
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.text.dropped);
+}
+
+test "colour glyphs honour the clip and the instance alpha" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    var d = textAt(4, 8, 64, 8, "\xF0\x9F\x98\x80");
+    d.clip_w = 10; // x 0..10 cuts the 12 px emoji at 10 (it starts at 4)
+    d.color = .{ 1, 1, 1, 0.5 };
+    h.gpu.uploadText(&.{d});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    const pix = at(f, 6, 8);
+    try std.testing.expect(pix[2] > 120 and pix[2] < 136); // red at half opacity over black
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 12, 8)); // beyond the clip
 }
 
 // ── SDF quads: rounded rects, borders, gradients, soft shadows ─────

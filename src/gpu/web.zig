@@ -103,6 +103,8 @@ const WebRaster = struct {
     /// Scratch for one canvas-rasterized cluster (`rasterCluster` reports a
     /// larger size if it does not fit; such a glyph is skipped).
     cluster_px: [192 * 192]u8 = undefined,
+    /// Scratch for one colour (RGBA) cluster.
+    color_px: [160 * 160 * 4]u8 = undefined,
 
     pub fn deinit(self: *WebRaster) void {
         self.inner.deinit();
@@ -129,6 +131,16 @@ const WebRaster = struct {
 
     pub fn rasterizeSdf(self: *WebRaster, face: u16, gid: u16) ?text.GlyphBitmap {
         return self.inner.rasterizeSdf(face, gid);
+    }
+
+    /// Colour clusters (emoji) from canvas 2D as straight-alpha RGBA.
+    pub fn rasterizeColor(self: *WebRaster, utf8: []const u8, font: FontSpec, size_px: f32) ?text.GlyphBitmap {
+        var font_buf: [web_font.css_buf_len]u8 = undefined;
+        const css = web_font.css(&font_buf, font);
+        const bmp = zgpu.rasterClusterRgba(utf8, css, size_px, &self.color_px);
+        if (bmp.truncated) return null;
+        const m = bmp.metrics;
+        return .{ .pixels = bmp.pixels, .width = m.width, .height = m.height, .bearing_x = m.bearing_x, .bearing_y = -m.bearing_y };
     }
 
     pub fn rasterizeCluster(self: *WebRaster, utf8: []const u8, font: FontSpec, size_px: f32) ?text.GlyphBitmap {
@@ -184,6 +196,8 @@ pub const Gpu = struct {
     sampler: zgpu.Sampler,
     text: TextStage,
     atlas_pages: std.ArrayList(AtlasPage),
+    /// RGBA pages of colour glyphs (emoji), parallel to `text.cpages`.
+    color_pages: std.ArrayList(AtlasPage),
     glyph_buf: ?zgpu.Buffer,
     glyph_buf_size: u32,
 
@@ -336,6 +350,7 @@ pub const Gpu = struct {
             .sampler = sampler,
             .text = web_text,
             .atlas_pages = .empty,
+            .color_pages = .empty,
             .glyph_buf = null,
             .glyph_buf_size = 0,
             .image_pipeline = image_pipeline,
@@ -396,6 +411,12 @@ pub const Gpu = struct {
             zgpu.destroyTexture(pg.texture);
         }
         self.atlas_pages.deinit(std.heap.wasm_allocator);
+        for (self.color_pages.items) |pg| {
+            zgpu.release(pg.bind_group);
+            zgpu.release(pg.view);
+            zgpu.destroyTexture(pg.texture);
+        }
+        self.color_pages.deinit(std.heap.wasm_allocator);
         self.text.deinit();
         if (self.glyph_buf) |gb| zgpu.bufferDestroy(gb);
         zgpu.bufferDestroy(self.glyph_uniform_buf);
@@ -603,11 +624,16 @@ pub const Gpu = struct {
     }
 
     fn ensurePages(self: *Gpu) void {
-        while (self.atlas_pages.items.len < self.text.pageCount()) {
+        self.growPages(&self.atlas_pages, self.text.pageCount(), .r8unorm);
+        self.growPages(&self.color_pages, self.text.colorPageCount(), .rgba8unorm);
+    }
+
+    fn growPages(self: *Gpu, pages: *std.ArrayList(AtlasPage), want: usize, format: zgpu.TextureFormat) void {
+        while (pages.items.len < want) {
             const texture = zgpu.createTexture(
                 text_stage.atlas_dim,
                 text_stage.atlas_dim,
-                .r8unorm,
+                format,
                 zgpu.TextureUsage.TEXTURE_BINDING | zgpu.TextureUsage.COPY_DST,
             );
             const view = zgpu.createTextureView(texture);
@@ -616,7 +642,7 @@ pub const Gpu = struct {
                 zgpu.BindGroupEntry.initTextureView(1, view),
                 zgpu.BindGroupEntry.initSampler(2, self.glyph_sampler),
             });
-            self.atlas_pages.append(std.heap.wasm_allocator, .{ .texture = texture, .view = view, .bind_group = bg }) catch return;
+            pages.append(std.heap.wasm_allocator, .{ .texture = texture, .view = view, .bind_group = bg }) catch return;
         }
     }
 
@@ -629,6 +655,14 @@ pub const Gpu = struct {
             const start = @as(usize, d.y) * text_stage.atlas_dim + d.x;
             const len = (@as(usize, d.h) - 1) * text_stage.atlas_dim + d.w;
             zgpu.writeTextureRegion(pg.texture, d.x, d.y, d.w, d.h, staging[start..][0..len], text_stage.atlas_dim);
+        }
+        for (self.color_pages.items, 0..) |pg, i| {
+            if (i >= self.text.colorPageCount()) break;
+            const d = self.text.takeColorDirty(i) orelse continue;
+            const staging = self.text.colorStaging(i);
+            const start = (@as(usize, d.y) * text_stage.atlas_dim + d.x) * 4;
+            const len = ((@as(usize, d.h) - 1) * text_stage.atlas_dim + d.w) * 4;
+            zgpu.writeTextureRegion(pg.texture, d.x, d.y, d.w, d.h, staging[start..][0..len], text_stage.atlas_dim * 4);
         }
 
         const total = self.text.finish();
@@ -647,6 +681,11 @@ pub const Gpu = struct {
                 if (list.len == 0) continue;
                 zgpu.bufferWriteTyped(glyph_atlas.GlyphInstance, self.glyph_buf.?, pi.first[layer] * stride, list);
             }
+            for (self.text.cinsts.items) |*pi| {
+                const list = pi.list[layer].items;
+                if (list.len == 0) continue;
+                zgpu.bufferWriteTyped(glyph_atlas.GlyphInstance, self.glyph_buf.?, pi.first[layer] * stride, list);
+            }
         }
     }
 
@@ -654,16 +693,18 @@ pub const Gpu = struct {
     fn drawGlyphs(self: *Gpu, pass: zgpu.RenderPassEncoder, layer: usize) void {
         const buf = self.glyph_buf orelse return;
         var bound = false;
-        for (self.text.insts.items, 0..) |pi, i| {
-            const n = pi.list[layer].items.len;
-            if (n == 0 or i >= self.atlas_pages.items.len) continue;
-            if (!bound) {
-                zgpu.renderPassSetPipeline(pass, self.glyph_pipeline);
-                zgpu.renderPassSetVertexBuffer(pass, 0, buf, 0, self.glyph_buf_size);
-                bound = true;
+        inline for (.{ .{ self.text.insts.items, self.atlas_pages.items }, .{ self.text.cinsts.items, self.color_pages.items } }) |set| {
+            for (set[0], 0..) |pi, i| {
+                const n = pi.list[layer].items.len;
+                if (n == 0 or i >= set[1].len) continue;
+                if (!bound) {
+                    zgpu.renderPassSetPipeline(pass, self.glyph_pipeline);
+                    zgpu.renderPassSetVertexBuffer(pass, 0, buf, 0, self.glyph_buf_size);
+                    bound = true;
+                }
+                zgpu.renderPassSetBindGroup(pass, 0, set[1][i].bind_group);
+                zgpu.renderPassDraw(pass, 6, @intCast(n), 0, pi.first[layer]);
             }
-            zgpu.renderPassSetBindGroup(pass, 0, self.atlas_pages.items[i].bind_group);
-            zgpu.renderPassDraw(pass, 6, @intCast(n), 0, pi.first[layer]);
         }
     }
 

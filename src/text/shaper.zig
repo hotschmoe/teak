@@ -126,6 +126,7 @@ fn isWide(cp: u21) bool {
         (cp >= 0x4E00 and cp <= 0x9FFF) or (cp >= 0xA960 and cp <= 0xA97F) or
         (cp >= 0xAC00 and cp <= 0xD7A3) or (cp >= 0xF900 and cp <= 0xFAFF) or
         (cp >= 0xFF01 and cp <= 0xFF60) or (cp >= 0xFFE0 and cp <= 0xFFE6) or
+        (cp >= 0x1F300 and cp <= 0x1F64F) or (cp >= 0x1F680 and cp <= 0x1F6FF) or (cp >= 0x1F900 and cp <= 0x1FAFF) or
         (cp >= 0x20000 and cp <= 0x3FFFD);
 }
 
