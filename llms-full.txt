@@ -2280,6 +2280,8 @@ convenience emitters.
   > `fromPalette` with shape tokens: the derived button / input / card
   > styles get the radii, borders and elevations from `t`.
   - `pub fn fromPaletteTokens(p: Palette, t: Tokens) Theme`
+> WCAG contrast ratio of two colours (1 .. 21).
+- `pub fn contrast(a: [4]f32, b: [4]f32) f32`
 - `pub const dark_palette: Palette = .{ .bg = .{ 0.08, 0.08, 0.10, 1.0 }, .bg_panel = .{ 0.15, 0.15, 0.18, 1.0 }, .bg_sunken = .{ 0.12, 0.12, 0.14, 1.0 }, .bg_raised = .{ 0.25, 0.25, 0.28, 1.0 }, .bg_hover = .{ 0.35, 0.35, `
 - `pub const light_palette: Palette = .{ .bg = .{ 0.96, 0.96, 0.97, 1.0 }, .bg_panel = .{ 0.97, 0.97, 0.98, 1.0 }, .bg_sunken = .{ 1.00, 1.00, 1.00, 1.0 }, .bg_raised = .{ 0.88, 0.88, 0.92, 1.0 }, .bg_hover = .{ 0.82, 0.82,`
 - `pub const modern_light_palette: Palette = .{ .bg = .{ 0.957, 0.961, 0.973, 1.0 }, .bg_panel = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_sunken = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_raised = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_hover = .{ 0.945, 0.9`
