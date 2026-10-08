@@ -42,7 +42,8 @@ skip() { printf '%s|SKIP|%s\n' "$1" "$2" >"$OUT/res/${1//[^A-Za-z0-9._-]/_}"; }
 
 have_vulkan() {
   command -v vulkaninfo >/dev/null 2>&1 && vulkaninfo --summary >/dev/null 2>&1 && return 0
-  ls /usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json >/dev/null 2>&1
+  [ -n "${VK_ICD_FILENAMES:-}" ] && return 0
+  compgen -G '/usr/share/vulkan/icd.d/*.json' >/dev/null || compgen -G '/etc/vulkan/icd.d/*.json' >/dev/null
 }
 
 example_lane() {
