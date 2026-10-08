@@ -25,6 +25,12 @@ pub const FontSpec = struct {
     /// Extra advance after every glyph, in pixels (tracking). Layout adds
     /// it per byte in `monoMeasurer`; real measurers add it per glyph.
     letter_spacing: f32 = 0,
+    /// Round every glyph advance to a whole pixel (crisp terminal-grid text).
+    /// Applied identically by the shaper, the measurer and the rasterizer.
+    /// Default off while the rasterizer still places glyphs from float pens;
+    /// the text-engine plan (docs/features/text-engine.md 3.2) flips it on for
+    /// `.mono` when the atlas path lands.
+    snap_advance: bool = false,
 };
 
 pub const DEFAULT_FONT: FontSpec = .{};
@@ -50,6 +56,42 @@ pub const TextMeasurer = struct {
     pub fn prefixWidth(self: TextMeasurer, text: []const u8, font: FontSpec, byte_prefix: usize) f32 {
         if (byte_prefix == 0) return 0;
         return self.measure(text[0..byte_prefix], font).width;
+    }
+};
+
+/// One positioned glyph produced by a `Shaper`. Plain data, logical order.
+pub const ShapedGlyph = extern struct {
+    /// Glyph id in `face`.
+    glyph: u16,
+    /// Face-table index (fallback already resolved).
+    face: u16,
+    /// Byte offset in the source text where this glyph's cluster starts.
+    cluster: u32,
+    /// Pen x BEFORE this glyph, logical px, run-relative (includes kerning + letter_spacing).
+    x: f32,
+    /// Advance in logical px, kerning with the next glyph and letter_spacing included,
+    /// so `sum(advance) == ShapeResult.width`.
+    advance: f32,
+};
+
+pub const ShapeResult = struct {
+    /// Glyphs written to `out`.
+    count: usize,
+    /// Sum of the written advances, logical px.
+    width: f32,
+    /// Source bytes covered. Less than `text.len` only when `out` filled up;
+    /// the caller continues from here (always a cluster boundary).
+    consumed: usize,
+};
+
+/// Interface value (like `TextMeasurer`) through which core reaches a shaper.
+/// No allocation; data in, data out.
+pub const Shaper = struct {
+    ctx: *anyopaque,
+    shape_fn: *const fn (ctx: *anyopaque, text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult,
+
+    pub fn shape(self: Shaper, text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
+        return self.shape_fn(self.ctx, text, font, out);
     }
 };
 

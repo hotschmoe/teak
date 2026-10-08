@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) void {
     // Pure GPU-side helpers (slot table, scene uniform packing / target
     // sizing / change signature). Not reachable from src/teak.zig for the
     // same reason as glyph_cache; each is a root file with its own tests.
-    for ([_][]const u8{ "src/gpu/slot_table.zig", "src/gpu/scene_common.zig", "src/gpu/overlay.zig" }) |path| {
+    for ([_][]const u8{ "src/gpu/slot_table.zig", "src/gpu/scene_common.zig", "src/gpu/overlay.zig", "src/gpu/glyph_atlas.zig" }) |path| {
         const m = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,
@@ -95,13 +95,13 @@ pub fn build(b: *std.Build) void {
         const platform_win32_tests = b.addTest(.{ .root_module = platform_win32_mod });
         test_step.dependOn(&b.addRunArtifact(platform_win32_tests).step);
     }
-    // stb_truetype text backend (src/gpu/text_stbtt.zig) — the Linux
+    // stb_truetype text backend (src/text/text.zig) — the Linux
     // rasterizer + measurer. Like glyph_cache it is gpu-adjacent and not
     // reachable from src/teak.zig, so it gets its own test module. Links
     // the vendored stb impl TU + libc; its tests rasterize/measure a real
     // system font and skip cleanly when none is installed (headless CI).
     const stbtt_mod = b.createModule(.{
-        .root_source_file = b.path("src/gpu/text_stbtt.zig"),
+        .root_source_file = b.path("src/text/text.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -119,7 +119,7 @@ pub fn build(b: *std.Build) void {
     // Face-table tests against the real IBM Plex Mono files shipped with
     // examples/fonts (no system font needed).
     const stbtt_face_mod = b.createModule(.{
-        .root_source_file = b.path("src/gpu/text_stbtt_test.zig"),
+        .root_source_file = b.path("src/text/face_test.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -132,6 +132,11 @@ pub fn build(b: *std.Build) void {
         const file = b.fmt("IBMPlexMono-{c}{s}.ttf", .{ std.ascii.toUpper(weight[0]), weight[1..] });
         stbtt_face_mod.addAnonymousImport(b.fmt("plex-{s}", .{weight}), .{
             .root_source_file = b.path(b.fmt("examples/fonts/assets/{s}", .{file})),
+        });
+    }
+    for ([_][]const u8{ "IBMPlexMonoSub-Regular", "QuicksandSub-Regular", "QuicksandSub-NoLig" }) |name| {
+        stbtt_face_mod.addAnonymousImport(b.fmt("test-font-{s}", .{name}), .{
+            .root_source_file = b.path(b.fmt("tests/fonts/{s}.ttf", .{name})),
         });
     }
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = stbtt_face_mod })).step);
@@ -524,7 +529,7 @@ fn stbTextModule(
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
     const text_mod = b.createModule(.{
-        .root_source_file = teak_dep.path("src/gpu/text_stbtt.zig"),
+        .root_source_file = teak_dep.path("src/text/text.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
