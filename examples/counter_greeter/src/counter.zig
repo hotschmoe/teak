@@ -61,7 +61,7 @@ pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
     ) catch unreachable;
     cb.text(count_str);
 
-    cb.pushGroup(.{ .direction = .horizontal, .gap = 8 });
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8 });
     cb.button(msgs.increment, "+");
     cb.button(msgs.decrement, "-");
     cb.popGroup();

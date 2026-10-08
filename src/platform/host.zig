@@ -89,6 +89,22 @@ pub const FileDialogPoll = union(enum) {
     cancelled: void,
 };
 
+/// One synthetic input event, injected by the agent control channel
+/// (`src/control.zig`) through the Host's optional `injectInput`. It lands in
+/// the same queue real OS events do, so injected input takes exactly the path
+/// real input takes (HARDLINE: no second mutation path).
+pub const InjectEvent = union(enum) {
+    move: [2]f32,
+    down: pointer.Button,
+    up: pointer.Button,
+    /// DOM sign convention: positive `dy` scrolls content down.
+    wheel: [2]f32,
+    /// UTF-8 text; at most `InputQueue.CHARS_CAP` bytes land per frame.
+    chars: []const u8,
+    key: SpecialKey,
+    mods: Modifiers,
+};
+
 /// Per-frame input snapshot returned by `Host.pollInputs`.
 ///
 /// `mouse_x` / `mouse_y` are the current cursor position (state, not an
@@ -210,6 +226,9 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   devicePixelRatio backing store internally). Nothing in the
 ///   framework consumes it yet; see docs/features/host.md "DPI and
 ///   scaling" for the end-to-end render-at-scale follow-up.
+///   This is the one scale API: apps pass it to the Gpu as
+///   `InitOptions.scale`, and when it changes at runtime (Win32
+///   `WM_DPICHANGED`) the run loop forwards the new value to `Gpu.setScale`.
 /// - `setCursor(shape)` — **optional**: show the OS mouse cursor for a
 ///   `CursorShape`. `teak.run` calls it only when the shape picked from
 ///   the hovered cmd (or the App's `cursorFor` hook) changes. X11 maps to

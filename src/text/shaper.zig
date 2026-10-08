@@ -15,6 +15,7 @@
 const std = @import("std");
 const teak = @import("teak");
 const face_mod = @import("face.zig");
+const fallback = @import("fallback.zig");
 const compose_table = @import("compose_table.zig");
 
 const Font = face_mod.Font;
@@ -64,6 +65,21 @@ fn mapGlyph(primary: *const Font, primary_id: u16, family: teak.FontFamily, cp: 
         const alt = f.glyphIndex(cp);
         if (alt != 0) return .{ .glyph = alt, .face_id = id, .face = f };
     }
+    // Other registered families, then the app's explicit chain and the system
+    // last-resort list (text/fallback.zig). Tofu only when nothing has it.
+    var fam_i: u8 = 0;
+    while (fam_i < 3) : (fam_i += 1) {
+        const fam: teak.FontFamily = @fromBackingInt(@intCast(fam_i));
+        if (fam == family) continue;
+        var w2: u8 = 0;
+        while (w2 < 3) : (w2 += 1) {
+            const id = face_mod.faceId(fam, @fromBackingInt(@intCast(w2)));
+            const f = face_mod.faceById(id) orelse continue;
+            const alt = f.glyphIndex(cp);
+            if (alt != 0) return .{ .glyph = alt, .face_id = id, .face = f };
+        }
+    }
+    if (fallback.glyphFor(cp)) |h| return .{ .glyph = h.glyph, .face_id = h.face_id, .face = h.face };
     return .{ .glyph = 0, .face_id = primary_id, .face = primary };
 }
 
@@ -110,6 +126,7 @@ fn isWide(cp: u21) bool {
         (cp >= 0x4E00 and cp <= 0x9FFF) or (cp >= 0xA960 and cp <= 0xA97F) or
         (cp >= 0xAC00 and cp <= 0xD7A3) or (cp >= 0xF900 and cp <= 0xFAFF) or
         (cp >= 0xFF01 and cp <= 0xFF60) or (cp >= 0xFFE0 and cp <= 0xFFE6) or
+        (cp >= 0x1F300 and cp <= 0x1F64F) or (cp >= 0x1F680 and cp <= 0x1F6FF) or (cp >= 0x1F900 and cp <= 0x1FAFF) or
         (cp >= 0x20000 and cp <= 0x3FFFD);
 }
 
@@ -123,6 +140,36 @@ fn isCombining(cp: u21) bool {
         (cp >= 0xFE00 and cp <= 0xFE0F) or (cp >= 0xFE20 and cp <= 0xFE2F) or
         cp == 0x200C or cp == 0x200D or cp == 0x0483 or cp == 0x0484 or cp == 0x0485 or cp == 0x0486 or
         (cp >= 0x0591 and cp <= 0x05BD) or (cp >= 0x064B and cp <= 0x065F);
+}
+
+/// Width of pure-ASCII `text` straight from the face's ASCII tables, bit-identical
+/// to summing `shape`'s advances. Null when the run needs the full shaper: a
+/// non-ASCII byte, a glyph the primary face lacks, a possible ligature, or a run
+/// longer than one shaper chunk.
+pub fn asciiWidth(text: []const u8, font: FontSpec) ?f32 {
+    if (text.len > 256) return null;
+    const resolved = face_mod.resolveFace(font.family, font.weight) orelse return null;
+    const face = resolved.face;
+    const scale = face.scaleForEm(font.size_px);
+    const ligatures = font.letter_spacing == 0 and font.family != .mono and !face.isFixedPitch();
+    const snap = font.snapsAdvance();
+    var x: f32 = 0;
+    var pending_raw: f32 = 0;
+    var pending_glyph: u16 = 0;
+    for (text, 0..) |b, i| {
+        if (b >= 128) return null;
+        const g = face.ascii_gid[b];
+        if (g == 0) return null;
+        if (ligatures and b == 'f' and i + 1 < text.len and (text[i + 1] == 'f' or text[i + 1] == 'i' or text[i + 1] == 'l')) return null;
+        if (pending_glyph != 0) {
+            pending_raw += @as(f32, @floatFromInt(face.kernUnits(pending_glyph, g))) * scale;
+            x += if (snap) @round(pending_raw) else pending_raw;
+        }
+        pending_raw = @as(f32, @floatFromInt(face.ascii_adv[b])) * scale + font.letter_spacing;
+        pending_glyph = g;
+    }
+    if (pending_glyph != 0) x += if (snap) @round(pending_raw) else pending_raw;
+    return x;
 }
 
 const use_harfbuzz = @import("text_options").harfbuzz;
@@ -161,6 +208,14 @@ pub fn shapeSimple(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeRe
     var pending_cp: u21 = 0; // the base's code point (0 = a ligature / unknown)
 
     while (pos < text.len) {
+        // Default-ignorable code points (ZWJ, variation selectors, ...) draw
+        // nothing and take no space; skipping them avoids tofu in emoji
+        // sequences.
+        const d = decode(text, pos);
+        if (fallback.isInvisible(d.cp)) {
+            pos += d.len;
+            continue;
+        }
         const u = nextUnit(primary, primary_id, text, pos, font, ligatures);
         if (u.mark) {
             // Prefer the precomposed letter (NFC) when the face has it: e + U+0301 -> U+00E9. Works

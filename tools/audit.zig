@@ -661,6 +661,37 @@ fn auditDocDrift(gpa: std.mem.Allocator, io: Io) ![]Hit {
         } else |_| {}
     }
 
+    // 2b. Orientation docs: every non-test src/**/*.zig is in CLAUDE.md's and
+    // AGENTS.md's module tree (regenerate with tools/gen_tree.py).
+    {
+        const claude = try readOpt(gpa, io, "CLAUDE.md");
+        defer if (claude) |b| gpa.free(b);
+        const agents = try readOpt(gpa, io, "AGENTS.md");
+        defer if (agents) |b| gpa.free(b);
+        if (cwd.openDir(io, "src", .{ .iterate = true })) |dir_const| {
+            var dir = dir_const;
+            defer dir.close(io);
+            var walker = try dir.walk(gpa);
+            defer walker.deinit();
+            while (try walker.next(io)) |entry| {
+                if (entry.kind != .file or !std.mem.endsWith(u8, entry.basename, ".zig")) continue;
+                if (std.mem.endsWith(u8, entry.basename, "test.zig")) continue;
+                if (std.mem.indexOf(u8, entry.path, "testdata") != null or std.mem.indexOf(u8, entry.path, "vendor") != null) continue;
+                var needle_buf: [128]u8 = undefined;
+                const needle = std.fmt.bufPrint(&needle_buf, "  {s} ", .{entry.basename}) catch continue;
+                const docs = [_]struct { name: []const u8, text: ?[]u8 }{ .{ .name = "CLAUDE.md", .text = claude }, .{ .name = "AGENTS.md", .text = agents } };
+                for (docs) |d| {
+                    const t = d.text orelse continue;
+                    if (std.mem.indexOf(u8, t, needle) == null) {
+                        var msg: [200]u8 = undefined;
+                        const txt = std.fmt.bufPrint(&msg, "src/{s} is missing from the {s} module tree (run python3 tools/gen_tree.py)", .{ entry.path, d.name }) catch entry.path;
+                        try addHit(gpa, &hits, d.name, "module tree", txt);
+                    }
+                }
+            }
+        } else |_| {}
+    }
+
     // 3. Optional surfaces the run loop probes: documented where readers look.
     const run_src = (try readOpt(gpa, io, "src/run.zig")) orelse return hits.toOwnedSlice(gpa);
     defer gpa.free(run_src);

@@ -110,6 +110,10 @@ pub fn validateGpu(comptime T: type) void {
             "uploadMesh, releaseMesh and renderScenes come together");
     // Optional overlay layering: where the overlay layer starts in each
     // staged list. Called before the uploads of a frame.
+    // Optional HiDPI hook: render at `scale` physical pixels per logical unit.
+    if (@hasDecl(T, "setScale") and @typeInfo(@TypeOf(T.setScale)) != .@"fn")
+        @compileError("Gpu '" ++ tn ++ "'.setScale must be a function " ++
+            "(expected fn(*Gpu, f32) void)");
     if (@hasDecl(T, "setOverlayStart") and @typeInfo(@TypeOf(T.setOverlayStart)) != .@"fn")
         @compileError("Gpu '" ++ tn ++ "'.setOverlayStart must be a function " ++
             "(expected fn(*Gpu, OverlaySplit) void)");

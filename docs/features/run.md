@@ -82,10 +82,12 @@ table does not name.
 |---|---|---|---|
 | `keyCharMsg` | `(*const Model, u8) ?Msg` | each typed character, in order | a Msg (null = ignore) |
 | `keySpecialMsg` | `(*const Model, SpecialKey) ?Msg` | each non-text key / chord | a Msg |
-| `keyNeedsClipboard` | `(SpecialKey) bool` | on a special key | whether `handleClipboard` should take it |
-| `handleClipboard` | `(*Model, SpecialKey, Clipboard) void` | cut/copy/paste chords that `keyNeedsClipboard` claims | **mutates the Model directly** (a known HARDLINE §1 exception, see the audit note below) |
+| `clipboardText` | `(*const Model, SpecialKey) ?[]const u8` | Ctrl+C / Ctrl+X, before `clipboardMsg` | the text to copy (a pure query; the loop writes the Host clipboard) |
+| `clipboardMsg` | `(*const Model, SpecialKey, paste: []const u8) ?Msg` | Ctrl+C / Ctrl+X / Ctrl+V; `paste` is the clipboard text for Ctrl+V (an empty paste is not delivered) | a Msg (Ctrl+X: the cut, after the copy) |
+| `keyNeedsClipboard` + `handleClipboard` | `(SpecialKey) bool` / `(*Model, SpecialKey, Clipboard) void` | **deprecated**; only when neither new hook exists | mutates the Model outside `update` (HARDLINE §1); removed next release, see [migration-clipboard.md](../migration-clipboard.md) |
 | `submitMsg` | `(*const Model) ?Msg` | Enter key (before `keySpecialMsg`) | a Msg |
 | `focusedMsg` | `(*const Model) ?Msg` | every frame | the focus Msg of the focused widget; enables Tab traversal + the focus ring + caret |
+| `blurMsg` | `(*const Model) ?Msg` | when Tab moves keyboard focus from a text field onto a non-text widget | the Msg that clears the Model's text focus, so the field stops receiving typed characters |
 | `wheelMsg` | `(*const Model, f32) ?Msg` | vertical wheel not claimed by a scroll region / pointer canvas | a Msg |
 | `scrollMsg` | `(*const Model, id, dx, dy) ?Msg` | wheel over the innermost `ScrollStyle.id != 0` region | a Msg |
 | `scrollLayoutMsg` | `(*const Model, id, vw, vh, cw, ch) ?Msg` | a scroll region's first layout and each size change | a Msg (the view cannot read layout) |
@@ -114,6 +116,7 @@ route against the **previous** frame's layout, exactly like hit-testing.
 | Decl | Signature | Role |
 |------|-----------|------|
 | `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer events over `CanvasCmd.pointer` canvases: `down` / `move` / `up` / `wheel` / `leave`, and `layout` on first layout and whenever the rect size changes. Semantics in [canvas.md](canvas.md). |
+| `pointerMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | **the one pointer hook for widgets**: `ev.kind` = `hover` (target changed), `down` (any button but right), `up`, `context` (right press); `ev.button` says which. `ev.hit` is the widget's click / focus Msg, or **null for blank space**, so `if (ev.kind == .down and ev.isBlank()) return .clear_focus` clears the app's focus (the loop never invents focus changes for you). `ev.box` / `ev.now_ms` as for `hoverMsg`. `hoverMsg` / `contextMsg` are the same events for one kind each and remain; canvas / text / slider pointer hooks keep their capture semantics (see docs/features/pointer-msg.md for the staged migration). |
 | `hoverMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the interactive widget under the pointer changed (entered, left, replaced). `ev.hit` is that widget's click Msg, `ev.box` its rect (previous frame), `ev.now_ms` the host clock. Drives `widgets.tooltip`. |
 | `contextMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the right button went down; `ev.hit` is the Msg of the widget under the cursor, `null` over empty space. Drives `widgets.menu.ContextMenu`. |
 | `sliderMsg` | `(*const Model, grab: Msg, value: f32) ?Msg` | a `slider` cmd is being dragged: `grab` is its `grab_msg` (which slider), `value` the 0..1 position under the pointer. Fired on press and every frame the left button stays down (pointer captured, so the drag survives leaving the track); the slider's plain click Msg is not dispatched. Without the hook a slider is click-only. |
@@ -233,6 +236,7 @@ the primary window is unaffected on the other backends.
   (default 500; 0 = no blinking). The caret phase is `TransientState.blink_on`,
   set from the clock; while idle the loop wakes only at each toggle.
 - `snapshot_path: ?[]const u8` — live-snapshot sink (default `null`).
+- `control_path` / `record_path` / `replay_path: ?[]const u8`, `inspect: bool`, `inspect_hotkey: bool` — agent control socket, input recording / replay, the dev inspector (`TEAK_CONTROL` / `TEAK_RECORD` / `TEAK_REPLAY` / `TEAK_INSPECT` env win); see [agent-driver.md](agent-driver.md).
 - `app_name: []const u8` — names the app for hosts that keep per-app files (native storage under `<config>/teak/<app_name>/`); empty = the window title.
 
 ### Live snapshot sink (`TEAK_SNAPSHOT`)
@@ -257,7 +261,7 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
 3. Keyboard: chars via `keyCharMsg`; then special keys — built-in
    Tab/Shift+Tab traversal and Enter→`submitMsg` first (if the app
    exposes the relevant hooks), then clipboard chords via
-   `handleClipboard`, else `keySpecialMsg`.
+   `clipboardText` / `clipboardMsg` (or the deprecated `handleClipboard`), else `keySpecialMsg`.
 4. Pointer canvases (`canvasMsg`): hover / move / down / up / leave +
    capture. Wheel: pointer canvas -> `scrollMsg` region -> `wheelMsg`.
 5. Effect results (`effectMsg`), then subscriptions: `runSubs(subscribe(model))`

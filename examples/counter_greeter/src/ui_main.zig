@@ -1,7 +1,7 @@
 //! Native entry for the counter_greeter example. `teak.run` owns the host
 //! loop; the app supplies the optional hooks it needs — `keyCharMsg` /
-//! `keySpecialMsg` (greeter typing + selection), `keyNeedsClipboard` /
-//! `handleClipboard` (cut/copy/paste), `focusedMsg` (focus ring + cursor
+//! `keySpecialMsg` (greeter typing + selection), `clipboardText` /
+//! `clipboardMsg` (cut/copy/paste), `focusedMsg` (focus ring + cursor
 //! blink), `themeFor` (dark/light toggle), and the secondary-window trio
 //! (`secondaryWindow` / `secondaryView` / `secondaryClosedMsg`) that drives
 //! the standalone "Stats" window. Backends (X11 / Win32 + wgpu) are picked

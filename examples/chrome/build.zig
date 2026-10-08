@@ -72,7 +72,7 @@ pub fn build(b: *std.Build) void {
     //
     //   zig build shot -- out.png
 
-    if (target.result.os.tag == .linux or target.result.os.tag == .macos) {
+    if (teak.hasNativeBackend(target.result.os.tag)) {
         const shot_exe = b.addExecutable(.{
             .name = "chrome-shot",
             .root_module = b.createModule(.{

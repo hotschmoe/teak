@@ -29,6 +29,7 @@
 - Migration notes, one per Zig version bump (newest last): [docs/migration-0.17.md](docs/migration-0.17.md) — build.zig
   changes (`b.args`, lowercase optimize modes), toolchain, what did not change in teak's API. A new `docs/migration-<ver>.md`
   must be linked here (audit-enforced).
+- Other migrations: [docs/migration-clipboard.md](docs/migration-clipboard.md) — `handleClipboard` to `clipboardText` / `clipboardMsg`.
 
 ## The core loop
 
@@ -116,10 +117,13 @@ pub fn view(m: *const Model, cb: *CmdBuffer(Msg)) void;   // pure; cb passed as 
 ```zig
 pub fn keyCharMsg(*const Model, u8) ?Msg              // typed character → Msg
 pub fn keySpecialMsg(*const Model, SpecialKey) ?Msg   // arrows/backspace/etc → Msg
-pub fn keyNeedsClipboard(SpecialKey) bool             // pairs with handleClipboard
-pub fn handleClipboard(*Model, SpecialKey, Clipboard) void   // cut/copy/paste policy
+pub fn clipboardText(*const Model, SpecialKey) ?[]const u8        // what Ctrl+C/X copy (pure query)
+pub fn clipboardMsg(*const Model, SpecialKey, paste: []const u8) ?Msg  // Ctrl+C/X/V -> Msg (paste = clipboard text)
+pub fn keyNeedsClipboard(SpecialKey) bool             // DEPRECATED, pairs with handleClipboard
+pub fn handleClipboard(*Model, SpecialKey, Clipboard) void   // DEPRECATED: mutates Model outside update
 pub fn wheelMsg(*const Model, f32) ?Msg               // vertical wheel delta → Msg (when no canvas / scroll region took it)
 pub fn canvasMsg(*const Model, CanvasEvent) ?Msg      // pointer events over CanvasCmd.pointer canvases and SceneCmd.pointer scenes (shared id space) (see "Pointer events")
+pub fn pointerMsg(*const Model, PointerEvent(Msg)) ?Msg   // one hook: kind hover/down/up/context, hit=null on blank space (ev.isBlank())
 pub fn hoverMsg(*const Model, PointerEvent(Msg)) ?Msg     // the interactive widget under the pointer changed (drives Tooltip)
 pub fn sliderMsg(*const Model, grab: Msg, value: f32) ?Msg     // a `slider` cmd is dragged (pointer captured); value 0..1; without it a slider is click-only
 pub fn contextMsg(*const Model, PointerEvent(Msg)) ?Msg   // right button down; ev.hit = Msg of the widget under the cursor (drives ContextMenu)
@@ -139,6 +143,7 @@ pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view 
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
 pub fn subscribe(*const Model) []const Sub(Msg)       // declarative timers; run services them each
                                                       //   frame via runSubs on Host.nowMs() (§2 hatch 6)
+pub fn debugState(*const Model, *std.Io.Writer) void  // Model dump for the control channel's `state` command
 pub fn animationMsg(*const Model, dt_ms: u32) ?Msg    // frame time while a Sub.animation_frame is listed
                                                       //   (core/anim.zig; run loop idles when none is listed)
 pub fn resources(*const Model) []const Resource       // declarative GPU meshes/images by (key, rev);
@@ -153,6 +158,11 @@ pub const RunOptions = struct {
     clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },  // scene clear each frame
     blink_half_ms: u32 = 500, // caret blink half-period in Host-clock ms (0 = no blink); idle wakes at each toggle
     snapshot_path: ?[]const u8 = null,   // live snapshot sink; TEAK_SNAPSHOT env wins (see below)
+    control_path: ?[]const u8 = null,    // agent control socket; TEAK_CONTROL env wins (see "Agent driver")
+    record_path: ?[]const u8 = null,     // record the input stream; TEAK_RECORD env wins
+    replay_path: ?[]const u8 = null,     // replay a recording (headless Host); TEAK_REPLAY env wins
+    inspect: bool = false,               // show the dev inspector panel; TEAK_INSPECT=1 env
+    inspect_hotkey: bool = (Debug build),// F12 toggles the inspector (the key is consumed)
 };
 pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: u32 };
 ```
@@ -336,7 +346,16 @@ nextFocusable(cmds, current: ?usize) ?usize   // wraps; null only if no focusabl
 prevFocusable(cmds, current: ?usize) ?usize
 indexOfFocusMsg(cmds, msg) ?usize             // cmd index whose leaf carries msg (by value) — stable
 focusMsgAt(cmds, index: usize) ?Msg           // the Msg the leaf at index would dispatch
+nextNavigable(cmds, current) ?usize           // same walk over EVERY keyboard-operable leaf (button, checkbox, radio, slider, text field)
+prevNavigable(cmds, current) ?usize
 ```
+Keyboard navigation (`RunOptions.keyboard_nav`, default on): Tab / Shift+Tab walk `nextNavigable` (disabled skipped, modal overlay traps).
+A text leaf gets its focus Msg dispatched (the Model owns text focus); any other leaf becomes the run loop's own focus: a ring in
+`palette.accent` / `tokens.focus_ring_width` is drawn around it, Space / Enter dispatch the Msg a click would, Left/Right/Up/Down move
+and select inside a radio group, arrows / Home / End / PageUp / PageDown set a slider through `sliderMsg`. Optional App hook
+`blurMsg(*const Model) ?Msg` clears the app's text focus when Tab leaves a text field (so typing keys stop reaching it). App key
+hooks (`keyCharMsg`, `keySpecialMsg`, `submitMsg`, menus, dialogs) run first; the focused widget only gets keys they decline.
+Focus is keyed by the leaf's Msg, so it follows the widget through list inserts / removals; a click on a widget moves it there.
 
 ### Keys (`teak.keys` → input/keys.zig)
 ```zig
@@ -345,6 +364,7 @@ SpecialKey = enum { backspace, delete, left, right, up, down, home, end, page_up
                     shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v,
                     ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left,
                     ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end,
+                    ctrl_backspace, ctrl_delete, f12 }
                     ctrl_backspace, ctrl_delete, f10, alt_tap }   // f10 / alt_tap (a bare Alt press+release) activate a MenuBar
 ```
 
@@ -426,6 +446,8 @@ textFieldChar(comptime AppMsg, comptime field_name: []const u8, c: u8) AppMsg
 textFieldSpecial(comptime AppMsg, comptime field_name, key: SpecialKey) ?AppMsg
 textFieldReplaceSelection(comptime AppMsg, comptime field_name, bytes: []const u8) AppMsg
 keyNeedsClipboard(key: SpecialKey) bool     // true for ctrl_c/ctrl_x/ctrl_v
+textFieldClipboardMsg(AppMsg, field, key, paste) ?AppMsg   // for clipboardMsg: ctrl_v -> replace_selection, ctrl_x -> delete selection
+textFieldCopyText(model, key) ?[]const u8   // for clipboardText: the field's selection
 
 NumericField(comptime config: NumericConfig) type   // TextField + parse/validate; adds
                                                      //   value()?f64, isValid(), content(), formatValue()
@@ -527,6 +549,26 @@ DebugOverlayOpts = struct { x = 8, y = 8, padding = 8, gap = 2, backdrop, fg: [4
                             max_lines: usize = 512 }
 appendDebugOverlay(cb, cmds, rects: []const Rect, opts: DebugOverlayOpts) void
 ```
+
+### Agent driver (`teak.control`, `teak.input_record`, `teak.inspector`; docs/features/agent-driver.md)
+Opt-in control channel for LLM agents: `TEAK_CONTROL=<unix socket>` (Host with the control surface: headless, X11).
+Line-delimited JSON; commands snapshot, tree, click/hover/type/key/scroll (selector = role + label substring, cmd
+`index`, or x/y), screenshot (offscreen Gpu), msglog, state (App `debugState`), wait, info, inspect, quit. Input is
+INJECTED through `Host.injectInput` into the real input path (HARDLINE: no second mutation path).
+```zig
+// teak.control (control.zig): loop-side machinery, driven by Runtime.frame
+State.init(gpa) State; State.replayDone() bool; State.flushRecording() void
+fmtValue(w: *std.Io.Writer, v: anytype) !void       // compact Msg/payload text (.tag(payload))
+// teak.input_record: TEAK_RECORD / TEAK_REPLAY file format
+FrameRec; writeLine(w, *const FrameRec) !void; parseLine(line) !?FrameRec; Tracker.observe(frame, input) ?FrameRec
+// teak.inspector: pure overlay builder used by run (TEAK_INSPECT=1 / F12)
+appendInspector(cb, cmds, rects, Data{window_w, window_h, frame, hover_index, focus_index, msgs, timings}, Opts) void
+// teak.headless.serve(App, Host, Gpu, gpa, ServeOptions) !void   // headless app until quit (pair with TEAK_CONTROL)
+// Host optional surface: controlListen(path) bool; controlRecv([]u8) ?[]u8; controlSend([]const u8) void;
+//   injectInput(InjectEvent) void; requestClose() void.   teak.host.InjectEvent = union(enum) { move, down, up, wheel, chars, key, mods }
+```
+`tools/teak_drive.zig` (`zig build drive`): `teak-drive --socket S <cmd>` for shells and `teak-drive mcp` (stdio JSON-RPC MCP
+server; tools launch_app, snapshot, tree, click, hover, type, key, scroll, screenshot, msglog, state, wait, quit).
 
 ### Snapshot / golden tests (`teak.snapshot` → core/snapshot.zig)
 ```zig
@@ -643,7 +685,7 @@ section.chain(gpa, []const Segment) !Loops;  section.isClosed(gpa, MeshData) !bo
 FontFamily = enum { sans, serif, mono }
 FontWeight = enum { regular, medium, bold }
 FontSpec = struct { size_px: f32 = 14, family: FontFamily = .sans, weight: FontWeight = .regular,
-                    letter_spacing: f32 = 0, snap_advance: ?bool = null }   // px per glyph; snap_advance rounds advances to whole px (null: on for .mono)
+                    letter_spacing: f32 = 0, snap_advance: ?bool = null, scalable: bool = false }   // px per glyph; snap_advance rounds advances to whole px (null: on for .mono); scalable = SDF glyphs, crisp at any zoom
 DEFAULT_FONT: FontSpec        // sans 14px
 TextMetrics = struct { width, height, ascent, descent: f32 }
 TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
@@ -777,6 +819,8 @@ UndoLog(rec_cap, byte_cap) type
 ### Unicode, line breaking, wrapping (`teak.unicode`, `teak.linebreak`, `teak.text_wrap`)
 Pure, allocation-free, std-only; byte offsets everywhere; invalid UTF-8 tolerated (1 bad byte = 1 unit).
 // Wrapped text and shrink (layout passes 2-3 run only when present; see docs/features/layout.md)
+cb.richParagraph(content, spans: []const RichTextSpan, ParagraphOpts)   // wrapped rich_text: lines break across spans; RichTextCmd.wrap/max_lines/text_align
+text.registerFallbackFace(ttf) !void   // teak-text (native): app fallback faces, tried before the system chain (DejaVu, Noto/CJK/WenQuanYi, Noto Emoji, FreeSans, Unifont; TEAK_FALLBACK_FONTS=/a.ttf:/b.ttc prepends)
 cb.paragraph(s) / cb.paragraphStyled(s, font, color, ParagraphOpts{ wrap = .word, max_lines: u16 = 0, text_align }) / cb.textEllipsis(s)
 Wrap = enum { none, word, char, ellipsis }          // TextCmd.wrap (default none)
 GroupStyle.shrink / ScrollStyle.shrink: f32 = 0      // shrink weight; wrapped text shrinks implicitly
@@ -867,6 +911,16 @@ validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uplo
 //                                              //   the overlay's, so an opaque overlay hides base text (hatch 5)
 ```
 
+### Hot reload (`teak.dev` → dev.zig; docs/features/hot-reload.md)
+Dev builds only: the App as `libapp.so` behind a stable loader; Model + TransientState survive a rebuild when the Model type is unchanged.
+```zig
+teak.dev.Plugin(App, Host, Gpu, Init).exportAll()   // in the lib root, comptime; Init = struct { host(gpa) !Host, gpu(*Host) !Gpu }
+teak.dev.runLoader(init: std.process.Init, default_lib_path) !void   // the loader exe's main
+teak.dev.typeFingerprint(T) u64   // comptime: name/size/field names+offsets+types, recursive
+teak.dev.Loader{ init, pollReload() ReloadResult, reload(), frame() bool, idle(cap_ms), lastNote() }   // embed the loader yourself
+```
+Build: `zig build dev [--watch] [-Dbackend=headless]` in examples/todo, run `zig-out/bin/todo-dev`.
+
 ### Headless runs (`teak.headless` → headless_run.zig; docs/features/headless.md)
 No display needed; Linux + a Vulkan device. In build.zig: `teak.linkHeadless(b, exe, .{})` adds imports
 `teak-platform-headless` (`Host`: scripted input, fake 16 ms/frame clock, stb text, captured effects) and
@@ -956,6 +1010,7 @@ More worked examples and idioms: **docs/cookbook.md**.
 - `docs/features/transient-state.md` — presentation-only state.
 - `docs/features/text.md` — TextMeasurer + FontSpec.
 - `docs/features/host.md` — Host interface (window + input; DPI/scaling notes).
+- `docs/features/hot-reload.md` — hot reload: libapp.so + stable loader, Model kept across rebuilds.
 - `docs/features/headless.md` — headless native runs: scripted input -> PNG (`linkHeadless`, `teak.headless`).
 - `docs/features/gpu.md` — Gpu interface (vertex upload + present).
 - `docs/features/snapshot.md` — golden snapshot tests + live TEAK_SNAPSHOT streaming.

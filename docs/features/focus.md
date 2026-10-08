@@ -1,11 +1,69 @@
 # Focus traversal
 
 **Status**: `pub` in `src/teak.zig` as `nextFocusable`, `prevFocusable`,
-`indexOfFocusMsg`, `focusMsgAt`.
+`nextNavigable`, `prevNavigable`, `indexOfFocusMsg`, `focusMsgAt`. The run loop's
+keyboard navigation (`RunOptions.keyboard_nav`) is described first; the traversal
+primitives follow.
 **Source**: `src/input/focus.zig`
 **Tests**: colocated — forward/backward wrap, empty buffer, single-focusable
 self-wrap, `indexOfFocusMsg` mapping + conditional-drop stability,
 `focusMsgAt` round-trip, Tab-skips-disabled.
+
+## Keyboard navigation (run loop)
+
+Text focus stays in the app's Model (`focusedMsg`). Every other keyboard-operable leaf (enabled buttons, checkboxes,
+radios, sliders, clickable canvases such as the toggle switch) is focused by the **run loop itself**: a presentation-only
+`nav` focus (HARDLINE hatch 2: derivable, non-logical, safely losable) keyed by the leaf's activation `Msg` plus its ordinal
+among equal Msgs, so it follows the widget when items are inserted, removed or reordered (and falls to the nearest leaf when
+the widget is gone). It never reaches `update`; only the Msgs it activates do.
+
+| Key | Effect |
+|---|---|
+| Tab / Shift+Tab | next / previous navigable leaf in command order, wrapping; disabled leaves skipped; trapped inside the topmost modal overlay |
+| Space, Enter | on a button, checkbox, radio or clickable canvas: dispatches the Msg a click would |
+| arrows | radio: move to the previous/next radio of the group and select it (wraps); slider: +-5% (`sliderMsg`), PageUp/Down +-20%, Home / End = 0 / 1 |
+| click | moves the keyboard focus to the clicked widget (text fields: to the Model focus) |
+
+Rules: **the app's key hooks run first** (`keyCharMsg`, `keySpecialMsg`, `submitMsg`, clipboard, open menus and dialogs) and the
+focused widget only gets keys they decline. Tabbing from a text field to another widget calls the optional hook
+`blurMsg(*const Model) ?Msg` so the app can clear its text focus (otherwise typing keeps going to the field); tabbing onto a
+text field dispatches its focus Msg as before. When a **modal overlay** opens, the focus moves to its first widget and the
+previous widget is remembered; closing it restores that widget (Escape handling stays the app's, e.g. `dialog.keyMsg`).
+`RunOptions.keyboard_nav = false` restores the old Tab (text fields only, apps with `focusedMsg`).
+
+**Focus ring**: a frame of `Tokens.focus_ring_width` (2 px) in `Palette.accent`, drawn just outside the focused widget in every
+look (square corners follow the button's radius in the modern look). Text fields keep their `focus_border`.
+
+### Audit matrix (examples/gallery, master + this PR)
+
+Legend: yes = works and tested; GAP = does not; N/A = no such widget. "Reach" = Tab / Shift+Tab lands on it. The gallery
+test `examples/gallery/src/focus_audit.zig` asserts reach for every enabled interactive widget on every page in every look.
+
+| Widget | Reach | Ring | Activate | Arrows / keys inside | Disabled skipped | Notes |
+|---|---|---|---|---|---|---|
+| Button | yes | yes | Space, Enter | n/a | yes | |
+| Checkbox | yes | yes | Space | n/a | n/a (no disabled state) | |
+| Radio group | yes | yes | Space | arrows move + select, wrap | n/a | |
+| Slider | yes | yes | n/a | arrows, PageUp/Down, Home/End | n/a | needs the app's `sliderMsg` hook (gallery has it) |
+| Toggle switch (clickable canvas) | yes | yes | Space, Enter | n/a | n/a | |
+| Text input, NumericField | yes | border | typing | editor keys | yes | focus is the Model's |
+| Text area | yes | border | typing | editor keys, visual Up/Down | yes | |
+| Combobox | yes | border | Enter commits | Up/Down/Page, Esc closes | n/a | wired through `Combo.keyMsg` while focused |
+| Dropdown (button + list) | yes (trigger) | yes | Enter opens | GAP: arrows inside the open list not wired in the gallery (`Dropdown.highlightMsg` exists) | yes | |
+| Tabs | yes (each tab is a button) | yes | Space, Enter | partial: Left/Right via `Tabs.keyMsg` while the page is shown, not tied to focus; GAP: roving arrows need the a11y `tab` hint | yes | |
+| Menu bar / menus | via F10, mnemonics | highlight | Enter | arrows, Esc | yes | `MenuBar.keyMsg` |
+| Context menu | GAP: opens by right click only | highlight | Enter | arrows, Esc | yes | |
+| Dialog | trapped, first widget focused | yes | Enter confirms, Esc cancels | n/a | yes | focus returns to the opener |
+| Data table / list / tree rows | yes (every row is a Tab stop) | yes | Space, Enter | GAP: arrows / Home / End not wired (components have `keyMsg`) | n/a | 26 Tab stops on the data page |
+| Split pane divider | GAP | GAP | n/a | GAP: pointer only | n/a | |
+| Scroll regions | n/a | n/a | n/a | GAP: wheel only (no PageUp/Down / arrows) | n/a | |
+| Tooltip | GAP: hover only | n/a | n/a | n/a | n/a | |
+| Toast | not focusable | n/a | n/a | GAP: no keyboard dismiss | n/a | |
+| Date field | N/A: no such widget | | | | | |
+| Focus after list mutation | yes | | | | | Msg-keyed, tested (insert before the focused widget) |
+| Escape closes overlays | app hooks (`dialog.keyMsg`, `MenuBar.keyMsg`, `ContextMenu.keyMsg`) | | | | | the framework does not know how to close an overlay (no Msg) |
+
+The GAP rows are tracked as follow-up PRs.
 
 ## Contract
 
@@ -55,7 +113,7 @@ landing leaf's `focusMsgAt`.
 - **No tab-order override.** Order is cmd-emission order. A `disabled`
   `text_input` *is* skipped; any other focus-skip rule would need
   `isFocusable` to consult a flag.
-- **No focus trap.** `next` always returns *something* if focusables exist. Modal dialogs that want to trap focus implement the trap in the app's handler.
+- **Focus trap.** `nextFocusable` / `nextNavigable` stay inside the topmost modal overlay when one is open (`focusScope`).
 - **Cmd-index results are per-frame.** `nextFocusable`/`prevFocusable`
   return cmd indices, which aren't stable across view calls — use them
   within a frame. For focus that *persists* across frames, store it as a

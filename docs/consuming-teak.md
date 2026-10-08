@@ -360,7 +360,7 @@ are required; an app without them just doesn't get that behavior.
 |------|-----------|---------|
 | `keyCharMsg` | `(*const Model, u8) ?Msg` | typed characters → Msg |
 | `keySpecialMsg` | `(*const Model, SpecialKey) ?Msg` | arrows/backspace/etc → Msg |
-| `keyNeedsClipboard` + `handleClipboard` | `(SpecialKey) bool` / `(*Model, SpecialKey, Clipboard) void` | cut/copy/paste |
+| `clipboardText` + `clipboardMsg` | `(*const Model, SpecialKey) ?[]const u8` / `(*const Model, SpecialKey, paste: []const u8) ?Msg` | cut/copy/paste (replaces the deprecated `keyNeedsClipboard` + `handleClipboard`) |
 | `wheelMsg` | `(*const Model, f32) ?Msg` | mouse-wheel scroll (when no canvas / scroll region took it) |
 | `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pan / zoom / drag over `cb.canvasInteractive` canvases — see [features/canvas.md](features/canvas.md#interactive-canvases-pan--zoom--drag) |
 | `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over a `ScrollStyle.id != 0` region |

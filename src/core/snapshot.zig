@@ -182,6 +182,9 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writeRect(writer, r);
             try writer.writeByte(' ');
             try writeQuoted(writer, rt.content);
+            if (rt.wrap != .none) try writer.print(" wrap={s}", .{@tagName(rt.wrap)});
+            if (rt.max_lines != 0) try writer.print(" max_lines={d}", .{rt.max_lines});
+            if (rt.text_align != .start) try writer.print(" align={s}", .{@tagName(rt.text_align)});
         },
         .image => |img| {
             try writer.writeAll("image ");

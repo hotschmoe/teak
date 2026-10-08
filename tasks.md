@@ -8,21 +8,50 @@ per-phase sections below for what shipped earlier.
 
 ## Next up (open)
 
-The previous "Next up" list is now 5-of-6 done — see §"Prior phase —
-Agent DX + consumer gaps" below. Only one item carries over:
+Snapshot at master `4f898c0` (2026-10). Shipped items live in `CHANGELOG.md`;
+this section is only what is still open. Rebuild the PR table with
+`gh pr list --state open`; the matrix of what exists vs. what competitors
+ship is [docs/PARITY.md](docs/PARITY.md).
 
-- **Merge `dev-hotschmoe` → `master`** — in progress (41+ commits ahead).
+### In review (open PRs)
 
-Known follow-ups deferred out of the Agent-DX wave:
+| PR | What |
+|---|---|
+| #31 | Win32 parity: effects, stb text, headless, DPI v2 (closes #5) |
+| #32 | Visual regression suite: named shot states, deflate PNG, tools/vreg, goldens |
+| #44 | Font fallback chain (native), wrapped rich_text, input queue cap |
+| #46 | Agent driver: control channel, record/replay, teak-drive (CLI + MCP), dev inspector |
+| #49 | text-engine PR13: web IME bridge (Japanese input in TextArea/TextField on web) |
+| #54 | macOS backend: Cocoa host + Metal (wgpu-native), headless on macOS |
+| #57 | Win32: IDropTarget, image paste, IME test |
+| #58 | M3 accessibility: tree publishing, semantic hints, actions as input, web DOM mirror wiring |
+| #60 | Interaction: shortcuts + command palette, drag and drop, native file dialogs, clipboard image |
+| #62 | HiDPI: scene targets at device resolution + scale-2 pixel tests |
+| #64 | ci: a11y-probe job (stacked on #58) |
+| #65 | Win32 UIA Invoke/Toggle/Value patterns -> actions (stacked on #58) |
+| #66 | text-engine PR15: scalable (SDF) text, canvas text labels |
+| #67 | Win32 live: drive a real window in CI |
+| #71 | text-engine PR16: colour emoji (RGBA atlas pages), web via canvas 2D RGBA |
+| #75 | widgets: number spinner |
+| #78 | widgets: colour picker |
+| #79 | Hot reload: libapp.so + stable loader, Model kept across rebuilds |
+| #82 | web startup: profile (tools/web-startup.mjs), lazy image/scene pipelines, --font-nowait |
+| #85 | Bidi in rendering and editing: visual runs, caret/hit-test/selection, visual arrows (stacked on #74) |
+| #88 | text-engine PR18: docs close-out (text.md, TextArea wiring, cookbook 19, README supported subset) |
+| #93 | Keyboard navigation everywhere: Tab ring over all widgets, Space/Enter, radio+slider arrows, modal focus resto |
+| #94 | Keyboard gaps: split divider, keyboard scrolling, focus tooltips, toast Escape (stacked on #93) |
+| #95 | Keyboard gaps: lists as one Tab stop with roving arrows, dropdown list keys, keyboard context menu (stacked on |
 
-- **Win32 DPI awareness + render-at-scale** — deliberately deferred; the
-  design and the scaleFactor truth table are recorded in
-  [docs/features/host.md](docs/features/host.md).
-- **Secondary windows on X11 / wasm** — Win32-only today
-  (`openSecondaryWindow` returns `null` on the other hosts).
-- **Dropdown open-scroll-to-reveal on toggle** — opening parks the
-  highlight on the selection but defers the reveal to the first keyboard
-  move (`.toggle` carries no viewport geometry).
+### Open by area (not yet in a PR, or deliberately deferred)
+
+- **Platforms:** macOS host (#54 in review, none on master); web WebGL2 fallback evaluated only (`docs/features/web-fallback.md`); secondary windows are real on Win32 only.
+- **Text:** subpixel LCD AA (none); bundled CJK face (none); static-text selection (only input selection); bidi rendering / caret (#85); web IME (#49); font fallback chain + wrapped `rich_text` (#44); colour emoji (#71); SDF text (#66).
+- **Graphics:** no SVG / vector icons; canvas polylines are still quads (no AA); no grid layout.
+- **Input / a11y:** whole-UI keyboard navigation (#93-#95), shortcuts + command palette + drag and drop (#60), accessibility publishing / actions / web mirror (#58, #64, #65), Win32 IDropTarget + image paste (#57), Win32 live CI (#67).
+- **Tooling:** agent driver + record / replay + MCP (#46), hot reload (#79), visual-regression goldens (#32; regenerate with `zig build vreg -- --update` after the fix PRs land and LOOK at every PNG), web startup profile (#82).
+- **QA findings left open** (`docs/qa-2026-10.md`, "Open"): `ButtonStyle.label_align` defaults to `.start` for hand-built styles; the tree example is noisy (two bordered buttons per row).
+- **API cleanup:** `handleClipboard` / `keyNeedsClipboard` are deprecated (removed next release, `docs/migration-clipboard.md`); `hoverMsg` / `contextMsg` / `canvasMsg` / `textMsg` / `sliderMsg` migrate onto `pointerMsg` in stages (`docs/features/pointer-msg.md`); moving big `Cmd` payloads out of line is a measured proposal (`docs/features/cmd-size.md`), not scheduled.
+- **Carried from earlier phases:** Win32 DPI render-at-scale (#31 in review); dropdown open-scroll-to-reveal on toggle (`.toggle` carries no viewport geometry).
 
 ---
 
@@ -398,13 +427,6 @@ After the seven-phase cleanup landed, these follow-ups went in:
 - **Zunk v0.8.0 migration** (2026-04-19) — `VertexAttribute` +
   `VertexBufferLayout` constructors in `src/gpu/web.zig` moved to
   struct-literal / `fromSlice` form. No ABI change.
-
-- **`handleClipboard` mutates the Model outside `update`** (HARDLINE §1
-  deviation, found by the 2026-10 drift audit). Replace with
-  `clipboardMsg(*const Model, SpecialKey, paste_text: []const u8) ?Msg` (the
-  loop reads the clipboard for a paste chord and passes the text) and let copy /
-  cut go through the existing `write_clipboard` effect; keep the old pair as a
-  deprecated adapter for one release.
 
 ---
 

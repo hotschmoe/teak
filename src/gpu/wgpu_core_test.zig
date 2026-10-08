@@ -23,17 +23,47 @@ const NoSurface = struct {
 const BoxRaster = struct {
     const GlyphBitmap = struct { pixels: []const u8, width: u32, height: u32, bearing_x: i32, bearing_y: i32 };
     pixels: [6 * 8]u8 = @splat(255),
+    sdf: [16 * 16]u8 = undefined,
+    rgba: [12 * 12 * 4]u8 = undefined,
 
     pub fn init(_: std.mem.Allocator) !BoxRaster {
         return .{};
     }
     pub fn deinit(_: *BoxRaster) void {}
     pub fn shape(_: *BoxRaster, text: []const u8, _: teak.FontSpec, out: []teak.ShapedGlyph) teak.ShapeResult {
-        const n = @min(text.len, out.len);
-        for (text[0..n], 0..) |ch, i| {
-            out[i] = .{ .glyph = ch, .face = 0, .cluster = @intCast(i), .x = @floatFromInt(i * 8), .advance = 8 };
+        // One glyph per byte (advance 8); a 4-byte UTF-8 sequence is ONE unmapped glyph (an
+        // emoji: glyph 0, advance 16).
+        var n: usize = 0;
+        var i: usize = 0;
+        var x: f32 = 0;
+        while (i < text.len and n < out.len) : (n += 1) {
+            const emoji = text[i] >= 0xF0 and i + 4 <= text.len;
+            const adv: f32 = if (emoji) 16 else 8;
+            out[n] = .{ .glyph = if (emoji) 0 else text[i], .face = 0, .cluster = @intCast(i), .x = x, .advance = adv };
+            x += adv;
+            i += if (emoji) 4 else 1;
         }
-        return .{ .count = n, .width = @floatFromInt(n * 8), .consumed = n };
+        return .{ .count = n, .width = x, .consumed = i };
+    }
+    /// A 16x16 distance field of an 8x8 box (texels 4..12): byte = 128 + 16 * signed distance.
+    pub const sdf_em: f32 = 16;
+    pub fn rasterizeSdf(self: *BoxRaster, _: u16, gid: u16) ?GlyphBitmap {
+        if (gid == ' ') return .{ .pixels = &.{}, .width = 0, .height = 0, .bearing_x = 0, .bearing_y = 0 };
+        for (0..16) |y| for (0..16) |x| {
+            const fx: f32 = @as(f32, @floatFromInt(x)) + 0.5;
+            const fy: f32 = @as(f32, @floatFromInt(y)) + 0.5;
+            const inside = @min(@min(fx - 4, 12 - fx), @min(fy - 4, 12 - fy));
+            self.sdf[y * 16 + x] = @intFromFloat(std.math.clamp(128 + 16 * inside, 0, 255));
+        };
+        return .{ .pixels = &self.sdf, .width = 16, .height = 16, .bearing_x = 0, .bearing_y = -12 };
+    }
+    /// A 12x12 colour glyph: left half red, right half green, fully opaque (straight alpha RGBA).
+    pub fn rasterizeColor(self: *BoxRaster, _: []const u8, _: teak.FontSpec, _: f32) ?GlyphBitmap {
+        for (0..12) |y| for (0..12) |x| {
+            const o = (y * 12 + x) * 4;
+            self.rgba[o..][0..4].* = if (x < 6) .{ 255, 0, 0, 255 } else .{ 0, 255, 0, 255 };
+        };
+        return .{ .pixels = &self.rgba, .width = 12, .height = 12, .bearing_x = 0, .bearing_y = -12 };
     }
     pub fn ascent(_: *BoxRaster, _: teak.FontSpec, _: f32) f32 {
         return 8; // device px: the box glyph is a fixed size at any scale
@@ -222,6 +252,20 @@ test "images upload, draw and release (slot reuse)" {
     h.gpu.releaseImage(img);
     const again = h.gpu.uploadImage(std.mem.asBytes(&red_px), 2, 2);
     try std.testing.expectEqual(img, again);
+}
+
+test "setScale re-derives the device size from the logical size and ignores bad factors" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    try std.testing.expectEqual(@as(f32, 1.0), h.gpu.scale);
+    h.gpu.setScale(2.0);
+    try std.testing.expectEqual(@as(f32, 2.0), h.gpu.scale);
+    try std.testing.expectEqual(px * 2, h.gpu.width);
+    h.gpu.setScale(0); // rejected
+    h.gpu.setScale(1000); // rejected
+    try std.testing.expectEqual(@as(f32, 2.0), h.gpu.scale);
+    h.gpu.setScale(1.0);
+    try std.testing.expectEqual(px, h.gpu.width);
 }
 
 test "the image cache grows past 64 slots and every image draws in one frame" {
@@ -458,6 +502,90 @@ test "atlas text: scale 2 places glyphs in device pixels and scales solids as ve
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 5, 9));
     try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, at(f, 50, 50)); // blue (BGRA) quad scaled 2x
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 35, 50));
+}
+
+fn scalable(d: teak.TextDraw, size: f32) teak.TextDraw {
+    var out = d;
+    out.font = .{ .size_px = size, .scalable = true };
+    out.rect_w = 64;
+    out.rect_h = 64;
+    return out;
+}
+
+test "scalable text: one distance field, crisp edges at 2x and 4x, placed by the zoom" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    // size 32 -> k = 2: the 8x8 box becomes 16x16 at x 4+8..4+24, y (48-24)+8..(48-24)+24.
+    h.gpu.uploadText(&.{scalable(textAt(4, 40, 0, 0, "a"), 32)});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 20, 40)); // inside
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 8, 40)); // left of the box
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 20, 28)); // above it
+    try std.testing.expect(at(f, 11, 40)[0] < 60); // one pixel outside the edge: almost nothing
+    try std.testing.expect(at(f, 13, 40)[0] > 195); // one pixel inside: almost full
+    const at_2x = h.gpu.text.atlas.pageCount();
+
+    // 4x: the SAME atlas entry (no new glyph), edges still one pixel wide.
+    h.gpu.uploadText(&.{scalable(textAt(4, 40, 0, 0, "a"), 64)});
+    const g = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(g);
+    try std.testing.expectEqual(at_2x, h.gpu.text.atlas.pageCount());
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(g, 30, 30));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(g, 12, 30));
+    try std.testing.expect(at(g, 19, 30)[0] < 60); // box edge at x = 4 + 16 = 20
+    try std.testing.expect(at(g, 21, 30)[0] > 195);
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.text.dropped);
+}
+
+test "scalable text keeps its clip, and a non-scalable draw of the same glyph still uses bitmaps" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    var d = scalable(textAt(4, 40, 0, 0, "a"), 32);
+    d.clip_w = 20; // clip x 0..20 cuts the box (12..28) at 20
+    var bitmap = textAt(4, 8, 16, 8, "b");
+    bitmap.color = .{ 0, 1, 0, 1 };
+    h.gpu.uploadText(&.{ d, bitmap });
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 16, 40));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 22, 40)); // beyond the clip
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 6, 10)); // the 6x8 box bitmap glyph
+}
+
+test "colour glyphs: an emoji draws from an RGBA page with its own colours, next to coverage text" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    // "a" + a 4-byte sequence: glyph boxes at x 4.., the emoji (12x12, bearing -12 on baseline 16) at x 12.
+    const content = "a\xF0\x9F\x98\x80";
+    var d = textAt(4, 8, 64, 8, content);
+    d.color = .{ 0.2, 0.4, 1, 1 }; // the coverage glyph is tinted; the emoji must not be
+    h.gpu.uploadText(&.{d});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 102, 51, 255 }, at(f, 6, 10)); // 'a' box in the draw colour (BGRA)
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 14, 8)); // emoji left half: red (BGRA)
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 20, 8)); // right half: green
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 26, 8)); // past the emoji
+    try std.testing.expectEqual(@as(usize, 1), h.gpu.text.colorPageCount());
+    // Same frame twice: cached, no new page.
+    h.gpu.uploadText(&.{d});
+    try std.testing.expectEqual(@as(usize, 1), h.gpu.text.colorPageCount());
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.text.dropped);
+}
+
+test "colour glyphs honour the clip and the instance alpha" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    var d = textAt(4, 8, 64, 8, "\xF0\x9F\x98\x80");
+    d.clip_w = 10; // x 0..10 cuts the 12 px emoji at 10 (it starts at 4)
+    d.color = .{ 1, 1, 1, 0.5 };
+    h.gpu.uploadText(&.{d});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    const pix = at(f, 6, 8);
+    try std.testing.expect(pix[2] > 120 and pix[2] < 136); // red at half opacity over black
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 12, 8)); // beyond the clip
 }
 
 // ── SDF quads: rounded rects, borders, gradients, soft shadows ─────
