@@ -26,7 +26,7 @@ const sample_head =
     \\Longer paragraphs wrap at word boundaries; a very long unbroken token like supercalifragilisticexpialidocious_supercalifragilisticexpialidocious breaks at grapheme boundaries instead of overflowing. Combining marks stay with their letter:
 ;
 
-const sample = sample_head ++ " cafe\u{0301}, and so do emoji sequences.";
+const sample = sample_head ++ " cafe\u{0301}, and so do emoji sequences like \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} and \u{1F600} \u{2764}\u{FE0F}. Mixed scripts fall back per code point: Latin, \u{65E5}\u{672C}\u{8A9E}\u{306E}\u{30C6}\u{30AD}\u{30B9}\u{30C8}, \u{4E2D}\u{6587}, \u{0395}\u{03BB}\u{03BB}\u{03B7}\u{03BD}\u{03B9}\u{03BA}\u{03AC}, \u{041F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}.";
 
 const Focus = enum { none, notes, chat };
 
@@ -103,7 +103,15 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.heading("CHAT");
     cb.pushGroup(.{ .padding = 10, .gap = 8, .flex = 1, .bg = cb.theme.palette.bg_sunken, .align_cross = .stretch });
     if (m.log_n == 0) cb.textMuted("No messages yet.");
-    for (0..m.log_n) |i| cb.paragraph(m.logItem(i));
+    // Each message is a wrapped rich paragraph: a bold, coloured sender then the
+    // text, breaking across the span boundary like any other text.
+    const a = cb.arena.allocator();
+    const bold = cb.theme.typography.heading;
+    for (0..m.log_n) |i| {
+        const line = std.fmt.allocPrint(a, "you: {s}", .{m.logItem(i)}) catch continue;
+        const spans = a.dupe(teak.RichTextSpan, &.{.{ .start = 0, .end = 4, .font = bold, .color = cb.theme.palette.accent }}) catch continue;
+        cb.richParagraph(line, spans, .{});
+    }
     cb.popGroup();
     Chat.viewWith(&m.chat, cb, .{ .focus = Msg{ .chat = .focus } }, .{ .id = CHAT_ID, .height = 84 });
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .justify = .end });

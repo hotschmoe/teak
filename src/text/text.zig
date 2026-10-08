@@ -5,11 +5,13 @@
 pub const face = @import("face.zig");
 pub const shaper = @import("shaper.zig");
 pub const raster = @import("raster.zig");
+pub const fallback = @import("fallback.zig");
 const measure_mod = @import("measure.zig");
 
 pub const Font = face.Font;
 pub const registerFace = face.registerFace;
 pub const releaseFaces = face.releaseFaces;
+pub const registerFallbackFace = fallback.registerFallbackFace;
 pub const faceFor = face.faceFor;
 pub const SimpleShaper = shaper;
 pub const measure = measure_mod.measure;
@@ -19,6 +21,7 @@ pub const StbttRasterizer = raster.StbttRasterizer;
 
 test {
     _ = @import("face.zig");
+    _ = @import("fallback.zig");
     _ = @import("shaper.zig");
     _ = @import("measure.zig");
     _ = @import("raster.zig");

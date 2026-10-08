@@ -617,6 +617,8 @@ UndoLog(rec_cap, byte_cap) type
 ### Unicode, line breaking, wrapping (`teak.unicode`, `teak.linebreak`, `teak.text_wrap`)
 Pure, allocation-free, std-only; byte offsets everywhere; invalid UTF-8 tolerated (1 bad byte = 1 unit).
 // Wrapped text and shrink (layout passes 2-3 run only when present; see docs/features/layout.md)
+cb.richParagraph(content, spans: []const RichTextSpan, ParagraphOpts)   // wrapped rich_text: lines break across spans; RichTextCmd.wrap/max_lines/text_align
+text.registerFallbackFace(ttf) !void   // teak-text (native): app fallback faces, tried before the system chain (DejaVu, Noto/CJK/WenQuanYi, Noto Emoji, FreeSans, Unifont; TEAK_FALLBACK_FONTS=/a.ttf:/b.ttc prepends)
 cb.paragraph(s) / cb.paragraphStyled(s, font, color, ParagraphOpts{ wrap = .word, max_lines: u16 = 0, text_align }) / cb.textEllipsis(s)
 Wrap = enum { none, word, char, ellipsis }          // TextCmd.wrap (default none)
 GroupStyle.shrink / ScrollStyle.shrink: f32 = 0      // shrink weight; wrapped text shrinks implicitly

@@ -140,6 +140,59 @@ fn emitWrapped(
     }
 }
 
+/// A wrapped `rich_text`: lines break across spans with the same `text_wrap`
+/// walk layout used (via `RichMeasure`); each line is drawn as one TextDraw
+/// per same-font/colour piece, left to right, aligned by `text_align`.
+fn emitRichWrapped(
+    text_draws: *std.ArrayList(TextDraw),
+    alloc: std.mem.Allocator,
+    rt: anytype,
+    rect: Rect,
+    clip: Rect,
+    measurer: TextMeasurer,
+) void {
+    if (rect.w <= 0 or rect.h <= 0) return;
+    const rm = text_wrap.RichMeasure.init(rt.content, rt.spans, rt.default_font, measurer);
+    const lh = rm.max_height;
+    var it = text_wrap.LineIter.init(rt.content, rt.default_font, rect.w, rt.wrap, rt.max_lines, rm.measurer());
+    var li: f32 = 0;
+    while (it.next()) |line| : (li += 1) {
+        const y = rect.y + li * lh;
+        if (y + lh <= clip.y or y >= clip.y + clip.h) continue;
+        var x = switch (rt.text_align) {
+            .start => rect.x,
+            .center => rect.x + (rect.w - line.width) * 0.5,
+            .end => rect.x + rect.w - line.width,
+        };
+        var cursor: usize = line.start;
+        while (cursor < line.end) {
+            var font = rt.default_font;
+            var color = rt.default_color;
+            var stop: usize = line.end;
+            for (rt.spans) |sp| {
+                const s: usize = @min(sp.start, rt.content.len);
+                const e: usize = @min(sp.end, rt.content.len);
+                if (e <= cursor) continue;
+                if (s <= cursor) {
+                    font = sp.font;
+                    color = sp.color;
+                    stop = @min(e, stop);
+                } else stop = @min(s, stop);
+                break;
+            }
+            const piece = rt.content[cursor..stop];
+            const w = measurer.measure(piece, font).width;
+            emitText(text_draws, alloc, piece, font, color, .{ .x = x, .y = y, .w = w, .h = lh }, clip);
+            x += w;
+            cursor = stop;
+        }
+        if (line.ellipsized) {
+            const ew = measurer.measure(text_wrap.ELLIPSIS, rt.default_font).width;
+            emitText(text_draws, alloc, text_wrap.ELLIPSIS, rt.default_font, rt.default_color, .{ .x = x, .y = y, .w = ew, .h = lh }, clip);
+        }
+    }
+}
+
 /// A `text_area`: border + bg, selection quads per wrapped line, one
 /// `TextDraw` per visible line (culled by scroll), the IME composition at the
 /// caret, and the blinking caret -- all clipped to the inner box. Line breaks
@@ -349,6 +402,10 @@ fn buildLayer(
             },
             .rich_text => |rt| {
                 if (!visible) continue;
+                if (rt.wrap != .none) {
+                    emitRichWrapped(text_draws, alloc, rt, rect, cur_clip, measurer);
+                    continue;
+                }
                 // Walk spans + uncovered ranges, emitting one TextDraw
                 // per run. Maintains an x cursor along the rect.
                 var x_cursor = rect.x;
@@ -1960,4 +2017,40 @@ test "text_area: scrolled content culls lines above the viewport" {
     try testing.expectEqual(@as(usize, 2), text_draws.items.len);
     try testing.expectEqualStrings("4", text_draws.items[0].content);
     try testing.expectEqualStrings("5", text_draws.items[1].content);
+}
+
+test "wrapped rich_text: per-line pieces keep their span font and colour, ellipsis closes the last line" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    const wide: FontSpec = .{ .letter_spacing = 10 };
+    const red: [4]f32 = .{ 1, 0, 0, 1 };
+    const spans = [_]cmd_mod.RichTextSpan{.{ .start = 3, .end = 7, .font = wide, .color = red }};
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+    cb.richParagraph("aa bbbb cc dd ee ff gg hh", &spans, .{ .max_lines = 2 });
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 130, 300, text_mod.monoMeasurer());
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var draws: std.ArrayList(TextDraw) = .empty;
+    defer draws.deinit(testing.allocator);
+    var imgs: std.ArrayList(ImageDraw) = .empty;
+    defer imgs.deinit(testing.allocator);
+    buildVertices(&verts, &draws, &imgs, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    // Line 1: "aa " default + "bbbb" wide/red; line 2 is ellipsized.
+    try testing.expectEqualStrings("aa ", draws.items[0].content);
+    try testing.expectEqualStrings("bbbb", draws.items[1].content);
+    try testing.expectEqual(red, draws.items[1].color);
+    try testing.expectEqual(@as(f32, 10), draws.items[1].font.letter_spacing);
+    try testing.expectEqual(@as(f32, 30), draws.items[1].rect_x); // after "aa " (30 px)
+    try testing.expectEqualStrings("cc dd ee", draws.items[2].content[0..8]); // line 2 starts at x = 0
+    try testing.expectEqual(@as(f32, 0), draws.items[2].rect_x);
+    try testing.expectEqual(@as(f32, 20), draws.items[2].rect_y);
+    try testing.expectEqual(@as(f32, 0), draws.items[0].rect_y);
+    const last = draws.items[draws.items.len - 1];
+    try testing.expectEqualStrings("\u{2026}", last.content);
+    try testing.expectEqual(@as(f32, 20), last.rect_y);
 }

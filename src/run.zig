@@ -1474,6 +1474,7 @@ pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd
                 if (!std.mem.eql(u8, rt.content, o.content)) return false;
                 if (!std.meta.eql(rt.default_color, o.default_color)) return false;
                 if (!std.meta.eql(rt.default_font, o.default_font)) return false;
+                if (rt.wrap != o.wrap or rt.max_lines != o.max_lines or rt.text_align != o.text_align) return false;
                 if (rt.spans.len != o.spans.len) return false;
                 for (rt.spans, o.spans) |sa, sb| if (!std.meta.eql(sa, sb)) return false;
             },

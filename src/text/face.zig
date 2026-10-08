@@ -20,6 +20,7 @@ const std = @import("std");
 const teak = @import("teak");
 
 pub const c = @import("stb-c");
+const fallback = @import("fallback.zig");
 
 /// Font search order. `TEAK_FONT` (absolute path) overrides everything;
 /// otherwise the first readable candidate wins. DejaVuSansMono leads
@@ -145,6 +146,7 @@ pub fn registerFace(family: teak.FontFamily, weight: teak.FontWeight, ttf: []con
 
 /// Forget every registered face and the loaded fallback.
 pub fn releaseFaces() void {
+    fallback.release();
     if (registry.fallback) |*f| f.deinit();
     registry = .{};
 }
@@ -163,7 +165,7 @@ pub fn faceById(id: u16) ?*const Font {
         if (registry.fallback) |*f| return f;
         return null;
     }
-    if (id > fallback_face_id) return null;
+    if (id > fallback_face_id) return fallback.faceByExtraId(id);
     const fam = id / weight_count;
     const w = id % weight_count;
     if (registry.faces[fam][w]) |*f| return f;
@@ -238,7 +240,7 @@ fn readFontFile(allocator: std.mem.Allocator) ![]u8 {
 /// threading an `Io` handle from `main` — impractical for a font load
 /// deep inside backend init — so libc `fopen`/`fread` is the pragmatic,
 /// churn-proof choice. Reads in chunks; no `fseek`/`fstat` dependency.
-fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+pub fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     var path_buf: [4096]u8 = undefined;
     if (path.len + 1 > path_buf.len) return error.PathTooLong;
     @memcpy(path_buf[0..path.len], path);

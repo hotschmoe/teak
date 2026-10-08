@@ -392,21 +392,9 @@ pub const VirtualListStyle = struct {
 // lives in the per-frame arena — typically built by walking a rich_zig
 // `Text` value into `RichTextSpan`s.
 
-pub const RichTextSpan = struct {
-    /// Byte start in the rich_text's content (UTF-8). Spans must be
-    /// non-overlapping and sorted by start.
-    start: u32,
-    /// Byte end (exclusive).
-    end: u32,
-    color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
-    font: FontSpec = DEFAULT_FONT,
-    /// Set on the rendered TextDraw so the text pass can pick a
-    /// bold/italic font face. The Host's text measurer is expected to
-    /// consult these — for now they're advisory (current GDI host
-    /// always picks Regular).
-    bold: bool = false,
-    italic: bool = false,
-};
+/// A styled byte range of a `rich_text` (defined in `text.zig` so `text_wrap`
+/// can measure runs without importing the Cmd types).
+pub const RichTextSpan = text.RichTextSpan;
 
 pub const RichTextCmd = struct {
     /// Full UTF-8 string. Spans index into this. Anything not covered
@@ -415,6 +403,12 @@ pub const RichTextCmd = struct {
     spans: []const RichTextSpan = &.{},
     default_color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
     default_font: FontSpec = DEFAULT_FONT,
+    /// Line breaking, as `TextCmd.wrap`: lines break across spans (mixed
+    /// fonts / colours per line) at UAX #14 opportunities. `.none` keeps the
+    /// single-line behaviour.
+    wrap: Wrap = .none,
+    max_lines: u16 = 0,
+    text_align: TextAlign = .start,
 };
 
 // ── Mixed-font text builder ────────────────────────────────────────
@@ -1448,6 +1442,20 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .rich_text = .{
                 .content = content,
                 .spans = spans,
+            } }) catch unreachable;
+        }
+
+        /// Wrapped `rich_text` (mixed fonts / colours per line, breaking across
+        /// spans). Uses the theme's body font and text colour as the defaults.
+        pub fn richParagraph(self: *Self, content: []const u8, spans: []const RichTextSpan, opts: ParagraphOpts) void {
+            self.cmds.append(self.backing, .{ .rich_text = .{
+                .content = content,
+                .spans = spans,
+                .default_font = self.theme.typography.body,
+                .default_color = self.theme.text_color,
+                .wrap = opts.wrap,
+                .max_lines = opts.max_lines,
+                .text_align = opts.text_align,
             } }) catch unreachable;
         }
 

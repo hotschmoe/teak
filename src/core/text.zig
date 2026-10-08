@@ -35,6 +35,22 @@ pub const FontSpec = struct {
 
 pub const DEFAULT_FONT: FontSpec = .{};
 
+pub const RichTextSpan = struct {
+    /// Byte start in the rich_text's content (UTF-8). Spans must be
+    /// non-overlapping and sorted by start.
+    start: u32,
+    /// Byte end (exclusive).
+    end: u32,
+    color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
+    font: FontSpec = DEFAULT_FONT,
+    /// Set on the rendered TextDraw so the text pass can pick a
+    /// bold/italic font face. The Host's text measurer is expected to
+    /// consult these — for now they're advisory (current GDI host
+    /// always picks Regular).
+    bold: bool = false,
+    italic: bool = false,
+};
+
 pub const TextMetrics = struct {
     width: f32,
     height: f32,
