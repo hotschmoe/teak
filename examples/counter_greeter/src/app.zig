@@ -360,17 +360,17 @@ test "app: snapshot golden — real view at a fixed Model (LLM dev loop)" {
         \\    button (8,8,60,36) "Help"
         \\    button (76,8,116,36) "Light mode"
         \\    button (200,8,116,36) "Open stats"
-        \\  group (0,52,376,188) horizontal
-        \\    group (16,68,176,156) vertical
+        \\  group (0,52,360,172) horizontal
+        \\    group (16,68,160,140) vertical
         \\      text (32,84,80,20) "Count: 1"
-        \\      group (32,112,144,52) horizontal
-        \\        button (40,120,60,36) "+"
-        \\        button (108,120,60,36) "-"
-        \\      button (32,172,66,36) "Reset"
-        \\    group (208,68,152,88) vertical
-        \\      group (208,68,152,88) vertical
-        \\        text_input (224,84,120,28) "A" cursor=1
-        \\        text (224,120,90,20) "Hello, A!"
+        \\      group (32,112,128,36) horizontal
+        \\        button (32,112,60,36) "+"
+        \\        button (100,112,60,36) "-"
+        \\      button (32,156,66,36) "Reset"
+        \\    group (192,68,152,88) vertical
+        \\      group (192,68,152,88) vertical
+        \\        text_input (208,84,120,28) "A" cursor=1
+        \\        text (208,120,90,20) "Hello, A!"
         \\
     );
 }
