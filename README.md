@@ -20,7 +20,7 @@ Every arrow is an explicit function call with typed inputs and outputs. No globa
 
 ## Status
 
-- **Proto-2 shipped** on three hosts: **Windows** (Win32 + wgpu-native), **Linux** (X11 + wgpu-native), and **WebAssembly** (WebGPU via [zunk](https://github.com/hotschmoe/zunk)). One `linkNativeWgpu` call picks the native backend by target OS. *(Linux X11 runs under XWayland; a native Wayland backend is not yet implemented.)*
+- **Proto-2 shipped** on three hosts: **Windows** (Win32 + wgpu-native), **Linux** (X11 + wgpu-native), **macOS** (Cocoa + Metal via wgpu-native, no SDK needed to build), and **WebAssembly** (WebGPU via [zunk](https://github.com/hotschmoe/zunk)). One `linkNativeWgpu` call picks the native backend by target OS. *(Linux X11 runs under XWayland; a native Wayland backend is not yet implemented.)*
 - **Text rendering shipped.** Both backends rasterize glyph-accurate text into a texture atlas and draw via `uploadText` / `renderFrame`.
 - **Functional-gaps push landed** on `functional_gaps_yolo`: overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs surface, virtual list, a11y tree, rich text. See [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md).
 - **Declarative effects:** `effects` / `effectMsg` (HARDLINE hatch 7) — HTTP, downloads, file open, storage, clock, clipboard, query params, plus pasted / dropped images and files; see [`docs/features/effects.md`](docs/features/effects.md).
@@ -108,7 +108,7 @@ src/
 ├── render/
 │   ├── vertex.zig        Vertex struct, emitQuad
 │   └── build.zig         []Cmd + []Rect + TransientState → vertex buffer
-├── platform/             Host interface, InputQueue + Win32 / X11 / wasm backends
+├── platform/             Host interface, InputQueue + Win32 / X11 / Cocoa / wasm backends
 └── gpu/                  Gpu interface + wgpu-native (Win32+GDI / X11+stb_truetype) / zunk
 
 examples/counter_greeter/  proto-2 demo; composed Components + focus routing

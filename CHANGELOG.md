@@ -37,6 +37,16 @@
 
 ### Added
 
+- **macOS backend** (`src/platform/cocoa.zig`, `objc.zig`, `cocoa_data.zig`,
+  `gpu/surface_cocoa.zig`, `gpu/native_macos.zig`): Cocoa host driven through
+  the Objective-C runtime (libobjc / AppKit / QuartzCore `dlopen`ed, so no SDK
+  and no frameworks are needed to build or cross-compile), Metal through
+  wgpu-native (macOS prebuilts as lazy deps), NSTextInputClient text + IME
+  marked text, Cmd as the primary modifier, precise scrolling, NSPasteboard
+  clipboard, file drops, NSCursor shapes, open/save panels, Retina scale.
+  `teak.hasNativeBackend(.macos)` is true; `teak.linkHeadless` now works on
+  macOS (offscreen Metal screenshots); stb text probes `Menlo.ttc` & friends.
+
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
     selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,
