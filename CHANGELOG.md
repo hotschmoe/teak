@@ -179,6 +179,7 @@
   with scalable text and gains `zig build shot -- out.png --zoom Z`. Native and web (the wasm math shim gained small cbrt/cos/acos; chrome-sized
   apps pay about 4-5 KB gzip for the SDF code). Not for UI text: a distance field is softer than a hinted bitmap at 12-16 px.
 
+- **Win32 leftovers.** The window is an OLE drop target (`IDropTarget`): files, text and images dragged in arrive as `dropped` results (images as PNG <= 1568 px plus an RGBA thumbnail, like web). A Ctrl+V that `handleClipboard` does not claim becomes `pasted_text` or, for a clipboard image (PNG / CF_DIB), a `dropped` image. PNG / JPEG files dropped are `kind = .image` on every native host. The IME mirror (`imeState()`) has a synthetic-message unit test.
 - Native glyph fallback chain (`src/text/fallback.zig`): per code point the shaper tries the requested face, the family's other weights,
   the other registered families, `registerFallbackFace` faces, then lazily-probed system fonts (DejaVu Sans, Noto Sans / CJK / Emoji,
   WenQuanYi, FreeSans, Unifont; `TEAK_FALLBACK_FONTS` prepends paths). Tofu only when nothing has the glyph; ZWJ / variation selectors /
