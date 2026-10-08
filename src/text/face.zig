@@ -119,6 +119,16 @@ pub const Font = struct {
         return if (g < 0 or g > std.math.maxInt(u16)) 0 else @intCast(g);
     }
 
+    /// Horizontal centre of glyph `gid`'s outline, in font units (0 when it has none).
+    pub fn inkCenterUnits(self: *const Font, gid: u16) f32 {
+        var x0: c_int = 0;
+        var y0: c_int = 0;
+        var x1: c_int = 0;
+        var y1: c_int = 0;
+        if (c.stbtt_GetGlyphBox(&self.info, gid, &x0, &y0, &x1, &y1) == 0) return 0;
+        return @as(f32, @floatFromInt(x0 + x1)) * 0.5;
+    }
+
     /// Horizontal advance of glyph `gid`, in font units.
     pub fn advanceUnits(self: *const Font, gid: u16) i32 {
         var advance: c_int = 0;

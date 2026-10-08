@@ -1,6 +1,5 @@
-//! libc stand-ins for stb_truetype on wasm32-freestanding (no libc there).
-//! `stb_wasm_impl.c` points STBTT_malloc/free and the few libm calls it cannot
-//! express as compiler builtins at these exports. Pulled in by `text.zig` only
+//! libc stand-ins for stb_truetype on wasm32-freestanding (no libc there):
+//! `stb_wasm_impl.c` points STBTT_malloc/free at these exports. Pulled in by `text.zig` only
 //! on freestanding targets.
 
 const std = @import("std");
@@ -18,20 +17,4 @@ export fn teak_stb_free(p: ?*anyopaque) void {
     const base: [*]align(16) u8 = @ptrFromInt(@intFromPtr(ptr) - header_len);
     const total = std.mem.readInt(usize, base[0..@sizeOf(usize)], .little);
     std.heap.wasm_allocator.free(base[0..total]);
-}
-
-export fn teak_stb_pow(x: f64, y: f64) f64 {
-    return std.math.pow(f64, x, y);
-}
-
-export fn teak_stb_fmod(x: f64, y: f64) f64 {
-    return @mod(x, y);
-}
-
-export fn teak_stb_cos(x: f64) f64 {
-    return @cos(x);
-}
-
-export fn teak_stb_acos(x: f64) f64 {
-    return std.math.acos(x);
 }

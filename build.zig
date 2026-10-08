@@ -127,7 +127,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(b.fmt("examples/fonts/assets/{s}", .{file})),
         });
     }
-    for ([_][]const u8{ "IBMPlexMonoSub-Regular", "QuicksandSub-Regular", "QuicksandSub-NoLig" }) |name| {
+    for ([_][]const u8{ "IBMPlexMonoSub-Regular", "QuicksandSub-Regular", "QuicksandSub-NoLig", "IBMPlexMonoMarks" }) |name| {
         stbtt_face_mod.addAnonymousImport(b.fmt("test-font-{s}", .{name}), .{
             .root_source_file = b.path(b.fmt("tests/fonts/{s}.ttf", .{name})),
         });
@@ -666,7 +666,8 @@ fn webFontModule(b: *std.Build, teak_mod: *std.Build.Module, fonts_mod: *std.Bui
 
 /// The `teak-web-fontdata` module: every `.fonts` file and the default face
 /// embedded as bytes (so stb_truetype in wasm shapes and rasterizes with exactly
-/// the faces the app ships), plus each file's slot and weight.
+/// the faces the app ships), plus each file's slot and weight. The default face
+/// (a Plex Mono ASCII subset, ~5.5 KB gzip) is embedded only when `fonts` is empty.
 fn webFontDataModule(
     b: *std.Build,
     fonts: []const WebFont,
@@ -688,7 +689,9 @@ fn webFontDataModule(
     const wf = b.addWriteFiles();
     const root = wf.add("webfontdata.zig", src.written());
     const mod = b.createModule(.{ .root_source_file = root, .target = target, .optimize = optimize });
-    mod.addAnonymousImport("teak-default-font", .{ .root_source_file = default_font });
+    // An app that ships its own faces does not also pay for the built-in default
+    // (any registered face serves families without one).
+    mod.addAnonymousImport("teak-default-font", .{ .root_source_file = if (fonts.len > 0) wf.add("no-default-font", "") else default_font });
     for (fonts, 0..) |f, i| {
         mod.addAnonymousImport(b.fmt("font-{d}", .{i}), .{ .root_source_file = f.path });
     }

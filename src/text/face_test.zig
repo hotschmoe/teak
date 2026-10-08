@@ -212,3 +212,48 @@ test "unmapped full-width code points advance one em" {
     // An unmapped narrow code point keeps the face's missing-glyph advance.
     try std.testing.expect(text.measure("\u{00E9}", f).width < 19);
 }
+
+const marks = @embedFile("test-font-IBMPlexMonoMarks");
+
+test "combining mark: zero advance, so cafe + U+0301 measures like café" {
+    defer text.releaseFaces();
+    try text.registerFace(.mono, .regular, marks);
+    const f: teak.FontSpec = .{ .size_px = 20, .family = .mono, .snap_advance = false };
+    const decomposed = text.measure("cafe\u{301}", f).width;
+    const composed = text.measure("caf\u{e9}", f).width;
+    try std.testing.expectApproxEqAbs(composed, decomposed, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 48), decomposed, 0.001); // 4 x 0.6 em
+    // The accent glyph sits centred over the e (glyph 3), not after it.
+    var out: [8]teak.ShapedGlyph = undefined;
+    const r = text.SimpleShaper.shape("cafe\u{301}", f, &out);
+    try std.testing.expectEqual(@as(usize, 5), r.count);
+    try std.testing.expectEqual(@as(f32, 0), out[4].advance);
+    const e = out[3];
+    const rf = text.face.resolveFace(.mono, .regular).?;
+    const ink_mid = out[4].x + rf.face.inkCenterUnits(out[4].glyph) * rf.face.scaleForEm(20);
+    try std.testing.expectApproxEqAbs(e.x + e.advance * 0.5, ink_mid, 0.01);
+    // A mark with no base, or one the face lacks, adds no width and no box.
+    try std.testing.expectApproxEqAbs(@as(f32, 12), text.measure("\u{301}a", f).width, 0.001);
+    try std.testing.expectEqual(@as(usize, 1), text.SimpleShaper.shape("a\u{300}", f, &out).count);
+}
+
+test "combining mark pixels: the accent is drawn over the e, not beside it" {
+    defer text.releaseFaces();
+    try text.registerFace(.mono, .regular, marks);
+    const f: teak.FontSpec = .{ .size_px = 40, .family = .mono, .snap_advance = false };
+    var out: [4]teak.ShapedGlyph = undefined;
+    const r = text.SimpleShaper.shape("e\u{301}", f, &out);
+    try std.testing.expectEqual(@as(usize, 2), r.count);
+    var rast = try text.StbttRasterizer.init(std.testing.allocator);
+    defer rast.deinit();
+    const base = rast.rasterizeGlyph(out[0].face, out[0].glyph, 40, 0).?;
+    const bx0: f32 = out[0].x + @as(f32, @floatFromInt(base.bearing_x));
+    const bx1 = bx0 + @as(f32, @floatFromInt(base.width));
+    const base_top = base.bearing_y;
+    const acc = rast.rasterizeGlyph(out[1].face, out[1].glyph, 40, 0).?;
+    const ax0: f32 = out[1].x + @as(f32, @floatFromInt(acc.bearing_x));
+    const ax1 = ax0 + @as(f32, @floatFromInt(acc.width));
+    // Horizontally inside the e's ink span, vertically above its top.
+    try std.testing.expect(ax0 >= bx0 - 1 and ax1 <= bx1 + 1);
+    try std.testing.expect(acc.bearing_y + @as(i32, @intCast(acc.height)) <= base_top + 2);
+}

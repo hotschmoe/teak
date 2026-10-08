@@ -44,17 +44,9 @@ const Unit = struct {
     /// A code point no face has, from a full-width script: one em wide, so the
     /// glyph a fallback rasterizer draws for it does not overlap its neighbours.
     wide: bool = false,
+    /// A combining mark: zero advance, centred over the preceding base glyph.
+    mark: bool = false,
 };
-
-/// Full-width code points (CJK ideographs, kana, hangul, full-width forms).
-fn isWide(cp: u21) bool {
-    return (cp >= 0x1100 and cp <= 0x115F) or (cp >= 0x2E80 and cp <= 0x303E) or
-        (cp >= 0x3041 and cp <= 0x33FF) or (cp >= 0x3400 and cp <= 0x4DBF) or
-        (cp >= 0x4E00 and cp <= 0x9FFF) or (cp >= 0xA960 and cp <= 0xA97F) or
-        (cp >= 0xAC00 and cp <= 0xD7A3) or (cp >= 0xF900 and cp <= 0xFAFF) or
-        (cp >= 0xFF01 and cp <= 0xFF60) or (cp >= 0xFFE0 and cp <= 0xFFE6) or
-        (cp >= 0x20000 and cp <= 0x3FFFD);
-}
 
 /// Glyph for `cp`: the primary face, else another registered weight of the same
 /// family. Missing everywhere yields the primary face's glyph 0 (.notdef).
@@ -103,7 +95,31 @@ fn nextUnit(primary: *const Font, primary_id: u16, text: []const u8, i: usize, f
     const d = decode(text, i);
     const m = mapGlyph(primary, primary_id, font.family, d.cp);
     const adv: ?u16 = if (d.cp < 128 and m.face == primary) primary.ascii_adv[d.cp] else null;
-    return .{ .glyph = m.glyph, .face_id = m.face_id, .face = m.face, .len = d.len, .adv = adv, .wide = m.glyph == 0 and isWide(d.cp) };
+    return .{ .glyph = m.glyph, .face_id = m.face_id, .face = m.face, .len = d.len, .adv = adv, .wide = m.glyph == 0 and isWide(d.cp), .mark = isCombining(d.cp) };
+}
+
+/// Full-width code points (CJK ideographs, kana, hangul, full-width forms).
+/// A handful of range compares instead of `teak.unicode`'s tables: the wasm
+/// build ships this shaper and the tables would cost ~16 KB gzip.
+fn isWide(cp: u21) bool {
+    return (cp >= 0x1100 and cp <= 0x115F) or (cp >= 0x2E80 and cp <= 0x303E) or
+        (cp >= 0x3041 and cp <= 0x33FF) or (cp >= 0x3400 and cp <= 0x4DBF) or
+        (cp >= 0x4E00 and cp <= 0x9FFF) or (cp >= 0xA960 and cp <= 0xA97F) or
+        (cp >= 0xAC00 and cp <= 0xD7A3) or (cp >= 0xF900 and cp <= 0xFAFF) or
+        (cp >= 0xFF01 and cp <= 0xFF60) or (cp >= 0xFFE0 and cp <= 0xFFE6) or
+        (cp >= 0x20000 and cp <= 0x3FFFD);
+}
+
+/// Combining marks the shaper centres over their base and gives no advance:
+/// the combining-diacritics blocks plus joiners and variation selectors.
+/// (`teak.unicode.graphemeBreakClass == .extend` is the exhaustive property;
+/// see `isWide` for why this is a range list.)
+fn isCombining(cp: u21) bool {
+    return (cp >= 0x0300 and cp <= 0x036F) or (cp >= 0x1AB0 and cp <= 0x1AFF) or
+        (cp >= 0x1DC0 and cp <= 0x1DFF) or (cp >= 0x20D0 and cp <= 0x20FF) or
+        (cp >= 0xFE00 and cp <= 0xFE0F) or (cp >= 0xFE20 and cp <= 0xFE2F) or
+        cp == 0x200C or cp == 0x200D or cp == 0x0483 or cp == 0x0484 or cp == 0x0485 or cp == 0x0486 or
+        (cp >= 0x0591 and cp <= 0x05BD) or (cp >= 0x064B and cp <= 0x065F);
 }
 
 /// Shape `text` into `out`. Without any font the result is empty (count 0,
@@ -119,7 +135,10 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     var count: usize = 0;
     var pos: usize = 0;
     var x: f32 = 0;
-    // The last emitted glyph is finalised when the next unit is known (kerning).
+    // The last base glyph is finalised when the next base is known (kerning);
+    // combining marks emitted after it do not disturb that.
+    var have_pending = false;
+    var pending_idx: usize = 0;
     var pending_raw: f32 = 0;
     var pending_face: ?*const Font = null;
     var pending_glyph: u16 = 0;
@@ -127,12 +146,35 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
 
     while (pos < text.len) {
         const u = nextUnit(primary, primary_id, text, pos, font, ligatures);
-        if (count > 0) {
+        if (u.mark) {
+            // Zero advance, centred over the base (the font's own vertical
+            // placement is kept). A mark the face lacks is dropped rather than
+            // drawn as a missing-glyph box.
+            if (u.glyph != 0) {
+                if (count == out.len) {
+                    if (have_pending) x += finish(&out[pending_idx], pending_raw, font.snapsAdvance());
+                    return .{ .count = count, .width = x, .consumed = pos };
+                }
+                const scale = if (u.face == primary) primary_scale else u.face.scaleForEm(font.size_px);
+                const centre = if (have_pending) out[pending_idx].x + pending_raw * 0.5 else x;
+                out[count] = .{
+                    .glyph = u.glyph,
+                    .face = u.face_id,
+                    .cluster = @intCast(pos),
+                    .x = centre - u.face.inkCenterUnits(u.glyph) * scale,
+                    .advance = 0,
+                };
+                count += 1;
+            }
+            pos += u.len;
+            continue;
+        }
+        if (have_pending) {
             if (pending_face == u.face) {
                 const k = u.face.kernUnits(pending_glyph, u.glyph);
                 pending_raw += @as(f32, @floatFromInt(k)) * pending_scale;
             }
-            x += finish(&out[count - 1], pending_raw, font.snapsAdvance());
+            x += finish(&out[pending_idx], pending_raw, font.snapsAdvance());
         }
         if (count == out.len) {
             return .{ .count = count, .width = x, .consumed = pos };
@@ -149,10 +191,12 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
         pending_face = u.face;
         pending_glyph = u.glyph;
         pending_scale = scale;
+        pending_idx = count;
+        have_pending = true;
         count += 1;
         pos += u.len;
     }
-    if (count > 0) x += finish(&out[count - 1], pending_raw, font.snapsAdvance());
+    if (have_pending) x += finish(&out[pending_idx], pending_raw, font.snapsAdvance());
     return .{ .count = count, .width = x, .consumed = pos };
 }
 

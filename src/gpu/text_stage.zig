@@ -38,6 +38,9 @@ pub fn TextStage(comptime Raster: type) type {
             first: [2]u32 = .{ 0, 0 },
         };
 
+        /// A slice of the glyph pool.
+        const RunSpan = struct { off: usize, len: usize };
+
         /// One cached shaped run: the glyphs of `text` in `font`.
         const Run = struct {
             hash: u64,
@@ -75,6 +78,11 @@ pub fn TextStage(comptime Raster: type) type {
 
         /// Fallback clusters: code point -> synthetic glyph id.
         cluster_cps: std.ArrayList(u21) = .empty,
+
+        /// Raster providers may opt out of the cross-frame shaped-run cache
+        /// (`pub const shaped_run_cache = false`): the web build trades the speed for
+        /// ~1.5 KB gzip of wasm.
+        const run_cache = if (@hasDecl(Raster, "shaped_run_cache")) Raster.shaped_run_cache else true;
 
         const max_pool_glyphs = 1 << 20;
         const max_pool_text = 1 << 22;
@@ -217,8 +225,14 @@ pub fn TextStage(comptime Raster: type) type {
         /// Glyphs of `text` in `font` with run-relative logical x positions
         /// (summed across shaper chunks). Cached across frames; valid until the next
         /// `runFor`.
-        fn runFor(self: *Self, text: []const u8, font: teak.FontSpec) ?struct { off: usize, len: usize } {
+        fn runFor(self: *Self, text: []const u8, font: teak.FontSpec) ?RunSpan {
             if (text.len == 0) return .{ .off = 0, .len = 0 };
+            if (comptime !run_cache) {
+                // No cross-frame cache: shape into the pool, reused by the next draw.
+                self.run_glyphs.clearRetainingCapacity();
+                self.run_entries.clearRetainingCapacity();
+                return self.shapeInto(text, font);
+            }
             const h = runHash(text, font);
             const mask = self.runs.len - 1;
             var i: usize = @intCast(h & mask);
@@ -239,6 +253,27 @@ pub fn TextStage(comptime Raster: type) type {
                 } else self.clearRuns();
                 return self.runFor(text, font);
             }
+            const placed = self.shapeInto(text, font) orelse return null;
+            const goff = placed.off;
+            const toff = self.run_text.items.len;
+            self.run_text.appendSlice(self.gpa, text) catch return null;
+            self.runs[i] = .{
+                .hash = h,
+                .text_off = @intCast(toff),
+                .text_len = @intCast(text.len),
+                .glyph_off = @intCast(goff),
+                .glyph_len = @intCast(placed.len),
+                .width = 0,
+                .font = font,
+                .used = true,
+            };
+            self.run_count += 1;
+            return placed;
+        }
+
+        /// Shape `text` and append its glyphs (run-relative logical x, summed across
+        /// shaper chunks) to the pool.
+        fn shapeInto(self: *Self, text: []const u8, font: teak.FontSpec) ?RunSpan {
             const goff = self.run_glyphs.items.len;
             var buf: [128]teak.ShapedGlyph = undefined;
             var pos: usize = 0;
@@ -258,19 +293,6 @@ pub fn TextStage(comptime Raster: type) type {
                 run_x += res.width;
                 pos += res.consumed;
             }
-            const toff = self.run_text.items.len;
-            self.run_text.appendSlice(self.gpa, text) catch return null;
-            self.runs[i] = .{
-                .hash = h,
-                .text_off = @intCast(toff),
-                .text_len = @intCast(text.len),
-                .glyph_off = @intCast(goff),
-                .glyph_len = @intCast(self.run_glyphs.items.len - goff),
-                .width = run_x,
-                .font = font,
-                .used = true,
-            };
-            self.run_count += 1;
             return .{ .off = goff, .len = self.run_glyphs.items.len - goff };
         }
 

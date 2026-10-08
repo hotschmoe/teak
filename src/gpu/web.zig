@@ -93,6 +93,9 @@ const AtlasPage = struct {
 /// Glyph provider: stb_truetype in wasm for every glyph the app's faces have,
 /// canvas 2D (via zunk) for code points no face covers (CJK, symbols).
 const WebRaster = struct {
+    /// Size over speed on web: shape each run fresh (a few us per label).
+    pub const shaped_run_cache = false;
+
     inner: text.StbttRasterizer,
     /// Scratch for one canvas-rasterized cluster (`rasterCluster` reports a
     /// larger size if it does not fit; such a glyph is skipped).

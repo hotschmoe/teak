@@ -242,7 +242,7 @@ var g_active_host: ?*Host = null;
 /// a registered face, like the system font on native; then each `.fonts` file
 /// goes into its slot and weight.
 fn registerEmbeddedFonts() void {
-    teak_text.face.setFallbackBytes(font_data.default_font);
+    if (font_data.default_font.len > 0) teak_text.face.setFallbackBytes(font_data.default_font);
     for (font_data.faces) |f| {
         const family: teak.FontFamily = @fromBackingInt(@intCast(f.slot));
         const weight: teak.FontWeight = if (f.weight < 450) .regular else if (f.weight < 600) .medium else .bold;
