@@ -53,3 +53,18 @@ until the goldens move:
 ## Cookbook
 
 See [cookbook recipe 20](../cookbook.md): add a golden screenshot test for your own example.
+
+## CI status: report-only (until calibrated)
+
+The two CI jobs (`vreg` native on lavapipe, `vreg-web` on SwiftShader) run with `continue-on-error: true`:
+they print every golden's difference, upload the diff PNGs and a zero-tolerance raw run
+(`zig build vreg -- --tol 0 --budget 4294967295`), but do not fail the workflow. The goldens come from the
+Mali box that develops teak, and the tolerances were never calibrated against CI's software rasterizers,
+so failures there are noise until someone reads the raw numbers from a few runs and sets `--tol` / the
+budget from them, then removes `continue-on-error`. Two known sources of non-portable pixels:
+
+- Shots that draw complex scripts (`notes-scripts`) depend on which fonts the machine has (this box's
+  fallback faces differ from the runner's), so that golden will keep differing on CI regardless of tolerance;
+  prefer registered fonts in such scenes.
+- Web goldens need a Chromium that exposes WebGPU (see `docs/features/web-ci.md`); a plain system Chromium
+  fails the shot, so they are regenerated from a CI artifact, not locally.

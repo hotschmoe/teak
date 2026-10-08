@@ -124,7 +124,9 @@ test "measure caches by full key: same text and font agree, different font does 
     try std.testing.expectEqual(a.width, b.width);
     if (a.width == 0) return; // no font on this builder
     const big = measure("hello", .{ .size_px = 28, .family = .mono });
-    try std.testing.expect(big.width > a.width * 1.9);
+    // Not exactly 2x: glyph advances snap to whole pixels, which rounds
+    // differently per face (Consolas at 14 px vs 28 px is ~1.87x).
+    try std.testing.expect(big.width > a.width * 1.7);
     try std.testing.expect(measure("hello!", .{ .size_px = 14, .family = .mono }).width > a.width);
 }
 

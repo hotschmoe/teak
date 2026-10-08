@@ -143,6 +143,7 @@ fn expectOk(reply: []const u8) !void {
 }
 
 test "control channel: drive the todo app with selectors, typing, keys and queries" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest; // Unix-socket control channel (Linux/POSIX only)
     if (comptime !control_socket.supported) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var sock_buf: [96]u8 = undefined;
@@ -281,6 +282,7 @@ fn finalSnapshot(rt: *Rt) ![]u8 {
 }
 
 test "record a scripted todo session, replay it to an identical final snapshot" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest; // Unix-socket control channel (Linux/POSIX only)
     const gpa = std.testing.allocator;
     var rec_buf: [96]u8 = undefined;
     const rec_path = try tmpPath(&rec_buf, "session.rec");
@@ -364,6 +366,7 @@ test "inspector: TEAK_INSPECT-style option draws the panel; F12 toggles it; cont
 }
 
 test "idle: a listening control channel caps the quiet wait at one frame; commands finish on quiet frames" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest; // Unix-socket control channel (Linux/POSIX only)
     if (comptime !control_socket.supported) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var sock_buf: [96]u8 = undefined;

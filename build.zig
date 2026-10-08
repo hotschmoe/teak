@@ -212,20 +212,22 @@ pub fn build(b: *std.Build) void {
     // the one piece of host logic worth unit-testing headlessly (no
     // libX11 / display needed; the test calls only pure mapping fns).
     // Imports the stb text module under `teak-text`, same as the build's
-    // linkLinux wiring. Built unconditionally on the host target; harmless
-    // on non-Linux since it never opens a display in tests.
-    const x11_mod = b.createModule(.{
-        .root_source_file = b.path("src/platform/x11.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "teak", .module = mod },
-            .{ .name = "teak-text", .module = stbtt_mod },
-        },
-    });
-    const x11_tests = b.addTest(.{ .root_module = x11_mod });
-    test_step.dependOn(&b.addRunArtifact(x11_tests).step);
+    // linkLinux wiring. Linux hosts only: the module loads libX11 through
+    // std.DynLib, which has no Windows backend (a compile error there).
+    if (target.result.os.tag == .linux) {
+        const x11_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/x11.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "teak", .module = mod },
+                .{ .name = "teak-text", .module = stbtt_mod },
+            },
+        });
+        const x11_tests = b.addTest(.{ .root_module = x11_mod });
+        test_step.dependOn(&b.addRunArtifact(x11_tests).step);
+    }
 
     // Wayland host (src/platform/wayland.zig + wayland/): pure decoding
     // tests run everywhere; live tests are `zig build test-wayland`.
@@ -240,19 +242,6 @@ pub fn build(b: *std.Build) void {
         },
     });
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = wl_mod })).step);
-    // The runtime-selecting Linux host (comptime-validates both backends).
-    const linux_host_mod = b.createModule(.{
-        .root_source_file = b.path("src/platform/linux.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "teak", .module = mod },
-            .{ .name = "teak-text", .module = stbtt_mod },
-        },
-    });
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = linux_host_mod })).step);
-
     if (target.result.os.tag == .linux) {
         const wl_live_mod = b.createModule(.{
             .root_source_file = b.path("src/platform/wayland_test.zig"),
@@ -270,6 +259,21 @@ pub fn build(b: *std.Build) void {
         test_wl_step.dependOn(&run_wl.step);
     }
 
+    // The runtime-selecting Linux host (comptime-validates both backends; it
+    // pulls in x11, which loads libX11 through std.DynLib: Linux only).
+    if (target.result.os.tag == .linux) {
+        const linux_host_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/linux.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "teak", .module = mod },
+                .{ .name = "teak-text", .module = stbtt_mod },
+            },
+        });
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = linux_host_mod })).step);
+    }
     // macOS host (src/platform/cocoa.zig, objc.zig, cocoa_data.zig): the pure
     // decoding runs on every OS; the AppKit glue is exercised by the macOS CI job.
     const cocoa_mod = b.createModule(.{
@@ -418,7 +422,12 @@ pub fn build(b: *std.Build) void {
         });
         // Compile-check only (not run): the bench calls internal pipeline APIs and
         // silently rotted when their signatures moved.
-        test_step.dependOn(&bench_exe.step);
+        // Skipped on Windows ARM64: the ReleaseFast bench exe is the one build
+        // there whose lld-link step cannot find its compiler_rt.lib (a Zig
+        // 0.17 aarch64-windows toolchain bug), and it adds nothing the Linux /
+        // x86 Windows / macOS checks do not already cover.
+        if (!(target.result.os.tag == .windows and target.result.cpu.arch == .aarch64))
+            test_step.dependOn(&bench_exe.step);
         const bench_run = b.addRunArtifact(bench_exe);
         bench_run.has_side_effects = true;
         b.step("bench", "CPU pipeline benchmark (view/layout/hit/render/cmdsEqual + text)").dependOn(&bench_run.step);
@@ -1169,8 +1178,11 @@ fn translateC(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
-    // Header-only declarations: no libc, so freestanding (wasm) targets work too.
-    const tc = b.addTranslateC(.{ .root_source_file = header, .target = target, .optimize = optimize, .link_libc = false });
+    // Header-only declarations. Hosted targets get libc's include paths
+    // (webgpu.h includes <math.h>, which a Windows host does not have on the
+    // default search path); freestanding (wasm) has none and needs none.
+    const hosted = target.result.os.tag != .freestanding;
+    const tc = b.addTranslateC(.{ .root_source_file = header, .target = target, .optimize = optimize, .link_libc = hosted });
     if (include_dir) |dir| tc.addIncludePath(dir);
     return tc.createModule();
 }

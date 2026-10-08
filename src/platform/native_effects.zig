@@ -1023,10 +1023,12 @@ test "http: the timeout answers at the deadline and the late reply is dropped" {
 }
 
 test "storage: set, get, overwrite, delete" {
-    // Several test binaries import this file and run in parallel: a per-process
-    // app name keeps their storage directories apart.
+    // Several test binaries import this file and run in parallel: a unique
+    // (clock-derived, so portable to Windows) app name keeps their storage
+    // directories apart.
     var name_buf: [64]u8 = undefined;
-    const app = try std.fmt.bufPrint(&name_buf, "teak-test-storage-{d}", .{std.c.getpid()});
+    const stamp: u64 = @truncate(@as(u96, @bitCast(Io.Clock.real.now(std.Options.debug_io).nanoseconds)));
+    const app = try std.fmt.bufPrint(&name_buf, "teak-test-storage-{d}", .{stamp});
     const svc = try Service.create(app);
     defer svc.destroy();
     const cfg = envValue("XDG_CONFIG_HOME") orelse envValue("HOME") orelse return;
@@ -1211,12 +1213,20 @@ fn writePickerScript(dir: []const u8, choice: []const u8, code: u8) !void {
 }
 
 test "open_file runs the native picker off-thread, reads the chosen file; save writes where the user picks" {
-    const dir = "/tmp/teak-native-picker-test";
+    // The zenity-style picker script is a POSIX feature; Win32 shows its own dialog.
+    if (is_windows) return error.SkipZigTest;
+    // A per-run directory: the test binaries that import this file run in
+    // parallel and would otherwise overwrite each other's picker script.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const stamp: u64 = @truncate(@as(u96, @bitCast(Io.Clock.real.now(std.Options.debug_io).nanoseconds)));
+    const dir = try std.fmt.allocPrint(arena.allocator(), "/tmp/teak-native-picker-test-{d}", .{stamp});
+    defer Io.Dir.cwd().deleteTree(std.Options.debug_io, dir) catch {};
     const io = std.Options.debug_io;
     try Io.Dir.cwd().createDirPath(io, dir);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/chosen.json", .data = "{\"picked\":true}" });
-    try writePickerScript(dir, dir ++ "/chosen.json", 0);
-    setEnv("TEAK_PICKER", dir ++ "/picker.sh");
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/chosen.json", .{dir}, 0)), .data = "{\"picked\":true}" });
+    try writePickerScript(dir, (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/chosen.json", .{dir}, 0)), 0);
+    setEnv("TEAK_PICKER", (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/picker.sh", .{dir}, 0)));
     defer unsetEnv("TEAK_PICKER");
     if (envValue("TEAK_OPEN") != null) return;
 
@@ -1230,18 +1240,18 @@ test "open_file runs the native picker off-thread, reads the chosen file; save w
     try std.testing.expectEqualStrings("application/json", r.file_opened.mime);
     try std.testing.expectEqualStrings("{\"picked\":true}", r.file_opened.bytes);
     // The picker was invoked zenity-style, with the accept list as a filter.
-    const argv = try Io.Dir.cwd().readFileAlloc(io, dir ++ "/argv", std.testing.allocator, .limited(4096));
+    const argv = try Io.Dir.cwd().readFileAlloc(io, (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/argv", .{dir}, 0)), std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(argv);
     try std.testing.expect(std.mem.indexOf(u8, argv, "--file-selection") != null);
     try std.testing.expect(std.mem.indexOf(u8, argv, "--file-filter=Files | *.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, argv, "--title=Open it") != null);
 
     // Save As: the user picks a path; the bytes land there.
-    try writePickerScript(dir, dir ++ "/saved.txt", 0);
+    try writePickerScript(dir, (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/saved.txt", .{dir}, 0)), 0);
     _ = svc.submit(.{ .download = .{ .id = 8, .name = "suggest.txt", .bytes = "payload", .pick = true } });
     try waitOne(svc, &r);
     try std.testing.expect(r.downloaded.ok and r.downloaded.id == 8);
-    const saved = try Io.Dir.cwd().readFileAlloc(io, dir ++ "/saved.txt", std.testing.allocator, .limited(4096));
+    const saved = try Io.Dir.cwd().readFileAlloc(io, (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/saved.txt", .{dir}, 0)), std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(saved);
     try std.testing.expectEqualStrings("payload", saved);
 
