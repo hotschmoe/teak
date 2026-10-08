@@ -1367,7 +1367,7 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             // New DPI in the low word of wParam; lParam is the window rect
             // Windows suggests so the window keeps its logical size on the
             // new monitor. Accepting it triggers WM_SIZE -> re-layout.
-            g_scale = dpiScale(loword(wp));
+            g_scale = dpiScale(loword(@bitCast(wp)));
             const r: *const RECT = @ptrFromInt(@as(usize, @bitCast(lp)));
             _ = SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             g_resized = true;
