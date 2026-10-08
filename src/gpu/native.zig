@@ -1,7 +1,7 @@
 //! Win32 + wgpu-native GPU backend (the Windows stitch).
 //!
 //! Binds the shared wgpu core (`wgpu_core.zig`) to the Win32 HWND surface
-//! (`surface_win32.zig`) and the GDI glyph rasterizer (`raster_gdi.zig`).
+//! (`surface_win32.zig`) and the stb_truetype rasterizer (`teak-text`, shared with the Host measurer).
 //! Linux uses the parallel `native_linux.zig` stitch (Xlib surface +
 //! stb_truetype rasterizer). The build's `linkNativeWgpu` picks the right
 //! stitch by target OS and exposes it under the `teak-gpu-native` import.
@@ -13,9 +13,9 @@
 const teak = @import("teak");
 const wgpu_core = @import("wgpu_core.zig");
 const surface_win32 = @import("surface_win32.zig");
-const raster_gdi = @import("raster_gdi.zig");
+const text = @import("teak-text");
 
-pub const Gpu = wgpu_core.Gpu(surface_win32, raster_gdi.GdiRasterizer);
+pub const Gpu = wgpu_core.Gpu(surface_win32, text.StbttRasterizer);
 
 pub const ClearColor = teak.ClearColor;
 pub const TextureHandle = teak.TextureHandle;

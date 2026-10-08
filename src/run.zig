@@ -502,6 +502,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         pub fn frame(self: *Self) !void {
             const input = self.host.pollInputs();
             if (self.host.shouldClose()) return;
+            // A Host with logical pixels (Win32 per-monitor DPI) tells the
+            // Gpu how many physical pixels back each one, before resizing.
+            if (comptime @hasDecl(Host, "renderScale") and @hasDecl(Gpu, "setScale")) {
+                self.gpu.setScale(self.host.renderScale());
+            }
             if (input.resized) {
                 self.gpu.resize(input.width, input.height);
                 if (@hasDecl(App, "windowMsg")) {

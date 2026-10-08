@@ -211,6 +211,19 @@ test "images upload, draw and release (slot reuse)" {
     try std.testing.expectEqual(img, again);
 }
 
+test "setScale only accepts sane factors and keeps the logical size" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    try std.testing.expectEqual(@as(f32, 1.0), h.gpu.scale);
+    h.gpu.setScale(2.0);
+    try std.testing.expectEqual(@as(f32, 2.0), h.gpu.scale);
+    h.gpu.setScale(0); // rejected
+    h.gpu.setScale(1000); // rejected
+    try std.testing.expectEqual(@as(f32, 2.0), h.gpu.scale);
+    try std.testing.expectEqual(px, h.gpu.width);
+    h.gpu.setScale(1.0);
+}
+
 fn textAt(x: f32, y: f32, w: f32, h: f32, content: []const u8) teak.TextDraw {
     return .{
         .rect_x = x,

@@ -109,6 +109,11 @@ pub fn requestDevice(instance: c.WGPUInstance, surface: ?c.WGPUSurface) error{ A
     adapter_opts.compatibleSurface = surface orelse null;
     adapter_opts.powerPreference = c.WGPUPowerPreference_HighPerformance;
     adapter_opts.featureLevel = c.WGPUFeatureLevel_Core;
+    // `TEAK_GPU_FALLBACK=1` asks for a software adapter (DX12 WARP, lavapipe,
+    // SwiftShader): CI runners and containers without a GPU.
+    if (std.c.getenv("TEAK_GPU_FALLBACK")) |v| {
+        if (std.mem.span(v).len > 0 and v[0] != '0') adapter_opts.forceFallbackAdapter = 1;
+    }
 
     var adapter_cb = std.mem.zeroes(c.WGPURequestAdapterCallbackInfo);
     adapter_cb.mode = c.WGPUCallbackMode_AllowSpontaneous;

@@ -71,7 +71,7 @@ pub fn build(b: *std.Build) void {
     //
     //   zig build shot -- out.png
 
-    if (target.result.os.tag == .linux) {
+    if (teak.hasNativeBackend(target.result.os.tag)) {
         const shot_exe = b.addExecutable(.{
             .name = "scene3d-shot",
             .root_module = b.createModule(.{

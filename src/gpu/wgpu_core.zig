@@ -171,6 +171,11 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// render rewrites the same uniform with its own dims.
         width: u32,
         height: u32,
+        /// Physical swap-chain pixels per logical unit (`setScale`). Layout,
+        /// vertices and the shader's `screen_size` stay logical; only the
+        /// surface and MSAA target are `scale` times larger. 1.0 unless the
+        /// Host renders at a HiDPI scale.
+        scale: f32,
 
         // ── Text pass ──────────────────────────────────────────────
         text_pipeline: c.WGPURenderPipeline,
@@ -481,6 +486,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 // zero-init here keeps the field set strictly post-init.
                 .width = 0,
                 .height = 0,
+                .scale = 1.0,
                 .text_pipeline = text_pipeline,
                 .text_bgl = text_bgl,
                 .sampler = sampler,
@@ -576,13 +582,34 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// the dimensions differ. Centralizing this keeps the three call
         /// sites (`resize`, `openSecondarySurface`, `resizeWindow`) in
         /// lock-step on swap-chain semantics.
+        /// Swap-chain pixels for `logical` units at the current scale.
+        fn physical(self: *const Self, logical: u32) u32 {
+            const px: f32 = @round(@as(f32, @floatFromInt(logical)) * self.scale);
+            return @max(1, @as(u32, @intFromFloat(px)));
+        }
+
+        /// Render at `scale` physical pixels per logical unit: the surface
+        /// (and its MSAA target) become `scale` times larger while all
+        /// coordinates stay logical, so the whole frame is crisp at HiDPI
+        /// without touching layout. Text, images and scenes are still
+        /// rasterized at logical resolution and magnified (soft at scale
+        /// != 1) until the glyph pass bakes at `size_px * scale`.
+        pub fn setScale(self: *Self, new_scale: f32) void {
+            if (!(new_scale >= 0.25 and new_scale <= 16) or new_scale == self.scale) return;
+            self.scale = new_scale;
+            if (self.surface != null) self.configureSurface(self.surface, self.width, self.height);
+            for (&self.secondary_surfaces) |*slot| {
+                if (slot.active and slot.surface != null) self.configureSurface(slot.surface, slot.width, slot.height);
+            }
+        }
+
         fn configureSurface(self: *Self, surface: c.WGPUSurface, width: u32, height: u32) void {
             var surf_config = std.mem.zeroes(c.WGPUSurfaceConfiguration);
             surf_config.device = self.device;
             surf_config.format = self.surf_format;
             surf_config.usage = c.WGPUTextureUsage_RenderAttachment;
-            surf_config.width = width;
-            surf_config.height = height;
+            surf_config.width = self.physical(width);
+            surf_config.height = self.physical(height);
             surf_config.presentMode = c.WGPUPresentMode_Fifo;
             surf_config.alphaMode = c.WGPUCompositeAlphaMode_Auto;
             c.wgpuSurfaceConfigure(surface, &surf_config);
@@ -711,7 +738,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const texture_view = c.wgpuTextureCreateView(surface_texture.texture, null);
             defer c.wgpuTextureViewRelease(texture_view);
 
-            self.encodeMainPass(texture_view, target_w, target_h, clear_color);
+            self.encodeMainPass(texture_view, self.physical(target_w), self.physical(target_h), clear_color);
             _ = c.wgpuSurfacePresent(surface_handle);
         }
 
