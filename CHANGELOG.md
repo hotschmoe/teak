@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Event-driven idle
+
+- `RunOptions.idle_skip` (default true): a frame with no input, no dispatched
+  Msg, no blinking focused input, no IME / secondary window skips view,
+  layout, diff, upload and present; `Runtime.quiet` reports it and `run`
+  calls the Host's optional `waitEvents(timeout_ms)` (headless implements it;
+  X11/Win32 hosts still to add it, see `platform/host.zig`). New
+  `sub.nextDueMs`. Behaviour change: `frame_counter` / snapshot `frame=` count
+  built frames only; set `.idle_skip = false` for the old every-frame behaviour.
+### Web build: stripped wasm by default
+
+- `linkWebWgpu` now strips DWARF and the name section from the wasm in every
+  non-Debug build (`WebWgpuOptions.strip`, default true). The shipped
+  `chrome-web.wasm` was 1.27 MB, of which 1.15 MB was debug info (the
+  apparent 0.16 -> 0.17 growth of +65 KB was all DWARF: code actually shrank
+  97.5 KB -> 89.8 KB); stripped it is 120 KB. Pass `.{ .strip = false }` to
+  keep symbols for wasm debugging.
+
+### Core cleanup (idiomatic Zig + silent-failure hardening)
+
+- **Frame diff is derived by reflection.** `cmdsEqual` now uses the generic
+  `core/eql.zig` `deepEql` over `Cmd(Msg)` (slices by content, floats bitwise,
+  `Msg` deep-compared): a new `Cmd` field can no longer be forgotten. Tests
+  mutate every leaf of every variant. `SceneCmd.eql` is removed (breaking, but
+  `deepEql` covers it); `CanvasPrimitive.eql` stays (revision-`key` shortcut).
+- **Every pass is exhaustive over `Cmd` tags** (no `else =>`): a new variant
+  fails to compile in layout, hit-test, focus, render, snapshot, a11y and
+  scroll extent. The CLAUDE.md/AGENTS.md widget checklist is shortened.
+- **OOM policy:** allocation `catch unreachable` (UB in release) replaced by
+  `core/oom.zig`'s `oom()`, a `@panic` in every optimize mode. Emitters stay
+  non-error-returning.
+- **Loud capacities:** `MAX_BALANCE_DEPTH` 32 -> 64 (layout stacks and
+  `ClipStack`). Stack overflow/underflow, `pushFormRow` nesting past 8 and a
+  stray `popFormRow` now `@panic` in every mode. `teak.run` runs
+  `validateBalance` every frame in every mode (was Debug only) and panics
+  naming the offending cmd index. The resource table logs once when full
+  (`Table.overflowed`).
 ### Changed
 
 - Web text now uses the same glyph atlas as native: stb_truetype compiled into the wasm

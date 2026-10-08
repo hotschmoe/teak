@@ -633,6 +633,11 @@ pub const WebWgpuOptions = struct {
     output_dir: []const u8 = "dist",
     /// Fonts copied to `<output_dir>/fonts/` and loaded before the first frame.
     fonts: []const WebFont = &.{},
+    /// Strip DWARF and the name section from the .wasm in any non-Debug
+    /// build (the browser cannot use it without an extension, and it was
+    /// ~90% of the shipped file: chrome 1.27 MB -> ~0.12 MB). Set false to
+    /// keep symbols for wasm debugging / `wasm-objdump`.
+    strip: bool = true,
 };
 
 /// The `teak-fonts` options module: the family registered for each slot ("" =
@@ -727,6 +732,7 @@ pub fn linkWebWgpu(
     exe.rdynamic = true;
     exe.entry = .disabled;
     exe.export_memory = true;
+    if (opts.strip and optimize != .debug) root.strip = true;
 
     const teak_dep = b.dependencyFromBuildZig(BuildZig, .{
         .target = target,

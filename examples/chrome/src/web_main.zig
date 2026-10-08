@@ -12,6 +12,9 @@ const build_options = @import("build_options");
 const stress = build_options.stress;
 const App = if (stress > 0) @import("textstress.zig") else @import("app.zig");
 
+/// std.log -> browser console (the default logFn does not build for wasm32-freestanding).
+pub const std_options: std.Options = .{ .logFn = platform.logFn };
+
 const Host = platform.Host;
 const Gpu = gpu_web.Gpu;
 const Runtime = teak.Runtime(App, Host, Gpu);
