@@ -222,6 +222,9 @@ jobs:
   # slightly in AA, which the tolerance in tools/vreg.zig absorbs.
   vreg:
     name: Visual regression (native, lavapipe)
+    # Report-only until the tolerances are calibrated against the raw
+    # differences this job prints (docs/features/visual-regression.md).
+    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -257,6 +260,8 @@ jobs:
 
   vreg-web:
     name: Visual regression (web, headless Chromium)
+    # Report-only, as for the native job.
+    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
