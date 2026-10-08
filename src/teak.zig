@@ -20,6 +20,7 @@ pub const text_field = @import("core/text_field.zig");
 pub const numeric_field = @import("core/numeric_field.zig");
 pub const dropdown = @import("core/dropdown.zig");
 pub const combobox = @import("core/combobox.zig");
+pub const widgets = @import("core/widgets.zig");
 pub const component_list = @import("core/component_list.zig");
 pub const debug_overlay = @import("core/debug_overlay.zig");
 pub const snapshot = @import("core/snapshot.zig");
