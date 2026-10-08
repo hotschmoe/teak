@@ -239,6 +239,8 @@ pub const PipelineOptions = struct {
     /// null = write the shader output unblended.
     blend: ?*const c.WGPUBlendState = &alpha_blend,
     cull_mode: c.WGPUCullMode = c.WGPUCullMode_None,
+    /// Colour channels written; `WGPUColorWriteMask_None` for stencil-only passes.
+    write_mask: c.WGPUColorWriteMask = c.WGPUColorWriteMask_All,
     /// null = no depth attachment in the pass.
     depth: ?c.WGPUDepthStencilState = null,
     samples: u32 = 1,
@@ -249,7 +251,7 @@ pub fn createPipeline(device: c.WGPUDevice, o: PipelineOptions) c.WGPURenderPipe
     var color_target = std.mem.zeroes(c.WGPUColorTargetState);
     color_target.format = o.format;
     color_target.blend = if (o.blend) |b| b else null;
-    color_target.writeMask = c.WGPUColorWriteMask_All;
+    color_target.writeMask = o.write_mask;
 
     var frag = std.mem.zeroes(c.WGPUFragmentState);
     frag.module = o.module;
