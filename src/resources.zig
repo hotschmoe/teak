@@ -31,13 +31,17 @@ const Entry = struct {
 pub const Table = struct {
     entries: [MAX_RESOURCES]Entry = undefined,
     len: usize = 0,
+    /// Set (and a warning logged, once) the first time a resource is
+    /// dropped because the table is full — see `MAX_RESOURCES`.
+    overflowed: bool = false,
 
     /// Reconcile the GPU with `list`: upload new (kind, key) pairs,
     /// re-upload when `rev` changed, release entries no longer listed.
     /// Returns true when anything was uploaded or released, so the loop
     /// can force a re-stage of draws that reference the affected handles.
     /// Keys must be unique per kind; entries past `MAX_RESOURCES` are
-    /// ignored.
+    /// dropped (never uploaded; `handleOf` returns 0 for them) with a
+    /// one-time `std.log.warn` and `overflowed` set.
     pub fn sync(self: *Table, gpu: anytype, list: []const Resource) bool {
         var changed = false;
         for (self.entries[0..self.len]) |*e| e.seen = false;
@@ -61,6 +65,9 @@ pub const Table = struct {
                 };
                 self.len += 1;
                 changed = true;
+            } else if (!self.overflowed) {
+                self.overflowed = true;
+                std.log.warn("teak: resource table full ({d} entries); further resources are ignored", .{MAX_RESOURCES});
             }
         }
 
@@ -271,4 +278,16 @@ test "table is bounded: overflow entries are ignored, not a crash" {
     _ = t.sync(&gpu, &list);
     try std.testing.expectEqual(MAX_RESOURCES, t.len);
     try std.testing.expectEqual(@as(u32, 0), t.handleOf(.image, MAX_RESOURCES + 1));
+}
+
+test "a full table drops extra resources loudly (overflowed) instead of corrupting" {
+    var gpu: StubGpu = .{};
+    var t: Table = .{};
+    var list: [MAX_RESOURCES + 1]Resource = undefined;
+    for (&list, 0..) |*r, i| r.* = img(@intCast(i + 1), 1);
+    _ = t.sync(&gpu, &list);
+    try std.testing.expect(t.overflowed);
+    try std.testing.expectEqual(MAX_RESOURCES, t.len);
+    try std.testing.expectEqual(@as(u32, 0), t.handleOf(.image, MAX_RESOURCES + 1));
+    try std.testing.expect(t.handleOf(.image, 1) != 0);
 }

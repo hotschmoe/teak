@@ -1349,7 +1349,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
             // Cap of 8 in-flight form rows; deeper nesting is a bug, not
             // a growth trigger. Assert mirrors the layout stacks: loud
             // crash in Debug/ReleaseSafe, zero cost in ReleaseFast.
-            std.debug.assert(self.form_row_depth < self.form_row_stack.len);
+            if (self.form_row_depth >= self.form_row_stack.len) @panic("teak: pushFormRow nested deeper than 8 (form_row_stack capacity)");
             // Outer vertical (content row + validation message).
             self.cmds.append(self.backing, .{ .push_group = .{
                 .direction = .vertical,
@@ -1381,7 +1381,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
         /// validation message (if any), then closes the outer vertical
         /// group.
         pub fn popFormRow(self: *Self) void {
-            if (self.form_row_depth == 0) return;
+            if (self.form_row_depth == 0) @panic("teak: popFormRow without a matching pushFormRow");
             self.form_row_depth -= 1;
             const pending = self.form_row_stack[self.form_row_depth];
             if (pending.units.len > 0) {
