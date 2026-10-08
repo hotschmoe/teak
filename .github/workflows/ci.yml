@@ -250,7 +250,7 @@ jobs:
         working-directory: teak/examples/chrome
         continue-on-error: true
         run: |
-          ./zig-out/bin/chrome-ui > "$GITHUB_WORKSPACE/shots/ui.log" 2>&1 &
+          TEAK_COCOA_DEBUG=1 ./zig-out/bin/chrome-ui > "$GITHUB_WORKSPACE/shots/ui.log" 2>&1 &
           pid=$!
           sleep 4
           screencapture -x "$GITHUB_WORKSPACE/shots/chrome-mac-window-4s.png" || true

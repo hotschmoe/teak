@@ -67,6 +67,8 @@ const State = struct {
     view: Id,
     layer: Id,
     running: bool = true,
+    debug: bool = false,
+    polls: u64 = 0,
     /// Logical size in points (content view bounds) and the backing scale.
     width: u32,
     height: u32,
@@ -412,6 +414,7 @@ pub const Host = struct {
         const layer = msg(Id, cls("CAMetalLayer"), sel("layer"), .{});
         const delegate = objc.allocInit(delegate_class);
         s.* = .{ .app = app, .window = window, .view = view, .layer = layer, .width = width, .height = height, .effects = effects };
+        s.debug = std.c.getenv("TEAK_COCOA_DEBUG") != null;
         objc.setState(view, s);
         objc.setState(delegate, s);
 
@@ -472,10 +475,28 @@ pub const Host = struct {
         }
     }
 
+    /// `TEAK_COCOA_DEBUG=1`: log the layer's state every ~120 polls.
+    fn debugLayer(self: *Host) void {
+        const s = self.st;
+        s.polls += 1;
+        if (!s.debug or s.polls % 120 != 1) return;
+        const size = msg(objc.CGSize, s.layer, sel("drawableSize"), .{});
+        const frame = msg(objc.CGRect, s.layer, sel("frame"), .{});
+        const device = msg(Id, s.layer, sel("device"), .{});
+        const hidden = msg(bool, s.layer, sel("isHidden"), .{});
+        const view_layer = msg(Id, s.view, sel("layer"), .{});
+        const win_vis = msg(bool, s.window, sel("isVisible"), .{});
+        std.log.info("teak/cocoa: poll {d}: drawable {d}x{d} frame {d}x{d} device={any} hidden={} view.layer==layer {} window visible {}", .{
+            s.polls,        size.w, size.h,                frame.size.w, frame.size.h,
+            device != null, hidden, view_layer == s.layer, win_vis,
+        });
+    }
+
     pub fn pollInputs(self: *Host) InputState {
         const s = self.st;
         const pool = objc.poolPush();
         defer objc.poolPop(pool);
+        self.debugLayer();
         s.queue.beginFrame();
         s.paste_requested = false;
         // Dispatch everything queued without waiting.
