@@ -55,7 +55,8 @@
 //!     content and caret rect) on first layout and whenever they change, so
 //!     the app can clamp scroll and reveal the caret. A press captures the
 //!     pointer (drag-select continues outside the rect). The focused caret
-//!     rect also feeds `Host.setImeSpot` when the Host has it.
+//!     rect also feeds `Host.setImeSpot` when the Host has it; `Host.setImeActive`
+//!     (optional) says whether a text field is focused (the web IME bridge needs it).
 //!   - `scrollMsg(*const Model, id, dx, dy) ?Msg`     — wheel over the
 //!     innermost hovered scroll region with `ScrollStyle.id != 0` (a pointer
 //!     canvas inside it wins when it is the innermost).
@@ -561,6 +562,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         text_metrics: [8]TextMetricsSlot = @splat(.{}),
         /// Last IME spot pushed to the Host (avoid per-frame calls).
         ime_spot: ?[2]i32 = null,
+        /// Whether the focused widget is a text field (`Host.setImeActive` last told the Host).
+        ime_focused: bool = false,
         /// Last `Host.scaleFactor()` seen (0 = not yet); a change (the window
         /// moved to a monitor with another DPI) is forwarded to `Gpu.setScale`.
         host_scale: f32 = 0,
@@ -1921,30 +1924,49 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Tell the Host where the focused caret is so an IME candidate
         /// window opens next to it (window logical px, just below the caret).
         fn updateImeSpot(self: *Self, cur: u1) void {
-            if (!@hasDecl(Host, "setImeSpot")) return;
+            const has_spot = comptime @hasDecl(Host, "setImeSpot");
+            const has_active = comptime @hasDecl(Host, "setImeActive");
+            if (comptime !(has_spot or has_active)) return;
             const cmds = self.bufs[cur].cmds.items;
             const rects = self.rects[cur].items;
-            const fi = self.ts.focus_index orelse return;
-            if (fi >= cmds.len) return;
-            var sx: f32 = undefined;
-            var sy: f32 = undefined;
-            switch (cmds[fi]) {
-                .text_area => |ta| {
-                    const g = textAreaGeometry(ta, rects[fi]);
-                    const c = text_wrap.caretPos(ta.content, ta.cursor, ta.font, g.wrap_w, g.mode, 0, self.measurer);
-                    sx = g.inner.x - ta.scroll_x + c.x;
-                    sy = g.inner.y - ta.scroll_y + c.y + text_wrap.lineHeight(ta.font, self.measurer);
-                },
-                .text_input => |ti| {
-                    sx = rects[fi].x + 6 + self.measurer.prefixWidth(ti.content, ti.font, ti.cursor);
-                    sy = rects[fi].y + rects[fi].h;
-                },
-                else => return,
+
+            var sx: f32 = 0;
+            var sy: f32 = 0;
+            const editable = blk: {
+                const fi = self.ts.focus_index orelse break :blk false;
+                if (fi >= cmds.len) break :blk false;
+                switch (cmds[fi]) {
+                    .text_area => |ta| {
+                        const g = textAreaGeometry(ta, rects[fi]);
+                        const c = text_wrap.caretPos(ta.content, ta.cursor, ta.font, g.wrap_w, g.mode, 0, self.measurer);
+                        sx = g.inner.x - ta.scroll_x + c.x;
+                        sy = g.inner.y - ta.scroll_y + c.y + text_wrap.lineHeight(ta.font, self.measurer);
+                    },
+                    .text_input => |ti| {
+                        sx = rects[fi].x + 6 + self.measurer.prefixWidth(ti.content, ti.font, ti.cursor);
+                        sy = rects[fi].y + rects[fi].h;
+                    },
+                    else => break :blk false,
+                }
+                break :blk true;
+            };
+
+            // Hosts whose IME lives outside the window (the web's hidden field) must
+            // know when a text field has focus; others simply do not declare this.
+            if (has_active and editable != self.ime_focused) {
+                self.ime_focused = editable;
+                self.host.setImeActive(editable);
             }
-            const spot = [2]i32{ @intFromFloat(sx), @intFromFloat(sy) };
-            if (self.ime_spot) |old| if (old[0] == spot[0] and old[1] == spot[1]) return;
-            self.ime_spot = spot;
-            self.host.setImeSpot(spot[0], spot[1]);
+            if (!editable) {
+                self.ime_spot = null; // resend the spot when focus returns
+                return;
+            }
+            if (has_spot) {
+                const spot = [2]i32{ @intFromFloat(sx), @intFromFloat(sy) };
+                if (self.ime_spot) |old| if (old[0] == spot[0] and old[1] == spot[1]) return;
+                self.ime_spot = spot;
+                self.host.setImeSpot(spot[0], spot[1]);
+            }
         }
 
         /// Tell the app about layout results it cannot read from `view`:
