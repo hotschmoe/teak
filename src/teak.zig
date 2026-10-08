@@ -20,6 +20,8 @@ pub const unicode = @import("core/unicode.zig");
 pub const linebreak = @import("core/linebreak.zig");
 /// Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.
 pub const text_wrap = @import("core/text_wrap.zig");
+/// `Editor(cap, undo_cap)`: grapheme-aware text editing model with undo/redo (used by TextField/TextArea).
+pub const editor = @import("core/editor.zig");
 /// Declarative subscriptions (`Sub`): timers serviced by the run loop.
 pub const sub = @import("core/sub.zig");
 /// Model-driven animation: `Tween(T)`, easing curves and `lerp`.
@@ -32,6 +34,8 @@ pub const text_field = @import("core/text_field.zig");
 pub const numeric_field = @import("core/numeric_field.zig");
 /// `Dropdown`: a closed button plus an open overlay list.
 pub const dropdown = @import("core/dropdown.zig");
+/// `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
+pub const combobox = @import("core/combobox.zig");
 /// `ComponentList`: a dynamic homogeneous list of components.
 pub const component_list = @import("core/component_list.zig");
 /// `appendDebugOverlay`: dump the frame's cmds and rects as an overlay.
@@ -291,6 +295,10 @@ pub const NumericConfig = numeric_field.NumericConfig;
 pub const Dropdown = dropdown.Dropdown;
 /// Anchor and sizing for the open dropdown list.
 pub const DropdownViewOpts = dropdown.DropdownViewOpts;
+/// Searchable select component (see `combobox`).
+pub const Combobox = combobox.Combobox;
+/// Anchor and sizing options for the open combobox list.
+pub const ComboboxViewOpts = combobox.ViewOpts;
 /// Build the app Msg for a typed character into a named field.
 pub const textFieldChar = text_field.textFieldChar;
 /// Build the app Msg for a `SpecialKey` into a named field.

@@ -250,7 +250,7 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
 `pub fn resources(*const Model) []const Resource` — HARDLINE §2 hatch 8.
 `Resource = union(enum) { mesh: { key, rev, data: MeshData }, image:
 { key, rev, width, height, rgba } }`. The loop keeps a fixed-capacity
-(128) table of what is resident (`src/resources.zig`): a new (kind, key)
+(1024; overflow logs a warning) table of what is resident (`src/resources.zig`): a new (kind, key)
 uploads, a changed `rev` re-uploads (old handle released first), a key that
 disappears is released, and everything is released at shutdown. `Cmd`s use
 the app key: `cb.image(key, ...)`, `cb.scene3d(.{ .mesh = key })`; the loop
