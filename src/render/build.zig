@@ -18,6 +18,7 @@ const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
 const emitQuadCorners = vertex.emitQuadCorners;
+pub const sdf = @import("sdf.zig");
 
 /// Image draw record. Parallel to TextDraw — the GPU backend consumes
 /// these in `uploadImages` and emits 6 textured vertices per draw using
@@ -98,6 +99,35 @@ fn emitText(
         .clip_w = clip.w,
         .clip_h = clip.h,
     }) catch {};
+}
+
+/// A rect with rounded corners, a gradient and / or a soft shadow, plus an
+/// inside border stroke, as one SDF quad. Returns false (nothing emitted)
+/// when the rect uses none of those, so the caller keeps its plain solid
+/// quads, which is what makes the defaults pixel-identical to before.
+fn emitSurface(
+    verts: *std.ArrayList(Vertex),
+    alloc: std.mem.Allocator,
+    r: Rect,
+    radii: cmd_types.Radii,
+    fill: ?[4]f32,
+    gradient: ?cmd_types.Gradient,
+    border: ?[4]f32,
+    border_width: f32,
+    shadow: ?cmd_types.Shadow,
+    clip: Rect,
+) bool {
+    if (!sdf.needed(radii, gradient, shadow)) return false;
+    sdf.emitRect(verts, alloc, .{
+        .rect = r,
+        .radii = radii,
+        .fill = fill orelse .{ 0, 0, 0, 0 },
+        .gradient = gradient,
+        .border_width = if (border != null) border_width else 0,
+        .border = border orelse .{ 0, 0, 0, 0 },
+        .shadow = shadow,
+    }, clip);
+    return true;
 }
 
 /// A `width`-thick frame INSIDE `r`: four non-overlapping edge quads (so a
@@ -198,8 +228,10 @@ fn buildLayer(
                         const shadow_rect = Rect{ .x = rect.x + ov.shadow_offset[0], .y = rect.y + ov.shadow_offset[1], .w = rect.w, .h = rect.h };
                         emit(verts, alloc, shadow_rect, sh, cur_clip);
                     }
-                    if (ov.backdrop[3] > 0) emit(verts, alloc, rect, ov.backdrop, cur_clip);
-                    if (ov.border) |bc| emitBorder(verts, alloc, rect, ov.border_width, bc, cur_clip);
+                    if (!emitSurface(verts, alloc, rect, ov.radius, if (ov.backdrop[3] > 0) ov.backdrop else null, null, ov.border, ov.border_width, ov.soft_shadow, cur_clip)) {
+                        if (ov.backdrop[3] > 0) emit(verts, alloc, rect, ov.backdrop, cur_clip);
+                        if (ov.border) |bc| emitBorder(verts, alloc, rect, ov.border_width, bc, cur_clip);
+                    }
                     clip.push(clipRect(rect, cur_clip));
                 } else {
                     // Base-layer must still push a clip so the
@@ -223,8 +255,10 @@ fn buildLayer(
                 // paint on top. Layout already gives us the group's full
                 // (padded) rect; no inset.
                 if (visible) {
-                    if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
-                    if (grp.border) |bc| emitBorder(verts, alloc, rect, grp.border_width, bc, cur_clip);
+                    if (!emitSurface(verts, alloc, rect, grp.radius, grp.bg, grp.gradient, grp.border, grp.border_width, grp.soft_shadow, cur_clip)) {
+                        if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+                        if (grp.border) |bc| emitBorder(verts, alloc, rect, grp.border_width, bc, cur_clip);
+                    }
                 }
             },
             .pop_group, .push_virtual_list, .pop_virtual_list => {},
@@ -310,9 +344,11 @@ fn buildLayer(
                 var bg = btn.style.disabled_bg;
                 var fg = btn.style.disabled_fg;
                 var label_dy: f32 = 0;
+                var idle = false;
                 if (!btn.disabled) {
                     const pressed = if (transient.press_index) |pi| pi == i else false;
                     const hovered = if (transient.hover_index) |hi| hi == i else false;
+                    idle = !pressed and !hovered;
                     if (pressed) {
                         bg = btn.style.press_bg;
                         fg = btn.style.press_fg orelse btn.style.fg;
@@ -325,8 +361,15 @@ fn buildLayer(
                         fg = btn.style.fg;
                     }
                 }
-                emit(verts, alloc, rect, bg, cur_clip);
-                if (btn.style.border) |bc| emitBorder(verts, alloc, rect, btn.style.border_width, bc, cur_clip);
+                // Rounded / gradient / shadowed buttons are one SDF quad; the
+                // gradient is the idle look, a raised shadow is dropped while
+                // pressed or disabled.
+                const raised = idle or (!btn.disabled and (if (transient.hover_index) |hi| hi == i else false));
+                const sdf_drawn = emitSurface(verts, alloc, rect, btn.style.radius, bg, if (idle) btn.style.gradient else null, btn.style.border, btn.style.border_width, if (raised) btn.style.soft_shadow else null, cur_clip);
+                if (!sdf_drawn) {
+                    emit(verts, alloc, rect, bg, cur_clip);
+                    if (btn.style.border) |bc| emitBorder(verts, alloc, rect, btn.style.border_width, bc, cur_clip);
+                }
 
                 if (btn.label.len > 0) {
                     const m = measurer.measure(btn.label, btn.font);
@@ -369,9 +412,12 @@ fn buildLayer(
                     emit(verts, alloc, .{ .x = rect.x, .y = rect.y + rect.h - rule, .w = rect.w, .h = rule }, border_color, cur_clip);
                     inner.h = @max(0, rect.h - rule);
                 } else {
-                    emit(verts, alloc, rect, border_color, cur_clip);
+                    const input_bg = if (ti.disabled) ti.style.disabled_bg else ti.style.bg;
                     inner = insetRect(rect, ti.style.border_width);
-                    emit(verts, alloc, inner, if (ti.disabled) ti.style.disabled_bg else ti.style.bg, cur_clip);
+                    if (!emitSurface(verts, alloc, rect, ti.style.radius, input_bg, null, border_color, ti.style.border_width, null, cur_clip)) {
+                        emit(verts, alloc, rect, border_color, cur_clip);
+                        emit(verts, alloc, inner, input_bg, cur_clip);
+                    }
                 }
 
                 // Selection highlight before the text so text draws on top.
@@ -876,6 +922,7 @@ fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
 
 // Chrome (border / shadow / hover / underline) tests live in their own file.
 test {
+    _ = sdf;
     _ = @import("chrome_test.zig");
 }
 

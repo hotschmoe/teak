@@ -97,7 +97,10 @@ const TextCache = glyph_cache.GlyphCache(WebBackend);
 pub const Gpu = struct {
     // Solid pipeline.
     pipeline: zgpu.RenderPipeline,
-    bind_group: zgpu.BindGroup,
+    /// Built lazily for the current `vert_buf` (it is also bound as storage).
+    bind_group: ?zgpu.BindGroup,
+    bind_group_buf: ?zgpu.Buffer,
+    solid_bgl: zgpu.BindGroupLayout,
     uniform_buf: zgpu.Buffer,
     vert_buf: ?zgpu.Buffer,
     vert_buf_size: u32,
@@ -176,9 +179,12 @@ pub const Gpu = struct {
         const samples: u32 = if (options.msaa) scene_common.msaa_samples else 1;
         const shader = zgpu.createShaderModule(SHADER_SOLID);
 
+        // binding 0: screen size; binding 1: the solid vertex buffer again,
+        // read-only, so SDF quads can fetch their records (render/sdf.zig).
         const bgl = zgpu.createBindGroupLayout(&.{
             zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX, .uniform)
                 .withMinSize(8),
+            zgpu.BindGroupLayoutEntry.initBuffer(1, zgpu.ShaderVisibility.FRAGMENT, .read_only_storage),
         });
         const pl = zgpu.createPipelineLayout(&.{bgl});
 
@@ -193,9 +199,6 @@ pub const Gpu = struct {
         const pipeline = uiPipeline(pl, shader, &layouts, samples);
 
         const uniform_buf = zgpu.createBuffer(8, zgpu.BufferUsage.UNIFORM | zgpu.BufferUsage.COPY_DST);
-        const bind_group = zgpu.createBindGroup(bgl, &.{
-            zgpu.BindGroupEntry.initBufferFull(0, uniform_buf, 8),
-        });
 
         // Text + image pipelines: 3-entry BGL {uniform, texture, sampler},
         // same vertex layout as the solid pipeline; only the fragment
@@ -220,7 +223,9 @@ pub const Gpu = struct {
 
         var self: Gpu = .{
             .pipeline = pipeline,
-            .bind_group = bind_group,
+            .bind_group = null,
+            .bind_group_buf = null,
+            .solid_bgl = bgl,
             .uniform_buf = uniform_buf,
             .vert_buf = null,
             .vert_buf_size = 0,
@@ -296,6 +301,7 @@ pub const Gpu = struct {
         if (self.image_vert_buf) |ib| zgpu.bufferDestroy(ib);
         if (self.text_vert_buf) |tb| zgpu.bufferDestroy(tb);
         if (self.vert_buf) |vb| zgpu.bufferDestroy(vb);
+        if (self.bind_group) |bg| zgpu.release(bg);
         zgpu.bufferDestroy(self.uniform_buf);
         self.releaseMsaa();
     }
@@ -314,12 +320,16 @@ pub const Gpu = struct {
     /// Grow `buf` to hold `verts` and write them. Shared by the solid,
     /// text, image and scene-composite vertex streams.
     fn writeVerts(buf: *?zgpu.Buffer, size: *u32, verts: []const Vertex) void {
+        writeVertsAs(zgpu.BufferUsage.VERTEX, buf, size, verts);
+    }
+
+    fn writeVertsAs(usage: u32, buf: *?zgpu.Buffer, size: *u32, verts: []const Vertex) void {
         const byte_size: u32 = @intCast(verts.len * @sizeOf(Vertex));
         if (byte_size == 0) return;
         if (buf.* == null or byte_size > size.*) {
             if (buf.*) |old| zgpu.bufferDestroy(old);
             size.* = @max(byte_size, 4096);
-            buf.* = zgpu.createBuffer(size.*, zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.COPY_DST);
+            buf.* = zgpu.createBuffer(size.*, usage | zgpu.BufferUsage.COPY_DST);
         }
         zgpu.bufferWriteTyped(Vertex, buf.*.?, 0, verts);
     }
@@ -338,7 +348,8 @@ pub const Gpu = struct {
 
     pub fn uploadVertices(self: *Gpu, verts: []const Vertex) void {
         self.vert_count = @intCast(verts.len);
-        writeVerts(&self.vert_buf, &self.vert_buf_size, verts);
+        // Also bound read-only in the fragment stage: SDF quads read their records from it.
+        writeVertsAs(zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.STORAGE, &self.vert_buf, &self.vert_buf_size, verts);
     }
 
     // ── Main pass ──────────────────────────────────────────────────
@@ -405,12 +416,24 @@ pub const Gpu = struct {
     }
 
     /// Solid quads `[from, to)` (vertex indices).
+    /// {screen size, solid vertex buffer as read-only storage}, rebuilt
+    /// whenever `vert_buf` is reallocated.
+    fn rebuildSolidBindGroup(self: *Gpu) void {
+        if (self.bind_group) |old| zgpu.release(old);
+        self.bind_group = zgpu.createBindGroup(self.solid_bgl, &.{
+            zgpu.BindGroupEntry.initBufferFull(0, self.uniform_buf, 8),
+            zgpu.BindGroupEntry.initBufferFull(1, self.vert_buf.?, self.vert_buf_size),
+        });
+        self.bind_group_buf = self.vert_buf;
+    }
+
     fn drawSolids(self: *Gpu, pass: zgpu.RenderPassEncoder, range: struct { usize, usize }) void {
         const from, const to = range;
         if (to <= from or self.vert_buf == null) return;
         const draw_bytes: u64 = @as(u64, self.vert_count) * @sizeOf(Vertex);
+        if (self.bind_group_buf == null or self.bind_group_buf.? != self.vert_buf.?) self.rebuildSolidBindGroup();
         zgpu.renderPassSetPipeline(pass, self.pipeline);
-        zgpu.renderPassSetBindGroup(pass, 0, self.bind_group);
+        zgpu.renderPassSetBindGroup(pass, 0, self.bind_group.?);
         zgpu.renderPassSetVertexBuffer(pass, 0, self.vert_buf.?, 0, draw_bytes);
         zgpu.renderPassDraw(pass, @intCast(to - from), 1, @intCast(from), 0);
     }

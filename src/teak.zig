@@ -62,6 +62,9 @@ pub const formatBalanceError = cmd.formatBalanceError;
 pub const MAX_BALANCE_DEPTH = cmd.MAX_BALANCE_DEPTH;
 pub const ButtonCmd = cmd.ButtonCmd;
 pub const ButtonStyle = cmd.ButtonStyle;
+pub const Radii = cmd.Radii;
+pub const Shadow = cmd.Shadow;
+pub const Gradient = cmd.Gradient;
 pub const TextCmd = cmd.TextCmd;
 pub const TextInputCmd = cmd.TextInputCmd;
 pub const TextInputStyle = cmd.TextInputStyle;
@@ -147,6 +150,7 @@ pub const runSubs = sub.runSubs;
 
 pub const Theme = theme.Theme;
 pub const Palette = theme.Palette;
+pub const ThemeTokens = theme.Tokens;
 pub const Typography = theme.Typography;
 pub const dark_palette = theme.dark_palette;
 pub const light_palette = theme.light_palette;

@@ -2,6 +2,11 @@ const std = @import("std");
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
 const scene = @import("scene.zig");
+const surface = @import("surface.zig");
+
+pub const Radii = surface.Radii;
+pub const Shadow = surface.Shadow;
+pub const Gradient = surface.Gradient;
 
 pub const FontSpec = text.FontSpec;
 const DEFAULT_FONT = text.DEFAULT_FONT;
@@ -77,6 +82,15 @@ pub const GroupStyle = struct {
     /// keep `padding >= border_width` so children don't paint over it.
     border: ?[4]f32 = null,
     border_width: f32 = 1,
+    /// Rounded corners of the fill and border. With any of `radius`,
+    /// `gradient` or `soft_shadow` set the group draws as one SDF quad (the
+    /// border becomes an inside stroke that follows the corners); with none
+    /// it draws exactly as before.
+    radius: Radii = .{},
+    /// Replaces `bg` as the fill when set.
+    gradient: ?Gradient = null,
+    /// Blurred drop shadow outside the group's rect.
+    soft_shadow: ?Shadow = null,
 
     pub fn padX(self: GroupStyle) f32 {
         return self.pad_x orelse self.padding;
@@ -128,6 +142,13 @@ pub const ButtonStyle = struct {
     min_width: f32 = 60,
     /// Outer height in pixels.
     height: f32 = 36,
+    /// Rounded corners of the fill and border (0 = square, as before).
+    radius: Radii = .{},
+    /// Replaces the state background (`bg` / `hover_bg` / ...) with a
+    /// gradient in the idle state; hover and press keep their flat colours.
+    gradient: ?Gradient = null,
+    /// Blurred drop shadow outside the button (not drawn while pressed or disabled).
+    soft_shadow: ?Shadow = null,
     /// Flex weight on the parent's main axis (see `GroupStyle.flex`).
     flex: f32 = 0,
 };
@@ -156,6 +177,8 @@ pub const TextInputStyle = struct {
     min_width: f32 = 120,
     /// Outer height in pixels.
     height: f32 = 28,
+    /// Rounded corners of the `.boxed` variant (0 = square, as before).
+    radius: Radii = .{},
 };
 
 pub const CheckboxStyle = struct {
@@ -287,6 +310,11 @@ pub fn OverlayStyle(comptime Msg: type) type {
         /// passthrough behavior tooltips / popovers / the debug overlay
         /// rely on.
         modal: bool = false,
+        /// Rounded corners of the backdrop and border.
+        radius: Radii = .{},
+        /// Blurred drop shadow outside the overlay (the hard retro
+        /// `shadow` above is unrelated and can coexist).
+        soft_shadow: ?Shadow = null,
         /// Dispatched when the click lands inside the overlay's rect but
         /// on no interactive leaf — pair with `modal = true` for the
         /// "click outside the dialog to dismiss it" idiom. The Msg is

@@ -17,6 +17,15 @@
 
 ### Added
 
+- **SDF surfaces**: `Radii` (per-corner), soft `Shadow` (blur / spread / offset, CSS semantics), two-stop `Gradient` (linear /
+  radial) on `GroupStyle`, `ButtonStyle`, `OverlayStyle`, `TextInputStyle` (`radius`, `gradient`, `soft_shadow`). A rect using
+  any of them is one signed-distance quad in the solid vertex stream (`render/sdf.zig`; `shaders/quad.wgsl` reads its record
+  back from the vertex buffer bound read-only), anti-aliased with one device pixel at any DPR, with an inside border stroke that
+  follows the corners and dithered shadows / gradients. Rects using none draw exactly as before (kerf_viewer / scene3d shots
+  are byte-identical). Both backends.
+- **Theme tokens**: `Theme.tokens` (`ThemeTokens`: radii, border width, spacing scale, shadow elevations),
+  `Theme.fromPaletteTokens`, `button_primary`, and the `Theme.modern_light` / `Theme.modern_dark` presets. The chrome example
+  renders both looks (`M` key, header toggle, `zig build shot -- out.png --state modern`).
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
     selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,
