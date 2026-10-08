@@ -9,6 +9,7 @@
 //! backend. Fixed capacity, no allocation.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const res = @import("core/resources.zig");
 const render = @import("render/build.zig");
 const scene = @import("core/scene.zig");
@@ -16,7 +17,12 @@ const scene = @import("core/scene.zig");
 pub const Resource = res.Resource;
 pub const Kind = res.Kind;
 
-pub const MAX_RESOURCES: usize = 128;
+/// Most resources (images + meshes) one app can keep resident at once.
+/// Resources past it are not uploaded: `sync` counts them in
+/// `Table.dropped` and logs a warning once, and their draws are skipped
+/// (the unknown key remaps to the none handle). Raise it here if a real
+/// app needs more; entries are 16 bytes.
+pub const MAX_RESOURCES: usize = 1024;
 
 const Entry = struct {
     kind: Kind,
@@ -31,15 +37,19 @@ const Entry = struct {
 pub const Table = struct {
     entries: [MAX_RESOURCES]Entry = undefined,
     len: usize = 0,
+    /// Resources listed beyond `MAX_RESOURCES` in the latest `sync`.
+    dropped: usize = 0,
+    warned: bool = false,
 
     /// Reconcile the GPU with `list`: upload new (kind, key) pairs,
     /// re-upload when `rev` changed, release entries no longer listed.
     /// Returns true when anything was uploaded or released, so the loop
     /// can force a re-stage of draws that reference the affected handles.
     /// Keys must be unique per kind; entries past `MAX_RESOURCES` are
-    /// ignored.
+    /// ignored loudly (see `MAX_RESOURCES`).
     pub fn sync(self: *Table, gpu: anytype, list: []const Resource) bool {
         var changed = false;
+        self.dropped = 0;
         for (self.entries[0..self.len]) |*e| e.seen = false;
 
         for (list) |r| {
@@ -61,6 +71,13 @@ pub const Table = struct {
                 };
                 self.len += 1;
                 changed = true;
+            } else {
+                self.dropped += 1;
+                if (!self.warned) {
+                    self.warned = true;
+                    // Freestanding (web) has no default log sink; there `dropped` is the signal.
+                    if (comptime !builtin.is_test and builtin.os.tag != .freestanding) std.log.warn("teak: more than {d} resources declared; the extra ones are not uploaded (resources.MAX_RESOURCES)", .{MAX_RESOURCES});
+                }
             }
         }
 
@@ -270,5 +287,6 @@ test "table is bounded: overflow entries are ignored, not a crash" {
     for (&list, 0..) |*r, i| r.* = img(@intCast(i + 1), 1);
     _ = t.sync(&gpu, &list);
     try std.testing.expectEqual(MAX_RESOURCES, t.len);
+    try std.testing.expectEqual(@as(usize, 4), t.dropped);
     try std.testing.expectEqual(@as(u32, 0), t.handleOf(.image, MAX_RESOURCES + 1));
 }
