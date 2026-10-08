@@ -823,7 +823,7 @@ test "serializeA11yTree: oversized label is skipped, record still emitted" {
 
 test "wasm key table reaches every SpecialKey through the shared policy" {
     var seen = std.EnumSet(SpecialKey).empty;
-    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true } };
+    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = true } };
     for (mod_sets) |mods| {
         for (key_mappings) |m| {
             if (teak.resolveKey(m.to, mods)) |sk| seen.insert(sk);

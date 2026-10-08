@@ -1524,7 +1524,7 @@ test "X11 key tables reach every SpecialKey through the shared policy" {
         XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, 'a',     'c',     'x',    'v',      'y',
         'z',
     };
-    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true } };
+    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = true } };
     for (mod_sets) |mods| {
         for (keysyms) |ks| {
             const nk = (if (mods.ctrl) chordFromKeysym(ks) else null) orelse navFromKeysym(ks) orelse continue;
