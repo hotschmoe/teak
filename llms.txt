@@ -147,6 +147,10 @@ Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 dropdown debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
 
+### Version (`teak.version`)
+`teak.version: []const u8` — library semver, derived from `build.zig.zon` `.version` (plus `+<meta>` when built with
+`-Dversion-meta=<meta>`); the single source is documented in docs/VERSIONING.md.
+
 ### Commands & CmdBuffer (`teak.cmd` → core/cmd.zig)
 ```zig
 Cmd(comptime Msg: type) type          // tagged union: push_group/pop_group, push_scroll/pop_scroll,
@@ -615,6 +619,21 @@ measureWrapped(text, font, max_w, mode, max_lines, m) Measured{w, h, lines}
 minContent / maxContent(text, font, m) f32
 caretPos(text, index, font, max_w, mode, max_lines, m) Caret{x, y, line}
 indexAt(text, x, y, font, max_w, mode, max_lines, m) usize  // inverse of caretPos at grapheme boundaries
+```
+
+### Accessibility (`teak.A11yNode`, `teak.A11yHint`; docs/features/a11y.md)
+Published automatically (`RunOptions.a11y = true`) to `Host.publishA11yTree` only when the tree changed; AT requests come back
+through the optional `Host.pollA11yActions` and become a click / focus Msg / typed keys (no second mutation path).
+```zig
+A11yHint = struct { semantic: A11ySemantic = .none, label: []const u8 = "", value: f32 = 0 /*progressbar*/, level: u8 = 0,
+                    selected: bool = false, expanded: ?bool = null, live: A11yLive(.off|.polite|.assertive) = .off }
+A11ySemantic = enum { none, list, listitem, listbox, option, combobox, tablist, tab, tree, treeitem, table, row, columnheader,
+                      cell, menu, menubar, menuitem, toolbar, dialog, status, alert, progressbar, heading, link }
+GroupStyle.a11y / ScrollStyle.a11y / ButtonCmd.a11y: A11yHint;   cb.buttonA11y(msg, label, hint);  cb.buttonStyledA11y(...)
+cb.textInputA11y(focus_msg, content, cursor, accessible_name)
+A11yNode = struct { role: A11yRole, cmd_index, bounds, label, value, sel_start, sel_end, focused, disabled, state, selected,
+                    expanded: ?bool, level, live, modal, parent: u32 /*NO_PARENT*/ }
+A11yAction = struct { kind: A11yActionKind(.activate|.focus|.set_value|.increment|.decrement), cmd_index: u32, text: []const u8 }
 ```
 
 ### Host interface (`teak.host` → platform/host.zig)

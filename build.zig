@@ -1,5 +1,13 @@
 const std = @import("std");
 
+/// Single source of truth: build.zig.zon `.version` (docs/VERSIONING.md). `-Dversion-meta=<str>` appends "+<str>".
+fn versionString(b: *std.Build) []const u8 {
+    const base: []const u8 = @import("build.zig.zon").version;
+    _ = std.SemanticVersion.parse(base) catch @panic("build.zig.zon .version is not valid semver");
+    const meta = b.option([]const u8, "version-meta", "Semver build metadata appended as +<meta>") orelse return base;
+    return b.fmt("{s}+{s}", .{ base, meta });
+}
+
 const BuildZig = @This();
 
 pub fn build(b: *std.Build) void {
@@ -11,6 +19,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const version_options = b.addOptions();
+    version_options.addOption([]const u8, "version", versionString(b));
+    version_options.addOption([]const u8, "manifest_version", @import("build.zig.zon").version);
+    mod.addOptions("build_options", version_options);
 
     const mod_tests = b.addTest(.{ .root_module = mod });
 
@@ -27,23 +39,10 @@ pub fn build(b: *std.Build) void {
     const integ_tests = b.addTest(.{ .root_module = integ_mod });
     test_step.dependOn(&b.addRunArtifact(integ_tests).step);
 
-    // Shared glyph cache (src/gpu/glyph_cache.zig) — tests exercise the
-    // factored LRU + instrumentation against a stub backend. Not
-    // reachable from src/teak.zig (core can't import src/gpu/* per
-    // HARDLINE §3), so it needs its own test module.
-    const glyph_cache_mod = b.createModule(.{
-        .root_source_file = b.path("src/gpu/glyph_cache.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "teak", .module = mod }},
-    });
-    const glyph_cache_tests = b.addTest(.{ .root_module = glyph_cache_mod });
-    test_step.dependOn(&b.addRunArtifact(glyph_cache_tests).step);
-
     // Pure GPU-side helpers (slot table, scene uniform packing / target
     // sizing / change signature). Not reachable from src/teak.zig for the
-    // same reason as glyph_cache; each is a root file with its own tests.
-    for ([_][]const u8{ "src/gpu/slot_table.zig", "src/gpu/scene_common.zig", "src/gpu/overlay.zig", "src/gpu/glyph_atlas.zig" }) |path| {
+    // same reason as the other gpu helpers; each is a root file with its own tests.
+    for ([_][]const u8{ "src/gpu/slot_table.zig", "src/gpu/scene_common.zig", "src/gpu/overlay.zig", "src/gpu/glyph_atlas.zig", "src/gpu/text_stage.zig" }) |path| {
         const m = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,
@@ -53,6 +52,24 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
     }
 
+    // stb_truetype text backend (src/text/text.zig) — the Linux
+    // rasterizer + measurer. It is gpu-adjacent and not
+    // reachable from src/teak.zig, so it gets its own test module. Links
+    // the vendored stb impl TU + libc; its tests rasterize/measure a real
+    // system font and skip cleanly when none is installed (headless CI).
+    const stbtt_mod = b.createModule(.{
+        .root_source_file = b.path("src/text/text.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "teak", .module = mod }},
+    });
+    stbtt_mod.addImport("stb-c", translateC(b, b.path("src/gpu/vendor/stb_truetype.h"), null, target, optimize));
+    stbtt_mod.addIncludePath(b.path("src/gpu/vendor"));
+    stbtt_mod.addCSourceFile(.{
+        .file = b.path("src/gpu/vendor/stb_truetype_impl.c"),
+        .flags = &.{"-std=c99"},
+    });
     // Platform-wasm serialization tests. wasm.zig is the host backend
     // for the web target, but `serializeA11yTree` is a pure helper —
     // testable on the build host as long as zunk's `extern "env"`
@@ -72,33 +89,18 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/platform/wasm.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .imports = &.{
             .{ .name = "teak", .module = mod },
             .{ .name = "zunk", .module = zunk_host_dep.module("zunk") },
             .{ .name = "teak-web-font", .module = web_font_mod },
+            .{ .name = "teak-text", .module = stbtt_mod },
+            .{ .name = "teak-web-fontdata", .module = webFontDataModule(b, &.{}, b.path("src/text/fonts/IBMPlexMonoDefault.ttf"), target, optimize) },
         },
     });
     const platform_wasm_tests = b.addTest(.{ .root_module = platform_wasm_mod });
     test_step.dependOn(&b.addRunArtifact(platform_wasm_tests).step);
 
-    // stb_truetype text backend (src/text/text.zig) — the Linux
-    // rasterizer + measurer. Like glyph_cache it is gpu-adjacent and not
-    // reachable from src/teak.zig, so it gets its own test module. Links
-    // the vendored stb impl TU + libc; its tests rasterize/measure a real
-    // system font and skip cleanly when none is installed (headless CI).
-    const stbtt_mod = b.createModule(.{
-        .root_source_file = b.path("src/text/text.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{.{ .name = "teak", .module = mod }},
-    });
-    stbtt_mod.addImport("stb-c", translateC(b, b.path("src/gpu/vendor/stb_truetype.h"), null, target, optimize));
-    stbtt_mod.addIncludePath(b.path("src/gpu/vendor"));
-    stbtt_mod.addCSourceFile(.{
-        .file = b.path("src/gpu/vendor/stb_truetype_impl.c"),
-        .flags = &.{"-std=c99"},
-    });
     // Win32 platform smoke tests (src/platform/win32.zig). Only
     // wired when the host target is Windows because the file imports
     // user32/oleaut32/kernel32/uiautomationcore. Covers the UIA
@@ -137,7 +139,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(b.fmt("examples/fonts/assets/{s}", .{file})),
         });
     }
-    for ([_][]const u8{ "IBMPlexMonoSub-Regular", "QuicksandSub-Regular", "QuicksandSub-NoLig" }) |name| {
+    for ([_][]const u8{ "IBMPlexMonoSub-Regular", "QuicksandSub-Regular", "QuicksandSub-NoLig", "IBMPlexMonoMarks" }) |name| {
         stbtt_face_mod.addAnonymousImport(b.fmt("test-font-{s}", .{name}), .{
             .root_source_file = b.path(b.fmt("tests/fonts/{s}.ttf", .{name})),
         });
@@ -536,11 +538,14 @@ fn stbTextModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
+    // wasm32-freestanding has no libc: stb is compiled against a small shim
+    // (src/text/stb_wasm_shim.zig) instead.
+    const wasm = target.result.os.tag == .freestanding;
     const text_mod = b.createModule(.{
         .root_source_file = teak_dep.path("src/text/text.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
+        .link_libc = !wasm,
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
         },
@@ -548,8 +553,9 @@ fn stbTextModule(
     text_mod.addImport("stb-c", translateC(b, teak_dep.path("src/gpu/vendor/stb_truetype.h"), null, target, optimize));
     text_mod.addIncludePath(teak_dep.path("src/gpu/vendor"));
     text_mod.addCSourceFile(.{
-        .file = teak_dep.path("src/gpu/vendor/stb_truetype_impl.c"),
-        .flags = &.{"-std=c99"},
+        .file = if (wasm) teak_dep.path("src/text/stb_wasm_impl.c") else teak_dep.path("src/gpu/vendor/stb_truetype_impl.c"),
+        // wasm: size matters more than the last few percent of rasterizer speed.
+        .flags = if (wasm) &.{ "-std=c99", "-Oz" } else &.{"-std=c99"},
     });
     return text_mod;
 }
@@ -639,6 +645,11 @@ pub const WebWgpuOptions = struct {
     output_dir: []const u8 = "dist",
     /// Fonts copied to `<output_dir>/fonts/` and loaded before the first frame.
     fonts: []const WebFont = &.{},
+    /// Strip DWARF and the name section from the .wasm in any non-Debug
+    /// build (the browser cannot use it without an extension, and it was
+    /// ~90% of the shipped file: chrome 1.27 MB -> ~0.12 MB). Set false to
+    /// keep symbols for wasm debugging / `wasm-objdump`.
+    strip: bool = true,
 };
 
 /// The `teak-fonts` options module: the family registered for each slot ("" =
@@ -670,6 +681,40 @@ fn webFontModule(b: *std.Build, teak_mod: *std.Build.Module, fonts_mod: *std.Bui
     });
 }
 
+/// The `teak-web-fontdata` module: every `.fonts` file and the default face
+/// embedded as bytes (so stb_truetype in wasm shapes and rasterizes with exactly
+/// the faces the app ships), plus each file's slot and weight. The default face
+/// (a Plex Mono ASCII subset, ~5.5 KB gzip) is embedded only when `fonts` is empty.
+fn webFontDataModule(
+    b: *std.Build,
+    fonts: []const WebFont,
+    default_font: std.Build.LazyPath,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    var src: std.Io.Writer.Allocating = .init(b.allocator);
+    src.writer.writeAll(
+        \\pub const Face = struct { slot: u8, weight: u16, bytes: []const u8 };
+        \\pub const default_font = @embedFile("teak-default-font");
+        \\pub const faces = [_]Face{
+        \\
+    ) catch @panic("OOM");
+    for (fonts, 0..) |f, i| {
+        src.writer.print("    .{{ .slot = {d}, .weight = {d}, .bytes = @embedFile(\"font-{d}\") }},\n", .{ @backingInt(f.slot), f.weight, i }) catch @panic("OOM");
+    }
+    src.writer.writeAll("};\n") catch @panic("OOM");
+    const wf = b.addWriteFiles();
+    const root = wf.add("webfontdata.zig", src.written());
+    const mod = b.createModule(.{ .root_source_file = root, .target = target, .optimize = optimize });
+    // An app that ships its own faces does not also pay for the built-in default
+    // (any registered face serves families without one).
+    mod.addAnonymousImport("teak-default-font", .{ .root_source_file = if (fonts.len > 0) wf.add("no-default-font", "") else default_font });
+    for (fonts, 0..) |f, i| {
+        mod.addAnonymousImport(b.fmt("font-{d}", .{i}), .{ .root_source_file = f.path });
+    }
+    return mod;
+}
+
 fn addFontArgs(run: *std.Build.Step.Run, fonts: []const WebFont) void {
     for (fonts) |f| {
         run.addArg("--font");
@@ -699,6 +744,7 @@ pub fn linkWebWgpu(
     exe.rdynamic = true;
     exe.entry = .disabled;
     exe.export_memory = true;
+    if (opts.strip and optimize != .debug) root.strip = true;
 
     const teak_dep = b.dependencyFromBuildZig(BuildZig, .{
         .target = target,
@@ -722,6 +768,9 @@ pub fn linkWebWgpu(
 
     const web_font_mod = webFontModule(b, teak_mod, webFontsModule(b, opts.fonts), teak_dep.path("src/gpu/web_font.zig"), target, optimize);
 
+    const text_mod = stbTextModule(b, teak_dep, teak_mod, target, optimize);
+    const font_data_mod = webFontDataModule(b, opts.fonts, teak_dep.path("src/text/fonts/IBMPlexMonoDefault.ttf"), target, optimize);
+
     const platform_mod = b.createModule(.{
         .root_source_file = teak_dep.path("src/platform/wasm.zig"),
         .target = target,
@@ -730,6 +779,8 @@ pub fn linkWebWgpu(
             .{ .name = "teak", .module = teak_mod },
             .{ .name = "zunk", .module = zunk_mod },
             .{ .name = "teak-web-font", .module = web_font_mod },
+            .{ .name = "teak-text", .module = text_mod },
+            .{ .name = "teak-web-fontdata", .module = font_data_mod },
         },
     });
 
@@ -742,6 +793,7 @@ pub fn linkWebWgpu(
             .{ .name = "zunk", .module = zunk_mod },
             .{ .name = "teak-web-font", .module = web_font_mod },
             .{ .name = "teak-shaders", .module = shaders_mod },
+            .{ .name = "teak-text", .module = text_mod },
         },
     });
 
@@ -792,7 +844,8 @@ fn translateC(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
-    const tc = b.addTranslateC(.{ .root_source_file = header, .target = target, .optimize = optimize });
+    // Header-only declarations: no libc, so freestanding (wasm) targets work too.
+    const tc = b.addTranslateC(.{ .root_source_file = header, .target = target, .optimize = optimize, .link_libc = false });
     if (include_dir) |dir| tc.addIncludePath(dir);
     return tc.createModule();
 }
