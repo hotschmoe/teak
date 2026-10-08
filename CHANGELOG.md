@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Added
+
+- **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
+  - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
+    selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,
+    `STRING`, `TEXT`, `text/plain`); `Clipboard.read` does a bounded
+    synchronous `XConvertSelection` round trip; an unclaimed Ctrl+V becomes
+    `.pasted_text` (or a `.dropped` PNG image) asynchronously, with INCR on
+    receive.
+  - XDND v5 drops: `text/uri-list` files and `UTF8_STRING` text arrive as
+    `.dropped` like the web host.
+  - Input methods: XIM input context with on-the-spot preedit callbacks
+    feeding `imeState()`, `Xutf8LookupString` text (also Compose / dead keys),
+    `Host.setImeSpot` for the over-the-spot style, clean fallback when no IM.
+  - `zig build test-x11` (live display, skips without `DISPLAY`) drives the
+    host with xclip / xdotool and an in-process XDND source.
+
+### Fixed
+
+- X11 host failed to compile on first use under Zig 0.17 (`Xlib.load` still
+  used the removed `@typeInfo(...).fields`).
+
 ### Changed (breaking)
 
 - **Zig 0.17.0 is now required; 0.16 support is dropped.** See
