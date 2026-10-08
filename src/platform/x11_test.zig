@@ -18,6 +18,8 @@ fn requireDisplay() !void {
     if (getenv("DISPLAY") == null) return error.SkipZigTest;
     if (system("command -v xclip >/dev/null 2>&1") != 0) return error.SkipZigTest;
     if (system("command -v xdotool >/dev/null 2>&1") != 0) return error.SkipZigTest;
+    // Scratch dir (gitignored) in the package root, the test's cwd.
+    std.Io.Dir.cwd().createDirPath(std.Options.debug_io, ".x11_test") catch {};
 }
 
 fn sh(comptime fmt: []const u8, args: anytype) !void {
@@ -97,16 +99,16 @@ test "clipboard write is served to another client (xclip -o)" {
 
     // Through the Clipboard vtable (Ctrl+C path) ...
     host.clipboard().write("héllo from teak");
-    var job: Job = .{ .cmd = "xclip -selection clipboard -o > .zig-cache/x11_clip_out" };
+    var job: Job = .{ .cmd = "xclip -selection clipboard -o > .x11_test/x11_clip_out" };
     try pumpWhile(&host, &job);
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("héllo from teak", try readSmallFile(".zig-cache/x11_clip_out", &buf));
+    try std.testing.expectEqualStrings("héllo from teak", try readSmallFile(".x11_test/x11_clip_out", &buf));
 
     // ... and through the declarative effect.
     try std.testing.expectEqual(teak.EffectSubmit.accepted, host.submit(.{ .write_clipboard = .{ .id = 1, .text = "via effect" } }));
-    var job2: Job = .{ .cmd = "xclip -selection clipboard -o -t STRING > .zig-cache/x11_clip_out" };
+    var job2: Job = .{ .cmd = "xclip -selection clipboard -o -t STRING > .x11_test/x11_clip_out" };
     try pumpWhile(&host, &job2);
-    try std.testing.expectEqualStrings("via effect", try readSmallFile(".zig-cache/x11_clip_out", &buf));
+    try std.testing.expectEqualStrings("via effect", try readSmallFile(".x11_test/x11_clip_out", &buf));
 
     // Reading back what we own never leaves the process.
     try std.testing.expectEqualStrings("via effect", host.clipboard().read());
@@ -154,8 +156,8 @@ test "pasted PNG arrives as an image drop" {
     @memcpy(png[12..16], "IHDR");
     std.mem.writeInt(u32, png[16..20], 7, .big);
     std.mem.writeInt(u32, png[20..24], 5, .big);
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ".zig-cache/x11_test.png", .data = &png });
-    try sh("xclip -selection clipboard -t image/png -i .zig-cache/x11_test.png >/dev/null 2>&1", .{});
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ".x11_test/x11_test.png", .data = &png });
+    try sh("xclip -selection clipboard -t image/png -i .x11_test/x11_test.png >/dev/null 2>&1", .{});
     std.Io.sleep(std.Options.debug_io, .fromMilliseconds(150), .awake) catch {};
     try pressCtrlV(&host);
     var r: EffectResult = undefined;
@@ -175,8 +177,8 @@ test "large clipboard text arrives intact (INCR or one shot)" {
 
     var big: [3 * 1024 * 1024]u8 = undefined;
     for (&big, 0..) |*b, i| b.* = 'a' + @as(u8, @intCast(i % 26));
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ".zig-cache/x11_big.txt", .data = &big });
-    try sh("xclip -selection clipboard -i .zig-cache/x11_big.txt >/dev/null 2>&1", .{});
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ".x11_test/x11_big.txt", .data = &big });
+    try sh("xclip -selection clipboard -i .x11_test/x11_big.txt >/dev/null 2>&1", .{});
     std.Io.sleep(std.Options.debug_io, .fromMilliseconds(150), .awake) catch {};
     try pressCtrlV(&host);
     var r: EffectResult = undefined;
@@ -193,11 +195,11 @@ test "XDND file drop delivers a Drop and finishes the session" {
     _ = host.pollInputs();
     _ = src.pollInputs();
 
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ".zig-cache/dropped file.json", .data = "{\"k\":1}" });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = ".x11_test/dropped file.json", .data = "{\"k\":1}" });
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd_n = try std.process.currentPath(std.Options.debug_io, &cwd_buf);
     var uri_buf: [std.fs.max_path_bytes + 64]u8 = undefined;
-    const uri_list = try std.fmt.bufPrint(&uri_buf, "# comment\r\nfile://{s}/.zig-cache/dropped%20file.json\r\nfile://remotehost/etc/passwd\r\n", .{cwd_buf[0..cwd_n]});
+    const uri_list = try std.fmt.bufPrint(&uri_buf, "# comment\r\nfile://{s}/.x11_test/dropped%20file.json\r\nfile://remotehost/etc/passwd\r\n", .{cwd_buf[0..cwd_n]});
 
     const a = &src.atoms;
     _ = src.x.XSetSelectionOwner(src.display, a.xdnd_selection, src.window, 0);

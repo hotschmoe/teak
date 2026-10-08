@@ -1610,7 +1610,7 @@ test "preedit callbacks drive the composition state (multibyte and wide)" {
 
 test "atomsFromBytes decodes a format-32 property" {
     var raw: [3 * @sizeOf(c_long)]u8 = undefined;
-    for (0..3) |i| std.mem.writeInt(c_ulong, raw[i * @sizeOf(c_long) ..][0..@sizeOf(c_ulong)], 100 + i, @import("builtin").cpu.arch.endian());
+    for (0..3) |i| std.mem.writeInt(c_ulong, raw[i * @sizeOf(c_long) ..][0..@sizeOf(c_ulong)], @as(c_ulong, 100) + @as(c_ulong, @intCast(i)), @import("builtin").cpu.arch.endian());
     var out: [4]Atom = undefined;
     try std.testing.expectEqual(@as(usize, 3), atomsFromBytes(&raw, &out));
     try std.testing.expectEqual(@as(Atom, 102), out[2]);
