@@ -60,6 +60,7 @@ const hb = struct {
     extern fn hb_buffer_add_utf8(b: *Buffer, text: [*]const u8, text_length: c_int, item_offset: c_uint, item_length: c_int) void;
     extern fn hb_buffer_guess_segment_properties(b: *Buffer) void;
     extern fn hb_buffer_get_direction(b: *Buffer) c_int;
+    extern fn hb_buffer_set_direction(b: *Buffer, d: c_int) void;
     extern fn hb_shape(f: *HFont, b: *Buffer, features: ?*const anyopaque, num_features: c_uint) void;
     extern fn hb_buffer_get_length(b: *Buffer) c_uint;
     extern fn hb_buffer_get_glyph_infos(b: *Buffer, length: ?*c_uint) [*]GlyphInfo;
