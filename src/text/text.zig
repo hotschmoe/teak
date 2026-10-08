@@ -14,7 +14,7 @@ pub const faceFor = face.faceFor;
 pub const SimpleShaper = shaper;
 pub const measure = measure_mod.measure;
 pub const width = measure_mod.width;
-pub const Bitmap = raster.Bitmap;
+pub const GlyphBitmap = raster.GlyphBitmap;
 pub const StbttRasterizer = raster.StbttRasterizer;
 
 test {
