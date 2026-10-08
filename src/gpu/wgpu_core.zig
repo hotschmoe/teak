@@ -134,6 +134,11 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// Built lazily for the current `vert_buf` (it is also bound as storage).
         bind_group: c.WGPUBindGroup,
         bind_group_buf: c.WGPUBuffer,
+        /// `vert_buf_size` the bind group was built for. A reallocation always
+        /// changes it, which the handle alone cannot show: a released buffer's
+        /// handle can come back for the new one, leaving a bind group on the
+        /// stale buffer (SDF records read as garbage).
+        bind_group_size: u64,
         solid_bgl: c.WGPUBindGroupLayout,
         uniform_buf: c.WGPUBuffer,
         vert_buf: c.WGPUBuffer,
@@ -164,6 +169,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// Bind group layout + sampler shared by the image/scene pipelines.
         text_bgl: c.WGPUBindGroupLayout,
         sampler: c.WGPUSampler,
+        glyph_sampler: c.WGPUSampler,
         text: text_stage.TextStage(Rasterizer),
         atlas_pages: std.ArrayList(AtlasPage),
         glyph_buf: c.WGPUBuffer,
@@ -417,6 +423,10 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             sampler_desc.lodMaxClamp = 1;
             sampler_desc.maxAnisotropy = 1;
             const sampler = c.wgpuDeviceCreateSampler(device, &sampler_desc) orelse return error.SamplerFailed;
+            // Distance-field glyphs are minified AND magnified: plain bilinear.
+            sampler_desc.label = wgpuStr("glyph-sampler");
+            sampler_desc.magFilter = c.WGPUFilterMode_Linear;
+            const glyph_sampler = c.wgpuDeviceCreateSampler(device, &sampler_desc) orelse return error.SamplerFailed;
 
             const scene = try wgpu_scene.Renderer.init(device, ctx.queue, surf_format, options.scene_msaa);
 
@@ -431,6 +441,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             var glyph_bgl_entries = [_]c.WGPUBindGroupLayoutEntry{
                 std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
                 std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
+                std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
             };
             glyph_bgl_entries[0].binding = 0;
             glyph_bgl_entries[0].visibility = c.WGPUShaderStage_Vertex | c.WGPUShaderStage_Fragment;
@@ -440,6 +451,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             glyph_bgl_entries[1].visibility = c.WGPUShaderStage_Fragment;
             glyph_bgl_entries[1].texture.sampleType = c.WGPUTextureSampleType_Float;
             glyph_bgl_entries[1].texture.viewDimension = c.WGPUTextureViewDimension_2D;
+            glyph_bgl_entries[2].binding = 2;
+            glyph_bgl_entries[2].visibility = c.WGPUShaderStage_Fragment;
+            glyph_bgl_entries[2].sampler.type = c.WGPUSamplerBindingType_Filtering;
             var glyph_bgl_desc = std.mem.zeroes(c.WGPUBindGroupLayoutDescriptor);
             glyph_bgl_desc.label = wgpuStr("glyph-bgl");
             glyph_bgl_desc.entryCount = glyph_bgl_entries.len;
@@ -486,6 +500,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .pipeline = pipeline,
                 .bind_group = null,
                 .bind_group_buf = null,
+                .bind_group_size = 0,
                 .solid_bgl = bind_group_layout,
                 .uniform_buf = uniform_buf,
                 .vert_buf = null,
@@ -503,6 +518,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .height = 0,
                 .text_bgl = text_bgl,
                 .sampler = sampler,
+                .glyph_sampler = glyph_sampler,
                 .glyph_pipeline = glyph_pipeline,
                 .glyph_bgl = glyph_bgl,
                 .glyph_uniform_buf = glyph_uniform_buf,
@@ -568,6 +584,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             c.wgpuRenderPipelineRelease(self.glyph_pipeline);
             c.wgpuBindGroupLayoutRelease(self.glyph_bgl);
             c.wgpuSamplerRelease(self.sampler);
+            c.wgpuSamplerRelease(self.glyph_sampler);
             c.wgpuBindGroupLayoutRelease(self.text_bgl);
 
             self.releaseMsaa();
@@ -873,6 +890,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             desc.entries = &entries;
             self.bind_group = c.wgpuDeviceCreateBindGroup(self.device, &desc);
             self.bind_group_buf = self.vert_buf;
+            self.bind_group_size = self.vert_buf_size;
         }
 
         /// Solid quads `[from, to)` (vertex indices).
@@ -880,7 +898,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const from, const to = range;
             if (to <= from or self.vert_buf == null) return;
             const draw_byte_size: u64 = @as(u64, self.vert_count) * @sizeOf(Vertex);
-            if (self.bind_group_buf != self.vert_buf) self.rebuildSolidBindGroup();
+            if (self.bind_group_buf != self.vert_buf or self.bind_group_size != self.vert_buf_size) self.rebuildSolidBindGroup();
             c.wgpuRenderPassEncoderSetPipeline(pass, self.pipeline);
             c.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.bind_group, 0, null);
             c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.vert_buf, 0, draw_byte_size);
@@ -1011,12 +1029,15 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 var entries = [_]c.WGPUBindGroupEntry{
                     std.mem.zeroes(c.WGPUBindGroupEntry),
                     std.mem.zeroes(c.WGPUBindGroupEntry),
+                    std.mem.zeroes(c.WGPUBindGroupEntry),
                 };
                 entries[0].binding = 0;
                 entries[0].buffer = self.glyph_uniform_buf;
                 entries[0].size = 16;
                 entries[1].binding = 1;
                 entries[1].textureView = view;
+                entries[2].binding = 2;
+                entries[2].sampler = self.glyph_sampler;
                 var desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
                 desc.label = wgpuStr("glyph-atlas-bg");
                 desc.layout = self.glyph_bgl;
@@ -1165,6 +1186,21 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             };
         }
 
+        /// Read-only view of the image table for the scene renderer's sprites.
+        const ImageLookup = struct {
+            cache: *ImageCache,
+            pub fn hasImage(self: ImageLookup, handle: u32) bool {
+                return self.cache.get(handle) != null;
+            }
+            pub fn viewOf(self: ImageLookup, handle: u32) ?c.WGPUTextureView {
+                return (self.cache.get(handle) orelse return null).view;
+            }
+        };
+
+        fn imageLookup(self: *Self) ImageLookup {
+            return .{ .cache = &self.images };
+        }
+
         /// Free an image uploaded with `uploadImage`. The handle (and any
         /// `ImageDraw` still carrying it) is dead afterwards; the slot is
         /// reused by the next upload.
@@ -1216,7 +1252,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// composite quad per visible scene for the next `renderFrame`.
         /// Call after `uploadImages`, before `renderFrame`. Scenes whose
         /// content did not change since the last frame are not redrawn.
-        pub fn renderScenes(self: *Self, draws: []const teak.SceneDraw, items: []const teak.SceneItem) void {
+        pub fn renderScenes(self: *Self, draws: []const teak.SceneDraw, data: teak.SceneData) void {
             self.scene_draw_count = 0;
             self.scene_vert_count = 0;
             var mark: overlay.Marker = .{ .start = self.splitOf("scenes", draws.len) };
@@ -1231,7 +1267,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const scale: f32 = 1;
             for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
                 mark.visit(i, self.scene_draw_count);
-                const size = self.scene.renderInto(encoder, i, draw, scene_common.itemsOf(draw, items), scale) orelse continue;
+                const size = self.scene.renderInto(encoder, i, draw, scene_common.itemsOf(draw, data.items), scene_common.spritesOf(draw, data.sprites), self.imageLookup(), scale) orelse continue;
                 const quad = scene_common.compositeQuad(draw, size, scale) orelse continue;
                 const bind_group = self.sceneBindGroup(i) orelse continue;
 

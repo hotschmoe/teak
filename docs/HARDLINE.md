@@ -145,9 +145,11 @@ menus can render outside their declaring parent.
   base text (docs/features/gpu.md, "Overlay layering").
   Each pass walks the buffer twice in the same forward order; within
   a level, painter's order = doc order (unchanged from §1).
-- Overlay position comes from explicit `x`, `y` on `OverlayStyle(Msg)`.
-  The app computes them (typically from the previous frame's anchor
-  rect or mouse coords). No anchor-by-cmd-index coupling.
+- Overlay position comes from explicit `x`, `y` on `OverlayStyle(Msg)`
+  (mouse coords, a fixed spot), or from `anchor_msg`: a widget named by its
+  click / focus **Msg value**, resolved by the layout pass from the same
+  frame's rects (like `focusedMsg`, never by cmd index). No anchor-by-cmd-index
+  coupling, no retained anchor state, no layout feedback into `view`.
 - Overlays do not contribute to their parent's measured size — they
   hop the layout but stay in the buffer.
 - `OverlayStyle(Msg)` is Msg-generic so `backdrop_msg: ?Msg` can carry
@@ -352,3 +354,24 @@ human review.
       greps for `builtin.os.tag`, `builtin.target`, `@import("builtin")`.
 - [ ] **[auto]** `view` signatures take no `std.mem.Allocator`
       parameter. Audit finds `fn view(` and scans the signature body.
+- [ ] **[auto]** Docs match the code: the `### Escape hatch N` headings
+      here and the numbered §2 list in `llms.txt` agree; every directory
+      under `examples/` appears as `examples/<name>/` in `README.md`; every
+      optional App hook the run loop probes (`@hasDecl(App, "x")` in
+      `src/run.zig`) is named in the hook table in `docs/features/run.md`;
+      every Host / Gpu optional surface (`@hasDecl(Host|Gpu, "x")` in
+      `run.zig`, plus the `validateHost` / `validateGpu` lists) is named in
+      `docs/features/host.md` / `gpu.md`.
+- [ ] **[manual]** Every optional App hook is a function of `*const Model`
+      plus loop-supplied data and returns data (a `Msg`, a spec, a theme);
+      no hook receives a mutable `*Model`, a callback, or a Host handle it
+      may keep. (The one historical exception, `handleClipboard(*Model, ...)`, is
+      a deprecated one-release adapter over `clipboardMsg` / `clipboardText`.)
+- [ ] **[manual]** Host-side extras (`setCursor`, `setImeSpot`,
+      `waitEvents`, a11y publish, control channel / `injectInput`) are
+      output-only or input-source surfaces: they may not read the Model or
+      invent a second mutation path (input injected by a control channel
+      must arrive as the same `InputState` a real device produces).
+- [ ] **[manual]** Do not `@hasDecl` a *private* (non-`pub`) declaration in
+      `src/platform/*` or `src/gpu/*`: it is always false from outside the
+      file and silently disables the feature.

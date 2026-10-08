@@ -23,6 +23,7 @@ const NoSurface = struct {
 const BoxRaster = struct {
     const GlyphBitmap = struct { pixels: []const u8, width: u32, height: u32, bearing_x: i32, bearing_y: i32 };
     pixels: [6 * 8]u8 = @splat(255),
+    sdf: [16 * 16]u8 = undefined,
 
     pub fn init(_: std.mem.Allocator) !BoxRaster {
         return .{};
@@ -34,6 +35,18 @@ const BoxRaster = struct {
             out[i] = .{ .glyph = ch, .face = 0, .cluster = @intCast(i), .x = @floatFromInt(i * 8), .advance = 8 };
         }
         return .{ .count = n, .width = @floatFromInt(n * 8), .consumed = n };
+    }
+    /// A 16x16 distance field of an 8x8 box (texels 4..12): byte = 128 + 16 * signed distance.
+    pub const sdf_em: f32 = 16;
+    pub fn rasterizeSdf(self: *BoxRaster, _: u16, gid: u16) ?GlyphBitmap {
+        if (gid == ' ') return .{ .pixels = &.{}, .width = 0, .height = 0, .bearing_x = 0, .bearing_y = 0 };
+        for (0..16) |y| for (0..16) |x| {
+            const fx: f32 = @as(f32, @floatFromInt(x)) + 0.5;
+            const fy: f32 = @as(f32, @floatFromInt(y)) + 0.5;
+            const inside = @min(@min(fx - 4, 12 - fx), @min(fy - 4, 12 - fy));
+            self.sdf[y * 16 + x] = @intFromFloat(std.math.clamp(128 + 16 * inside, 0, 255));
+        };
+        return .{ .pixels = &self.sdf, .width = 16, .height = 16, .bearing_x = 0, .bearing_y = -12 };
     }
     pub fn ascent(_: *BoxRaster, _: teak.FontSpec, _: f32) f32 {
         return 8; // device px: the box glyph is a fixed size at any scale
@@ -172,7 +185,7 @@ test "a scene is rendered offscreen and composited at its rect, honouring clip" 
     try std.testing.expect(mesh != teak.MESH_HANDLE_NONE);
 
     // A 32x32 scene at (16, 16); its red quad covers the whole target.
-    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 0)}, &.{});
+    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 0)}, .{});
     const full = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(full);
     try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(full, 30, 30)); // scene (red, BGRA)
@@ -182,14 +195,14 @@ test "a scene is rendered offscreen and composited at its rect, honouring clip" 
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(full, 15, 15));
 
     // Same scene clipped by a scroll container starting at x = 32.
-    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 32)}, &.{});
+    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 32)}, .{});
     const clipped = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(clipped);
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(clipped, 20, 30)); // clipped away
     try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(clipped, 40, 30)); // still visible
 
     // No scenes staged: nothing composited.
-    h.gpu.renderScenes(&.{}, &.{});
+    h.gpu.renderScenes(&.{}, .{});
     const none = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(none);
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(none, 30, 30));
@@ -474,6 +487,55 @@ test "atlas text: scale 2 places glyphs in device pixels and scales solids as ve
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 35, 50));
 }
 
+fn scalable(d: teak.TextDraw, size: f32) teak.TextDraw {
+    var out = d;
+    out.font = .{ .size_px = size, .scalable = true };
+    out.rect_w = 64;
+    out.rect_h = 64;
+    return out;
+}
+
+test "scalable text: one distance field, crisp edges at 2x and 4x, placed by the zoom" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    // size 32 -> k = 2: the 8x8 box becomes 16x16 at x 4+8..4+24, y (48-24)+8..(48-24)+24.
+    h.gpu.uploadText(&.{scalable(textAt(4, 40, 0, 0, "a"), 32)});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 20, 40)); // inside
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 8, 40)); // left of the box
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 20, 28)); // above it
+    try std.testing.expect(at(f, 11, 40)[0] < 60); // one pixel outside the edge: almost nothing
+    try std.testing.expect(at(f, 13, 40)[0] > 195); // one pixel inside: almost full
+    const at_2x = h.gpu.text.atlas.pageCount();
+
+    // 4x: the SAME atlas entry (no new glyph), edges still one pixel wide.
+    h.gpu.uploadText(&.{scalable(textAt(4, 40, 0, 0, "a"), 64)});
+    const g = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(g);
+    try std.testing.expectEqual(at_2x, h.gpu.text.atlas.pageCount());
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(g, 30, 30));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(g, 12, 30));
+    try std.testing.expect(at(g, 19, 30)[0] < 60); // box edge at x = 4 + 16 = 20
+    try std.testing.expect(at(g, 21, 30)[0] > 195);
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.text.dropped);
+}
+
+test "scalable text keeps its clip, and a non-scalable draw of the same glyph still uses bitmaps" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    var d = scalable(textAt(4, 40, 0, 0, "a"), 32);
+    d.clip_w = 20; // clip x 0..20 cuts the box (12..28) at 20
+    var bitmap = textAt(4, 8, 16, 8, "b");
+    bitmap.color = .{ 0, 1, 0, 1 };
+    h.gpu.uploadText(&.{ d, bitmap });
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 16, 40));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 22, 40)); // beyond the clip
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 6, 10)); // the 6x8 box bitmap glyph
+}
+
 // ── SDF quads: rounded rects, borders, gradients, soft shadows ─────
 
 const sdf = teak.render.sdf;
@@ -656,4 +718,44 @@ test "sdf: MSAA does not change fully covered or empty pixels" {
     try std.testing.expectEqual(@as(u8, 255), at(pixels, 28, 28)[1]);
     try std.testing.expectEqual(@as(u8, 0), at(pixels, 2, 2)[1]);
     try std.testing.expectEqual(@as(u8, 255), at(pixels, 8, 28)[1]);
+}
+
+test "sdf: records survive the vertex buffer growing and shrinking between frames (overlay open / close)" {
+    // The SDF records are read back from the vertex buffer through a storage
+    // bind group. When the buffer is reallocated (a dropdown opens: more
+    // vertices) the bind group must follow it, even if the new buffer comes
+    // back with the old one's handle; otherwise rects drawn after the growth
+    // read records from a stale buffer (missing fills, shifted rects, stray dots).
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    const counts = [_]usize{ 2, 7, 30, 64, 1, 64, 12, 64, 3 };
+    for (counts, 0..) |n, frame| {
+        var verts: std.ArrayList(teak.Vertex) = .empty;
+        defer verts.deinit(std.testing.allocator);
+        // a plain quad under everything so the vertex count also moves in odd steps
+        teak.vertex.emitQuad(&verts, std.testing.allocator, .{ .x = 0, .y = 0, .w = 1, .h = 1 }, .{ 0, 0, 0, 1 });
+        for (0..n) |i| {
+            const cx: f32 = @floatFromInt((i % 8) * 8);
+            const cy: f32 = @floatFromInt((i / 8) * 8);
+            const shade: f32 = @as(f32, @floatFromInt(40 + (i * 3) % 200)) / 255.0;
+            sdf.emitRect(&verts, std.testing.allocator, .{
+                .rect = .{ .x = cx + 1, .y = cy + 1, .w = 6, .h = 6 },
+                .radii = teak.Radii.all(1),
+                .fill = .{ shade, 1 - shade, 0.5, 1 },
+            }, full_clip);
+        }
+        h.gpu.uploadVertices(verts.items);
+        const pixels = try h.frame(.{ 0, 0, 0, 1 });
+        defer std.testing.allocator.free(pixels);
+        for (0..n) |i| {
+            const x: u32 = @intCast((i % 8) * 8 + 4);
+            const y: u32 = @intCast((i / 8) * 8 + 4);
+            const want_r: i32 = @intCast(@as(u32, @intFromFloat(@round((@as(f32, @floatFromInt(40 + (i * 3) % 200)) / 255.0) * 255.0))));
+            const got = at(pixels, x, y); // BGRA
+            std.testing.expect(@abs(@as(i32, got[2]) - want_r) <= 2 and got[3] == 255) catch |e| {
+                std.debug.print("frame {d} ({d} rects): rect {d} at ({d},{d}) read {any}, wanted r={d}\n", .{ frame, n, i, x, y, got, want_r });
+                return e;
+            };
+        }
+    }
 }
