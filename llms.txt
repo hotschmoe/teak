@@ -138,7 +138,7 @@ frame with no opt-in. A static read-only app is just Model/Msg/update/view.
 ```zig
 pub const RunOptions = struct {
     clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },  // scene clear each frame
-    blink_period: u32 = 30,   // frames/forced rebuild while focused (cursor blink); 0 disables
+    blink_half_ms: u32 = 500, // caret blink half-period in Host-clock ms (0 = no blink); idle wakes at each toggle
     snapshot_path: ?[]const u8 = null,   // live snapshot sink; TEAK_SNAPSHOT env wins (see below)
 };
 pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: u32 };
