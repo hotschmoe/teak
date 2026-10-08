@@ -6,6 +6,10 @@
 //! — a consumer's build.zig picks a Host + Gpu backend module and wires
 //! them up. See `docs/archive/tasks-file-struct.md` for the load-bearing rationale.
 
+/// Library version (semver), derived from `build.zig.zon` `.version` at build
+/// time; `-Dversion-meta=<str>` appends `+<str>`. See docs/VERSIONING.md.
+pub const version: []const u8 = @import("build_options").version;
+
 /// The flat `Cmd` union, `CmdBuffer` and balance validation.
 pub const cmd = @import("core/cmd.zig");
 /// Comptime component composition (`Components`, `validateComponent`).
@@ -22,8 +26,14 @@ pub const linebreak = @import("core/linebreak.zig");
 pub const text_wrap = @import("core/text_wrap.zig");
 /// `Editor(cap, undo_cap)`: grapheme-aware text editing model with undo/redo (used by TextField/TextArea).
 pub const editor = @import("core/editor.zig");
+/// `TextEvent` and friends: pointer, motion and metrics events for `text_area`.
+pub const text_event = @import("core/text_event.zig");
+/// `TextArea(cap)`: multi-line editor component (Editor + scroll + textMsg events).
+pub const text_area = @import("core/text_area.zig");
 /// Declarative subscriptions (`Sub`): timers serviced by the run loop.
 pub const sub = @import("core/sub.zig");
+/// Model-driven animation: `Tween(T)`, easing curves and `lerp`.
+pub const anim = @import("core/anim.zig");
 /// `Theme`, `Palette` and `Typography` presets consulted by the theme-aware emitters.
 pub const theme = @import("core/theme.zig");
 /// `TextField`: the canonical text-input component and its key-dispatch helpers.
@@ -32,8 +42,24 @@ pub const text_field = @import("core/text_field.zig");
 pub const numeric_field = @import("core/numeric_field.zig");
 /// `Dropdown`: a closed button plus an open overlay list.
 pub const dropdown = @import("core/dropdown.zig");
+/// `Scroller`: scroll position with smooth wheel and kinetic fling, as Model data.
+pub const Scroller = @import("core/scroller.zig").Scroller;
+/// `DataTable(cfg)`: virtualized, sortable, resizable, selectable table for 100k+ rows.
+pub const data_table = @import("core/data_table.zig");
+pub const DataTable = data_table.DataTable;
+/// Column definition of a `DataTable`.
+pub const DataTableColumn = data_table.Column;
+/// `VarList(cap)`: virtualized list with per-row heights measured by layout, scroll-anchored.
+pub const var_list = @import("core/var_list.zig");
+pub const VarList = var_list.VarList;
+/// `TreeList(cap)`: virtualized tree over a preorder node set; expand/collapse + keyboard.
+pub const tree_list = @import("core/tree_list.zig");
+pub const TreeList = tree_list.TreeList;
 /// `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
 pub const combobox = @import("core/combobox.zig");
+/// Widgets built from existing Cmd primitives: toggle, progress, tabs, split pane,
+/// tooltip, toast, dialog, menu bar, context menu.
+pub const widgets = @import("core/widgets.zig");
 /// `ComponentList`: a dynamic homogeneous list of components.
 pub const component_list = @import("core/component_list.zig");
 /// `appendDebugOverlay`: dump the frame's cmds and rects as an overlay.
@@ -117,6 +143,12 @@ pub const MAX_BALANCE_DEPTH = cmd.MAX_BALANCE_DEPTH;
 pub const ButtonCmd = cmd.ButtonCmd;
 /// Colors, size and alignment of a button.
 pub const ButtonStyle = cmd.ButtonStyle;
+/// Per-corner radii for SDF surfaces.
+pub const Radii = cmd.Radii;
+/// Soft box shadow.
+pub const Shadow = cmd.Shadow;
+/// Two-stop gradient.
+pub const Gradient = cmd.Gradient;
 /// A single-style text leaf.
 pub const TextCmd = cmd.TextCmd;
 /// A single-line text input leaf (cursor, selection, focus Msg).
@@ -151,6 +183,10 @@ pub const Direction = cmd.Direction;
 pub const Align = cmd.Align;
 /// Horizontal placement of text inside its box.
 pub const TextAlign = cmd.TextAlign;
+/// Line-breaking mode of a `text` Cmd (`none`, `word`, `char`, `ellipsis`).
+pub const Wrap = cmd.Wrap;
+/// Options for `CmdBuffer.paragraphStyled` / `richParagraph`.
+pub const ParagraphOpts = cmd.ParagraphOpts;
 /// Visual variant of a text input.
 pub const InputVariant = cmd.InputVariant;
 /// Main-axis distribution of leftover space.
@@ -164,6 +200,10 @@ pub const Modifiers = pointer.Modifiers;
 pub const Button = pointer.Button;
 /// One pointer event on an interactive canvas or scene.
 pub const CanvasEvent = pointer.CanvasEvent;
+/// What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
+pub const PointerEvent = pointer.PointerEvent;
+/// A window-space rectangle (`PointerEvent.box`).
+pub const Box = pointer.Box;
 /// Kind of a `CanvasEvent` (press, move, release, wheel, ...).
 pub const CanvasEventKind = pointer.CanvasEventKind;
 
@@ -276,6 +316,8 @@ pub const runSubs = sub.runSubs;
 pub const Theme = theme.Theme;
 /// Semantic color set of a theme.
 pub const Palette = theme.Palette;
+/// Radii, border width, spacing and shadow elevations of a theme.
+pub const ThemeTokens = theme.Tokens;
 /// Font set of a theme.
 pub const Typography = theme.Typography;
 /// The default dark palette.
@@ -285,6 +327,12 @@ pub const light_palette = theme.light_palette;
 
 /// Text-input component with cursor, selection and editing `update`.
 pub const TextField = text_field.TextField;
+/// Multi-line text component driven by `textMsg` events.
+pub const TextArea = text_area.TextArea;
+/// One pointer / motion / metrics event over a `text_area`.
+pub const TextEvent = text_event.TextEvent;
+/// Kind of a `TextEvent`.
+pub const TextEventKind = text_event.TextEventKind;
 /// Text field specialised for numbers (parse, validate, value).
 pub const NumericField = numeric_field.NumericField;
 /// Comptime configuration for `NumericField`.
@@ -417,4 +465,15 @@ pub const monoMeasurer = text.monoMeasurer;
 
 test {
     @import("std").testing.refAllDecls(@This());
+}
+
+test "version is semver and matches build.zig.zon" {
+    const std = @import("std");
+    const opts = @import("build_options");
+    const parsed = try std.SemanticVersion.parse(version);
+    const manifest = try std.SemanticVersion.parse(opts.manifest_version);
+    try std.testing.expectEqual(manifest.major, parsed.major);
+    try std.testing.expectEqual(manifest.minor, parsed.minor);
+    try std.testing.expectEqual(manifest.patch, parsed.patch);
+    try std.testing.expectEqualStrings(manifest.pre orelse "", parsed.pre orelse "");
 }

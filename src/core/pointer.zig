@@ -78,3 +78,30 @@ pub const CanvasEvent = struct {
     w: f32 = 0,
     h: f32 = 0,
 };
+
+/// A window-space rectangle (`PointerEvent.box`).
+pub const Box = struct {
+    x: f32 = 0,
+    y: f32 = 0,
+    w: f32 = 0,
+    h: f32 = 0,
+};
+
+/// What the App's `hoverMsg` / `contextMsg` hooks receive: where the pointer
+/// is and which interactive widget is under it. `hit` is the Msg that widget
+/// would dispatch on a left click (its identity: the app compares it with
+/// `std.meta.eql`, no id hashing); `null` over empty or non-interactive
+/// space. `box` is that widget's rect from the previous frame's layout (the
+/// view cannot read layout, so this is how a tooltip or menu learns where to
+/// anchor); all zero when `hit` is null. `now_ms` is the host's monotonic
+/// clock, so the app can derive deadlines for `Sub.at`.
+pub fn PointerEvent(comptime Msg: type) type {
+    return struct {
+        x: f32,
+        y: f32,
+        hit: ?Msg = null,
+        box: Box = .{},
+        mods: Modifiers = .{},
+        now_ms: u64 = 0,
+    };
+}

@@ -1,5 +1,13 @@
 const std = @import("std");
 
+/// Single source of truth: build.zig.zon `.version` (docs/VERSIONING.md). `-Dversion-meta=<str>` appends "+<str>".
+fn versionString(b: *std.Build) []const u8 {
+    const base: []const u8 = @import("build.zig.zon").version;
+    _ = std.SemanticVersion.parse(base) catch @panic("build.zig.zon .version is not valid semver");
+    const meta = b.option([]const u8, "version-meta", "Semver build metadata appended as +<meta>") orelse return base;
+    return b.fmt("{s}+{s}", .{ base, meta });
+}
+
 const BuildZig = @This();
 
 pub fn build(b: *std.Build) void {
@@ -11,6 +19,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const version_options = b.addOptions();
+    version_options.addOption([]const u8, "version", versionString(b));
+    version_options.addOption([]const u8, "manifest_version", @import("build.zig.zon").version);
+    mod.addOptions("build_options", version_options);
 
     const mod_tests = b.addTest(.{ .root_module = mod });
 
@@ -284,6 +296,56 @@ pub fn build(b: *std.Build) void {
 
     const wasm_step = b.step("test-wasm", "Compile framework core for wasm32-freestanding (posix-dep canary)");
     wasm_step.dependOn(&wasm_canary.step);
+
+    // `zig build bench`: CPU pipeline benchmark (tools/bench/main.zig), always
+    // ReleaseFast. Text case measures through the stb `teak-text` module.
+    {
+        const bench_teak = b.createModule(.{
+            .root_source_file = b.path("src/teak.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        });
+        const bench_text = b.createModule(.{
+            .root_source_file = b.path("src/text/text.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{.{ .name = "teak", .module = bench_teak }},
+        });
+        bench_text.addImport("stb-c", translateC(b, b.path("src/gpu/vendor/stb_truetype.h"), null, target, .ReleaseFast));
+        bench_text.addIncludePath(b.path("src/gpu/vendor"));
+        bench_text.addCSourceFile(.{ .file = b.path("src/gpu/vendor/stb_truetype_impl.c"), .flags = &.{"-std=c99"} });
+        const bench_exe = b.addExecutable(.{
+            .name = "teak-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/bench/main.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .strip = false, // keep symbols so `perf report` works on the binary
+                .imports = &.{
+                    .{ .name = "teak", .module = bench_teak },
+                    .{ .name = "teak-text", .module = bench_text },
+                },
+            }),
+        });
+        const bench_run = b.addRunArtifact(bench_exe);
+        bench_run.has_side_effects = true;
+        b.step("bench", "CPU pipeline benchmark (view/layout/hit/render/cmdsEqual + text)").dependOn(&bench_run.step);
+
+        // Prototype for docs/features/cmd-size.md (slim out-of-line Cmd on a copy).
+        const cs_exe = b.addExecutable(.{
+            .name = "teak-bench-cmdsize",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/bench/cmd_size.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{.{ .name = "teak", .module = bench_teak }},
+            }),
+        });
+        const cs_run = b.addRunArtifact(cs_exe);
+        cs_run.has_side_effects = true;
+        b.step("bench-cmdsize", "Prototype: slim (out-of-line payload) Cmd vs the real 240-byte Cmd").dependOn(&cs_run.step);
+    }
 
     // HARDLINE drift audit — greppable half of docs/HARDLINE.md §5.
     // Depends on the wasm canary so one command gates both.
