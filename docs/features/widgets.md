@@ -187,6 +187,45 @@ new escape hatch and no per-widget retained state.
 
 ---
 
+## Combobox (searchable select)
+
+### Why
+
+`Dropdown` collapses a long list to one row but still makes the user scroll
+to find "W12x26". `Combobox(cap)` adds a text query that filters the list
+(consumer issue #2). Still zero new `Cmd` variants.
+
+### Shape
+
+`teak.Combobox(cap)` (cap = query bytes) is a component: `Model { query:
+TextField model, open, selected: ?usize, highlighted, scroll_offset }`,
+`Msg { focus, close, select: usize, edit: TextField.Msg, highlight,
+scroll_by }`. The option labels are app-owned and passed to `viewWith(model,
+cb, options, msgs, opts)`; `msgs` carries `.focus`, `.close` and a comptime
+`selectMsg(i)` that receives the **original** option index. `ViewOpts`:
+`list_x/list_y/list_width`, `max_visible` (default 8; the list scrolls past
+it), `match` (`.substring` | `.prefix`), `input_style`.
+
+The view is a `text_input` (query while open, the selected label while
+closed) plus, when open, a modal overlay of one button per match inside a
+`push_scroll`, or a disabled "No matches" row. Matching is case-insensitive
+(ASCII, Latin-1/Extended-A, Greek, Cyrillic fold) and grapheme-safe: a match
+starts and ends on option grapheme boundaries (`matches`, `countMatches`,
+`nthMatch` are public and pure).
+
+Host wiring helpers: `charMsg(byte)`, `keyMsg(model, key, options, opts)`
+(Up/Down/PageUp/PageDown/Enter/Escape + all `TextField` editing chords),
+`enterMsg`, `highlightMsg`, `scrollByMsg`, `shownText`. See cookbook recipe 14
+and the MATERIAL field in `examples/chrome`.
+
+### HARDLINE
+
+All state in the Model; the highlight is a match *ordinal* (presentation),
+selection is the original index; Cmds carry data only; filtering is a pure
+function of `(query, options)` recomputed in `view` with no allocation.
+
+---
+
 ## Dynamic window title — `Host.setTitle`
 
 `src/platform/host.zig` (contract), `win32.zig` / `x11.zig` / `wasm.zig`

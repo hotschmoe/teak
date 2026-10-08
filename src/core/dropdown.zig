@@ -379,7 +379,10 @@ pub fn Dropdown(comptime cap: usize) type {
                 // a clickable target (see `ButtonStyle.min_width`).
                 var style = cb.theme.button;
                 style.min_width = row_width;
-                if (i == model.highlighted) style.bg = cb.theme.button.hover_bg;
+                if (i == model.highlighted) {
+                    style.bg = cb.theme.button.hover_bg;
+                    style.fg = cb.theme.button.hover_fg orelse cb.theme.button.fg;
+                }
                 cb.buttonStyled(msgs.selectMsg(i), opt, style);
             }
         }

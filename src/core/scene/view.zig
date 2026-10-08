@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const mat = @import("mat.zig");
+const eql_mod = @import("../eql.zig");
 
 pub const identity_3x4: [12]f32 = mat.identity_affine;
 
@@ -90,15 +91,6 @@ pub const View = struct {
     highlight_color: [4]f32 = .{ 0.114, 0.306, 0.62, 1 },
     /// How strongly `highlight` items blend toward `highlight_color`.
     highlight_mix: f32 = 0.6,
-
-    /// Content equality for the frame diff (items compared by value, not address).
-    pub fn eql(a: View, b: View) bool {
-        if (a.items.len != b.items.len) return false;
-        for (a.items, b.items) |x, y| if (!std.meta.eql(x, y)) return false;
-        return std.meta.eql(a.grid, b.grid) and std.meta.eql(a.gizmo, b.gizmo) and
-            std.meta.eql(a.cut, b.cut) and a.material == b.material and
-            std.meta.eql(a.highlight_color, b.highlight_color) and a.highlight_mix == b.highlight_mix;
-    }
 };
 
 test "Item layout defaults: identity transform, white tint, no flags" {
@@ -109,17 +101,17 @@ test "Item layout defaults: identity transform, white tint, no flags" {
     try std.testing.expectEqual(@as(u8, 0), @as(u8, @bitCast(it.flags)));
 }
 
-test "View.eql compares item content, not slice identity" {
+test "deepEql compares item content, not slice identity" {
     const a_items = [_]Item{ .{ .mesh = 1, .id = 5 }, .{ .mesh = 2 } };
     const b_items = [_]Item{ .{ .mesh = 1, .id = 5 }, .{ .mesh = 2 } };
     const a = View{ .items = &a_items };
     var b = View{ .items = &b_items };
-    try std.testing.expect(a.eql(b));
+    try std.testing.expect(eql_mod.deepEql(View, a, b));
     var c_items = b_items;
     c_items[1].flags.highlight = true;
     b.items = &c_items;
-    try std.testing.expect(!a.eql(b));
-    try std.testing.expect(!(View{}).eql(View{ .grid = .{} }));
-    try std.testing.expect((View{ .cut = .{ .plane = .{ 0, 1, 0, 0 } } }).eql(.{ .cut = .{ .plane = .{ 0, 1, 0, 0 } } }));
-    try std.testing.expect(!(View{}).eql(View{ .material = .flat }));
+    try std.testing.expect(!eql_mod.deepEql(View, a, b));
+    try std.testing.expect(!eql_mod.deepEql(View, .{}, .{ .grid = .{} }));
+    try std.testing.expect(eql_mod.deepEql(View, .{ .cut = .{ .plane = .{ 0, 1, 0, 0 } } }, .{ .cut = .{ .plane = .{ 0, 1, 0, 0 } } }));
+    try std.testing.expect(!eql_mod.deepEql(View, .{}, .{ .material = .flat }));
 }

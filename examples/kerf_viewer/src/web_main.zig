@@ -10,6 +10,9 @@ const platform = @import("teak-platform-wasm");
 const gpu_web = @import("teak-gpu-web");
 const App = @import("app.zig");
 
+/// Route std.log to the browser console (the default logFn does not build on wasm32-freestanding).
+pub const std_options: std.Options = .{ .logFn = platform.logFn };
+
 const Host = platform.Host;
 const Gpu = gpu_web.Gpu;
 const Runtime = teak.Runtime(App, Host, Gpu);
