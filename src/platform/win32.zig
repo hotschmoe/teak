@@ -1346,6 +1346,35 @@ fn utf16OffsetToUtf8(utf8: []const u8, utf16_off: usize) usize {
     return byte_i;
 }
 
+// IME mirror transitions, split out of `wndProc` so synthetic messages can
+// test them without an input method context.
+
+fn imeStart() void {
+    g_ime_active = true;
+    imeClearText();
+}
+
+fn imeEnd() void {
+    g_ime_active = false;
+    imeClearText();
+}
+
+fn imeClearText() void {
+    g_ime_text_len = 0;
+    g_ime_cursor = 0;
+}
+
+/// Store the in-progress composition (UTF-16 as the IME reports it) and the
+/// caret, which arrives as a UTF-16 unit offset and is stored as a UTF-8 byte
+/// offset into the mirror. A negative / absent caret parks it at the end.
+fn imeSetComposition(utf16: []const u16, cursor_units: c_long) void {
+    g_ime_text_len = std.unicode.utf16LeToUtf8(g_ime_text[0..], utf16) catch 0;
+    g_ime_cursor = if (cursor_units >= 0 and g_ime_text_len > 0)
+        utf16OffsetToUtf8(g_ime_text[0..g_ime_text_len], @intCast(cursor_units))
+    else
+        g_ime_text_len;
+}
+
 fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
     switch (msg) {
         WM_DESTROY => {
@@ -1374,9 +1403,7 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             return 0;
         },
         WM_IME_STARTCOMPOSITION => {
-            g_ime_active = true;
-            g_ime_text_len = 0;
-            g_ime_cursor = 0;
+            imeStart();
             // Returning 0 suppresses the default IME window so the
             // composition is only rendered inline by teak. The caret
             // still receives WM_CHAR on commit via the IME's normal
@@ -1405,40 +1432,20 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
                         @ptrCast(&utf16_buf),
                         @intCast(utf16_buf.len * @sizeOf(u16)),
                     );
-                    if (byte_len > 0) {
-                        const u16_units: usize = @intCast(@divTrunc(byte_len, @as(c_long, @sizeOf(u16))));
-                        const clamped: usize = @min(u16_units, utf16_buf.len);
-                        const written = std.unicode.utf16LeToUtf8(g_ime_text[0..], utf16_buf[0..clamped]) catch 0;
-                        g_ime_text_len = written;
-                    } else {
-                        g_ime_text_len = 0;
-                    }
-                    // Caret position is a UTF-16 code-unit offset; convert
-                    // to a UTF-8 byte offset against our newly-decoded
-                    // mirror so the renderer can place the caret correctly.
+                    const units: usize = if (byte_len > 0) @min(@as(usize, @intCast(@divTrunc(byte_len, @as(c_long, @sizeOf(u16))))), utf16_buf.len) else 0;
                     const cur_units = ImmGetCompositionStringW(himc, GCS_CURSORPOS, null, 0);
-                    if (cur_units >= 0 and g_ime_text_len > 0) {
-                        g_ime_cursor = utf16OffsetToUtf8(
-                            g_ime_text[0..g_ime_text_len],
-                            @intCast(cur_units),
-                        );
-                    } else {
-                        g_ime_cursor = g_ime_text_len;
-                    }
+                    imeSetComposition(utf16_buf[0..units], cur_units);
                 }
             } else if ((flags & GCS_COMPSTR) == 0 and (flags & GCS_RESULTSTR) != 0) {
                 // Commit-only message: drop the pre-commit mirror but
                 // stay active until WM_IME_ENDCOMPOSITION arrives.
-                g_ime_text_len = 0;
-                g_ime_cursor = 0;
+                imeClearText();
             }
             // Pass through so the IME's commit -> WM_CHAR path still fires.
             return DefWindowProcW(hwnd, msg, wp, lp);
         },
         WM_IME_ENDCOMPOSITION => {
-            g_ime_active = false;
-            g_ime_text_len = 0;
-            g_ime_cursor = 0;
+            imeEnd();
             return 0;
         },
         WM_GETOBJECT => {
@@ -2195,4 +2202,35 @@ test "DPI helpers: dpiScale and toLogical convert physical client pixels" {
 test "dropped paths queue is bounded and starts empty" {
     try std.testing.expectEqual(@as(usize, 0), g_drop_count);
     try std.testing.expect(MAX_PENDING_DROPS > 0);
+}
+
+test "IME: start / composition / commit / end drive imeState like the other hosts" {
+    const host: *const Host = undefined; // imeState reads module state only
+    try std.testing.expect(!host.imeState().active);
+
+    // WM_IME_STARTCOMPOSITION through the real window procedure.
+    const fake_hwnd: HANDLE = @ptrFromInt(0x1000);
+    try std.testing.expectEqual(@as(LRESULT, 0), wndProc(fake_hwnd, WM_IME_STARTCOMPOSITION, 0, 0));
+    try std.testing.expect(host.imeState().active);
+    try std.testing.expectEqual(@as(usize, 0), host.imeState().text.len);
+
+    // Composition "nihon" + one multi-byte char; caret after the 2nd UTF-16 unit.
+    const comp = std.unicode.utf8ToUtf16LeStringLiteral("\u{65e5}\u{672c}go");
+    imeSetComposition(comp, 2);
+    var st = host.imeState();
+    try std.testing.expect(st.active);
+    try std.testing.expectEqualStrings("\u{65e5}\u{672c}go", st.text);
+    try std.testing.expectEqual(@as(usize, 6), st.cursor); // 2 units -> 6 UTF-8 bytes
+
+    // No caret reported: parked at the end.
+    imeSetComposition(comp, -1);
+    try std.testing.expectEqual(host.imeState().text.len, host.imeState().cursor);
+
+    // Commit-only clears the mirror but stays active; end deactivates.
+    imeClearText();
+    st = host.imeState();
+    try std.testing.expect(st.active);
+    try std.testing.expectEqual(@as(usize, 0), st.text.len);
+    try std.testing.expectEqual(@as(LRESULT, 0), wndProc(fake_hwnd, WM_IME_ENDCOMPOSITION, 0, 0));
+    try std.testing.expect(!host.imeState().active);
 }
