@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- `Shaper` / `ShapedGlyph` / `ShapeResult` (core) and `FontSpec.snap_advance` (default false).
+- `teak-text` now ships `SimpleShaper` (stb kerning, fi/fl/ff/ffi/ffl ligatures on proportional
+  faces) in `src/text/`; the module root moved from `src/gpu/text_stbtt.zig` to `src/text/text.zig`
+  (same exports). Measurement and rasterization both place glyphs from the shaper; invalid
+  UTF-8 now yields U+FFFD per bad byte (was byte-as-codepoint).
+
 ### Changed (breaking)
 
 - **Zig 0.17.0 is now required; 0.16 support is dropped.** See
