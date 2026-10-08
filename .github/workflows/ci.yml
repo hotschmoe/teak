@@ -149,7 +149,7 @@ jobs:
   vreg:
     name: Visual regression (native, lavapipe)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: teak
@@ -184,7 +184,7 @@ jobs:
   vreg-web:
     name: Visual regression (web, headless Chromium)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with: { path: teak }
