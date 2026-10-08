@@ -195,7 +195,9 @@ jobs:
           zig build -Dtarget=x86_64-linux-gnu --summary all
       # Headless wgpu on the runner's software adapter (DX12 WARP): proves
       # the Windows wgpu-native + stb text path renders real pixels. The
-      # PNGs are uploaded for a human to look at.
+      # PNGs are uploaded for a human to look at. `zig build shot` runs the
+      # exe from the zig cache, where Windows cannot find wgpu_native.dll;
+      # the build installs the DLL to zig-out\bin, so put that on PATH.
       - name: Headless screenshots (WARP software adapter)
         env:
           TEAK_GPU_FALLBACK: "1"
@@ -203,16 +205,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\shots" | Out-Null
           foreach ($ex in "chrome", "scene3d") {
             Push-Location "examples/$ex"
+            $env:PATH = "$PWD\zig-out\bin;$env:PATH"
             zig build shot -- "$env:GITHUB_WORKSPACE\shots\win-$ex-${{ matrix.arch }}.png"
-            if ($LASTEXITCODE -ne 0) {
-              # Rerun the exe by hand (DLL beside it) so its stderr shows up.
-              $exe = Get-ChildItem $env:ZIG_LOCAL_CACHE_DIR -Recurse -Filter "$ex-shot.exe" | Select-Object -First 1
-              $dll = Get-ChildItem zig-out\bin -Filter wgpu_native.dll -ErrorAction SilentlyContinue | Select-Object -First 1
-              Write-Host "exe=$($exe.FullName) dll=$($dll.FullName)"
-              if ($exe -and $dll) { Copy-Item $dll.FullName $exe.DirectoryName -Force }
-              if ($exe) { & $exe.FullName "$env:GITHUB_WORKSPACE\shots\retry-$ex.png" 2>&1 | Write-Host; Write-Host "retry exit=$LASTEXITCODE" }
-              throw "${ex}: headless shot failed"
-            }
+            if ($LASTEXITCODE -ne 0) { throw "${ex}: headless shot failed" }
             Pop-Location
           }
           Get-ChildItem "$env:GITHUB_WORKSPACE\shots"
