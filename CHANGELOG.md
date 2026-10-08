@@ -165,6 +165,7 @@
 
 ### Added
 
+- Keyboard navigation everywhere (`RunOptions.keyboard_nav`, default on): Tab / Shift+Tab over buttons, checkboxes, radios, sliders, clickable canvases (toggle switch) and text fields; a focus ring (`Palette.accent`, `Tokens.focus_ring_width`) in every look; Space / Enter activate; arrows move and select inside radio groups and set sliders (`sliderMsg`); modal overlays move focus inside and restore it to the opener on close; focus is keyed by the widget's Msg so it survives list mutations; optional `blurMsg` hook; `nextNavigable` / `prevNavigable`. Focus audit matrix in docs/features/focus.md; gallery asserts every enabled widget is Tab-reachable.
 - **Colour emoji (web).** Glyphs no face has and that are emoji / pictographs go through a second, RGBA atlas
   (`TextStage.catlas`, 1024x1024 pages, glyph key `mode = 2`; instance `flags` mode 2 draws the texels as they are, instance alpha
   fades them). The web backend fills it from canvas 2D via zunk's new `gpu.rasterClusterRgba` (needs the zunk change), so the browser's colour

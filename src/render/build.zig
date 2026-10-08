@@ -394,6 +394,20 @@ fn buildLayer(
             .base => !in_overlay,
             .overlay => in_overlay,
         };
+        // Keyboard focus ring: a frame just OUTSIDE the widget, drawn before it
+        // (nothing of the widget covers it). One look in retro and modern.
+        if (visible and transient.nav_index != null and transient.nav_index.? == i) {
+            const w = transient.ring_width;
+            const outer = Rect{ .x = rect.x - w, .y = rect.y - w, .w = rect.w + 2 * w, .h = rect.h + 2 * w };
+            const radius = switch (c) {
+                .button => |b| b.style.radius,
+                else => cmd_types.Radii{},
+            };
+            const grown = cmd_types.Radii{ .tl = if (radius.tl > 0) radius.tl + w else 0, .tr = if (radius.tr > 0) radius.tr + w else 0, .br = if (radius.br > 0) radius.br + w else 0, .bl = if (radius.bl > 0) radius.bl + w else 0 };
+            if (!emitSurface(verts, alloc, outer, grown, null, null, transient.ring_color, w, null, cur_clip)) {
+                emitBorder(verts, alloc, outer, w, transient.ring_color, cur_clip);
+            }
+        }
         switch (c) {
             .push_overlay => |ov| {
                 overlay_depth += 1;

@@ -275,6 +275,11 @@ pub fn focusedMsg(m: *const Model) ?Msg {
     };
 }
 
+/// Tab moved the keyboard focus off the text fields: stop typing into them.
+pub fn blurMsg(m: *const Model) ?Msg {
+    return if (m.focus != null) .blur else null;
+}
+
 /// Pointer, wheel, resolved motion and metrics for the text area.
 pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
     return if (ev.id == model_mod.area_id) Msg{ .area = model_mod.Area.eventMsg(ev) } else null;

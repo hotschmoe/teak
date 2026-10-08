@@ -84,6 +84,9 @@ pub const Tokens = struct {
     radius_lg: f32 = 0,
     /// Stroke width of borders and rules.
     border_width: f32 = 1,
+    /// Thickness of the keyboard focus ring drawn around the navigated widget
+    /// (colour: `Palette.accent`). Same value in the retro and modern looks.
+    focus_ring_width: f32 = 2,
     /// Spacing scale for padding and gaps: xs, sm, md, lg, xl.
     space: [5]f32 = .{ 4, 8, 12, 16, 24 },
     /// Elevation steps 0..3 as soft shadows (step 0 and a retro theme: none).

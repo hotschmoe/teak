@@ -177,6 +177,11 @@ const max_issued_effects = 32;
 const effect_batch = 16;
 
 pub const RunOptions = struct {
+    /// Keyboard navigation of buttons, checkboxes, radios and sliders (Tab /
+    /// Shift+Tab, focus ring, Space / Enter, arrows in radio groups and on
+    /// sliders). Text fields keep their Model-owned focus. Off = Tab only
+    /// walks text fields (apps with `focusedMsg`), as before.
+    keyboard_nav: bool = true,
     /// Scene clear color passed to `Gpu.renderFrame` each frame.
     clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },
     /// Text-cursor blink half-period in ms of the Host clock (500 = 500 ms on,
@@ -540,6 +545,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         pm_hover_seen: bool = false,
         /// The `grab_msg` of the slider being dragged (`sliderMsg` hook).
         slider_grab: ?Msg = null,
+        /// Keyboard-navigation focus on a non-text leaf (button, checkbox, radio,
+        /// slider): the loop's own presentation state (HARDLINE hatch 2), keyed by
+        /// the leaf's activation Msg so it survives list mutations. Null while a
+        /// text field (the Model's focus) owns the keyboard.
+        nav: ?NavFocus = null,
+        /// Where the navigation focus was when a modal overlay opened; restored when it closes.
+        nav_return: ?NavFocus = null,
 
         /// The previous frame's `nowMs`. `runSubs` is stateless — it decides
         /// fire/skip from (last_sub_ms, now_ms, sub data) — so this single
@@ -836,6 +848,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         // `hit.msg` is null when a modal overlay consumed the
                         // click but asked for no Msg (HARDLINE §2 hatch 5) —
                         // swallow it, don't fall through.
+                        if (self.opts.keyboard_nav and hit.index < prev_cmds.len) {
+                            const c = prev_cmds[hit.index];
+                            if (focus.isNavigable(c)) self.nav = if (focus.isTextLeaf(c)) null else self.navCapture(prev_cmds, hit.index);
+                        }
                         if (hit.msg) |m| self.dispatch(m);
                     }
                 }
@@ -961,10 +977,16 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// cut/copy/paste policy).
         fn routeKeys(self: *Self, input: Input, prev: u1) void {
             const prev_cmds = self.bufs[prev].cmds.items;
-            if (@hasDecl(App, "keyCharMsg")) {
-                for (input.chars) |ch| {
-                    if (App.keyCharMsg(&self.model, ch)) |m| self.dispatch(m);
+            for (input.chars) |ch| {
+                var handled = false;
+                if (@hasDecl(App, "keyCharMsg")) {
+                    if (App.keyCharMsg(&self.model, ch)) |m| {
+                        self.dispatch(m);
+                        handled = true;
+                    }
                 }
+                // Space activates the keyboard-focused button / checkbox / radio.
+                if (!handled and ch == ' ') _ = self.navActivate(prev_cmds);
             }
             for (input.keys) |k| {
                 if (k == .f12 and self.opts.inspect_hotkey) {
@@ -976,12 +998,14 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (has_text_hook) {
                     if (self.sendTextNav(k, input, prev)) continue;
                 }
-                // Built-in Tab / Shift+Tab focus traversal — only for apps
-                // that expose `focusedMsg` (so the loop knows the current
-                // focus and how to move it). Walk the PREVIOUS frame's
-                // focusables, then dispatch the landing widget's focus Msg
-                // so the app advances its focus field.
-                if (@hasDecl(App, "focusedMsg")) {
+                // Built-in Tab / Shift+Tab focus traversal. With
+                // `keyboard_nav` it walks every keyboard-operable leaf; a
+                // text leaf gets its focus Msg dispatched (the app's Model owns
+                // text focus), any other leaf becomes the loop's `nav` focus
+                // and the app is asked to blur its text field (`blurMsg`).
+                if (self.opts.keyboard_nav and (k == .tab or k == .shift_tab)) {
+                    if (self.navTab(prev_cmds, k == .tab)) continue;
+                } else if (@hasDecl(App, "focusedMsg")) {
                     if (k == .tab or k == .shift_tab) {
                         const cur_idx = if (App.focusedMsg(&self.model)) |fm|
                             focus.indexOfFocusMsg(prev_cmds, fm)
@@ -1020,10 +1044,177 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 const clipboard_capable = comptime (@hasDecl(App, "keyNeedsClipboard") and @hasDecl(App, "handleClipboard"));
                 if (clipboard_capable and App.keyNeedsClipboard(k)) {
                     App.handleClipboard(&self.model, k, self.host.clipboard());
-                } else if (@hasDecl(App, "keySpecialMsg")) {
-                    if (App.keySpecialMsg(&self.model, k)) |m| self.dispatch(m);
+                } else {
+                    if (@hasDecl(App, "keySpecialMsg")) {
+                        if (App.keySpecialMsg(&self.model, k)) |m| {
+                            self.dispatch(m);
+                            continue;
+                        }
+                    }
+                    // Nothing in the app took the key: the keyboard-focused
+                    // widget gets it (Enter, arrows).
+                    _ = self.navKey(prev_cmds, k);
                 }
             }
+        }
+
+        // ── Keyboard navigation (non-text leaves) ──────────────────────
+
+        const NavFocus = struct { msg: Msg, ordinal: u32, index: u32 };
+
+        /// Remember leaf `idx` as the navigation focus.
+        fn navCapture(self: *Self, cmds: anytype, idx: usize) NavFocus {
+            _ = self;
+            const msg = focus.activationMsg(cmds[idx]).?;
+            var ord: u32 = 0;
+            for (cmds[0..idx]) |c| {
+                if (!focus.isNavigable(c)) continue;
+                if (focus.activationMsg(c)) |m| if (std.meta.eql(m, msg)) {
+                    ord += 1;
+                };
+            }
+            return .{ .msg = msg, .ordinal = ord, .index = @intCast(idx) };
+        }
+
+        /// The navigation focus in `cmds`: the leaf with the remembered Msg
+        /// (same ordinal among equal Msgs); when it is gone, the leaf now at
+        /// the remembered index, else the last leaf (focus survives list
+        /// mutations); null when there is no navigable leaf at all.
+        fn navResolve(self: *Self, cmds: anytype) ?usize {
+            const n = self.nav orelse return null;
+            var ord: u32 = 0;
+            for (cmds, 0..) |c, i| {
+                if (!focus.isNavigable(c) or focus.isTextLeaf(c)) continue;
+                if (focus.activationMsg(c)) |m| if (std.meta.eql(m, n.msg)) {
+                    if (ord == n.ordinal) {
+                        self.nav.?.index = @intCast(i);
+                        return i;
+                    }
+                    ord += 1;
+                };
+            }
+            // Gone: fall to the nearest navigable leaf at or after the old index.
+            const from: usize = @min(n.index, cmds.len -| 1);
+            var i = from;
+            while (i < cmds.len) : (i += 1) {
+                if (focus.isNavigable(cmds[i]) and !focus.isTextLeaf(cmds[i])) {
+                    self.nav = self.navCapture(cmds, i);
+                    return i;
+                }
+            }
+            i = from;
+            while (i > 0) {
+                i -= 1;
+                if (focus.isNavigable(cmds[i]) and !focus.isTextLeaf(cmds[i])) {
+                    self.nav = self.navCapture(cmds, i);
+                    return i;
+                }
+            }
+            self.nav = null;
+            return null;
+        }
+
+        /// Modal overlays trap and restore keyboard focus: while one is open the
+        /// navigation focus lives inside it (first widget on open), and closing it
+        /// puts the focus back on the widget that opened it.
+        fn navModal(self: *Self, cmds: anytype) void {
+            if (!self.opts.keyboard_nav) return;
+            if (focus.modalScope(cmds)) |sc| {
+                const inside = if (self.navResolve(cmds)) |i| i >= sc.lo and i < sc.hi else false;
+                if (inside) return;
+                if (self.nav_return == null) self.nav_return = self.nav;
+                self.nav = null;
+                var i = sc.lo;
+                while (i < sc.hi) : (i += 1) {
+                    if (!focus.isNavigable(cmds[i])) continue;
+                    // A text field first: the Model's focus owns it; no ring-less nav.
+                    if (!focus.isTextLeaf(cmds[i])) self.nav = self.navCapture(cmds, i);
+                    break;
+                }
+            } else if (self.nav_return) |r| {
+                self.nav = r;
+                self.nav_return = null;
+            }
+        }
+
+        /// Tab / Shift+Tab. Returns false (key left to the app) when the frame
+        /// has nothing navigable.
+        fn navTab(self: *Self, cmds: anytype, forward: bool) bool {
+            const cur: ?usize = self.navResolve(cmds) orelse blk: {
+                if (@hasDecl(App, "focusedMsg")) {
+                    if (App.focusedMsg(&self.model)) |fm| break :blk focus.indexOfFocusMsg(cmds, fm);
+                }
+                break :blk null;
+            };
+            const target = (if (forward) focus.nextNavigable(cmds, cur) else focus.prevNavigable(cmds, cur)) orelse return false;
+            if (focus.isTextLeaf(cmds[target])) {
+                self.nav = null;
+                if (focus.focusMsgAt(cmds, target)) |fm| self.dispatch(fm);
+            } else {
+                self.nav = self.navCapture(cmds, target);
+                if (comptime @hasDecl(App, "blurMsg")) {
+                    if (App.blurMsg(&self.model)) |m| self.dispatch(m);
+                }
+            }
+            return true;
+        }
+
+        /// Space / Enter on the focused button, checkbox or radio: the Msg a
+        /// click would dispatch.
+        fn navActivate(self: *Self, cmds: anytype) bool {
+            const idx = self.navResolve(cmds) orelse return false;
+            switch (cmds[idx]) {
+                .button, .checkbox, .radio, .canvas => {
+                    if (focus.activationMsg(cmds[idx])) |m| self.dispatch(m);
+                    return true;
+                },
+                else => return false,
+            }
+        }
+
+        /// Default key behaviour of the keyboard-focused widget (the app's own
+        /// key hooks ran first and declined): Enter activates, arrows move
+        /// inside a radio group, arrows / Home / End / PageUp / PageDown set a
+        /// slider through `sliderMsg`.
+        fn navKey(self: *Self, cmds: anytype, k: @import("input/keys.zig").SpecialKey) bool {
+            const idx = self.navResolve(cmds) orelse return false;
+            switch (cmds[idx]) {
+                .button, .checkbox, .canvas => return k == .enter and self.navActivate(cmds),
+                .radio => {
+                    if (k == .enter) return self.navActivate(cmds);
+                    const forward = switch (k) {
+                        .right, .down => true,
+                        .left, .up => false,
+                        else => return false,
+                    };
+                    const to = focus.groupNeighbor(cmds, idx, forward) orelse return true;
+                    self.nav = self.navCapture(cmds, to);
+                    // Arrow selection: moving into a radio selects it.
+                    if (focus.activationMsg(cmds[to])) |m| self.dispatch(m);
+                    return true;
+                },
+                .slider => |sl| {
+                    if (comptime !@hasDecl(App, "sliderMsg")) return false;
+                    var v = self.sliderValue(sl);
+                    switch (k) {
+                        .left, .down => v -= 0.05,
+                        .right, .up => v += 0.05,
+                        .page_down => v -= 0.2,
+                        .page_up => v += 0.2,
+                        .home => v = 0,
+                        .end => v = 1,
+                        else => return false,
+                    }
+                    v = std.math.clamp(v, 0, 1);
+                    if (App.sliderMsg(&self.model, sl.grab_msg, v)) |m| self.dispatch(m);
+                    return true;
+                },
+                else => return false,
+            }
+        }
+
+        fn sliderValue(_: *Self, sl: anytype) f32 {
+            return sl.value;
         }
 
         /// Ctrl+C / Ctrl+X / Ctrl+V through the App's `clipboardText` (what to
@@ -1524,7 +1715,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const cmds = self.bufs[cur].cmds.items;
             self.ts.hover_index = hit_test.hoverTest(cmds, self.rects[cur].items, input.mouse_x, input.mouse_y);
             self.ts.press_index = self.press_target;
-            self.ts.focus_index = focusIndex(App, &self.model, cmds);
+            self.navModal(cmds);
+            self.ts.nav_index = self.navResolve(cmds);
+            self.ts.focus_index = if (self.ts.nav_index != null) null else focusIndex(App, &self.model, cmds);
+            const th = &self.bufs[cur].theme;
+            self.ts.ring_color = th.palette.accent;
+            self.ts.ring_width = th.tokens.focus_ring_width;
             self.ts.mouse_x = input.mouse_x;
             self.ts.mouse_y = input.mouse_y;
             self.ts.frame_counter +%= 1;
@@ -1784,6 +1980,8 @@ fn transientSame(a: TransientState, b: TransientState) bool {
     return a.hover_index == b.hover_index and
         a.press_index == b.press_index and
         a.focus_index == b.focus_index and
+        a.nav_index == b.nav_index and
+        std.mem.eql(f32, &a.ring_color, &b.ring_color) and
         a.blink_on == b.blink_on and
         a.ime_active == b.ime_active and
         a.ime_cursor == b.ime_cursor and
