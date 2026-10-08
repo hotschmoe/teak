@@ -16,8 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { path: teak }
-      - uses: actions/checkout@v4
-        with: { repository: hotschmoe/zunk, ref: master, path: zunk }
 
       # Version single source of truth: build.zig.zon `.version`. The tag must be "v" + that string.
       - name: Tag matches build.zig.zon version

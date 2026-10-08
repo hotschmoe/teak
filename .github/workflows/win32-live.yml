@@ -29,7 +29,6 @@ concurrency:
 
 env:
   ZIG_VERSION: 0.17.0
-  ZUNK_REF: master
 
 jobs:
   live:
@@ -50,8 +49,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { path: teak }
-      - uses: actions/checkout@v4
-        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
       - uses: mlugg/setup-zig@v2
         with: { version: "${{ env.ZIG_VERSION }}" }
       - name: Build the driver

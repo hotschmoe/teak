@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local merge gate for teak (+ the sibling zunk checkout).
+# Local merge gate for teak (+ zunk tests when a ../zunk checkout is present).
 #
 #   tools/gate.sh            full gate
 #   tools/gate.sh --quick    library test + audit + fmt + examples/chrome test
