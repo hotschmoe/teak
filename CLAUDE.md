@@ -41,6 +41,7 @@ The repo is split into a **library** (root `build.zig`) and **examples** (each w
 ```sh
 # Library
 zig build test                              # Library tests (run from repo root)
+tools/gate.sh [--quick]                    # Full merge gate: lib+ReleaseSafe+audit+gpu+examples+fmt+win cross+zunk (GATE_OUT for PNGs)
 
 # Example: counter_greeter (CLI + wgpu UI)
 cd examples/counter_greeter
