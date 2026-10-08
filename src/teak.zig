@@ -28,6 +28,8 @@ pub const text_wrap = @import("core/text_wrap.zig");
 pub const editor = @import("core/editor.zig");
 /// Declarative subscriptions (`Sub`): timers serviced by the run loop.
 pub const sub = @import("core/sub.zig");
+/// Model-driven animation: `Tween(T)`, easing curves and `lerp`.
+pub const anim = @import("core/anim.zig");
 /// `Theme`, `Palette` and `Typography` presets consulted by the theme-aware emitters.
 pub const theme = @import("core/theme.zig");
 /// `TextField`: the canonical text-input component and its key-dispatch helpers.
@@ -155,6 +157,10 @@ pub const Direction = cmd.Direction;
 pub const Align = cmd.Align;
 /// Horizontal placement of text inside its box.
 pub const TextAlign = cmd.TextAlign;
+/// Line-breaking mode of a `text` Cmd (`none`, `word`, `char`, `ellipsis`).
+pub const Wrap = cmd.Wrap;
+/// Options for `CmdBuffer.paragraphStyled` / `richParagraph`.
+pub const ParagraphOpts = cmd.ParagraphOpts;
 /// Visual variant of a text input.
 pub const InputVariant = cmd.InputVariant;
 /// Main-axis distribution of leftover space.
