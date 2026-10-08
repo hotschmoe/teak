@@ -98,6 +98,12 @@ extern "user32" fn EmptyClipboard() callconv(WINAPI) BOOL;
 extern "user32" fn GetClipboardData(UINT) callconv(WINAPI) ?HANDLE;
 extern "user32" fn SetClipboardData(UINT, HANDLE) callconv(WINAPI) ?HANDLE;
 extern "user32" fn IsWindow(HANDLE) callconv(WINAPI) BOOL;
+extern "user32" fn GetWindowThreadProcessId(HANDLE, ?*DWORD) callconv(WINAPI) DWORD;
+extern "user32" fn AttachThreadInput(DWORD, DWORD, BOOL) callconv(WINAPI) BOOL;
+extern "user32" fn BringWindowToTop(HANDLE) callconv(WINAPI) BOOL;
+extern "user32" fn SetActiveWindow(HANDLE) callconv(WINAPI) ?HANDLE;
+extern "user32" fn SetFocus(?HANDLE) callconv(WINAPI) ?HANDLE;
+extern "kernel32" fn GetCurrentThreadId() callconv(WINAPI) DWORD;
 
 extern "gdi32" fn CreateCompatibleDC(?HANDLE) callconv(WINAPI) ?HANDLE;
 extern "gdi32" fn CreateCompatibleBitmap(HANDLE, c_int, c_int) callconv(WINAPI) ?HANDLE;
@@ -215,6 +221,9 @@ fn findWidget(snap: []const u8, kind: []const u8, label: []const u8) ?Rect {
 // ── Window + input ─────────────────────────────────────────────────
 
 var hwnd: HANDLE = undefined;
+/// False when the runner would not give us the foreground: input is then
+/// posted to the window as messages (clicks, typing; no Ctrl chords).
+var foreground = true;
 
 fn scale() f32 {
     const dpi = GetDpiForWindow(hwnd);
@@ -232,7 +241,21 @@ fn focusWindow() void {
     _ = SendInput(2, &alt, @sizeOf(INPUT));
     _ = SetForegroundWindow(hwnd);
     sleepMs(300);
-    log("foreground is the app window: {}", .{GetForegroundWindow() == hwnd});
+    if (GetForegroundWindow() != hwnd) {
+        // Share the app thread's input queue, which lets us take the foreground.
+        const app_thread = GetWindowThreadProcessId(hwnd, null);
+        const me = GetCurrentThreadId();
+        _ = AttachThreadInput(me, app_thread, 1);
+        _ = BringWindowToTop(hwnd);
+        _ = SetForegroundWindow(hwnd);
+        _ = SetActiveWindow(hwnd);
+        _ = SetFocus(hwnd);
+        sleepMs(300);
+        _ = AttachThreadInput(me, app_thread, 0);
+    }
+    foreground = GetForegroundWindow() == hwnd;
+    log("foreground is the app window: {}", .{foreground});
+    if (!foreground) log("input falls back to posted window messages (no chords)", .{});
 }
 
 fn clientOrigin() POINT {
@@ -254,6 +277,17 @@ fn moveTo(lx: f32, ly: f32) void {
 }
 
 fn clickAt(lx: f32, ly: f32) void {
+    if (!foreground) {
+        const s = scale();
+        const lp: isize = (@as(isize, @intFromFloat(ly * s)) << 16) | @as(isize, @intFromFloat(lx * s));
+        _ = PostMessageW(hwnd, 0x0200, 0, lp); // WM_MOUSEMOVE
+        sleepMs(60);
+        _ = PostMessageW(hwnd, 0x0201, 1, lp); // WM_LBUTTONDOWN
+        sleepMs(60);
+        _ = PostMessageW(hwnd, 0x0202, 0, lp); // WM_LBUTTONUP
+        sleepMs(200);
+        return;
+    }
     moveTo(lx, ly);
     mouse(2); // left down
     sleepMs(60);
@@ -270,6 +304,7 @@ fn key(vk: u16, up: bool) INPUT {
 }
 
 fn chord(letter: u8) void {
+    if (!foreground) return log("skipping Ctrl+{c}: needs the foreground", .{letter});
     const in = [_]INPUT{ key(VK_CONTROL, false), key(letter, false), key(letter, true), key(VK_CONTROL, true) };
     _ = SendInput(4, &in, @sizeOf(INPUT));
     sleepMs(300);
@@ -279,6 +314,11 @@ fn typeText(text: []const u8) void {
     var utf16: [128]u16 = undefined;
     const n = std.unicode.utf8ToUtf16Le(&utf16, text) catch return;
     for (utf16[0..n]) |unit| {
+        if (!foreground) {
+            _ = PostMessageW(hwnd, WM_CHAR, unit, 0);
+            sleepMs(30);
+            continue;
+        }
         const in = [_]INPUT{
             .{ .type = 1, .u = .{ .ki = .{ .wVk = 0, .wScan = unit, .dwFlags = KEYEVENTF_UNICODE, .time = 0, .dwExtraInfo = 0 } } },
             .{ .type = 1, .u = .{ .ki = .{ .wVk = 0, .wScan = unit, .dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, .time = 0, .dwExtraInfo = 0 } } },
@@ -666,14 +706,16 @@ fn effectsScenario() void {
     var buf: [256]u8 = undefined;
     check(if (clipboardGet(&buf)) |t| std.mem.eql(u8, t, "teak effects clipboard test") else false, "write_clipboard effect reaches the Windows clipboard");
 
-    // Ctrl+V reads the Windows clipboard through Clipboard.read.
-    _ = clipboardSet("hello from the driver");
-    chord('V');
-    check(waitSnap("Ctrl+V via Clipboard.read: hello from the driver", 5000), "Ctrl+V pastes the clipboard text");
-    // Ctrl+C writes the clipboard.
-    chord('C');
-    sleepMs(300);
-    check(if (clipboardGet(&buf)) |t| std.mem.eql(u8, t, "teak effects Ctrl+C") else false, "Ctrl+C writes the Windows clipboard");
+    if (foreground) {
+        // Ctrl+V reads the Windows clipboard through Clipboard.read.
+        _ = clipboardSet("hello from the driver");
+        chord('V');
+        check(waitSnap("Ctrl+V via Clipboard.read: hello from the driver", 5000), "Ctrl+V pastes the clipboard text");
+        // Ctrl+C writes the clipboard.
+        chord('C');
+        sleepMs(300);
+        check(if (clipboardGet(&buf)) |t| std.mem.eql(u8, t, "teak effects Ctrl+C") else false, "Ctrl+C writes the Windows clipboard");
+    }
 
     // Drag-drop a file through the OLE IDropTarget.
     var drop_buf: [512]u8 = undefined;
