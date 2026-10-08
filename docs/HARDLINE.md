@@ -70,7 +70,10 @@ If a field fails any rule, it goes in `Model`.
 **Bounded by**:
 - Fixed-depth stack (currently 32); exceeding it is a bug, not an
   allocation trigger.
-- Two O(n) linear passes (measure bottom-up, position top-down).
+- Two to four O(n) linear passes: measure bottom-up and position top-down
+  always; resolve-widths (top-down) and re-measure-heights (bottom-up) run
+  in between ONLY when the frame has wrapped text or shrinkable nodes, and
+  are skipped (instrumented test) otherwise.
 - Each pass function is replaceable — swap in a constraint solver or
   grid engine without touching `view`, hit-test, or render.
 
@@ -96,6 +99,10 @@ allowed and belong here.
   Each extension adds one decl to `validateHost` or `validateGpu` and
   is documented in the corresponding feature doc. Surface extensions
   are not new escape hatches — they remain bounded by (a)–(c).
+  The same holds for the run loop's `textMsg` hook (`core/text_event.zig`):
+  like `canvasMsg`, it turns pointer input over a `text_area` into plain
+  `TextEvent` data (byte index, wrapped line, layout metrics) resolved with
+  the Host's measurer; the app maps it to a Msg, and no fn pointer sits on a Cmd.
 
 Cross-boundary interface values (e.g. `TextMeasurer` in
 `src/core/text.zig`, a `*anyopaque` + fn-pointer pair returned by

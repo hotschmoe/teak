@@ -9,8 +9,12 @@ pub const TransientState = struct {
     /// Visual focus mirror — kept in sync with the Model's focus field by
     /// the main loop. Used by the renderer to draw the focus ring.
     focus_index: ?usize = null,
-    /// Frame counter, incremented once per render. Drives cursor blink.
+    /// Frame counter, incremented once per built frame.
     frame_counter: u32 = 0,
+    /// Caret phase: true = the text cursor is drawn. Set by the run loop
+    /// from the Host clock (`RunOptions.blink_half_ms`), so the blink keeps
+    /// its rate when idle frames are skipped. Always true when blink is off.
+    blink_on: bool = true,
     mouse_x: f32 = 0,
     mouse_y: f32 = 0,
     /// IME pre-commit composition mirror. The host loop snapshots
