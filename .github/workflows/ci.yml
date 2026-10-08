@@ -339,25 +339,20 @@ jobs:
         with: { path: teak }
       - uses: actions/checkout@v4
         with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      # windows-11-arm restores a zig cache with files missing (maker.exe,
+      # compiler_rt.lib: "FileNotFound" / lld-link "could not open"), so that
+      # runner builds cold; x86_64 keeps the cache.
       - uses: mlugg/setup-zig@v2
-        with: { version: "${{ env.ZIG_VERSION }}" }
+        with:
+          version: "${{ env.ZIG_VERSION }}"
+          use-cache: ${{ matrix.arch == 'x86_64' }}
       - name: Toolchain is native
         run: |
           zig version
           $env:PROCESSOR_ARCHITECTURE
           zig env | Select-String "target"
-      # The first build on a restored zig cache has twice lost
-      # compiler_rt.lib on windows-11-arm (lld-link "could not open ...
-      # compiler_rt.lib"), a cache-race artifact that a second run clears.
       - name: Library tests (Debug)
-        run: |
-          zig build test --summary all
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::warning::retrying once with a clean zig cache (stale compiler_rt?)"
-            Remove-Item -Recurse -Force "$env:ZIG_GLOBAL_CACHE_DIR\o" -ErrorAction SilentlyContinue
-            zig build test --summary all
-          }
-          if ($LASTEXITCODE -ne 0) { throw "library tests failed" }
+        run: zig build test --summary all
       - name: Library tests (ReleaseSafe)
         run: zig build test -Doptimize=ReleaseSafe --summary all
       - name: Examples (test + build incl. Win32 UI exe)
