@@ -78,6 +78,7 @@ A Gpu type must expose these declarations:
 | `init` | backend-specific (e.g. `fn(NativeHandle, u32, u32) !Gpu`) | Create device + surface + pipelines. **Not** validated — the `NativeHandle` shape differs per backend. |
 | `deinit` | `fn(*Gpu) void` | Release GPU resources. |
 | `resize` | `fn(*Gpu, u32, u32) void` | Reconfigure the surface. Called when `InputState.resized` is true. |
+| `setScale` *(optional; wgpu_core)* | `fn(*Gpu, f32) void` | Change device pixels per logical pixel at runtime (the window moved to a monitor with another DPI). The run loop calls it when `Host.scaleFactor()` changes; the initial value is `InitOptions.scale`. |
 | `uploadVertices` | `fn(*Gpu, []const Vertex) void` | Copy the current frame's colored-quad vertex buffer to the GPU. Called each frame after `buildVertices`. |
 | `renderFrame` | `fn(*Gpu, ClearColor) void` | Encode + submit + present one frame using the last uploaded vertices, text draws, and image draws. |
 | `rasterizeText` | `fn(*Gpu, []const u8, FontSpec, [4]f32, u32, u32) TextureHandle` | **Web only; no longer required** (native backends draw text from the glyph atlas in `uploadText`). Rasterize a string into a cached texture and return an opaque handle. |
