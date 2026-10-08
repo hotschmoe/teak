@@ -75,8 +75,8 @@ pub const Table = struct {
                 self.dropped += 1;
                 if (!self.warned) {
                     self.warned = true;
-                    // Freestanding (web) has no default log sink; there `dropped` is the signal.
-                    if (comptime !builtin.is_test and builtin.os.tag != .freestanding) std.log.warn("teak: more than {d} resources declared; the extra ones are not uploaded (resources.MAX_RESOURCES)", .{MAX_RESOURCES});
+                    // Web entry points route std.log through `platform.logFn` (std_options).
+                    std.log.warn("teak: more than {d} resources declared; the extra ones are not uploaded (resources.MAX_RESOURCES)", .{MAX_RESOURCES});
                 }
             }
         }
@@ -280,12 +280,18 @@ test "remap turns keys into handles; unknown keys become none" {
     try std.testing.expectEqual(@as(u32, 0), scenes[1].mesh);
 }
 
-test "table is bounded: overflow entries are ignored, not a crash" {
+test "table is bounded: overflow entries are dropped loudly (warned), not a crash" {
+    // The one-time overflow warning is the behaviour under test; keep it off
+    // the test runner's stderr (the runner reports logged output as failure).
+    const saved_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = saved_level;
     var gpu: StubGpu = .{};
     var t: Table = .{};
     var list: [MAX_RESOURCES + 4]Resource = undefined;
     for (&list, 0..) |*r, i| r.* = img(@intCast(i + 1), 1);
     _ = t.sync(&gpu, &list);
+    try std.testing.expect(t.warned);
     try std.testing.expectEqual(MAX_RESOURCES, t.len);
     try std.testing.expectEqual(@as(usize, 4), t.dropped);
     try std.testing.expectEqual(@as(u32, 0), t.handleOf(.image, MAX_RESOURCES + 1));

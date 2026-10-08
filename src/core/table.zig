@@ -18,6 +18,7 @@
 //! ellipsis); wide CJK / combining sequences are out of scope.
 
 const std = @import("std");
+const oom = @import("oom.zig").oom;
 const text_mod = @import("text.zig");
 const Allocator = std.mem.Allocator;
 
@@ -92,7 +93,7 @@ pub const Table = struct {
         for (self.columns, 0..) |col, i| {
             const raw: []const u8 = if (cells) |cs| (if (i < cs.len) cs[i] else "") else col.title;
             const gutter: usize = if (i + 1 < self.columns.len) self.gutter else 0;
-            const cell = fitCell(arena, raw, col.chars, col.cell_align, self.ellipsis, gutter) catch unreachable;
+            const cell = fitCell(arena, raw, col.chars, col.cell_align, self.ellipsis, gutter) catch oom();
             cb.textStyled(cell, style.font, style.color);
         }
         cb.popGroup();

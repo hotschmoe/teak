@@ -95,6 +95,10 @@ entry point). See [consuming-teak.md](consuming-teak.md) for `build.zig`.
    }
    ```
 
+   For a web entry point (`teak-platform-wasm`) also declare
+   `pub const std_options: std.Options = .{ .logFn = platform.logFn };` — the
+   default `std.log` sink does not compile for wasm32-freestanding.
+
 3. `zig build ui` (or `-Dtarget=…` to cross-compile). `teak.run` owns the
    whole loop: double-buffering, hit-test, layout, render, present.
 
