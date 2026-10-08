@@ -274,6 +274,7 @@ fn exampleDir(arena: std.mem.Allocator, ex: []const u8) ![]const u8 {
 }
 
 fn listStates(arena: std.mem.Allocator, io: std.Io, o: Options, ex: []const u8) ![]const []const u8 {
+    std.debug.print("[vreg] {s}: listing states\n", .{ex});
     const res = try std.process.run(arena, io, .{
         .argv = &.{ o.zig, "build", "shot", "--", "--list" },
         .cwd = .{ .path = try exampleDir(arena, ex) },
@@ -299,6 +300,7 @@ fn nativeShot(arena: std.mem.Allocator, io: std.Io, o: Options, ex: []const u8, 
     const abs_actual = try std.Io.Dir.cwd().realPathFileAlloc(io, o.out, arena);
     const abs_out = try std.fmt.allocPrint(arena, "{s}/{s}.actual.png", .{ abs_actual, name });
 
+    std.debug.print("[vreg] {s}: rendering\n", .{name});
     const res = try std.process.run(arena, io, .{
         .argv = &.{ o.zig, "build", "shot", "--", abs_out, "--state", state },
         .cwd = .{ .path = try exampleDir(arena, ex) },
