@@ -862,6 +862,24 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (self.press_target != null and hover != self.press_target) self.press_target = null;
         }
 
+        /// `contextMsg` for the Menu key / Shift+F10: the pointer event is anchored at the
+        /// focused widget (the navigation focus, else the Model's text focus, else the
+        /// mouse), `hit` = that widget's Msg.
+        fn sendContextKey(self: *Self, input: Input, prev: u1) void {
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+            const idx: ?usize = self.navResolve(cmds) orelse focusIndex(App, &self.model, cmds);
+            var ev: pointer.PointerEvent(Msg) = .{ .x = input.mouse_x, .y = input.mouse_y, .mods = input.mods, .now_ms = self.host.nowMs() };
+            if (idx) |i| if (i < rects.len) {
+                const r = rects[i];
+                ev.x = r.x;
+                ev.y = r.y + r.h;
+                ev.hit = focus.activationMsg(cmds[i]);
+                ev.box = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
+            };
+            if (App.contextMsg(&self.model, ev)) |m| self.dispatch(m);
+        }
+
         /// `hoverMsg` / `contextMsg`: both resolve the pointer against the
         /// previous frame's layout like a click does.
         fn routePointerHooks(self: *Self, input: Input, prev: u1) void {
@@ -1009,6 +1027,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (!handled and ch == ' ') _ = self.navActivate(prev_cmds);
             }
             for (input.keys) |k| {
+                // Menu key / Shift+F10: a context-menu request at the keyboard-focused
+                // widget (below its left edge), through the same `contextMsg` hook a
+                // right click uses. Without the hook the key reaches `keySpecialMsg`.
+                if (comptime @hasDecl(App, "contextMsg")) {
+                    if (k == .context_menu) {
+                        self.sendContextKey(input, prev);
+                        continue;
+                    }
+                }
                 if (k == .f12 and self.opts.inspect_hotkey) {
                     control.toggleInspect(&self.ctl);
                     continue;
@@ -1199,7 +1226,29 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn navKey(self: *Self, cmds: anytype, prev: u1, k: @import("input/keys.zig").SpecialKey) bool {
             const idx = self.navResolve(cmds) orelse return false;
             switch (cmds[idx]) {
-                .button, .checkbox => {
+                .button => |b| {
+                    if (b.roving != .none) {
+                        const delta: i32 = switch (k) {
+                            .up, .left => -1,
+                            .down, .right => 1,
+                            .page_up => -5,
+                            .page_down => 5,
+                            .home => std.math.minInt(i32),
+                            .end => std.math.maxInt(i32),
+                            else => 0,
+                        };
+                        if (delta != 0) {
+                            if (focus.rovingTarget(cmds, idx, delta)) |to| {
+                                self.nav = self.navCapture(cmds, to);
+                                if (cmds[to].button.roving == .select) self.dispatch(cmds[to].button.msg);
+                            }
+                            return true;
+                        }
+                    }
+                    if (k == .enter) return self.navActivate(cmds);
+                    return self.navScroll(cmds, prev, idx, k);
+                },
+                .checkbox => {
                     if (k == .enter) return self.navActivate(cmds);
                     return self.navScroll(cmds, prev, idx, k);
                 },

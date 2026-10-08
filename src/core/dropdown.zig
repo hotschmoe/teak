@@ -1,6 +1,7 @@
 const std = @import("std");
 const cmd = @import("cmd.zig");
 const component = @import("component.zig");
+const keys = @import("../input/keys.zig");
 
 // ── Dropdown / Select ────────────────────────────────────────────────
 //
@@ -258,6 +259,23 @@ pub fn Dropdown(comptime cap: usize) type {
                 .count = options_len,
                 .max_visible = opts.max_visible,
             } };
+        }
+
+        /// Key -> Msg while the list is open (null when closed: Enter / Space on the
+        /// trigger button is the run loop's keyboard activation). Up / Down / Home / End /
+        /// PageUp / PageDown move the highlight, Enter chooses it, Escape closes. The app
+        /// calls this from `keySpecialMsg` and wraps the result.
+        pub fn keyMsg(model: *const Model, key: keys.SpecialKey, options_len: usize, opts: DropdownViewOpts) ?Msg {
+            if (!model.open or options_len == 0) return null;
+            return switch (key) {
+                .up, .page_up => moveHighlightMsg(.prev, options_len, opts),
+                .down, .page_down => moveHighlightMsg(.next, options_len, opts),
+                .home => moveHighlightMsg(.first, options_len, opts),
+                .end => moveHighlightMsg(.last, options_len, opts),
+                .enter => .{ .select = @min(model.highlighted, options_len - 1) },
+                .escape => .close,
+                else => null,
+            };
         }
 
         /// Canonical 3-arg view satisfying the component contract + the
@@ -819,4 +837,25 @@ test "viewWith: empty / out-of-range selection shows placeholder, no crash" {
         try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
         try testing.expectEqualStrings(PLACEHOLDER, cb.cmds.items[0].button.label);
     }
+}
+
+test "keyMsg: arrows move the highlight, Enter chooses it, Escape closes; closed list ignores keys" {
+    const testing = std.testing;
+    const DD = Dropdown(4);
+    var m: DD.Model = .{ .selected = 1 };
+    const o: DropdownViewOpts = .{};
+    try testing.expect(DD.keyMsg(&m, .down, 3, o) == null); // closed
+    DD.update(&m, .toggle);
+    try testing.expectEqual(@as(usize, 1), m.highlighted);
+    DD.update(&m, DD.keyMsg(&m, .down, 3, o).?);
+    try testing.expectEqual(@as(usize, 2), m.highlighted);
+    DD.update(&m, DD.keyMsg(&m, .down, 3, o).?); // clamps at the end
+    try testing.expectEqual(@as(usize, 2), m.highlighted);
+    DD.update(&m, DD.keyMsg(&m, .home, 3, o).?);
+    try testing.expectEqual(@as(usize, 0), m.highlighted);
+    DD.update(&m, DD.keyMsg(&m, .enter, 3, o).?);
+    try testing.expectEqual(@as(usize, 0), m.selected);
+    try testing.expect(!m.open);
+    DD.update(&m, .toggle);
+    try testing.expectEqual(DD.Msg.close, DD.keyMsg(&m, .escape, 3, o).?);
 }

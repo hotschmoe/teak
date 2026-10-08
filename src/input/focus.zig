@@ -90,12 +90,12 @@ pub fn nextFocusable(cmds: anytype, current: ?usize) ?usize {
 /// buttons, checkboxes, radios, sliders, text inputs and text areas. This is
 /// the Tab order of the run loop's keyboard navigation.
 pub fn nextNavigable(cmds: anytype, current: ?usize) ?usize {
-    return nextWhere(cmds, current, isNavigable);
+    return nextWhere(cmds, current, isTabStop);
 }
 
 /// `prevFocusable` over every keyboard-operable leaf.
 pub fn prevNavigable(cmds: anytype, current: ?usize) ?usize {
-    return prevWhere(cmds, current, isNavigable);
+    return prevWhere(cmds, current, isTabStop);
 }
 
 fn nextWhere(cmds: anytype, current: ?usize, comptime pred: anytype) ?usize {
@@ -145,6 +145,14 @@ fn prevWhere(cmds: anytype, current: ?usize, comptime pred: anytype) ?usize {
     return null;
 }
 
+/// `isNavigable` minus buttons that opted out of Tab (`ButtonCmd.tab_stop = false`).
+pub fn isTabStop(c: anytype) bool {
+    return switch (c) {
+        .button => |b| !b.disabled and b.tab_stop,
+        else => isNavigable(c),
+    };
+}
+
 /// A cmd the keyboard can operate: everything `isFocusable` accepts plus
 /// enabled buttons, checkboxes, radios and sliders.
 pub fn isNavigable(c: anytype) bool {
@@ -155,6 +163,59 @@ pub fn isNavigable(c: anytype) bool {
         .canvas => |cv| cv.msg != null,
         else => isFocusable(c),
     };
+}
+
+/// Buttons of the roving group `idx` belongs to (contiguous `roving != .none` buttons
+/// sharing one container): the neighbour `delta` steps away (negative = back), clamped to the
+/// group (no wrap); `delta` of `minInt`/`maxInt` jumps to the first / last. Null when `idx` is
+/// not a roving button or the group has one member.
+pub fn rovingTarget(cmds: anytype, idx: usize, delta: i32) ?usize {
+    if (idx >= cmds.len or cmds[idx] != .button or cmds[idx].button.roving == .none) return null;
+    var members: [256]usize = undefined;
+    var n: usize = 0;
+    var self_pos: usize = 0;
+    var lo = idx;
+    var depth: i32 = 0;
+    var i = idx;
+    while (i > 0) {
+        i -= 1;
+        switch (cmds[i]) {
+            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => depth += 1,
+            .push_group, .push_scroll, .push_overlay, .push_virtual_list => {
+                if (depth == 0) break;
+                depth -= 1;
+            },
+            .button => |b| if (depth == 0) {
+                if (b.roving == .none) break;
+                lo = i;
+            },
+            .radio, .checkbox, .slider, .text_input, .text_area, .canvas => if (depth == 0) break,
+            else => {},
+        }
+    }
+    depth = 0;
+    i = lo;
+    while (i < cmds.len and n < members.len) : (i += 1) {
+        switch (cmds[i]) {
+            .push_group, .push_scroll, .push_overlay, .push_virtual_list => depth += 1,
+            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => {
+                if (depth == 0) break;
+                depth -= 1;
+            },
+            .button => |b| if (depth == 0) {
+                if (b.roving == .none) break;
+                if (i == idx) self_pos = n;
+                members[n] = i;
+                n += 1;
+            },
+            .radio, .checkbox, .slider, .text_input, .text_area, .canvas => if (depth == 0) break,
+            else => {},
+        }
+    }
+    if (n < 2) return null;
+    const last: i64 = @intCast(n - 1);
+    const want: i64 = if (delta == std.math.minInt(i32)) 0 else if (delta == std.math.maxInt(i32)) last else std.math.clamp(@as(i64, @intCast(self_pos)) + delta, 0, last);
+    return members[@intCast(want)];
 }
 
 /// The next (`forward`) or previous radio of the radio group `idx` belongs to,

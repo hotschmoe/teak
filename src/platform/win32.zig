@@ -127,6 +127,7 @@ const VK_RETURN: WPARAM = 0x0D;
 const VK_ESCAPE: WPARAM = 0x1B;
 const VK_F12: WPARAM = 0x7B;
 const VK_F10: WPARAM = 0x79;
+const VK_APPS: WPARAM = 0x5D;
 const VK_ALT: WPARAM = 0x12; // VK_MENU
 const VK_PRIOR: WPARAM = 0x21; // page up
 const VK_NEXT: WPARAM = 0x22; // page down
@@ -1621,6 +1622,7 @@ fn navFromVk(vk: WPARAM) ?NavKey {
         VK_ESCAPE => .escape,
         VK_F12 => .f12,
         VK_F10 => .f10,
+        VK_APPS => .menu,
         VK_A => .a,
         VK_C => .c,
         VK_X => .x,
