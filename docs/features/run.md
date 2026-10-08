@@ -69,7 +69,7 @@ initial state if present, else `.{}`.
 Optional App decls, each detected with `@hasDecl` — present only what you
 need (full table in [consuming-teak.md §5](../consuming-teak.md)):
 `keyCharMsg`, `keySpecialMsg`, `keyNeedsClipboard` + `handleClipboard`,
-`wheelMsg`, `windowMsg` (window size on the first frame and each resize), `canvasMsg`, `hoverMsg`, `contextMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
+`wheelMsg`, `windowMsg` (window size on the first frame and each resize), `canvasMsg`, `hoverMsg`, `contextMsg`, `sliderMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
 `secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`),
 `subscribe`.
 
@@ -83,6 +83,7 @@ route against the **previous** frame's layout, exactly like hit-testing.
 | `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer events over `CanvasCmd.pointer` canvases: `down` / `move` / `up` / `wheel` / `leave`, and `layout` on first layout and whenever the rect size changes. Semantics in [canvas.md](canvas.md). |
 | `hoverMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the interactive widget under the pointer changed (entered, left, replaced). `ev.hit` is that widget's click Msg, `ev.box` its rect (previous frame), `ev.now_ms` the host clock. Drives `widgets.tooltip`. |
 | `contextMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the right button went down; `ev.hit` is the Msg of the widget under the cursor, `null` over empty space. Drives `widgets.menu.ContextMenu`. |
+| `sliderMsg` | `(*const Model, grab: Msg, value: f32) ?Msg` | a `slider` cmd is being dragged: `grab` is its `grab_msg` (which slider), `value` the 0..1 position under the pointer. Fired on press and every frame the left button stays down (pointer captured, so the drag survives leaving the track); the slider's plain click Msg is not dispatched. Without the hook a slider is click-only. |
 | `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over the innermost hovered scroll region whose `ScrollStyle.id != 0`. `dx`/`dy` are DOM-signed px. Return `null` to ignore; the wheel is still consumed. |
 | `scrollLayoutMsg` | `(*const Model, id: u32, viewport_w, viewport_h, content_w, content_h: f32) ?Msg` | for every `ScrollStyle.id != 0` region, on its first layout and whenever its viewport or content size changes. Content is the extent of its children (`teak.scrollExtent`: nested scroll interiors and overlays excluded), independent of the scroll offset — enough to clamp `scroll_y` and size a scrollbar thumb. |
 

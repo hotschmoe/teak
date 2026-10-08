@@ -57,6 +57,12 @@
 //!     went down. `ev.hit` is the Msg of the widget under the cursor (null on
 //!     empty space), so one hook opens a context menu for any region
 //!     (`teak.ContextMenu`); the app maps `hit` to "which row / which panel".
+//!   - `sliderMsg(*const Model, grab: Msg, value: f32) ?Msg` — a `slider` cmd is
+//!     being dragged: `grab` is its `grab_msg` (which slider), `value` the
+//!     0..1 position under the pointer. Fired on press and every frame the
+//!     left button stays down (the pointer is captured: the drag keeps
+//!     working off the track), and the slider's plain click Msg is NOT
+//!     dispatched. Without the hook a slider is click-only.
 //!   - `focusedMsg(*const Model) ?Msg`                — the focus Msg of the
 //!     currently-focused widget; `run` maps it to a cmd index via
 //!     `indexOfFocusMsg` (stable across conditional/reordered widgets)
@@ -442,6 +448,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// `press_target` (a lost value only repeats one hover event).
         hover_reported: ?usize = null,
         hover_seen: bool = false,
+        /// The `grab_msg` of the slider being dragged (`sliderMsg` hook).
+        slider_grab: ?Msg = null,
 
         /// The previous frame's `nowMs`. `runSubs` is stateless — it decides
         /// fire/skip from (last_sub_ms, now_ms, sub data) — so this single
@@ -605,9 +613,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             else
                 null;
 
+            var slider_consumed = false;
+            if (comptime @hasDecl(App, "sliderMsg")) slider_consumed = self.routeSlider(input, prev_cmds, prev_rects, hover);
+
             if (input.mouse_down) self.press_target = hover;
             if (input.mouse_up) {
-                if (self.press_target != null and hover == self.press_target) {
+                if (!slider_consumed and self.press_target != null and hover == self.press_target) {
                     if (hit_test.hitTest(prev_cmds, prev_rects, input.mouse_x, input.mouse_y)) |hit| {
                         // `hit.msg` is null when a modal overlay consumed the
                         // click but asked for no Msg (HARDLINE §2 hatch 5) —
@@ -663,6 +674,33 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 }
             }
             return ev;
+        }
+
+        /// Slider drag with pointer capture (`sliderMsg`). Returns true when
+        /// this frame's press / release belongs to a slider, so the plain
+        /// click dispatch must be skipped.
+        fn routeSlider(self: *Self, input: Input, cmds: anytype, rects: []const Rect, hover: ?usize) bool {
+            var consumed = false;
+            if (input.mouse_down) {
+                if (hover) |idx| if (idx < cmds.len and idx < rects.len) switch (cmds[idx]) {
+                    .slider => |sl| {
+                        self.slider_grab = sl.grab_msg;
+                        consumed = true;
+                    },
+                    else => {},
+                };
+            }
+            if (self.slider_grab) |grab| {
+                consumed = true;
+                if (focus.indexOfFocusMsg(cmds, grab)) |idx| {
+                    if (idx < rects.len) {
+                        const v = hit_test.sliderValueAt(rects[idx], input.mouse_x);
+                        if (App.sliderMsg(&self.model, grab, v)) |m| self.dispatch(m);
+                    }
+                }
+                if (!input.buttons.left) self.slider_grab = null;
+            }
+            return consumed;
         }
 
         /// Characters first, then special keys; clipboard chords route to the

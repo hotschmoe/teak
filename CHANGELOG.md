@@ -51,6 +51,8 @@
   in the Model), tooltip (hover delay via `Sub.at`), toast stack (tick countdown), modal dialog helper,
   menu bar with submenus / mnemonics / F10 + Alt activation, and context menu. See
   `docs/features/widgets.md` and cookbook recipes.
+- App hook `sliderMsg(model, grab_msg, value)`: slider drags under `teak.run` (they were click-only: nothing
+  turned the pointer position into a value).
 - App hooks `hoverMsg` / `contextMsg` (`teak.PointerEvent`, `teak.Box`): the widget under the pointer
   and its previous-frame rect, as data.
 - `SpecialKey.f10` and `SpecialKey.alt_tap` (a bare Alt press + release), wired in the Win32, X11 and web
