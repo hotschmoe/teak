@@ -125,6 +125,36 @@ fn isCombining(cp: u21) bool {
         (cp >= 0x0591 and cp <= 0x05BD) or (cp >= 0x064B and cp <= 0x065F);
 }
 
+/// Width of pure-ASCII `text` straight from the face's ASCII tables, bit-identical
+/// to summing `shape`'s advances. Null when the run needs the full shaper: a
+/// non-ASCII byte, a glyph the primary face lacks, a possible ligature, or a run
+/// longer than one shaper chunk.
+pub fn asciiWidth(text: []const u8, font: FontSpec) ?f32 {
+    if (text.len > 256) return null;
+    const resolved = face_mod.resolveFace(font.family, font.weight) orelse return null;
+    const face = resolved.face;
+    const scale = face.scaleForEm(font.size_px);
+    const ligatures = font.letter_spacing == 0 and font.family != .mono and !face.isFixedPitch();
+    const snap = font.snapsAdvance();
+    var x: f32 = 0;
+    var pending_raw: f32 = 0;
+    var pending_glyph: u16 = 0;
+    for (text, 0..) |b, i| {
+        if (b >= 128) return null;
+        const g = face.ascii_gid[b];
+        if (g == 0) return null;
+        if (ligatures and b == 'f' and i + 1 < text.len and (text[i + 1] == 'f' or text[i + 1] == 'i' or text[i + 1] == 'l')) return null;
+        if (pending_glyph != 0) {
+            pending_raw += @as(f32, @floatFromInt(face.kernUnits(pending_glyph, g))) * scale;
+            x += if (snap) @round(pending_raw) else pending_raw;
+        }
+        pending_raw = @as(f32, @floatFromInt(face.ascii_adv[b])) * scale + font.letter_spacing;
+        pending_glyph = g;
+    }
+    if (pending_glyph != 0) x += if (snap) @round(pending_raw) else pending_raw;
+    return x;
+}
+
 const use_harfbuzz = @import("text_options").harfbuzz;
 const hb_shaper = if (use_harfbuzz) @import("hb_shaper.zig") else struct {};
 

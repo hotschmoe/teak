@@ -10,6 +10,7 @@ pub const Radii = surface.Radii;
 pub const Shadow = surface.Shadow;
 pub const Gradient = surface.Gradient;
 const eql = @import("eql.zig");
+const eql_mod = @import("eql.zig");
 const text_wrap = @import("text_wrap.zig");
 
 pub const FontSpec = text.FontSpec;
@@ -872,26 +873,44 @@ pub fn Cmd(comptime Msg: type) type {
         /// Re-expose Msg so that generic helpers can recover it from the Cmd type.
         pub const MsgT = Msg;
 
-        push_group: GroupStyle,
+        push_group: *const GroupStyle,
         pop_group,
         push_scroll: ScrollStyle,
         pop_scroll,
-        push_overlay: OverlayStyle(Msg),
+        push_overlay: *const OverlayStyle(Msg),
         pop_overlay,
         push_virtual_list: VirtualListStyle,
         pop_virtual_list,
         text: TextCmd,
         rich_text: RichTextCmd,
         image: ImageCmd,
-        button: ButtonCmd(Msg),
-        text_input: TextInputCmd(Msg),
-        text_area: TextAreaCmd(Msg),
-        checkbox: CheckboxCmd(Msg),
-        radio: RadioCmd(Msg),
-        slider: SliderCmd(Msg),
+        button: *const ButtonCmd(Msg),
+        text_input: *const TextInputCmd(Msg),
+        text_area: *const TextAreaCmd(Msg),
+        checkbox: *const CheckboxCmd(Msg),
+        radio: *const RadioCmd(Msg),
+        slider: *const SliderCmd(Msg),
         divider: DividerStyle,
-        canvas: CanvasCmd(Msg),
-        scene3d: SceneCmd(Msg),
+        canvas: *const CanvasCmd(Msg),
+        scene3d: *const SceneCmd(Msg),
+
+        /// Content equality for the frame diff. Variants whose payload lives out of
+        /// line (a `*const` into the per-frame arena) compare the pointed-to
+        /// payload, never the address: the arena hands out fresh addresses each frame.
+        pub fn eql(a: @This(), b: @This()) bool {
+            if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+            switch (a) {
+                inline else => |va, tag| {
+                    const vb = @field(b, @tagName(tag));
+                    const V = @TypeOf(va);
+                    if (@typeInfo(V) == .pointer) {
+                        if (va == vb) return true;
+                        return eql_mod.deepEql(@typeInfo(V).pointer.child, va.*, vb.*);
+                    }
+                    return eql_mod.deepEql(V, va, vb);
+                },
+            }
+        }
     };
 }
 
@@ -1138,6 +1157,15 @@ pub fn CmdBuffer(comptime Msg: type) type {
         form_row_stack: [8]PendingFormRow = undefined,
         form_row_depth: u8 = 0,
 
+        /// Build a `Cmd` whose big payload lives in the per-frame arena (the union
+        /// holds an 8-byte pointer, keeping every slot of the flat buffer small).
+        /// Arena-only, no per-widget free; the payload is plain data like any other.
+        pub fn box(self: *Self, comptime tag: std.meta.Tag(CmdT), payload: @typeInfo(@FieldType(CmdT, @tagName(tag))).pointer.child) CmdT {
+            const p = self.arena.allocator().create(@TypeOf(payload)) catch oom();
+            p.* = payload;
+            return @unionInit(CmdT, @tagName(tag), p);
+        }
+
         pub fn init(backing: std.mem.Allocator) Self {
             return .{
                 .arena = std.heap.ArenaAllocator.init(backing),
@@ -1168,7 +1196,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
         // ── Convenience emitters ───────────────────────────────────
 
         pub fn pushGroup(self: *Self, style: GroupStyle) void {
-            self.cmds.append(self.backing, .{ .push_group = style }) catch oom();
+            self.cmds.append(self.backing, self.box(.push_group, style)) catch oom();
         }
 
         pub fn popGroup(self: *Self) void {
@@ -1274,21 +1302,21 @@ pub fn CmdBuffer(comptime Msg: type) type {
         }
 
         pub fn button(self: *Self, msg: Msg, label: []const u8) void {
-            self.cmds.append(self.backing, .{ .button = .{
+            self.cmds.append(self.backing, self.box(.button, .{
                 .msg = msg,
                 .label = label,
                 .style = self.theme.button,
                 .font = self.theme.typography.body,
-            } }) catch oom();
+            })) catch oom();
         }
 
         pub fn buttonStyled(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle) void {
-            self.cmds.append(self.backing, .{ .button = .{
+            self.cmds.append(self.backing, self.box(.button, .{
                 .msg = msg,
                 .label = label,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch oom();
+            })) catch oom();
         }
 
         /// Emit a greyed-out, non-interactive button. Same as `button`
@@ -1296,37 +1324,37 @@ pub fn CmdBuffer(comptime Msg: type) type {
         /// button keeps its place instead of shifting the layout when it
         /// would otherwise be conditionally omitted.
         pub fn buttonDisabled(self: *Self, msg: Msg, label: []const u8) void {
-            self.cmds.append(self.backing, .{ .button = .{
+            self.cmds.append(self.backing, self.box(.button, .{
                 .msg = msg,
                 .label = label,
                 .style = self.theme.button,
                 .font = self.theme.typography.body,
                 .disabled = true,
-            } }) catch oom();
+            })) catch oom();
         }
 
         /// A styled button whose label has one underlined character (a
         /// mnemonic hint). `at` indexes `label`; out of range draws nothing.
         pub fn buttonStyledUnderlined(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle, at: ?usize) void {
-            self.cmds.append(self.backing, .{ .button = .{
+            self.cmds.append(self.backing, self.box(.button, .{
                 .msg = msg,
                 .label = label,
                 .style = style,
                 .font = self.theme.typography.body,
                 .underline = if (at) |i| @intCast(i) else null,
-            } }) catch unreachable;
+            })) catch unreachable;
         }
 
         /// `buttonDisabled` with an explicit style (a compact menu row stays
         /// its own height when disabled).
         pub fn buttonStyledDisabled(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle) void {
-            self.cmds.append(self.backing, .{ .button = .{
+            self.cmds.append(self.backing, self.box(.button, .{
                 .msg = msg,
                 .label = label,
                 .style = style,
                 .font = self.theme.typography.body,
                 .disabled = true,
-            } }) catch unreachable;
+            })) catch unreachable;
         }
 
         pub fn textInput(
@@ -1335,13 +1363,13 @@ pub fn CmdBuffer(comptime Msg: type) type {
             content: []const u8,
             cursor: usize,
         ) void {
-            self.cmds.append(self.backing, .{ .text_input = .{
+            self.cmds.append(self.backing, self.box(.text_input, .{
                 .focus_msg = focus_msg,
                 .content = content,
                 .cursor = cursor,
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
-            } }) catch oom();
+            })) catch oom();
         }
 
         pub fn textInputStyled(
@@ -1351,13 +1379,13 @@ pub fn CmdBuffer(comptime Msg: type) type {
             cursor: usize,
             style: TextInputStyle,
         ) void {
-            self.cmds.append(self.backing, .{ .text_input = .{
+            self.cmds.append(self.backing, self.box(.text_input, .{
                 .focus_msg = focus_msg,
                 .content = content,
                 .cursor = cursor,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch oom();
+            })) catch oom();
         }
 
         /// Emit a greyed-out, non-interactive text input. Same as
@@ -1369,14 +1397,14 @@ pub fn CmdBuffer(comptime Msg: type) type {
             content: []const u8,
             cursor: usize,
         ) void {
-            self.cmds.append(self.backing, .{ .text_input = .{
+            self.cmds.append(self.backing, self.box(.text_input, .{
                 .focus_msg = focus_msg,
                 .content = content,
                 .cursor = cursor,
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
                 .disabled = true,
-            } }) catch oom();
+            })) catch oom();
         }
 
         pub fn pushScroll(self: *Self, style: ScrollStyle) void {
@@ -1388,37 +1416,37 @@ pub fn CmdBuffer(comptime Msg: type) type {
         }
 
         pub fn checkbox(self: *Self, msg: Msg, checked: bool, label: []const u8) void {
-            self.cmds.append(self.backing, .{ .checkbox = .{
+            self.cmds.append(self.backing, self.box(.checkbox, .{
                 .msg = msg,
                 .checked = checked,
                 .label = label,
                 .style = self.theme.checkbox,
                 .font = self.theme.typography.body,
-            } }) catch oom();
+            })) catch oom();
         }
 
         pub fn radio(self: *Self, msg: Msg, selected: bool, label: []const u8) void {
-            self.cmds.append(self.backing, .{ .radio = .{
+            self.cmds.append(self.backing, self.box(.radio, .{
                 .msg = msg,
                 .selected = selected,
                 .label = label,
                 .style = self.theme.radio,
                 .font = self.theme.typography.body,
-            } }) catch oom();
+            })) catch oom();
         }
 
         pub fn slider(self: *Self, grab_msg: Msg, value: f32) void {
-            self.cmds.append(self.backing, .{ .slider = .{
+            self.cmds.append(self.backing, self.box(.slider, .{
                 .grab_msg = grab_msg,
                 .value = value,
                 .style = self.theme.slider,
-            } }) catch oom();
+            })) catch oom();
         }
 
         // ── Overlay / virtual list / image / rich text ─────────────
 
         pub fn pushOverlay(self: *Self, style: OverlayStyle(Msg)) void {
-            self.cmds.append(self.backing, .{ .push_overlay = style }) catch oom();
+            self.cmds.append(self.backing, self.box(.push_overlay, style)) catch oom();
         }
 
         pub fn popOverlay(self: *Self) void {
@@ -1444,10 +1472,10 @@ pub fn CmdBuffer(comptime Msg: type) type {
         /// bg; `primitives` are arena-owned pure-data draw ops (build them
         /// with `teak.chart.lineChartPrimitives` or by hand).
         pub fn canvas(self: *Self, style: CanvasStyle, primitives: []const CanvasPrimitive) void {
-            self.cmds.append(self.backing, .{ .canvas = .{
+            self.cmds.append(self.backing, self.box(.canvas, .{
                 .style = style,
                 .primitives = primitives,
-            } }) catch oom();
+            })) catch oom();
         }
 
         /// Canvas with an accessibility label (announced by the a11y tree)
@@ -1458,11 +1486,11 @@ pub fn CmdBuffer(comptime Msg: type) type {
             primitives: []const CanvasPrimitive,
             label: []const u8,
         ) void {
-            self.cmds.append(self.backing, .{ .canvas = .{
+            self.cmds.append(self.backing, self.box(.canvas, .{
                 .style = style,
                 .primitives = primitives,
                 .label = label,
-            } }) catch oom();
+            })) catch oom();
         }
 
         /// Clickable canvas: `msg` fires on click. The app pairs it with
@@ -1475,18 +1503,18 @@ pub fn CmdBuffer(comptime Msg: type) type {
             primitives: []const CanvasPrimitive,
             label: []const u8,
         ) void {
-            self.cmds.append(self.backing, .{ .canvas = .{
+            self.cmds.append(self.backing, self.box(.canvas, .{
                 .style = style,
                 .primitives = primitives,
                 .msg = msg,
                 .label = label,
-            } }) catch oom();
+            })) catch oom();
         }
 
         /// Emit a 3D scene leaf; see `SceneCmd`. Typical use:
         /// `cb.scene3d(.{ .style = .{ .width = 480, .height = 360 }, .mesh = key, .camera = cam, .key = rev })`.
         pub fn scene3d(self: *Self, cmd: SceneCmd(Msg)) void {
-            self.cmds.append(self.backing, .{ .scene3d = cmd }) catch oom();
+            self.cmds.append(self.backing, self.box(.scene3d, cmd)) catch oom();
         }
 
         /// The 3D viewport: `scene3d` with `cmd.view` populated (placed
@@ -1505,13 +1533,13 @@ pub fn CmdBuffer(comptime Msg: type) type {
             id: u32,
             label: []const u8,
         ) void {
-            self.cmds.append(self.backing, .{ .canvas = .{
+            self.cmds.append(self.backing, self.box(.canvas, .{
                 .style = style,
                 .primitives = primitives,
                 .label = label,
                 .pointer = true,
                 .id = id,
-            } }) catch oom();
+            })) catch oom();
         }
 
         pub fn textInputSelected(
@@ -1522,20 +1550,20 @@ pub fn CmdBuffer(comptime Msg: type) type {
             selection_anchor: ?usize,
             style: TextInputStyle,
         ) void {
-            self.cmds.append(self.backing, .{ .text_input = .{
+            self.cmds.append(self.backing, self.box(.text_input, .{
                 .focus_msg = focus_msg,
                 .content = content,
                 .cursor = cursor,
                 .selection_anchor = selection_anchor,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch oom();
+            })) catch oom();
         }
 
         /// Multi-line editable text; see `TextAreaCmd`. The theme's
         /// `text_input` style and body font are used.
         pub fn textArea(self: *Self, c: TextAreaCmd(Msg)) void {
-            self.cmds.append(self.backing, .{ .text_area = c }) catch oom();
+            self.cmds.append(self.backing, self.box(.text_area, c)) catch oom();
         }
 
         /// `textArea` with the theme's input style + body font filled in.
@@ -1581,17 +1609,17 @@ pub fn CmdBuffer(comptime Msg: type) type {
             // crash in Debug/ReleaseSafe, zero cost in ReleaseFast.
             if (self.form_row_depth >= self.form_row_stack.len) @panic("teak: pushFormRow nested deeper than 8 (form_row_stack capacity)");
             // Outer vertical (content row + validation message).
-            self.cmds.append(self.backing, .{ .push_group = .{
+            self.cmds.append(self.backing, self.box(.push_group, .{
                 .direction = .vertical,
                 .padding = 0,
                 .gap = opts.validation_gap,
-            } }) catch oom();
+            })) catch oom();
             // Inner horizontal (label + content + units).
-            self.cmds.append(self.backing, .{ .push_group = .{
+            self.cmds.append(self.backing, self.box(.push_group, .{
                 .direction = .horizontal,
                 .padding = 0,
                 .gap = opts.gap,
-            } }) catch oom();
+            })) catch oom();
             if (opts.label.len > 0) {
                 self.cmds.append(self.backing, .{ .text = .{
                     .content = opts.label,

@@ -53,8 +53,32 @@ pub fn TextStage(comptime Raster: type) type {
             used: bool = false,
         };
 
+        /// What one draw emitted last frame (Host-side, safely losable): when the next
+        /// frame's draw at the same index has the same `sig`, its instances are copied
+        /// from `prev_insts` instead of re-resolving every glyph. Valid only while the
+        /// atlas page they point into keeps its generation.
+        const Memo = struct {
+            sig: u64 = 0,
+            start: u32 = 0,
+            count: u32 = 0,
+            page: u8 = 0,
+            layer: u8 = 0,
+            gen: u32 = 0,
+            ok: bool = false,
+        };
+
         gpa: std.mem.Allocator,
         raster: Raster,
+        memo: std.ArrayList(Memo) = .empty,
+        memo_prev: std.ArrayList(Memo) = .empty,
+        /// Last frame's instance lists (double buffer of `insts`).
+        prev_insts: std.ArrayList(PageInstances) = .empty,
+        // Per-draw emission tracking (see `appendInstance`).
+        cur_count: u32 = 0,
+        cur_page: u8 = 0,
+        cur_layer: u8 = 0,
+        cur_start: u32 = 0,
+        cur_multi: bool = false,
         atlas: glyph_atlas.GlyphAtlas,
         /// CPU copy of each atlas page (`atlas_dim^2` bytes).
         pages: std.ArrayList([]u8) = .empty,
@@ -100,6 +124,10 @@ pub fn TextStage(comptime Raster: type) type {
             self.pages.deinit(self.gpa);
             for (self.insts.items) |*pi| for (&pi.list) |*l| l.deinit(self.gpa);
             self.insts.deinit(self.gpa);
+            for (self.prev_insts.items) |*pi| for (&pi.list) |*l| l.deinit(self.gpa);
+            self.prev_insts.deinit(self.gpa);
+            self.memo.deinit(self.gpa);
+            self.memo_prev.deinit(self.gpa);
             self.atlas.deinit();
             self.gpa.free(self.runs);
             self.run_glyphs.deinit(self.gpa);
@@ -147,6 +175,11 @@ pub fn TextStage(comptime Raster: type) type {
             self.atlas.beginFrame();
             self.frame_no += 1;
             self.dropped = 0;
+            if (comptime run_cache) {
+                std.mem.swap(std.ArrayList(PageInstances), &self.insts, &self.prev_insts);
+                std.mem.swap(std.ArrayList(Memo), &self.memo, &self.memo_prev);
+                self.memo.clearRetainingCapacity();
+            }
             for (self.insts.items) |*pi| for (&pi.list) |*l| l.clearRetainingCapacity();
             if (@hasDecl(Raster, "epoch")) {
                 const e = self.raster.epoch();
@@ -167,6 +200,32 @@ pub fn TextStage(comptime Raster: type) type {
 
             for (draws, 0..) |draw, di| {
                 const layer: usize = if (di >= overlay_start) 1 else 0;
+                var sig: u64 = 0;
+                if (comptime run_cache) {
+                    sig = drawSig(draw, layer);
+                    if (di < self.memo_prev.items.len) {
+                        const m = self.memo_prev.items[di];
+                        var nm = m;
+                        if (m.ok and m.sig == sig and self.reuse(&nm)) {
+                            self.memo.append(self.gpa, nm) catch {};
+                            continue;
+                        }
+                    }
+                    self.cur_count = 0;
+                    self.cur_multi = false;
+                }
+                const dropped0 = self.dropped;
+                defer if (comptime run_cache) {
+                    self.memo.append(self.gpa, .{
+                        .sig = sig,
+                        .start = self.cur_start,
+                        .count = self.cur_count,
+                        .page = self.cur_page,
+                        .layer = self.cur_layer,
+                        .gen = if (self.cur_count > 0) self.atlas.pageGen(self.cur_page) else 0,
+                        .ok = !self.cur_multi and self.dropped == dropped0,
+                    }) catch {};
+                };
                 // Cull runs entirely outside their clip (logical px).
                 const vx0 = @max(draw.rect_x, draw.clip_x);
                 const vy0 = @max(draw.rect_y, draw.clip_y);
@@ -202,11 +261,44 @@ pub fn TextStage(comptime Raster: type) type {
         // ── Shaped-run cache ───────────────────────────────────────
 
         fn clearRuns(self: *Self) void {
+            self.memo_prev.clearRetainingCapacity();
             for (self.runs) |*r| r.used = false;
             self.run_count = 0;
             self.run_glyphs.clearRetainingCapacity();
             self.run_entries.clearRetainingCapacity();
             self.run_text.clearRetainingCapacity();
+        }
+
+        /// Everything that shapes a draw's instances, mixed into one 64-bit signature
+        /// (a collision would show last frame's glyphs for one frame: 2^-64 odds).
+        fn drawSig(draw: teak.TextDraw, layer: usize) u64 {
+            const f = draw.font;
+            const words = [_]u32{
+                @bitCast(draw.rect_x),   @bitCast(draw.rect_y),      @bitCast(draw.rect_w),
+                @bitCast(draw.rect_h),   @bitCast(draw.clip_x),      @bitCast(draw.clip_y),
+                @bitCast(draw.clip_w),   @bitCast(draw.clip_h),      @bitCast(draw.color[0]),
+                @bitCast(draw.color[1]), @bitCast(draw.color[2]),    @bitCast(draw.color[3]),
+                @bitCast(f.size_px),     @bitCast(f.letter_spacing),
+                @as(u32, @backingInt(f.family)) | (@as(u32, @backingInt(f.weight)) << 8) |
+                    (@as(u32, if (f.snap_advance) |v| @intFromBool(v) + 1 else 0) << 16) | (@as(u32, @intCast(layer)) << 24),
+            };
+            return std.hash.Wyhash.hash(0x7ea4, std.mem.sliceAsBytes(&words)) ^ std.hash.Wyhash.hash(1, draw.content);
+        }
+
+        /// Copy a memoised draw's instances from last frame's lists. False when the
+        /// atlas page they sit in has since been reset (the draw is rebuilt).
+        fn reuse(self: *Self, m: *Memo) bool {
+            if (m.count == 0) return true;
+            if (m.page >= self.prev_insts.items.len or self.atlas.pageGen(m.page) != m.gen) return false;
+            const src = self.prev_insts.items[m.page].list[m.layer].items;
+            if (m.start + m.count > src.len) return false;
+            while (self.insts.items.len <= m.page) self.insts.append(self.gpa, .{}) catch return false;
+            const dst = &self.insts.items[m.page].list[m.layer];
+            const new_start: u32 = @intCast(dst.items.len);
+            dst.appendSlice(self.gpa, src[m.start..][0..m.count]) catch return false;
+            m.start = new_start;
+            self.atlas.pinPage(m.page);
+            return true;
         }
 
         fn runHash(text: []const u8, font: teak.FontSpec) u64 {
@@ -367,7 +459,16 @@ pub fn TextStage(comptime Raster: type) type {
             while (self.insts.items.len <= e.page) {
                 self.insts.append(self.gpa, .{}) catch return;
             }
-            self.insts.items[e.page].list[layer].append(self.gpa, .{
+            const lst = &self.insts.items[e.page].list[layer];
+            if (comptime run_cache) {
+                if (self.cur_count == 0) {
+                    self.cur_page = e.page;
+                    self.cur_layer = @intCast(layer);
+                    self.cur_start = @intCast(lst.items.len);
+                } else if (self.cur_page != e.page or self.cur_layer != layer) self.cur_multi = true;
+                self.cur_count += 1;
+            }
+            lst.append(self.gpa, .{
                 .x = gx,
                 .y = gy,
                 .w = e.rect.w,
@@ -483,4 +584,63 @@ fn deviceClip(draw: teak.TextDraw, scale: f32) DeviceClip {
         .xy = .{ @intFromFloat(x0), @intFromFloat(y0) },
         .wh = .{ @intFromFloat(@max(x1 - x0, 1)), @intFromFloat(@max(y1 - y0, 1)) },
     };
+}
+
+// ── Tests ──────────────────────────────────────────────────────────
+
+/// 6-px-wide boxes, one glyph per byte.
+const FakeRaster = struct {
+    const Bitmap = struct { pixels: []const u8, width: u32, height: u32, bearing_x: i32, bearing_y: i32 };
+    var px: [16]u8 = @splat(255);
+    pub fn shape(_: *FakeRaster, text: []const u8, _: teak.FontSpec, out: []teak.ShapedGlyph) teak.ShapeResult {
+        const n = @min(text.len, out.len);
+        for (0..n) |i| out[i] = .{ .glyph = text[i], .face = 0, .cluster = @intCast(i), .x = @as(f32, @floatFromInt(i)) * 6, .advance = 6 };
+        return .{ .count = n, .width = @as(f32, @floatFromInt(n)) * 6, .consumed = n };
+    }
+    pub fn ascent(_: *FakeRaster, _: teak.FontSpec, _: f32) f32 {
+        return 8;
+    }
+    pub fn rasterizeGlyph(_: *FakeRaster, _: u16, _: u16, _: f32, _: u2) ?Bitmap {
+        return .{ .pixels = &px, .width = 4, .height = 4, .bearing_x = 0, .bearing_y = -4 };
+    }
+};
+
+fn testDraw(text: []const u8, x: f32) teak.TextDraw {
+    return .{ .rect_x = x, .rect_y = 10, .rect_w = 100, .rect_h = 12, .content = text, .font = .{ .size_px = 10 }, .color = .{ 1, 1, 1, 1 }, .clip_x = 0, .clip_y = 0, .clip_w = 500, .clip_h = 500 };
+}
+
+test "stage: unchanged draws replay last frame's instances; changed ones are rebuilt" {
+    const gpa = std.testing.allocator;
+    var st = try TextStage(FakeRaster).init(gpa, .{}, 2, 1);
+    defer st.deinit();
+
+    var draws = [_]teak.TextDraw{ testDraw("abc", 0), testDraw("xy", 50), testDraw("hello", 90) };
+    st.stage(&draws, draws.len);
+    const first = try gpa.dupe(GlyphInstance, st.insts.items[0].list[0].items);
+    defer gpa.free(first);
+    try std.testing.expectEqual(@as(usize, 10), first.len);
+
+    // Frame 2: identical draws come from the memo; the result is byte-identical.
+    st.stage(&draws, draws.len);
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(first), std.mem.sliceAsBytes(st.insts.items[0].list[0].items));
+
+    // Frame 3: one draw changes; the others still match a from-scratch stage.
+    draws[1] = testDraw("xyz", 50);
+    st.stage(&draws, draws.len);
+    var fresh = try TextStage(FakeRaster).init(gpa, .{}, 2, 1);
+    defer fresh.deinit();
+    fresh.stage(&draws, draws.len);
+    // Atlas cells depend on packing order, so compare geometry, colour and clip only.
+    const a = fresh.insts.items[0].list[0].items;
+    const b = st.insts.items[0].list[0].items;
+    try std.testing.expectEqual(a.len, b.len);
+    for (a, b) |x, y| {
+        var xn = x;
+        var yn = y;
+        xn.u = 0;
+        xn.v = 0;
+        yn.u = 0;
+        yn.v = 0;
+        try std.testing.expectEqualSlices(u8, std.mem.asBytes(&xn), std.mem.asBytes(&yn));
+    }
 }
