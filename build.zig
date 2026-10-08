@@ -357,6 +357,9 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
+        // Compile-check only (not run): the bench calls internal pipeline APIs and
+        // silently rotted when their signatures moved.
+        test_step.dependOn(&bench_exe.step);
         const bench_run = b.addRunArtifact(bench_exe);
         bench_run.has_side_effects = true;
         b.step("bench", "CPU pipeline benchmark (view/layout/hit/render/cmdsEqual + text)").dependOn(&bench_run.step);
