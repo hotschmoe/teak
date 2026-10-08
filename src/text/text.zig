@@ -25,6 +25,7 @@ comptime {
 test {
     _ = @import("face.zig");
     _ = @import("shaper.zig");
+    _ = @import("compose_table.zig");
     _ = @import("measure.zig");
     _ = @import("raster.zig");
 }

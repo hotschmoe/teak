@@ -139,7 +139,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(b.fmt("examples/fonts/assets/{s}", .{file})),
         });
     }
-    for ([_][]const u8{ "IBMPlexMonoSub-Regular", "QuicksandSub-Regular", "QuicksandSub-NoLig", "IBMPlexMonoMarks" }) |name| {
+    for ([_][]const u8{ "IBMPlexMonoSub-Regular", "QuicksandSub-Regular", "QuicksandSub-NoLig", "IBMPlexMonoMarks", "IBMPlexMonoAccents" }) |name| {
         stbtt_face_mod.addAnonymousImport(b.fmt("test-font-{s}", .{name}), .{
             .root_source_file = b.path(b.fmt("tests/fonts/{s}.ttf", .{name})),
         });
