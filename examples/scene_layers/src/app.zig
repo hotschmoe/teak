@@ -152,7 +152,7 @@ fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
             m.selected = m.pickAt(ev.x, ev.y, ev.w, ev.h);
         },
         .leave => m.hovered = 0,
-        .wheel => {},
+        .wheel, .key => {},
     }
     _ = m.cam.onEvent(ev, .{});
 }
