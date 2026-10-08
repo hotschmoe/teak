@@ -1772,3 +1772,63 @@ test "idle + blink: a sub due before the toggle wins the timeout" {
     try run_mod.run(FocusSub, std.testing.allocator, &host, &gpu, .{});
     try std.testing.expectEqual(@as(u32, 80), host.last_wait_ms); // sub at 100 vs caret at 500
 }
+
+const AnimApp = struct {
+    pub const Model = struct { tween: @import("core/anim.zig").Tween(f32) = .still(0), frames_seen: u32 = 0 };
+    pub const Msg = union(enum) { go, frame: u32 };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .go => m.tween.start(100, 100, .linear),
+            .frame => |dt| {
+                m.frames_seen += 1;
+                m.tween.advance(dt);
+            },
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{});
+        cb.text(std.fmt.allocPrint(cb.arena.allocator(), "v {d}", .{@as(u32, @intFromFloat(m.tween.value()))}) catch "?");
+        cb.popGroup();
+    }
+    pub fn subscribe(m: *const Model) []const sub_mod.Sub(Msg) {
+        return if (m.tween.active()) &.{.animation_frame} else &.{};
+    }
+    pub fn animationMsg(_: *const Model, dt: u32) ?Msg {
+        return .{ .frame = dt };
+    }
+};
+
+test "animation_frame: dt reaches the app, frames flow while active, idle resumes after" {
+    var host: ScriptHost = .{
+        .script = &.{
+            .{ .clock_ms = 0 },
+            .{ .clock_ms = 0 },
+            .{ .clock_ms = 40 },
+            .{ .clock_ms = 80 },
+            .{ .clock_ms = 120 }, // tween (100 ms) finished at this frame's dt
+            .{ .clock_ms = 120 }, // quiet again
+            .{ .clock_ms = 120 },
+        },
+    };
+    var gpu: PlainGpu = .{};
+    var rt = try Runtime(AnimApp, ScriptHost, PlainGpu).init(std.testing.allocator, &host, &gpu, .{});
+    defer rt.deinit();
+    rt.model.tween.start(100, 100, .linear); // as if a Msg.go had run
+    while (!host.shouldClose()) try rt.frame();
+    try std.testing.expectEqual(@as(f32, 100), rt.model.tween.value());
+    try std.testing.expect(!rt.model.tween.active());
+    // dt is frame time: 0 (first), 0, 40, 40, 40 -> 120 ms capped by the 100 ms tween.
+    try std.testing.expectEqual(@as(u32, 5), rt.model.frames_seen);
+    try std.testing.expect(rt.quiet); // finished: the loop idles again
+    try std.testing.expect(gpu.renders >= 4 and gpu.renders <= 6);
+}
+
+test "animation_frame: dt is capped so a stalled frame cannot skip an animation" {
+    var host: ScriptHost = .{ .script = &.{ .{ .clock_ms = 0 }, .{ .clock_ms = 5000 } } };
+    var gpu: PlainGpu = .{};
+    var rt = try Runtime(AnimApp, ScriptHost, PlainGpu).init(std.testing.allocator, &host, &gpu, .{});
+    defer rt.deinit();
+    rt.model.tween.start(1000, 1000, .linear);
+    while (!host.shouldClose()) try rt.frame();
+    try std.testing.expectEqual(@as(f32, 100), rt.model.tween.value()); // advanced by the 100 ms cap, not 5000
+}
