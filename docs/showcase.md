@@ -23,6 +23,11 @@ and the 3D view. Hover outlines the footing. (kerf dogfood #89, canvas triangles
 **3D with a section cut**: per-part items with highlight flags, ground grid, axis gizmo, stencil-parity cut with manila
 caps and hatch; open shells are outlined, not capped. (scene S3-S6: #24 #27 #34 #37, viewer #30)
 
+![Command palette](images/showcase/kerf-palette.png)
+
+**Command palette**: Ctrl+K opens a filtered list over the app's command table (the same table builds the menu bar and the
+shortcuts shown beside each entry). (shortcuts + palette #60, menu bar from commands #116)
+
 ![Chat console](images/showcase/kerf-chat.png)
 
 **OPERATOR CONSOLE**: a multi-line `TextArea` (Enter sends, Shift+Enter newline), manila message cards with `**bold**`
@@ -91,9 +96,24 @@ only the visible rows are emitted. Scrolled deep into the data. (#56 #73, tab fi
 ![Notes](images/showcase/notes.png)
 
 **Notes** (`examples/notes`): wrapping multi-line `TextArea` with a drag selection across wrapped lines, grapheme-aware
-caret (combining marks stay with their letter), chat box beside it. (#40, bidi #74 and HarfBuzz #77 add RTL and
-Indic shaping; the headless shot has no HarfBuzz build, so multi-script text is exercised by their own tests.)
+caret (combining marks stay with their letter), per-script font fallback in one paragraph, chat box beside it. (#40, a11y
+role #118)
+
+![Notes, complex scripts](images/showcase/notes-scripts-harfbuzz.png)
+
+**Complex scripts**: built with `-Dharfbuzz=true` (#77) and the Noto faces: Arabic joined and right-to-left with marks placed,
+Hebrew, Devanagari reordered; visual-order caret, hit-testing and selection from the bidi core (#74, #85).
 
 ![Todo](images/showcase/todo.png)
 
-**Todo**: the dynamic-list basic: rows from `Model.items`, per-row `Msg`s; labels fixed by #100.
+**Todo**: the dynamic-list basic: rows from `Model.items`, per-row `Msg`s with keyboard-reachable controls (#93); labels fixed by #100.
+
+## Platforms
+
+![macOS](images/showcase/platform-macos.png)
+
+**macOS**: the chrome example in a real Cocoa window, rendered through Metal by wgpu-native. (#54)
+
+![Windows ARM64](images/showcase/platform-windows-arm64.png)
+
+**Windows on ARM64**: the Win32 host and GDI text, rendered through wgpu on the WARP software adapter. (#31, #10, wgpu-native #19)
