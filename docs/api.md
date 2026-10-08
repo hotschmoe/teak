@@ -2379,7 +2379,7 @@ docs/features/headless.md.
 - `struct ShotFont`
   - fields: `family, weight, bytes`
 - `struct ShotOptions`
-  - fields: `fonts, width, height, msaa, scale, steps, settle, run, fonts`
+  - fields: `fonts, width, height, msaa, scale, steps, settle, run`
 > Run `App` headlessly: build the Host and offscreen Gpu, play the
 > script, capture the last frame to `path` as a PNG. `Host` is
 > `teak-platform-headless`'s `Host`, `Gpu` is `teak-gpu-headless`'s `Gpu`.

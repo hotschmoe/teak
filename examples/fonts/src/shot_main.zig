@@ -15,9 +15,9 @@ pub fn main(init: std.process.Init) !void {
         .width = 1000,
         .height = 520,
         .fonts = &.{
-            .{ .family = .mono, .weight = .regular, .ttf = @embedFile("plex-Regular") },
-            .{ .family = .mono, .weight = .medium, .ttf = @embedFile("plex-Medium") },
-            .{ .family = .mono, .weight = .bold, .ttf = @embedFile("plex-Bold") },
+            .{ .family = .mono, .weight = .regular, .bytes = @embedFile("plex-Regular") },
+            .{ .family = .mono, .weight = .medium, .bytes = @embedFile("plex-Medium") },
+            .{ .family = .mono, .weight = .bold, .bytes = @embedFile("plex-Bold") },
         },
         .run = .{ .clear_color = .{ 0.08, 0.08, 0.1, 1.0 } },
     }, &.{
