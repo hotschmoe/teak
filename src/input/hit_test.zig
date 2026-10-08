@@ -61,7 +61,21 @@ fn interactiveLeaf(c: anytype) ?Leaf(@TypeOf(c).MsgT) {
         .canvas => |cv| if (cv.msg != null or cv.pointer) .{ .msg = cv.msg } else null,
         // Same rule for a 3D scene.
         .scene3d => |sc| if (sc.msg != null or sc.pointer) .{ .msg = sc.msg } else null,
-        else => null,
+        // Containers and decorative leaves: clicks pass through. Listed
+        // explicitly (no `else`) so a new Cmd variant must be classified here.
+        .push_group,
+        .pop_group,
+        .push_scroll,
+        .pop_scroll,
+        .push_overlay,
+        .pop_overlay,
+        .push_virtual_list,
+        .pop_virtual_list,
+        .text,
+        .rich_text,
+        .image,
+        .divider,
+        => null,
     };
 }
 
@@ -159,7 +173,7 @@ fn hitTestLayer(
                 clip.pop();
             },
             .push_group, .pop_group, .push_virtual_list, .pop_virtual_list => {},
-            else => if (visible_to_layer) {
+            .text, .rich_text, .image, .divider, .button, .text_input, .text_area, .checkbox, .radio, .slider, .canvas, .scene3d => if (visible_to_layer) {
                 if (interactiveLeaf(c)) |leaf| {
                     if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
                         best = .{ .index = i, .msg = leaf.msg };
@@ -271,7 +285,8 @@ fn wheelTargetLayer(cmds: anytype, rects: []const Rect, x: f32, y: f32, layer: L
             .canvas, .scene3d, .text_area => if (visible and inside) {
                 if (pointerSurface(cmds, i)) |t| best = .{ .canvas = t };
             },
-            else => {},
+            .push_group, .pop_group, .push_virtual_list, .pop_virtual_list => {},
+            .text, .rich_text, .image, .divider, .button, .text_input, .checkbox, .radio, .slider => {},
         }
     }
     if (best) |t| return .{ .target = t };

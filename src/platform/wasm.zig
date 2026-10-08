@@ -12,6 +12,11 @@ const std = @import("std");
 const teak = @import("teak");
 const zunk = @import("zunk");
 
+/// `std.Options.logFn` that writes `std.log` to the browser console. The
+/// default logFn does not compile on wasm32-freestanding, so every web entry
+/// point must declare `pub const std_options: std.Options = .{ .logFn = platform.logFn };`.
+pub const logFn = zunk.web.logFn;
+
 const zinput = zunk.web.input;
 const zapp = zunk.web.app;
 const zgpu = zunk.web.gpu;

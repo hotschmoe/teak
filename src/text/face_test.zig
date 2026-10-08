@@ -18,11 +18,12 @@ fn registerAll() !void {
 }
 
 fn inkTotal(rast: *text.StbttRasterizer, weight: teak.FontWeight) !u64 {
-    const bmp = rast.rasterize("MMMM", .{ .size_px = 24, .family = .mono, .weight = weight }, .{ 1, 1, 1, 1 }, 96, 32) orelse
-        return error.RasterizeFailed;
+    const r = text.face.resolveFace(.mono, weight) orelse return error.NoFace;
     var sum: u64 = 0;
-    var i: usize = 3;
-    while (i < bmp.pixels.len) : (i += 4) sum += bmp.pixels[i];
+    for ("MMMM") |ch| {
+        const bmp = rast.rasterizeGlyph(r.id, r.face.glyphIndex(ch), 24, 0) orelse return error.RasterizeFailed;
+        for (bmp.pixels) |p| sum += p;
+    }
     return sum;
 }
 
@@ -40,8 +41,8 @@ test "every weight advances 0.6 em per character, whatever the glyph" {
 test "letter spacing adds to every character, the last included" {
     defer text.releaseFaces();
     try registerAll();
-    const plain = text.measure("abcd", .{ .size_px = 20, .family = .mono }).width;
-    const spaced = text.measure("abcd", .{ .size_px = 20, .family = .mono, .letter_spacing = 1.5 }).width;
+    const plain = text.measure("abcd", .{ .size_px = 20, .family = .mono, .snap_advance = false }).width;
+    const spaced = text.measure("abcd", .{ .size_px = 20, .family = .mono, .letter_spacing = 1.5, .snap_advance = false }).width;
     try std.testing.expectApproxEqAbs(plain + 6, spaced, 0.001);
 }
 

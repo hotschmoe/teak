@@ -361,7 +361,7 @@ fn buildLayer(
                         emitText(text_draws, alloc, piece, rt.default_font, rt.default_color, r, cur_clip);
                         x_cursor += m.width;
                     }
-                    const end = @min(sp.end, @as(u32, @intCast(rt.content.len)));
+                    const end = @min(sp.end, std.math.lossyCast(u32, rt.content.len));
                     if (end > sp.start) {
                         const piece = rt.content[sp.start..end];
                         const m = measurer.measure(piece, sp.font);
