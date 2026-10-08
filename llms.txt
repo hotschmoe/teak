@@ -511,16 +511,43 @@ Flat-shaded two-sided lighting (one directional light + ambient), depth-tested, 
 as camera-facing pixel-width quads (colour = vertex colour * `edge_color`). The Gpu renders each
 `SceneDraw` offscreen, then composites it like an image.
 
+### Scene camera, picking, section cuts (`teak.scene.{Orbit,camera,pick,section,mat}`; design: docs/features/scene.md)
+Pure math, no allocation except where noted. Right-handed, column-major, depth 0..1.
+```zig
+Orbit = struct { target: [3]f32, yaw, pitch: f32 /*clamped +-(pi/2-0.01)*/, dist: f32, up: enum{y,z},
+                 projection: Projection /* .{.perspective=.{.fov_y}} | .ortho (half-height = dist*tan(0.35)) */,
+                 near_far: ?[2]f32;
+                 pub fn setPreset(*Orbit, Preset{front,back,left,right,top,bottom,iso}) void
+                 pub fn frame(*Orbit, lo, hi: [3]f32, aspect) void       // fit bounding sphere
+                 pub fn toggleProjection(*Orbit) void                     // keeps apparent size at target
+                 pub fn onEvent(*Orbit, CanvasEvent, Bindings) bool       // orbit / pan (middle or shift) / wheel zoom-to-cursor
+                 pub fn camera(Orbit, w, h: f32, ?Bounds) Camera          // near/far from bounds
+                 pub fn eye / basis / halfHeight / rotate / panPx / zoomAt }
+Ray = struct { origin, dir: [3]f32 };  Bounds = struct { lo, hi: [3]f32 }
+pickRay(Camera, w, h, x, y) Ray            // viewport-local logical px
+project(Camera, w, h, p: [3]f32) ?[3]f32   // px + ndc depth; null behind the eye
+pick.items(Ray, []const pick.Item, []const pick.MeshRef, pick.Options{cull_back, cut}) ?pick.Hit  // {id,item,triangle,t,point,normal}
+pick.Item = struct { mesh: u32, transform: [12]f32 /*3x4 rows*/, id: u32, hidden, no_pick: bool }
+pick.MeshRef = struct { key: u32, mesh: MeshData, bvh: ?*const pick.Bvh, bounds: ?Bounds }
+pick.Bvh.build(gpa, MeshData) !Bvh;  pick.rayTriangle / pick.rayAabb / pick.nearestBrute
+pick.gizmoHit(Orbit, GizmoLayout, w, h, x, y) ?GizmoAxis;  pick.gizmoTips;  GizmoAxis.preset(up) Preset
+section.outline(gpa, MeshData, transform, plane [nx,ny,nz,d] /*keeps n.p+d<=0*/, *ArrayList(Segment)) !void
+section.chain(gpa, []const Segment) !Loops;  section.isClosed(gpa, MeshData) !bool   // even-edge watertight check
+```
+
 ### Text measurement (`teak.text` → core/text.zig)
 ```zig
 FontFamily = enum { sans, serif, mono }
 FontWeight = enum { regular, medium, bold }
 FontSpec = struct { size_px: f32 = 14, family: FontFamily = .sans, weight: FontWeight = .regular,
-                    letter_spacing: f32 = 0 }   // px per glyph; backends that can't honor weight/spacing ignore them
+                    letter_spacing: f32 = 0, snap_advance: bool = false }   // px per glyph; snap_advance rounds advances to whole px
 DEFAULT_FONT: FontSpec        // sans 14px
 TextMetrics = struct { width, height, ascent, descent: f32 }
 TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
                         pub fn prefixWidth(text, font, byte_prefix: usize) f32 }
+ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32 }  // logical order; sum(advance)==width
+ShapeResult = struct { count: usize, width: f32, consumed: usize }   // consumed < text.len only when `out` filled
+Shaper = struct { ctx: *anyopaque, shape_fn; pub fn shape(text, font, out: []ShapedGlyph) ShapeResult }
 TextureHandle = u32
 TEXTURE_HANDLE_NONE: TextureHandle = 0
 TextDraw = struct { rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x..clip_h }
