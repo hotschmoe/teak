@@ -596,11 +596,12 @@ fn buildLayer(
                     emit(verts, alloc, underline_rect, ti.style.cursor, cur_clip);
                 }
 
-                // Blinking cursor when focused. ~0.5s on / 0.5s off at 60fps.
+                // Blinking cursor when focused (phase from the run loop's
+                // Host-clock `blink_on`, default 500 ms on / 500 ms off).
                 // While IME composition is active the caret moves to the
                 // end of the composition string so the user sees where
                 // the next codepoint will commit.
-                if (focused and ((transient.frame_counter / 30) & 1) == 0) {
+                if (focused and transient.blink_on) {
                     const base_prefix = measurer.prefixWidth(ti.content, ti.font, ti.cursor);
                     const ime_offset = if (ime_drawn)
                         measurer.prefixWidth(transient.ime_text, ti.font, transient.ime_cursor)
@@ -1213,10 +1214,10 @@ test "buildVertices draws border + bg + cursor for focused text input" {
     var image_draws: std.ArrayList(ImageDraw) = .empty;
     defer image_draws.deinit(testing.allocator);
 
-    // Focused, blink-on frame (frame_counter 0 -> on).
+    // Focused, blink-on frame.
     buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{
         .focus_index = 1,
-        .frame_counter = 0,
+        .blink_on = true,
     }, text_mod.monoMeasurer());
     // border + bg + cursor = 3 quads = 18 verts. Content goes to text_draws.
     try testing.expectEqual(@as(usize, 18), verts.items.len);

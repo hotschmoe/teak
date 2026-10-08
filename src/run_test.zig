@@ -378,6 +378,113 @@ test "run: drag-off cancels the click" {
     try std.testing.expectEqual(@as(i32, 0), t.rt.model.count);
 }
 
+const HookApp = struct {
+    pub const Model = struct {
+        hovers: u32 = 0,
+        hovered_a: bool = false,
+        last_box: pointer.Box = .{},
+        last_now: u64 = 0,
+        contexts: u32 = 0,
+        ctx_on_a: bool = false,
+        ctx_x: f32 = -1,
+    };
+    pub const Msg = union(enum) { a, b, hover: ?u8, ctx: struct { on_a: bool, x: f32 } };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .a, .b => {},
+            .hover => |h| {
+                m.hovers += 1;
+                m.hovered_a = h != null and h.? == 'a';
+            },
+            .ctx => |c| {
+                m.contexts += 1;
+                m.ctx_on_a = c.on_a;
+                m.ctx_x = c.x;
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .direction = .vertical });
+        cb.button(.a, "A");
+        cb.button(.b, "B");
+        cb.popGroup();
+    }
+    pub fn hoverMsg(_: *const Model, ev: pointer.PointerEvent(Msg)) ?Msg {
+        const h = ev.hit orelse return .{ .hover = null };
+        return .{ .hover = if (std.meta.eql(h, Msg.a)) 'a' else 'b' };
+    }
+    pub fn contextMsg(_: *const Model, ev: pointer.PointerEvent(Msg)) ?Msg {
+        const on_a = if (ev.hit) |h| std.meta.eql(h, Msg.a) else false;
+        return .{ .ctx = .{ .on_a = on_a, .x = ev.x } };
+    }
+};
+
+test "run: hoverMsg fires when the widget under the pointer changes, not every frame" {
+    const t = try play(HookApp, &.{
+        .{}, // 1: lays out; the pointer is off-window and over nothing
+        .{ .x = 5, .y = 5 }, // 2: enters A
+        .{ .x = 6, .y = 6 }, // 3: still A: no event
+        .{ .x = 5, .y = 45 }, // 4: B
+        .{ .x = 500, .y = 500 }, // 5: leaves everything
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 3), t.rt.model.hovers); // A, B, none
+    try std.testing.expect(!t.rt.model.hovered_a);
+}
+
+test "run: contextMsg fires on right-button down with the widget under the cursor" {
+    const t = try play(HookApp, &.{
+        .{},
+        .{ .x = 5, .y = 5, .held = right, .down = right },
+        .{ .x = 5, .y = 5, .up = right },
+        .{ .x = 300, .y = 200, .held = right, .down = right }, // empty space
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.rt.model.contexts);
+    try std.testing.expect(!t.rt.model.ctx_on_a); // the last one was over nothing
+    try std.testing.expectEqual(@as(f32, 300), t.rt.model.ctx_x);
+}
+
+const SliderApp = struct {
+    pub const Model = struct { value: f32 = -1, clicks: u32 = 0, updates: u32 = 0 };
+    pub const Msg = union(enum) { grab, set: f32, other };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .grab, .other => m.clicks += 1,
+            .set => |v| {
+                m.value = v;
+                m.updates += 1;
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .direction = .vertical });
+        cb.slider(.grab, 0);
+        cb.button(.other, "B");
+        cb.popGroup();
+    }
+    pub fn sliderMsg(_: *const Model, _: Msg, value: f32) ?Msg {
+        return .{ .set = value };
+    }
+};
+
+test "run: sliderMsg drags with capture, and the slider's plain click is not dispatched" {
+    // The slider sits at the top-left, min_width 120.
+    const t = try play(SliderApp, &.{
+        .{},
+        .{ .x = 30, .y = 5, .held = left, .down = left }, // press at ~1/4
+        .{ .x = 90, .y = 200, .held = left }, // dragged far off the track: still captured
+        .{ .x = 500, .y = 5, .held = left }, // past the end: clamps to 1
+        .{ .x = 500, .y = 5, .up = left },
+        .{ .x = 5, .y = 60, .held = left, .down = left }, // press the button below: normal click
+        .{ .x = 5, .y = 60, .up = left },
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(f32, 1), t.rt.model.value);
+    try std.testing.expect(t.rt.model.updates >= 3);
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.clicks); // only the button; the slider never fired `.grab`
+}
+
 const KeyApp = struct {
     pub const Model = struct {
         typed: [8]u8 = undefined,
@@ -497,7 +604,7 @@ test "run: a same-length IME composition change forces a rebuild" {
             .{ .ime = "ab" }, // composition starts
             .{ .ime = "cd" }, // same length, written over "ab" in the Host's one shared buffer
         },
-    }, .{ .blink_period = 0 });
+    }, .{ .blink_half_ms = 0 });
     defer t.destroy();
     // Frame 1: first content. Frame 2: IME activates. Frame 3: "cd" — a
     // rebuild ONLY if the loop copies each frame's composition into its own
@@ -1971,6 +2078,70 @@ test "idle: a fired sub, a moved mouse and a click each wake the pipeline; idle_
     const never = try runIdle(&.{ .{}, .{}, .{}, .{} }, .{ .idle_skip = false });
     try std.testing.expectEqual(@as(u32, 4), never.renders);
     try std.testing.expectEqual(@as(u32, 0), never.waits);
+}
+
+// ── Blink-aware idle ────────────────────────────────────────────────
+
+const FocusApp = struct {
+    pub const Model = struct {};
+    pub const Msg = union(enum) { focus, noop };
+    pub fn update(_: *Model, _: Msg) void {}
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.textInput(.focus, "ab", 2);
+        cb.popGroup();
+    }
+    pub fn focusedMsg(_: *const Model) ?Msg {
+        return .focus;
+    }
+};
+
+test "idle + blink: a focused input idles, toggling the caret with a vertex-only re-render" {
+    // Half-period 500 ms: caret on at t=0..499, off at 500..999, on at 1000.
+    const t = try playWith(FocusApp, .{
+        .script = &.{
+            .{ .clock_ms = 0 }, // builds (caret on)
+            .{ .clock_ms = 100 }, // idle, same phase: nothing
+            .{ .clock_ms = 499 }, // idle, same phase: nothing
+            .{ .clock_ms = 500 }, // toggles off: re-render, still no view
+            .{ .clock_ms = 700 }, // idle
+            .{ .clock_ms = 1000 }, // toggles on
+        },
+    }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.ts.frame_counter); // only the first frame ran view/layout
+    try std.testing.expectEqual(@as(u32, 3), t.gpu.upload_vert_calls); // build + off + on
+    try std.testing.expect(t.rt.ts.blink_on);
+    try std.testing.expect(t.rt.quiet);
+}
+
+test "idle + blink: the wait timeout is the nearer of the next caret toggle and the next sub" {
+    var host: ScriptHost = .{ .script = &.{ .{ .clock_ms = 0 }, .{ .clock_ms = 120 } } };
+    var gpu: PlainGpu = .{};
+    try run_mod.run(FocusApp, std.testing.allocator, &host, &gpu, .{});
+    try std.testing.expectEqual(@as(u32, 380), host.last_wait_ms); // 500 - 120
+    // With blink off the same app has no focus timer: it waits the 1 s cap.
+    var host2: ScriptHost = .{ .script = &.{ .{ .clock_ms = 0 }, .{ .clock_ms = 120 } } };
+    var gpu2: PlainGpu = .{};
+    try run_mod.run(FocusApp, std.testing.allocator, &host2, &gpu2, .{ .blink_half_ms = 0 });
+    try std.testing.expectEqual(@as(u32, 1000), host2.last_wait_ms);
+}
+
+test "idle + blink: a sub due before the toggle wins the timeout" {
+    const FocusSub = struct {
+        pub const Model = FocusApp.Model;
+        pub const Msg = FocusApp.Msg;
+        pub const update = FocusApp.update;
+        pub const view = FocusApp.view;
+        pub const focusedMsg = FocusApp.focusedMsg;
+        pub fn subscribe(_: *const Model) []const sub_mod.Sub(Msg) {
+            return &.{.{ .every = .{ .interval_ms = 100, .msg = .noop } }};
+        }
+    };
+    var host: ScriptHost = .{ .script = &.{ .{ .clock_ms = 10 }, .{ .clock_ms = 20 } } };
+    var gpu: PlainGpu = .{};
+    try run_mod.run(FocusSub, std.testing.allocator, &host, &gpu, .{});
+    try std.testing.expectEqual(@as(u32, 80), host.last_wait_ms); // sub at 100 vs caret at 500
 }
 
 const AnimApp = struct {
