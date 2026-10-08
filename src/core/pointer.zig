@@ -57,6 +57,10 @@ pub const CanvasEventKind = enum {
     /// Model (the view cannot read layout results), e.g. to anchor overlay
     /// text over a 3D viewport.
     layout,
+    /// A key pressed while the canvas has the keyboard focus (a focusable
+    /// canvas, `canvasInteractiveFocusable`) and the app's own key hooks
+    /// declined it. `CanvasEvent.key` names the key. Return a Msg to consume it.
+    key,
 };
 
 /// One pointer event on an interactive canvas / scene. Coordinates are
@@ -79,6 +83,8 @@ pub const CanvasEvent = struct {
     /// Canvas rect size in logical px.
     w: f32 = 0,
     h: f32 = 0,
+    /// For `key`: which key.
+    key: ?@import("../input/keys.zig").SpecialKey = null,
 };
 
 /// A window-space rectangle (`PointerEvent.box`).

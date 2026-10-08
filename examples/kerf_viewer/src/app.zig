@@ -811,7 +811,7 @@ fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
             }
         },
         .leave => m.hovered = 0,
-        .wheel => {},
+        .wheel, .key => {},
     }
     _ = m.cam.onEvent(ev, .{});
 }
@@ -858,6 +858,7 @@ fn sheetEvent(m: *Model, ev: teak.CanvasEvent) void {
             if (ev.button == .left and m.drag2d == .press and m.drag_px <= click_slop_px) m.selectPart(m.press_part);
             m.drag2d = .none;
         },
+        .key => {},
     }
 }
 
