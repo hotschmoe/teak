@@ -60,6 +60,95 @@ pub fn SlotTable(comptime Entry: type, comptime capacity: usize) type {
     };
 }
 
+/// Growable counterpart of `SlotTable` for caches whose size the app, not
+/// the backend, decides (images). Same handle contract (`slot index + 1`,
+/// 0 is none, freed slots are reused, no generation). Storage grows on
+/// demand up to `max_slots`; `insert` returns null only at that ceiling or
+/// on allocator failure. There is deliberately no eviction: handles are
+/// app-owned (`releaseImage`), and evicting a live texture would leave the
+/// app holding a handle that silently draws nothing.
+pub fn GrowSlotTable(comptime Entry: type, comptime max_slots: u32) type {
+    return struct {
+        const Self = @This();
+
+        slots: std.ArrayList(?Entry) = .empty,
+        /// Freed slot indices, reused LIFO.
+        free: std.ArrayList(u32) = .empty,
+        live: u32 = 0,
+
+        pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
+            self.slots.deinit(gpa);
+            self.free.deinit(gpa);
+        }
+
+        pub fn insert(self: *Self, gpa: std.mem.Allocator, entry: Entry) ?u32 {
+            if (self.free.pop()) |i| {
+                self.slots.items[i] = entry;
+                self.live += 1;
+                return i + 1;
+            }
+            if (self.slots.items.len >= max_slots) return null;
+            self.slots.append(gpa, entry) catch return null;
+            self.live += 1;
+            return @intCast(self.slots.items.len);
+        }
+
+        pub fn get(self: *Self, handle: u32) ?*Entry {
+            if (handle == 0 or handle > self.slots.items.len) return null;
+            return if (self.slots.items[handle - 1]) |*e| e else null;
+        }
+
+        /// Free the slot and return its entry so the caller can release
+        /// the GPU objects it owned.
+        pub fn remove(self: *Self, gpa: std.mem.Allocator, handle: u32) ?Entry {
+            const e = self.get(handle) orelse return null;
+            const out = e.*;
+            self.slots.items[handle - 1] = null;
+            self.free.append(gpa, handle - 1) catch {}; // slot leaks until teardown
+            self.live -= 1;
+            return out;
+        }
+
+        /// Visit every live entry (for teardown).
+        pub fn iterator(self: *Self) Iterator {
+            return .{ .table = self, .next_index = 0 };
+        }
+
+        pub const Iterator = struct {
+            table: *Self,
+            next_index: usize,
+
+            pub fn next(it: *Iterator) ?*Entry {
+                while (it.next_index < it.table.slots.items.len) {
+                    const i = it.next_index;
+                    it.next_index += 1;
+                    if (it.table.slots.items[i]) |*e| return e;
+                }
+                return null;
+            }
+        };
+    };
+}
+
+test "GrowSlotTable grows past any fixed size, reuses freed slots, honours the ceiling" {
+    const gpa = std.testing.allocator;
+    var t: GrowSlotTable(u32, 300) = .{};
+    defer t.deinit(gpa);
+    var h: u32 = 0;
+    for (0..300) |i| h = t.insert(gpa, @intCast(i)).?;
+    try std.testing.expectEqual(@as(u32, 300), h);
+    try std.testing.expect(t.insert(gpa, 0) == null);
+    try std.testing.expectEqual(@as(?u32, 41), t.remove(gpa, 42));
+    try std.testing.expect(t.get(42) == null);
+    try std.testing.expect(t.remove(gpa, 42) == null);
+    try std.testing.expectEqual(@as(u32, 42), t.insert(gpa, 999).?);
+    var it = t.iterator();
+    var n: u32 = 0;
+    while (it.next()) |_| n += 1;
+    try std.testing.expectEqual(@as(u32, 300), n);
+    try std.testing.expect(t.get(0) == null and t.get(301) == null);
+}
+
 test "insert hands out slot+1 handles and reuses freed slots" {
     var t: SlotTable(u32, 2) = .{};
     const a = t.insert(10).?;

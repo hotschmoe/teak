@@ -37,26 +37,31 @@ pub fn clipRect(a: Rect, b: Rect) Rect {
     return .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
 }
 
-/// Scroll-clip stack shared by hit-test and render. Fixed depth mirrors
-/// LayoutEngine's FixedStack — exceeding it is a bug, not an allocation
-/// trigger. `top()` returns a huge sentinel rect when empty so callers
-/// don't branch on depth.
+/// Container nesting capacity of every fixed stack in the passes. One value
+/// with `cmd.validateBalance`, so a buffer it accepts can never overflow.
+const MAX_DEPTH = cmd.MAX_BALANCE_DEPTH;
+
+/// Scroll-clip stack shared by hit-test, render and a11y. Fixed depth
+/// (`MAX_DEPTH`, same as the layout stacks) — exceeding it is a bug, not an
+/// allocation trigger. `top()` returns a huge sentinel rect when empty so
+/// callers don't branch on depth.
 ///
-/// `push` and `pop` `std.debug.assert` the depth invariant: overflow on
-/// push and underflow on pop are programmer errors, not recoverable
-/// conditions. Zero-cost in ReleaseFast; loud crash in Debug/ReleaseSafe.
+/// Overflow on `push` and underflow on `pop` are programmer errors (an
+/// unbalanced or too-deep buffer), reported with an unconditional `@panic`
+/// in EVERY optimize mode — never an out-of-bounds write. The run loop runs
+/// `cmd.validateBalance` first, which names the offending cmd index.
 pub const ClipStack = struct {
-    buffer: [16]Rect = undefined,
+    buffer: [MAX_DEPTH]Rect = undefined,
     len: usize = 0,
 
     pub fn push(self: *ClipStack, r: Rect) void {
-        std.debug.assert(self.len < self.buffer.len);
+        if (self.len >= self.buffer.len) @panic("teak: clip stack overflow (scroll/overlay nesting too deep; see cmd.validateBalance)");
         self.buffer[self.len] = r;
         self.len += 1;
     }
 
     pub fn pop(self: *ClipStack) void {
-        std.debug.assert(self.len > 0);
+        if (self.len == 0) @panic("teak: clip stack underflow (stray pop_scroll/pop_overlay; see cmd.validateBalance)");
         self.len -= 1;
     }
 
@@ -117,26 +122,25 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
 
         const Self = @This();
 
-        // push / pop / top `std.debug.assert` against the capacity bound
-        // and the non-empty bound respectively. Overflow on push,
-        // underflow on pop, and read-empty on top are all programmer
-        // errors — the layout passes own the matched push/pop discipline.
-        // Zero cost in ReleaseFast; loud crash in Debug/ReleaseSafe.
+        // push / pop / top check the capacity and non-empty bounds with an
+        // unconditional `@panic` (every optimize mode): overflow, underflow
+        // and read-empty are programmer errors — the passes call
+        // `assertPushable` / `assertPoppable` first to name the cmd index.
 
         fn push(self: *Self, item: T) void {
-            std.debug.assert(self.len < capacity);
+            if (self.len >= capacity) @panic("teak layout: container stack overflow");
             self.buffer[self.len] = item;
             self.len += 1;
         }
 
         fn pop(self: *Self) T {
-            std.debug.assert(self.len > 0);
+            if (self.len == 0) @panic("teak layout: container stack underflow");
             self.len -= 1;
             return self.buffer[self.len];
         }
 
         fn top(self: *Self) *T {
-            std.debug.assert(self.len > 0);
+            if (self.len == 0) @panic("teak layout: container stack is empty");
             return &self.buffer[self.len - 1];
         }
     };
@@ -217,7 +221,7 @@ pub const LayoutEngine = struct {
     /// its max-content width (one line per hard break) here; the real width
     /// comes from pass 2.
     fn measurePassImpl(rects: []Rect, cmds: anytype, measurer: TextMeasurer) bool {
-        var stack: FixedStack(GroupContext, 32) = .{};
+        var stack: FixedStack(GroupContext, MAX_DEPTH) = .{};
         var needs_wrap = false;
 
         for (cmds, 0..) |c, i| {
@@ -432,7 +436,7 @@ pub const LayoutEngine = struct {
                             total_w += m.width;
                             max_h = @max(max_h, m.height);
                         }
-                        const end = @min(sp.end, @as(u32, @intCast(rt.content.len)));
+                        const end = @min(sp.end, std.math.lossyCast(u32, rt.content.len));
                         if (end > sp.start) {
                             const m = measurer.measure(rt.content[sp.start..end], sp.font);
                             total_w += m.width;
@@ -526,7 +530,7 @@ pub const LayoutEngine = struct {
             .push_group => |g| .{ .direction = g.direction, .pad_x = g.padX(), .pad_y = g.padY(), .gap = g.gap, .align_cross = g.align_cross, .can_shrink = true },
             .push_scroll => |sc| .{ .direction = sc.direction, .pad_x = sc.padding, .pad_y = sc.padding, .gap = sc.gap, .align_cross = sc.align_cross, .can_shrink = sc.direction == .vertical },
             .push_overlay => |ov| .{ .direction = ov.direction, .pad_x = ov.padding, .pad_y = ov.padding, .gap = ov.gap, .align_cross = ov.align_cross, .can_shrink = true },
-            else => null,
+            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list, .push_virtual_list, .text, .rich_text, .button, .text_input, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas => null,
         };
     }
 
@@ -631,7 +635,7 @@ pub const LayoutEngine = struct {
     /// are final (pass 2); containers recompute their height and their
     /// `fixed_main` (so the position pass sees the real child sizes).
     pub fn remeasureHeights(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void {
-        var stack: FixedStack(GroupContext, 32) = .{};
+        var stack: FixedStack(GroupContext, MAX_DEPTH) = .{};
         for (cmds, 0..) |c, i| {
             switch (c) {
                 .push_group => |g| stack.push(refreshCtx(rects[i], i, .{
@@ -718,7 +722,7 @@ pub const LayoutEngine = struct {
     }
 
     /// Fold a child's (possibly re-measured) size into its parent's accumulators.
-    fn foldChild(stack: *FixedStack(GroupContext, 32), child_w: f32, child_h: f32) void {
+    fn foldChild(stack: *FixedStack(GroupContext, MAX_DEPTH), child_w: f32, child_h: f32) void {
         if (stack.len == 0) return;
         const t = stack.top();
         const horizontal = t.direction == .horizontal;
@@ -731,7 +735,7 @@ pub const LayoutEngine = struct {
     /// time its own children are placed its final rect is known; each child
     /// goes at the running cursor.
     pub fn positionPass(rects: []Rect, cmds: anytype) void {
-        var stack: FixedStack(CursorContext, 32) = .{};
+        var stack: FixedStack(CursorContext, MAX_DEPTH) = .{};
 
         for (cmds, 0..) |c, i| {
             switch (c) {
@@ -841,7 +845,7 @@ pub const LayoutEngine = struct {
     /// Place one child (leaf or container) at the parent's cursor: grow it
     /// along the main axis by its flex share, size it along the cross axis
     /// per the parent's `align_cross`, then advance the cursor.
-    fn placeChild(rects: []Rect, stack: *FixedStack(CursorContext, 32), i: usize, spec: ChildSpec) void {
+    fn placeChild(rects: []Rect, stack: *FixedStack(CursorContext, MAX_DEPTH), i: usize, spec: ChildSpec) void {
         const ctx = stack.top();
         if (ctx.child_count > 0) advanceCursor(ctx, ctx.gap);
         const r = &rects[i];
@@ -885,7 +889,7 @@ pub const LayoutEngine = struct {
     /// Open the cursor for the children of container `i`, whose rect is
     /// final by now: split the leftover main-axis space (flex weights, else
     /// `justify`) and record the inner cross extent for `align_cross`.
-    fn pushChildren(rects: []Rect, stack: *FixedStack(CursorContext, 32), i: usize, spec: ContainerSpec) void {
+    fn pushChildren(rects: []Rect, stack: *FixedStack(CursorContext, MAX_DEPTH), i: usize, spec: ContainerSpec) void {
         const r = rects[i];
         const horizontal = spec.direction == .horizontal;
         const inner_w = @max(0, r.w - 2 * spec.pad_x);
@@ -980,12 +984,12 @@ pub const LayoutEngine = struct {
     /// Flex weight of a single-line control (text_input, slider): it only
     /// grows along a horizontal main axis. In a vertical parent its height
     /// stays fixed instead of ballooning into the leftover column space.
-    fn rowFlex(stack: *FixedStack(GroupContext, 32), flex: f32) f32 {
+    fn rowFlex(stack: *FixedStack(GroupContext, MAX_DEPTH), flex: f32) f32 {
         return if (stack.len > 0 and stack.top().direction == .horizontal) flex else 0;
     }
 
     /// Fold a finished child into its parent's accumulators.
-    fn addLeafToTop(stack: *FixedStack(GroupContext, 32), child_w: f32, child_h: f32, child_flex: f32) void {
+    fn addLeafToTop(stack: *FixedStack(GroupContext, MAX_DEPTH), child_w: f32, child_h: f32, child_flex: f32) void {
         if (stack.len == 0) return;
         const t = stack.top();
         const horizontal = t.direction == .horizontal;
@@ -1374,22 +1378,22 @@ test "ClipStack: round-trip up to capacity without tripping bounds" {
     const empty_top = clips.top();
     try testing.expect(empty_top.w > 1e8);
 
-    // Push the full capacity (16) and confirm the stack accepts every
+    // Push the full capacity and confirm the stack accepts every
     // one without a panic.
     var i: usize = 0;
     while (i < clips.buffer.len) : (i += 1) {
         clips.push(.{ .x = @floatFromInt(i), .y = 0, .w = 10, .h = 10 });
     }
-    try testing.expectEqual(@as(usize, 16), clips.len);
-    try testing.expectEqual(@as(f32, 15), clips.top().x);
+    try testing.expectEqual(@as(usize, MAX_DEPTH), clips.len);
+    try testing.expectEqual(@as(f32, MAX_DEPTH - 1), clips.top().x);
 
     // Pop them all; depth returns to zero, no underflow.
     i = 0;
-    while (i < 16) : (i += 1) clips.pop();
+    while (i < MAX_DEPTH) : (i += 1) clips.pop();
     try testing.expectEqual(@as(usize, 0), clips.len);
 }
 
-test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
+test "FixedStack (via MAX_DEPTH-deep group nesting): documented depth is reachable" {
     const testing = std.testing;
     const Msg = union(enum) { noop };
     const CmdBuffer = cmd.CmdBuffer(Msg);
@@ -1397,10 +1401,10 @@ test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
     var cb = CmdBuffer.init(testing.allocator);
     defer cb.deinit();
 
-    // Documented max for the measure-pass FixedStack is 32. Push 32
-    // groups, all of which must coexist on the stack simultaneously
+    // Documented max for the measure-pass FixedStack is MAX_DEPTH. Push that
+    // many groups, all of which must coexist on the stack simultaneously
     // during the measure pass — this is the boundary case.
-    const DEPTH: usize = 32;
+    const DEPTH: usize = MAX_DEPTH;
     var i: usize = 0;
     while (i < DEPTH) : (i += 1) {
         cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
@@ -1410,10 +1414,10 @@ test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
     i = 0;
     while (i < DEPTH) : (i += 1) cb.popGroup();
 
-    const rects = testing.allocator.alloc(Rect, cb.cmds.items.len) catch unreachable;
+    const rects = try testing.allocator.alloc(Rect, cb.cmds.items.len);
     defer testing.allocator.free(rects);
-    // If FixedStack's push asserted on overflow this would panic — it
-    // must not, because 32 is the documented capacity.
+    // The stacks panic on overflow in every mode — this must not, because
+    // MAX_DEPTH is the documented capacity.
     LayoutEngine.doLayout(rects, cb.cmds.items, 800, 600, test_measurer);
     try testing.expectEqual(@as(f32, 800), rects[0].w);
 }

@@ -99,6 +99,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const cmd = @import("core/cmd.zig");
+const eql = @import("core/eql.zig");
 const snapshot = @import("core/snapshot.zig");
 const sub_mod = @import("core/sub.zig");
 const effects_mod = @import("core/effects.zig");
@@ -145,6 +146,15 @@ pub const RunOptions = struct {
     /// under `<config>/teak/<app_name>/`). Empty: the Host's default, the
     /// window title. Ignored by hosts without `setAppName`.
     app_name: []const u8 = "",
+    /// Event-driven idle. When true, a frame in which nothing happened (no
+    /// input event, no Msg dispatched by a sub / effect result / window hook,
+    /// no focused text input blinking, no secondary window, not the first
+    /// frame) skips view, layout, diff, upload and present entirely —
+    /// `Runtime.quiet` reports it — and `run` then blocks in the Host's
+    /// optional `waitEvents(timeout_ms)` until input or the next sub is due.
+    /// Set false for an app that needs a frame every tick. The web Host stays
+    /// rAF-driven but still skips the work. See docs/features/run.md.
+    idle_skip: bool = true,
 };
 
 /// The target has a host filesystem to mirror snapshots into. Freestanding
@@ -339,7 +349,12 @@ pub fn run(
 ) !void {
     var rt = try Runtime(App, @TypeOf(host.*), @TypeOf(gpu.*)).init(gpa, host, gpu, opts);
     defer rt.deinit();
-    while (!host.shouldClose()) try rt.frame();
+    while (!host.shouldClose()) {
+        try rt.frame();
+        if (comptime @hasDecl(@TypeOf(host.*), "waitEvents")) {
+            if (rt.quiet and !host.shouldClose()) host.waitEvents(rt.idleTimeoutMs());
+        }
+    }
 }
 
 /// The canonical loop body, one `frame` call per iteration, parameterized on
@@ -450,6 +465,21 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         snap_first: bool = true,
         prev_secondary_open: bool = false,
 
+        /// True when the last `frame()` found nothing to do and skipped the
+        /// pipeline (see `RunOptions.idle_skip`). `run` blocks in
+        /// `Host.waitEvents` while this holds.
+        quiet: bool = false,
+        /// Count of Msgs dispatched so far; a frame that leaves it unchanged
+        /// changed no state.
+        dispatch_count: u64 = 0,
+        /// Pointer position / buttons of the previous frame, to tell a still
+        /// mouse from a moved one.
+        last_mouse_x: f32 = -1,
+        last_mouse_y: f32 = -1,
+        last_buttons: pointer.Buttons = .{},
+        /// The first frame always builds (nothing to show yet).
+        built_once: bool = false,
+
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
         title_len: usize = 0,
@@ -512,6 +542,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // Input is routed against the PREVIOUS frame's layout — the one
             // the user is looking at — so `prev` is captured before the swap.
             const prev = self.current;
+            const dispatched_before = self.dispatch_count;
             self.routeMouse(input, prev);
             self.routeCanvasPointer(input, prev);
             self.routeKeys(input, prev);
@@ -519,6 +550,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.deliverEffectResults();
             self.fireSubs();
             self.serviceEffects();
+
+            // Event-driven idle: nothing changed since the frame on screen.
+            self.quiet = self.opts.idle_skip and self.built_once and
+                self.dispatch_count == dispatched_before and self.inputIdle(input);
+            self.last_mouse_x = input.mouse_x;
+            self.last_mouse_y = input.mouse_y;
+            self.last_buttons = input.buttons;
+            if (self.quiet) return;
+            self.built_once = true;
 
             const cur = try self.buildView(input);
             self.reportLayout(prev, cur);
@@ -572,10 +612,38 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
         }
 
+        /// True when `input` carries nothing the pipeline must react to and no
+        /// loop-owned animation (cursor blink, live secondary window, IME
+        /// composition) needs the next frame.
+        fn inputIdle(self: *Self, input: Input) bool {
+            if (input.resized or input.mouse_down or input.mouse_up) return false;
+            if (input.mouse_x != self.last_mouse_x or input.mouse_y != self.last_mouse_y) return false;
+            if (!std.meta.eql(input.buttons, self.last_buttons)) return false;
+            if (input.wheel_dx != 0 or input.wheel_dy != 0) return false;
+            if (input.chars.len != 0 or input.keys.len != 0) return false;
+            if (self.ts.ime_active or self.host.imeState().active) return false;
+            if (self.opts.blink_period > 0 and self.ts.focus_index != null) return false;
+            if (has_secondary and App.secondaryWindow(&self.model) != null) return false;
+            if (has_secondary and self.secondary.window_id != null) return false;
+            return true;
+        }
+
+        /// How long the Host may block after a quiet frame: until the next
+        /// `Sub` is due, capped so a Host without its own wake-ups is polled.
+        pub fn idleTimeoutMs(self: *Self) u32 {
+            // Effect results arrive from the Host asynchronously; poll them
+            // at frame rate while any effect is outstanding.
+            const cap: u32 = if (self.issued.len != 0) 16 else 1000;
+            if (!@hasDecl(App, "subscribe")) return cap;
+            const due = sub_mod.nextDueMs(Msg, App.subscribe(&self.model), self.host.nowMs()) orelse return cap;
+            return @intCast(@min(due, cap));
+        }
+
         /// Every Msg is routed through here so the live snapshot's header can
         /// name the last transition. Adds nothing to the TEA loop — it is
         /// `App.update` plus one string assignment.
         fn dispatch(self: *Self, msg: Msg) void {
+            self.dispatch_count +%= 1;
             self.last_msg = @tagName(std.meta.activeTag(msg));
             App.update(&self.model, msg);
         }
@@ -897,7 +965,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (@hasDecl(App, "themeFor")) self.bufs[cur].theme = App.themeFor(&self.model);
             App.view(&self.model, &self.bufs[cur]);
             const cmds = self.bufs[cur].cmds.items;
-            debugCheckBalance(cmds, "view");
+            checkBalance(cmds, "view");
 
             try self.rects[cur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
@@ -1009,7 +1077,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             App.secondaryView(&self.model, &sec.bufs[scur]);
 
             const cmds = sec.bufs[scur].cmds.items;
-            debugCheckBalance(cmds, "secondaryView");
+            checkBalance(cmds, "secondaryView");
             try sec.rects[scur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
                 sec.rects[scur].items,
@@ -1134,14 +1202,12 @@ fn transientSame(a: TransientState, b: TransientState) bool {
         std.mem.eql(u8, a.ime_text, b.ime_text);
 }
 
-/// Debug-only cmd-buffer balance check. A missed pop_group (or friends)
-/// is otherwise a silent layout bug; in Debug builds this panics naming
-/// the offending cmd index before the layout passes consume the buffer.
-/// Compiled out entirely in release modes. run.zig sits outside the
-/// framework-core dirs, so the builtin.mode gate is allowed here
-/// (HARDLINE §3 scopes the conditional-compilation ban to core).
-fn debugCheckBalance(cmds: anytype, view_name: []const u8) void {
-    if (@import("builtin").mode != .debug) return;
+/// Per-frame cmd-buffer balance check, in EVERY optimize mode. An unbalanced
+/// or too-deeply-nested buffer (`cmd.MAX_BALANCE_DEPTH`) is otherwise a
+/// silent wrong-rects bug or an out-of-bounds stack write in release; this
+/// panics naming the view and the offending cmd index before any pass runs.
+/// O(n), allocation-free (a few microseconds at thousands of cmds).
+fn checkBalance(cmds: anytype, view_name: []const u8) void {
     if (cmd.validateBalance(cmds)) |bal_err| {
         var buf: [128]u8 = undefined;
         std.debug.panic("teak: unbalanced cmd buffer from {s}() — {s}", .{
@@ -1161,99 +1227,17 @@ fn focusIndex(comptime App: type, model: *const App.Model, cmds: anytype) ?usize
 
 // ── Frame diff ──────────────────────────────────────────────────────
 //
-// Shared with what every example's ui_main hand-rolled. Compares the
-// observable content of two cmd buffers: tags, styles, and — for
-// variants carrying slices — string/span content (not pointer identity,
-// since the arena hands out fresh addresses each frame).
+// Compares the observable content of two cmd buffers (slices by content,
+// not pointer identity — the arena hands out fresh addresses each frame).
 
-/// True if two cmd buffers would render identically.
+/// True if two cmd buffers would render identically. Derived by comptime
+/// reflection over `Cmd(Msg)` (`core/eql.zig`): every field of every
+/// variant participates, so a new widget or a new style field can never be
+/// forgotten here.
 pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd(Msg)) bool {
     if (a.len != b.len) return false;
     for (a, b) |ca, cb| {
-        if (std.meta.activeTag(ca) != std.meta.activeTag(cb)) return false;
-        switch (ca) {
-            .push_group => |g| if (!std.meta.eql(g, cb.push_group)) return false,
-            .pop_group => {},
-            .push_scroll => |s| if (!std.meta.eql(s, cb.push_scroll)) return false,
-            .pop_scroll => {},
-            .push_overlay => |o| if (!std.meta.eql(o, cb.push_overlay)) return false,
-            .pop_overlay => {},
-            .push_virtual_list => |v| if (!std.meta.eql(v, cb.push_virtual_list)) return false,
-            .pop_virtual_list => {},
-            .text => |t| {
-                const o = cb.text;
-                if (!std.mem.eql(u8, t.content, o.content)) return false;
-                if (!std.meta.eql(t.font, o.font) or !std.meta.eql(t.color, o.color)) return false;
-                if (t.wrap != o.wrap or t.max_lines != o.max_lines or t.text_align != o.text_align) return false;
-            },
-            .button => |x| {
-                // Compare the FULL payload: label (slice) by content, then
-                // msg / style / font / disabled. Omitting style or font makes
-                // a theme flip or a per-widget restyle (e.g. a danger-colored
-                // button) skip the vertex rebuild AND the snapshot write —
-                // stale pixels.
-                const o = cb.button;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-                if (x.disabled != o.disabled) return false;
-            },
-            .text_input => |x| {
-                const o = cb.text_input;
-                if (x.cursor != o.cursor or x.selection_anchor != o.selection_anchor) return false;
-                if (x.disabled != o.disabled) return false;
-                if (!std.mem.eql(u8, x.content, o.content)) return false;
-                if (!std.meta.eql(x.focus_msg, o.focus_msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-            },
-            .checkbox => |x| {
-                const o = cb.checkbox;
-                if (x.checked != o.checked) return false;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-            },
-            .radio => |x| {
-                const o = cb.radio;
-                if (x.selected != o.selected) return false;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-            },
-            .slider => |x| {
-                const o = cb.slider;
-                if (x.value != o.value) return false;
-                if (!std.meta.eql(x.grab_msg, o.grab_msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-            },
-            .divider => |d| if (!std.meta.eql(d, cb.divider)) return false,
-            .image => |im| if (!std.meta.eql(im, cb.image)) return false,
-            .rich_text => |rt| {
-                const o = cb.rich_text;
-                if (!std.mem.eql(u8, rt.content, o.content)) return false;
-                if (!std.meta.eql(rt.default_color, o.default_color)) return false;
-                if (!std.meta.eql(rt.default_font, o.default_font)) return false;
-                if (rt.spans.len != o.spans.len) return false;
-                for (rt.spans, o.spans) |sa, sb| if (!std.meta.eql(sa, sb)) return false;
-            },
-            .scene3d => |x| if (!x.eql(cb.scene3d)) return false,
-            .canvas => |x| {
-                const o = cb.canvas;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (x.id != o.id or x.pointer != o.pointer) return false;
-                if (x.primitives.len != o.primitives.len) return false;
-                // Compare by content, not slice identity — the arena hands
-                // out fresh addresses each frame (`eql` walks nested slices;
-                // big triangle/line batches compare by their `key`).
-                for (x.primitives, o.primitives) |pa, pb| if (!pa.eql(pb)) return false;
-            },
-        }
+        if (!eql.deepEql(cmd.Cmd(Msg), ca, cb)) return false;
     }
     return true;
 }
@@ -1268,6 +1252,8 @@ pub fn rectsEqual(a: []const Rect, b: []const Rect) bool {
 }
 
 test {
+    _ = @import("core/eql.zig");
+    _ = @import("core/oom.zig");
     _ = @import("run_test.zig");
     _ = @import("run_effects_test.zig");
 }

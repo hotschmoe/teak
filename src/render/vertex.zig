@@ -1,4 +1,5 @@
 const std = @import("std");
+const oom = @import("../core/oom.zig").oom;
 const Rect = @import("../layout/engine.zig").Rect;
 
 pub const Vertex = extern struct {
@@ -34,7 +35,7 @@ pub fn emitQuad(
         .{ .x = x1, .y = y0, .r = r, .g = g, .b = b, .a = a, .u = 1, .v = 0 },
         .{ .x = x1, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = 1, .v = 1 },
         .{ .x = x0, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = 0, .v = 1 },
-    }) catch unreachable;
+    }) catch oom();
 }
 
 /// Emit a solid-color quad from four explicit corners winding around the
@@ -65,7 +66,7 @@ pub fn emitQuadCorners(
         .{ .x = c0[0], .y = c0[1], .r = r, .g = g, .b = b, .a = a, .u = 0, .v = 0 },
         .{ .x = c2[0], .y = c2[1], .r = r, .g = g, .b = b, .a = a, .u = 0, .v = 0 },
         .{ .x = c3[0], .y = c3[1], .r = r, .g = g, .b = b, .a = a, .u = 0, .v = 0 },
-    }) catch unreachable;
+    }) catch oom();
 }
 
 /// The six vertices of an image-style quad covering `rect`, trimmed to
