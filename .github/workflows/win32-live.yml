@@ -55,7 +55,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with: { version: "${{ env.ZIG_VERSION }}" }
       - name: Build the driver
-        run: zig build-exe -lc --dep teak -Mroot=tools/win32_live/driver.zig -Mteak=src/teak.zig -femit-bin="$env:RUNNER_TEMP\driver.exe"
+        run: zig build-exe -lc --dep teak "-Mroot=tools/win32_live/driver.zig" "-Mteak=src/teak.zig" "-femit-bin=$env:RUNNER_TEMP\driver.exe"
       - name: Build the UI exe
         working-directory: teak/examples/${{ matrix.example }}
         run: zig build ui-install --summary all
