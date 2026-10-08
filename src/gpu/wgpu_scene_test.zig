@@ -294,6 +294,88 @@ test "items: re-placing an item changes the signature; an identical frame does n
     try std.testing.expect(sig != fx.renderer.target(0).?.signature);
 }
 
+/// Ortho top-down camera (preset `top`) over a 64 px square: 8.77 px per world unit.
+fn topCamera() teak.Camera {
+    var o = teak.scene.Orbit{ .dist = 10, .projection = .ortho };
+    o.setPreset(.top);
+    var cam = o.camera(target_px, target_px, null);
+    cam.light_dir = .{ 0, 0, 0 };
+    return cam;
+}
+
+fn chan(p: [4]u8, which: enum { b, g, r }) u8 {
+    return p[@backingInt(which)];
+}
+
+test "grid: axis and minor lines appear, cells stay clear, a mesh above occludes it" {
+    var fx = try Fixture.init(true);
+    defer fx.deinit();
+    var d = drawFor(0);
+    d.camera = topCamera();
+    d.grid = .{ .spacing = 1, .major_every = 5 };
+
+    const pixels = try fx.render(d);
+    defer std.testing.allocator.free(pixels);
+    // x axis: the v = 0 line through the centre is the (red) axis_a line
+    // (the 1.5 px line straddles rows 32 and 33)
+    const axis_r = @as(u32, chan(px(pixels, 45, 32), .r)) + chan(px(pixels, 45, 33), .r);
+    const axis_b = @as(u32, chan(px(pixels, 45, 32), .b)) + chan(px(pixels, 45, 33), .b);
+    // (a plain minor line is bluish white, b > r; the axis tips r above b)
+    try std.testing.expect(axis_r > 80 and axis_r > axis_b + 10);
+    // z axis: the u = 0 line is axis_b (blue)
+    const zb = @as(u32, chan(px(pixels, 31, 52), .b)) + chan(px(pixels, 32, 52), .b);
+    const zr = @as(u32, chan(px(pixels, 31, 52), .r)) + chan(px(pixels, 32, 52), .r);
+    try std.testing.expect(zb > zr + 40);
+    // mid-cell is the clear colour; an integer line (x = 1 -> px ~ 40.8) is not
+    try expectNear(px(pixels, 36, 52), .{ 0, 0, 0 }, 4);
+    const minor = px(pixels, 40, 52);
+    try std.testing.expect(@as(u32, minor[0]) + minor[1] + minor[2] > 60);
+
+    // A quad above the plane covering the centre hides the grid there.
+    const verts = [_]teak.MeshVertex{
+        .{ .pos = .{ -2, 1, -2 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1, 1 } },
+        .{ .pos = .{ 2, 1, -2 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1, 1 } },
+        .{ .pos = .{ 2, 1, 2 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1, 1 } },
+        .{ .pos = .{ -2, 1, 2 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1, 1 } },
+    };
+    const mesh = fx.renderer.uploadMesh(.{ .vertices = &verts, .indices = &.{ 0, 1, 2, 0, 2, 3 } });
+    const items = [_]teak.SceneItem{.{ .mesh = mesh }};
+    const occluded = try fx.renderItems(d, &items);
+    defer std.testing.allocator.free(occluded);
+    try expectNear(px(occluded, 32, 32), .{ 255, 255, 255 }, 4); // quad, not the axis crossing
+    try expectNear(px(occluded, 46, 32), .{ 255, 255, 255 }, 4);
+    // beyond the quad (x = 2.9 -> px 57.4) the axis shows again
+    try std.testing.expect(@as(u32, chan(px(occluded, 60, 32), .r)) + chan(px(occluded, 60, 33), .r) > 80);
+}
+
+test "gizmo: axis triad lands in its corner, shafts follow the view, nothing outside" {
+    var fx = try Fixture.init(true);
+    defer fx.deinit();
+    var o = teak.scene.Orbit{ .dist = 10 };
+    o.setPreset(.front);
+    var d = drawFor(0);
+    d.camera = o.camera(target_px, target_px, null);
+    d.gizmo = .{ .corner = .bottom_left, .size_px = 32, .margin_px = 0 };
+
+    const pixels = try fx.render(d);
+    defer std.testing.allocator.free(pixels);
+    // gizmo square is x 0..32, y 32..64; origin at (16, 48); +x right (red), +y up (green)
+    const xs = px(pixels, 22, 48);
+    try std.testing.expect(chan(xs, .r) > 120 and chan(xs, .g) < 80);
+    const ys = px(pixels, 16, 40);
+    try std.testing.expect(chan(ys, .g) > 80 and chan(ys, .r) < 90);
+    try expectNear(px(pixels, 50, 50), .{ 0, 0, 0 }, 3);
+    try expectNear(px(pixels, 50, 10), .{ 0, 0, 0 }, 3);
+    try expectNear(px(pixels, 16, 10), .{ 0, 0, 0 }, 3); // above the gizmo square
+
+    // Corner choice moves it.
+    d.gizmo.?.corner = .top_right;
+    const moved = try fx.render(d);
+    defer std.testing.allocator.free(moved);
+    try std.testing.expect(chan(px(moved, 48 + 6, 16), .r) > 120); // origin (48, 16)
+    try expectNear(px(moved, 22, 48), .{ 0, 0, 0 }, 3);
+}
+
 test "scene_common is linked into the gpu test" {
     try std.testing.expectEqual(@as(usize, 176), @sizeOf(common.Globals));
 }
