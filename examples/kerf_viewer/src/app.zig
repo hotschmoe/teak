@@ -1862,7 +1862,7 @@ test "gizmo labels follow the viewport's window origin" {
     for (cb.cmds.items) |c| switch (c) {
         .push_overlay => |o| {
             overlays += 1;
-            if (first == null) first = o;
+            if (first == null) first = o.*;
         },
         else => {},
     };
