@@ -185,6 +185,8 @@ src/                           -- the library, consumable as a Zig module
     scene.zig                  -- MeshData/Camera/SceneDraw data for scene3d (docs/features/scene3d.md)
     resources.zig              -- Resource union for the App `resources()` hook (HARDLINE hatch 8)
     table.zig                  -- fixed-column monospace tables: fitCell + Table.header/row
+    widgets/                   -- toggle, progress, tabs, split, tooltip, toast, dialog, menu (bar + context):
+                               --   primitive-built widgets, zero new Cmd variants (docs/features/widgets.md)
     snapshot.zig               -- []Cmd+[]Rect -> text; golden tests + TEAK_SNAPSHOT
   layout/
     engine.zig                 -- measure + position passes (fixed sizes, align, justify, flex);
@@ -241,6 +243,8 @@ examples/
       greeter.zig              -- text input w/ selection + clipboard editing
       rich_zig_adapter.zig     -- rich_zig markup -> teak RichTextSpan[]
 
+  gallery/                     -- every widget in three looks (retro / dark / light); vreg goldens; native + web
+
 shaders/
   quad.wgsl              -- shader for colored rectangles
   glyph.wgsl             -- instanced glyph quads from the R8 atlas (native + web)
@@ -258,7 +262,7 @@ The library has no external dependencies; `wgpu-native` is owned by teak's build
 
 ## Implementation Status
 
-The framework is **implemented and shipping**: the full loop (Model → view → layout → render → hit-test → update) runs on native Windows (Win32 + wgpu), native Linux (X11 + wgpu), and web (wasm + WebGPU via zunk), with real text rendering on all three. Six examples (`counter_greeter`, `todo`, `tree`, `chrome`, `viewport` — pan/zoom canvas + scroll list, `effects` — every declarative effect) exercise the loop end-to-end.
+The framework is **implemented and shipping**: the full loop (Model → view → layout → render → hit-test → update) runs on native Windows (Win32 + wgpu), native Linux (X11 + wgpu), and web (wasm + WebGPU via zunk), with real text rendering on all three. Six examples (`counter_greeter`, `todo`, `tree`, `chrome`, `viewport` — pan/zoom canvas + scroll list, `effects` — every declarative effect, `gallery` — every widget in three looks, with menus, tooltips, toasts, dialogs) exercise the loop end-to-end.
 
 Shipped phases, in order: prototype core loop → cleanup/abstraction hardening (`zig build audit`, CI) → text rendering (Host `TextMeasurer` + glyph caches) → functional gaps (overlay, images, selection/clipboard, subscriptions, multi-window, virtual list, a11y, rich text) → ergonomic helpers → consumer DX (`teak.run`, widgets, onboarding docs) → Linux native support → agent DX + consumer gaps (validateBalance, examples on `teak.run`, `teak.snapshot` + `TEAK_SNAPSHOT`, canvas/chart, dropdown scrolling, per-item focus, subscriptions serviced by `run`, `llms.txt` + cookbook). The current working task list is `tasks.md`; the original phase-by-phase prototype guide survives at `docs/archive/init_convo/first_proto.md`.
 
