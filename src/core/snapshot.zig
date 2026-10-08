@@ -190,6 +190,7 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writeRect(writer, r);
             try writer.writeByte(' ');
             try writeQuoted(writer, b.label);
+            if (b.underline) |u| try writer.print(" underline={d}", .{u});
             if (b.disabled) try writer.writeAll(" [disabled]");
         },
         .text_input => |ti| {

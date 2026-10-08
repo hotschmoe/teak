@@ -344,6 +344,17 @@ fn buildLayer(
                         .h = m.height,
                     };
                     emitText(text_draws, alloc, btn.label, btn.font, fg, label_rect, cur_clip);
+                    if (btn.underline) |at| if (at < btn.label.len and label_w >= m.width) {
+                        // One glyph's width under the mnemonic letter, just below the baseline.
+                        const before = measurer.measure(btn.label[0..at], btn.font).width;
+                        const glyph = measurer.measure(btn.label[at .. at + 1], btn.font).width;
+                        emit(verts, alloc, .{
+                            .x = label_rect.x + before,
+                            .y = label_rect.y + m.ascent + 2,
+                            .w = glyph,
+                            .h = 1,
+                        }, fg, cur_clip);
+                    };
                 }
             },
             .text_input => |ti| {
@@ -913,6 +924,31 @@ test "buildVertices emits one bg quad per button and one TextDraw per label/text
     // 1 button bg = 1 quad * 6 verts. Text and label go to text_draws.
     try testing.expectEqual(@as(usize, 6), verts.items.len);
     try testing.expectEqual(@as(usize, 2), text_draws.items.len); // "hello" + "+"
+}
+
+test "buildVertices: an underlined button label adds one thin quad under that glyph" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0 });
+    cb.buttonStyledUnderlined(.a, "File", cb.theme.button, 0);
+    cb.buttonStyledUnderlined(.a, "Edit", cb.theme.button, null);
+    cb.buttonStyledUnderlined(.a, "Save", cb.theme.button, 9); // out of range: nothing drawn
+    cb.popGroup();
+    var rects: [8]Rect = undefined;
+    const n = cb.cmds.items.len;
+    layout.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..n], .{}, text_mod.monoMeasurer());
+    // three button bgs (3 quads) + one underline quad
+    try testing.expectEqual(@as(usize, 4 * 6), verts.items.len);
 }
 
 test "buildVertices clips child widgets to scroll container" {
