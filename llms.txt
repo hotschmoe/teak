@@ -123,6 +123,7 @@ pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view 
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
 pub fn subscribe(*const Model) []const Sub(Msg)       // declarative timers; run services them each
                                                       //   frame via runSubs on Host.nowMs() (§2 hatch 6)
+pub fn commands(*const Model, *CommandList(Msg)) void // command table: shortcuts, menu/palette rows (see "Commands")
 pub fn debugState(*const Model, *std.Io.Writer) void  // Model dump for the control channel's `state` command
 pub fn resources(*const Model) []const Resource       // declarative GPU meshes/images by (key, rev);
                                                       //   run uploads/releases + maps keys to handles (§2 hatch 8)
@@ -465,6 +466,22 @@ DebugOverlayOpts = struct { x = 8, y = 8, padding = 8, gap = 2, backdrop, fg: [4
                             font: FontSpec, skip_pops = true, skip_pushes = false,
                             max_lines: usize = 512 }
 appendDebugOverlay(cb, cmds, rects: []const Rect, opts: DebugOverlayOpts) void
+```
+
+### Commands, shortcuts, palette (`teak.commands` → core/commands.zig; docs/features/commands.md)
+App hook `commands(*const Model, *CommandList(Msg)) void` (pure); `teak.run` matches `InputState.chords` against enabled rows BEFORE
+widget key handling, dispatches the row's Msg and swallows the chord's text/special key.
+```zig
+Key = enum { a..z, d0..d9, f1..f12, enter, tab, escape, space, backspace, delete, insert, left, right, up, down, home, end,
+             page_up, page_down, comma, period, slash, backslash, semicolon, quote, minus, equal, bracket_left, bracket_right, grave }
+Chord = struct { key: Key, mod: bool = false /* Ctrl (Cmd on mac) */, shift: bool = false, alt: bool = false }
+Chord.ctrl(k) Chord.ctrlShift(k) Chord.altKey(k) Chord.plain(k)   Chord.format(w, ShortcutPlatform{pc,mac}) !void   Chord.parse("ctrl+shift+p") ?Chord
+Command(Msg) = struct { id, label: []const u8, shortcut: ?Chord = null, alt_shortcut: ?Chord = null, enabled = true, hidden = false, msg: Msg }
+Command.menuLabel(arena, platform, column) []const u8        // "Save    Ctrl+S"
+CommandList(Msg): add(Command) / slice() / match(Chord) ?*const Command / byId(id) / paletteOptions(&labels,&map) usize / paletteCommand(option) ?*const Command
+CommandPalette(cap): Model/Msg/update (Combobox-shaped: .focus opens, .select(option_index)), charMsg(c), keyMsg(model,key,&list,PaletteViewOpts) ?Msg,
+                     scrollByMsg, viewPalette(model, cb, &list, .{ .focus, .close, .selectMsg }, PaletteViewOpts{ window_w, window_h, width, max_visible, platform, column })
+Combobox Match gains .fuzzy (in-order subsequence). InputState.chords: []const Chord; Host InjectEvent .chord; headless Host.pushChord.
 ```
 
 ### Agent driver (`teak.control`, `teak.input_record`, `teak.inspector`; docs/features/agent-driver.md)

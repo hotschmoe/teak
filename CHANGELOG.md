@@ -68,6 +68,11 @@
 
 ### Added
 
+- **Commands, shortcuts, command palette** (docs/features/commands.md): App hook `commands(*const Model, *CommandList(Msg))`;
+  `teak.Chord` / `teak.Key`; hosts (X11, Win32, web, headless) report `InputState.chords`; `teak.run` matches them before widget
+  key handling and swallows claimed chords; `teak.CommandPalette(cap)` (fuzzy, built on `Combobox`, new `Match.fuzzy`);
+  `Command.menuLabel` for menu shortcut text; control command `shortcut`; kerf_viewer has Ctrl+K and shortcuts.
+
 - **Agent driver** (docs/features/agent-driver.md): `TEAK_CONTROL=<unix socket>` control channel in `teak.run`
   (snapshot, a11y `tree`, click/hover/type/key/scroll by role+label selector, screenshot, msglog, state, wait),
   injected through the Host's real input queue (`Host.injectInput`; headless + X11 hosts); `TEAK_RECORD` /

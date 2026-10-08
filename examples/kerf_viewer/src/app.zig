@@ -932,10 +932,11 @@ const golden =
     \\      group (98,13,6,14) vertical bg
     \\    text (116,10,110,20) "MESH VIEWER"
     \\    text (238,10,180,20) "DOC: FLUSH-PSL-2X6"
-    \\    group (430,20,380,0) vertical
-    \\    button (822,7,174,26) "PALMER-SD1-LIKE"
-    \\    button (1008,7,154,26) "FLUSH-PSL-2X6"
-    \\    button (1174,7,94,26) "OPEN..."
+    \\    group (430,20,284,0) vertical
+    \\    button (726,7,174,26) "PALMER-SD1-LIKE"
+    \\    button (912,7,154,26) "FLUSH-PSL-2X6"
+    \\    button (1078,7,94,26) "OPEN..."
+    \\    button (1184,7,84,26) "CTRL+K"
     \\  group (0,40,1280,2) vertical bg
     \\  group (0,42,1280,734) horizontal
     \\    group (0,42,940,734) vertical bg
@@ -1007,3 +1008,19 @@ const golden =
     \\    text (858,778,410,20) "PERSP  YAW -36  PITCH 29  DIST 14'-4 1/4\""
     \\
 ;
+
+test "commands: the palette runs a view command and shortcuts resolve" {
+    var m = smallModel();
+    defer m.loaded.?.deinit();
+    var list: teak.CommandList(Msg) = .{};
+    commands(&m, &list);
+    try testing.expectEqual(Msg.toggle_ortho, list.match(teak.Chord.altKey(.o)).?.msg);
+    try testing.expectEqual(Msg{ .palette = .focus }, list.match(teak.Chord.ctrl(.k)).?.msg);
+
+    update(&m, .{ .palette = .focus });
+    try testing.expect(m.palette.open);
+    for ("vtop") |c| update(&m, keyCharMsg(&m, c).?);
+    const enter = keySpecialMsg(&m, .enter).?; // "View: Top" is the only fuzzy match for "vtop"? at least first
+    update(&m, enter);
+    try testing.expect(!m.palette.open);
+}

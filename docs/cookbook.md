@@ -30,6 +30,7 @@ change yields.
 | Fire a Msg on a timer | [11. Timer / subscription](#11-timer--subscription) |
 | Add a brand-new widget to the framework | [12. Add a new widget to the framework](#12-add-a-new-widget-to-the-framework) |
 | Call an HTTP API, open / save a file, remember a setting | [13. Effects: HTTP, files, storage](#13-effects-http-files-storage) |
+| Add shortcuts + a Ctrl+K command palette | [16. Shortcuts and a command palette](#16-shortcuts-and-a-command-palette) |
 | Drive my app from an LLM agent (click, type, screenshot, replay) | [15. Drive your app from an LLM agent](#15-drive-your-app-from-an-llm-agent) |
 
 The mechanical spine underneath every app recipe: **1.** field on `Model`
@@ -969,4 +970,28 @@ overlays the widget tree, hovered style, last Msgs and frame timings.
 **Guarantees:** injected input takes the exact path real input takes (no second
 mutation path, HARDLINE intact); a selector that matches nothing is a clean
 error. Depth: [agent-driver.md](features/agent-driver.md).
+
+---
+
+## 16. Shortcuts and a command palette
+
+**Goal:** Ctrl+S-style shortcuts, shortcut text in menus, and a Ctrl+K palette that fuzzy-runs any command.
+
+**1. Declare the table** (pure; the runtime matches chords before widget keys and dispatches the Msg):
+
+```zig
+pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
+    list.add(.{ .id = "file.save", .label = "Save", .shortcut = teak.Chord.ctrl(.s), .enabled = m.dirty, .msg = .save });
+    list.add(.{ .id = "palette", .label = "Command Palette", .shortcut = teak.Chord.ctrlShift(.p),
+                .alt_shortcut = teak.Chord.ctrl(.k), .hidden = true, .msg = .{ .palette = .focus } });
+}
+```
+
+**2. The palette**: `const Palette = teak.CommandPalette(24);` with `palette: Palette.Model` in the Model, a `palette: Palette.Msg` and a `palette_run: usize` Msg;
+route `keyCharMsg` / `keySpecialMsg` to it while `m.palette.open`; draw it last in `view` with `Palette.viewPalette`;
+on `palette_run(i)` close it and `update(m, list.paletteCommand(i).?.msg)`. The complete wiring is in `examples/kerf_viewer/src/app.zig`.
+
+**3. Menus**: show `cmd.menuLabel(arena, .pc, 20)` (or `Chord.format`) so the displayed shortcut is the working one.
+
+Test it headlessly with `host.pushChord(.{ .key = .s, .mod = true })` or, against a live app, `teak-drive shortcut ctrl+s`. Depth: [commands.md](features/commands.md).
 

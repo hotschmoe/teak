@@ -65,6 +65,9 @@ const App = struct {
             else => null,
         };
     }
+    pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
+        list.add(.{ .id = "todo.add", .label = "Add item", .shortcut = teak.Chord.ctrl(.enter), .enabled = m.input_len > 0, .msg = .add });
+    }
     pub fn debugState(m: *const Model, w: *std.Io.Writer) void {
         w.print("items={d} input={s}", .{ m.n, m.input[0..m.input_len] }) catch {};
     }
@@ -378,4 +381,36 @@ test "idle: a listening control channel caps the quiet wait at one frame; comman
     defer gpa.free(r2);
     try rt.frame();
     try std.testing.expect(rt.bufs[rt.current].cmds.items.len > before);
+}
+
+test "control: the shortcut command presses a chord matched by the app's commands table" {
+    if (comptime !control_socket.supported) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var sock_buf: [96]u8 = undefined;
+    const sock = try tmpPath(&sock_buf, "sc.sock");
+    var host = try testHost();
+    defer host.deinit();
+    var gpu: StubGpu = .{};
+    var rt = try Rt.init(gpa, &host, &gpu, .{ .control_path = sock });
+    defer rt.deinit();
+    try rt.frame();
+    var cl = try control_socket.Client.connect(sock);
+    defer cl.close();
+
+    const a = try ask(&rt, &cl, "{\"cmd\":\"click\",\"selector\":{\"role\":\"text_input\"}}");
+    gpa.free(a);
+    const b = try ask(&rt, &cl, "{\"cmd\":\"type\",\"text\":\"tea\"}");
+    gpa.free(b);
+    // Disabled while empty would not fire; with text, Ctrl+Enter adds the item.
+    const r = try ask(&rt, &cl, "{\"cmd\":\"shortcut\",\"chord\":\"ctrl+enter\"}");
+    defer gpa.free(r);
+    try expectOk(r);
+    try std.testing.expectEqual(@as(usize, 1), rt.model.n);
+    // Again with the input empty: the command is disabled, nothing happens.
+    const r2 = try ask(&rt, &cl, "{\"cmd\":\"shortcut\",\"chord\":\"ctrl+enter\"}");
+    defer gpa.free(r2);
+    try std.testing.expectEqual(@as(usize, 1), rt.model.n);
+    const r3 = try ask(&rt, &cl, "{\"cmd\":\"shortcut\",\"chord\":\"bogus\"}");
+    defer gpa.free(r3);
+    try std.testing.expect(std.mem.indexOf(u8, r3, "\"ok\":false") != null);
 }

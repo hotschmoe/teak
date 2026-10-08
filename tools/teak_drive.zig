@@ -23,7 +23,7 @@ const usage =
     \\  (the socket defaults to $TEAK_CONTROL)
     \\
     \\read:     snapshot | tree | info | state | msglog [N]
-    \\act:      click|hover [--role R] [--label L | LABEL...] [--index N] [--nth N] [--x X --y Y]
+    \\act:      shortcut CHORD (e.g. ctrl+shift+p) | click|hover [--role R] [--label L | LABEL...] [--index N] [--nth N] [--x X --y Y]
     \\          type TEXT | key NAME [COUNT] | scroll --dy N [--dx N] [selector]
     \\          wait --frames N | wait --text STR [--timeout FRAMES]
     \\          screenshot PATH | inspect [on|off] | quit
@@ -181,6 +181,11 @@ fn buildCommand(gpa: std.mem.Allocator, cmd: []const u8, args: []const []const u
             try joined.writer.writeAll(a);
         }
         try jsonStr(w, joined.written());
+        try w.writeByte('}');
+    } else if (std.mem.eql(u8, cmd, "shortcut")) {
+        if (args.len != 1) return null;
+        try w.writeAll("{\"cmd\":\"shortcut\",\"chord\":");
+        try jsonStr(w, args[0]);
         try w.writeByte('}');
     } else if (std.mem.eql(u8, cmd, "key")) {
         if (args.len == 0) return null;
@@ -352,6 +357,9 @@ const tools = [_]Tool{
     },
     .{ .name = "key", .description = "Press a special key by teak.SpecialKey name: enter, tab, shift_tab, escape, backspace, delete, left, right, up, down, home, end, page_up, page_down, ctrl_a, ctrl_c, ctrl_v, ...", .schema =
     \\{"type":"object","properties":{"name":{"type":"string"},"count":{"type":"integer"}},"required":["name"]}
+    },
+    .{ .name = "shortcut", .description = "Press a keyboard shortcut such as ctrl+s, ctrl+shift+p, alt+enter or f5; the app's command table matches it like a real key press (use this to run commands and open the command palette).", .schema =
+    \\{"type":"object","properties":{"chord":{"type":"string"}},"required":["chord"]}
     },
     .{ .name = "scroll", .description = "Scroll the wheel (dy>0 scrolls content down), optionally over a selected widget.", .schema = "{\"type\":\"object\",\"properties\":{\"dx\":{\"type\":\"number\"},\"dy\":{\"type\":\"number\"}," ++ selector_props ++ "}}" },
     .{ .name = "screenshot", .description = "Write the current frame to a PNG (headless mode only) and return its path; set include_image to also receive the pixels inline.", .schema =

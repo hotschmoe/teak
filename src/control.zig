@@ -64,6 +64,8 @@ const Act = union(enum) {
     key: keys.SpecialKey,
     /// UTF-8 in `pool[off..][0..len]`.
     chars: struct { off: u32, len: u32 },
+    /// A keyboard shortcut (`InputState.chords`).
+    chord: keys.Chord,
     /// A frame with no input (lets effects / subs settle).
     nop,
     /// Hold for `n` more frames.
@@ -404,6 +406,7 @@ fn stepAct(rt: anytype) void {
         .up => |b| host.injectInput(.{ .up = b }),
         .wheel => |w| host.injectInput(.{ .wheel = w }),
         .key => |k| host.injectInput(.{ .key = k }),
+        .chord => |c| host.injectInput(.{ .chord = c }),
         .chars => |c| host.injectInput(.{ .chars = st.pool.items[c.off..][0..c.len] }),
         .nop => {},
         .wait => |*n| {
@@ -515,6 +518,8 @@ fn handleLine(rt: anytype, line: []const u8) void {
         return cmdClick(rt, obj);
     } else if (std.mem.eql(u8, cmd, "hover")) {
         return cmdHover(rt, obj);
+    } else if (std.mem.eql(u8, cmd, "shortcut")) {
+        return cmdShortcut(rt, obj);
     } else if (std.mem.eql(u8, cmd, "type")) {
         return cmdType(rt, obj);
     } else if (std.mem.eql(u8, cmd, "key")) {
@@ -848,6 +853,17 @@ fn cmdType(rt: anytype, obj: std.json.ObjectMap) void {
         addAct(st, .{ .chars = .{ .off = p.off, .len = p.len } });
         rest = rest[n..];
     }
+    addAct(st, .nop);
+    begin(rt);
+}
+
+/// `{"cmd":"shortcut","chord":"ctrl+shift+p"}`: press a keyboard shortcut,
+/// matched by the app's `commands` table like a real key press.
+fn cmdShortcut(rt: anytype, obj: std.json.ObjectMap) void {
+    const st = &rt.ctl;
+    const s = getStr(obj, "chord") orelse return fail(rt, "shortcut needs \"chord\" (e.g. \"ctrl+s\", \"ctrl+shift+p\", \"f5\")", .{});
+    const c = keys.Chord.parse(s) orelse return fail(rt, "cannot parse chord \"{s}\"", .{s});
+    addAct(st, .{ .chord = c });
     addAct(st, .nop);
     begin(rt);
 }

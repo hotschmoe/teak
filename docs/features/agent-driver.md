@@ -22,6 +22,7 @@ Opt-in, one socket per app. Start the app with `TEAK_CONTROL=<unix socket path>`
 | `click` / `hover` | selector (below); a click is move, press, release, settle (one frame each) |
 | `type {text}` | typed characters, 32 bytes per frame |
 | `key {name,count?}` | a `teak.SpecialKey` tag: `enter`, `tab`, `escape`, `backspace`, `ctrl_a`, ... |
+| `shortcut {chord}` | a keyboard shortcut (`"ctrl+shift+p"`), matched by the app's `commands` table ([commands.md](commands.md)) |
 | `scroll {dx,dy,selector?}` | wheel (positive `dy` scrolls content down) |
 | `screenshot {path}` | PNG of the last frame; needs an offscreen Gpu (headless), an error elsewhere |
 | `msglog {n?}` | the last Msgs as text (oldest first, `.add(\"milk\")` style) |
