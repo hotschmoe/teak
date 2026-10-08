@@ -41,6 +41,10 @@ pub fn view(_: *const Model, cb: anytype) void {
     line(cb, mono(10, .regular, 0), "10px: The quick brown fox jumps over the lazy dog 0123456789");
     line(cb, mono(16, .medium, 0), "16px: The quick brown fox jumps over");
     line(cb, mono(20, .regular, 0), "20px: The quick brown fox");
+    cb.divider();
+    // No shipped face has these: the web build rasterizes them with canvas 2D
+    // (the browser's own fonts); native draws the face's missing-glyph box.
+    line(cb, mono(16, .regular, 0), "fallback: \u{6F22}\u{5B57} \u{304B}\u{306A} \u{D55C}\u{AE00}");
     cb.popGroup();
 }
 
