@@ -11,13 +11,17 @@
 //!                    on its own thread until the OS gives up).
 //!   storage_*        one file per key under `$XDG_CONFIG_HOME/teak/<app>/`
 //!                    (default `~/.config`). An empty value deletes the key.
-//!   download         written to `$TEAK_OUT` (default: the cwd).
-//!   open_file        there is no dialog: `file_cancelled`, unless the env var
-//!                    `TEAK_OPEN=path` names a file, which every request then
-//!                    reads (lets agents and tests drive the app).
+//!   open_file        a native dialog (`file_picker.zig`: `$TEAK_PICKER`,
+//!                    zenity or kdialog) on a worker thread; `file_cancelled`
+//!                    when cancelled or no picker is installed. The env var
+//!                    `TEAK_OPEN=path` bypasses the dialog: every request
+//!                    reads that file (lets agents and tests drive the app).
+//!   download         with `pick = true` a Save As dialog, else written to
+//!                    `$TEAK_OUT` (default: the cwd).
 //!   clock            the OS wall clock and UTC offset.
 //!   query_param      argv `--name=value`, else env `TEAK_<NAME_UPPER>`.
-//!   write_clipboard  logged once and ignored (X11 selections are async).
+//!   write_clipboard  logged once and ignored (X11 selections are async);
+//!   write_clipboard_image   likewise: the X11 host serves both itself.
 //!
 //! Results are queued under a mutex and handed out by `poll`; every result
 //! owns a small arena that is freed at the next `poll`, which is why result
@@ -25,6 +29,7 @@
 
 const std = @import("std");
 const teak = @import("teak");
+const file_picker = @import("file_picker.zig");
 
 const Effect = teak.Effect;
 const EffectResult = teak.EffectResult;
@@ -67,6 +72,9 @@ pub const Service = struct {
     delivered: std.ArrayList(*std.heap.ArenaAllocator) = .empty,
     jobs: [max_jobs]Job = @splat(.{}),
     clipboard_warned: bool = false,
+    /// A file dialog is open on its worker thread (one at a time).
+    dialog_busy: bool = false,
+    picker_warned: bool = false,
 
     /// `app_name` (usually the window title) names the storage directory; it
     /// is reduced to a lowercase slug.
@@ -92,6 +100,7 @@ pub const Service = struct {
         self.lock();
         var running = false;
         for (self.jobs) |j| running = running or j.id != 0;
+        running = running or self.dialog_busy;
         self.unlock();
         if (running) return;
         self.releaseDelivered();
@@ -116,13 +125,18 @@ pub const Service = struct {
         switch (e) {
             .http => |r| return self.startHttp(r),
             .download => |d| {
+                if (d.pick) return self.startDialog(.save, d.id, "", d.title, d.name, d.bytes);
                 const ok = writeDownload(self.io, d.name, d.bytes);
                 self.finish(.{ .downloaded = .{ .id = d.id, .ok = ok } });
             },
-            .open_file => |o| self.openFile(o.id),
+            .open_file => |o| {
+                if (envValue("TEAK_OPEN") != null) {
+                    self.openFile(o.id);
+                } else return self.startDialog(.open, o.id, o.accept, o.title, "", "");
+            },
             // The X11 host intercepts this before it reaches the service
             // (it owns the selection); any other embedder gets a one-time note.
-            .write_clipboard => {
+            .write_clipboard, .write_clipboard_image => {
                 if (!self.clipboard_warned) {
                     self.clipboard_warned = true;
                     warn("teak: write_clipboard is not handled by this host; ignored", .{});
@@ -337,6 +351,95 @@ pub const Service = struct {
         else
             null;
         self.push(arena, .{ .storage_value = .{ .id = id, .value = value } });
+    }
+
+    // ── File dialogs ────────────────────────────────────────────────
+
+    const DialogJob = struct {
+        service: *Service,
+        arena: *std.heap.ArenaAllocator,
+        kind: file_picker.Kind,
+        id: u32,
+        accept: []const u8,
+        title: []const u8,
+        name: []const u8,
+        bytes: []const u8,
+    };
+
+    fn startDialog(self: *Service, kind: file_picker.Kind, id: u32, accept: []const u8, title: []const u8, name: []const u8, bytes: []const u8) teak.EffectSubmit {
+        self.lock();
+        if (self.dialog_busy) {
+            self.unlock();
+            return .busy; // one dialog at a time; the runtime retries next frame
+        }
+        self.dialog_busy = true;
+        self.unlock();
+
+        const arena = newArena() orelse return self.dialogFailed(null);
+        const a = arena.allocator();
+        const job = a.create(DialogJob) catch return self.dialogFailed(arena);
+        job.* = .{
+            .service = self,
+            .arena = arena,
+            .kind = kind,
+            .id = id,
+            .accept = a.dupe(u8, accept) catch return self.dialogFailed(arena),
+            .title = a.dupe(u8, title) catch return self.dialogFailed(arena),
+            .name = a.dupe(u8, name) catch return self.dialogFailed(arena),
+            .bytes = a.dupe(u8, bytes) catch return self.dialogFailed(arena),
+        };
+        const thread = std.Thread.spawn(.{}, dialogWorker, .{job}) catch return self.dialogFailed(arena);
+        thread.detach();
+        return .accepted;
+    }
+
+    fn dialogFailed(self: *Service, arena: ?*std.heap.ArenaAllocator) teak.EffectSubmit {
+        if (arena) |a| freeArena(a);
+        self.lock();
+        self.dialog_busy = false;
+        self.unlock();
+        return .busy;
+    }
+
+    fn dialogWorker(job: *DialogJob) void {
+        const self = job.service;
+        defer {
+            self.lock();
+            self.dialog_busy = false;
+            self.unlock();
+            freeArena(job.arena);
+        }
+        const chosen: ?[]u8 = file_picker.pick(gpa, envValue("TEAK_PICKER"), job.kind, job.accept, job.title, job.name) catch |e| blk: {
+            if (e == error.NoPicker and !self.picker_warned) {
+                self.picker_warned = true;
+                warn("teak: no file dialog available (install zenity or kdialog, or set TEAK_OPEN)", .{});
+            }
+            break :blk null;
+        };
+        defer if (chosen) |c| gpa.free(c);
+
+        switch (job.kind) {
+            .save => {
+                const path = chosen orelse return self.finish(.{ .downloaded = .{ .id = job.id, .ok = false } });
+                const ok = if (Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = job.bytes })) |_| true else |e| blk: {
+                    warn("teak: save {s}: {s}", .{ path, @errorName(e) });
+                    break :blk false;
+                };
+                self.finish(.{ .downloaded = .{ .id = job.id, .ok = ok } });
+            },
+            .open => {
+                const path = chosen orelse return self.finish(.{ .file_cancelled = .{ .id = job.id } });
+                const arena = newArena() orelse return self.finish(.{ .file_cancelled = .{ .id = job.id } });
+                const bytes = Io.Dir.cwd().readFileAlloc(self.io, path, arena.allocator(), .limited(max_body_bytes)) catch |e| {
+                    warn("teak: open {s}: {s}", .{ path, @errorName(e) });
+                    freeArena(arena);
+                    return self.finish(.{ .file_cancelled = .{ .id = job.id } });
+                };
+                const name = std.fs.path.basename(path);
+                const name_copy = arena.allocator().dupe(u8, name) catch name;
+                self.push(arena, .{ .file_opened = .{ .id = job.id, .name = name_copy, .mime = mimeFromName(name_copy), .bytes = bytes } });
+            },
+        }
     }
 
     fn openFile(self: *Service, id: u32) void {
@@ -776,6 +879,9 @@ test "clock is plausible" {
 
 test "open_file without TEAK_OPEN is cancelled; clipboard and storage_set make no result" {
     if (envValue("TEAK_OPEN") != null) return;
+    // The picker exits 1 without printing anything: a cancelled dialog.
+    setEnv("TEAK_PICKER", "/bin/false");
+    defer unsetEnv("TEAK_PICKER");
     const svc = try Service.create("test");
     defer svc.destroy();
     _ = svc.submit(.{ .write_clipboard = .{ .id = 1, .text = "x" } });
@@ -841,4 +947,65 @@ test "query_param falls back to TEAK_<NAME> and reports absent ones" {
     _ = svc.submit(.{ .query_param = .{ .id = 2, .name = "qp-not-set" } });
     try waitOne(svc, &r);
     try std.testing.expect(r.query_value.value == null);
+}
+
+/// Write an executable picker script that records its argv in `<dir>/argv`
+/// and prints `choice` (nothing when empty), exiting `code`.
+fn writePickerScript(dir: []const u8, choice: []const u8, code: u8) !void {
+    const io = std.Options.debug_io;
+    try Io.Dir.cwd().createDirPath(io, dir);
+    var path_buf: [256]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/picker.sh", .{dir});
+    var body: [512]u8 = undefined;
+    const text = try std.fmt.bufPrint(&body, "#!/bin/sh\nprintf '%s\\n' \"$@\" > {s}/argv\n[ -n '{s}' ] && echo '{s}'\nexit {d}\n", .{ dir, choice, choice, code });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = text, .flags = .{ .permissions = .executable_file } });
+}
+
+test "open_file runs the native picker off-thread, reads the chosen file; save writes where the user picks" {
+    const dir = "/tmp/teak-native-picker-test";
+    const io = std.Options.debug_io;
+    try Io.Dir.cwd().createDirPath(io, dir);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/chosen.json", .data = "{\"picked\":true}" });
+    try writePickerScript(dir, dir ++ "/chosen.json", 0);
+    setEnv("TEAK_PICKER", dir ++ "/picker.sh");
+    defer unsetEnv("TEAK_PICKER");
+    if (envValue("TEAK_OPEN") != null) return;
+
+    const svc = try Service.create("test");
+    defer svc.destroy();
+    var r: EffectResult = undefined;
+    try std.testing.expectEqual(teak.EffectSubmit.accepted, svc.submit(.{ .open_file = .{ .id = 7, .accept = ".json", .title = "Open it" } }));
+    try waitOne(svc, &r);
+    try std.testing.expectEqual(@as(u32, 7), r.file_opened.id);
+    try std.testing.expectEqualStrings("chosen.json", r.file_opened.name);
+    try std.testing.expectEqualStrings("application/json", r.file_opened.mime);
+    try std.testing.expectEqualStrings("{\"picked\":true}", r.file_opened.bytes);
+    // The picker was invoked zenity-style, with the accept list as a filter.
+    const argv = try Io.Dir.cwd().readFileAlloc(io, dir ++ "/argv", std.testing.allocator, .limited(4096));
+    defer std.testing.allocator.free(argv);
+    try std.testing.expect(std.mem.indexOf(u8, argv, "--file-selection") != null);
+    try std.testing.expect(std.mem.indexOf(u8, argv, "--file-filter=Files | *.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, argv, "--title=Open it") != null);
+
+    // Save As: the user picks a path; the bytes land there.
+    try writePickerScript(dir, dir ++ "/saved.txt", 0);
+    _ = svc.submit(.{ .download = .{ .id = 8, .name = "suggest.txt", .bytes = "payload", .pick = true } });
+    try waitOne(svc, &r);
+    try std.testing.expect(r.downloaded.ok and r.downloaded.id == 8);
+    const saved = try Io.Dir.cwd().readFileAlloc(io, dir ++ "/saved.txt", std.testing.allocator, .limited(4096));
+    defer std.testing.allocator.free(saved);
+    try std.testing.expectEqualStrings("payload", saved);
+
+    // Cancel: exit 1, nothing printed.
+    try writePickerScript(dir, "", 1);
+    _ = svc.submit(.{ .download = .{ .id = 9, .name = "x.txt", .bytes = "p", .pick = true } });
+    try waitOne(svc, &r);
+    try std.testing.expect(!r.downloaded.ok);
+    _ = svc.submit(.{ .open_file = .{ .id = 10 } });
+    try waitOne(svc, &r);
+    try std.testing.expectEqual(@as(u32, 10), r.file_cancelled.id);
+}
+
+test {
+    _ = file_picker;
 }

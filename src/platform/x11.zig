@@ -560,6 +560,8 @@ pub const Host = struct {
 
     /// Text we serve while we own the CLIPBOARD selection (null: not owner).
     clip_out: ?[]u8,
+    /// PNG we serve as `image/png` while we own the CLIPBOARD (exclusive with `clip_out`).
+    clip_png: ?[]u8,
     /// Result of the last synchronous `Clipboard.read` (freed on the next).
     read_buf: ?[]u8,
     /// Largest property payload one `XChangeProperty` may carry; bigger
@@ -647,6 +649,7 @@ pub const Host = struct {
             .resized_pending = false,
             .queue = .{},
             .clip_out = null,
+            .clip_png = null,
             .read_buf = null,
             .max_prop_bytes = max_prop_bytes,
             .paste_requested = false,
@@ -663,6 +666,7 @@ pub const Host = struct {
         text.releaseFaces();
         self.abortTransfer();
         if (self.clip_out) |b| gpa.free(b);
+        if (self.clip_png) |b| gpa.free(b);
         if (self.read_buf) |b| gpa.free(b);
         if (self.xic) |ic| self.x.XDestroyIC(ic);
         if (self.xim) |im| _ = self.x.XCloseIM(im);
@@ -737,6 +741,8 @@ pub const Host = struct {
                 SelectionClear => if (ev.xselectionclear.selection == self.atoms.clipboard) {
                     if (self.clip_out) |b| gpa.free(b);
                     self.clip_out = null;
+                    if (self.clip_png) |b| gpa.free(b);
+                    self.clip_png = null;
                 },
                 FocusIn => if (self.xic) |ic| self.x.XSetICFocus(ic),
                 FocusOut => if (self.xic) |ic| self.x.XUnsetICFocus(ic),
@@ -1148,6 +1154,16 @@ pub const Host = struct {
                 } else |_| {}
             }
         };
+        if (req.selection == a.clipboard) if (self.clip_png) |png| {
+            if (req.target == a.targets) {
+                const offered = [_]c_ulong{ a.targets, a.image_png };
+                _ = self.x.XChangeProperty(self.display, req.requestor, prop, XA_ATOM, 32, PropModeReplace, @ptrCast(&offered), offered.len);
+                reply.property = prop;
+            } else if (req.target == a.image_png and png.len <= self.max_prop_bytes) {
+                _ = self.x.XChangeProperty(self.display, req.requestor, prop, a.image_png, 8, PropModeReplace, png.ptr, @intCast(png.len));
+                reply.property = prop;
+            }
+        };
         var ev: XEvent = undefined;
         ev.xselection = reply;
         _ = self.x.XSendEvent(self.display, req.requestor, 0, 0, &ev);
@@ -1162,12 +1178,31 @@ pub const Host = struct {
     pub fn writeClipboard(self: *Host, txt: []const u8) void {
         const copy = gpa.dupe(u8, txt) catch return;
         if (self.clip_out) |b| gpa.free(b);
+        if (self.clip_png) |b| gpa.free(b);
+        self.clip_png = null;
         self.clip_out = copy;
         _ = self.x.XSetSelectionOwner(self.display, self.atoms.clipboard, self.window, CurrentTime);
         _ = self.x.XFlush(self.display);
         if (self.x.XGetSelectionOwner(self.display, self.atoms.clipboard) != self.window) {
             gpa.free(copy);
             self.clip_out = null;
+        }
+    }
+
+    /// Take ownership of CLIPBOARD and serve `png` (copied) as `image/png`.
+    /// Replaces any text we were serving; same size limit and lifetime rules
+    /// as `writeClipboard`.
+    pub fn writeClipboardImage(self: *Host, png: []const u8) void {
+        const copy = gpa.dupe(u8, png) catch return;
+        if (self.clip_png) |b| gpa.free(b);
+        if (self.clip_out) |b| gpa.free(b);
+        self.clip_out = null;
+        self.clip_png = copy;
+        _ = self.x.XSetSelectionOwner(self.display, self.atoms.clipboard, self.window, CurrentTime);
+        _ = self.x.XFlush(self.display);
+        if (self.x.XGetSelectionOwner(self.display, self.atoms.clipboard) != self.window) {
+            gpa.free(copy);
+            self.clip_png = null;
         }
     }
 
@@ -1270,6 +1305,10 @@ pub const Host = struct {
         switch (e) {
             .write_clipboard => |w| {
                 self.writeClipboard(w.text);
+                return .accepted;
+            },
+            .write_clipboard_image => |w| {
+                self.writeClipboardImage(w.png);
                 return .accepted;
             },
             else => return self.effects.submit(e),

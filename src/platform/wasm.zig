@@ -589,6 +589,7 @@ pub const Host = struct {
             .download => |d| fx.download(d.id, d.name, d.mime, d.bytes),
             .open_file => |o| fx.openFile(o.id, o.accept),
             .write_clipboard => |c| fx.clipboardWrite(c.text),
+            .write_clipboard_image => |c| fx.clipboardWriteImage(c.png),
             .storage_set => |s| fx.storageSet(s.key, s.value),
             .storage_get => |g| fx.storageGet(g.id, g.key),
             .clock => |c| fx.clock(c.id),

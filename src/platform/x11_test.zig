@@ -114,6 +114,35 @@ test "clipboard write is served to another client (xclip -o)" {
     try std.testing.expectEqualStrings("via effect", host.clipboard().read());
 }
 
+test "clipboard image write is served as image/png (xclip -t image/png -o)" {
+    try requireDisplay();
+    var host = try Host.init("teak x11 test", 200, 100);
+    defer host.deinit();
+    _ = host.pollInputs();
+
+    // A tiny but valid PNG signature + payload; the host serves bytes verbatim.
+    const png = "\x89PNG\r\n\x1a\nfake-png-payload";
+    try std.testing.expectEqual(teak.EffectSubmit.accepted, host.submit(.{ .write_clipboard_image = .{ .id = 1, .png = png } }));
+
+    // The TARGETS list offers image/png.
+    var job: Job = .{ .cmd = "xclip -selection clipboard -o -t TARGETS > .x11_test/x11_clip_out" };
+    try pumpWhile(&host, &job);
+    var buf: [256]u8 = undefined;
+    const targets = try readSmallFile(".x11_test/x11_clip_out", &buf);
+    try std.testing.expect(std.mem.indexOf(u8, targets, "image/png") != null);
+
+    var job2: Job = .{ .cmd = "xclip -selection clipboard -o -t image/png > .x11_test/x11_clip_out" };
+    try pumpWhile(&host, &job2);
+    try std.testing.expectEqualStrings(png, try readSmallFile(".x11_test/x11_clip_out", &buf));
+
+    // Text replaces the image (one selection owner, one content).
+    host.clipboard().write("now text");
+    var job3: Job = .{ .cmd = "xclip -selection clipboard -o -t TARGETS > .x11_test/x11_clip_out" };
+    try pumpWhile(&host, &job3);
+    const targets2 = try readSmallFile(".x11_test/x11_clip_out", &buf);
+    try std.testing.expect(std.mem.indexOf(u8, targets2, "image/png") == null);
+}
+
 test "clipboard read round-trips another owner's text" {
     try requireDisplay();
     var host = try Host.init("teak x11 test", 200, 100);

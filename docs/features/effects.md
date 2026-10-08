@@ -51,13 +51,25 @@ pasted text) declares `effectMsg` alone.
 | Effect | Fields | Answer |
 |---|---|---|
 | `http` | `id, method, url, headers: []Header, body, timeout_ms` | `.http{ id, status, body, err }` — `status == 0` is a transport failure (network, CORS, timeout, TLS) and `err` says which |
-| `download` | `id, name, mime, bytes` | `.downloaded{ id, ok }` — browser download / file under `$TEAK_OUT` or the cwd |
-| `open_file` | `id, accept` | `.file_opened{ id, name, mime, bytes }` or `.file_cancelled{ id }` |
+| `download` | `id, name, mime, bytes, pick = false, title = ""` | `.downloaded{ id, ok }` — browser download / file under `$TEAK_OUT` or the cwd; native with `pick`: a Save As dialog, `ok = false` when cancelled |
+| `open_file` | `id, accept, title = ""` | `.file_opened{ id, name, mime, bytes }` or `.file_cancelled{ id }` |
 | `write_clipboard` | `id, text` | none (fire and forget) |
+| `write_clipboard_image` | `id, png` | none (fire and forget): a PNG on the clipboard |
 | `storage_set` | `id, key, value` | none; an empty `value` deletes the key |
 | `storage_get` | `id, key` | `.storage_value{ id, value: ?[]const u8 }`; `null` = absent |
 | `clock` | `id` | `.clock{ id, unix_ms, utc_offset_min }` |
 | `query_param` | `id, name` | `.query_value{ id, value: ?[]const u8 }` — web: `?name=value`; native: `--name=value` argv, else env `TEAK_<NAME_UPPER>` |
+
+Which host implements what (`yes`, `-` = answered `unsupported` / ignored):
+
+| Effect | Web | X11 | Wayland | Win32 | Headless |
+|---|---|---|---|---|---|
+| `http`, `storage_*`, `clock`, `query_param` | yes | yes | yes (shared service) | `-` until win32-parity | captured / injected |
+| `download` (save to dir) | browser download | `$TEAK_OUT` / cwd | same | `-` | captured |
+| `download{pick}`, `open_file` dialogs | `<input type=file>` / download | zenity / kdialog / `$TEAK_PICKER` | same | `-` as an effect (the sync `Host.openFileDialog` / `saveFileDialog` use `GetOpenFileNameW`) | `TEAK_OPEN`, captured |
+| `write_clipboard` | yes | yes (owns CLIPBOARD) | when its host serves selections | `-` (Clipboard vtable works) | captured |
+| `write_clipboard_image` | `ClipboardItem` (gesture + secure context) | yes (`image/png`) | when its host serves selections | `-` | captured |
+| paste / drop results | yes | yes (XDND, selections) | when its host does | `-` | injected |
 
 Unsolicited results (no id, never filtered):
 
@@ -124,6 +136,7 @@ pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize; // fills 
 | `open_file` | hidden `<input type=file accept=...>`. Browsers want a user activation: if one is live the picker opens at once, otherwise it is **armed and opens on the next pointer press or key press**; cancel resolves `file_cancelled` |
 | `storage_*` | `localStorage` |
 | `clock` | `Date.now()` + `-getTimezoneOffset()` |
+| `write_clipboard_image` | `navigator.clipboard.write([new ClipboardItem({'image/png': blob})])` (zunk `fx.clipboardWriteImage`); browsers want a user activation and a secure context, a refusal is logged (fire and forget) |
 | `write_clipboard` | `navigator.clipboard.writeText`, with an `execCommand('copy')` fallback. Ctrl/Cmd+C and Ctrl/Cmd+X also write through it (`Clipboard.write`) |
 | `query_param` | `URLSearchParams` of `location.search` |
 | paste / drop | `paste` and `drop` events on the page; images decoded with `createImageBitmap`, downscaled, re-encoded, thumbnailed (see `Drop`). Dropped `.json` / `.txt` and other files arrive as `Drop{kind = .file}`; pasted text as `.pasted_text`. Ctrl/Cmd+V is no longer swallowed by the page, and `Clipboard.read` returns the text of the paste that accompanied the key press, so a `keyNeedsClipboard` / `handleClipboard` text field pastes through the existing path; only unclaimed pastes surface as `.pasted_text` |
@@ -138,7 +151,9 @@ zunk's `docs/ARCHITECTURE.md` ("Host services: `web.fx`").
 | `http` | `std.http.Client` (TLS, system CA bundle) on a short-lived worker thread per request, at most 8 at once (`busy` beyond that), so a frame never blocks. Method, headers and body are copied at `submit`. The timeout is enforced at poll time: at the deadline the app gets `status = 0`, `err = "timeout after N ms"` and the worker's late answer is discarded (std's client has no socket timeout, so a hung connect lingers on its own thread until the OS gives up). Failures give `status = 0` and a reason ("network error: connection refused", "invalid URL", ...). Responses up to 32 MB. |
 | `storage_get` / `storage_set` | one file per key under `$XDG_CONFIG_HOME/teak/<app>/` (default `~/.config`); the key is escaped into a single path component; an empty value deletes the file. `<app>` is a slug of the window title, or `RunOptions.app_name`. |
 | `download` | written to `$TEAK_OUT` (created if missing) or the cwd, under the base name of `name`. |
-| `open_file` | no dialog: `file_cancelled`, unless env `TEAK_OPEN=path` is set; then every request reads that file (name, mime from the extension, bytes). Lets agents and tests drive the app. |
+| `open_file` | a native dialog on a worker thread (never the frame loop): `$TEAK_PICKER` (any program with zenity's command line), else `zenity`, else `kdialog`; `accept` becomes the file filter (`.json,.kerf.json` -> `*.json *.kerf.json`, `image/*` -> common image globs). The chosen file is read (up to 32 MB) and answered as `file_opened`; cancel, an unreadable file, or no picker installed answers `file_cancelled` (one warning logged for the last case). One dialog at a time (`busy` retries). Env `TEAK_OPEN=path` bypasses the dialog and reads that file for every request (agents and tests). The same `Service` backs the X11 and Wayland hosts. A direct xdg-desktop-portal FileChooser client (D-Bus) is not implemented: zenity/kdialog are the toolkit front-ends of the same desktop and need no protocol code; revisit if a portal-only (Flatpak without zenity) target appears. |
+| `download` with `pick` | the same dialog in save mode (`--save --confirm-overwrite`, suggested file name); the bytes are written where the user chooses, `downloaded{ ok }` reports the write. Without `pick`: `$TEAK_OUT` / the cwd as before. |
+| `write_clipboard_image` | the X11 host takes the `CLIPBOARD` selection and serves `image/png` (and a `TARGETS` list naming it) until another client takes it or the process exits; text and image replace each other (one owner, one content); content above the server's maximum request size is refused (no INCR when sending). Wayland: through the same effect once the Wayland host serves selections. |
 | `clock` | OS wall clock and UTC offset. |
 | `query_param` | argv `--name=value` (read from `/proc/self/cmdline`), else env `TEAK_<NAME_UPPER>` (`api-base` -> `TEAK_API_BASE`), else absent. |
 | `write_clipboard` | the window takes the `CLIPBOARD` selection and serves the text to other clients on request (`UTF8_STRING`, `STRING`, `TEXT`, `text/plain[;charset=utf-8]`, `TARGETS`). Ctrl+C/X through `Clipboard.write` does the same. Limits: the content is copied once and lives as long as the process (no clipboard-manager hand-off, so it vanishes when the app exits); texts above the server's maximum request size (~16 MiB on X.org) are refused to requestors (no INCR on the sending side). |
@@ -156,7 +171,7 @@ runtime, request payloads live in `Model`; every answer is a `Msg` through
 
 - No streaming responses, no response headers, no request cancellation
   beyond delisting.
-- No multi-file open, no save dialog (`download` is the save path).
+- No multi-file open. Save dialogs are `download` with `pick = true`.
 - 32 distinct ids in flight at once.
 - A Host that rejects an effect kind (`unsupported`) is not retried.
 

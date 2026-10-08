@@ -864,7 +864,9 @@ pub fn effectMsg(_: *const Model, r: teak.EffectResult) ?Msg {
 answer if you delisted it (that is how you cancel). The same shape covers
 `open_file` (`.file_opened{ name, mime, bytes }` / `.file_cancelled`),
 `download`, `storage_get` / `storage_set`, `clock`, `write_clipboard` and
-`query_param`. An app that only wants pasted / dropped images and text
+`query_param`. Native hosts show a real file dialog for `open_file` and, with
+`.pick = true`, for `download` (a Save As prompt); `write_clipboard_image` puts a
+PNG on the clipboard. An app that only wants pasted / dropped images and text
 declares `effectMsg` alone and matches `.dropped` / `.pasted_text`.
 
 **Common mistakes:** reusing an id while an older request of that id is in

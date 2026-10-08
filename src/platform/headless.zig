@@ -378,6 +378,10 @@ pub const Host = struct {
             },
             .open_file => |o| c.name = try a.dupe(u8, o.accept),
             .write_clipboard => |w| c.name = try a.dupe(u8, w.text),
+            .write_clipboard_image => |w| {
+                c.name = try a.dupe(u8, "image/png");
+                c.bytes = try a.dupe(u8, w.png);
+            },
             .storage_set => |s| {
                 c.name = try a.dupe(u8, s.key);
                 c.bytes = try a.dupe(u8, s.value);
@@ -495,10 +499,13 @@ test "effects are accepted and captured by deep copy; results come only from inj
     try std.testing.expectEqual(EffectSubmit.accepted, h.submit(.{ .http = .{ .id = 1, .method = .post, .url = &url, .body = "payload" } }));
     try std.testing.expectEqual(EffectSubmit.accepted, h.submit(.{ .download = .{ .id = 2, .name = "out.dxf", .mime = "image/vnd.dxf", .bytes = "0\nSECTION" } }));
     try std.testing.expectEqual(EffectSubmit.accepted, h.submit(.{ .storage_set = .{ .id = 3, .key = "k", .value = "v" } }));
+    try std.testing.expectEqual(EffectSubmit.accepted, h.submit(.{ .write_clipboard_image = .{ .id = 4, .png = "\x89PNG" } }));
+    try std.testing.expectEqual(@as(usize, 1), h.countEffects(.write_clipboard_image));
+    try std.testing.expectEqualStrings("\x89PNG", h.submittedEffects()[h.submittedEffects().len - 1].bytes);
     @memset(&url, 'X'); // the host must not alias the caller's slice
 
     const got = h.submittedEffects();
-    try std.testing.expectEqual(@as(usize, 3), got.len);
+    try std.testing.expectEqual(@as(usize, 4), got.len);
     try std.testing.expectEqualStrings("https://example.test/a", got[0].name);
     try std.testing.expectEqualStrings("payload", got[0].bytes);
     try std.testing.expectEqual(teak.HttpMethod.post, got[0].method);

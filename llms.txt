@@ -410,12 +410,14 @@ id-bearing scroll region's viewport + content size (`teak.scrollExtent`) so apps
 // App decls: pub fn effects(*const Model) []const Effect;  pub fn effectMsg(*const Model, EffectResult) ?Msg
 // (effectMsg alone = an app that only wants dropped images / pasted text)
 Effect = union(enum) { http: HttpRequest, download: Download, open_file: OpenFile,
-                       write_clipboard: WriteClipboard, storage_set: StorageSet,
+                       write_clipboard: WriteClipboard, write_clipboard_image: WriteClipboardImage, storage_set: StorageSet,
                        storage_get: StorageGet, clock: ClockRequest, query_param: QueryParam }
     // every payload has `id: u32` (yours, unique per request); Effect.id(), Effect.wantsResult()
 HttpRequest = struct { id: u32, method: HttpMethod, url, headers: []const Header, body: []const u8, timeout_ms: u32 }
 HttpResult = struct { id, status: u16 /*0 = transport failure*/, body, err }
-Download = struct { id, name, mime, bytes }      OpenFile = struct { id, accept: []const u8 /* ".json,image/*" */ }
+Download = struct { id, name, mime, bytes, pick: bool = false /* native: Save As dialog */, title }
+OpenFile = struct { id, accept: []const u8 /* ".json,image/*" */, title: []const u8 = "" }
+WriteClipboardImage = struct { id, png: []const u8 }   // fire and forget; X11 serves image/png, web ClipboardItem
 StorageSet = struct { id, key, value /* "" deletes */ }   StorageGet = struct { id, key }
 QueryParam = struct { id, name }   // web ?name=v ; native --name=v argv or env TEAK_<NAME_UPPER>
 EffectResult = union(enum) { http: HttpResult, file_opened: {id,name,mime,bytes}, file_cancelled: {id},
@@ -434,7 +436,8 @@ delisted (a late result for an unlisted id is dropped = cancellation). Results f
 (`last_msg` names them). Effect slices live for the `submit` call; result slices until the `update` returns.
 Keep the request in `Model` (`effects()` returns a slice of it). 32 ids at once.
 Native: HTTP on worker threads, storage under `$XDG_CONFIG_HOME/teak/<app>/` (`RunOptions.app_name` or the window title), downloads to `$TEAK_OUT`,
-`TEAK_OPEN=path` feeds `open_file`, `query_param` reads `--name=value` / `TEAK_<NAME>`.
+`open_file` / `download{pick=true}` open a native dialog (zenity or kdialog, or `$TEAK_PICKER`) on a worker thread (`file_cancelled` / `downloaded{ok=false}` on cancel or when none is installed),
+`TEAK_OPEN=path` bypasses the dialog for `open_file`, `query_param` reads `--name=value` / `TEAK_<NAME>`.
 
 ### Fonts (docs/features/text.md)
 ```zig

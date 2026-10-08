@@ -68,6 +68,11 @@
 
 ### Added
 
+- **Native file dialogs** (X11, Wayland via the shared service): `open_file` shows a zenity / kdialog (or `$TEAK_PICKER`) dialog on a worker
+  thread; `download{ pick = true }` is a Save As dialog; `OpenFile.title`, `Download.pick` / `title`; `TEAK_OPEN` still bypasses.
+  **Clipboard image**: new effect `write_clipboard_image{ id, png }` (X11 serves `image/png`; web via zunk `fx.clipboardWriteImage`,
+  hotschmoe/zunk#28 must land first for the web build).
+
 - **In-app drag and drop** (docs/features/drag-drop.md): `GroupStyle.drag_id` / `drop_id`, App hook `dragMsg(*const Model, DragEvent)`
   (`start` / `move` / `drop` / `cancel`, innermost drop target + pointer fraction); `examples/todo` reorders by mouse (ghost overlay,
   drop indicator) and by keyboard (Alt+Up/Down via the command table); control command `drag`, `teak-drive drag`, MCP tool `drag`.
