@@ -295,11 +295,122 @@ pub fn windowTitle(m: *const Model) ?[]const u8 {
     return "Teak gallery";
 }
 
-test "the gallery view lays out and balances" {
-    var cb = teak.CmdBuffer(Msg).init(std.testing.allocator);
+const testing = std.testing;
+
+fn layoutAll(m: *const Model, cb: *teak.CmdBuffer(Msg), rects: []teak.Rect) []teak.Rect {
+    cb.theme = themeFor(m);
+    view(m, cb);
+    const n = cb.cmds.items.len;
+    teak.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, m.win_w, m.win_h, teak.monoMeasurer());
+    return rects[0..n];
+}
+
+test "every page in every look builds a balanced command buffer that lays out" {
+    var rects: [4096]teak.Rect = undefined;
+    for (std.enums.values(model_mod.Page)) |page| for (std.enums.values(Look)) |look| {
+        var cb = teak.CmdBuffer(Msg).init(testing.allocator);
+        defer cb.deinit();
+        var m: Model = .{};
+        m.page = page;
+        m.look = look;
+        _ = layoutAll(&m, &cb, &rects);
+        try testing.expect(teak.validateBalance(cb.cmds.items) == null);
+    };
+}
+
+test "overlays: open menu, context menu, dialog and toasts balance too" {
+    var rects: [4096]teak.Rect = undefined;
+    var m: Model = .{ .page = .overlays };
+    update(&m, .{ .menubar = .{ .goto = .{ .active = true, .hot = 1, .open = true, .depth = 1, .sel = .{ 1, 0, 0, 0 } } } });
+    update(&m, .{ .ctx = CM.openAt(400, 300) });
+    update(&m, .{ .dialog = .shortcuts });
+    update(&m, .{ .toast_push = .{ .kind = .danger } });
+    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
     defer cb.deinit();
-    const m: Model = .{};
-    cb.theme = themeFor(&m);
-    view(&m, &cb);
-    try std.testing.expect(teak.validateBalance(cb.cmds.items) == null);
+    _ = layoutAll(&m, &cb, &rects);
+    try testing.expect(teak.validateBalance(cb.cmds.items) == null);
+}
+
+test "F10 activates the menu bar; mnemonics open menus; Enter runs an item and closes the bar" {
+    var m: Model = .{};
+    update(&m, keySpecialMsg(&m, .f10).?);
+    try testing.expect(m.menubar.st.active);
+    update(&m, keyCharMsg(&m, 'v').?); // View
+    try testing.expect(m.menubar.st.open and m.menubar.st.hot == 1);
+    update(&m, keyCharMsg(&m, 'f').?); // Re&fresh
+    try testing.expect(!m.menubar.st.active and !m.menubar.st.open);
+    try testing.expectEqual(@as(?model_mod.Action, .refresh), m.last_action);
+    try testing.expectEqual(@as(usize, 1), m.toasts.len);
+}
+
+test "the theme submenu switches the look and a confirm dialog resets the demo" {
+    var m: Model = .{};
+    update(&m, .{ .run = .look_dark });
+    try testing.expectEqual(Look.dark, m.look);
+    update(&m, .{ .check_b = {} });
+    update(&m, .{ .run = .reset });
+    try testing.expectEqual(model_mod.Dialog.confirm_reset, m.dialog);
+    // Enter confirms through the dialog key hook.
+    update(&m, keySpecialMsg(&m, .enter).?);
+    try testing.expectEqual(model_mod.Dialog.none, m.dialog);
+    try testing.expect(!m.check_b);
+    try testing.expectEqual(Look.dark, m.look); // the look survives a reset
+}
+
+test "tooltips: hovering a target arms Sub.at; the deadline fires and the tip shows" {
+    var m: Model = .{};
+    const ev: teak.PointerEvent(Msg) = .{ .x = 10, .y = 10, .hit = Msg{ .demo = 0 }, .box = .{ .x = 20, .y = 100, .w = 60, .h = 26 }, .now_ms = 1000 };
+    update(&m, hoverMsg(&m, ev).?);
+    try testing.expectEqual(@as(usize, 1), subscribe(&m).len);
+    try testing.expectEqual(@as(u64, 1550), subscribe(&m)[0].at.deadline_ms);
+    update(&m, subscribe(&m)[0].at.msg);
+    try testing.expect(m.tip.shown);
+    // A click on the target hides it (the demo handler does).
+    update(&m, .{ .demo = 0 });
+    try testing.expect(!m.tip.shown);
+    // An open menu suppresses new tips.
+    update(&m, .{ .menubar = .{ .goto = .{ .active = true, .open = true } } });
+    try testing.expect(hoverMsg(&m, ev) == null);
+}
+
+test "right-click opens the context menu only inside the content area" {
+    var m: Model = .{};
+    const inside: teak.PointerEvent(Msg) = .{ .x = 600, .y = 400 };
+    try testing.expect(contextMsg(&m, inside) != null);
+    try testing.expect(contextMsg(&m, .{ .x = 50, .y = 400 }) == null); // sidebar
+    try testing.expect(contextMsg(&m, .{ .x = 600, .y = 10 }) == null); // menu bar
+}
+
+test "subscriptions are listed only while something needs them" {
+    var m: Model = .{};
+    try testing.expectEqual(@as(usize, 0), subscribe(&m).len);
+    update(&m, .{ .toast_push = .{ .kind = .info } });
+    try testing.expectEqual(@as(usize, 1), subscribe(&m).len);
+    update(&m, .job_start);
+    try testing.expectEqual(@as(usize, 3), subscribe(&m).len);
+    var i: usize = 0;
+    while (i < 60) : (i += 1) update(&m, .job_tick);
+    try testing.expect(!m.job_running);
+    try testing.expectEqual(@as(f32, 1), m.job);
+}
+
+test "sliders report through sliderMsg; the split drags through canvasMsg" {
+    var m: Model = .{};
+    update(&m, sliderMsg(&m, .{ .slider_grab = .mix }, 0.25).?);
+    try testing.expectEqual(@as(f32, 0.25), m.mix);
+    try testing.expect(sliderMsg(&m, .clicked, 0.5) == null);
+
+    const o = page_layout.split_opts;
+    update(&m, canvasMsg(&m, .{ .id = o.id, .kind = .down, .button = .left }).?);
+    const before = m.split.ratio;
+    update(&m, canvasMsg(&m, .{ .id = o.id, .kind = .move, .dx = 40 }).?);
+    try testing.expect(m.split.ratio > before);
+}
+
+test "the virtual list window follows the scroll offset and clamps at the end" {
+    var m: Model = .{};
+    update(&m, .{ .list_scroll_by = 1e9 });
+    try testing.expectEqual(m.list_content - m.list_viewport, m.list_scroll);
+    update(&m, .{ .list_scroll_by = -1e9 });
+    try testing.expectEqual(@as(f32, 0), m.list_scroll);
 }

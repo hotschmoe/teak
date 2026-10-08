@@ -922,3 +922,122 @@ sets `material.open = false` (see chrome's `.focus_name`).
 it is the index into *your* options slice, so `m.material.selected` is always
 a valid index into it. `list_x/list_y` are window coordinates (the previous
 frame's rect of the input, as for `Dropdown`).
+
+---
+
+## 16. Menu bar with submenus and a context menu
+
+**Goal:** File / Edit / View menus with shortcuts, mnemonics, submenus and F10 / Alt activation, plus a right-click menu.
+Every piece below is `examples/gallery/src/app.zig`.
+
+1. Describe the menus as data (`&` marks the mnemonic; `Item.sep` is a rule; `children` makes a submenu). `Action` is your own enum.
+
+   ```zig
+   const MB = teak.widgets.menu.MenuBar(Action);
+   const file_menu = [_]MB.Item{
+       .{ .label = "&New", .action = .new, .shortcut = "Ctrl+N" },
+       MB.Item.sep,
+       .{ .label = "E&xit", .action = .quit },
+   };
+   const menus = [_]MB.Item{ .{ .label = "&File", .children = &file_menu } };
+   ```
+
+2. Embed the model and wire two comptime wrappers (the same trick as `Dropdown`'s `selectMsg`):
+
+   ```zig
+   // Model: menubar: MB.Model = .{}     Msg: menubar: MB.Msg, run: Action
+   fn wrapMenu(s: MB.Msg) Msg { return .{ .menubar = s }; }
+   fn wrapRun(a: Action) Msg { return .{ .run = a }; }
+   const bar_msgs = .{ .menu = wrapMenu, .run = wrapRun };
+   // update:
+   //   .menubar => |s| MB.update(&m.menubar, s),
+   //   .run => |a| { MB.update(&m.menubar, .close); perform(m, a); },
+   ```
+
+3. Draw it first in `view`, then route keys. While the bar is active it owns letters (mnemonics) and the arrows:
+
+   ```zig
+   MB.viewWith(&m.menubar, cb, &menus, bar_msgs, .{ .window_w = m.win_w, .window_h = m.win_h });
+   pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
+       if (MB.keyMsg(&m.menubar, key, &menus, bar_msgs)) |r| return r;   // F10 / Alt, arrows, Enter, Esc
+       if (MB.isActive(&m.menubar)) return null;
+       ...
+   }
+   pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+       if (MB.isActive(&m.menubar)) return MB.charMsg(&m.menubar, c, &menus, bar_msgs);
+       ...
+   }
+   ```
+
+4. **Context menu:** the `contextMsg` hook fires on every right-button press with the widget under the cursor
+   (`ev.hit`, a Msg you can switch on to pick *which* menu) and its rect:
+
+   ```zig
+   const CM = teak.widgets.menu.ContextMenu(Action);
+   pub fn contextMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+       return .{ .ctx = CM.openAt(ev.x, ev.y) };
+   }
+   // view, late: CM.viewWith(&m.ctx, cb, &context_items, ctx_msgs, .{ .window_w = ..., .window_h = ... });
+   ```
+
+**Common mistakes:** forgetting `MB.update(&m.menubar, .close)` in the `.run` arm (the menu stays open after a
+choice); building the item tree per frame in `view` but not in `keySpecialMsg` (both must see the same tree: keep
+it `const`); expecting panels to follow measured text (geometry comes from `top_width` / `row_h` / `panel_w`, set them
+to match your font); an Alt-only activation inside a browser, which may keep the keystroke (F10 is the portable key).
+
+---
+
+## 17. Tooltips
+
+**Goal:** a hint popup after the pointer rests on a button, with no timers in widgets.
+
+1. List the widgets that have tips by the Msg they dispatch, plus the texts:
+
+   ```zig
+   const tip_targets = [_]Msg{ .save, .open, .{ .go = .data } };
+   const tip_texts = [_][]const u8{ "Save (Ctrl+S)", "Open a file", "Table, tree, chart" };
+   ```
+
+2. Feed hover events in and arm the delay with a declarative `Sub.at`:
+
+   ```zig
+   // Model: tip: teak.widgets.tooltip.Model = .{}     Msg: tip: teak.widgets.tooltip.Msg
+   pub fn hoverMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+       return .{ .tip = Tooltip.hoverMsg(Msg, ev, &tip_targets, 550) };
+   }
+   // subscribe: if (Tooltip.deadline(&m.tip)) |d| -> .{ .at = .{ .deadline_ms = d, .msg = .{ .tip = .show } } }
+   // view, last:  Tooltip.view(&m.tip, cb, &tip_texts, .{ .window_w = m.win_w, .window_h = m.win_h });
+   ```
+
+   `Sub` slices must outlive the call; the gallery rebuilds a small `subs` array in the Model after every `update`
+   (`refreshSubs`) so `subscribe` stays a pure read.
+
+3. Hide it when something else takes over (`.tip = .hide` on a click, a dialog opening).
+
+**Why it is in the Model:** a tooltip changes what `view` emits, so its hover state may not live in
+`TransientState` (presentation-only, never consulted by `view`).
+
+---
+
+## 18. Tabs, split panes, progress, toasts, dialogs
+
+Short recipes; all are in `examples/gallery`.
+
+* **Tabs:** `Tabs.viewWith(&m.tabs, cb, &labels, .{ .selectMsg = pick }, .{})`, then `switch (m.tabs.selected)` for the
+  content. Route `Tabs.keyMsg(&m.tabs, key, labels.len)` from `keySpecialMsg` (Left / Right / Home / End once a tab
+  has been clicked).
+* **Split pane:** `Split.begin(...)`, pane A, `Split.divider(...)`, pane B, `Split.end(cb)`; route the divider's pointer
+  events from `canvasMsg` with `Split.canvasMsg(&m.split, ev, opts)`. The outer size comes from your `windowMsg`.
+* **Progress:** `progress.bar(cb, fraction, .{})`. For an indeterminate bar keep `Progress.Model` and list
+  `Sub.every(progress.TICK_MS)` only while the work runs.
+* **Toasts:** `Toasts.push(&m.toasts, .success, "Saved", Toasts.default_ttl)` from any `update` arm; list
+  `Sub.every(toast.TICK_MS)` only while `Toasts.active(&m.toasts)`; draw `Toasts.viewWith(...)` last.
+* **Dialog:** keep a flag in the Model and call `Dialog.view(cb, opts, .{ .confirm = ..., .cancel = ... })` while it
+  is set. Route `Dialog.keyMsg(key, msgs, has_cancel)` first from `keySpecialMsg`. The card is a modal overlay, so Tab
+  traversal and clicks stay inside it.
+* **Toggle switch:** `toggle.view(cb, Msg{ .toggle_wifi = {} }, m.wifi, "Wi-Fi")`.
+* **Slider that drags:** list the optional `sliderMsg(model, grab_msg, value)` hook; without it a `slider` cmd is
+  click-only.
+
+**Common mistake:** writing `Msg.toggle_wifi` for a payload-free variant of a union that also has payload variants:
+that is the tag enum, not a `Msg` (`runtime coercion ... to union`). Write `Msg{ .toggle_wifi = {} }`.
