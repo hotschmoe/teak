@@ -169,6 +169,15 @@ pub const RunOptions = struct {
     /// F12 toggles the inspector (the key is consumed). On in Debug builds;
     /// elsewhere F12 reaches the app like any key.
     inspect_hotkey: bool = builtin.mode == .debug,
+    /// Event-driven idle. When true, a frame in which nothing happened (no
+    /// input event, no Msg dispatched by a sub / effect result / window hook,
+    /// no focused text input blinking, no secondary window, not the first
+    /// frame) skips view, layout, diff, upload and present entirely —
+    /// `Runtime.quiet` reports it — and `run` then blocks in the Host's
+    /// optional `waitEvents(timeout_ms)` until input or the next sub is due.
+    /// Set false for an app that needs a frame every tick. The web Host stays
+    /// rAF-driven but still skips the work. See docs/features/run.md.
+    idle_skip: bool = true,
 };
 
 /// The target has a host filesystem to mirror snapshots into. Freestanding
@@ -363,7 +372,12 @@ pub fn run(
 ) !void {
     var rt = try Runtime(App, @TypeOf(host.*), @TypeOf(gpu.*)).init(gpa, host, gpu, opts);
     defer rt.deinit();
-    while (!host.shouldClose()) try rt.frame();
+    while (!host.shouldClose()) {
+        try rt.frame();
+        if (comptime @hasDecl(@TypeOf(host.*), "waitEvents")) {
+            if (rt.quiet and !host.shouldClose()) host.waitEvents(rt.idleTimeoutMs());
+        }
+    }
 }
 
 /// The canonical loop body, one `frame` call per iteration, parameterized on
@@ -479,6 +493,21 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         snap_first: bool = true,
         prev_secondary_open: bool = false,
 
+        /// True when the last `frame()` found nothing to do and skipped the
+        /// pipeline (see `RunOptions.idle_skip`). `run` blocks in
+        /// `Host.waitEvents` while this holds.
+        quiet: bool = false,
+        /// Count of Msgs dispatched so far; a frame that leaves it unchanged
+        /// changed no state.
+        dispatch_count: u64 = 0,
+        /// Pointer position / buttons of the previous frame, to tell a still
+        /// mouse from a moved one.
+        last_mouse_x: f32 = -1,
+        last_mouse_y: f32 = -1,
+        last_buttons: pointer.Buttons = .{},
+        /// The first frame always builds (nothing to show yet).
+        built_once: bool = false,
+
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
         title_len: usize = 0,
@@ -534,6 +563,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// host reports close during the input poll.
         pub fn frame(self: *Self) !void {
             control.beforePoll(self);
+            // Runs on EVERY exit (quiet frames included): finishes the control
+            // command in flight and advances the frame number.
+            defer control.afterFrame(self);
             const input = self.host.pollInputs();
             control.afterPoll(self, input);
             if (self.host.shouldClose()) return;
@@ -547,6 +579,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // Input is routed against the PREVIOUS frame's layout — the one
             // the user is looking at — so `prev` is captured before the swap.
             const prev = self.current;
+            const dispatched_before = self.dispatch_count;
             self.routeMouse(input, prev);
             self.routeCanvasPointer(input, prev);
             const swallow = self.routeChords(input);
@@ -555,6 +588,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.deliverEffectResults();
             self.fireSubs();
             self.serviceEffects();
+
+            // Event-driven idle: nothing changed since the frame on screen.
+            self.quiet = self.opts.idle_skip and self.built_once and
+                self.dispatch_count == dispatched_before and self.inputIdle(input) and !self.ctl.consumeDirty();
+            self.last_mouse_x = input.mouse_x;
+            self.last_mouse_y = input.mouse_y;
+            self.last_buttons = input.buttons;
+            if (self.quiet) return;
+            self.built_once = true;
 
             const cur = try self.buildView(input);
             self.reportLayout(prev, cur);
@@ -588,7 +630,6 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
             self.gpu.renderFrame(self.opts.clear_color);
             self.ctl.timings.render_ms = control.msBetween(t_render, control.stamp(&self.ctl));
-            defer control.afterFrame(self);
 
             const sec = if (has_secondary) try self.driveSecondary() else SecondaryFrame{};
 
@@ -611,10 +652,41 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
         }
 
+        /// True when `input` carries nothing the pipeline must react to and no
+        /// loop-owned animation (cursor blink, live secondary window, IME
+        /// composition) needs the next frame.
+        fn inputIdle(self: *Self, input: Input) bool {
+            if (input.resized or input.mouse_down or input.mouse_up) return false;
+            if (input.mouse_x != self.last_mouse_x or input.mouse_y != self.last_mouse_y) return false;
+            if (!std.meta.eql(input.buttons, self.last_buttons)) return false;
+            if (input.wheel_dx != 0 or input.wheel_dy != 0) return false;
+            if (input.chars.len != 0 or input.keys.len != 0) return false;
+            if (self.ts.ime_active or self.host.imeState().active) return false;
+            if (self.opts.blink_period > 0 and self.ts.focus_index != null) return false;
+            if (has_secondary and App.secondaryWindow(&self.model) != null) return false;
+            if (has_secondary and self.secondary.window_id != null) return false;
+            return true;
+        }
+
+        /// How long the Host may block after a quiet frame: until the next
+        /// `Sub` is due, capped so a Host without its own wake-ups is polled.
+        pub fn idleTimeoutMs(self: *Self) u32 {
+            // Effect results arrive from the Host asynchronously; poll them
+            // at frame rate while any effect is outstanding.
+            // A listening control channel is polled at frame rate too, so a
+            // command arriving while the app is quiet waits at most one frame
+            // (the Host cannot wake on the socket by itself).
+            const cap: u32 = if (self.issued.len != 0 or self.ctl.active) 16 else 1000;
+            if (!@hasDecl(App, "subscribe")) return cap;
+            const due = sub_mod.nextDueMs(Msg, App.subscribe(&self.model), self.host.nowMs()) orelse return cap;
+            return @intCast(@min(due, cap));
+        }
+
         /// Every Msg is routed through here so the live snapshot's header can
         /// name the last transition. Adds nothing to the TEA loop — it is
         /// `App.update` plus one string assignment.
         fn dispatch(self: *Self, msg: Msg) void {
+            self.dispatch_count +%= 1;
             self.last_msg = @tagName(std.meta.activeTag(msg));
             if (self.ctl.log_msgs) self.ctl.logMsg(Msg, msg);
             App.update(&self.model, msg);

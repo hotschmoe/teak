@@ -181,6 +181,15 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   user picks a path. Return `null` on cancel. Native hosts call the
 ///   OS file picker; web stubs return `null` (browser file APIs need a
 ///   completely different flow).
+/// - Optional `waitEvents(timeout_ms: u32) void` (NOT checked by
+///   `validateHost`): event-driven idle. `teak.run` calls it after a frame
+///   that did nothing (`Runtime.quiet`, see `RunOptions.idle_skip`); the Host
+///   should block until an input event arrives (including resize / expose,
+///   which must surface as `InputState.resized`), an async effect result is
+///   ready, or `timeout_ms` elapses — then return. Hosts without it keep
+///   polling at their own pace (the skipped frames are still nearly free).
+///   X11: `XPending` + `poll` on the connection fd; Win32:
+///   `MsgWaitForMultipleObjects`; web: n/a (rAF drives `frame`).
 /// - `openSecondaryWindow(title, w, h)` returns an opaque window handle
 ///   for a second top-level window sharing this Host's event source.
 ///   Tracked as a Host-internal id; the app holds it and renders into
