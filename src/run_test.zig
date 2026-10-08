@@ -90,10 +90,18 @@ pub const ScriptHost = struct {
     fx_queue: [32]host_iface.EffectResult = undefined,
     fx_queue_n: usize = 0,
 
+    /// `waitEvents` calls from `run` after quiet frames, and the last timeout.
+    wait_calls: u32 = 0,
+    last_wait_ms: u32 = 0,
+
     pub const NativeHandle = struct { tag: u32 = 7 };
     const forever = std.math.maxInt(u32);
 
     pub fn deinit(_: *ScriptHost) void {}
+    pub fn waitEvents(self: *ScriptHost, timeout_ms: u32) void {
+        self.wait_calls += 1;
+        self.last_wait_ms = timeout_ms;
+    }
     pub fn shouldClose(self: *const ScriptHost) bool {
         return self.next > self.script.len;
     }
@@ -578,8 +586,8 @@ test "run: live snapshot mirrors the frame and skips idle rewrites" {
     defer gpa.free(path);
 
     // Cursor parked over the button throughout. The last content change is
-    // frame 4 (the click), so a correct sink stamps `frame=4`; a higher
-    // number would mean an idle frame rewrote the file.
+    // the click, so a correct sink stamps its frame; a higher number would
+    // mean an idle frame rewrote the file.
     const t = try playWith(SnapApp, .{
         .script = &.{
             .{ .x = 5, .y = 5 }, // 1: first write
@@ -606,7 +614,9 @@ test "run: live snapshot mirrors the frame and skips idle rewrites" {
     const fi = std.mem.indexOf(u8, contents, marker).?;
     const after = contents[fi + marker.len ..];
     const end = std.mem.indexOfScalar(u8, after, ' ') orelse after.len;
-    try std.testing.expectEqual(@as(u32, 4), try std.fmt.parseInt(u32, after[0..end], 10));
+    // Frame 2 was a quiet frame (skipped, uncounted), so the click is the
+    // third frame that actually built.
+    try std.testing.expectEqual(@as(u32, 3), try std.fmt.parseInt(u32, after[0..end], 10));
 }
 
 // ── Secondary window ────────────────────────────────────────────────
@@ -1306,7 +1316,8 @@ test "a Gpu without the scene extension still runs scene-bearing apps" {
     comptime gpu_iface.validateGpu(PlainGpu);
     var host: ScriptHost = .{ .script = &.{ .{}, .{}, .{} } };
     var gpu: PlainGpu = .{};
-    var rt = try Runtime(NoResApp, ScriptHost, PlainGpu).init(std.testing.allocator, &host, &gpu, .{});
+    // Counts renders per frame, so idle skipping is off for this test.
+    var rt = try Runtime(NoResApp, ScriptHost, PlainGpu).init(std.testing.allocator, &host, &gpu, .{ .idle_skip = false });
     defer rt.deinit();
     while (!host.shouldClose()) try rt.frame();
     try std.testing.expectEqual(@as(u32, 3), gpu.renders);
@@ -1647,4 +1658,52 @@ test "cmdsEqual: Msg slices compare by content; variant swaps are detected" {
     try std.testing.expect(cmdsEqual(Msg, &x, &same));
     try std.testing.expect(!cmdsEqual(Msg, &x, &diff));
     try std.testing.expect(!cmdsEqual(Msg, &x, &other_tag));
+}
+
+// ── Event-driven idle ───────────────────────────────────────────────
+
+const IdleApp = struct {
+    pub const Model = struct { ticks: u32 = 0 };
+    pub const Msg = union(enum) { tick };
+    pub fn update(m: *Model, _: Msg) void {
+        m.ticks += 1;
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{});
+        cb.text(std.fmt.allocPrint(cb.arena.allocator(), "ticks {d}", .{m.ticks}) catch "?");
+        cb.popGroup();
+    }
+    pub fn subscribe(_: *const Model) []const sub_mod.Sub(Msg) {
+        return &.{.{ .every = .{ .interval_ms = 100, .msg = .tick } }};
+    }
+};
+
+fn runIdle(script: []const Frame, opts: run_mod.RunOptions) !struct { renders: u32, ticks: u32, waits: u32, last_wait: u32 } {
+    var host: ScriptHost = .{ .script = script };
+    var gpu: PlainGpu = .{};
+    try run_mod.run(IdleApp, std.testing.allocator, &host, &gpu, opts);
+    return .{ .renders = gpu.renders, .ticks = 0, .waits = host.wait_calls, .last_wait = host.last_wait_ms };
+}
+
+test "idle: frames with no input, sub or dispatch skip view/render and block in waitEvents" {
+    const r = try runIdle(&.{ .{ .clock_ms = 10 }, .{ .clock_ms = 10 }, .{ .clock_ms = 10 }, .{ .clock_ms = 10 } }, .{});
+    try std.testing.expectEqual(@as(u32, 1), r.renders); // only the first frame built
+    try std.testing.expectEqual(@as(u32, 3), r.waits);
+    try std.testing.expectEqual(@as(u32, 90), r.last_wait); // until the 100 ms sub boundary
+}
+
+test "idle: a fired sub, a moved mouse and a click each wake the pipeline; idle_skip=false never skips" {
+    // Frame 3 crosses the 100 ms boundary: the sub dispatches a Msg.
+    const sub_fired = try runIdle(&.{ .{ .clock_ms = 10 }, .{ .clock_ms = 10 }, .{ .clock_ms = 150 }, .{ .clock_ms = 150 } }, .{});
+    try std.testing.expectEqual(@as(u32, 2), sub_fired.renders);
+
+    const moved = try runIdle(&.{ .{ .clock_ms = 10 }, .{ .x = 5, .y = 5, .clock_ms = 10 }, .{ .x = 5, .y = 5, .clock_ms = 10 } }, .{});
+    try std.testing.expectEqual(@as(u32, 2), moved.renders); // the move built; the still mouse after it did not
+
+    const clicked = try runIdle(&.{ .{}, .{ .held = left, .down = left }, .{ .up = left }, .{} }, .{});
+    try std.testing.expectEqual(@as(u32, 3), clicked.renders);
+
+    const never = try runIdle(&.{ .{}, .{}, .{}, .{} }, .{ .idle_skip = false });
+    try std.testing.expectEqual(@as(u32, 4), never.renders);
+    try std.testing.expectEqual(@as(u32, 0), never.waits);
 }

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Event-driven idle
+
+- `RunOptions.idle_skip` (default true): a frame with no input, no dispatched
+  Msg, no blinking focused input, no IME / secondary window skips view,
+  layout, diff, upload and present; `Runtime.quiet` reports it and `run`
+  calls the Host's optional `waitEvents(timeout_ms)` (headless implements it;
+  X11/Win32 hosts still to add it, see `platform/host.zig`). New
+  `sub.nextDueMs`. Behaviour change: `frame_counter` / snapshot `frame=` count
+  built frames only; set `.idle_skip = false` for the old every-frame behaviour.
+
 ### Core cleanup (idiomatic Zig + silent-failure hardening)
 
 - **Frame diff is derived by reflection.** `cmdsEqual` now uses the generic
