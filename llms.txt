@@ -150,7 +150,7 @@ Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 `cmd component component_list transient text sub theme text_field text_area text_event numeric_field
 `cmd component component_list transient text sub anim theme text_field numeric_field
-dropdown debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
+dropdown data_table var_list tree_list debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
 
 ### Version (`teak.version`)
@@ -184,7 +184,7 @@ Emitters (all `catch unreachable` on arena OOM):
 - text: `text(s)`, `heading(s)`, `textMuted(s)`, `textDanger(s)`, `textMono(s)`,
   `textStyled(s, font, color)`, `mixedText(parts: []const MixedPart)`
 - `divider()`, `dividerStyled(DividerStyle)`
-- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`
+- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`, `buttonStyledUnderlined(msg, label, ButtonStyle, at: ?usize)` (one underlined ASCII char: a mnemonic hint; `ButtonCmd.underline: ?u16`)
 - `textInput(focus_msg, content, cursor)`, `textInputStyled(...)`, `textInputDisabled(...)`,
   `textInputSelected(focus_msg, content, cursor, ?selection_anchor, TextInputStyle)`
 - `checkbox(msg, checked, label)`, `radio(msg, selected, label)`, `slider(grab_msg, value)`
@@ -229,7 +229,7 @@ ButtonStyle = struct { bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg: [4]
                        press_offset_y: f32 = 0, label_align: TextAlign = .start,
                        h_padding: f32 = 8, min_width: f32 = 60, height: f32 = 36, flex: f32 = 0 }
                        // corners are square (no corner_radius: the quad renderer has no rounding)
-ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false }
+ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false, underline: ?u16 = null }
 TextCmd = struct { content: []const u8, font: FontSpec, color: [4]f32 }
 TextInputStyle = struct { bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg,
                        disabled_border, selection_bg: [4]f32, variant: InputVariant = .boxed,
@@ -528,12 +528,12 @@ TransientState = struct { hover_index, press_index, focus_index: ?usize = null,
 
 ### Render (`teak.render`, `teak.vertex`)
 ```zig
-buildFrame(verts, text_draws, image_draws, scene_draws: *std.ArrayList(...), alloc, cmds, rects,
+buildFrame(verts, text_draws, image_draws, scene_draws, scene_items: *std.ArrayList(...), alloc, cmds, rects,
            transient: TransientState, measurer: TextMeasurer) OverlaySplit   // what teak.run uses
 OverlaySplit = struct { verts, text, images, scenes: u32 }   // counts the BASE layer produced = where the overlay starts
 buildVertices(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer) void  // = buildFrame, scenes skipped
 ResourceTable = struct { sync(self, gpu, []const Resource) bool /*changed*/, deinit(self, gpu), handleOf(kind, key) u32 }
-stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw) void  // remap keys, uploadImages, renderScenes
+stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw, items: []SceneItem) void  // remap keys (incl. item keys), uploadImages, renderScenes
                                       // (hand-written web loops call these; teak.run does it for you)
 ImageDraw = struct { rect_x, rect_y, rect_w, rect_h: f32, handle: TextureHandle,
                      tint: [4]f32, clip_x, clip_y, clip_w, clip_h: f32 }
@@ -565,6 +565,18 @@ Resource = union(enum) { mesh: MeshResource{key,rev,data: MeshData}, image: Imag
 Flat-shaded two-sided lighting (one directional light + ambient), depth-tested, feature lines
 as camera-facing pixel-width quads (colour = vertex colour * `edge_color`). The Gpu renders each
 `SceneDraw` offscreen, then composites it like an image.
+
+### viewport3d: placed items + scene options (`teak.SceneView`, `SceneItem`; design: docs/features/scene.md)
+`cb.viewport3d(.{ .style, .camera, .view = .{ .items = arena_slice, ... }, .clear, .key, .id, .pointer })` is `scene3d` with
+`SceneCmd.view` populated; with no items it is the legacy single-mesh scene.
+```zig
+SceneItem = struct { mesh: u32 /*resource key*/, transform: [12]f32 /*3x4 rows, identity*/, tint: [4]f32 = white,
+                     id: u32 = 0 /*echoed by pick*/, flags: SceneItemFlags{hidden, unlit, no_edges, no_pick, highlight} }
+SceneView = struct { items: []const SceneItem, grid: ?Grid, gizmo: ?Gizmo, cut: ?Cut /*keeps n.p+d<=0*/,
+                     material: enum{lambert,flat}, highlight_color: [4]f32, highlight_mix: f32; pub fn eql }
+```
+`buildFrame` flattens each scene's visible items into `scene_items` (`SceneDraw.item_first/item_count`); `stageDraws` remaps their
+keys to handles; `Gpu.renderScenes(draws, items)` draws them. Snapshot suffix: `items=N grid cut gizmo flat`.
 
 ### Scene camera, picking, section cuts (`teak.scene.{Orbit,camera,pick,section,mat}`; design: docs/features/scene.md)
 Pure math, no allocation except where noted. Right-handed, column-major, depth 0..1.
@@ -607,6 +619,33 @@ TextureHandle = u32
 TEXTURE_HANDLE_NONE: TextureHandle = 0
 TextDraw = struct { rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x..clip_h }
 monoMeasurer() TextMeasurer    // stateless 10px/byte, 20px line — for headless tests + CLI
+```
+
+### Tables & lists at scale (`teak.DataTable`, `teak.VarList`, `teak.TreeList`, `teak.Scroller`)
+Virtualized components for 100k-row data (docs/features/tables-at-scale.md). All state in the Model; rows are the app's,
+passed as a `src` value; each emits only the visible rows. Wire the hooks `scrollMsg`, `scrollLayoutMsg`, `animationMsg` + `subscribe`.
+```zig
+Scroller = struct { pos, target, vel, max, smooth_ms = 70, friction_ms = 325 }   // smooth wheel + fling, as Model data
+  wheel(dy) / glideTo(y) / jumpTo(y) / fling(px_per_s) / shift(d) /*anchor*/ / setExtent(viewport, content)
+  animating() bool  /* list Sub.animation_frame while true */ ;  step(dt_ms)
+DataTable(comptime cfg: struct { max_rows = 131072, max_cols = 16 }) type
+  Model: n_rows, order/rank (display<->data permutation), sort_col/sort_desc, widths, selection (bitset by DATA row),
+         cursor/anchor, focused, mods, sc: Scroller, view_h;  setRows(n) / setColumns(cols) / isSelected(row) / selectedRows(out)
+  Msg = union(enum) { sort: u8, grip: {col, dx}, row: u32 /*display idx*/, key: Key, wheel: f32, viewport: {vw,vh,cw,ch}, mods: Modifiers, frame: u32, blur }
+  update(model, msg, src)   // src.compare(col: u8, a: u32, b: u32) std.math.Order  (stable index sort); src.cell(arena, col: u8, row: u32) []const u8
+  view(model, cb, cols: []const DataTableColumn, src, msgs /*.sort(col) .row(display)*/, ViewOpts{ id, grip_base, row_h = 22, header_h = 26, char_w = 8, ... })
+  keyMsg(SpecialKey, mods) ?Msg;  gripMsg(CanvasEvent, grip_base) ?Msg;  charMsg(u8) ?Msg /*type-to-search*/;  searchText(model) []const u8;  reveal(model, display_row)
+DataTableColumn = struct { title, width = 120, min_width = 36, cell_align: CellAlign = .left, sortable = true }
+VarList(comptime cap: usize) type      // rows of different heights, measured by layout, scroll-anchored
+  Model: n, est, h[], prefix[], sc, view_h;  setCount(n, est) / insert(at, h) / remove(at) / rowAt(y) / total()
+  Msg = union(enum) { wheel, viewport, measured: {first, count, heights[96]}, frame };  measuredMsg(first, heights) Msg
+  view(model, cb, src /* src.row(cb, i) emits ONE child */, ViewOpts{ id, height, ... })
+TreeList(comptime cap: usize) type     // preorder nodes + depth; expand/collapse; keyboard
+  Model: n_nodes, expanded (bitset), visible[], n_visible, selected, sc;  setNodes(n, src, expand_depth) / rowOf(node)
+  Msg = union(enum) { toggle: u32, select: u32, key: Key, wheel, viewport, frame, blur };  update(model, msg, src)  // src.depth(node) u16, src.label(arena, node) []const u8
+  view(model, cb, src, msgs /*.toggle(node) .select(node)*/, ViewOpts{ id, row_h = 22, indent = 16, ... });  keyMsg(SpecialKey) ?Msg
+// VirtualListStyle gained total_extent / start_offset (variable rows), id (measured-row reports) and align_cross.
+// App hooks added: virtualRowsMsg(model, id, first_row, heights: []const f32) ?Msg;  modsMsg(model, mods: Modifiers) ?Msg
 ```
 
 ### TextArea and text events (`teak.TextArea`, `teak.text_area`, `teak.text_event`)
@@ -669,7 +708,7 @@ widgets.menu.MenuBar(Action) type: Item (= MenuItem(Action){label "&File" mnemon
     viewWith(model, cb, items, msgs /*.menu(Msg) .run(Action)*/, ViewOpts{x,y,window_w,window_h,top_width,bar_height,panel_w,row_h,cols,bar_bg});
     keyMsg(model, SpecialKey, items, msgs) ?AppMsg (F10/Alt activate; arrows, Enter, Escape); charMsg(model, u8, items, msgs) ?AppMsg (mnemonics)
 widgets.menu.ContextMenu(Action) type: Model{x,y,st}; Msg{open_at, goto, close}; openAt(x, y) Msg; isOpen; viewWith / keyMsg / charMsg as MenuBar
-widgets.menu.State{active, hot, open, depth, sel[4]}; menu.displayLabel(cb, label); menu.max_depth; menu.SEP_H
+widgets.menu.State{active, hot, open, depth, sel[4]}; menu.displayLabel(cb, label); menu.mnemonicIndex(label) ?usize; menu.max_depth; menu.SEP_H
 ```
 Choosing a leaf dispatches `msgs.run(action)`; the app's update also runs `MenuBar.update(&m.bar, .close)`.
 Tab traversal (`focus.nextFocusable` / `prevFocusable`) stays inside the topmost modal overlay (dialogs, menus).
@@ -762,7 +801,7 @@ validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uplo
                                        //   renderFrame, rasterizeText, uploadText, uploadImage, uploadImages, releaseImage
 // Optional extension (checked only when present; the scene trio is all-or-none):
 //   uploadMesh(*Gpu, MeshData) MeshHandle      releaseMesh(*Gpu, MeshHandle) void
-//   renderScenes(*Gpu, []const SceneDraw) void  // before renderFrame; offscreen 3D -> composite quads
+//   renderScenes(*Gpu, []const SceneDraw, []const SceneItem) void  // before renderFrame; offscreen 3D -> composite quads
 //   setOverlayStart(*Gpu, OverlaySplit) void    // before the uploads: draw base solids/images/scenes/text, THEN
 //                                              //   the overlay's, so an opaque overlay hides base text (hatch 5)
 ```

@@ -300,8 +300,9 @@ pub const LayoutEngine = struct {
                         .pad_y = vl.padding,
                         .gap = vl.gap,
                         .is_virtual = true,
-                        .total_count = @floatFromInt(vl.total_count),
-                        .item_extent = vl.item_extent,
+                        // Variable-height mode claims `total_extent` as one "item".
+                        .total_count = if (vl.total_extent > 0) 1 else @floatFromInt(vl.total_count),
+                        .item_extent = if (vl.total_extent > 0) vl.total_extent else vl.item_extent,
                     });
                 },
                 .pop_group, .pop_scroll => {
@@ -375,7 +376,7 @@ pub const LayoutEngine = struct {
                 },
                 .button => |btn| {
                     const label_w = measurer.measure(btn.label, btn.font).width + 2 * btn.style.h_padding;
-                    const w = @max(label_w, btn.style.min_width);
+                    const w = if (btn.style.ellipsis) btn.style.min_width else @max(label_w, btn.style.min_width);
                     const h = btn.style.height;
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, btn.style.flex);
@@ -826,11 +827,12 @@ pub const LayoutEngine = struct {
                         .pad_x = vl.padding,
                         .pad_y = vl.padding,
                         .gap = vl.gap,
+                        .align_cross = vl.align_cross,
                     });
                     // Bump the cursor so the first emitted child sits at
                     // row visible_start, not row 0.
                     const ctx = stack.top();
-                    const offset: f32 = @as(f32, @floatFromInt(vl.visible_start)) * vl.item_extent;
+                    const offset: f32 = if (vl.total_extent > 0) vl.start_offset else @as(f32, @floatFromInt(vl.visible_start)) * vl.item_extent;
                     switch (vl.direction) {
                         .horizontal => ctx.x += offset,
                         .vertical => ctx.y += offset,
@@ -1329,6 +1331,24 @@ test "virtual list claims total_count * item_extent on main axis" {
     // The virtual-list container's height = 10000 * 24 = 240000 even
     // though only three rows were emitted.
     try testing.expectEqual(@as(f32, 240000), rects[0].h);
+}
+
+test "variable-height virtual list claims total_extent and starts at start_offset" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushScroll(.{ .direction = .vertical, .padding = 0, .gap = 0, .width = 400, .height = 200 });
+    cb.pushVirtualList(.{ .total_extent = 5000, .start_offset = 1234, .visible_start = 40, .visible_end = 42 });
+    cb.text("row 40");
+    cb.text("row 41");
+    cb.popVirtualList();
+    cb.popScroll();
+    var rects: [16]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
+    try testing.expectEqual(@as(f32, 5000), rects[1].h);
+    try testing.expectEqual(@as(f32, 1234), rects[2].y);
+    try testing.expect(rects[3].y >= rects[2].y + rects[2].h); // rows flow after each other
 }
 
 test "virtual list children sit at visible_start * item_extent offset" {

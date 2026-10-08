@@ -3,11 +3,10 @@
 //! ortho/persp toggle, CPU click-picking and a parts inspector, in Kerf's
 //! 1970s engineering-office look (kerf/spec/DESIGN.md).
 //!
-//! It runs on the EXISTING `scene3d` path: one mesh per scene Cmd, so the
-//! parts are concatenated and the selected part is tinted in place (a rev
-//! bump re-uploads). When `viewport3d` + per-item tint land, `refreshMesh`
-//! and the `scene3d` call in `viewport()` are the only places that change;
-//! camera, picking, panel and effects stay as they are.
+//! Rendering is `viewport3d`: every part is its own mesh resource (key =
+//! part id, uploaded once per document) and each frame places them as
+//! `Item`s. Selection is the `highlight` flag and hover a brighter tint on
+//! the item, so interacting never touches or re-uploads geometry.
 //!
 //! Model sources: a bundled fixture (default), `?mesh=<fixture|url>` /
 //! `--mesh=<fixture|url>` read through the `query_param` effect, an
@@ -133,7 +132,6 @@ const row_button_on: teak.ButtonStyle = .{
 
 // ── Model ──────────────────────────────────────────────────────────
 
-pub const mesh_key: u32 = 1;
 pub const scene_id: u32 = 7;
 pub const list_id: u32 = 8;
 const click_slop_px: f32 = 4;
@@ -158,12 +156,13 @@ pub const Model = struct {
     selected: u32 = 0,
     hovered: u32 = 0,
     edges: bool = true,
+    /// Ground grid (at the model's lowest Y) and the corner axis gizmo.
+    grid: bool = true,
     /// Re-frame on the first `layout` event (the real viewport size).
     fit_pending: bool = true,
-    /// Mesh content revision: the resource `rev` and the scene's `key`.
+    /// Document revision: stamped on every part's mesh resource (so a new
+    /// document re-uploads the keys) and used as the scene's `key`.
     rev: u32 = 0,
-    res: [1]teak.Resource = undefined,
-    res_len: usize = 0,
     /// Pixels travelled since the left button went down; a small value on
     /// release is a click (pick), a large one was an orbit / pan.
     drag_px: f32 = 0,
@@ -213,18 +212,19 @@ pub const Model = struct {
     /// Parse `bytes` and, on success, replace the document (frames the
     /// camera, clears the selection). A failure keeps the old document.
     fn loadBytes(m: *Model, name: []const u8, bytes: []const u8) void {
-        const next = kerf.parse(gpa, bytes) catch |e| {
+        var next = kerf.parse(gpa, bytes) catch |e| {
             m.setStatus("ERR {s}: {s}", .{ name, @errorName(e) });
             return;
         };
         if (m.loaded) |*old| old.deinit();
+        m.rev +%= 1;
+        next.setRev(m.rev);
         m.loaded = next;
         m.setDoc(name);
         m.selected = 0;
         m.hovered = 0;
         m.list_scroll = 0;
         m.fitView();
-        m.refreshMesh();
         m.status_len = 0;
     }
 
@@ -238,19 +238,6 @@ pub const Model = struct {
 
     fn aspect(m: *const Model) f32 {
         return if (m.vp[1] > 0) m.vp[0] / m.vp[1] else 1;
-    }
-
-    /// Re-tint for the current selection and publish a new mesh revision.
-    /// (The scene3d-path workaround; `viewport3d` items replace this.)
-    fn refreshMesh(m: *Model) void {
-        const l = &(m.loaded orelse {
-            m.res_len = 0;
-            return;
-        });
-        l.setSelected(m.selected, highlight, highlight);
-        m.rev +%= 1;
-        m.res[0] = .{ .mesh = .{ .key = mesh_key, .rev = m.rev, .data = l.meshData(m.edges) } };
-        m.res_len = 1;
     }
 
     fn takeId(m: *Model) u32 {
@@ -292,7 +279,6 @@ pub const Model = struct {
         const next: u32 = if (id <= m.partCount()) id else 0;
         if (next == m.selected) return;
         m.selected = next;
-        m.refreshMesh();
         // Keep the row visible in the panel.
         if (next != 0 and m.list_viewport > 0) {
             const top = @as(f32, @floatFromInt(next - 1)) * row_height;
@@ -310,6 +296,7 @@ pub const Msg = union(enum) {
     preset: Orbit.Preset,
     toggle_ortho,
     toggle_edges,
+    toggle_grid,
     fit,
     load_fixture: u8,
     open_file,
@@ -343,10 +330,8 @@ pub fn update(m: *Model, msg: Msg) void {
         },
         .preset => |p| m.cam.setPreset(p),
         .toggle_ortho => m.cam.toggleProjection(),
-        .toggle_edges => {
-            m.edges = !m.edges;
-            m.refreshMesh();
-        },
+        .toggle_edges => m.edges = !m.edges,
+        .toggle_grid => m.grid = !m.grid,
         .fit => m.fitView(),
         .load_fixture => |i| if (i < fixtures.len) m.loadBytes(fixtures[i].name, fixtures[i].bytes),
         .open_file => if (m.req_len == 0) {
@@ -384,6 +369,20 @@ fn clampScroll(m: *const Model, y: f32) f32 {
     return std.math.clamp(y, 0, @max(0, m.list_content - m.list_viewport));
 }
 
+/// Placement of the axis gizmo (shared by the view and its hit test).
+const gizmo_view: teak.scene.Gizmo = .{
+    .corner = .bottom_left,
+    .size_px = 100,
+    .margin_px = 10,
+    // X / Y / Z in Kerf's red, green and blue
+    .colors = .{ .{ 0.784, 0.063, 0.180, 1 }, .{ 0.180, 0.490, 0.196, 1 }, .{ 0.114, 0.306, 0.620, 1 } },
+};
+
+fn gizmoHit(m: *const Model, x: f32, y: f32, w: f32, h: f32) ?scene.pick.GizmoAxis {
+    const layout: scene.pick.GizmoLayout = .{ .corner = .bottom_left, .size_px = gizmo_view.size_px, .margin_px = gizmo_view.margin_px };
+    return scene.pick.gizmoHit(m.cam, layout, w, h, x, y);
+}
+
 fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
     switch (ev.kind) {
         .layout => {
@@ -401,7 +400,13 @@ fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
             }
         },
         .up => if (ev.button == .left and m.drag_px < click_slop_px and !ev.mods.shift) {
-            m.selectPart(m.pickAt(ev.x, ev.y, ev.w, ev.h));
+            // A click on a gizmo cap looks down that axis; anywhere else it picks a part.
+            const axis = if (m.grid) gizmoHit(m, ev.x, ev.y, ev.w, ev.h) else null;
+            if (axis) |a| {
+                m.cam.setPreset(a.preset(m.cam.up));
+            } else {
+                m.selectPart(m.pickAt(ev.x, ev.y, ev.w, ev.h));
+            }
         },
         .leave => m.hovered = 0,
         .wheel => {},
@@ -442,6 +447,7 @@ pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
         'o', 'O' => .toggle_ortho,
         'f', 'F' => .fit,
         'e', 'E' => .toggle_edges,
+        'g', 'G' => .toggle_grid,
         else => null,
     };
 }
@@ -477,7 +483,7 @@ pub fn effectMsg(_: *const Model, r: teak.EffectResult) ?Msg {
 }
 
 pub fn resources(m: *const Model) []const teak.Resource {
-    return m.res[0..m.res_len];
+    return if (m.loaded) |l| l.resources else &.{};
 }
 
 pub fn themeFor(_: *const Model) teak.Theme {
@@ -549,6 +555,7 @@ fn centerColumn(m: *const Model, cb: anytype) void {
     cb.spacer(1);
     cb.buttonStyled(.toggle_ortho, if (m.cam.projection == .ortho) "[ORTHO]" else "[PERSP]", tab_button);
     cb.buttonStyled(.toggle_edges, if (m.edges) "[EDGES ON]" else "[EDGES OFF]", tab_button);
+    cb.buttonStyled(.toggle_grid, if (m.grid) "[GRID ON]" else "[GRID OFF]", tab_button);
     cb.buttonStyled(.fit, "[FIT]", tab_button);
     cb.popGroup();
 
@@ -556,13 +563,50 @@ fn centerColumn(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-/// The one place that talks to the scene path: swapping to `viewport3d`
-/// replaces this call (+ `refreshMesh`) and nothing else.
+/// One `Item` per part, placed at the identity: selection is the
+/// `highlight` flag, hover a slightly brighter tint, edges a per-item flag.
+fn partItems(m: *const Model, arena: std.mem.Allocator) []const teak.SceneItem {
+    const l = &(m.loaded orelse return &.{});
+    const items = arena.alloc(teak.SceneItem, l.parts.len) catch return &.{};
+    for (items, l.parts) |*it, p| {
+        const id = p.index + 1;
+        it.* = .{
+            .mesh = id,
+            .id = id,
+            .tint = if (m.hovered == id and m.selected != id) .{ 1.18, 1.18, 1.18, 1 } else .{ 1, 1, 1, 1 },
+            .flags = .{ .highlight = m.selected == id, .no_edges = !m.edges },
+        };
+    }
+    return items;
+}
+
+/// DESIGN section 4: ground grid in `grid-2` / `grid` on the paper, in feet
+/// (the mesh units are inches), sitting on the model's lowest point.
+fn groundGrid(m: *const Model) teak.scene.Grid {
+    const floor_y: f32 = if (m.loaded) |l| l.lo[1] else 0;
+    return .{
+        .plane = .xz,
+        .offset = floor_y,
+        .spacing = 12,
+        .major_every = 5,
+        .minor = .{ 0.827, 0.878, 0.933, 1 }, // #D3E0EE
+        .major = .{ 0.663, 0.757, 0.867, 1 }, // #A9C1DD
+        .axis_a = .{ 0.784, 0.063, 0.180, 0.8 },
+        .axis_b = .{ 0.114, 0.306, 0.620, 0.8 },
+    };
+}
+
 fn viewport(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 1, .gap = 0, .flex = 1, .border = ink, .bg = paper, .align_cross = .stretch });
-    cb.scene3d(.{
+    cb.viewport3d(.{
         .style = .{ .width = 480, .height = 320, .flex = 1 },
-        .mesh = mesh_key,
+        .view = .{
+            .items = partItems(m, cb.arena.allocator()),
+            .highlight_color = highlight,
+            .highlight_mix = 0.6,
+            .grid = if (m.grid) groundGrid(m) else null,
+            .gizmo = if (m.grid) gizmo_view else null,
+        },
         .camera = camera(m),
         .clear = paper,
         .edge_color = .{ 1, 1, 1, 1 },
@@ -709,10 +753,12 @@ test "init: bundled fixture loads, camera frames it, mesh resource published" {
     var m = Model.init();
     defer m.loaded.?.deinit();
     try testing.expectEqual(@as(u32, 24), m.partCount());
-    try testing.expectEqual(@as(usize, 1), resources(&m).len);
-    const r = resources(&m)[0].mesh;
-    try testing.expectEqual(mesh_key, r.key);
-    try testing.expectEqual(m.loaded.?.display.len, r.data.vertices.len);
+    // one mesh resource per part, keyed by part id, all at the document revision
+    try testing.expectEqual(@as(usize, 24), resources(&m).len);
+    for (resources(&m), 1..) |res, id| {
+        try testing.expectEqual(@as(u32, @intCast(id)), res.mesh.key);
+        try testing.expectEqual(m.rev, res.mesh.rev);
+    }
     // the framed camera puts the model centre at the viewport centre
     const l = &m.loaded.?;
     const c = scene.mat.scale(scene.mat.add(l.lo, l.hi), 0.5);
@@ -723,22 +769,39 @@ test "init: bundled fixture loads, camera frames it, mesh resource published" {
     try testing.expect(effects(&m)[0] == .query_param);
 }
 
-test "selecting recolours one part and bumps the mesh rev" {
+test "selecting and hovering change items only: no new revision, no geometry edit" {
     var m = smallModel();
     defer m.loaded.?.deinit();
     const rev0 = m.rev;
+    const verts_before = m.loaded.?.parts[2].mesh.vertices[0];
     update(&m, .{ .select = 3 });
     try testing.expectEqual(@as(u32, 3), m.selected);
-    try testing.expect(m.rev != rev0);
-    const l = &m.loaded.?;
-    const p = l.parts[2];
-    try testing.expect(!std.meta.eql(l.display[p.vert_first].color, l.base[p.vert_first].color));
-    // selecting the same part again does not re-upload; out-of-range clears
-    const rev1 = m.rev;
-    update(&m, .{ .select = 3 });
-    try testing.expectEqual(rev1, m.rev);
+    m.hovered = 5;
+    try testing.expectEqual(rev0, m.rev);
+    try testing.expectEqual(rev0, resources(&m)[2].mesh.rev);
+    try testing.expect(std.meta.eql(verts_before, m.loaded.?.parts[2].mesh.vertices[0]));
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const items = partItems(&m, arena.allocator());
+    try testing.expectEqual(@as(usize, 10), items.len);
+    for (items, 1..) |it, id| {
+        try testing.expectEqual(@as(u32, @intCast(id)), it.mesh);
+        try testing.expectEqual(@as(u32, @intCast(id)), it.id);
+        try testing.expectEqual(id == 3, it.flags.highlight);
+        try testing.expect(!it.flags.no_edges);
+        try testing.expectEqual(id == 5, it.tint[0] > 1);
+    }
+    update(&m, .toggle_edges);
+    try testing.expect(partItems(&m, arena.allocator())[0].flags.no_edges);
+    try testing.expectEqual(rev0, m.rev);
+
+    // out-of-range clears the selection; loading a document bumps the revision
     update(&m, .{ .select = 999 });
     try testing.expectEqual(@as(u32, 0), m.selected);
+    update(&m, .{ .load_fixture = 0 });
+    try testing.expect(m.rev != rev0);
+    try testing.expectEqual(m.rev, resources(&m)[0].mesh.rev);
 }
 
 test "select_step wraps in both directions" {
@@ -761,7 +824,7 @@ test "click picks the part under the cursor; a drag orbits instead" {
 
     // aim at a triangle centroid of part 2: project it, click there
     const l = &m.loaded.?;
-    const pm = l.parts[1].pick_mesh;
+    const pm = l.parts[1].mesh;
     const v0 = pm.vertices[pm.indices[0]].pos;
     const v1 = pm.vertices[pm.indices[1]].pos;
     const v2 = pm.vertices[pm.indices[2]].pos;
@@ -788,6 +851,25 @@ test "click picks the part under the cursor; a drag orbits instead" {
     try testing.expect(m.cam.yaw != yaw);
 }
 
+test "clicking a gizmo cap looks down that axis; elsewhere it still picks" {
+    var m = smallModel();
+    defer m.loaded.?.deinit();
+    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .layout, .w = 900, .h = 600 } });
+    m.cam.setPreset(.front);
+    // front view: the +x cap sits right of the gizmo centre (bottom-left corner)
+    const layout: scene.pick.GizmoLayout = .{ .corner = .bottom_left, .size_px = gizmo_view.size_px, .margin_px = gizmo_view.margin_px };
+    const tips = scene.pick.gizmoTips(m.cam, layout, 900, 600);
+    const plus_x = tips[0];
+    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .up, .button = .left, .x = plus_x.x, .y = plus_x.y, .w = 900, .h = 600 } });
+    try testing.expectApproxEqAbs(@as(f32, std.math.pi / 2.0), m.cam.yaw, 1e-4); // `right` preset
+    try testing.expectEqual(@as(u32, 0), m.selected);
+    // with the grid (and gizmo) off the same click is just a pick
+    update(&m, .toggle_grid);
+    m.cam.setPreset(.front);
+    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .up, .button = .left, .x = plus_x.x, .y = plus_x.y, .w = 900, .h = 600 } });
+    try testing.expectEqual(@as(f32, 0), m.cam.yaw);
+}
+
 test "wheel zoom changes distance; presets and ortho toggle apply" {
     var m = smallModel();
     defer m.loaded.?.deinit();
@@ -799,7 +881,7 @@ test "wheel zoom changes distance; presets and ortho toggle apply" {
     update(&m, .toggle_ortho);
     try testing.expect(m.cam.projection == .ortho);
     update(&m, .toggle_edges);
-    try testing.expectEqual(@as(usize, 0), resources(&m)[0].mesh.data.lines.len);
+    try testing.expect(!m.edges);
 }
 
 test "?mesh= selects a fixture, a URL becomes an http effect, errors keep the document" {
@@ -870,7 +952,9 @@ test "view: balanced, one interactive scene3d, 340px inspector, 24px status bar"
     for (cb.cmds.items, rs) |c, r| switch (c) {
         .scene3d => |s| {
             scenes += 1;
-            try testing.expect(s.pointer and s.id == scene_id and s.mesh == mesh_key);
+            try testing.expect(s.pointer and s.id == scene_id);
+            try testing.expectEqual(@as(usize, 10), s.view.items.len);
+            try testing.expect(s.view.items[1].flags.highlight); // part 2 is selected
             try testing.expectEqual(m.rev, @as(u32, @intCast(s.key)));
             try testing.expect(r.w > 600 and r.h > 400); // flexes into the centre
         },
@@ -913,12 +997,13 @@ const golden =
     \\        button (102,54,66,24) "[ISO]"
     \\        button (172,54,66,24) "[TOP]"
     \\        button (242,54,86,24) "[RIGHT]"
-    \\        group (332,66,316,0) vertical
-    \\        button (652,54,86,24) "[PERSP]"
-    \\        button (742,54,116,24) "[EDGES ON]"
+    \\        group (332,66,206,0) vertical
+    \\        button (542,54,86,24) "[PERSP]"
+    \\        button (632,54,116,24) "[EDGES ON]"
+    \\        button (752,54,106,24) "[GRID ON]"
     \\        button (862,54,66,24) "[FIT]"
     \\      group (12,86,916,678) vertical bg border
-    \\        scene3d (13,87,914,676) mesh=1 key=3 id=7 pointer "3D model viewport"
+    \\        scene3d (13,87,914,676) mesh=0 key=2 id=7 items=10 grid gizmo pointer "3D model viewport"
     \\    group (940,42,340,734) vertical bg border
     \\      group (952,54,316,20) horizontal
     \\        text (952,54,55,20) "PARTS"

@@ -9,8 +9,10 @@ const std = @import("std");
 const teak = @import("teak");
 const zunk = @import("zunk");
 const common = @import("scene_common.zig");
+const scene_pass = @import("scene_pass.zig");
 const SlotTable = @import("slot_table.zig").SlotTable;
 const scene_wgsl = @import("teak-shaders").scene_wgsl;
+const scene_grid_wgsl = @import("teak-shaders").scene_grid_wgsl;
 
 const zgpu = zunk.web.gpu;
 const MeshData = teak.MeshData;
@@ -22,6 +24,9 @@ const TargetSize = common.TargetSize;
 
 pub const MESH_CAPACITY: usize = 128;
 pub const depth_format: zgpu.TextureFormat = .depth32float;
+
+/// Scratch for the per-frame plan (backend code outside the framework core).
+const plan_allocator = std.heap.wasm_allocator;
 
 const MeshEntry = struct {
     vertex_buf: ?zgpu.Buffer,
@@ -53,10 +58,26 @@ pub const Target = struct {
     depth_view: zgpu.TextureView,
     uniform_buf: zgpu.Buffer,
     bind_group: zgpu.BindGroup,
+    /// Packed per-item instance records (`scene_pass.Packed`), grown on demand.
+    inst_buf: ?zgpu.Buffer = null,
+    inst_cap: u32 = 0,
+    /// Grid pass uniforms (`scene_pass.GridUniform`) + bind group.
+    grid_buf: zgpu.Buffer,
+    grid_bg: zgpu.BindGroup,
+    /// Gizmo pass: its own `Globals`, bind group and line-segment vertices.
+    gizmo_ubo: zgpu.Buffer,
+    gizmo_bg: zgpu.BindGroup,
+    gizmo_lines: zgpu.Buffer,
     signature: u64,
     generation: u32,
 
     fn release(self: Target) void {
+        if (self.inst_buf) |b| zgpu.bufferDestroy(b);
+        zgpu.bufferDestroy(self.gizmo_lines);
+        zgpu.release(self.gizmo_bg);
+        zgpu.bufferDestroy(self.gizmo_ubo);
+        zgpu.release(self.grid_bg);
+        zgpu.bufferDestroy(self.grid_buf);
         zgpu.release(self.bind_group);
         zgpu.bufferDestroy(self.uniform_buf);
         zgpu.release(self.depth_view);
@@ -73,9 +94,16 @@ pub const Renderer = struct {
     bgl: zgpu.BindGroupLayout,
     mesh_pipeline: zgpu.RenderPipeline,
     line_pipeline: zgpu.RenderPipeline,
+    /// Line pipeline that ignores the depth buffer, for the gizmo overlay.
+    gizmo_pipeline: zgpu.RenderPipeline,
+    grid_bgl: zgpu.BindGroupLayout,
+    grid_pipeline: zgpu.RenderPipeline,
+    /// One identity `Packed` record bound at stride 0 for gizmo lines.
+    ident_buf: zgpu.Buffer,
 
     meshes: SlotTable(MeshEntry, MESH_CAPACITY) = .{},
     next_version: u32 = 1,
+    plan: scene_pass.Plan = .{},
     targets: [common.max_scenes]?Target = @splat(null),
     next_generation: u32 = 1,
 
@@ -97,8 +125,19 @@ pub const Renderer = struct {
             .{ .format = .float32x3, .offset = @offsetOf(MeshVertex, "normal"), .shader_location = 1 },
             .{ .format = .float32x4, .offset = @offsetOf(MeshVertex, "color"), .shader_location = 2 },
         };
+        // Per-item instance stream (`scene_pass.Packed`): per-instance for
+        // triangles, stride 0 for lines so every segment of one item reads
+        // the same record.
+        const inst_attrs = [_]zgpu.VertexAttribute{
+            .{ .format = .float32x4, .offset = 0, .shader_location = 4 },
+            .{ .format = .float32x4, .offset = 16, .shader_location = 5 },
+            .{ .format = .float32x4, .offset = 32, .shader_location = 6 },
+            .{ .format = .float32x4, .offset = 48, .shader_location = 7 },
+            .{ .format = .uint32x2, .offset = 64, .shader_location = 8 },
+        };
         const mesh_layouts = [_]zgpu.VertexBufferLayout{
             zgpu.VertexBufferLayout.fromSlice(@sizeOf(MeshVertex), .vertex, &mesh_attrs),
+            zgpu.VertexBufferLayout.fromSlice(@sizeOf(scene_pass.Packed), .instance, &inst_attrs),
         };
         // One instance = one segment = a pair of LineVertex.
         const line_attrs = [_]zgpu.VertexAttribute{
@@ -109,11 +148,42 @@ pub const Renderer = struct {
         };
         const line_layouts = [_]zgpu.VertexBufferLayout{
             zgpu.VertexBufferLayout.fromSlice(2 * @sizeOf(LineVertex), .instance, &line_attrs),
+            zgpu.VertexBufferLayout.fromSlice(0, .instance, inst_attrs[0..3]),
         };
+
+        const grid_shader = zgpu.createShaderModule(scene_grid_wgsl);
+        const grid_bgl = zgpu.createBindGroupLayout(&.{
+            zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX | zgpu.ShaderVisibility.FRAGMENT, .uniform)
+                .withMinSize(@sizeOf(scene_pass.GridUniform)),
+        });
+        const ident_buf = makeBuffer(zgpu.BufferUsage.VERTEX, std.mem.asBytes(&scene_pass.pack(.{ .mesh = 1 })));
 
         return .{
             .samples = samples,
             .bgl = bgl,
+            .gizmo_pipeline = zgpu.createRenderPipelineDesc(.{
+                .layout = layout,
+                .shader = shader,
+                .vertex_entry = "vs_line",
+                .fragment_entry = "fs_line",
+                .vertex_buffers = &line_layouts,
+                .color_format = format,
+                .blend = .alpha,
+                .depth = .{ .format = depth_format, .write_enabled = false, .compare = .always },
+                .sample_count = samples,
+            }),
+            .grid_bgl = grid_bgl,
+            .grid_pipeline = zgpu.createRenderPipelineDesc(.{
+                .layout = zgpu.createPipelineLayout(&.{grid_bgl}),
+                .shader = grid_shader,
+                .vertex_entry = "vs_grid",
+                .fragment_entry = "fs_grid",
+                .color_format = format,
+                .blend = .alpha,
+                .depth = .{ .format = depth_format, .write_enabled = false, .compare = .less_equal },
+                .sample_count = samples,
+            }),
+            .ident_buf = ident_buf,
             .mesh_pipeline = zgpu.createRenderPipelineDesc(.{
                 .layout = layout,
                 .shader = shader,
@@ -140,9 +210,14 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Renderer) void {
+        self.plan.deinit(plan_allocator);
         var it = self.meshes.iterator();
         while (it.next()) |m| m.release();
         for (self.targets) |t| if (t) |tt| tt.release();
+        zgpu.bufferDestroy(self.ident_buf);
+        zgpu.release(self.grid_pipeline);
+        zgpu.release(self.grid_bgl);
+        zgpu.release(self.gizmo_pipeline);
         zgpu.release(self.line_pipeline);
         zgpu.release(self.mesh_pipeline);
         zgpu.release(self.bgl);
@@ -190,8 +265,25 @@ pub const Renderer = struct {
         if (self.meshes.remove(handle)) |m| m.release();
     }
 
-    fn meshVersion(self: *Renderer, handle: MeshHandle) u32 {
+    pub fn meshVersion(self: *Renderer, handle: MeshHandle) u32 {
         return if (self.meshes.get(handle)) |m| m.version else 0;
+    }
+
+    pub fn hasMesh(self: *Renderer, handle: MeshHandle) bool {
+        return self.meshes.get(handle) != null;
+    }
+
+    /// Make sure `t.inst_buf` holds at least `bytes`; the caller rewrites the contents.
+    fn ensureInstBuf(t: *Target, bytes: u32) zgpu.Buffer {
+        if (t.inst_buf) |b| {
+            if (t.inst_cap >= bytes) return b;
+            zgpu.bufferDestroy(b);
+        }
+        const cap = @max(std.math.ceilPowerOfTwo(u32, bytes) catch bytes, 16 * @sizeOf(scene_pass.Packed));
+        const buf = zgpu.createBuffer(cap, zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.COPY_DST);
+        t.inst_buf = buf;
+        t.inst_cap = cap;
+        return buf;
     }
 
     // ── Targets ────────────────────────────────────────────────────
@@ -212,6 +304,8 @@ pub const Renderer = struct {
         }
         const depth = zgpu.createDepthTexture(size.w, size.h, depth_format, self.samples);
         const uniform_buf = zgpu.createUniformBuffer(@sizeOf(common.Globals));
+        const grid_buf = zgpu.createUniformBuffer(@sizeOf(scene_pass.GridUniform));
+        const gizmo_ubo = zgpu.createUniformBuffer(@sizeOf(common.Globals));
         const gen = self.next_generation;
         self.next_generation +%= 1;
         return .{
@@ -226,6 +320,15 @@ pub const Renderer = struct {
             .bind_group = zgpu.createBindGroup(self.bgl, &.{
                 zgpu.BindGroupEntry.initBufferFull(0, uniform_buf, @sizeOf(common.Globals)),
             }),
+            .grid_buf = grid_buf,
+            .grid_bg = zgpu.createBindGroup(self.grid_bgl, &.{
+                zgpu.BindGroupEntry.initBufferFull(0, grid_buf, @sizeOf(scene_pass.GridUniform)),
+            }),
+            .gizmo_ubo = gizmo_ubo,
+            .gizmo_bg = zgpu.createBindGroup(self.bgl, &.{
+                zgpu.BindGroupEntry.initBufferFull(0, gizmo_ubo, @sizeOf(common.Globals)),
+            }),
+            .gizmo_lines = zgpu.createBuffer(scene_pass.gizmo_segments * 2 * @sizeOf(LineVertex), zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.COPY_DST),
             .signature = 0,
             .generation = gen,
         };
@@ -244,11 +347,12 @@ pub const Renderer = struct {
     /// no-op when the slot already holds this exact picture. Returns the
     /// target size, or null if the scene has no pixels. `scale` = device
     /// pixels per logical pixel (the canvas devicePixelRatio).
-    pub fn renderInto(self: *Renderer, index: usize, draw: SceneDraw, scale: f32) ?TargetSize {
+    pub fn renderInto(self: *Renderer, index: usize, draw: SceneDraw, items: []const teak.SceneItem, scale: f32) ?TargetSize {
         const size = common.targetSize(draw.rect_w, draw.rect_h, scale) orelse return null;
         const t = self.ensureTarget(index, size);
 
-        const sig = common.signature(draw, size, scale, self.meshVersion(draw.mesh));
+        self.plan.build(plan_allocator, draw, items, self) catch return null;
+        const sig = common.signature(draw, size, scale, self.plan.contentHash(self));
         if (t.signature == sig) return size;
         t.signature = sig;
 
@@ -265,19 +369,63 @@ pub const Renderer = struct {
             .depth_store = .discard,
         });
 
-        if (self.meshes.get(draw.mesh)) |m| {
+        const inst_bytes: u32 = @intCast(self.plan.insts.items.len * @sizeOf(scene_pass.Packed));
+        if (inst_bytes > 0) {
+            const inst_buf = ensureInstBuf(t, inst_bytes);
+            zgpu.bufferWrite(inst_buf, 0, std.mem.sliceAsBytes(self.plan.insts.items));
             zgpu.renderPassSetBindGroup(pass, 0, t.bind_group);
-            if (m.index_bytes > 0) {
-                zgpu.renderPassSetPipeline(pass, self.mesh_pipeline);
+            // Triangles: one instanced draw per run of items sharing a mesh.
+            zgpu.renderPassSetPipeline(pass, self.mesh_pipeline);
+            for (self.plan.runs.items) |run| {
+                const m = self.meshes.get(run.mesh) orelse continue;
+                if (m.index_bytes == 0) continue;
                 zgpu.renderPassSetVertexBuffer(pass, 0, m.vertex_buf.?, 0, m.vertex_bytes);
+                zgpu.renderPassSetVertexBuffer(pass, 1, inst_buf, 0, inst_bytes);
                 zgpu.renderPassSetIndexBuffer(pass, m.index_buf.?, .uint32, 0, m.index_bytes);
-                zgpu.renderPassDrawIndexed(pass, m.index_bytes / @sizeOf(u32), 1, 0, 0, 0);
+                zgpu.renderPassDrawIndexed(pass, m.index_bytes / @sizeOf(u32), run.count, 0, 0, run.first);
             }
-            if (m.segment_count > 0) {
-                zgpu.renderPassSetPipeline(pass, self.line_pipeline);
+            // Feature edges: one draw per item (its transform is bound at stride 0).
+            zgpu.renderPassSetPipeline(pass, self.line_pipeline);
+            for (self.plan.runs.items) |run| {
+                const m = self.meshes.get(run.mesh) orelse continue;
+                if (m.segment_count == 0) continue;
                 zgpu.renderPassSetVertexBuffer(pass, 0, m.line_buf.?, 0, m.segment_count * 2 * @sizeOf(LineVertex));
-                zgpu.renderPassDraw(pass, 6, m.segment_count, 0, 0);
+                for (self.plan.insts.items[run.first..][0..run.count], run.first..) |inst, k| {
+                    if (inst.flags & scene_pass.flag_no_edges != 0) continue;
+                    zgpu.renderPassSetVertexBuffer(pass, 1, inst_buf, @as(u32, @intCast(k)) * @sizeOf(scene_pass.Packed), @sizeOf(scene_pass.Packed));
+                    zgpu.renderPassDraw(pass, 6, m.segment_count, 0, 0);
+                }
             }
+        }
+
+        // Grid: depth-tested against everything drawn above, blended over it.
+        if (draw.grid) |grid| if (scene_pass.gridUniform(draw, grid, size.w, size.h, scale)) |gu| {
+            zgpu.bufferWriteTyped(scene_pass.GridUniform, t.grid_buf, 0, &.{gu});
+            zgpu.renderPassSetPipeline(pass, self.grid_pipeline);
+            zgpu.renderPassSetBindGroup(pass, 0, t.grid_bg);
+            zgpu.renderPassDraw(pass, 3, 1, 0, 0);
+        };
+
+        // Gizmo: axis triad in a corner sub-viewport, always on top.
+        if (draw.gizmo) |gz| {
+            const r = scene_pass.gizmoRect(gz, size.w, size.h, scale);
+            const lines = scene_pass.gizmoLines(draw.camera.view_proj, gz);
+            zgpu.bufferWrite(t.gizmo_lines, 0, std.mem.sliceAsBytes(&lines));
+            var gg = common.globals(draw, .{ .w = @intFromFloat(r[2]), .h = @intFromFloat(r[3]) }, scale);
+            gg.view_proj = scene_pass.gizmoProjection();
+            gg.edge_color = .{ 1, 1, 1, 1 };
+            gg.viewport[2] = 2 * scale;
+            gg.viewport[3] = 0;
+            gg.clip = .{ 0, 0, 0, 0 };
+            gg.misc = .{ 0, 0, 0, 0 };
+            zgpu.bufferWriteTyped(common.Globals, t.gizmo_ubo, 0, &.{gg});
+            zgpu.renderPassSetViewport(pass, r[0], r[1], r[2], r[3], 0, 1);
+            zgpu.renderPassSetScissorRect(pass, @intFromFloat(r[0]), @intFromFloat(r[1]), @intFromFloat(r[2]), @intFromFloat(r[3]));
+            zgpu.renderPassSetPipeline(pass, self.gizmo_pipeline);
+            zgpu.renderPassSetBindGroup(pass, 0, t.gizmo_bg);
+            zgpu.renderPassSetVertexBuffer(pass, 0, t.gizmo_lines, 0, scene_pass.gizmo_segments * 2 * @sizeOf(LineVertex));
+            zgpu.renderPassSetVertexBuffer(pass, 1, self.ident_buf, 0, @sizeOf(scene_pass.Packed));
+            zgpu.renderPassDraw(pass, 6, scene_pass.gizmo_segments, 0, 0);
         }
         zgpu.renderPassEnd(pass);
         return size;
