@@ -276,7 +276,7 @@ pub fn canvasMsg(model: *const Model, ev: pointer.CanvasEvent, o: Opts) ?Msg {
             return pick(target, ev, w, h, false);
         },
         .up => return if (ev.button == .left) .release else null,
-        .leave, .wheel, .layout => return null,
+        .leave, .wheel, .layout, .key => return null,
     }
 }
 
