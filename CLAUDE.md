@@ -199,9 +199,8 @@ src/                           -- the library, consumable as a Zig module
     wgpu_core.zig              -- Gpu(comptime Surface, comptime Rasterizer): shared wgpu
                                --   pipeline; owns the single @cImport(webgpu.h) so all
                                --   providers share one WGPUSurface type
-    surface_win32.zig          -- HWND surface provider      } Windows stitch:
-    raster_gdi.zig             -- GDI glyph rasterizer        } native.zig
-    native.zig                 -- Gpu(surface_win32, GdiRasterizer) + validateGpu
+    surface_win32.zig          -- HWND surface provider
+    native.zig                 -- Gpu(surface_win32, StbttRasterizer) + validateGpu  (Windows stitch)
     surface_xlib.zig           -- Xlib Window surface provider } Linux stitch:
     native_linux.zig           -- Gpu(surface_xlib, StbttRasterizer) + validateGpu
     web.zig                    -- zunk WebGPU backend (wasm)
@@ -214,7 +213,7 @@ src/                           -- the library, consumable as a Zig module
     host.zig                   -- validateHost contract + InputState/Clipboard/etc.
     input_queue.zig            -- InputQueue (events -> InputState for Win32/X11), NavKey +
                                --   resolveKey (the one Shift/Ctrl key policy), UTF-8 text queue
-    win32.zig                  -- Win32 Host (GDI measurer)
+    win32.zig                  -- Win32 Host (stb measurer, effects, DPI v2)
     x11.zig                    -- X11 Host via std.DynLib(libX11.so.6); stb measurer;
                                --   keysym->SpecialKey; no -lX11 (dlopened at runtime)
     wasm.zig                   -- zunk Host (web)
@@ -239,7 +238,7 @@ shaders/
   image.wgsl             -- texture * tint (RGBA images)
 ```
 
-The library has no external dependencies; `wgpu-native` is owned by teak's build helper (`linkNativeWgpu`/`linkWebWgpu`) and fetched lazily per target. The `src/gpu/` and `src/platform/` split (backend-polymorphic GPU context + Host interface) is executed per [`docs/archive/tasks-file-struct.md`](docs/archive/tasks-file-struct.md). Native backends are assembled by **comptime provider injection** — `wgpu_core.Gpu(Surface, Rasterizer)` is bound to `(surface_win32, GdiRasterizer)` by `native.zig` on Windows and `(surface_xlib, StbttRasterizer)` by `native_linux.zig` on Linux — so each OS's `extern`s only compile for that OS (no `switch (builtin.os.tag)` smuggling platform code into the other's translation unit). Host backends live in `src/platform/{win32,x11,wasm}.zig`; the build exposes the chosen native pair under the stable import names `teak-platform-native` / `teak-gpu-native` so one `ui_main.zig` compiles on every OS.
+The library has no external dependencies; `wgpu-native` is owned by teak's build helper (`linkNativeWgpu`/`linkWebWgpu`) and fetched lazily per target. The `src/gpu/` and `src/platform/` split (backend-polymorphic GPU context + Host interface) is executed per [`docs/archive/tasks-file-struct.md`](docs/archive/tasks-file-struct.md). Native backends are assembled by **comptime provider injection** — `wgpu_core.Gpu(Surface, Rasterizer)` is bound to `(surface_win32, StbttRasterizer)` by `native.zig` on Windows and `(surface_xlib, StbttRasterizer)` by `native_linux.zig` on Linux — so each OS's `extern`s only compile for that OS (no `switch (builtin.os.tag)` smuggling platform code into the other's translation unit). Host backends live in `src/platform/{win32,x11,wasm}.zig`; the build exposes the chosen native pair under the stable import names `teak-platform-native` / `teak-gpu-native` so one `ui_main.zig` compiles on every OS.
 
 **Functional gaps overview**: [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md) covers the 8 features added in the `functional_gaps_yolo` branch — overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs, virtual list, a11y tree, rich text via rich_zig.
 

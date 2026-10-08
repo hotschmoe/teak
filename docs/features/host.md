@@ -32,7 +32,8 @@ A Host type must expose these declarations:
 | `secondaryWindowHandle` | `fn(*const Host, u32) ?NativeHandle` | Return the native handle of a secondary window so the app can hand it to `gpu.openSecondarySurface`. |
 | `nowMs` | `fn(*const Host) u64` | Monotonic millisecond timestamp on the host's clock. Used by `Sub.at(deadline_ms, msg)` and anything else needing a host-side wall clock without violating HARDLINE §3's "no wall-clock in `view`". |
 | `submit` + `pollEffectResults` *(optional pair)* | `fn(*Host, Effect) EffectSubmit` / `fn(*Host, []EffectResult) usize` | Declarative effects ([effects.md](effects.md), HARDLINE hatch 7): `submit` starts one effect (slices valid only during the call), `pollEffectResults` fills `buf` with finished results and unsolicited drops / pastes (slices valid until the next `pollInputs`). Declare both or neither; a Host without them answers every effect as unsupported. |
-| `registerFont` *(X11, Win32; not in `validateHost`)* | `fn(*Host, FontFamily, FontWeight, []const u8) !void` | Register a TTF (typically `@embedFile`) as the face for a family and weight, shared with the Gpu rasterizer. Win32 accepts and ignores it. See [text.md](text.md#custom-fonts-ibm-plex-mono-and-friends). |
+| `renderScale` *(optional; Win32)* | `fn(*const Host) f32` | Physical pixels per logical pixel the Host reports in `InputState`. The run loop forwards it to `Gpu.setScale` when both declare the hook. |
+| `registerFont` *(X11, Win32; not in `validateHost`)* | `fn(*Host, FontFamily, FontWeight, []const u8) !void` | Register a TTF (typically `@embedFile`) as the face for a family and weight, shared with the Gpu rasterizer. See [text.md](text.md#custom-fonts-ibm-plex-mono-and-friends). |
 | `scaleFactor` *(optional)* | `fn(*const Host) f32` | Physical device pixels per logical UI unit at the window's current DPI (1.0 = no scaling). **Optional** — `validateHost` checks it for callability only when present, so Hosts (and `run.zig`'s test stubs) that predate it still validate. Nothing in the framework consumes it yet; see [DPI and scaling](#dpi-and-scaling). |
 
 `validateHost` comptime-asserts every non-`init` **required** decl above, and checks the optional `scaleFactor` only when a Host declares it. The clipboard / IME / a11y / dialog / secondary-window / `nowMs` decls landed during the `functional_gaps_yolo` push as HARDLINE §4(d) surface extensions. Compile-error format:
@@ -79,7 +80,7 @@ pub const InputState = struct {
 
 Three Hosts implement the contract; all satisfy `validateHost`.
 
-- **Win32** (`win32.zig`) — `WNDPROC`-driven; buffers async messages and drains on `pollInputs`. GDI text measurer. Implements clipboard and file dialogs for real.
+- **Win32** (`win32.zig`) — `WNDPROC`-driven; buffers async messages and drains on `pollInputs`. stb_truetype measurer shared with the Gpu (`registerFont`, letter spacing). Implements clipboard (`CF_UNICODETEXT`) and file dialogs for real, services declarative effects (shared `native_effects.zig` plus native pickers, clipboard and `WM_DROPFILES` drops), and runs per-monitor DPI v2: it reports **logical** pixels and `renderScale()`, and the run loop passes the factor to `Gpu.setScale` so the swap-chain is physical-sized.
 - **X11** (`x11.zig`) — the Linux backend. libX11 is loaded at runtime via `std.DynLib("libX11.so.6")` (no `-lX11`, no X11 dev package needed to build; the module links libc for the dlopen path). Window create/map, synchronous `XNextEvent` pump (mouse, wheel via `Button4`/`5`+`6`/`7`, keys), buttons 1-3 + modifiers from every event's `state`, `keysym`→`NavKey` mapping (Delete, arrows, Tab/Shift-Tab, Enter, Home/End/PgUp/PgDn, Esc, Ctrl chords), text from Latin-1 / Unicode keysyms (no input-method composition yet), `setTitle` via `XStoreName`, `nowMs`. The text measurer is the shared stb_truetype `teak-text` module — the *same* font the GPU rasterizer renders from, so layout and rendering agree. All state lives on the `Host` struct (no module-scope globals), since X11 delivers events synchronously. X11 runs under **XWayland** on Wayland desktops; there is no native Wayland backend.
 - **wasm** (`wasm.zig`) — the web backend over zunk shared memory; `shouldClose` returns `false` (page lifecycle is zunk's problem). Services effects through `zunk.web.fx` (fetch, downloads, file picker, localStorage, clock, query params, clipboard, paste / drop; see [effects.md](effects.md)). `clipboard().write` goes through the effects bridge; `clipboard().read` returns the text of the paste event that came with the Ctrl/Cmd+V key press (the browser only exposes it there) and claims it so it is not also reported as `pasted_text`. Cmd acts as Ctrl for chord keys. `nowMs` is `performance.now()`.
 
@@ -108,7 +109,7 @@ current rendering behavior is unchanged.**
 
 | Host | Input + `width`/`height` units | GPU surface configured at | `scaleFactor()` today | Result at scale ≠ 1 |
 |---|---|---|---|---|
-| **Win32** | Virtualized logical px (process is DPI-*unaware*) | Same virtualized px (DXGI swap-chain = client rect) | `GetDpiForWindow/96` → **1.0** while unaware | **Blurry** — Windows renders at logical res then bitmap-stretches the whole window to physical. Self-consistent coords, upscaled output. |
+| **Win32** | Logical px (per-monitor v2 aware; Host divides physical by the DPI scale) | Physical px = logical × `renderScale()` (`Gpu.setScale`) | `GetDpiForWindow/96` | **Crisp geometry, correctly sized.** Solids are exact at physical resolution; text, images and 3D scene composites are still rasterized at logical resolution and magnified (soft) until the glyph pass bakes at `size_px × scale`. |
 | **X11** | Device (physical) px — no automatic scaling | Same physical px (Vulkan swap-chain) | `Xft.dpi/96` (e.g. 2.0 on a 192-DPI desktop) | **Crisp but undersized** — fonts rasterize at logical `size_px`, so on a 200 % desktop the UI is ~half the intended physical size. No blur. |
 | **wasm/zunk** | CSS px (zunk v0.5.2+) | zunk owns the canvas; backing store sized at CSS×`devicePixelRatio` internally | **1.0** (teak never sees physical px) | **Crisp and correctly sized** — zunk rasterizes glyphs at DPR into its backing store; teak works purely in CSS px. |
 
@@ -122,36 +123,23 @@ extent and UVs) assumes 1 layout unit = 1 texture texel = 1 framebuffer
 pixel — i.e. **scale == 1** — which is why the native paths cannot yet
 render at scale without the follow-up below.
 
-### Follow-up: render-at-scale (not yet landed)
+### Render-at-scale (Win32 landed; text bake pending)
 
-The coherent end-to-end fix spans the orchestrator (`run.zig`) and the
-render pass (framework core), which are out of scope for the platform/GPU
-layer that owns `scaleFactor`. Design:
+Win32 declares `PER_MONITOR_AWARE_V2` in `Host.init`, handles `WM_DPICHANGED`
+(accepting the suggested rect, which re-lays out via `WM_SIZE`), and reports
+**logical** pixels: mouse coordinates and `width`/`height` are the physical
+client values divided by the DPI scale. It exposes the factor as the optional
+`renderScale()`; `run.zig` forwards it to the optional `Gpu.setScale(f32)`
+before each resize. The Gpu keeps layout, vertices and the shader's
+`screen_size` logical and makes the swap-chain (and MSAA target)
+`logical * scale` physical pixels, so solids are crisp and the UI is the right
+size on a 150 % / 200 % monitor.
 
-1. **Win32 must declare awareness first.** Call
-   `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` in `Host.init`
-   (or ship an application manifest) and handle `WM_DPICHANGED`
-   (re-layout + accept the suggested window rect). Only then does
-   `GetDpiForWindow` report the real factor — landing awareness *without*
-   also scaling content would trade the blur for X11-style undersizing,
-   so the two must ship together. (Proposed diff lives in the audit
-   report, deliberately unlanded because it can't be validated headless.)
-2. **Keep layout logical, upscale the framebuffer.** The orchestrator
-   reads `host.scaleFactor()` and (a) multiplies each `FontSpec.size_px`
-   handed to rasterization by the factor so glyph textures are baked at
-   physical resolution, while (b) keeping layout math and the shader's
-   `screen_size` uniform in logical units so vertex coordinates still map
-   to the full physical swap-chain. Measure and raster **must** apply the
-   factor identically — on Linux they already share one `teak-text`
-   module, so scaling `size_px` in one place keeps them honest; splitting
-   them would reintroduce the measure-vs-render cursor drift the shared
-   module was built to prevent.
-3. **Snapping stays valid** because it operates in framebuffer pixels once
-   the factor is folded into the rasterization extent.
-
-Until that lands, `scaleFactor` is honest, inert plumbing: it exposes the
-factor per host so the orchestrator change is a localized follow-up, not a
-cross-cutting rewrite.
+Still open: text, images and 3D scene composites are rasterized at logical
+resolution and magnified by the swap-chain (soft at scale != 1). The text
+follow-up is to bake glyphs at `size_px * scale` in the glyph pass (measure
+and raster must apply the factor identically; both live in `teak-text`).
+X11 and wasm do not declare `renderScale` (they report physical / CSS pixels).
 
 ## Invariants
 

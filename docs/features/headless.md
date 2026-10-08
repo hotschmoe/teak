@@ -114,7 +114,7 @@ Same App, same layout engine, same shaders, same MSAA path, so geometry, colours
 
 ## Limits
 
-- `linkHeadless` is Linux-only for now (the stb-text headless stitch; Windows would need its own).
+- `linkHeadless` works on Linux and Windows. On a machine without a GPU (CI runners, containers) set `TEAK_GPU_FALLBACK=1` to ask wgpu for a software adapter (DX12 WARP on Windows, lavapipe / SwiftShader on Linux); CI does this on `windows-latest` and uploads the PNG.
 - One primary window; secondary windows are not simulated.
 - `zig build shot` runs the GPU for real: it needs a Vulkan driver (no software fallback is guaranteed) and exits with an error where none opens.
 - The PNG writer stores uncompressed blocks; run an external optimizer if size matters.
