@@ -4,6 +4,9 @@
 
 ### Added
 
+- `teak.Combobox(cap)`: searchable select (query field + filtered overlay list with scrolling, type-ahead
+  highlight, keyboard, "No matches" row), composed from existing primitives; chrome's MATERIAL field uses it (#2).
+- Cookbook recipe 6b + tested `LoadRow`/`LoadApp` example: rows owning several focusable fields (#1).
 - `teak.unicode`, `teak.linebreak`, `teak.text_wrap`: UAX#29 graphemes, word classes, UAX#14-lite line
   breaking, wrapping/measure/caret mapping (text-engine PR2a/b).
 - `teak.editor`: `Editor(cap, undo_cap)` with grapheme-aware editing, word jumps, undo/redo (PR10).
@@ -17,6 +20,7 @@
 
 ### Changed
 
+- `Dropdown`/`Combobox`: the keyboard-highlighted row now also takes the theme's `hover_fg` (fixes invisible labels on inverting themes).
 - `TextField(N)` is now built on `Editor`: backspace/Delete remove whole grapheme clusters, multi-byte
   characters typed byte-wise are inserted atomically, and it gains `delete`, `home`/`end`, word jumps,
   `undo`/`redo` Msgs (the `Model` field names `len`/`cursor`/`selection_anchor` are unchanged; the byte array is now `buf`).
