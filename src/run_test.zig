@@ -1587,25 +1587,25 @@ test "cmdsEqual: scene3d fields and keyed canvas batches" {
         .{ .x = 0, .y = 1, .r = 1, .g = 1, .b = 1, .a = 1 },
     };
     const copy = tri; // same content, other address
-    const a = [_]C{
-        .{ .scene3d = .{ .mesh = 1, .key = 4, .id = 2, .pointer = true } },
-        .{ .canvas = .{ .primitives = &.{.{ .triangles = .{ .verts = &tri, .key = 9 } }} } },
-    };
-    var b = [_]C{
-        .{ .scene3d = .{ .mesh = 1, .key = 4, .id = 2, .pointer = true } },
-        .{ .canvas = .{ .primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 9 } }} } },
-    };
+    const Sc = @typeInfo(@FieldType(C, "scene3d")).pointer.child;
+    const Cv = @typeInfo(@FieldType(C, "canvas")).pointer.child;
+    const sa: Sc = .{ .mesh = 1, .key = 4, .id = 2, .pointer = true };
+    const ca: Cv = .{ .primitives = &.{.{ .triangles = .{ .verts = &tri, .key = 9 } }} };
+    const a = [_]C{ .{ .scene3d = &sa }, .{ .canvas = &ca } };
+    var sb = sa;
+    var cbv: Cv = .{ .primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 9 } }} };
+    var b = [_]C{ .{ .scene3d = &sb }, .{ .canvas = &cbv } };
     try std.testing.expect(cmdsEqual(Msg, &a, &b));
-    b[0].scene3d.key = 5;
+    sb.key = 5;
     try std.testing.expect(!cmdsEqual(Msg, &a, &b));
-    b[0].scene3d.key = 4;
-    b[0].scene3d.id = 3;
+    sb.key = 4;
+    sb.id = 3;
     try std.testing.expect(!cmdsEqual(Msg, &a, &b));
-    b[0].scene3d.id = 2;
-    b[0].scene3d.pointer = false;
+    sb.id = 2;
+    sb.pointer = false;
     try std.testing.expect(!cmdsEqual(Msg, &a, &b));
-    b[0].scene3d.pointer = true;
-    b[1].canvas.primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 10 } }};
+    sb.pointer = true;
+    cbv.primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 10 } }};
     try std.testing.expect(!cmdsEqual(Msg, &a, &b));
 }
 
@@ -1916,6 +1916,13 @@ test "text_area: a draw frame renders the area (quads + per-line text)" {
 const mutation = struct {
     const Alloc = std.mem.Allocator;
 
+    fn wrap(comptime PF: type, a: Alloc, v: anytype) !PF {
+        if (@typeInfo(PF) != .pointer) return v;
+        const p = try a.create(@TypeOf(v));
+        p.* = v;
+        return p;
+    }
+
     /// Deterministic non-trivial value of `T`. Every union picks field
     /// `pick % n`. A field named `key` stays 0 so canvas batches compare
     /// by content (a non-zero key deliberately short-circuits the diff).
@@ -2038,13 +2045,17 @@ test "cmdsEqual: every field of every Cmd variant is observed by the diff" {
     const arena = arena_state.allocator();
 
     var checked: usize = 0;
-    inline for (@typeInfo(C).@"union".field_names, @typeInfo(C).@"union".field_types) |vname, P| {
+    inline for (@typeInfo(C).@"union".field_names, @typeInfo(C).@"union".field_types) |vname, PF| {
+        // Out-of-line payloads (`*const T` into the frame arena) are sampled and
+        // mutated as `T`, then boxed at a fresh address: the diff must follow the pointer.
+        const boxed = @typeInfo(PF) == .pointer;
+        const P = if (boxed) @typeInfo(PF).pointer.child else PF;
         var pick: usize = 0;
         while (pick < 9) : (pick += 1) {
             const pa = try mutation.sample(P, arena, pick, vname);
             const pb = try mutation.sample(P, arena, pick, vname);
-            const ca = [_]C{@unionInit(C, vname, pa)};
-            const cb = [_]C{@unionInit(C, vname, pb)};
+            const ca = [_]C{@unionInit(C, vname, try mutation.wrap(PF, arena, pa))};
+            const cb = [_]C{@unionInit(C, vname, try mutation.wrap(PF, arena, pb))};
             // Equal content at distinct addresses must compare equal.
             try std.testing.expect(cmdsEqual(Msg, &ca, &cb));
 
@@ -2053,7 +2064,7 @@ test "cmdsEqual: every field of every Cmd variant is observed by the diff" {
                 var mutated = try mutation.sample(P, arena, pick, vname);
                 var k = idx;
                 if (!mutation.mutate(P, &mutated, &k)) break;
-                const cm = [_]C{@unionInit(C, vname, mutated)};
+                const cm = [_]C{@unionInit(C, vname, try mutation.wrap(PF, arena, mutated))};
                 std.testing.expect(!cmdsEqual(Msg, &ca, &cm)) catch |e| {
                     std.debug.print("variant {s} pick {d}: leaf #{d} change not detected\n", .{ vname, pick, idx });
                     return e;
@@ -2068,11 +2079,15 @@ test "cmdsEqual: every field of every Cmd variant is observed by the diff" {
 test "cmdsEqual: Msg slices compare by content; variant swaps are detected" {
     const Msg = union(enum) { a, b: []const u8 };
     const C = cmd.Cmd(Msg);
-    const x = [_]C{.{ .button = .{ .msg = .{ .b = "k1" }, .label = "L" } }};
+    const Btn = @typeInfo(@FieldType(C, "button")).pointer.child;
+    const bx: Btn = .{ .msg = .{ .b = "k1" }, .label = "L" };
+    const x = [_]C{.{ .button = &bx }};
     var buf = "k1".*;
-    const same = [_]C{.{ .button = .{ .msg = .{ .b = &buf }, .label = "L" } }};
-    const diff = [_]C{.{ .button = .{ .msg = .{ .b = "k2" }, .label = "L" } }};
-    const other_tag = [_]C{.{ .checkbox = .{ .msg = .a, .checked = false, .label = "L" } }};
+    const bs: Btn = .{ .msg = .{ .b = &buf }, .label = "L" };
+    const same = [_]C{.{ .button = &bs }};
+    const bd: Btn = .{ .msg = .{ .b = "k2" }, .label = "L" };
+    const diff = [_]C{.{ .button = &bd }};
+    const other_tag = [_]C{.{ .checkbox = &.{ .msg = .a, .checked = false, .label = "L" } }};
     try std.testing.expect(cmdsEqual(Msg, &x, &same));
     try std.testing.expect(!cmdsEqual(Msg, &x, &diff));
     try std.testing.expect(!cmdsEqual(Msg, &x, &other_tag));
