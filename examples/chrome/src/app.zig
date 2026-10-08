@@ -141,12 +141,18 @@ const tab_names = [_][]const u8{ "PARTS", "NOTES", "DIFF" };
 // ── Model / Msg / update ───────────────────────────────────────────
 
 pub const MAX_NAME = 24;
+const default_name_text = "BASE-PLATE";
+const default_name: [MAX_NAME]u8 = blk: {
+    var buf: [MAX_NAME]u8 = @splat(0);
+    @memcpy(buf[0..default_name_text.len], default_name_text);
+    break :blk buf;
+};
 
 pub const Model = struct {
     tab: u8 = 0,
     selected: u8 = 1,
-    name: [MAX_NAME]u8 = ("BASE-PLATE" ++ "\x00" ** (MAX_NAME - 10)).*,
-    name_len: u8 = 10,
+    name: [MAX_NAME]u8 = default_name,
+    name_len: u8 = default_name_text.len,
     name_focused: bool = false,
     help_open: bool = true,
 };

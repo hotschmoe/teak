@@ -22,16 +22,16 @@ pub const MAX_INPUT = MAX_LABEL;
 // ── Model ──────────────────────────────────────────────────────────
 
 pub const Item = struct {
-    label: [MAX_LABEL]u8 = [_]u8{0} ** MAX_LABEL,
+    label: [MAX_LABEL]u8 = @splat(0),
     label_len: u8 = 0,
     done: bool = false,
 };
 
 pub const Model = struct {
-    items: [MAX_ITEMS]Item = [_]Item{.{}} ** MAX_ITEMS,
+    items: [MAX_ITEMS]Item = @splat(.{}),
     items_len: u16 = 0,
     /// In-progress label for the "add" input.
-    input: [MAX_INPUT]u8 = [_]u8{0} ** MAX_INPUT,
+    input: [MAX_INPUT]u8 = @splat(0),
     input_len: u8 = 0,
     /// Whether the add-input has focus. Drives the cursor + directs
     /// keyboard events. Mirrored into TransientState.focus_index by the

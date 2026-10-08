@@ -23,8 +23,8 @@ const teak = @import("teak");
 
 pub const StyleAttribute = rich.StyleAttribute;
 
-const ATTR_BOLD_MASK: u16 = 1 << @intFromEnum(StyleAttribute.bold);
-const ATTR_ITALIC_MASK: u16 = 1 << @intFromEnum(StyleAttribute.italic);
+const ATTR_BOLD_MASK: u16 = 1 << @backingInt(StyleAttribute.bold);
+const ATTR_ITALIC_MASK: u16 = 1 << @backingInt(StyleAttribute.italic);
 
 /// Convert rich_zig's Color → teak's [4]f32 RGBA (sRGB).
 /// Unsupported color types (.default) fall back to the supplied default.

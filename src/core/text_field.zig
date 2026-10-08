@@ -68,7 +68,7 @@ pub fn TextField(comptime capacity: usize) type {
         };
 
         pub const Model = struct {
-            buffer: [capacity]u8 = [_]u8{0} ** capacity,
+            buffer: [capacity]u8 = @splat(0),
             len: usize = 0,
             cursor: usize = 0,
             /// null = no selection. When set and != cursor, the range

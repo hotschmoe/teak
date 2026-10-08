@@ -71,7 +71,7 @@ const FxApp = struct {
     }
 };
 
-const idle12 = [_]Frame{.{}} ** 12;
+const idle12: [12]Frame = @splat(.{});
 
 fn want(m: *FxApp.Model, list: []const Effect) void {
     @memcpy(m.want[0..list.len], list);
@@ -209,7 +209,7 @@ test "effects: more listed ids than the table holds wait for a free slot" {
 
 test "effects: unsolicited drops and pastes reach effectMsg without effects()" {
     const png = "\x89PNG";
-    const thumb = [_]u8{0} ** 16;
+    const thumb: [16]u8 = @splat(0);
     const script = [_]Frame{
         .{},
         .{ .fx_result = .{ .dropped = .{

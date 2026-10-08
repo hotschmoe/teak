@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
         });
         teak.linkHeadless(b, shot, .{});            // teak, teak-platform-headless, teak-gpu-headless, wgpu-native
         const run = b.addRunArtifact(shot);
-        if (b.args) |args| run.addArgs(args);
+        run.addPassthruArgs();
         b.step("shot", "Headless PNG screenshot: zig build shot -- out.png")
             .dependOn(&run.step);
     }

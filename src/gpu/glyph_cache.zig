@@ -25,7 +25,7 @@ pub const CAPACITY: usize = 256;
 /// Instrumentation toggle — debug builds track hits/misses/evictions,
 /// release builds compile the increments out. Tests run in Debug by
 /// default so counter assertions hold.
-const track_stats = builtin.mode == .Debug;
+const track_stats = builtin.mode == .debug;
 
 /// Runtime opt-in for the periodic stats line. **Off by default** so a
 /// consumer's stdout stays quiet — the 60-frame log was reported as
@@ -59,7 +59,7 @@ pub fn textCacheKey(
     // Tracking in 1/16 px steps; weight and spacing change the rasterized pixels.
     const spacing: u16 = @bitCast(@as(i16, @intFromFloat(std.math.clamp(font.letter_spacing * 16, -32768, 32767))));
     const font_bits: u64 = (@as(u64, spacing) << 40) | (@as(u64, size_px) << 16) |
-        (@as(u64, @intFromEnum(font.weight)) << 8) | @as(u64, @intFromEnum(font.family));
+        (@as(u64, @backingInt(font.weight)) << 8) | @as(u64, @backingInt(font.family));
     const dim_bits: u64 = (@as(u64, w) << 32) | @as(u64, h);
     return content_hash ^ font_bits ^ @as(u64, color_bits) ^ dim_bits;
 }
@@ -91,7 +91,7 @@ pub fn GlyphCache(comptime Backend: type) type {
             last_used_frame: u64 = 0,
         };
 
-        entries: [CAPACITY]Entry = [_]Entry{.{}} ** CAPACITY,
+        entries: [CAPACITY]Entry = @splat(.{}),
         len: usize = 0,
         frame_counter: u64 = 0,
         hits: u32 = 0,

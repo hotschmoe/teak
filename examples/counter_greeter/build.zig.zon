@@ -2,7 +2,7 @@
     .name = .counter_greeter,
     .version = "0.0.0",
     .fingerprint = 0xb3afed8cd41407ac, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .teak = .{ .path = "../.." },
         // rich_zig: pinned to a tagged release so this example is
@@ -12,8 +12,8 @@
         // teak's rich_text Cmd. Bump the tag + re-run `zig fetch --save`
         // to update.
         .rich_zig = .{
-            .url = "git+https://github.com/hotschmoe/rich_zig.git#768b5bfd4b542da849c0efda8b585e1f28560451",
-            .hash = "rich_zig-2.0.1-cZcAnJFZDAB_mhWB525wIbBMY95SNa3MdGAuDaok_vLk",
+            .url = "git+https://github.com/hotschmoe/rich_zig.git#8936c396c7bb13a003ee7f488072a55d928f331f",
+            .hash = "rich_zig-2.1.0-cZcAnKhZDAAex8HYaphWHqrjR0PgvL2qyyeR4BgQsHVn",
         },
     },
     .paths = .{
