@@ -63,6 +63,10 @@ pub fn build(b: *std.Build) void {
         ui_run.step.dependOn(&install_ui.step);
         ui_run.addPassthruArgs();
 
+        // Build + install the UI exe without running it (the live Win32 CI
+        // job launches it from tools/win32_live).
+        b.step("ui-install", "Build and install the native UI exe (no run)").dependOn(&install_ui.step);
+
         const ui_step = b.step("ui", "Run Teak effects UI (wgpu native: Win32 / X11)");
         ui_step.dependOn(&ui_run.step);
     }
