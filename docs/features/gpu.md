@@ -79,7 +79,7 @@ A Gpu type must expose these declarations:
 | `resize` | `fn(*Gpu, u32, u32) void` | Reconfigure the surface. Called when `InputState.resized` is true. |
 | `uploadVertices` | `fn(*Gpu, []const Vertex) void` | Copy the current frame's colored-quad vertex buffer to the GPU. Called each frame after `buildVertices`. |
 | `renderFrame` | `fn(*Gpu, ClearColor) void` | Encode + submit + present one frame using the last uploaded vertices, text draws, and image draws. |
-| `rasterizeText` | `fn(*Gpu, []const u8, FontSpec, [4]f32, u32, u32) TextureHandle` | Rasterize a string at a given font + color into a glyph-atlas texture and return an opaque handle. Backends cache by (text, font, color); the app stashes the handle in its Model. |
+| `rasterizeText` | `fn(*Gpu, []const u8, FontSpec, [4]f32, u32, u32) TextureHandle` | **Web only; no longer required** (native backends draw text from the glyph atlas in `uploadText`). Rasterize a string into a cached texture and return an opaque handle. |
 | `uploadText` | `fn(*Gpu, []const TextDraw) void` | Per-frame: ingest the renderer's `TextDraw` list and build the textured-quad buffer that `renderFrame` will draw. |
 | `uploadImage` | `fn(*Gpu, []const u8, u32, u32) TextureHandle` | Upload an RGBA8 image (`width * height * 4` bytes) and return an opaque handle the app stashes in `ImageCmd.handle`. App-driven cache; cached for the lifetime of the Gpu. Implemented on both native and web (web wires zunk v0.6.0+ texture upload). |
 | `uploadImages` | `fn(*Gpu, []const ImageDraw) void` | Per-frame counterpart to `uploadText` for images. Walks `ImageDraw`s and records a draw entry per visible image. |

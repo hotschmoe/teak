@@ -99,6 +99,9 @@ pub const ShotOptions = struct {
     height: u32 = 800,
     /// 4x MSAA of the UI pass (as a windowed app would run it).
     msaa: bool = true,
+    /// Device pixels per logical pixel: the PNG is `width * scale` by
+    /// `height * scale` and text is rasterized at that size (HiDPI).
+    scale: f32 = 1,
     /// Input script; see `Step`.
     steps: []const Step = &.{},
     /// Extra frames after the script so animations / one-frame input
@@ -123,7 +126,7 @@ pub fn shot(
     var host = try Host.init(gpa, o.width, o.height);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.ttf);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = o.scale });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
@@ -170,6 +173,7 @@ pub fn shotCli(
     var want: []const u8 = states[0].name;
     var list = false;
     var all_dir: ?[]const u8 = null;
+    var opts_base = o;
     var prefix: []const u8 = "shot";
     var it = init.minimal.args.iterate();
     _ = it.next();
@@ -178,6 +182,8 @@ pub fn shotCli(
             list = true;
         } else if (std.mem.eql(u8, a, "--all")) {
             all_dir = it.next() orelse return error.MissingAllDir;
+        } else if (std.mem.eql(u8, a, "--scale")) {
+            opts_base.scale = std.fmt.parseFloat(f32, it.next() orelse return error.MissingScale) catch return error.BadScale;
         } else if (std.mem.eql(u8, a, "--prefix")) {
             prefix = it.next() orelse return error.MissingPrefix;
         } else if (std.mem.eql(u8, a, "--state")) {
@@ -193,7 +199,7 @@ pub fn shotCli(
     }
     if (all_dir) |dir| {
         for (states) |st| {
-            var opts = o;
+            var opts = opts_base;
             opts.steps = st.steps;
             const out = try std.fmt.allocPrint(init.gpa, "{s}/{s}-{s}.actual.png", .{ dir, prefix, st.name });
             defer init.gpa.free(out);
@@ -204,7 +210,7 @@ pub fn shotCli(
         return;
     }
     for (states) |st| if (std.mem.eql(u8, st.name, want)) {
-        var opts = o;
+        var opts = opts_base;
         opts.steps = st.steps;
         try shot(App, Host, Gpu, init.gpa, path, opts);
         std.debug.print("wrote {s} (state {s})\n", .{ path, st.name });

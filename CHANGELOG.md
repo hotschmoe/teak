@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Changed
+
+- Native text (Linux, Windows) is drawn from a glyph atlas: shaped glyphs are packed into R8
+  pages and drawn as instanced quads (`shaders/glyph.wgsl`), replacing the per-string BGRA
+  texture cache. Text is rasterized at the device pixel size with quarter-pixel x positioning.
+  `.mono` text now snaps advances to whole pixels by default (`FontSpec.snap_advance = null`
+  resolves to on for `.mono`; set `false` for the old fractional advances); screenshots shift
+  by a pixel here and there. `InitOptions` gains `scale` and `max_atlas_pages`.
+- The Gpu contract's `rasterizeText` is optional (web only); the native `Rasterizer` provider
+  contract is now per glyph (see `docs/features/gpu.md`). The Windows backend uses stb_truetype
+  (`TEAK_FONT`, then `C:\Windows\Fonts\consola.ttf`) and measures through `teak-text` too;
+  `Host.registerFont` now works on Windows.
+
 ### Added
 
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
