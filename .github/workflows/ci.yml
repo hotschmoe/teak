@@ -177,7 +177,8 @@ jobs:
           TEAK_BACKEND: wayland
         run: |
           zig build ui-install
-          timeout 20 ./zig-out/bin/chrome-ui; rc=$?
+          rc=0
+          timeout 20 ./zig-out/bin/chrome-ui || rc=$?
           test $rc -eq 124
 
   web-smoke:
@@ -351,7 +352,11 @@ jobs:
       - name: Library tests (Debug)
         run: |
           zig build test --summary all
-          if ($LASTEXITCODE -ne 0) { Write-Host "::warning::retrying once (stale zig cache?)"; zig build test --summary all }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::retrying once with a clean zig cache (stale compiler_rt?)"
+            Remove-Item -Recurse -Force "$env:ZIG_GLOBAL_CACHE_DIR\o" -ErrorAction SilentlyContinue
+            zig build test --summary all
+          }
           if ($LASTEXITCODE -ne 0) { throw "library tests failed" }
       - name: Library tests (ReleaseSafe)
         run: zig build test -Doptimize=ReleaseSafe --summary all

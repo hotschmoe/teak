@@ -240,6 +240,7 @@ pub const Client = struct {
 };
 
 test "server and client exchange lines" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest; // Unix-socket control channel (Linux/POSIX only)
     if (comptime !supported) return error.SkipZigTest;
     var path_buf: [64]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "/tmp/teak-ctl-test-{d}.sock", .{linux.getpid()});
