@@ -271,7 +271,7 @@ the zunk canvas text JS. Re-measure: the commands are in PR7's acceptance item.
   bitmap** (`zunk_text_raster_cluster(utf8, font_css, size_px, out_ptr, out_cap) -> {w,h,bearing_x,bearing_y,advance}`):
   canvas2D draws the cluster in white on transparent, JS writes the alpha channel into wasm memory, Zig uploads it as a
   glyph with a synthetic key (`face = 0xFFFF`, `glyph` = hash of the cluster, small cache). Colour emoji need an RGBA
-  page kind (flags bit 2) and are explicitly a follow-up (PR16); until then they render as the coverage of the glyph's
+  page kind (flags bit 2) and (shipped in PR16: a second atlas of RGBA pages, glyph key / instance mode 2; native colour sources need a sbix/CBDT PNG decoder) - the original plan follows: they render as the coverage of the glyph's
   alpha, which is acceptable for monochrome symbols and wrong for colour emoji.
 * The font bytes reach wasm through the existing asset fetch (`zunk.web.asset.fetch`) plus `registerFont` (same as
   the X11 Host) so the app does not start before faces are in memory, as `web_font.zig` already guarantees today.

@@ -77,6 +77,13 @@
 
 ### Added
 
+- **Colour emoji (web).** Glyphs no face has and that are emoji / pictographs go through a second, RGBA atlas
+  (`TextStage.catlas`, 1024x1024 pages, glyph key `mode = 2`; instance `flags` mode 2 draws the texels as they are, instance alpha
+  fades them). The web backend fills it from canvas 2D via zunk's new `gpu.rasterClusterRgba` (needs the zunk change), so the browser's colour
+  emoji font shows in colour. Emoji advance one em. Native has the whole RGBA path (pixel-tested with a stub rasterizer) but no source of colour glyphs yet:
+  stb cannot read COLR/CBDT/sbix, and decoding sbix/CBDT PNG strikes needs the PNG decoder from the visual-regression PR; until then native shows the face's
+  missing-glyph box. Providers opt in with `rasterizeColor(utf8, FontSpec, size_px) ?GlyphBitmap` (RGBA).
+
 - **Scalable (SDF) text.** `FontSpec.scalable = true` draws a glyph from a signed distance field rasterized ONCE (stb
   `GetGlyphSDF`, 32 px source, shared R8 atlas pages, `GlyphKey.mode = 1`) instead of once per size: crisp from below 1x to 8x+ with no
   re-rasterization or blur, positioned at exact (unsnapped) coordinates. `shaders/glyph.wgsl` branches per instance on `flags` (bits 0-1 mode,

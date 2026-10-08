@@ -164,6 +164,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         glyph_sampler: c.WGPUSampler,
         text: text_stage.TextStage(Rasterizer),
         atlas_pages: std.ArrayList(AtlasPage),
+        /// RGBA pages of colour glyphs (emoji), parallel to `text.cpages`.
+        color_pages: std.ArrayList(AtlasPage),
         glyph_buf: c.WGPUBuffer,
         glyph_buf_size: u64,
         /// Device pixels per logical pixel (`InitOptions.scale`).
@@ -519,6 +521,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .glyph_uniform_buf = glyph_uniform_buf,
                 .text = text,
                 .atlas_pages = .empty,
+                .color_pages = .empty,
                 .glyph_buf = null,
                 .glyph_buf_size = 0,
                 .scale = scale,
@@ -573,6 +576,12 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 c.wgpuTextureRelease(pg.texture);
             }
             self.atlas_pages.deinit(std.heap.page_allocator);
+            for (self.color_pages.items) |pg| {
+                c.wgpuBindGroupRelease(pg.bind_group);
+                c.wgpuTextureViewRelease(pg.view);
+                c.wgpuTextureRelease(pg.texture);
+            }
+            self.color_pages.deinit(std.heap.page_allocator);
             self.text.deinit();
             if (self.glyph_buf) |gb| c.wgpuBufferRelease(gb);
             c.wgpuBufferRelease(self.glyph_uniform_buf);
@@ -957,17 +966,23 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             }
         }
 
-        /// Create GPU textures for atlas pages added since the last frame.
+        /// Create GPU textures for text atlas pages (coverage and colour) added since the last frame.
         fn ensurePages(self: *Self) void {
+            self.growPages(&self.atlas_pages, self.text.pageCount(), c.WGPUTextureFormat_R8Unorm);
+            self.growPages(&self.color_pages, self.text.colorPageCount(), c.WGPUTextureFormat_RGBA8Unorm);
+        }
+
+        /// Create GPU textures for atlas pages added since the last frame.
+        fn growPages(self: *Self, pages: *std.ArrayList(AtlasPage), want: usize, format: c.WGPUTextureFormat) void {
             const alloc = std.heap.page_allocator;
-            while (self.atlas_pages.items.len < self.text.pageCount()) {
+            while (pages.items.len < want) {
                 const texture = wgpu_c.createTexture2D(self.device, "glyph-atlas", .{
                     .width = atlas_dim,
                     .height = atlas_dim,
-                    .format = c.WGPUTextureFormat_R8Unorm,
+                    .format = format,
                     .usage = c.WGPUTextureUsage_TextureBinding | c.WGPUTextureUsage_CopyDst,
                 }) orelse return;
-                const view = wgpu_c.createView2D(texture, "glyph-atlas", c.WGPUTextureFormat_R8Unorm) orelse {
+                const view = wgpu_c.createView2D(texture, "glyph-atlas", format) orelse {
                     c.wgpuTextureRelease(texture);
                     return;
                 };
@@ -993,7 +1008,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                     c.wgpuTextureRelease(texture);
                     return;
                 };
-                self.atlas_pages.append(alloc, .{ .texture = texture, .view = view, .bind_group = bg }) catch return;
+                pages.append(alloc, .{ .texture = texture, .view = view, .bind_group = bg }) catch return;
             }
         }
 
@@ -1017,6 +1032,23 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 c.wgpuQueueWriteTexture(self.queue, &dst, staging[start..].ptr, len, &layout, &extent);
             }
 
+            for (self.color_pages.items, 0..) |pg, i| {
+                if (i >= self.text.colorPageCount()) break;
+                const d = self.text.takeColorDirty(i) orelse continue;
+                var dst = std.mem.zeroes(c.WGPUTexelCopyTextureInfo);
+                dst.texture = pg.texture;
+                dst.aspect = c.WGPUTextureAspect_All;
+                dst.origin = .{ .x = d.x, .y = d.y, .z = 0 };
+                var layout = std.mem.zeroes(c.WGPUTexelCopyBufferLayout);
+                layout.bytesPerRow = atlas_dim * 4;
+                layout.rowsPerImage = d.h;
+                const extent = c.WGPUExtent3D{ .width = d.w, .height = d.h, .depthOrArrayLayers = 1 };
+                const staging = self.text.colorStaging(i);
+                const start = (@as(usize, d.y) * atlas_dim + d.x) * 4;
+                const len = ((@as(usize, d.h) - 1) * atlas_dim + d.w) * 4;
+                c.wgpuQueueWriteTexture(self.queue, &dst, staging[start..].ptr, len, &layout, &extent);
+            }
+
             const total = self.text.finish();
             if (total == 0) return;
             const bytes: u64 = @as(u64, total) * @sizeOf(glyph_atlas.GlyphInstance);
@@ -1030,6 +1062,12 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                     const off: u64 = @as(u64, pi.first[layer]) * @sizeOf(glyph_atlas.GlyphInstance);
                     c.wgpuQueueWriteBuffer(self.queue, self.glyph_buf, off, list.ptr, @as(u64, list.len) * @sizeOf(glyph_atlas.GlyphInstance));
                 }
+                for (self.text.cinsts.items) |*pi| {
+                    const list = pi.list[layer].items;
+                    if (list.len == 0) continue;
+                    const off: u64 = @as(u64, pi.first[layer]) * @sizeOf(glyph_atlas.GlyphInstance);
+                    c.wgpuQueueWriteBuffer(self.queue, self.glyph_buf, off, list.ptr, @as(u64, list.len) * @sizeOf(glyph_atlas.GlyphInstance));
+                }
             }
         }
 
@@ -1037,16 +1075,18 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         fn drawGlyphs(self: *Self, pass: c.WGPURenderPassEncoder, layer: usize) void {
             if (self.glyph_buf == null) return;
             var bound = false;
-            for (self.text.insts.items, 0..) |pi, i| {
-                const n = pi.list[layer].items.len;
-                if (n == 0 or i >= self.atlas_pages.items.len) continue;
-                if (!bound) {
-                    c.wgpuRenderPassEncoderSetPipeline(pass, self.glyph_pipeline);
-                    c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.glyph_buf, 0, self.glyph_buf_size);
-                    bound = true;
+            inline for (.{ .{ self.text.insts.items, self.atlas_pages.items }, .{ self.text.cinsts.items, self.color_pages.items } }) |set| {
+                for (set[0], 0..) |pi, i| {
+                    const n = pi.list[layer].items.len;
+                    if (n == 0 or i >= set[1].len) continue;
+                    if (!bound) {
+                        c.wgpuRenderPassEncoderSetPipeline(pass, self.glyph_pipeline);
+                        c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.glyph_buf, 0, self.glyph_buf_size);
+                        bound = true;
+                    }
+                    c.wgpuRenderPassEncoderSetBindGroup(pass, 0, set[1][i].bind_group, 0, null);
+                    c.wgpuRenderPassEncoderDraw(pass, 6, @intCast(n), 0, pi.first[layer]);
                 }
-                c.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.atlas_pages.items[i].bind_group, 0, null);
-                c.wgpuRenderPassEncoderDraw(pass, 6, @intCast(n), 0, pi.first[layer]);
             }
         }
 
