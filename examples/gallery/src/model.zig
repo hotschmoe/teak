@@ -43,6 +43,8 @@ pub const NameField = teak.TextField(32);
 pub const QtyField = teak.NumericField(.{ .capacity = 8, .min = 0, .max = 999, .precision = 0, .invalid_message = "enter 0 - 999" });
 pub const Drop = teak.Dropdown(8);
 pub const Combo = teak.Combobox(24);
+pub const Area = teak.TextArea(512);
+pub const area_id: u32 = 31;
 
 pub const Page = enum {
     controls,
@@ -64,7 +66,7 @@ pub const Page = enum {
     }
 };
 
-pub const Field = enum { name, search, qty, combo };
+pub const Field = enum { name, search, qty, combo, area };
 pub const SliderId = enum { volume, mix };
 pub const Dialog = enum { none, about, shortcuts, confirm_reset };
 
@@ -111,6 +113,7 @@ pub const Msg = union(enum) {
     qty: QtyField.Msg,
     drop: Drop.Msg,
     combo: Combo.Msg,
+    area: Area.Msg,
     // data
     tree_toggle: u8,
     row_pick: u8,
@@ -166,6 +169,7 @@ pub const Model = struct {
     qty: QtyField.Model = .{},
     drop: Drop.Model = .{ .selected = 1 },
     combo: Combo.Model = .{},
+    area: Area.Model = .{},
 
     // data
     tree_open: [tree_len]bool = .{ true, true, false, false, true, false, false, false, true, false, false, false, false, false },
@@ -288,6 +292,10 @@ pub fn update(m: *Model, msg: Msg) void {
         .combo => |s| {
             Combo.update(&m.combo, s);
             if (s == .focus) m.focus = .combo;
+        },
+        .area => |s| {
+            Area.update(&m.area, s);
+            if (s == .focus) m.focus = .area;
         },
 
         .tree_toggle => |i| {

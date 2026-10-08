@@ -174,6 +174,19 @@ pub fn Toast(comptime cap: usize, comptime text_cap: usize) type {
             model.len -= 1;
         }
 
+        /// Escape dismisses the newest toast that is not already leaving. Returns
+        /// null for other keys or when nothing is showing. Call it AFTER the
+        /// keys that open overlays / menus / dialogs so those consume Escape first.
+        pub fn keyMsg(model: *const Model, key: @import("../../input/keys.zig").SpecialKey) ?Msg {
+            if (key != .escape) return null;
+            var i = model.len;
+            while (i > 0) {
+                i -= 1;
+                if (!model.items[i].leaving) return .{ .dismiss = model.items[i].id };
+            }
+            return null;
+        }
+
         /// True while any toast has a countdown running or is leaving: the app lists the
         /// tick subscription only then, so an idle app wakes for nothing.
         pub fn active(model: *const Model) bool {

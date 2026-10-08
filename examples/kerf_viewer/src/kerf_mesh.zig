@@ -35,6 +35,8 @@ pub const Part = struct {
 pub const Loaded = struct {
     arena: std.heap.ArenaAllocator,
     parts: []Part,
+    /// `parts[i].src`, in order (for the chat's part-name matching).
+    names: []const []const u8,
     lo: Vec3,
     hi: Vec3,
     tri_total: u32,
@@ -104,6 +106,8 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) ParseError!Loaded {
     }
 
     out.parts = try a.alloc(Part, jp.len);
+    const names = try a.alloc([]const u8, jp.len);
+    out.names = names;
     out.resources = try a.alloc(teak.Resource, jp.len);
     out.pick_items = try a.alloc(teak.scene.pick.Item, jp.len);
     out.pick_refs = try a.alloc(teak.scene.pick.MeshRef, jp.len);
@@ -150,6 +154,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) ParseError!Loaded {
             .mesh = mesh,
             .closed = teak.scene.section.isClosed(gpa, .{ .vertices = verts, .indices = indices }) catch false,
         };
+        names[pi] = out.parts[pi].src;
         out.resources[pi] = .{ .mesh = .{ .key = key, .rev = 1, .data = mesh } };
         out.pick_items[pi] = .{ .mesh = key, .id = key };
         out.pick_refs[pi] = .{ .key = key, .mesh = mesh, .bounds = .{ .lo = plo, .hi = phi } };

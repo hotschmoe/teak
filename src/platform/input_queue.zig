@@ -11,6 +11,7 @@
 //! Pure data + arithmetic: no OS types, no allocation.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const host = @import("host.zig");
 const pointer = @import("../core/pointer.zig");
 const keys = @import("../input/keys.zig");
@@ -19,6 +20,47 @@ const Buttons = pointer.Buttons;
 const Button = pointer.Button;
 const Modifiers = pointer.Modifiers;
 const SpecialKey = keys.SpecialKey;
+
+/// Synthetic events waiting for the next poll (agent control channel).
+/// Event-driven Hosts apply them to their `InputQueue` right after
+/// `beginFrame` and the OS event pump, so injected input is
+/// indistinguishable from real input and never wiped by `beginFrame`.
+pub const InjectBuffer = struct {
+    pub const CAP = 128;
+    const Entry = union(enum) {
+        ev: host.InjectEvent,
+        chars: struct { buf: [InputQueue.CHARS_CAP]u8, len: u8 },
+    };
+
+    entries: [CAP]Entry = undefined,
+    len: usize = 0,
+
+    /// Queue `ev` for the next `apply`. Text longer than one frame's
+    /// capacity is truncated at a code-point boundary; a full buffer drops.
+    pub fn push(self: *InjectBuffer, ev: host.InjectEvent) void {
+        if (self.len == CAP) return;
+        switch (ev) {
+            .chars => |t| {
+                var n = @min(t.len, InputQueue.CHARS_CAP);
+                while (n > 0 and n < t.len and (t[n] & 0xC0) == 0x80) n -= 1;
+                var e: Entry = .{ .chars = .{ .buf = undefined, .len = @intCast(n) } };
+                @memcpy(e.chars.buf[0..n], t[0..n]);
+                self.entries[self.len] = e;
+            },
+            else => self.entries[self.len] = .{ .ev = ev },
+        }
+        self.len += 1;
+    }
+
+    /// Apply everything queued, in order, and empty the buffer.
+    pub fn apply(self: *InjectBuffer, q: *InputQueue) void {
+        for (self.entries[0..self.len]) |*e| switch (e.*) {
+            .ev => |ev| q.inject(ev),
+            .chars => |*c| q.pushText(c.buf[0..c.len]),
+        };
+        self.len = 0;
+    }
+};
 
 /// Host-neutral navigation / chord keys. Each backend maps its native key
 /// codes onto this (a small switch) and `resolveKey` applies the
@@ -38,6 +80,7 @@ pub const NavKey = enum {
     enter,
     tab,
     escape,
+    f12,
     f10,
     /// The Menu / Apps key.
     menu,
@@ -69,11 +112,12 @@ pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey {
         .end => if (ctrl) (if (shift) .ctrl_shift_end else .ctrl_end) else if (shift) .shift_end else .end,
         .page_up => .page_up,
         .page_down => .page_down,
-        .enter => .enter,
+        .enter => if (shift) .shift_enter else .enter,
         .tab => if (shift) .shift_tab else .tab,
         .escape => .escape,
         .f10 => if (shift) .context_menu else .f10,
         .menu => .context_menu,
+        .f12 => .f12,
         .a => if (mods.ctrl) .ctrl_a else null,
         .c => if (mods.ctrl) .ctrl_c else null,
         .x => if (mods.ctrl) .ctrl_x else null,
@@ -84,8 +128,11 @@ pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey {
 }
 
 pub const InputQueue = struct {
-    pub const CHARS_CAP = 64;
-    pub const KEYS_CAP = 32;
+    /// Typed bytes / keys one frame can carry. 256 covers scripted input and
+    /// fast IME commits; an overflow is counted in `dropped` and logged (once
+    /// per frame), never silent.
+    pub const CHARS_CAP = 256;
+    pub const KEYS_CAP = 64;
 
     mouse_x: f32 = 0,
     mouse_y: f32 = 0,
@@ -106,6 +153,8 @@ pub const InputQueue = struct {
     /// First half of a UTF-16 surrogate pair awaiting its partner
     /// (Win32 `WM_CHAR` delivers code units).
     pending_high: u16 = 0,
+    /// Chars / keys dropped (queue full) since the last `beginFrame`.
+    dropped: u32 = 0,
     /// True from an Alt press until any other key, text or button arrives;
     /// an Alt release while still clean is an `alt_tap`.
     alt_clean: bool = false,
@@ -116,6 +165,12 @@ pub const InputQueue = struct {
     pub fn beginFrame(self: *InputQueue) void {
         self.chars_len = 0;
         self.keys_len = 0;
+        self.dropped = 0;
+    }
+
+    fn noteDrop(self: *InputQueue, what: []const u8) void {
+        if (self.dropped == 0 and !builtin.is_test) std.log.warn("teak: input queue full, dropping {s} (cap {d} chars / {d} keys per frame)", .{ what, CHARS_CAP, KEYS_CAP });
+        self.dropped +|= 1;
     }
 
     pub fn pointerMoved(self: *InputQueue, x: f32, y: f32) void {
@@ -157,6 +212,20 @@ pub const InputQueue = struct {
         if (self.keys_len < KEYS_CAP) {
             self.keys[self.keys_len] = k;
             self.keys_len += 1;
+        } else self.noteDrop("keys");
+    }
+
+    /// Apply one synthetic event (agent control channel) exactly as the
+    /// matching OS event would be.
+    pub fn inject(self: *InputQueue, ev: host.InjectEvent) void {
+        switch (ev) {
+            .move => |p| self.pointerMoved(p[0], p[1]),
+            .down => |b| self.buttonDown(b),
+            .up => |b| self.buttonUp(b),
+            .wheel => |w| self.wheel(w[0], w[1]),
+            .chars => |t| self.pushText(t),
+            .key => |k| self.pushKey(k),
+            .mods => |m| self.mods = m,
         }
     }
 
@@ -173,7 +242,7 @@ pub const InputQueue = struct {
         self.alt_clean = false;
         var buf: [4]u8 = undefined;
         const n = std.unicode.utf8Encode(cp, &buf) catch return;
-        if (self.chars_len + n > CHARS_CAP) return;
+        if (self.chars_len + n > CHARS_CAP) return self.noteDrop("typed characters");
         @memcpy(self.chars[self.chars_len..][0..n], buf[0..n]);
         self.chars_len += n;
     }
@@ -254,6 +323,8 @@ test "resolveKey applies the Shift / Ctrl policy" {
     try testing.expectEqual(SpecialKey.shift_home, resolveKey(.home, shift).?);
     try testing.expectEqual(SpecialKey.shift_end, resolveKey(.end, shift).?);
     try testing.expectEqual(SpecialKey.shift_tab, resolveKey(.tab, shift).?);
+    try testing.expectEqual(SpecialKey.shift_enter, resolveKey(.enter, shift).?);
+    try testing.expectEqual(SpecialKey.enter, resolveKey(.enter, .{}).?);
     try testing.expectEqual(SpecialKey.tab, resolveKey(.tab, none).?);
     try testing.expectEqual(SpecialKey.delete, resolveKey(.delete, none).?);
     try testing.expectEqual(SpecialKey.escape, resolveKey(.escape, shift).?);
@@ -339,6 +410,9 @@ test "InputQueue: a code point that does not fit is dropped whole" {
     try testing.expectEqual(@as(usize, InputQueue.CHARS_CAP - 1), q.chars_len);
     q.pushCodepoint('y'); // an ASCII byte still fits
     try testing.expectEqual(@as(usize, InputQueue.CHARS_CAP), q.chars_len);
+    try testing.expectEqual(@as(u32, 1), q.dropped); // the euro sign was counted
+    q.beginFrame();
+    try testing.expectEqual(@as(u32, 0), q.dropped);
 }
 
 test "InputQueue: UTF-16 surrogate pairs decode to one code point" {

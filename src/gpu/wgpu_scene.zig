@@ -30,6 +30,22 @@ pub const MESH_CAPACITY: usize = 128;
 /// for the line bias (`scene_common.line_depth_bias`).
 pub const depth_format = c.WGPUTextureFormat_Depth24PlusStencil8;
 
+const sprite_bg_cache = 32;
+
+/// A cached bind group for one image's texture view (rebuilt if the Gpu
+/// replaced the view behind a handle).
+const SpriteBg = struct { handle: u32 = 0, view: c.WGPUTextureView = null, bg: c.WGPUBindGroup = null };
+
+/// An image source with nothing in it (scenes without sprites).
+pub const NoImages = struct {
+    pub fn hasImage(_: NoImages, _: u32) bool {
+        return false;
+    }
+    pub fn viewOf(_: NoImages, _: u32) ?c.WGPUTextureView {
+        return null;
+    }
+};
+
 /// One cap quad to draw: which plan instance, and where its vertices start in `Target.cap_buf`.
 const CapDraw = struct { inst: u32, first_vertex: u32 };
 
@@ -89,6 +105,13 @@ pub const Target = struct {
     /// the outline width differs from the edge width).
     cap_buf: c.WGPUBuffer = null,
     cap_cap: usize = 0,
+    /// Plane layers: tessellated vertices, plane records, sprite records.
+    plane_vbuf: c.WGPUBuffer = null,
+    plane_vcap: usize = 0,
+    plane_ibuf: c.WGPUBuffer = null,
+    plane_icap: usize = 0,
+    sprite_buf: c.WGPUBuffer = null,
+    sprite_cap: usize = 0,
     outline_buf: c.WGPUBuffer = null,
     outline_cap: usize = 0,
     outline_ubo: c.WGPUBuffer,
@@ -98,6 +121,9 @@ pub const Target = struct {
 
     fn release(self: Target) void {
         if (self.inst_buf) |b| c.wgpuBufferRelease(b);
+        if (self.plane_vbuf) |b| c.wgpuBufferRelease(b);
+        if (self.plane_ibuf) |b| c.wgpuBufferRelease(b);
+        if (self.sprite_buf) |b| c.wgpuBufferRelease(b);
         if (self.cap_buf) |b| c.wgpuBufferRelease(b);
         if (self.outline_buf) |b| c.wgpuBufferRelease(b);
         c.wgpuBindGroupRelease(self.outline_bg);
@@ -137,6 +163,14 @@ pub const Renderer = struct {
     stencil_pipeline: c.WGPURenderPipeline,
     cap_pipeline: c.WGPURenderPipeline,
     /// Scratch for per-frame cut geometry (cap quads, outline segments).
+    layers: scene_pass.Layers = .{},
+    plane_opaque_pipeline: c.WGPURenderPipeline,
+    plane_blend_pipeline: c.WGPURenderPipeline,
+    sprite_pipeline: c.WGPURenderPipeline,
+    sprite_bgl: c.WGPUBindGroupLayout,
+    sprite_sampler: c.WGPUSampler,
+    sprite_bgs: [sprite_bg_cache]SpriteBg = @splat(.{}),
+    next_sprite_bg: usize = 0,
     cap_quads: std.ArrayList(CapDraw) = .empty,
     cap_verts: std.ArrayList(LineVertex) = .empty,
     outline_segs: std.ArrayList(teak.scene.section.Segment) = .empty,
@@ -336,6 +370,109 @@ pub const Renderer = struct {
             .samples = samples,
         }) orelse return error.PipelineCreateFailed;
 
+        // Plane layers and sprites.
+        const layer_inst_attrs = [_]c.WGPUVertexAttribute{
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 0, .shaderLocation = 4 },
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 16, .shaderLocation = 5 },
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 32, .shaderLocation = 6 },
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 48, .shaderLocation = 7 },
+            .{ .format = c.WGPUVertexFormat_Uint32x2, .offset = 64, .shaderLocation = 8 },
+            .{ .format = c.WGPUVertexFormat_Sint32, .offset = 72, .shaderLocation = 9 },
+        };
+        const plane_vert_attrs = [_]c.WGPUVertexAttribute{
+            .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(teak.Vertex, "x"), .shaderLocation = 0 },
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = @offsetOf(teak.Vertex, "r"), .shaderLocation = 1 },
+        };
+        const plane_layout = [_]c.WGPUVertexBufferLayout{ .{
+            .arrayStride = @sizeOf(teak.Vertex),
+            .stepMode = c.WGPUVertexStepMode_Vertex,
+            .attributeCount = plane_vert_attrs.len,
+            .attributes = &plane_vert_attrs,
+        }, .{
+            .arrayStride = @sizeOf(scene_pass.LayerInst),
+            .stepMode = c.WGPUVertexStepMode_Instance,
+            .attributeCount = layer_inst_attrs.len,
+            .attributes = &layer_inst_attrs,
+        } };
+        const plane_opaque_pipeline = wgpu_c.createPipeline(device, .{
+            .label = "scene-plane-opaque",
+            .layout = layout,
+            .module = shader,
+            .vs_entry = "vs_plane",
+            .fs_entry = "fs_plane",
+            .vertex_buffers = &plane_layout,
+            .format = format,
+            .depth = wgpu_c.depthState(depth_format, true, c.WGPUCompareFunction_LessEqual),
+            .samples = samples,
+        }) orelse return error.PipelineCreateFailed;
+        const plane_blend_pipeline = wgpu_c.createPipeline(device, .{
+            .label = "scene-plane-blend",
+            .layout = layout,
+            .module = shader,
+            .vs_entry = "vs_plane",
+            .fs_entry = "fs_plane",
+            .vertex_buffers = &plane_layout,
+            .format = format,
+            .depth = wgpu_c.depthState(depth_format, false, c.WGPUCompareFunction_LessEqual),
+            .samples = samples,
+        }) orelse return error.PipelineCreateFailed;
+
+        var sprite_entries = [_]c.WGPUBindGroupLayoutEntry{ std.mem.zeroes(c.WGPUBindGroupLayoutEntry), std.mem.zeroes(c.WGPUBindGroupLayoutEntry) };
+        sprite_entries[0].binding = 0;
+        sprite_entries[0].visibility = c.WGPUShaderStage_Fragment;
+        sprite_entries[0].texture.sampleType = c.WGPUTextureSampleType_Float;
+        sprite_entries[0].texture.viewDimension = c.WGPUTextureViewDimension_2D;
+        sprite_entries[1].binding = 1;
+        sprite_entries[1].visibility = c.WGPUShaderStage_Fragment;
+        sprite_entries[1].sampler.type = c.WGPUSamplerBindingType_Filtering;
+        var sprite_bgl_desc = std.mem.zeroes(c.WGPUBindGroupLayoutDescriptor);
+        sprite_bgl_desc.label = wgpu_c.wgpuStr("scene-sprite-bgl");
+        sprite_bgl_desc.entryCount = sprite_entries.len;
+        sprite_bgl_desc.entries = &sprite_entries;
+        const sprite_bgl = c.wgpuDeviceCreateBindGroupLayout(device, &sprite_bgl_desc) orelse return error.BglCreateFailed;
+        const sprite_bgls = [_]c.WGPUBindGroupLayout{ bgl, sprite_bgl };
+        var sprite_pl_desc = std.mem.zeroes(c.WGPUPipelineLayoutDescriptor);
+        sprite_pl_desc.label = wgpu_c.wgpuStr("scene-sprite-pipeline-layout");
+        sprite_pl_desc.bindGroupLayoutCount = sprite_bgls.len;
+        sprite_pl_desc.bindGroupLayouts = &sprite_bgls;
+        const sprite_layout = c.wgpuDeviceCreatePipelineLayout(device, &sprite_pl_desc) orelse return error.PipelineLayoutFailed;
+        defer c.wgpuPipelineLayoutRelease(sprite_layout);
+        const sprite_attrs = [_]c.WGPUVertexAttribute{
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 0, .shaderLocation = 0 },
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 16, .shaderLocation = 1 },
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 32, .shaderLocation = 2 },
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 48, .shaderLocation = 3 },
+            .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 64, .shaderLocation = 4 },
+        };
+        const sprite_vlayout = [_]c.WGPUVertexBufferLayout{.{
+            .arrayStride = @sizeOf(scene_pass.SpriteInst),
+            .stepMode = c.WGPUVertexStepMode_Instance,
+            .attributeCount = sprite_attrs.len,
+            .attributes = &sprite_attrs,
+        }};
+        const sprite_pipeline = wgpu_c.createPipeline(device, .{
+            .label = "scene-sprite-pipeline",
+            .layout = sprite_layout,
+            .module = shader,
+            .vs_entry = "vs_sprite",
+            .fs_entry = "fs_sprite",
+            .vertex_buffers = &sprite_vlayout,
+            .format = format,
+            .depth = wgpu_c.depthState(depth_format, false, c.WGPUCompareFunction_LessEqual),
+            .samples = samples,
+        }) orelse return error.PipelineCreateFailed;
+        var sampler_desc = std.mem.zeroes(c.WGPUSamplerDescriptor);
+        sampler_desc.label = wgpu_c.wgpuStr("scene-sprite-sampler");
+        sampler_desc.addressModeU = c.WGPUAddressMode_ClampToEdge;
+        sampler_desc.addressModeV = c.WGPUAddressMode_ClampToEdge;
+        sampler_desc.addressModeW = c.WGPUAddressMode_ClampToEdge;
+        sampler_desc.magFilter = c.WGPUFilterMode_Linear;
+        sampler_desc.minFilter = c.WGPUFilterMode_Linear;
+        sampler_desc.mipmapFilter = c.WGPUMipmapFilterMode_Nearest;
+        sampler_desc.lodMaxClamp = 1;
+        sampler_desc.maxAnisotropy = 1;
+        const sprite_sampler = c.wgpuDeviceCreateSampler(device, &sampler_desc) orelse return error.SamplerFailed;
+
         const ident_buf = wgpu_c.createBuffer(device, "scene-identity", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, @sizeOf(scene_pass.Packed)) orelse return error.GpuResource;
         const ident = scene_pass.pack(.{ .mesh = 1 });
         c.wgpuQueueWriteBuffer(queue, ident_buf, 0, &ident, @sizeOf(scene_pass.Packed));
@@ -354,6 +491,11 @@ pub const Renderer = struct {
             .ident_buf = ident_buf,
             .stencil_pipeline = stencil_pipeline,
             .cap_pipeline = cap_pipeline,
+            .plane_opaque_pipeline = plane_opaque_pipeline,
+            .plane_blend_pipeline = plane_blend_pipeline,
+            .sprite_pipeline = sprite_pipeline,
+            .sprite_bgl = sprite_bgl,
+            .sprite_sampler = sprite_sampler,
         };
     }
 
@@ -362,6 +504,13 @@ pub const Renderer = struct {
         var it = self.meshes.iterator();
         while (it.next()) |m| m.release();
         for (self.targets) |t| if (t) |tt| tt.release();
+        self.layers.deinit(plan_allocator);
+        for (self.sprite_bgs) |e| if (e.bg) |bg| c.wgpuBindGroupRelease(bg);
+        c.wgpuSamplerRelease(self.sprite_sampler);
+        c.wgpuBindGroupLayoutRelease(self.sprite_bgl);
+        c.wgpuRenderPipelineRelease(self.sprite_pipeline);
+        c.wgpuRenderPipelineRelease(self.plane_blend_pipeline);
+        c.wgpuRenderPipelineRelease(self.plane_opaque_pipeline);
         c.wgpuRenderPipelineRelease(self.cap_pipeline);
         c.wgpuRenderPipelineRelease(self.stencil_pipeline);
         self.cap_quads.deinit(plan_allocator);
@@ -449,6 +598,97 @@ pub const Renderer = struct {
     }
 
     const CutGeo = struct { outline_verts: u32 = 0 };
+
+    /// Bind group for sampling image `handle`'s texture view (cached per handle;
+    /// rebuilt when the Gpu hands out a different view for it).
+    fn spriteBindGroup(self: *Renderer, handle: u32, view: c.WGPUTextureView) c.WGPUBindGroup {
+        for (&self.sprite_bgs) |*e| {
+            if (e.handle == handle and e.bg != null) {
+                if (e.view == view) return e.bg;
+                c.wgpuBindGroupRelease(e.bg);
+                e.* = .{};
+                break;
+            }
+        }
+        var entries = [_]c.WGPUBindGroupEntry{ std.mem.zeroes(c.WGPUBindGroupEntry), std.mem.zeroes(c.WGPUBindGroupEntry) };
+        entries[0].binding = 0;
+        entries[0].textureView = view;
+        entries[1].binding = 1;
+        entries[1].sampler = self.sprite_sampler;
+        var desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
+        desc.label = wgpu_c.wgpuStr("scene-sprite-bg");
+        desc.layout = self.sprite_bgl;
+        desc.entryCount = entries.len;
+        desc.entries = &entries;
+        const bg = c.wgpuDeviceCreateBindGroup(self.device, &desc);
+        const slot = for (self.sprite_bgs, 0..) |e, i| {
+            if (e.bg == null) break i;
+        } else blk: {
+            const i = self.next_sprite_bg % sprite_bg_cache;
+            self.next_sprite_bg += 1;
+            if (self.sprite_bgs[i].bg) |old| c.wgpuBindGroupRelease(old);
+            break :blk i;
+        };
+        self.sprite_bgs[slot] = .{ .handle = handle, .view = view, .bg = bg };
+        return bg;
+    }
+
+    /// Plane layers and sprites: opaque planes first (depth written), then the
+    /// blended planes and sprites back to front (depth tested, not written).
+    fn drawLayers(self: *Renderer, pass: c.WGPURenderPassEncoder, t: *Target, draw: SceneDraw, images: anytype) void {
+        _ = draw;
+        const ly = &self.layers;
+        if (ly.isEmpty()) return;
+        const vbytes = ly.plane_verts.items.len * @sizeOf(teak.Vertex);
+        const ibytes = ly.plane_insts.items.len * @sizeOf(scene_pass.LayerInst);
+        const sbytes = ly.sprites.items.len * @sizeOf(scene_pass.SpriteInst);
+        if (vbytes > 0 and self.growBuffer(&t.plane_vbuf, &t.plane_vcap, "scene-plane-verts", vbytes) and
+            self.growBuffer(&t.plane_ibuf, &t.plane_icap, "scene-plane-insts", ibytes))
+        {
+            c.wgpuQueueWriteBuffer(self.queue, t.plane_vbuf, 0, ly.plane_verts.items.ptr, vbytes);
+            c.wgpuQueueWriteBuffer(self.queue, t.plane_ibuf, 0, ly.plane_insts.items.ptr, ibytes);
+        }
+        if (sbytes > 0 and self.growBuffer(&t.sprite_buf, &t.sprite_cap, "scene-sprites", sbytes)) {
+            c.wgpuQueueWriteBuffer(self.queue, t.sprite_buf, 0, ly.sprites.items.ptr, sbytes);
+        }
+        c.wgpuRenderPassEncoderSetBindGroup(pass, 0, t.bind_group, 0, null);
+        if (vbytes > 0) {
+            c.wgpuRenderPassEncoderSetPipeline(pass, self.plane_opaque_pipeline);
+            for (ly.opaque_planes.items) |di| self.drawPlane(pass, t, ly.plane_draws.items[di]);
+        }
+        var bound_image: u32 = 0;
+        var last_kind: ?@TypeOf(ly.blended.items[0].kind) = null;
+        for (ly.blended.items) |b| {
+            switch (b.kind) {
+                .plane => {
+                    if (last_kind != .plane) c.wgpuRenderPassEncoderSetPipeline(pass, self.plane_blend_pipeline);
+                    self.drawPlane(pass, t, ly.plane_draws.items[b.index]);
+                },
+                .sprite => {
+                    if (last_kind != .sprite) {
+                        c.wgpuRenderPassEncoderSetPipeline(pass, self.sprite_pipeline);
+                        c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, t.sprite_buf, 0, sbytes);
+                        bound_image = 0;
+                    }
+                    const handle = ly.sprite_images.items[b.index];
+                    if (handle != bound_image) {
+                        const view = images.viewOf(handle) orelse continue;
+                        c.wgpuRenderPassEncoderSetBindGroup(pass, 1, self.spriteBindGroup(handle, view), 0, null);
+                        bound_image = handle;
+                    }
+                    c.wgpuRenderPassEncoderDraw(pass, 6, 1, 0, b.index);
+                },
+            }
+            last_kind = b.kind;
+        }
+    }
+
+    fn drawPlane(self: *Renderer, pass: c.WGPURenderPassEncoder, t: *Target, pd: scene_pass.PlaneDraw) void {
+        _ = self;
+        c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, t.plane_vbuf, @as(u64, pd.first_vertex) * @sizeOf(teak.Vertex), @as(u64, pd.vertex_count) * @sizeOf(teak.Vertex));
+        c.wgpuRenderPassEncoderSetVertexBuffer(pass, 1, t.plane_ibuf, @as(u64, pd.inst) * @sizeOf(scene_pass.LayerInst), @sizeOf(scene_pass.LayerInst));
+        c.wgpuRenderPassEncoderDraw(pass, pd.vertex_count, 1, 0, 0);
+    }
 
     /// Backend mesh of plan instance `k` (the run that contains it).
     fn meshOfInstance(self: *Renderer, k: u32) ?MeshEntry {
@@ -624,12 +864,13 @@ pub const Renderer = struct {
     /// size (the owner composites `target(index).color_view`), or null if
     /// the scene has no pixels or the device could not allocate targets.
     /// `scale` = device pixels per logical pixel.
-    pub fn renderInto(self: *Renderer, encoder: c.WGPUCommandEncoder, index: usize, draw: SceneDraw, items: []const teak.SceneItem, scale: f32) ?TargetSize {
+    pub fn renderInto(self: *Renderer, encoder: c.WGPUCommandEncoder, index: usize, draw: SceneDraw, items: []const teak.SceneItem, sprite_list: []const teak.SceneSprite, images: anytype, scale: f32) ?TargetSize {
         const size = common.targetSize(draw.rect_w, draw.rect_h, scale) orelse return null;
         const t = self.ensureTarget(index, size) orelse return null;
 
         self.plan.build(plan_allocator, draw, items, self) catch return null;
-        const sig = common.signature(draw, size, scale, self.plan.contentHash(self));
+        self.layers.build(plan_allocator, draw, sprite_list, images) catch return null;
+        const sig = common.signature(draw, size, scale, self.plan.contentHash(self) ^ (self.layers.contentHash() *% 0x9E3779B97F4A7C15));
         if (t.signature == sig) return size;
         t.signature = sig;
 
@@ -702,6 +943,8 @@ pub const Renderer = struct {
                 }
             }
         }
+
+        self.drawLayers(pass, t, draw, images);
 
         // Cut outline: exact plane x mesh segments, in their own pass-wide line style.
         if (cut_geo.outline_verts > 0) {

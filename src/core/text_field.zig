@@ -217,6 +217,32 @@ pub fn textFieldReplaceSelection(
     return @unionInit(AppMsg, field_name, @unionInit(FieldMsg, "replace_selection", bytes));
 }
 
+/// The Msg for a clipboard chord on the named field, for an App's
+/// `clipboardMsg` hook: Ctrl+V -> `replace_selection(paste)`, Ctrl+X ->
+/// `replace_selection("")` (deletes the selection; the copy itself is the
+/// App's `clipboardText`), anything else (Ctrl+C included) -> null.
+pub fn textFieldClipboardMsg(
+    comptime AppMsg: type,
+    comptime field_name: []const u8,
+    key: SpecialKey,
+    paste: []const u8,
+) ?AppMsg {
+    return switch (key) {
+        .ctrl_v => textFieldReplaceSelection(AppMsg, field_name, paste),
+        .ctrl_x => textFieldReplaceSelection(AppMsg, field_name, ""),
+        else => null,
+    };
+}
+
+/// What Ctrl+C / Ctrl+X copy from a field `Model` (a `TextField(cap).Model`):
+/// its selection, or null when nothing is selected. For the App's
+/// `clipboardText` hook; the slice borrows from the Model.
+pub fn textFieldCopyText(model: anytype, key: SpecialKey) ?[]const u8 {
+    if (key != .ctrl_c and key != .ctrl_x) return null;
+    if (!model.hasSelection()) return null;
+    return model.selectionText();
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 const cmd_mod = @import("cmd.zig");
@@ -420,4 +446,25 @@ test "textFieldSpecial maps the editing chords" {
     try std.testing.expectEqual(Search.Msg.undo, textFieldSpecial(App.Msg, "search", .ctrl_z).?.search);
     try std.testing.expectEqual(Search.Msg.redo, textFieldSpecial(App.Msg, "search", .ctrl_shift_z).?.search);
     try std.testing.expect(textFieldSpecial(App.Msg, "search", .up) == null);
+}
+
+test "textFieldClipboardMsg / textFieldCopyText: paste, cut and copy over a field" {
+    const TF = TextField(32);
+    const App = struct {
+        pub const Msg = union(enum) { search: TF.Msg };
+    };
+    const paste = textFieldClipboardMsg(App.Msg, "search", .ctrl_v, "hi").?;
+    try std.testing.expectEqualStrings("hi", paste.search.replace_selection);
+    const cut = textFieldClipboardMsg(App.Msg, "search", .ctrl_x, "ignored").?;
+    try std.testing.expectEqualStrings("", cut.search.replace_selection);
+    try std.testing.expect(textFieldClipboardMsg(App.Msg, "search", .ctrl_c, "") == null);
+
+    var m: TF.Model = .{};
+    TF.update(&m, .{ .replace_selection = "hello world" });
+    try std.testing.expect(textFieldCopyText(&m, .ctrl_c) == null); // nothing selected
+    TF.update(&m, .select_all);
+    try std.testing.expectEqualStrings("hello world", textFieldCopyText(&m, .ctrl_c).?);
+    try std.testing.expect(textFieldCopyText(&m, .ctrl_v) == null);
+    TF.update(&m, cut.search);
+    try std.testing.expectEqual(@as(usize, 0), m.len);
 }

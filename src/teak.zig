@@ -66,6 +66,8 @@ pub const widgets = @import("core/widgets.zig");
 pub const component_list = @import("core/component_list.zig");
 /// `appendDebugOverlay`: dump the frame's cmds and rects as an overlay.
 pub const debug_overlay = @import("core/debug_overlay.zig");
+/// Dev inspector panel (widget tree, hovered cmd, Msg log, timings) as overlay cmds.
+pub const inspector = @import("core/inspector.zig");
 /// LLM-readable text serialization of a frame (`[]Cmd` + `[]Rect`).
 pub const snapshot = @import("core/snapshot.zig");
 /// Pure line-chart primitive builder for canvases.
@@ -74,6 +76,10 @@ pub const chart = @import("core/chart.zig");
 pub const table = @import("core/table.zig");
 /// Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
 pub const pointer = @import("core/pointer.zig");
+/// Mouse-cursor shapes and the hovered-cmd picker (`Host.setCursor`, App `cursorFor`).
+pub const cursor = @import("core/cursor.zig");
+pub const CursorShape = cursor.CursorShape;
+pub const HoverKind = cursor.HoverKind;
 /// Declarative effects (HARDLINE hatch 7): data describing I/O the Host performs.
 pub const effects = @import("core/effects.zig");
 /// Data types for `scene3d`: meshes, camera and per-frame scene draws.
@@ -106,6 +112,12 @@ pub const gpu = @import("gpu/context.zig");
 pub const runtime = @import("run.zig");
 /// Scripted-input headless runs for tests and tooling.
 pub const headless = @import("headless_run.zig");
+/// Hot reload for dev builds: the App as a shared library behind a stable loader (docs/features/hot-reload.md).
+pub const dev = @import("dev.zig");
+/// Agent control channel + input record/replay (docs/features/agent-driver.md).
+pub const control = @import("control.zig");
+/// Input record/replay file format.
+pub const input_record = @import("input_record.zig");
 
 /// The flat command union for a given `Msg`; the unit every pass walks.
 pub const Cmd = cmd.Cmd;
@@ -117,6 +129,8 @@ pub const GroupStyle = cmd.GroupStyle;
 pub const ScrollStyle = cmd.ScrollStyle;
 /// Placement and look of a `push_overlay` (second z-layer).
 pub const OverlayStyle = cmd.OverlayStyle;
+/// Which side of its anchor widget an `OverlayStyle.anchor_msg` overlay opens on.
+pub const AnchorSide = cmd.AnchorSide;
 /// Geometry of a `push_virtual_list` (only visible rows are emitted).
 pub const VirtualListStyle = cmd.VirtualListStyle;
 /// Intrinsic size and flex of an `image` leaf.
@@ -224,6 +238,9 @@ pub const Camera = scene.Camera;
 /// One 3D scene to render this frame.
 pub const SceneDraw = scene.SceneDraw;
 pub const SceneItem = scene.Item;
+pub const SceneSprite = scene.Sprite;
+pub const ScenePlane = scene.Plane;
+pub const SceneData = scene.SceneData;
 pub const SceneItemFlags = scene.ItemFlags;
 pub const SceneView = scene.View;
 
@@ -362,6 +379,10 @@ pub const textFieldSpecial = text_field.textFieldSpecial;
 pub const textFieldReplaceSelection = text_field.textFieldReplaceSelection;
 /// True if a key needs host-level clipboard access.
 pub const keyNeedsClipboard = text_field.keyNeedsClipboard;
+/// The Msg for a clipboard chord on a field, for the App's `clipboardMsg` hook.
+pub const textFieldClipboardMsg = text_field.textFieldClipboardMsg;
+/// What Ctrl+C / Ctrl+X copy from a field Model, for the App's `clipboardText` hook.
+pub const textFieldCopyText = text_field.textFieldCopyText;
 
 /// The GPU vertex layout shared by every quad (position, color, uv).
 pub const Vertex = vertex.Vertex;

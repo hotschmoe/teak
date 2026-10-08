@@ -33,7 +33,13 @@
 //!   - `keyCharMsg(*const Model, u8) ?Msg`            — typed character
 //!   - `keySpecialMsg(*const Model, SpecialKey) ?Msg` — arrows/enter/etc
 //!   - `keyNeedsClipboard(SpecialKey) bool`           — pairs with…
-//!   - `handleClipboard(*Model, SpecialKey, Clipboard) void` — cut/copy/paste
+//!   - `clipboardText(*const Model, SpecialKey) ?[]const u8` — what Ctrl+C /
+//!     Ctrl+X copy (a pure query; the loop writes it to the Host clipboard)
+//!   - `clipboardMsg(*const Model, SpecialKey, paste: []const u8) ?Msg` — the
+//!     Msg for Ctrl+C / Ctrl+X / Ctrl+V (`paste` is the clipboard text for
+//!     Ctrl+V, "" otherwise; an empty paste is not delivered)
+//!   - `handleClipboard(*Model, SpecialKey, Clipboard) void` — DEPRECATED
+//!     (mutates the Model outside `update`); cut/copy/paste
 //!   - `wheelMsg(*const Model, f32) ?Msg`             — vertical wheel
 //!   - `canvasMsg(*const Model, CanvasEvent) ?Msg`    — pointer input over
 //!     interactive canvases and scenes (`CanvasCmd.pointer`,
@@ -69,6 +75,10 @@
 //!     `ev.hit` is that widget's click Msg, `ev.box` its rect, `ev.now_ms` the
 //!     host clock: enough to drive a tooltip (`teak.Tooltip`) with a
 //!     `Sub.at` delay, all in the Model.
+//!   - `pointerMsg(*const Model, PointerEvent(Msg)) ?Msg` — ONE hook for the
+//!     pointer over widgets: `kind` = hover (target changed) / down / up /
+//!     context (right press); `hit` is the widget's Msg or null for blank
+//!     space, so an app can clear its own focus (`ev.isBlank()`)
 //!   - `contextMsg(*const Model, PointerEvent(Msg)) ?Msg` — the right button
 //!     went down. `ev.hit` is the Msg of the widget under the cursor (null on
 //!     empty space), so one hook opens a context menu for any region
@@ -120,6 +130,12 @@
 //!     extension (`uploadMesh`, `releaseMesh`, `renderScenes`,
 //!     `releaseImage`). See `docs/features/scene3d.md`.
 //!
+//!   - `cursorFor(*const Model, HoverKind) ?CursorShape` — override the mouse
+//!     cursor the framework picks from the hovered cmd (button/checkbox/
+//!     radio/slider -> pointer, text_input -> ibeam, canvas -> its `cursor`
+//!     field). Pure data in, data out; `Host.setCursor` is called only when
+//!     the shape changes, and only on hosts that declare it.
+//!
 //! IME composition state (`Host.imeState`) is folded into `TransientState`
 //! every frame with no opt-in — hosts without IME report inactive and it
 //! costs nothing.
@@ -138,6 +154,7 @@ const effects_mod = @import("core/effects.zig");
 const transient = @import("core/transient.zig");
 const text = @import("core/text.zig");
 const pointer = @import("core/pointer.zig");
+const cursor_mod = @import("core/cursor.zig");
 const text_event = @import("core/text_event.zig");
 const text_wrap = @import("core/text_wrap.zig");
 const layout = @import("layout/engine.zig");
@@ -148,6 +165,7 @@ const focus = @import("input/focus.zig");
 const render = @import("render/build.zig");
 const vertex = @import("render/vertex.zig");
 const resources = @import("resources.zig");
+const control = @import("control.zig");
 
 const Rect = layout.Rect;
 const TransientState = transient.TransientState;
@@ -187,6 +205,20 @@ pub const RunOptions = struct {
     /// under `<config>/teak/<app_name>/`). Empty: the Host's default, the
     /// window title. Ignored by hosts without `setAppName`.
     app_name: []const u8 = "",
+    /// Agent control channel: the Unix socket path the Host listens on
+    /// (`TEAK_CONTROL` wins). Needs a Host with the control surface. See
+    /// `docs/features/agent-driver.md`.
+    control_path: ?[]const u8 = null,
+    /// Record the per-frame input stream to this file (`TEAK_RECORD` wins).
+    record_path: ?[]const u8 = null,
+    /// Replay a recording made with `record_path` (`TEAK_REPLAY` wins); needs
+    /// a Host with `injectInput` (the headless Host).
+    replay_path: ?[]const u8 = null,
+    /// Show the dev inspector panel from the first frame (`TEAK_INSPECT=1`).
+    inspect: bool = false,
+    /// F12 toggles the inspector (the key is consumed). On in Debug builds;
+    /// elsewhere F12 reaches the app like any key.
+    inspect_hotkey: bool = builtin.mode == .debug,
     /// Event-driven idle. When true, a frame in which nothing happened (no
     /// input event, no Msg dispatched by a sub / effect result / window hook,
     /// secondary window, not the first frame; a caret toggle is a cheap
@@ -415,6 +447,8 @@ pub fn run(
 pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type {
     return struct {
         const Self = @This();
+        /// The App type, for `control.zig`'s optional hooks.
+        pub const AppDecl = App;
         const Msg = App.Msg;
         const CmdBufT = cmd.CmdBuffer(Msg);
         /// The Host's per-frame input snapshot type (`platform/host.zig`'s
@@ -470,6 +504,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         image_draws: std.ArrayList(render.ImageDraw) = .empty,
         scene_draws: std.ArrayList(render.SceneDraw) = .empty,
         scene_items: std.ArrayList(render.SceneItem) = .empty,
+        scene_sprites: std.ArrayList(render.SceneSprite) = .empty,
 
         /// Declarative GPU resources (HARDLINE §2 hatch 8): which
         /// (kind, key, rev) is resident and under which Gpu handle. Loop
@@ -494,6 +529,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         text_metrics: [8]TextMetricsSlot = @splat(.{}),
         /// Last IME spot pushed to the Host (avoid per-frame calls).
         ime_spot: ?[2]i32 = null,
+        /// Last `Host.scaleFactor()` seen (0 = not yet); a change (the window
+        /// moved to a monitor with another DPI) is forwarded to `Gpu.setScale`.
+        host_scale: f32 = 0,
 
         /// Press model: arm on mousedown over a widget, fire the click only
         /// if mouseup lands on the same widget; drag-off cancels.
@@ -503,6 +541,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// `press_target` (a lost value only repeats one hover event).
         hover_reported: ?usize = null,
         hover_seen: bool = false,
+        pm_hover_reported: ?usize = null,
+        pm_hover_seen: bool = false,
         /// The `grab_msg` of the slider being dragged (`sliderMsg` hook).
         slider_grab: ?Msg = null,
         /// Keyboard-navigation focus on a non-text leaf (button, checkbox, radio,
@@ -512,6 +552,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         nav: ?NavFocus = null,
         /// Where the navigation focus was when a modal overlay opened; restored when it closes.
         nav_return: ?NavFocus = null,
+        /// The navigation focus last reported to `hoverMsg` (keyboard focus shows tooltips).
+        nav_hover: ?usize = null,
 
         /// The previous frame's `nowMs`. `runSubs` is stateless — it decides
         /// fire/skip from (last_sub_ms, now_ms, sub data) — so this single
@@ -532,6 +574,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         suppressed_spec: ?SecondaryWindowSpec = null,
 
         snap: SnapshotSink,
+        /// Agent control channel + record/replay + Msg ring (`control.zig`).
+        ctl: control.State,
         /// Force a first snapshot write even if the opening frame happens to
         /// match the empty previous buffer.
         snap_first: bool = true,
@@ -557,6 +601,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
         title_len: usize = 0,
+        /// Last cursor shape handed to `Host.setCursor` (change detection).
+        cursor: cursor_mod.CursorShape = .arrow,
 
         /// Loop-owned IME composition buffers. `Host.imeState().text`
         /// aliases the Host's single mutable global, so `ts.ime_text` and
@@ -570,7 +616,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (comptime @hasDecl(Host, "setAppName")) {
                 if (opts.app_name.len > 0) host.setAppName(opts.app_name);
             }
+            var ctl = control.State.init(gpa);
+            control.start(&ctl, host, opts);
             return .{
+                .ctl = ctl,
                 .gpa = gpa,
                 .host = host,
                 .gpu = gpu,
@@ -591,10 +640,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 }
             }
             self.snap.deinit();
+            self.ctl.deinit();
             self.secondary.deinit(self.gpa);
             if (has_resources) self.res_table.deinit(self.gpu);
             self.scene_draws.deinit(self.gpa);
             self.scene_items.deinit(self.gpa);
+            self.scene_sprites.deinit(self.gpa);
             self.image_draws.deinit(self.gpa);
             self.text_draws.deinit(self.gpa);
             self.verts.deinit(self.gpa);
@@ -605,8 +656,21 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// One loop iteration. Returns early, before presenting, when the
         /// host reports close during the input poll.
         pub fn frame(self: *Self) !void {
+            control.beforePoll(self);
+            // Runs on EVERY exit (quiet frames included): finishes the control
+            // command in flight and advances the frame number.
+            defer control.afterFrame(self);
             const input = self.host.pollInputs();
+            control.afterPoll(self, input);
             if (self.host.shouldClose()) return;
+            // The window's DPI scale changed (Win32 per-monitor DPI): the Gpu
+            // reconfigures its surfaces at the new device size. The initial
+            // scale reaches the Gpu through `InitOptions.scale`.
+            if (comptime @hasDecl(Host, "scaleFactor") and @hasDecl(Gpu, "setScale")) {
+                const sf = self.host.scaleFactor();
+                if (self.host_scale != 0 and sf != self.host_scale) self.gpu.setScale(sf);
+                self.host_scale = sf;
+            }
             if (input.resized) {
                 self.gpu.resize(input.width, input.height);
                 if (@hasDecl(App, "windowMsg")) {
@@ -634,7 +698,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
             // Event-driven idle: nothing changed since the frame on screen.
             self.quiet = self.opts.idle_skip and self.built_once and
-                self.dispatch_count == dispatched_before and self.inputIdle(input);
+                self.dispatch_count == dispatched_before and self.inputIdle(input) and !self.ctl.consumeDirty();
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
@@ -657,6 +721,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const cur_cmds = self.bufs[cur].cmds.items;
             const cur_rects = self.rects[cur].items;
             self.updateTransient(input, cur);
+            self.updateCursor(cur);
             self.updateImeSpot(cur);
             self.pushTitle();
 
@@ -675,12 +740,14 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const secondary_open = has_secondary and App.secondaryWindow(&self.model) != null;
             // A resource upload/release changes the handles the draws map to
             // even when no Cmd changed, so it forces a re-stage too.
+            const t_render = control.stamp(&self.ctl);
             if (diff.changed() or secondary_open or res_changed) {
                 self.uploadFrame(cur_cmds, cur_rects, self.ts);
             }
             self.prev_ts = self.ts;
 
             self.gpu.renderFrame(self.opts.clear_color);
+            self.ctl.timings.render_ms = control.msBetween(t_render, control.stamp(&self.ctl));
 
             const sec = if (has_secondary) try self.driveSecondary() else SecondaryFrame{};
 
@@ -737,7 +804,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         pub fn idleTimeoutMs(self: *Self) u32 {
             // Effect results arrive from the Host asynchronously; poll them
             // at frame rate while any effect is outstanding.
-            const cap: u32 = if (self.issued.len != 0) 16 else 1000;
+            // A listening control channel is polled at frame rate too, so a
+            // command arriving while the app is quiet waits at most one frame
+            // (the Host cannot wake on the socket by itself).
+            const cap: u32 = if (self.issued.len != 0 or self.ctl.active) 16 else 1000;
             var wait: u32 = cap;
             const now = self.host.nowMs();
             if (self.opts.blink_half_ms != 0 and self.ts.focus_index != null) {
@@ -757,6 +827,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn dispatch(self: *Self, msg: Msg) void {
             self.dispatch_count +%= 1;
             self.last_msg = @tagName(std.meta.activeTag(msg));
+            if (self.ctl.log_msgs) self.ctl.logMsg(Msg, msg);
             App.update(&self.model, msg);
         }
 
@@ -814,12 +885,31 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn routePointerHooks(self: *Self, input: Input, prev: u1) void {
             const has_hover = comptime @hasDecl(App, "hoverMsg");
             const has_context = comptime @hasDecl(App, "contextMsg");
-            if (!has_hover and !has_context) return;
+            const has_pm = comptime @hasDecl(App, "pointerMsg");
+            if (!has_hover and !has_context and !has_pm) return;
             const cmds = self.bufs[prev].cmds.items;
             const rects = self.rects[prev].items;
             const hit = if (cmds.len > 0) hit_test.hitTest(cmds, rects, input.mouse_x, input.mouse_y) else null;
             const under: ?usize = if (hit) |h| h.index else null;
 
+            // Keyboard focus is reported to `hoverMsg` like a pointer resting on the
+            // focused widget (so a tooltip shows for it); leaving non-text focus
+            // reports "nothing". The pointer's own reports are unaffected.
+            if (has_hover and self.opts.keyboard_nav) {
+                const ni = self.navResolve(cmds);
+                if (ni != self.nav_hover) {
+                    const was = self.nav_hover;
+                    self.nav_hover = ni;
+                    const NavHit = struct { index: usize, msg: ?Msg };
+                    if (ni) |i| {
+                        const nh: ?NavHit = .{ .index = i, .msg = focus.activationMsg(cmds[i]) };
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, nh, rects, .hover, .none))) |m| self.dispatch(m);
+                    } else if (was != null) {
+                        const none: ?NavHit = null;
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, none, rects, .hover, .none))) |m| self.dispatch(m);
+                    }
+                }
+            }
             if (has_hover) {
                 if (!self.hover_seen or under != self.hover_reported) {
                     const first = !self.hover_seen;
@@ -827,17 +917,56 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     self.hover_reported = under;
                     // Nothing to report before the first frame laid anything out.
                     if (!(first and under == null)) {
-                        if (App.hoverMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+                        const ev = self.pointerEvent(input, hit, rects, .hover, .none);
+                        if (App.hoverMsg(&self.model, ev)) |m| self.dispatch(m);
                     }
                 }
             }
             if (has_context and input.button_down.right) {
-                if (App.contextMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+                const ev = self.pointerEvent(input, hit, rects, .context, .right);
+                if (App.contextMsg(&self.model, ev)) |m| self.dispatch(m);
+            }
+            if (has_pm) self.routePointerMsg(input, hit, rects, under);
+        }
+
+        /// The unified `pointerMsg` hook: hover changes, every press (blank
+        /// space included: `hit == null`), every release, and the right-button
+        /// `context` press. Resolved against the previous frame like a click.
+        fn routePointerMsg(self: *Self, input: Input, hit: anytype, rects: []const Rect, under: ?usize) void {
+            // Hover changes (tracked separately from `hoverMsg`'s bookkeeping so
+            // an app may use either, or both).
+            if (!self.pm_hover_seen or under != self.pm_hover_reported) {
+                const first = !self.pm_hover_seen;
+                self.pm_hover_seen = true;
+                self.pm_hover_reported = under;
+                if (!(first and under == null)) {
+                    if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, .hover, .none))) |m| self.dispatch(m);
+                }
+            }
+            const downs = [_]struct { on: bool, button: pointer.Button, kind: pointer.PointerEvent(Msg).Kind }{
+                .{ .on = input.button_down.left, .button = .left, .kind = .down },
+                .{ .on = input.button_down.middle, .button = .middle, .kind = .down },
+                .{ .on = input.button_down.right, .button = .right, .kind = .context },
+            };
+            for (downs) |d| {
+                if (!d.on) continue;
+                if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, d.kind, d.button))) |m| self.dispatch(m);
+            }
+            const ups = [_]struct { on: bool, button: pointer.Button }{
+                .{ .on = input.button_up.left, .button = .left },
+                .{ .on = input.button_up.middle, .button = .middle },
+                .{ .on = input.button_up.right, .button = .right },
+            };
+            for (ups) |u| {
+                if (!u.on) continue;
+                if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, .up, u.button))) |m| self.dispatch(m);
             }
         }
 
-        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect) pointer.PointerEvent(Msg) {
+        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect, kind: pointer.PointerEvent(Msg).Kind, button: pointer.Button) pointer.PointerEvent(Msg) {
             var ev: pointer.PointerEvent(Msg) = .{
+                .kind = kind,
+                .button = button,
                 .x = input.mouse_x,
                 .y = input.mouse_y,
                 .mods = input.mods,
@@ -907,6 +1036,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         continue;
                     }
                 }
+                if (k == .f12 and self.opts.inspect_hotkey) {
+                    control.toggleInspect(&self.ctl);
+                    continue;
+                }
                 // Visual motion in a focused text area is resolved against the
                 // wrapped layout, so it becomes a `move` TextEvent (key consumed).
                 if (has_text_hook) {
@@ -936,13 +1069,25 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     }
                 }
                 // Enter-to-submit — apps opt in with `submitMsg`. Takes
-                // precedence over `keySpecialMsg` for the Enter key only.
+                // precedence over `keySpecialMsg` for the Enter key only,
+                // EXCEPT while a `text_area` has focus: Enter is a key there
+                // (a newline), delivered through `keySpecialMsg`.
                 if (@hasDecl(App, "submitMsg")) {
-                    if (k == .enter) {
+                    if (k == .enter and !focusIsTextArea(App, &self.model, prev_cmds)) {
                         if (App.submitMsg(&self.model)) |m| self.dispatch(m);
                         continue;
                     }
                 }
+                // Clipboard chords. New contract (HARDLINE-clean): `clipboardText`
+                // names what Ctrl+C / Ctrl+X put on the clipboard (a pure query),
+                // `clipboardMsg` turns the chord (+ the pasted text) into a Msg.
+                const has_clip_hooks = comptime (@hasDecl(App, "clipboardMsg") or @hasDecl(App, "clipboardText"));
+                if (has_clip_hooks and (k == .ctrl_c or k == .ctrl_x or k == .ctrl_v)) {
+                    self.routeClipboard(k);
+                    continue;
+                }
+                // Deprecated adapter: `handleClipboard` mutates the Model outside
+                // `update` (HARDLINE §1). Kept one release; see CHANGELOG.
                 const clipboard_capable = comptime (@hasDecl(App, "keyNeedsClipboard") and @hasDecl(App, "handleClipboard"));
                 if (clipboard_capable and App.keyNeedsClipboard(k)) {
                     App.handleClipboard(&self.model, k, self.host.clipboard());
@@ -955,7 +1100,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     }
                     // Nothing in the app took the key: the keyboard-focused
                     // widget gets it (Enter, arrows).
-                    _ = self.navKey(prev_cmds, k);
+                    _ = self.navKey(prev_cmds, prev, k);
                 }
             }
         }
@@ -1078,7 +1223,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// key hooks ran first and declined): Enter activates, arrows move
         /// inside a radio group, arrows / Home / End / PageUp / PageDown set a
         /// slider through `sliderMsg`.
-        fn navKey(self: *Self, cmds: anytype, k: @import("input/keys.zig").SpecialKey) bool {
+        fn navKey(self: *Self, cmds: anytype, prev: u1, k: @import("input/keys.zig").SpecialKey) bool {
             const idx = self.navResolve(cmds) orelse return false;
             switch (cmds[idx]) {
                 .button => |b| {
@@ -1100,15 +1245,31 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                             return true;
                         }
                     }
-                    return k == .enter and self.navActivate(cmds);
+                    if (k == .enter) return self.navActivate(cmds);
+                    return self.navScroll(cmds, prev, idx, k);
                 },
-                .checkbox, .canvas => return k == .enter and self.navActivate(cmds),
+                .checkbox => {
+                    if (k == .enter) return self.navActivate(cmds);
+                    return self.navScroll(cmds, prev, idx, k);
+                },
+                .canvas => |cv| {
+                    // A focusable pointer canvas (split divider...) gets the key as an event.
+                    if (cv.pointer and cv.id != 0 and has_canvas_hook) {
+                        const ev: pointer.CanvasEvent = .{ .id = cv.id, .kind = .key, .key = k };
+                        if (App.canvasMsg(&self.model, ev)) |m| {
+                            self.dispatch(m);
+                            return true;
+                        }
+                    }
+                    if (k == .enter) return self.navActivate(cmds);
+                    return self.navScroll(cmds, prev, idx, k);
+                },
                 .radio => {
                     if (k == .enter) return self.navActivate(cmds);
                     const forward = switch (k) {
                         .right, .down => true,
                         .left, .up => false,
-                        else => return false,
+                        else => return self.navScroll(cmds, prev, idx, k),
                     };
                     const to = focus.groupNeighbor(cmds, idx, forward) orelse return true;
                     self.nav = self.navCapture(cmds, to);
@@ -1126,7 +1287,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         .page_up => v += 0.2,
                         .home => v = 0,
                         .end => v = 1,
-                        else => return false,
+                        else => return self.navScroll(cmds, prev, idx, k),
                     }
                     v = std.math.clamp(v, 0, 1);
                     if (App.sliderMsg(&self.model, sl.grab_msg, v)) |m| self.dispatch(m);
@@ -1136,8 +1297,80 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
         }
 
+        /// Keys the focused widget did not use scroll the innermost id-bearing
+        /// scroll region that contains it, through `scrollMsg` (arrows a line,
+        /// PageUp / PageDown a viewport less a line, Home / End to the ends; the
+        /// app clamps like it does for the wheel).
+        fn navScroll(self: *Self, cmds: anytype, prev: u1, idx: usize, k: @import("input/keys.zig").SpecialKey) bool {
+            if (comptime !has_scroll_hook) return false;
+            // Innermost enclosing scroll region with an id.
+            var depth: i32 = 0;
+            var i = idx;
+            var found: ?usize = null;
+            while (i > 0) {
+                i -= 1;
+                switch (cmds[i]) {
+                    .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => depth += 1,
+                    .push_group, .push_overlay, .push_virtual_list => depth -= 1,
+                    .push_scroll => |sc| {
+                        if (depth == 0 and sc.id != 0) {
+                            found = i;
+                            break;
+                        }
+                        depth -= 1;
+                    },
+                    else => {},
+                }
+            }
+            const si = found orelse return false;
+            const sc = cmds[si].push_scroll;
+            const r = self.rects[prev].items[si];
+            const horiz = sc.direction == .horizontal;
+            const line: f32 = 40;
+            const page = @max(line, (if (horiz) r.w else r.h) - line);
+            const along: f32 = switch (k) {
+                .down => if (horiz) 0 else line,
+                .up => if (horiz) 0 else -line,
+                .right => if (horiz) line else 0,
+                .left => if (horiz) -line else 0,
+                .page_down => page,
+                .page_up => -page,
+                .home => -1.0e7,
+                .end => 1.0e7,
+                else => return false,
+            };
+            if (along == 0) return false;
+            const dx: f32 = if (horiz) along else 0;
+            const dy: f32 = if (horiz) 0 else along;
+            if (App.scrollMsg(&self.model, sc.id, dx, dy)) |m| {
+                self.dispatch(m);
+                return true;
+            }
+            return false;
+        }
+
         fn sliderValue(_: *Self, sl: anytype) f32 {
             return sl.value;
+        }
+
+        /// Ctrl+C / Ctrl+X / Ctrl+V through the App's `clipboardText` (what to
+        /// copy, read BEFORE the cut Msg runs) and `clipboardMsg` (the Msg for
+        /// the chord, carrying the pasted text for Ctrl+V). An empty paste is
+        /// not delivered, so an image paste still reaches `effectMsg` unclaimed.
+        fn routeClipboard(self: *Self, k: anytype) void {
+            const clip = self.host.clipboard();
+            var pasted: []const u8 = "";
+            if (k == .ctrl_v) {
+                pasted = clip.read();
+                if (pasted.len == 0) return;
+            } else if (@hasDecl(App, "clipboardText")) {
+                if (App.clipboardText(&self.model, k)) |t| {
+                    if (t.len > 0) clip.write(t);
+                }
+            }
+            if (@hasDecl(App, "clipboardMsg")) {
+                if (App.clipboardMsg(&self.model, k, pasted)) |m| self.dispatch(m);
+            }
         }
 
         /// Wheel routing, innermost consumer first: a captured or hovered
@@ -1324,7 +1557,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     ev.dy = input.wheel_dy;
                 },
                 .leave => ev.kind = .leave,
-                .layout => return,
+                .layout, .key => return,
             }
             switch (ev.kind) {
                 .down, .drag, .double_click, .triple_click, .up => {
@@ -1587,11 +1820,16 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn buildView(self: *Self, input: Input) !u1 {
             self.current ^= 1;
             const cur = self.current;
+            const t_view = control.stamp(&self.ctl);
             self.bufs[cur].reset();
             if (@hasDecl(App, "themeFor")) self.bufs[cur].theme = App.themeFor(&self.model);
             App.view(&self.model, &self.bufs[cur]);
+            checkBalance(self.bufs[cur].cmds.items, "view");
+            // Dev inspector: appended after the (pure) view, from the previous
+            // frame's data; a no-op unless it is switched on.
+            control.appendInspectorFor(self, &self.bufs[cur], cur, cur ^ 1, @floatFromInt(input.width), @floatFromInt(input.height));
             const cmds = self.bufs[cur].cmds.items;
-            checkBalance(cmds, "view");
+            const t_layout = control.stamp(&self.ctl);
 
             try self.rects[cur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
@@ -1601,6 +1839,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 @floatFromInt(input.height),
                 self.measurer,
             );
+            const t_done = control.stamp(&self.ctl);
+            self.ctl.timings.view_ms = control.msBetween(t_view, t_layout);
+            self.ctl.timings.layout_ms = control.msBetween(t_layout, t_done);
             return cur;
         }
 
@@ -1630,6 +1871,26 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.ts.ime_cursor = ime.cursor;
         }
 
+        /// Pick the cursor for whatever the pointer is over and push it to the
+        /// Host when it changed. Compiles away on hosts without `setCursor`.
+        fn updateCursor(self: *Self, cur: u1) void {
+            if (comptime !@hasDecl(Host, "setCursor")) return;
+            const cmds = self.bufs[cur].cmds.items;
+            const hovered: ?usize = self.ts.hover_index;
+            var shape: cursor_mod.CursorShape = .arrow;
+            var kind: cursor_mod.HoverKind = .none;
+            if (hovered) |i| if (i < cmds.len) {
+                kind = cursor_mod.kindOf(cmds[i]);
+                shape = cursor_mod.defaultFor(cmds[i]);
+            };
+            if (comptime @hasDecl(App, "cursorFor")) {
+                if (App.cursorFor(&self.model, kind)) |s| shape = s;
+            }
+            if (shape == self.cursor) return;
+            self.cursor = shape;
+            self.host.setCursor(shape);
+        }
+
         /// Push the app's dynamic window title, only on change.
         fn pushTitle(self: *Self) void {
             if (!@hasDecl(App, "windowTitle")) return;
@@ -1645,13 +1906,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         }
 
         fn uploadFrame(self: *Self, cmds: []const cmd.Cmd(Msg), rects: []const Rect, ts: TransientState) void {
-            const split = render.buildFrame(&self.verts, &self.text_draws, &self.image_draws, &self.scene_draws, &self.scene_items, self.gpa, cmds, rects, ts, self.measurer);
+            const split = render.buildFrame(&self.verts, &self.text_draws, &self.image_draws, &self.scene_draws, &self.scene_items, &self.scene_sprites, self.gpa, cmds, rects, ts, self.measurer);
             // Tell a layering-aware Gpu where the overlay layer starts, so an
             // opaque overlay hides the base layer's text and images.
             if (comptime @hasDecl(Gpu, "setOverlayStart")) self.gpu.setOverlayStart(split);
             self.gpu.uploadVertices(self.verts.items);
             self.gpu.uploadText(self.text_draws.items);
-            resources.stageDraws(self.gpu, if (has_resources) &self.res_table else null, self.image_draws.items, self.scene_draws.items, self.scene_items.items);
+            resources.stageDraws(self.gpu, if (has_resources) &self.res_table else null, self.image_draws.items, self.scene_draws.items, .{ .items = self.scene_items.items, .sprites = self.scene_sprites.items });
         }
 
         /// What the secondary window did this frame, for the snapshot gate.
@@ -1875,6 +2136,12 @@ fn checkBalance(cmds: anytype, view_name: []const u8) void {
             view_name, cmd.formatBalanceError(bal_err, &buf),
         });
     }
+}
+
+/// The focused widget (by `focusedMsg`) is a `text_area`.
+fn focusIsTextArea(comptime App: type, model: *const App.Model, cmds: anytype) bool {
+    const i = focusIndex(App, model, cmds) orelse return false;
+    return cmds[i] == .text_area;
 }
 
 /// Resolve the focused widget's cmd index for this frame. Apps that
