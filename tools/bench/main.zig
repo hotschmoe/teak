@@ -46,7 +46,7 @@ fn buildRows(cb: *CB, n: usize) void {
 }
 
 fn buildProse(cb: *CB, n: usize) void {
-    const line = "The quick brown fox jumps over the lazy dog, again and again.";
+    const line = "The quick brown fox jumps over the lazy dog."; // 44 B: within the measure cache's 48-byte run limit
     cb.pushScroll(.{ .id = 1, .flex = 1 });
     for (0..n) |_| cb.text(line);
     cb.popScroll();
