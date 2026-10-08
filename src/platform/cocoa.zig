@@ -67,6 +67,8 @@ const State = struct {
     view: Id,
     layer: Id,
     running: bool = true,
+    /// `occlusionState` had the Visible bit at the last poll.
+    was_visible: bool = false,
     debug: bool = false,
     polls: u64 = 0,
     /// Logical size in points (content view bounds) and the backing scale.
@@ -462,6 +464,13 @@ pub const Host = struct {
     /// keep the CAMetalLayer's `contentsScale` in step.
     fn syncGeometry(self: *Host) void {
         const s = self.st;
+        // A window that was occluded (or not yet on screen) when a frame was
+        // presented dropped it (wgpu answers `Occluded`), and an idle frame is
+        // never redrawn: ask for a rebuild when it becomes visible. The flag
+        // rides the `resized` input, which the run loop never skips.
+        const visible = msg(u64, s.window, sel("occlusionState"), .{}) & 2 != 0;
+        if (visible and !s.was_visible) s.resized_pending = true;
+        s.was_visible = visible;
         const b = msg(objc.CGRect, s.view, sel("bounds"), .{});
         const scale: f32 = @floatCast(msg(f64, s.window, sel("backingScaleFactor"), .{}));
         const w: u32 = @max(1, @as(u32, @intFromFloat(@round(@max(b.size.w, 0)))));
