@@ -259,7 +259,7 @@ pub const StubGpu = struct {
     pub fn releaseImage(self: *StubGpu, _: u32) void {
         self.image_releases += 1;
     }
-    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw) void {
+    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw, _: []const render.SceneItem) void {
         self.scene_calls += 1;
         self.last_scene_count = d.len;
         if (d.len > 0) self.last_scene_mesh = d[0].mesh;
@@ -580,6 +580,68 @@ test "run: Shift+Tab walks focus backwards" {
     });
     defer t.destroy();
     try std.testing.expectEqual(TabApp.Focus.a, t.rt.model.focus);
+}
+
+// ── Measured rows + modifier reports ────────────────────────────────
+
+const RowsApp = struct {
+    pub const Model = struct { got: [4]f32 = @splat(0), n: usize = 0, first: u32 = 99, calls: u32 = 0, shift: bool = false, mods_calls: u32 = 0 };
+    pub const Msg = union(enum) { rows: struct { first: u32, n: u8, h: [4]f32 }, mods: pointer.Modifiers };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .rows => |r| {
+                m.calls += 1;
+                m.first = r.first;
+                m.n = r.n;
+                m.got = r.h;
+            },
+            .mods => |mm| {
+                m.shift = mm.shift;
+                m.mods_calls += 1;
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushScroll(.{ .padding = 0, .gap = 0, .width = 200, .height = 100, .id = 1 });
+        cb.pushVirtualList(.{ .total_extent = 1000, .start_offset = 300, .visible_start = 7, .visible_end = 9, .id = 4, .align_cross = .stretch });
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 20 });
+        cb.popGroup();
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 30 });
+        cb.popGroup();
+        cb.popVirtualList();
+        cb.popScroll();
+    }
+    pub fn virtualRowsMsg(_: *const Model, id: u32, first: u32, heights: []const f32) ?Msg {
+        if (id != 4) return null;
+        var h: [4]f32 = @splat(0);
+        @memcpy(h[0..heights.len], heights);
+        return .{ .rows = .{ .first = first, .n = @intCast(heights.len), .h = h } };
+    }
+    pub fn modsMsg(_: *const Model, mods: pointer.Modifiers) ?Msg {
+        return .{ .mods = mods };
+    }
+};
+
+test "run: virtualRowsMsg reports the measured row heights once, and again only when they change" {
+    const t = try playWith(RowsApp, .{ .script = &.{ .{}, .{}, .{}, .{} } }, .{ .idle_skip = false });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls);
+    try std.testing.expectEqual(@as(u32, 7), t.rt.model.first);
+    try std.testing.expectEqual(@as(usize, 2), t.rt.model.n);
+    try std.testing.expectEqual(@as(f32, 20), t.rt.model.got[0]);
+    try std.testing.expectEqual(@as(f32, 30), t.rt.model.got[1]);
+}
+
+test "run: modsMsg fires when the modifier keys change, not every frame" {
+    const t = try playWith(RowsApp, .{ .script = &.{
+        .{},
+        .{ .mods = .{ .shift = true } },
+        .{ .mods = .{ .shift = true } },
+        .{},
+    } }, .{ .idle_skip = false });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.rt.model.mods_calls); // shift down, shift up
+    try std.testing.expect(!t.rt.model.shift);
 }
 
 // ── Frame diff: IME aliasing, over-long title ───────────────────────
@@ -1884,7 +1946,7 @@ const mutation = struct {
         switch (@typeInfo(T)) {
             .void => return {},
             .bool => return false,
-            .int => return if (comptime std.mem.eql(u8, name, "key")) 0 else @truncate(3 + pick),
+            .int => return if (comptime std.mem.eql(u8, name, "key")) 0 else std.math.cast(T, (3 + pick) % 4) orelse 0,
             .float => return 1.5,
             .@"enum" => |i| return @fromBackingInt(@intCast(i.field_values[0])),
             .optional => |i| return try sample(i.child, a, pick, name),
@@ -1966,7 +2028,14 @@ const mutation = struct {
             },
             .@"struct" => |i| {
                 inline for (i.field_names, i.field_types) |n, F| {
-                    if (mutate(F, &@field(v.*, n), k)) return true;
+                    if (i.layout == .@"packed") {
+                        // fields of a packed struct have no addressable storage: edit a copy
+                        var f = @field(v.*, n);
+                        if (mutate(F, &f, k)) {
+                            @field(v.*, n) = f;
+                            return true;
+                        }
+                    } else if (mutate(F, &@field(v.*, n), k)) return true;
                 }
                 return false;
             },

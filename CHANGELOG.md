@@ -94,6 +94,21 @@
 
 ### Added
 
+- Toasts slide in from the right and fade (and slide out on expiry / dismiss) with `teak.anim` tweens; the app
+  forwards `animationMsg` frames as `Toast.Msg.frame` and lists `Sub.animation_frame` while `Toast.animating`.
+
+- `ButtonCmd.underline` / `cb.buttonStyledUnderlined`: one underlined character in a button label (a 1 px quad under the
+  glyph). Menu bars and panels use it for their `&` mnemonics.
+
+- **DataTable: pixel-accurate ellipsis and type-to-search.** New `ButtonStyle.ellipsis` (fixed-width button whose label is cut with U+2026 at the pixel, any
+  font); DataTable cells and headers use it instead of counting characters (`ViewOpts.char_w` is gone). Type a prefix to jump to the first row whose
+  sort-column cell starts with it (`Table.charMsg`, `Table.searchText`).
+
+- **Tables and lists at scale**: `teak.DataTable` (virtualized, sortable, resizable, selectable, sticky header), `teak.VarList`
+  (rows of different heights, measured by layout, scroll-anchored), `teak.TreeList` (virtualized tree, keyboard) and `teak.Scroller`
+  (smooth wheel + fling as Model data, driven by `Sub.animation_frame`). New App hooks `virtualRowsMsg` and `modsMsg`;
+  `VirtualListStyle` gains `total_extent`, `start_offset`, `id`, `align_cross`. `examples/tables`, `tools/web-frame-bench.mjs`,
+  docs/features/tables-at-scale.md.
 - **SDF surfaces**: `Radii` (per-corner), soft `Shadow` (blur / spread / offset, CSS semantics), two-stop `Gradient` (linear /
   radial) on `GroupStyle`, `ButtonStyle`, `OverlayStyle`, `TextInputStyle` (`radius`, `gradient`, `soft_shadow`). A rect using
   any of them is one signed-distance quad in the solid vertex stream (`render/sdf.zig`; `shaders/quad.wgsl` reads its record
@@ -159,6 +174,19 @@
   (same exports). Measurement and rasterization both place glyphs from the shaper; invalid
   UTF-8 now yields U+FFFD per bad byte (was byte-as-codepoint).
 
+- `viewport3d` (= `scene3d` with `SceneCmd.view`): `SceneItem` (mesh key + 3x4 transform + tint + id + flags), grid / gizmo /
+  section-cut options, material and highlight colour as data (`core/scene/view.zig`).
+- Both scene backends draw `viewport3d` items: one instanced `drawIndexed` per mesh run, per-item transform / tint /
+  `highlight` blend / `unlit` / `no_edges` / `hidden`, flat material, and a section-plane `discard` (faces and edges).
+  `shaders/scene.wgsl` Globals grew to 176 B; new backend-neutral plan in `src/gpu/scene_pass.zig`.
+- Section cut with caps (`View.cut`): stencil-parity caps per closed item (per-item `Item.cap_color`, hatched; `no_cap` for open
+  shells), exact cut outlines from a CPU copy of each uploaded mesh (`section.outlinePositions`). Scene targets now use
+  `Depth24PlusStencil8`. The canvas `layout` event also carries the rect's window origin (`x`, `y`) and fires when it moves;
+  `pick.gizmoLabels` turns that into axis-letter anchors for overlay text.
+- `viewport3d` grid and gizmo: `shaders/scene_grid.wgsl` ray-intersects a world plane per pixel (anti-aliased minor / major
+  lines, two axis lines, distance and far-plane fade, depth-tested), and a corner axis triad is drawn in a sub-viewport
+  from the camera's own rotation. Hit-testing the gizmo is `scene.pick.gizmoHit` (S2).
+
 ### Changed
 
 - `Dropdown`/`Combobox`: the keyboard-highlighted row now also takes the theme's `hover_fg` (fixes invisible labels on inverting themes).
@@ -170,6 +198,9 @@
 
 ### Changed (breaking)
 
+- **Scene staging takes the flat item list**: `render.buildFrame(..., scene_draws, scene_items, ...)`,
+  `stageDraws(gpu, table, images, scenes, items)` and `Gpu.renderScenes(draws, items)` (one extra slice each; pass
+  `scene_items` through from `buildFrame`). `SceneDraw` gained `item_first/item_count`, grid, gizmo, cut, material.
 - **Zig 0.17.0 is now required; 0.16 support is dropped.** See
   [docs/migration-0.17.md](docs/migration-0.17.md).
   - Array/string `**` repeats replaced with `@splat` (library, examples, tests).
