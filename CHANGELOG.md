@@ -11,8 +11,10 @@
   UTF-8 now yields U+FFFD per bad byte (was byte-as-codepoint).
 
 - `viewport3d` (= `scene3d` with `SceneCmd.view`): `SceneItem` (mesh key + 3x4 transform + tint + id + flags), grid / gizmo /
-  section-cut options, material and highlight colour as data (`core/scene/view.zig`). Plumbing only in this step; the
-  renderer draws items in the next one.
+  section-cut options, material and highlight colour as data (`core/scene/view.zig`).
+- Both scene backends draw `viewport3d` items: one instanced `drawIndexed` per mesh run, per-item transform / tint /
+  `highlight` blend / `unlit` / `no_edges` / `hidden`, flat material, and a section-plane `discard` (faces and edges).
+  `shaders/scene.wgsl` Globals grew to 176 B; new backend-neutral plan in `src/gpu/scene_pass.zig`.
 
 ### Changed
 
