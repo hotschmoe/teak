@@ -20,6 +20,8 @@ pub const transient = @import("core/transient.zig");
 pub const text = @import("core/text.zig");
 /// UAX#29 graphemes, word boundaries, lossy UTF-8 decoding and Unicode property lookups.
 pub const unicode = @import("core/unicode.zig");
+/// UAX #9 bidirectional algorithm: levels, per-line visual runs, visual caret movement, selection spans.
+pub const bidi = @import("core/bidi.zig");
 /// UAX#14-lite line-break opportunities over grapheme clusters.
 pub const linebreak = @import("core/linebreak.zig");
 /// Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.
@@ -72,6 +74,10 @@ pub const chart = @import("core/chart.zig");
 pub const table = @import("core/table.zig");
 /// Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
 pub const pointer = @import("core/pointer.zig");
+/// Mouse-cursor shapes and the hovered-cmd picker (`Host.setCursor`, App `cursorFor`).
+pub const cursor = @import("core/cursor.zig");
+pub const CursorShape = cursor.CursorShape;
+pub const HoverKind = cursor.HoverKind;
 /// Declarative effects (HARDLINE hatch 7): data describing I/O the Host performs.
 pub const effects = @import("core/effects.zig");
 /// Data types for `scene3d`: meshes, camera and per-frame scene draws.
@@ -115,6 +121,8 @@ pub const GroupStyle = cmd.GroupStyle;
 pub const ScrollStyle = cmd.ScrollStyle;
 /// Placement and look of a `push_overlay` (second z-layer).
 pub const OverlayStyle = cmd.OverlayStyle;
+/// Which side of its anchor widget an `OverlayStyle.anchor_msg` overlay opens on.
+pub const AnchorSide = cmd.AnchorSide;
 /// Geometry of a `push_virtual_list` (only visible rows are emitted).
 pub const VirtualListStyle = cmd.VirtualListStyle;
 /// Intrinsic size and flex of an `image` leaf.
@@ -221,6 +229,12 @@ pub const MeshData = scene.MeshData;
 pub const Camera = scene.Camera;
 /// One 3D scene to render this frame.
 pub const SceneDraw = scene.SceneDraw;
+pub const SceneItem = scene.Item;
+pub const SceneSprite = scene.Sprite;
+pub const ScenePlane = scene.Plane;
+pub const SceneData = scene.SceneData;
+pub const SceneItemFlags = scene.ItemFlags;
+pub const SceneView = scene.View;
 
 /// A declared GPU resource (image or mesh) keyed by an app-chosen key.
 pub const Resource = resources.Resource;
@@ -353,6 +367,10 @@ pub const textFieldSpecial = text_field.textFieldSpecial;
 pub const textFieldReplaceSelection = text_field.textFieldReplaceSelection;
 /// True if a key needs host-level clipboard access.
 pub const keyNeedsClipboard = text_field.keyNeedsClipboard;
+/// The Msg for a clipboard chord on a field, for the App's `clipboardMsg` hook.
+pub const textFieldClipboardMsg = text_field.textFieldClipboardMsg;
+/// What Ctrl+C / Ctrl+X copy from a field Model, for the App's `clipboardText` hook.
+pub const textFieldCopyText = text_field.textFieldCopyText;
 
 /// The GPU vertex layout shared by every quad (position, color, uv).
 pub const Vertex = vertex.Vertex;

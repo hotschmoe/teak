@@ -236,6 +236,11 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     };
 }
 
+pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    if (m.tab != .table or !m.table.focused) return null;
+    return if (Table.charMsg(c)) |k| .{ .table = k } else null;
+}
+
 pub fn animationMsg(_: *const Model, dt_ms: u32) ?Msg {
     // One frame time feeds whichever scroller is moving; the others ignore a step at rest.
     return .{ .table = .{ .frame = dt_ms } };
@@ -272,8 +277,8 @@ const tree_msgs = struct {
 };
 
 fn tabButton(cb: anytype, m: *const Model, tab: Tab, label: []const u8) void {
-    var s = cb.theme.button;
-    if (m.tab == tab) s.bg = cb.theme.palette.accent;
+    // The active tab is the primary button: its label colour is picked for contrast on the accent.
+    var s = if (m.tab == tab) cb.theme.button_primary else cb.theme.button;
     s.min_width = 90;
     s.height = 30;
     cb.buttonStyled(.{ .tab = tab }, label, s);
@@ -283,15 +288,16 @@ pub fn view(m: *const Model, cb: anytype) void {
     const pal = cb.theme.palette;
     cb.pushGroup(.{ .direction = .vertical, .padding = 12, .gap = 8, .align_cross = .stretch });
 
-    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8 });
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .align_cross = .center });
     tabButton(cb, m, .table, "Table");
     tabButton(cb, m, .list, "List");
     tabButton(cb, m, .tree, "Tree");
     const status = switch (m.tab) {
-        .table => std.fmt.allocPrint(cb.arena.allocator(), "{d} rows, {d} selected{s}", .{
+        .table => std.fmt.allocPrint(cb.arena.allocator(), "{d} rows, {d} selected{s}{s}", .{
             m.table.n_rows,
             m.table.sel_count,
             if (m.table.sort_col) |c| std.fmt.allocPrint(cb.arena.allocator(), ", sorted by {s} {s}", .{ columns[c].title, if (m.table.sort_desc) "desc" else "asc" }) catch "" else "",
+            if (m.table.search_len > 0) std.fmt.allocPrint(cb.arena.allocator(), ", find \"{s}\"", .{Table.searchText(m.table)}) catch "" else "",
         }) catch "",
         .list => std.fmt.allocPrint(cb.arena.allocator(), "{d} messages of 1-6 lines, {d:.0} px tall", .{ m.list.n, m.list.total() }) catch "",
         .tree => std.fmt.allocPrint(cb.arena.allocator(), "{d} nodes, {d} visible", .{ m.tree.n_nodes, m.tree.n_visible }) catch "",
