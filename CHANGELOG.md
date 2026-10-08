@@ -169,6 +169,8 @@
 
 ### Added
 
+- **Win32 live CI** (`.github/workflows/win32-live.yml`, `tools/win32_live/driver.zig`): launches the chrome and effects examples as real Win32 windows on windows-latest and windows-11-arm (DX12 WARP), drives them with `SendInput`, the clipboard and window resizes, reads state back through `TEAK_SNAPSHOT` and uploads window captures. Cross-process OLE drag-and-drop is a documented known gap (skipped). Found and fixed on the way: the wgpu surface texture was never released after present (DX12 resize panicked "Invalid surface"), and `LoadCursorW` claimed `u16` alignment for a MAKEINTRESOURCE value (Debug panic in `setCursor`).
+
 - **Menus from the command table**: `teak.commands.menuItems` (runtime rows: label, shortcut text, enabled, command index) and comptime `Chord.text`;
   kerf_viewer gets a File / View / Parts menu bar built from its commands, gallery's menu shortcuts are now real bindings (Ctrl+T, F5, Ctrl+C/V/A) sharing one chord table.
 

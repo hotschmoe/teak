@@ -1,0 +1,76 @@
+name: Win32 live
+
+# A real Win32 window on the runner's interactive desktop, on the software
+# adapter (DX12 WARP), driven with real input (SendInput, DoDragDrop, the
+# clipboard) by tools/win32_live/driver.zig. The GUI is read back through the
+# TEAK_SNAPSHOT sink and the window is captured to PNG artifacts.
+
+on:
+  pull_request:
+    paths:
+      - "src/platform/win32*.zig"
+      - "src/platform/native_effects.zig"
+      - "src/gpu/**"
+      - "src/run.zig"
+      - "tools/win32_live/**"
+      - ".github/workflows/win32-live.yml"
+      - "examples/chrome/**"
+      - "examples/effects/**"
+  push:
+    branches: [master]
+    paths:
+      - "src/platform/win32*.zig"
+      - "tools/win32_live/**"
+  workflow_dispatch:
+
+concurrency:
+  group: win32-live-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZIG_VERSION: 0.17.0
+  ZUNK_REF: master
+
+jobs:
+  live:
+    name: Live ${{ matrix.example }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+        example: [chrome, effects]
+        include:
+          - { os: windows-latest, arch: x86_64 }
+          - { os: windows-11-arm, arch: aarch64 }
+    defaults:
+      run:
+        working-directory: teak
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - name: Build the driver
+        run: zig build-exe -lc --dep teak "-Mroot=tools/win32_live/driver.zig" "-Mteak=src/teak.zig" "-femit-bin=$env:RUNNER_TEMP\driver.exe"
+      - name: Build the UI exe
+        working-directory: teak/examples/${{ matrix.example }}
+        run: zig build ui-install --summary all
+      - name: Drive it
+        working-directory: teak/examples/${{ matrix.example }}
+        env:
+          TEAK_GPU_FALLBACK: "1"
+        run: |
+          $out = "$env:GITHUB_WORKSPACE\live-${{ matrix.example }}-${{ matrix.arch }}"
+          $env:PATH = "$PWD\zig-out\bin;$env:PATH"
+          & "$env:RUNNER_TEMP\driver.exe" "$PWD\zig-out\bin\${{ matrix.example }}-ui.exe" $out ${{ matrix.example }}
+          if ($LASTEXITCODE -ne 0) { throw "live driver reported failures (exit $LASTEXITCODE)" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-${{ matrix.example }}-${{ matrix.arch }}
+          path: ${{ github.workspace }}/live-${{ matrix.example }}-${{ matrix.arch }}
+          if-no-files-found: warn

@@ -812,6 +812,11 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 return;
             }
 
+            // The frame texture is returned with ownership. Holding it past
+            // the present keeps a swap-chain buffer referenced, which makes
+            // the next `wgpuSurfaceConfigure` (a window resize) fail on DX12
+            // with "Invalid surface".
+            defer c.wgpuTextureRelease(surface_texture.texture);
             const texture_view = c.wgpuTextureCreateView(surface_texture.texture, null);
             defer c.wgpuTextureViewRelease(texture_view);
 
