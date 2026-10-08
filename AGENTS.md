@@ -208,11 +208,13 @@ src/                                          -- the library, consumable as a Zi
       sort.zig                                -- Depth ordering for blended scene layers (translucent planes, sprites)
       view.zig                                -- The data a viewport3d Cmd carries besides the camera: placed mesh instances (Item) and
     widgets/
+      color_picker.zig                        -- Colour picker: a saturation / value square, a hue strip, a hex field, R / G / B fields and a
       date.zig                                -- Calendar dates: pure proleptic-Gregorian maths, ISO 8601 parse / format, no allocation and no
       date_field.zig                          -- Date field: an ISO text field (YYYY-MM-DD) with a calendar popover
       dialog.zig                              -- Modal dialog helper: a centred card over a dimmed window with a title, a message (or app
       menu.zig                                -- Menus: a menu bar with drop-down menus and nested submenus, and a context (right-click) menu
       progress.zig                            -- Progress bar: determinate (a fraction) and indeterminate (a block sliding across the track)
+      spinner.zig                             -- Number spinner: a NumericField with step buttons, plus arrow-key and wheel stepping
       split.zig                               -- Split pane: two panes separated by a draggable divider, with minimum sizes and a ratio that
       tabs.zig                                -- Tab strip: a row of tabs where exactly one is selected, with keyboard navigation
       toast.zig                               -- Toasts: transient notifications stacked in a corner that dismiss themselves

@@ -333,6 +333,13 @@ fields (never the one being typed in), and an unparseable field is drawn with a 
 `canvasMsg` (`color_picker.canvasMsg`), the fields from the app's key hooks (`charMsg(field, c)` / `keyMsg(field, key)`),
 read the result with `rgb(model)` / `rgba(model)`.
 
+**spinner.** `Spinner(.{ .min, .max, .step, .big_step, .precision })` wraps a `NumericField`: its `Msg` *is* the
+NumericField's, so typing routes through `textFieldChar` / `textFieldSpecial` unchanged, and stepping is a function the
+app calls from its own `update` arm (`Spinner.step(&m.qty, .up)`). `keyStep` maps Up / Down / Page Up / Page Down,
+`wheelStep(dy, shift)` maps the wheel (Shift = big step). A step starts from the current value (the minimum when the
+text is empty or invalid), rounds to `precision` (no `0.30000000000000004`), clamps to `[min, max]` and rewrites the
+text; the `-` / `+` buttons disable at the limits.
+
 **date_field.** An ISO text field (`YYYY-MM-DD`) plus a calendar popover: a modal overlay with a month header (`<<` `<`
 `>` `>>`), weekday headings (Monday first), a 6 x 7 grid of day buttons (other-month days muted, today outlined,
 selected inverted, the keyboard cursor in a heavy border) and Today / Clear. The date maths (`widgets.date`: days from

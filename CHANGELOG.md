@@ -170,6 +170,7 @@
 ### Added
 
 - `widgets.color_picker`: SV square + hue strip (canvas triangles), hex / R / G / B fields, swatches.
+- `widgets.spinner.Spinner`: NumericField with step buttons, arrow / Page / wheel stepping.
 
 - Win32 UIA control patterns (Invoke / Toggle / Value) route AT requests back as input through `teak.A11yActionQueue` and `Host.pollA11yActions`; `ValuePattern` replaces the value-as-Name fallback.
 - Accessibility wiring (M3): `Runtime` builds the a11y tree and publishes it to the Host only when it changed
