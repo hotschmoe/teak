@@ -84,7 +84,7 @@ A Gpu type must expose these declarations:
 | `uploadImage` | `fn(*Gpu, []const u8, u32, u32) TextureHandle` | Upload an RGBA8 image (`width * height * 4` bytes) and return an opaque handle the app stashes in `ImageCmd.handle`. App-driven cache; cached for the lifetime of the Gpu. Implemented on both native and web (web wires zunk v0.6.0+ texture upload). |
 | `uploadImages` | `fn(*Gpu, []const ImageDraw) void` | Per-frame counterpart to `uploadText` for images. Walks `ImageDraw`s and records a draw entry per visible image. |
 | `setOverlayStart` | `fn(*Gpu, OverlaySplit) void` | *Optional.* Where the overlay layer starts in each staged list; call before `uploadVertices` / `uploadText` / `uploadImages` / `renderScenes` each frame (see "Overlay layering"). |
-| `releaseImage` | `fn(*Gpu, TextureHandle) void` | *Optional.* Free an `uploadImage` texture; the slot is reused by the next upload. The handle is dead afterwards (no generation counter). |
+| `releaseImage` | `fn(*Gpu, TextureHandle) void` | Free an `uploadImage` texture; the slot is reused by the next upload. The handle is dead afterwards (no generation counter). The image table grows on demand (up to 65536 live images, then `uploadImage` logs and returns none); there is no eviction because handles are app-owned. |
 | `uploadMesh` | `fn(*Gpu, MeshData) MeshHandle` | *Optional scene block.* Copy mesh geometry to GPU buffers (128-slot table). `MESH_HANDLE_NONE` on invalid data (`MeshData.validate`) or a full table. |
 | `releaseMesh` | `fn(*Gpu, MeshHandle) void` | *Optional scene block.* Free a mesh. On web, call between frames (a mesh destroyed while a recorded-but-unpresented frame still uses it invalidates the submit). |
 | `renderScenes` | `fn(*Gpu, []const SceneDraw) void` | *Optional scene block.* Render up to 16 scenes offscreen and stage their composites for the next `renderFrame`. Pass an empty slice to clear last frame's composites. |
@@ -93,7 +93,7 @@ A Gpu type must expose these declarations:
 | `closeSecondarySurface` | `fn(*Gpu, u32) void` | Release the surface for the given secondary id. No-op on invalid ids. |
 | `resizeWindow` | `fn(*Gpu, u32, u32, u32) void` | Reconfigure a window's surface. `id = 0` is the primary (same effect as `resize`). |
 
-`ClearColor = [4]f32` (RGBA, 0..1). `validateGpu` comptime-asserts every required decl above. `rasterizeText` / `uploadText` / `uploadImage` / `uploadImages` / `renderToWindow` / `openSecondarySurface` / `closeSecondarySurface` / `resizeWindow` are HARDLINE §4(d) surface extensions added during / after the `functional_gaps_yolo` push. The scene block (`uploadMesh` + `releaseMesh` + `renderScenes`) and `releaseImage` are *optional* extensions checked only when declared (like `Host.scaleFactor`): the scene trio must come together, each a function; `teak.run` calls them only when present. Compile-error format:
+`ClearColor = [4]f32` (RGBA, 0..1). `validateGpu` comptime-asserts every required decl above. `rasterizeText` / `uploadText` / `uploadImage` / `uploadImages` / `renderToWindow` / `openSecondarySurface` / `closeSecondarySurface` / `resizeWindow` are HARDLINE §4(d) surface extensions added during / after the `functional_gaps_yolo` push. `releaseImage` is required. The scene block (`uploadMesh` + `releaseMesh` + `renderScenes`) is an *optional* extension checked only when declared (like `Host.scaleFactor`): the scene trio must come together, each a function; `teak.run` calls them only when present. Compile-error format:
 
 ```
 Gpu 'MyGpu' is missing declaration 'uploadVertices'
