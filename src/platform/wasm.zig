@@ -43,11 +43,12 @@ pub const NativeHandle = struct {};
 
 /// DOM `keyCode` -> shortcut key (see `InputQueue.pushShortcut`); built at
 /// comptime from the key enum so letters, digits and F-keys cost no lines.
+const ShortcutCode = struct { code: u8, key: teak.Key };
 const shortcut_codes = shortcutTable();
 
-fn shortcutTable() [shortcut_count]struct { code: u8, key: teak.Key } {
+fn shortcutTable() [shortcut_count]ShortcutCode {
     @setEvalBranchQuota(10_000);
-    var out: [shortcut_count]struct { code: u8, key: teak.Key } = undefined;
+    var out: [shortcut_count]ShortcutCode = undefined;
     var n: usize = 0;
     for (0..26) |i| {
         out[n] = .{ .code = @intCast(65 + i), .key = @fromBackingInt(@intCast(i)) };
@@ -68,7 +69,7 @@ fn shortcutTable() [shortcut_count]struct { code: u8, key: teak.Key } {
     return out;
 }
 
-const shortcut_extra = [_]struct { code: u8, key: teak.Key }{
+const shortcut_extra = [_]ShortcutCode{
     .{ .code = 13, .key = .enter },          .{ .code = 9, .key = .tab },
     .{ .code = 27, .key = .escape },         .{ .code = 32, .key = .space },
     .{ .code = 8, .key = .backspace },       .{ .code = 46, .key = .delete },
