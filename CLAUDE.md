@@ -34,6 +34,10 @@ the change yields, not the doc. If you believe the doc is wrong, invoke
 
 ## Build Commands
 
+zunk (the wasm/WebGPU toolchain) is a **hash-pinned dependency** in `build.zig.zon` (a zunk release tag). To co-develop teak and zunk,
+build against a local checkout with `zig build <step> --fork=../zunk` instead of editing the pin; bump the pin (`zig fetch` the new tag's
+commit) when a zunk release ships.
+
 Requires **Zig 0.17.0+**.
 
 The repo is split into a **library** (root `build.zig`) and **examples** (each with their own `build.zig`). Library tests run from root; example steps run from the example's directory.
@@ -317,7 +321,7 @@ shaders/
 tools/
   a11yprobe.mjs                               -- Web accessibility probe: serve a zunk `dist/`, load it in headless Chromium
   audit.zig                                   -- HARDLINE drift audit. Walks `src/` and flags the greppable rules
-  gate.sh                                     -- Local merge gate for teak (+ the sibling zunk checkout)
+  gate.sh                                     -- Local merge gate for teak (+ zunk tests when a ../zunk checkout is present)
   gen_api.zig                                 -- Generated API reference: walks `src/teak.zig` with `std.zig.Ast`, follows
   gen_compose.py                              -- generates src/text/compose_table.zig (Unicode compose sequences)
   gen_tree.py                                 -- regenerates the Module Structure tree in CLAUDE.md / AGENTS.md from the files on disk

@@ -44,7 +44,7 @@ ship is [docs/PARITY.md](docs/PARITY.md).
 
 ### Open by area (not yet in a PR, or deliberately deferred)
 
-- **Platforms:** macOS host (#54 in review, none on master); web WebGL2 fallback evaluated only (`docs/features/web-fallback.md`); secondary windows are real on Win32 only.
+- **Platforms:** macOS host on master (#54; input/IME/Retina not yet exercised on a real Mac); web WebGL2 fallback **deferred by owner decision 2026-10-09** (`docs/features/web-fallback.md`); secondary windows are real on Win32 only.
 - **Text:** subpixel LCD AA (none); bundled CJK face (none); static-text selection (only input selection); bidi rendering / caret (#85); web IME (#49); font fallback chain + wrapped `rich_text` (#44); colour emoji (#71); SDF text (#66).
 - **Graphics:** no SVG / vector icons; canvas polylines are still quads (no AA); no grid layout.
 - **Input / a11y:** whole-UI keyboard navigation (#93-#95), shortcuts + command palette + drag and drop (#60), accessibility publishing / actions / web mirror (#58, #64, #65), Win32 IDropTarget + image paste (#57), Win32 live CI (#67).
