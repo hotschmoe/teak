@@ -644,7 +644,7 @@ indexAt(text, x, y, font, max_w, mode, max_lines, m) usize  // inverse of caretP
 ```
 
 ### Host interface (`teak.host` → platform/host.zig)
-Backends live in `platform/{win32,x11,wasm}.zig` — NOT re-exported; the build
+Backends live in `platform/{win32,x11,wasm}.zig` — NOT re-exported (web entry points must also declare `pub const std_options: std.Options = .{ .logFn = platform.logFn };` — the default std.log sink does not build on wasm32-freestanding); the build
 picks one under the import name `teak-platform-native`.
 ```zig
 InputState = struct { mouse_x, mouse_y: f32,

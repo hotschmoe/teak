@@ -79,6 +79,9 @@ pub const Host = struct {
     first_poll: bool = true,
     closed: bool = false,
     clock_ms: u64 = 0,
+    /// `waitEvents` calls (idle blocks) and the total fake time they skipped.
+    wait_calls: u32 = 0,
+    waited_ms: u64 = 0,
     /// `pollInputs` calls so far (= frames run).
     frames: u32 = 0,
     title_buf: [128]u8 = undefined,
@@ -218,6 +221,18 @@ pub const Host = struct {
     // ── validateHost surface ───────────────────────────────────────
 
     pub fn nativeHandle(_: *Host) void {}
+
+    /// Event-driven idle (`RunOptions.idle_skip`): `run` calls this after a
+    /// quiet frame. A real Host blocks until an input event or `timeout_ms`;
+    /// the headless Host has no event source, so it just jumps its fake clock
+    /// forward by the timeout (minus the frame the next poll adds), which
+    /// makes timer-driven scripts deterministic and fast.
+    pub fn waitEvents(self: *Host, timeout_ms: u32) void {
+        self.wait_calls += 1;
+        const skip = if (timeout_ms > frame_ms) timeout_ms - frame_ms else 0;
+        self.waited_ms += skip;
+        self.clock_ms += skip;
+    }
 
     pub fn shouldClose(self: *const Host) bool {
         return self.closed;
@@ -510,6 +525,16 @@ test "clipboard round-trips, titles are kept, close ends the run" {
     try std.testing.expect(!h.shouldClose());
     h.close();
     try std.testing.expect(h.shouldClose());
+}
+
+test "waitEvents jumps the fake clock by the timeout (minus the next poll's frame)" {
+    var h = try testHost();
+    defer h.deinit();
+    h.waitEvents(116);
+    try std.testing.expectEqual(@as(u32, 1), h.wait_calls);
+    try std.testing.expectEqual(@as(u64, 100), h.nowMs());
+    h.waitEvents(5); // shorter than a frame: nothing to skip
+    try std.testing.expectEqual(@as(u64, 100), h.nowMs());
 }
 
 test {

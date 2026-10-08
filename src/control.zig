@@ -116,6 +116,9 @@ pub const State = struct {
 
     /// Inspector panel is shown (`TEAK_INSPECT`, F12, or the `inspect` command).
     inspect: bool = false,
+    /// A control-side change (inspector toggled) the quiet-frame check must
+    /// turn into a rebuilt frame; read-and-cleared by `consumeDirty`.
+    dirty: bool = false,
     /// Command count of each frame buffer BEFORE the inspector's overlay was
     /// appended, so the next frame inspects the app's cmds only.
     app_len: [2]usize = .{ 0, 0 },
@@ -137,6 +140,12 @@ pub const State = struct {
     }
 
     /// Replay file fully consumed (or none loaded).
+    /// True once after something visual changed outside the input path.
+    pub fn consumeDirty(self: *State) bool {
+        defer self.dirty = false;
+        return self.dirty;
+    }
+
     pub fn replayDone(self: *const State) bool {
         const d = self.replay_data orelse return true;
         return self.replay_pos >= d.len;
@@ -257,6 +266,7 @@ pub fn msBetween(a: u64, b: u64) f32 {
 
 pub fn toggleInspect(st: *State) void {
     st.inspect = !st.inspect;
+    st.dirty = true;
     if (st.inspect) st.log_msgs = true;
 }
 
@@ -498,6 +508,7 @@ fn handleLine(rt: anytype, line: []const u8) void {
     } else if (std.mem.eql(u8, cmd, "inspect")) {
         const on = if (obj.get("on")) |v| (v == .bool and v.bool) else !st.inspect;
         st.inspect = on;
+        st.dirty = true;
         if (on) st.log_msgs = true;
         return replyOk(rt, if (on) "\"inspect\":true," else "\"inspect\":false,");
     } else if (std.mem.eql(u8, cmd, "click")) {

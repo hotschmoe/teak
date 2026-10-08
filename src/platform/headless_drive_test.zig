@@ -339,3 +339,43 @@ test "inspector: TEAK_INSPECT-style option draws the panel; F12 toggles it; cont
     try rt.frame();
     try std.testing.expect(has.panel(&rt));
 }
+
+test "idle: a listening control channel caps the quiet wait at one frame; commands finish on quiet frames" {
+    if (comptime !control_socket.supported) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var sock_buf: [96]u8 = undefined;
+    const sock = try tmpPath(&sock_buf, "idle.sock");
+    var host = try testHost();
+    defer host.deinit();
+    var gpu: StubGpu = .{};
+
+    // Without a control channel the idle wait is the long default.
+    {
+        var rt0 = try Rt.init(gpa, &host, &gpu, .{});
+        defer rt0.deinit();
+        for (0..3) |_| try rt0.frame();
+        try std.testing.expect(rt0.quiet);
+        try std.testing.expect(rt0.idleTimeoutMs() > 16);
+    }
+    var rt = try Rt.init(gpa, &host, &gpu, .{ .control_path = sock });
+    defer rt.deinit();
+    for (0..3) |_| try rt.frame();
+    try std.testing.expect(rt.quiet); // nothing happening: frames are skipped...
+    try std.testing.expect(rt.idleTimeoutMs() <= 16); // ...but the Host must come back within a frame
+
+    // A wait command is made of quiet frames; it still completes.
+    var cl = try control_socket.Client.connect(sock);
+    defer cl.close();
+    const r = try ask(&rt, &cl, "{\"cmd\":\"wait\",\"frames\":3}");
+    defer gpa.free(r);
+    try expectOk(r);
+    try std.testing.expect(rt.quiet);
+
+    // Toggling the inspector over the channel forces a rebuilt frame even
+    // though no input arrived.
+    const before = rt.bufs[rt.current].cmds.items.len;
+    const r2 = try ask(&rt, &cl, "{\"cmd\":\"inspect\",\"on\":true}");
+    defer gpa.free(r2);
+    try rt.frame();
+    try std.testing.expect(rt.bufs[rt.current].cmds.items.len > before);
+}
