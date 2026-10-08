@@ -5,6 +5,7 @@ const ClipStack = layout.ClipStack;
 const clipRect = layout.clipRect;
 const TransientState = @import("../core/transient.zig").TransientState;
 const text_mod = @import("../core/text.zig");
+const text_wrap = @import("../core/text_wrap.zig");
 const TextDraw = text_mod.TextDraw;
 const TextMeasurer = text_mod.TextMeasurer;
 const FontSpec = text_mod.FontSpec;
@@ -18,6 +19,7 @@ const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
 const emitQuadCorners = vertex.emitQuadCorners;
+pub const sdf = @import("sdf.zig");
 
 /// Image draw record. Parallel to TextDraw — the GPU backend consumes
 /// these in `uploadImages` and emits 6 textured vertices per draw using
@@ -98,6 +100,145 @@ fn emitText(
         .clip_w = clip.w,
         .clip_h = clip.h,
     }) catch {};
+}
+
+/// A rect with rounded corners, a gradient and / or a soft shadow, plus an
+/// inside border stroke, as one SDF quad. Returns false (nothing emitted)
+/// when the rect uses none of those, so the caller keeps its plain solid
+/// quads, which is what makes the defaults pixel-identical to before.
+fn emitSurface(
+    verts: *std.ArrayList(Vertex),
+    alloc: std.mem.Allocator,
+    r: Rect,
+    radii: cmd_types.Radii,
+    fill: ?[4]f32,
+    gradient: ?cmd_types.Gradient,
+    border: ?[4]f32,
+    border_width: f32,
+    shadow: ?cmd_types.Shadow,
+    clip: Rect,
+) bool {
+    if (!sdf.needed(radii, gradient, shadow)) return false;
+    sdf.emitRect(verts, alloc, .{
+        .rect = r,
+        .radii = radii,
+        .fill = fill orelse .{ 0, 0, 0, 0 },
+        .gradient = gradient,
+        .border_width = if (border != null) border_width else 0,
+        .border = border orelse .{ 0, 0, 0, 0 },
+        .shadow = shadow,
+    }, clip);
+    return true;
+}
+
+/// One TextDraw per wrapped line of a `text` Cmd with `wrap != .none`, using
+/// the same `text_wrap` line walk layout used for the height, so the line
+/// count drawn equals the height reserved. Lines wholly outside `clip` are
+/// skipped; an ellipsized line is the kept text plus a second draw of U+2026
+/// (no allocation: `alloc` is the long-lived run-loop allocator).
+fn emitWrapped(
+    text_draws: *std.ArrayList(TextDraw),
+    alloc: std.mem.Allocator,
+    txt: anytype,
+    rect: Rect,
+    clip: Rect,
+    measurer: TextMeasurer,
+) void {
+    if (rect.w <= 0 or rect.h <= 0) return;
+    const lh = text_wrap.lineHeight(txt.font, measurer);
+    var it = text_wrap.LineIter.init(txt.content, txt.font, rect.w, txt.wrap, txt.max_lines, measurer);
+    var li: f32 = 0;
+    while (it.next()) |line| : (li += 1) {
+        const y = rect.y + li * lh;
+        if (y + lh <= clip.y or y >= clip.y + clip.h) continue;
+        const x = switch (txt.text_align) {
+            .start => rect.x,
+            .center => rect.x + (rect.w - line.width) * 0.5,
+            .end => rect.x + rect.w - line.width,
+        };
+        const piece = txt.content[line.start..line.end];
+        if (line.ellipsized) {
+            // Two draws, no allocation: the kept text, then a static "…"
+            // right after it (the run loop's allocator is the long-lived gpa).
+            const ew = measurer.measure(text_wrap.ELLIPSIS, txt.font).width;
+            const kept_w = line.width - ew;
+            emitText(text_draws, alloc, piece, txt.font, txt.color, .{ .x = x, .y = y, .w = kept_w, .h = lh }, clip);
+            emitText(text_draws, alloc, text_wrap.ELLIPSIS, txt.font, txt.color, .{ .x = x + kept_w, .y = y, .w = ew, .h = lh }, clip);
+        } else {
+            emitText(text_draws, alloc, piece, txt.font, txt.color, .{ .x = x, .y = y, .w = line.width, .h = lh }, clip);
+        }
+    }
+}
+
+/// A `text_area`: border + bg, selection quads per wrapped line, one
+/// `TextDraw` per visible line (culled by scroll), the IME composition at the
+/// caret, and the blinking caret -- all clipped to the inner box. Line breaks
+/// come from the same `text_wrap` walk the metrics event and pointer
+/// resolution use, so caret, selection and hit-testing agree.
+fn emitTextArea(
+    verts: *std.ArrayList(Vertex),
+    text_draws: *std.ArrayList(TextDraw),
+    alloc: std.mem.Allocator,
+    ta: anytype,
+    rect: Rect,
+    cur_clip: Rect,
+    transient: TransientState,
+    measurer: TextMeasurer,
+    focused: bool,
+) void {
+    const st = ta.style;
+    const border_color = if (ta.disabled) st.disabled_border else if (focused) st.focus_border else st.border;
+    emit(verts, alloc, rect, border_color, cur_clip);
+    emit(verts, alloc, insetRect(rect, st.border_width), if (ta.disabled) st.disabled_bg else st.bg, cur_clip);
+
+    const inner = layout.textAreaInner(rect, ta);
+    const clip = clipRect(inner, cur_clip);
+    if (clip.w <= 0 or clip.h <= 0) return;
+    const wrap_w = layout.textAreaWrapWidth(inner, ta);
+    const mode: text_wrap.Wrap = if (ta.wrap == .ellipsis) .none else ta.wrap;
+    const lh = text_wrap.lineHeight(ta.font, measurer);
+    const ox = inner.x - ta.scroll_x;
+    const oy = inner.y - ta.scroll_y;
+    const fg = if (ta.disabled) st.disabled_fg else st.fg;
+
+    const sel_lo: usize = if (ta.selection_anchor) |a| @min(a, ta.cursor) else 0;
+    const sel_hi: usize = if (ta.selection_anchor) |a| @max(a, ta.cursor) else 0;
+    const has_sel = !ta.disabled and sel_hi > sel_lo;
+
+    var it = text_wrap.LineIter.init(ta.content, ta.font, wrap_w, mode, 0, measurer);
+    var li: f32 = 0;
+    while (it.next()) |line| : (li += 1) {
+        const y = oy + li * lh;
+        if (y >= clip.y + clip.h) break;
+        if (y + lh <= clip.y) continue;
+        if (has_sel and sel_hi > line.start and sel_lo < line.next) {
+            const a = @max(sel_lo, @as(usize, line.start));
+            const b = @min(sel_hi, @as(usize, line.hang));
+            const x0 = if (a > line.start) measurer.measure(ta.content[line.start..a], ta.font).width else 0;
+            var x1 = if (b > line.start) measurer.measure(ta.content[line.start..b], ta.font).width else x0;
+            // A selection that runs past the line end shows a newline stub.
+            if (sel_hi > line.hang) x1 += lh * 0.3;
+            if (x1 > x0) emit(verts, alloc, .{ .x = ox + x0, .y = y, .w = x1 - x0, .h = lh }, st.selection_bg, clip);
+        }
+        if (line.end > line.start) {
+            emitText(text_draws, alloc, ta.content[line.start..line.end], ta.font, fg, .{ .x = ox, .y = y, .w = line.width, .h = lh }, clip);
+        }
+    }
+
+    if (!focused) return;
+    const caret = text_wrap.caretPos(ta.content, ta.cursor, ta.font, wrap_w, mode, 0, measurer);
+    var cx = ox + caret.x;
+    const cy = oy + caret.y;
+    const ime_drawn = transient.ime_active and transient.ime_text.len > 0;
+    if (ime_drawn) {
+        const m = measurer.measure(transient.ime_text, ta.font);
+        emitText(text_draws, alloc, transient.ime_text, ta.font, st.fg, .{ .x = cx, .y = cy, .w = m.width, .h = lh }, clip);
+        emit(verts, alloc, .{ .x = cx, .y = cy + lh - 1, .w = m.width, .h = 1 }, st.cursor, clip);
+        cx += measurer.prefixWidth(transient.ime_text, ta.font, transient.ime_cursor);
+    }
+    if (((transient.frame_counter / 30) & 1) == 0) {
+        emit(verts, alloc, .{ .x = cx, .y = cy, .w = CURSOR_WIDTH, .h = lh }, st.cursor, clip);
+    }
 }
 
 /// A `width`-thick frame INSIDE `r`: four non-overlapping edge quads (so a
@@ -198,8 +339,10 @@ fn buildLayer(
                         const shadow_rect = Rect{ .x = rect.x + ov.shadow_offset[0], .y = rect.y + ov.shadow_offset[1], .w = rect.w, .h = rect.h };
                         emit(verts, alloc, shadow_rect, sh, cur_clip);
                     }
-                    if (ov.backdrop[3] > 0) emit(verts, alloc, rect, ov.backdrop, cur_clip);
-                    if (ov.border) |bc| emitBorder(verts, alloc, rect, ov.border_width, bc, cur_clip);
+                    if (!emitSurface(verts, alloc, rect, ov.radius, if (ov.backdrop[3] > 0) ov.backdrop else null, null, ov.border, ov.border_width, ov.soft_shadow, cur_clip)) {
+                        if (ov.backdrop[3] > 0) emit(verts, alloc, rect, ov.backdrop, cur_clip);
+                        if (ov.border) |bc| emitBorder(verts, alloc, rect, ov.border_width, bc, cur_clip);
+                    }
                     clip.push(clipRect(rect, cur_clip));
                 } else {
                     // Base-layer must still push a clip so the
@@ -223,13 +366,20 @@ fn buildLayer(
                 // paint on top. Layout already gives us the group's full
                 // (padded) rect; no inset.
                 if (visible) {
-                    if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
-                    if (grp.border) |bc| emitBorder(verts, alloc, rect, grp.border_width, bc, cur_clip);
+                    if (!emitSurface(verts, alloc, rect, grp.radius, grp.bg, grp.gradient, grp.border, grp.border_width, grp.soft_shadow, cur_clip)) {
+                        if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+                        if (grp.border) |bc| emitBorder(verts, alloc, rect, grp.border_width, bc, cur_clip);
+                    }
                 }
             },
             .pop_group, .push_virtual_list, .pop_virtual_list => {},
             .text => |txt| {
-                if (visible) emitText(text_draws, alloc, txt.content, txt.font, txt.color, rect, cur_clip);
+                if (!visible) continue;
+                if (txt.wrap == .none) {
+                    emitText(text_draws, alloc, txt.content, txt.font, txt.color, rect, cur_clip);
+                } else {
+                    emitWrapped(text_draws, alloc, txt, rect, cur_clip, measurer);
+                }
             },
             .rich_text => |rt| {
                 if (!visible) continue;
@@ -310,9 +460,11 @@ fn buildLayer(
                 var bg = btn.style.disabled_bg;
                 var fg = btn.style.disabled_fg;
                 var label_dy: f32 = 0;
+                var idle = false;
                 if (!btn.disabled) {
                     const pressed = if (transient.press_index) |pi| pi == i else false;
                     const hovered = if (transient.hover_index) |hi| hi == i else false;
+                    idle = !pressed and !hovered;
                     if (pressed) {
                         bg = btn.style.press_bg;
                         fg = btn.style.press_fg orelse btn.style.fg;
@@ -325,12 +477,31 @@ fn buildLayer(
                         fg = btn.style.fg;
                     }
                 }
-                emit(verts, alloc, rect, bg, cur_clip);
-                if (btn.style.border) |bc| emitBorder(verts, alloc, rect, btn.style.border_width, bc, cur_clip);
+                // Rounded / gradient / shadowed buttons are one SDF quad; the
+                // gradient is the idle look, a raised shadow is dropped while
+                // pressed or disabled.
+                const raised = idle or (!btn.disabled and (if (transient.hover_index) |hi| hi == i else false));
+                const sdf_drawn = emitSurface(verts, alloc, rect, btn.style.radius, bg, if (idle) btn.style.gradient else null, btn.style.border, btn.style.border_width, if (raised) btn.style.soft_shadow else null, cur_clip);
+                if (!sdf_drawn) {
+                    emit(verts, alloc, rect, bg, cur_clip);
+                    if (btn.style.border) |bc| emitBorder(verts, alloc, rect, btn.style.border_width, bc, cur_clip);
+                }
 
                 if (btn.label.len > 0) {
                     const m = measurer.measure(btn.label, btn.font);
                     const avail = @max(0, rect.w - 2 * btn.style.h_padding);
+                    if (btn.style.ellipsis and m.width > avail) {
+                        // Cut at the pixel with U+2026, like `wrap = .ellipsis` text (two draws, no allocation).
+                        var it = text_wrap.LineIter.init(btn.label, btn.font, avail, .ellipsis, 1, measurer);
+                        const line = it.next() orelse continue;
+                        const ew = measurer.measure(text_wrap.ELLIPSIS, btn.font).width;
+                        const kept_w = @max(0, line.width - ew);
+                        const y = rect.y + @max(0, (rect.h - m.height) * 0.5) + label_dy;
+                        const x = rect.x + btn.style.h_padding;
+                        emitText(text_draws, alloc, btn.label[line.start..line.end], btn.font, fg, .{ .x = x, .y = y, .w = kept_w, .h = m.height }, cur_clip);
+                        emitText(text_draws, alloc, text_wrap.ELLIPSIS, btn.font, fg, .{ .x = x + kept_w, .y = y, .w = ew, .h = m.height }, cur_clip);
+                        continue;
+                    }
                     const label_w = @min(m.width, avail);
                     const label_dx: f32 = switch (btn.style.label_align) {
                         .start => 0,
@@ -380,9 +551,12 @@ fn buildLayer(
                     emit(verts, alloc, .{ .x = rect.x, .y = rect.y + rect.h - rule, .w = rect.w, .h = rule }, border_color, cur_clip);
                     inner.h = @max(0, rect.h - rule);
                 } else {
-                    emit(verts, alloc, rect, border_color, cur_clip);
+                    const input_bg = if (ti.disabled) ti.style.disabled_bg else ti.style.bg;
                     inner = insetRect(rect, ti.style.border_width);
-                    emit(verts, alloc, inner, if (ti.disabled) ti.style.disabled_bg else ti.style.bg, cur_clip);
+                    if (!emitSurface(verts, alloc, rect, ti.style.radius, input_bg, null, border_color, ti.style.border_width, null, cur_clip)) {
+                        emit(verts, alloc, rect, border_color, cur_clip);
+                        emit(verts, alloc, inner, input_bg, cur_clip);
+                    }
                 }
 
                 // Selection highlight before the text so text draws on top.
@@ -445,11 +619,12 @@ fn buildLayer(
                     emit(verts, alloc, underline_rect, ti.style.cursor, cur_clip);
                 }
 
-                // Blinking cursor when focused. ~0.5s on / 0.5s off at 60fps.
+                // Blinking cursor when focused (phase from the run loop's
+                // Host-clock `blink_on`, default 500 ms on / 500 ms off).
                 // While IME composition is active the caret moves to the
                 // end of the composition string so the user sees where
                 // the next codepoint will commit.
-                if (focused and ((transient.frame_counter / 30) & 1) == 0) {
+                if (focused and transient.blink_on) {
                     const base_prefix = measurer.prefixWidth(ti.content, ti.font, ti.cursor);
                     const ime_offset = if (ime_drawn)
                         measurer.prefixWidth(transient.ime_text, ti.font, transient.ime_cursor)
@@ -465,6 +640,11 @@ fn buildLayer(
                     };
                     emit(verts, alloc, cursor_rect, ti.style.cursor, cur_clip);
                 }
+            },
+            .text_area => |ta| {
+                if (!visible) continue;
+                const focused = !ta.disabled and (if (transient.focus_index) |fi| fi == i else false);
+                emitTextArea(verts, text_draws, alloc, ta, rect, cur_clip, transient, measurer, focused);
             },
             .checkbox => |cb| {
                 if (!visible) continue;
@@ -887,6 +1067,7 @@ fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
 
 // Chrome (border / shadow / hover / underline) tests live in their own file.
 test {
+    _ = sdf;
     _ = @import("chrome_test.zig");
 }
 
@@ -1081,10 +1262,10 @@ test "buildVertices draws border + bg + cursor for focused text input" {
     var image_draws: std.ArrayList(ImageDraw) = .empty;
     defer image_draws.deinit(testing.allocator);
 
-    // Focused, blink-on frame (frame_counter 0 -> on).
+    // Focused, blink-on frame.
     buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{
         .focus_index = 1,
-        .frame_counter = 0,
+        .blink_on = true,
     }, text_mod.monoMeasurer());
     // border + bg + cursor = 3 quads = 18 verts. Content goes to text_draws.
     try testing.expectEqual(@as(usize, 18), verts.items.len);
@@ -1693,4 +1874,215 @@ test "buildFrame without an overlay splits at the end of every list" {
     defer f.deinit(testing.allocator);
     try testing.expectEqual(@as(u32, @intCast(f.verts.items.len)), f.split.verts);
     try testing.expectEqual(@as(u32, 1), f.split.text);
+}
+
+fn renderTexts(comptime Msg: type, cb: *cmd_mod.CmdBuffer(Msg), rects: []Rect, w: f32, h: f32, draws: *std.ArrayList(TextDraw)) !void {
+    const testing = std.testing;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, w, h, text_mod.monoMeasurer());
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    draws.clearRetainingCapacity();
+    buildVertices(&verts, draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+}
+
+test "wrapped text emits one TextDraw per line, stacked at the line height" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+    cb.paragraph("hello world foo bar");
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    var draws: std.ArrayList(TextDraw) = .empty;
+    defer draws.deinit(testing.allocator);
+    try renderTexts(Msg, &cb, &rects, 100, 200, &draws);
+    try testing.expectEqual(@as(usize, 3), draws.items.len);
+    try testing.expectEqualStrings("hello", draws.items[0].content);
+    try testing.expectEqualStrings("world foo", draws.items[1].content);
+    try testing.expectEqualStrings("bar", draws.items[2].content);
+    try testing.expectEqual(@as(f32, 20), draws.items[1].rect_y);
+    try testing.expectEqual(@as(f32, 40), draws.items[2].rect_y);
+}
+
+test "ellipsis and max_lines draw U+2026; center alignment offsets each line" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+    cb.textEllipsis("one two three four five");
+    cb.paragraphStyled("aa bb cc dd ee ff gg hh", cb.theme.typography.body, cb.theme.text_color, .{ .max_lines = 2, .text_align = .center });
+    cb.popGroup();
+    var rects: [8]Rect = undefined;
+    var draws: std.ArrayList(TextDraw) = .empty;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 200, text_mod.monoMeasurer());
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    buildVertices(&verts, &draws, &image_draws, arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    try testing.expectEqualStrings("one two", draws.items[0].content);
+    try testing.expectEqualStrings("\u{2026}", draws.items[1].content);
+    try testing.expectEqual(@as(f32, 70), draws.items[1].rect_x); // right after the kept text
+    try testing.expectEqualStrings("aa bb cc", draws.items[2].content);
+    // Centered: line width 80 in a 100-wide rect.
+    try testing.expectEqual(@as(f32, 10), draws.items[2].rect_x);
+    try testing.expectEqualStrings("dd ee f", draws.items[3].content);
+    try testing.expectEqualStrings("\u{2026}", draws.items[4].content);
+}
+
+test "layout height equals the rendered line count for random strings and widths" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var prng = std.Random.DefaultPrng.init(0xBEEF);
+    const rnd = prng.random();
+    const words = [_][]const u8{ "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "supercalifragilistic", "日本", "。", "-", "x-y", "e\u{0301}e\u{0301}" };
+    var buf: [256]u8 = undefined;
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    var rects: [4]Rect = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var iter: usize = 0;
+    while (iter < 1000) : (iter += 1) {
+        var n: usize = 0;
+        for (0..1 + rnd.uintLessThan(usize, 12)) |_| {
+            const w = words[rnd.uintLessThan(usize, words.len)];
+            if (n + w.len + 1 > buf.len) break;
+            @memcpy(buf[n..][0..w.len], w);
+            n += w.len;
+            if (rnd.boolean()) {
+                buf[n] = ' ';
+                n += 1;
+            }
+        }
+        const width: f32 = @floatFromInt(20 + rnd.uintLessThan(u32, 300));
+        const max_lines: u16 = @intCast(rnd.uintLessThan(u32, 4));
+        const mode: cmd_mod.Wrap = if (rnd.uintLessThan(u8, 5) == 0) .char else .word;
+        cb.reset();
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+        cb.paragraphStyled(buf[0..n], cb.theme.typography.body, cb.theme.text_color, .{ .wrap = mode, .max_lines = max_lines });
+        cb.popGroup();
+        _ = arena.reset(.retain_capacity);
+        var draws: std.ArrayList(TextDraw) = .empty;
+        layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, width, 2000, text_mod.monoMeasurer());
+        var verts: std.ArrayList(Vertex) = .empty;
+        var image_draws: std.ArrayList(ImageDraw) = .empty;
+        buildVertices(&verts, &draws, &image_draws, arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+        var drawn_lines: f32 = 0;
+        var last_y: f32 = -1;
+        for (draws.items) |d| {
+            if (d.rect_y != last_y) drawn_lines += 1;
+            last_y = d.rect_y;
+        }
+        testing.expectEqual(rects[1].h, drawn_lines * 20) catch |e| {
+            std.debug.print("text='{s}' w={d} mode={s} max_lines={d}\n", .{ buf[0..n], width, @tagName(mode), max_lines });
+            var it = text_wrap.LineIter.init(buf[0..n], cb.theme.typography.body, rects[1].w, mode, max_lines, text_mod.monoMeasurer());
+            while (it.next()) |l| std.debug.print("  line {d}..{d} hang {d} next {d}\n", .{ l.start, l.end, l.hang, l.next });
+            return e;
+        };
+    }
+}
+
+test "text_area: multi-line selection quads, per-line text, scroll culling, caret" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    const sel: [4]f32 = .{ 0.2, 0.4, 0.9, 0.5 };
+    var style = cb.theme.text_input;
+    style.selection_bg = sel;
+    // Inner box: border 2 + padding 6 -> 184 wide = 18 chars; 5 rows of 20 px.
+    const content = "aaaa bbbb cccc dddd eeee ffff gggg"; // wraps to 3 lines
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.textArea(.{ .focus_msg = .focus, .id = 1, .content = content, .cursor = 24, .selection_anchor = 7, .style = style, .width = 200, .height = 116 });
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    var ts: TransientState = .{};
+    ts.focus_index = 1;
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws: std.ArrayList(TextDraw) = .empty;
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    var scenes: std.ArrayList(SceneDraw) = .empty;
+    defer scenes.deinit(testing.allocator);
+    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], ts, text_mod.monoMeasurer());
+
+    // Three wrapped lines of text.
+    try testing.expectEqual(@as(usize, 3), text_draws.items.len);
+    try testing.expectEqualStrings("aaaa bbbb cccc", text_draws.items[0].content);
+    try testing.expectEqualStrings("dddd eeee ffff", text_draws.items[1].content);
+    try testing.expectEqualStrings("gggg", text_draws.items[2].content);
+    // Selection [7, 24) covers the tail of line 0, all of line 1 and nothing of line 2: two quads.
+    var sel_quads: usize = 0;
+    var i: usize = 0;
+    while (i + 6 <= verts.items.len) : (i += 6) {
+        const v = verts.items[i];
+        if (v.r == sel[0] and v.g == sel[1] and v.b == sel[2] and v.a == sel[3]) sel_quads += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), sel_quads);
+    // Selection quads sit on rows 0 and 1 (origin y = 8).
+    try testing.expectEqual(@as(f32, 8), text_draws.items[0].rect_y);
+    try testing.expectEqual(@as(f32, 28), text_draws.items[1].rect_y);
+}
+
+test "text_area: scrolled content culls lines above the viewport" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.textArea(.{ .focus_msg = .focus, .id = 1, .content = "1\n2\n3\n4\n5\n6\n7\n8", .scroll_y = 60, .width = 200, .height = 56 });
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws: std.ArrayList(TextDraw) = .empty;
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    // Inner height 40: rows 4..5 are visible (scroll 60 = 3 lines), lines 1-3 above are culled.
+    try testing.expectEqual(@as(usize, 2), text_draws.items.len);
+    try testing.expectEqualStrings("4", text_draws.items[0].content);
+    try testing.expectEqualStrings("5", text_draws.items[1].content);
+}
+
+test "a button with `ellipsis` keeps its width and cuts its label at the pixel" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    var st = cb.theme.button;
+    st.min_width = 100; // mono measurer: 10 px per byte; 8 px padding each side -> 84 px for text
+    st.h_padding = 8;
+    st.ellipsis = true;
+    cb.buttonStyled(.a, "a long label here", st);
+    cb.buttonStyled(.a, "short", st);
+    cb.popGroup();
+    var rects: [8]Rect = undefined;
+    var draws: std.ArrayList(TextDraw) = .empty;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 200, text_mod.monoMeasurer());
+    try testing.expectEqual(@as(f32, 100), rects[1].w); // fixed, though the label is 170 px wide
+    try testing.expectEqual(@as(f32, 100), rects[2].w);
+    var verts: std.ArrayList(Vertex) = .empty;
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    buildVertices(&verts, &draws, &image_draws, arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    try testing.expectEqualStrings("a lon", draws.items[0].content); // 5 x 10 + "\u{2026}" (3 bytes = 30 under the mono measurer) = 80 <= 84
+    try testing.expectEqualStrings("\u{2026}", draws.items[1].content);
+    try testing.expect(draws.items[1].rect_x + draws.items[1].rect_w <= rects[1].x + rects[1].w - st.h_padding + 0.01);
+    try testing.expectEqualStrings("short", draws.items[2].content); // fits: drawn plain
 }

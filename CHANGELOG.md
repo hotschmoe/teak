@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Idle hosts and blink-aware idle
+
+- `Host.waitEvents(timeout_ms)` on X11 (poll on the connection fd), Win32
+  (`MsgWaitForMultipleObjectsEx`); `Expose` / `WM_PAINT` now request a repaint.
+  Wayland: see its branch.
+- **Breaking:** `RunOptions.blink_period` (frames) is replaced by
+  `blink_half_ms` (Host-clock ms, default 500; 0 = no blink). The caret phase is
+  the new `TransientState.blink_on`; a focused text input no longer prevents
+  idle skipping — the loop wakes at each toggle and re-uploads vertices only.
+
 ### Animation primitive
 
 - New `teak.anim`: `Tween(T)` (Model-resident), `Ease`/`ease`, `lerp`. New
@@ -80,6 +90,24 @@
 - `ButtonCmd.underline` / `cb.buttonStyledUnderlined`: one underlined character in a button label (a 1 px quad under the
   glyph). Menu bars and panels use it for their `&` mnemonics.
 
+- **DataTable: pixel-accurate ellipsis and type-to-search.** New `ButtonStyle.ellipsis` (fixed-width button whose label is cut with U+2026 at the pixel, any
+  font); DataTable cells and headers use it instead of counting characters (`ViewOpts.char_w` is gone). Type a prefix to jump to the first row whose
+  sort-column cell starts with it (`Table.charMsg`, `Table.searchText`).
+
+- **Tables and lists at scale**: `teak.DataTable` (virtualized, sortable, resizable, selectable, sticky header), `teak.VarList`
+  (rows of different heights, measured by layout, scroll-anchored), `teak.TreeList` (virtualized tree, keyboard) and `teak.Scroller`
+  (smooth wheel + fling as Model data, driven by `Sub.animation_frame`). New App hooks `virtualRowsMsg` and `modsMsg`;
+  `VirtualListStyle` gains `total_extent`, `start_offset`, `id`, `align_cross`. `examples/tables`, `tools/web-frame-bench.mjs`,
+  docs/features/tables-at-scale.md.
+- **SDF surfaces**: `Radii` (per-corner), soft `Shadow` (blur / spread / offset, CSS semantics), two-stop `Gradient` (linear /
+  radial) on `GroupStyle`, `ButtonStyle`, `OverlayStyle`, `TextInputStyle` (`radius`, `gradient`, `soft_shadow`). A rect using
+  any of them is one signed-distance quad in the solid vertex stream (`render/sdf.zig`; `shaders/quad.wgsl` reads its record
+  back from the vertex buffer bound read-only), anti-aliased with one device pixel at any DPR, with an inside border stroke that
+  follows the corners and dithered shadows / gradients. Rects using none draw exactly as before (kerf_viewer / scene3d shots
+  are byte-identical). Both backends.
+- **Theme tokens**: `Theme.tokens` (`ThemeTokens`: radii, border width, spacing scale, shadow elevations),
+  `Theme.fromPaletteTokens`, `button_primary`, and the `Theme.modern_light` / `Theme.modern_dark` presets. The chrome example
+  renders both looks (`M` key, header toggle, `zig build shot -- out.png --state modern`).
 - **Widgets wave 1** (`teak.widgets`, `src/core/widgets/`; zero new Cmd variants): toggle switch,
   progress bar (determinate + indeterminate), tabs (keyboard), split pane (draggable, min sizes, ratio
   in the Model), tooltip (hover delay via `Sub.at`), toast stack (tick countdown), modal dialog helper,
@@ -94,6 +122,14 @@
 - Tab traversal (`focus.nextFocusable` / `prevFocusable`) is confined to the topmost modal overlay.
 - `cb.buttonStyledDisabled`.
 
+- `text_area` Cmd + `TextArea(cap)` component + `textMsg` hook (text-engine PR11a/PR11b, closes the multi-line half of #6):
+  wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,
+  drag incl. outside, double/triple click, wheel), visual Up/Down/Home/End with a sticky column, layout `metrics` events,
+  `Host.setImeSpot` from the focused caret; `Editor.applyPointer`; `examples/notes`. See docs/features/text-area.md.
+- Wrapped text and flex shrink (text-engine PR8/PR9, closes #8): `text` gains `wrap` (`none|word|char|ellipsis`),
+  `max_lines`, `text_align`; groups/scrolls gain `shrink`; emitters `paragraph`, `paragraphStyled`, `textEllipsis`.
+  Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;
+  render draws one `TextDraw` per line. HARDLINE hatch 3 amended accordingly. Chrome's NOTES panel shows it.
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
     selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,
