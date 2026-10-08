@@ -103,7 +103,7 @@ pub const SceneDraw = struct {
 };
 
 test "MeshData.validate rejects bad indices and partial triangles" {
-    const v = [_]MeshVertex{.{ .pos = .{ 0, 0, 0 }, .normal = .{ 0, 0, 1 }, .color = .{ 1, 1, 1, 1 } }} ** 3;
+    const v: [3]MeshVertex = @splat(.{ .pos = .{ 0, 0, 0 }, .normal = .{ 0, 0, 1 }, .color = .{ 1, 1, 1, 1 } });
     const ok = MeshData{ .vertices = &v, .indices = &.{ 0, 1, 2 } };
     try ok.validate();
     try std.testing.expectEqual(@as(usize, 1), ok.triangleCount());
@@ -118,4 +118,23 @@ test "MeshData.validate rejects bad indices and partial triangles" {
 test "vertex layouts are tightly packed" {
     try std.testing.expectEqual(@as(usize, 40), @sizeOf(MeshVertex));
     try std.testing.expectEqual(@as(usize, 28), @sizeOf(LineVertex));
+}
+
+// ---- teak.scene helpers (camera, picking, section): see docs/features/scene.md
+pub const mat = @import("scene/mat.zig");
+pub const camera = @import("scene/camera.zig");
+pub const pick = @import("scene/pick.zig");
+pub const section = @import("scene/section.zig");
+pub const Orbit = camera.Orbit;
+pub const Projection = camera.Projection;
+pub const Bounds = camera.Bounds;
+pub const Ray = camera.Ray;
+pub const pickRay = camera.pickRay;
+pub const project = camera.project;
+
+test {
+    _ = mat;
+    _ = camera;
+    _ = pick;
+    _ = section;
 }
