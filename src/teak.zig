@@ -14,6 +14,12 @@ pub const component = @import("core/component.zig");
 pub const transient = @import("core/transient.zig");
 /// Text measurement, fonts and text-draw records.
 pub const text = @import("core/text.zig");
+/// UAX#29 graphemes, word boundaries, lossy UTF-8 decoding and Unicode property lookups.
+pub const unicode = @import("core/unicode.zig");
+/// UAX#14-lite line-break opportunities over grapheme clusters.
+pub const linebreak = @import("core/linebreak.zig");
+/// Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.
+pub const text_wrap = @import("core/text_wrap.zig");
 /// Declarative subscriptions (`Sub`): timers serviced by the run loop.
 pub const sub = @import("core/sub.zig");
 /// `Theme`, `Palette` and `Typography` presets consulted by the theme-aware emitters.
@@ -386,6 +392,12 @@ pub const DEFAULT_FONT = text.DEFAULT_FONT;
 pub const TextMetrics = text.TextMetrics;
 /// The Host-provided text measurement interface.
 pub const TextMeasurer = text.TextMeasurer;
+/// One positioned glyph produced by a `Shaper`.
+pub const ShapedGlyph = text.ShapedGlyph;
+/// A shaped run: glyphs plus total advance.
+pub const ShapeResult = text.ShapeResult;
+/// Pluggable shaping interface (runs -> positioned glyph ids); `SimpleShaper` lives in teak-text.
+pub const Shaper = text.Shaper;
 /// Opaque GPU texture token.
 pub const TextureHandle = text.TextureHandle;
 /// The "no texture" handle.

@@ -21,6 +21,17 @@
   `validateBalance` every frame in every mode (was Debug only) and panics
   naming the offending cmd index. The resource table logs once when full
   (`Table.overflowed`).
+### Added
+
+- `Shaper` / `ShapedGlyph` / `ShapeResult` (core) and `FontSpec.snap_advance` (default false).
+- `teak-text` now ships `SimpleShaper` (stb kerning, fi/fl/ff/ffi/ffl ligatures on proportional
+  faces) in `src/text/`; the module root moved from `src/gpu/text_stbtt.zig` to `src/text/text.zig`
+  (same exports). Measurement and rasterization both place glyphs from the shaper; invalid
+  UTF-8 now yields U+FFFD per bad byte (was byte-as-codepoint).
+
+### Changed
+
+- **wgpu-native prebuilts updated v25.0.2.2 -> v29.0.1.1** (all four Windows/Linux deps). No source API fixes were needed (the v25 code already used the StringView / callback-info API); device creation now installs an uncaptured-error callback that logs loudly, and sets the device-lost callback mode explicitly.
 
 ### Changed (breaking)
 

@@ -66,7 +66,7 @@ try host.registerFont(.mono, .regular, @embedFile("plex-Regular"));
 try host.registerFont(.mono, .bold, @embedFile("plex-Bold"));
 ```
 
-The measurer and the Gpu rasterizer share one face table (`src/gpu/text_stbtt.zig`). A request takes the registered weight nearest the one asked for (lighter on a tie); a family with no registered face uses the system monospace TTF (`TEAK_FONT=/path/to.ttf` overrides the search). Win32 ignores `registerFont` (GDI uses installed fonts). `examples/fonts` is the working reference for both.
+The measurer and the Gpu rasterizer share one face table (`src/text/face.zig`). A request takes the registered weight nearest the one asked for (lighter on a tie); a family with no registered face uses the system monospace TTF (`TEAK_FONT=/path/to.ttf` overrides the search). Win32 ignores `registerFont` (GDI uses installed fonts). `examples/fonts` is the working reference for both.
 
 ### Host extension
 

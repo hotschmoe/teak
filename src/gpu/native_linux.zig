@@ -2,7 +2,7 @@
 //!
 //! Binds the shared wgpu core (`wgpu_core.zig`) to the Xlib surface
 //! (`surface_xlib.zig`) and the stb_truetype glyph rasterizer
-//! (`text_stbtt.StbttRasterizer`, the `teak-text` module). The parallel
+//! (`raster.StbttRasterizer`, the `teak-text` module). The parallel
 //! Windows stitch is `native.zig` (HWND surface + GDI rasterizer). The
 //! build's `linkNativeWgpu` selects this file for Linux targets and
 //! exposes it under the `teak-gpu-native` import.

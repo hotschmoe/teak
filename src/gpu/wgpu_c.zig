@@ -64,6 +64,19 @@ fn deviceLostCallback(
     }
 }
 
+/// Validation / OOM / internal errors that no error scope captured. Loud on
+/// purpose: a silently invalid draw is far harder to debug than a log line.
+fn uncapturedErrorCallback(
+    _: [*c]const c.WGPUDevice,
+    kind: c.WGPUErrorType,
+    message: c.WGPUStringView,
+    _: ?*anyopaque,
+    _: ?*anyopaque,
+) callconv(.c) void {
+    const text: []const u8 = if (message.data) |data| data[0..message.length] else "(no message)";
+    std.debug.print("wgpu uncaptured error (type {d}): {s}\n", .{ kind, text });
+}
+
 /// An instance restricted to `backends` (e.g. `WGPUInstanceBackend_Vulkan`).
 /// Headless tests use this to avoid wgpu falling back to a GL software
 /// adapter on machines whose only real GPU path is a software Vulkan ICD.
@@ -117,7 +130,9 @@ pub fn requestDevice(instance: c.WGPUInstance, surface: ?c.WGPUSurface) error{ A
     device_desc.label = wgpuStr("teak-device");
     device_desc.defaultQueue.label = wgpuStr("teak-queue");
     device_desc.requiredLimits = &limits;
+    device_desc.deviceLostCallbackInfo.mode = c.WGPUCallbackMode_AllowSpontaneous;
     device_desc.deviceLostCallbackInfo.callback = &deviceLostCallback;
+    device_desc.uncapturedErrorCallbackInfo.callback = &uncapturedErrorCallback;
 
     var device_cb = std.mem.zeroes(c.WGPURequestDeviceCallbackInfo);
     device_cb.mode = c.WGPUCallbackMode_AllowSpontaneous;
