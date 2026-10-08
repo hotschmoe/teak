@@ -885,10 +885,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     const NavHit = struct { index: usize, msg: ?Msg };
                     if (ni) |i| {
                         const nh: ?NavHit = .{ .index = i, .msg = focus.activationMsg(cmds[i]) };
-                        if (App.hoverMsg(&self.model, self.pointerEvent(input, nh, rects))) |m| self.dispatch(m);
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, nh, rects, .hover, .none))) |m| self.dispatch(m);
                     } else if (was != null) {
                         const none: ?NavHit = null;
-                        if (App.hoverMsg(&self.model, self.pointerEvent(input, none, rects))) |m| self.dispatch(m);
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, none, rects, .hover, .none))) |m| self.dispatch(m);
                     }
                 }
             }

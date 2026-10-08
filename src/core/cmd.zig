@@ -1563,14 +1563,14 @@ pub fn CmdBuffer(comptime Msg: type) type {
             label: []const u8,
             focus_msg: Msg,
         ) void {
-            self.cmds.append(self.backing, .{ .canvas = .{
+            self.cmds.append(self.backing, self.box(.canvas, .{
                 .style = style,
                 .primitives = primitives,
                 .label = label,
                 .pointer = true,
                 .id = id,
                 .msg = focus_msg,
-            } }) catch oom();
+            })) catch oom();
         }
 
         pub fn textInputSelected(

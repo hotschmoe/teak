@@ -287,7 +287,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `none, left, middle, right`
 > One pointer event on an interactive canvas or scene.
 - `teak.CanvasEvent` = `pointer.CanvasEvent`
-  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h`
+  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h, key`
 > What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
 - `teak.PointerEvent`: `pub const PointerEvent = pointer.PointerEvent`
 > A window-space rectangle (`PointerEvent.box`).
@@ -295,7 +295,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `x, y, w, h`
 > Kind of a `CanvasEvent` (press, move, release, wheel, ...).
 - `teak.CanvasEventKind` = `pointer.CanvasEventKind`
-  - fields: `down, move, up, wheel, leave, layout`
+  - fields: `down, move, up, wheel, leave, layout, key`
 > Opaque backend mesh handle.
 - `teak.MeshHandle`: `pub const MeshHandle = scene.MeshHandle`
 > The "no mesh" handle; a scene with it draws only the clear colour.
@@ -1595,12 +1595,12 @@ and the App.
 - `enum Button`
   - fields: `none, left, middle, right`
 - `enum CanvasEventKind`
-  - fields: `down, move, up, wheel, leave, layout`
+  - fields: `down, move, up, wheel, leave, layout, key`
 > One pointer event on an interactive canvas / scene. Coordinates are
 > canvas-LOCAL logical pixels (origin = the canvas rect's top-left), the
 > same space as `CanvasPrimitive` coordinates.
 - `struct CanvasEvent`
-  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h`
+  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h, key`
 > A window-space rectangle (`PointerEvent.box`).
 - `struct Box`
   - fields: `x, y, w, h`
