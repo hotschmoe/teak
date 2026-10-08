@@ -22,6 +22,8 @@ pub const linebreak = @import("core/linebreak.zig");
 pub const text_wrap = @import("core/text_wrap.zig");
 /// Declarative subscriptions (`Sub`): timers serviced by the run loop.
 pub const sub = @import("core/sub.zig");
+/// Model-driven animation: `Tween(T)`, easing curves and `lerp`.
+pub const anim = @import("core/anim.zig");
 /// `Theme`, `Palette` and `Typography` presets consulted by the theme-aware emitters.
 pub const theme = @import("core/theme.zig");
 /// `TextField`: the canonical text-input component and its key-dispatch helpers.

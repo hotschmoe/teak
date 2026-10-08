@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Animation primitive
+
+- New `teak.anim`: `Tween(T)` (Model-resident), `Ease`/`ease`, `lerp`. New
+  `Sub.animation_frame` and the optional App hook `animationMsg(model, dt_ms)`:
+  while the sub is listed the run loop feeds frame time (capped at 100 ms) to
+  the app and suspends idle skipping. `Sub` gained a variant (exhaustive
+  switches over `Sub` need an arm). `examples/chrome`: sliding QUICK KEYS popover.
+  See docs/features/animation.md.
+
 ### Event-driven idle
 
 - `RunOptions.idle_skip` (default true): a frame with no input, no dispatched
