@@ -50,18 +50,20 @@ pub const NavKey = enum {
 
 /// The `SpecialKey` for `k` under `mods`, or null when the combination is
 /// not a special key (a plain letter, or Ctrl/Alt/Meta-less letter chord).
-/// Shift extends motion keys and reverses Tab; Ctrl+letter is a chord.
+/// Shift extends motion keys and reverses Tab; Ctrl+letter is a chord; Ctrl
+/// with Left/Right/Home/End/Backspace/Delete selects the word/document variants.
 pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey {
     const shift = mods.shift;
+    const ctrl = mods.ctrl;
     return switch (k) {
-        .backspace => .backspace,
-        .delete => .delete,
-        .left => if (shift) .shift_left else .left,
-        .right => if (shift) .shift_right else .right,
+        .backspace => if (ctrl) .ctrl_backspace else .backspace,
+        .delete => if (ctrl) .ctrl_delete else .delete,
+        .left => if (ctrl) (if (shift) .ctrl_shift_left else .ctrl_left) else if (shift) .shift_left else .left,
+        .right => if (ctrl) (if (shift) .ctrl_shift_right else .ctrl_right) else if (shift) .shift_right else .right,
         .up => if (shift) .shift_up else .up,
         .down => if (shift) .shift_down else .down,
-        .home => if (shift) .shift_home else .home,
-        .end => if (shift) .shift_end else .end,
+        .home => if (ctrl) (if (shift) .ctrl_shift_home else .ctrl_home) else if (shift) .shift_home else .home,
+        .end => if (ctrl) (if (shift) .ctrl_shift_end else .ctrl_end) else if (shift) .shift_end else .end,
         .page_up => .page_up,
         .page_down => .page_down,
         .enter => .enter,
@@ -72,7 +74,7 @@ pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey {
         .x => if (mods.ctrl) .ctrl_x else null,
         .v => if (mods.ctrl) .ctrl_v else null,
         .y => if (mods.ctrl) .ctrl_y else null,
-        .z => if (mods.ctrl) .ctrl_z else null,
+        .z => if (!ctrl) null else if (shift) .ctrl_shift_z else .ctrl_z,
     };
 }
 
@@ -240,6 +242,15 @@ test "resolveKey applies the Shift / Ctrl policy" {
     try testing.expectEqual(SpecialKey.ctrl_v, resolveKey(.v, ctrl).?);
     try testing.expectEqual(SpecialKey.ctrl_y, resolveKey(.y, ctrl).?);
     try testing.expectEqual(SpecialKey.ctrl_z, resolveKey(.z, ctrl).?);
+    const ctrl_shift: Modifiers = .{ .ctrl = true, .shift = true };
+    try testing.expectEqual(SpecialKey.ctrl_shift_z, resolveKey(.z, ctrl_shift).?);
+    try testing.expectEqual(SpecialKey.ctrl_left, resolveKey(.left, ctrl).?);
+    try testing.expectEqual(SpecialKey.ctrl_shift_right, resolveKey(.right, ctrl_shift).?);
+    try testing.expectEqual(SpecialKey.ctrl_home, resolveKey(.home, ctrl).?);
+    try testing.expectEqual(SpecialKey.ctrl_shift_end, resolveKey(.end, ctrl_shift).?);
+    try testing.expectEqual(SpecialKey.ctrl_backspace, resolveKey(.backspace, ctrl).?);
+    try testing.expectEqual(SpecialKey.ctrl_delete, resolveKey(.delete, ctrl).?);
+    try testing.expectEqual(SpecialKey.up, resolveKey(.up, ctrl).?);
 }
 
 test "InputQueue: a press and release inside one frame reports both edges" {

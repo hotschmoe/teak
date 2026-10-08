@@ -174,7 +174,7 @@ Walk backwards through `[]Cmd` and `[]Rect` (painter's order for z-ordering). Ch
 
 ### Render Pass
 
-Takes `[]Cmd`, `[]Rect`, and `TransientState`. Builds flat vertex/draw buffers that the GPU backend turns into wgpu draw calls: solid colored quads (`quad.wgsl`), textured glyph quads for text (`textured_quad.wgsl` — platform rasterizer + shared LRU glyph cache), and tinted image quads (`image.wgsl`). Text is measured at layout time through the Host's `TextMeasurer`, so layout metrics and rendered glyphs come from the same source.
+Takes `[]Cmd`, `[]Rect`, and `TransientState`. Builds flat vertex/draw buffers that the GPU backend turns into wgpu draw calls: solid colored quads (`quad.wgsl`), instanced glyph quads for text (`glyph.wgsl` — stb_truetype glyphs packed into a paged R8 atlas; native and web), and tinted image quads (`image.wgsl`). Text is measured at layout time through the Host's `TextMeasurer`, so layout metrics and rendered glyphs come from the same source.
 
 ### Arena Double Buffering
 

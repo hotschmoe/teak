@@ -1,33 +1,36 @@
-//! wgpu rasterizer provider for the native text path (string -> BGRA bitmap).
-//! Places glyphs from the shared `SimpleShaper`, so pens match the measurer.
-//! Superseded by the glyph-atlas path (text-engine PR4).
+//! Native glyph rasterizer provider for the wgpu text path. `wgpu_core.Gpu`
+//! is generic over this contract (duck-typed, like the Surface provider):
+//!
+//!   init(Allocator) !Self / deinit
+//!   shape(self, text, FontSpec, []ShapedGlyph) ShapeResult   -- one shaper for layout and render
+//!   ascent(self, FontSpec, scale) f32                        -- baseline offset at device size
+//!   rasterizeGlyph(self, face, gid, size_px, bin) ?GlyphBitmap
+//!
+//! Glyphs are rasterized one at a time at the physical pixel size with a
+//! quarter-pixel x offset (`bin`), into an R8 coverage bitmap the atlas packs.
 
 const std = @import("std");
 const teak = @import("teak");
 const face_mod = @import("face.zig");
 const shaper = @import("shaper.zig");
 
-const FontSpec = teak.FontSpec;
 const c = face_mod.c;
 
-/// BGRA8 glyph-run bitmap (`[b, g, r, coverage]` per pixel, top-down),
-/// matching `raster_gdi`'s output and ready for a `BGRA8Unorm` texture
-/// upload. Mirrors `wgpu_core.Bitmap` structurally; kept local so this
-/// module need not import the wgpu layer (`wgpu_core.rasterAndUpload`
-/// duck-types the rasterizer's return).
-pub const Bitmap = struct {
+/// R8 glyph coverage, tightly packed, top-down. `bearing_x`/`bearing_y` locate
+/// the bitmap's top-left relative to the pen on the baseline (y grows down, so
+/// `bearing_y` is usually negative). A zero-size bitmap is a blank glyph.
+/// `pixels` is valid until the next `rasterizeGlyph`.
+pub const GlyphBitmap = struct {
     pixels: []const u8,
     width: u32,
     height: u32,
+    bearing_x: i32,
+    bearing_y: i32,
 };
 
-/// wgpu rasterizer provider. Reuses two scratch buffers across calls so a
-/// per-frame text run allocates nothing once warmed. The returned
-/// `Bitmap` views `bgra` and is valid only until the next `rasterize`.
 pub const StbttRasterizer = struct {
     allocator: std.mem.Allocator,
-    cover: std.ArrayListUnmanaged(u8) = .empty,
-    bgra: std.ArrayListUnmanaged(u8) = .empty,
+    cover: std.ArrayList(u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) !StbttRasterizer {
         return .{ .allocator = allocator };
@@ -35,110 +38,68 @@ pub const StbttRasterizer = struct {
 
     pub fn deinit(self: *StbttRasterizer) void {
         self.cover.deinit(self.allocator);
-        self.bgra.deinit(self.allocator);
     }
 
-    pub fn rasterize(
-        self: *StbttRasterizer,
-        text_bytes: []const u8,
-        font_spec: FontSpec,
-        color: [4]f32,
-        width: u32,
-        height: u32,
-    ) ?Bitmap {
-        if (width == 0 or height == 0) return null;
-        const w: usize = width;
-        const h: usize = height;
-        const total = w * h;
+    /// Changes whenever the face table does; the text stage drops cached runs.
+    pub fn epoch(_: *const StbttRasterizer) u64 {
+        return face_mod.epoch;
+    }
 
-        // Coverage buffer, zeroed (transparent background).
-        self.cover.resize(self.allocator, total) catch return null;
+    pub fn shape(_: *StbttRasterizer, text: []const u8, font: teak.FontSpec, out: []teak.ShapedGlyph) teak.ShapeResult {
+        return shaper.shape(text, font, out);
+    }
+
+    /// Ascent in px of `font` at `font.size_px * scale` (0 with no font).
+    pub fn ascent(_: *StbttRasterizer, font: teak.FontSpec, scale: f32) f32 {
+        const r = face_mod.resolveFace(font.family, font.weight) orelse return 0;
+        return r.face.vMetrics(font.size_px * scale).ascent;
+    }
+
+    pub fn rasterizeGlyph(self: *StbttRasterizer, face: u16, gid: u16, size_px: f32, bin: u2) ?GlyphBitmap {
+        const f = face_mod.faceById(face) orelse return null;
+        const s = f.scaleForEm(size_px);
+        const shift: f32 = @as(f32, @floatFromInt(bin)) * 0.25;
+        var x0: c_int = 0;
+        var y0: c_int = 0;
+        var x1: c_int = 0;
+        var y1: c_int = 0;
+        c.stbtt_GetGlyphBitmapBoxSubpixel(&f.info, gid, s, s, shift, 0, &x0, &y0, &x1, &y1);
+        const w = x1 - x0;
+        const h = y1 - y0;
+        if (w <= 0 or h <= 0) return .{ .pixels = &.{}, .width = 0, .height = 0, .bearing_x = x0, .bearing_y = y0 };
+        const n: usize = @as(usize, @intCast(w)) * @as(usize, @intCast(h));
+        self.cover.resize(self.allocator, n) catch return null;
         @memset(self.cover.items, 0);
-
-        const face = face_mod.faceFor(font_spec.family, font_spec.weight) orelse return null;
-        const vm = face.vMetrics(font_spec.size_px);
-        var pen_x: f32 = 0;
-        const baseline: i32 = @intFromFloat(@round(vm.ascent));
-
-        var glyphs: [128]teak.ShapedGlyph = undefined;
-        var pos: usize = 0;
-        while (pos < text_bytes.len) {
-            // Same shaper as the measurer, so pens agree with layout.
-            const res = shaper.shape(text_bytes[pos..], font_spec, &glyphs);
-            if (res.consumed == 0) break;
-            for (glyphs[0..res.count]) |g| {
-                const gface = face_mod.faceById(g.face) orelse face;
-                var gw: c_int = 0;
-                var gh: c_int = 0;
-                var xoff: c_int = 0;
-                var yoff: c_int = 0;
-                const gscale = gface.scaleForEm(font_spec.size_px);
-                const bmp = c.stbtt_GetGlyphBitmap(&gface.info, gscale, gscale, g.glyph, &gw, &gh, &xoff, &yoff);
-                if (bmp != null and gw > 0 and gh > 0) {
-                    blit(self.cover.items, w, h, bmp, @intCast(gw), @intCast(gh), @as(i32, @intFromFloat(@round(pen_x + g.x))) + xoff, baseline + yoff);
-                }
-                if (bmp != null) c.stbtt_FreeBitmap(bmp, null);
-            }
-            pen_x += res.width;
-            pos += res.consumed;
-        }
-
-        // Expand coverage → BGRA with the requested color stamped in.
-        self.bgra.resize(self.allocator, total * 4) catch return null;
-        const b_byte: u8 = @intFromFloat(std.math.clamp(color[2], 0, 1) * 255);
-        const g_byte: u8 = @intFromFloat(std.math.clamp(color[1], 0, 1) * 255);
-        const r_byte: u8 = @intFromFloat(std.math.clamp(color[0], 0, 1) * 255);
-        for (self.cover.items, 0..) |coverage, i| {
-            const off = i * 4;
-            self.bgra.items[off + 0] = b_byte;
-            self.bgra.items[off + 1] = g_byte;
-            self.bgra.items[off + 2] = r_byte;
-            self.bgra.items[off + 3] = coverage;
-        }
-
-        return .{ .pixels = self.bgra.items, .width = width, .height = height };
+        c.stbtt_MakeGlyphBitmapSubpixel(&f.info, self.cover.items.ptr, w, h, w, s, s, shift, 0, gid);
+        return .{
+            .pixels = self.cover.items,
+            .width = @intCast(w),
+            .height = @intCast(h),
+            .bearing_x = x0,
+            .bearing_y = y0,
+        };
     }
 };
 
-/// Copy a `gw × gh` single-channel glyph bitmap into the `w × h` coverage
-/// buffer at (`dst_x`, `dst_y`), clipping to bounds. `max` so overlapping
-/// glyphs (rare at our spacing) don't erase each other's coverage.
-fn blit(dst: []u8, w: usize, h: usize, src: [*c]const u8, gw: usize, gh: usize, dst_x: i32, dst_y: i32) void {
-    var gy: usize = 0;
-    while (gy < gh) : (gy += 1) {
-        const dy = dst_y + @as(i32, @intCast(gy));
-        if (dy < 0 or dy >= @as(i32, @intCast(h))) continue;
-        var gx: usize = 0;
-        while (gx < gw) : (gx += 1) {
-            const dx = dst_x + @as(i32, @intCast(gx));
-            if (dx < 0 or dx >= @as(i32, @intCast(w))) continue;
-            const di = @as(usize, @intCast(dy)) * w + @as(usize, @intCast(dx));
-            const sv = src[gy * gw + gx];
-            if (sv > dst[di]) dst[di] = sv;
-        }
-    }
-}
-
-test "stbtt: the system fallback rasterizes non-empty coverage" {
+test "rasterizeGlyph: ink for 'H', blank for space, bins shift coverage" {
     defer face_mod.releaseFaces();
     var rast = StbttRasterizer.init(std.testing.allocator) catch unreachable;
     defer rast.deinit();
     // No system font on this builder: skip rather than fail.
-    if (face_mod.faceFor(.mono, .regular) == null) return;
-
-    const bmp = rast.rasterize("Hi", .{ .family = .mono, .size_px = 24 }, .{ 1, 1, 1, 1 }, 48, 32) orelse
-        return error.RasterizeFailed;
-    try std.testing.expectEqual(@as(u32, 48), bmp.width);
-    try std.testing.expectEqual(@as(u32, 32), bmp.height);
-    try std.testing.expectEqual(@as(usize, 48 * 32 * 4), bmp.pixels.len);
-
-    var inked = false;
-    var i: usize = 3;
-    while (i < bmp.pixels.len) : (i += 4) {
-        if (bmp.pixels[i] > 0) {
-            inked = true;
-            break;
-        }
-    }
-    try std.testing.expect(inked);
+    const r = face_mod.resolveFace(.mono, .regular) orelse return;
+    const h_gid = r.face.glyphIndex('H');
+    const bmp = rast.rasterizeGlyph(r.id, h_gid, 24, 0) orelse return error.RasterizeFailed;
+    try std.testing.expect(bmp.width > 0 and bmp.height > 0);
+    try std.testing.expectEqual(@as(usize, bmp.width * bmp.height), bmp.pixels.len);
+    var ink: u32 = 0;
+    for (bmp.pixels) |p| ink += p;
+    try std.testing.expect(ink > 0);
+    try std.testing.expect(bmp.bearing_y < 0);
+    const sp = rast.rasterizeGlyph(r.id, r.face.glyphIndex(' '), 24, 0).?;
+    try std.testing.expectEqual(@as(u32, 0), sp.width);
+    var first: [4096]u8 = undefined;
+    const n1 = @min(first.len, bmp.pixels.len);
+    @memcpy(first[0..n1], bmp.pixels[0..n1]);
+    const shifted = rast.rasterizeGlyph(r.id, h_gid, 24, 2).?;
+    try std.testing.expect(!std.mem.eql(u8, first[0..n1], shifted.pixels[0..@min(n1, shifted.pixels.len)]));
 }
