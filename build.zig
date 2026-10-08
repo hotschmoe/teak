@@ -409,7 +409,12 @@ pub fn build(b: *std.Build) void {
         });
         // Compile-check only (not run): the bench calls internal pipeline APIs and
         // silently rotted when their signatures moved.
-        test_step.dependOn(&bench_exe.step);
+        // Skipped on Windows ARM64: the ReleaseFast bench exe is the one build
+        // there whose lld-link step cannot find its compiler_rt.lib (a Zig
+        // 0.17 aarch64-windows toolchain bug), and it adds nothing the Linux /
+        // x86 Windows / macOS checks do not already cover.
+        if (!(target.result.os.tag == .windows and target.result.cpu.arch == .aarch64))
+            test_step.dependOn(&bench_exe.step);
         const bench_run = b.addRunArtifact(bench_exe);
         bench_run.has_side_effects = true;
         b.step("bench", "CPU pipeline benchmark (view/layout/hit/render/cmdsEqual + text)").dependOn(&bench_run.step);
