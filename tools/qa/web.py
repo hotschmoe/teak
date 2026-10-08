@@ -38,10 +38,12 @@ S=[
  ("tables","initial",1100,700,"",[]),
 ]
 only=sys.argv[1] if len(sys.argv)>1 and sys.argv[1]!='all' else None
-scales=[1,2]
+only_state=os.environ.get('QA_STATE')
+scales=[int(x) for x in os.environ.get('QA_SCALES','1,2').split(',')]
 os.makedirs(OUT+'/web',exist_ok=True)
 for ex,st,w,h,q,acts in S:
     if only and ex!=only: continue
+    if only_state and st!=only_state: continue
     dist=f'{R}/examples/{ex}/dist'
     if not os.path.isdir(dist): print('skip',ex); continue
     for sc in scales:
