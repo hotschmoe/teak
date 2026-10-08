@@ -38,7 +38,7 @@ const Fixture = struct {
     fn render(self: *Fixture, draw: teak.SceneDraw) ![]u8 {
         var enc_desc = std.mem.zeroes(c.WGPUCommandEncoderDescriptor);
         const encoder = c.wgpuDeviceCreateCommandEncoder(self.ctx.device, &enc_desc);
-        const size = self.renderer.renderInto(encoder, 0, draw, 1) orelse return error.NoTarget;
+        const size = self.renderer.renderInto(encoder, 0, draw, &.{}, 1) orelse return error.NoTarget;
         var cb_desc = std.mem.zeroes(c.WGPUCommandBufferDescriptor);
         const cmd = c.wgpuCommandEncoderFinish(encoder, &cb_desc);
         c.wgpuCommandEncoderRelease(encoder);

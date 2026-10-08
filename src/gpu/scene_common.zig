@@ -56,6 +56,14 @@ pub fn globals(draw: SceneDraw, size: TargetSize, scale: f32) Globals {
 
 pub const TargetSize = struct { w: u32, h: u32 };
 
+/// The slice of the flat item list that belongs to `draw` (empty for a
+/// legacy single-mesh scene, and clamped if the ranges are inconsistent).
+pub fn itemsOf(draw: SceneDraw, items: []const teak.SceneItem) []const teak.SceneItem {
+    if (draw.item_count == 0 or draw.item_first >= items.len) return &.{};
+    const end = @min(items.len, @as(usize, draw.item_first) + draw.item_count);
+    return items[draw.item_first..end];
+}
+
 /// Device-pixel size of the offscreen target for a scene occupying a
 /// `rect_w x rect_h` logical rect; null when empty or non-finite.
 pub fn targetSize(rect_w: f32, rect_h: f32, scale: f32) ?TargetSize {
