@@ -185,6 +185,14 @@ pub fn focusedMsg(m: *const Model) ?Msg {
     return if (m.input_focused) Msg.input_focus else null;
 }
 
+/// Agent-driver hook (`state` command): the Model as text, read-only.
+pub fn debugState(m: *const Model, w: *std.Io.Writer) void {
+    w.print("items={d} input=\"{s}\" focused={}\n", .{ m.items_len, m.input[0..m.input_len], m.input_focused }) catch return;
+    for (m.items[0..m.items_len], 0..) |it, i| {
+        w.print("  [{d}] {s} \"{s}\"\n", .{ i, if (it.done) "x" else " ", it.label[0..it.label_len] }) catch return;
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 test "add_item copies input into items and clears input" {

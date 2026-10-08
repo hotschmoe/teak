@@ -143,6 +143,7 @@ pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view 
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
 pub fn subscribe(*const Model) []const Sub(Msg)       // declarative timers; run services them each
                                                       //   frame via runSubs on Host.nowMs() (§2 hatch 6)
+pub fn debugState(*const Model, *std.Io.Writer) void  // Model dump for the control channel's `state` command
 pub fn animationMsg(*const Model, dt_ms: u32) ?Msg    // frame time while a Sub.animation_frame is listed
                                                       //   (core/anim.zig; run loop idles when none is listed)
 pub fn resources(*const Model) []const Resource       // declarative GPU meshes/images by (key, rev);
@@ -157,6 +158,11 @@ pub const RunOptions = struct {
     clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },  // scene clear each frame
     blink_half_ms: u32 = 500, // caret blink half-period in Host-clock ms (0 = no blink); idle wakes at each toggle
     snapshot_path: ?[]const u8 = null,   // live snapshot sink; TEAK_SNAPSHOT env wins (see below)
+    control_path: ?[]const u8 = null,    // agent control socket; TEAK_CONTROL env wins (see "Agent driver")
+    record_path: ?[]const u8 = null,     // record the input stream; TEAK_RECORD env wins
+    replay_path: ?[]const u8 = null,     // replay a recording (headless Host); TEAK_REPLAY env wins
+    inspect: bool = false,               // show the dev inspector panel; TEAK_INSPECT=1 env
+    inspect_hotkey: bool = (Debug build),// F12 toggles the inspector (the key is consumed)
 };
 pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: u32 };
 ```
@@ -349,6 +355,7 @@ SpecialKey = enum { backspace, delete, left, right, up, down, home, end, page_up
                     shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v,
                     ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left,
                     ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end,
+                    ctrl_backspace, ctrl_delete, f12 }
                     ctrl_backspace, ctrl_delete, f10, alt_tap }   // f10 / alt_tap (a bare Alt press+release) activate a MenuBar
 ```
 
@@ -533,6 +540,26 @@ DebugOverlayOpts = struct { x = 8, y = 8, padding = 8, gap = 2, backdrop, fg: [4
                             max_lines: usize = 512 }
 appendDebugOverlay(cb, cmds, rects: []const Rect, opts: DebugOverlayOpts) void
 ```
+
+### Agent driver (`teak.control`, `teak.input_record`, `teak.inspector`; docs/features/agent-driver.md)
+Opt-in control channel for LLM agents: `TEAK_CONTROL=<unix socket>` (Host with the control surface: headless, X11).
+Line-delimited JSON; commands snapshot, tree, click/hover/type/key/scroll (selector = role + label substring, cmd
+`index`, or x/y), screenshot (offscreen Gpu), msglog, state (App `debugState`), wait, info, inspect, quit. Input is
+INJECTED through `Host.injectInput` into the real input path (HARDLINE: no second mutation path).
+```zig
+// teak.control (control.zig): loop-side machinery, driven by Runtime.frame
+State.init(gpa) State; State.replayDone() bool; State.flushRecording() void
+fmtValue(w: *std.Io.Writer, v: anytype) !void       // compact Msg/payload text (.tag(payload))
+// teak.input_record: TEAK_RECORD / TEAK_REPLAY file format
+FrameRec; writeLine(w, *const FrameRec) !void; parseLine(line) !?FrameRec; Tracker.observe(frame, input) ?FrameRec
+// teak.inspector: pure overlay builder used by run (TEAK_INSPECT=1 / F12)
+appendInspector(cb, cmds, rects, Data{window_w, window_h, frame, hover_index, focus_index, msgs, timings}, Opts) void
+// teak.headless.serve(App, Host, Gpu, gpa, ServeOptions) !void   // headless app until quit (pair with TEAK_CONTROL)
+// Host optional surface: controlListen(path) bool; controlRecv([]u8) ?[]u8; controlSend([]const u8) void;
+//   injectInput(InjectEvent) void; requestClose() void.   teak.host.InjectEvent = union(enum) { move, down, up, wheel, chars, key, mods }
+```
+`tools/teak_drive.zig` (`zig build drive`): `teak-drive --socket S <cmd>` for shells and `teak-drive mcp` (stdio JSON-RPC MCP
+server; tools launch_app, snapshot, tree, click, hover, type, key, scroll, screenshot, msglog, state, wait, quit).
 
 ### Snapshot / golden tests (`teak.snapshot` → core/snapshot.zig)
 ```zig

@@ -187,6 +187,12 @@
   `max_lines`, `text_align`; groups/scrolls gain `shrink`; emitters `paragraph`, `paragraphStyled`, `textEllipsis`.
   Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;
   render draws one `TextDraw` per line. HARDLINE hatch 3 amended accordingly. Chrome's NOTES panel shows it.
+- **Agent driver** (docs/features/agent-driver.md): `TEAK_CONTROL=<unix socket>` control channel in `teak.run`
+  (snapshot, a11y `tree`, click/hover/type/key/scroll by role+label selector, screenshot, msglog, state, wait),
+  injected through the Host's real input queue (`Host.injectInput`; headless + X11 hosts); `TEAK_RECORD` /
+  `TEAK_REPLAY` input record/replay; `tools/teak-drive` CLI + MCP server (`zig build drive`);
+  `teak.headless.serve`; dev inspector overlay (`TEAK_INSPECT=1` / F12, `teak.inspector`);
+  `SpecialKey.f12`; optional App hook `debugState`. `examples/todo` gains a `drive` step.
 - `widgets.date` (pure calendar maths, ISO parse / format) and `widgets.date_field` (ISO text field + calendar popover, keyboard navigation; "today" comes from a clock effect).
 - **Generated API reference**: `tools/gen_api.zig` (`zig build api`) walks `src/teak.zig` with `std.zig.Ast`, follows its `@import`s and writes
   every public signature + `///` doc to `docs/api.md` and `llms-full.txt` (= hand-curated `llms.txt` + the generated part). `zig build audit` fails
@@ -273,6 +279,7 @@
 
 - X11 host failed to compile on first use under Zig 0.17 (`Xlib.load` still
   used the removed `@typeInfo(...).fields`).
+- `examples/todo`: item labels pointed at a by-value loop copy (garbled text); iterate by pointer.
 
 - `text_area` Cmd + `TextArea(cap)` component + `textMsg` hook (text-engine PR11a/PR11b, closes the multi-line half of #6):
   wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,

@@ -165,6 +165,7 @@ const focus = @import("input/focus.zig");
 const render = @import("render/build.zig");
 const vertex = @import("render/vertex.zig");
 const resources = @import("resources.zig");
+const control = @import("control.zig");
 
 const Rect = layout.Rect;
 const TransientState = transient.TransientState;
@@ -199,6 +200,20 @@ pub const RunOptions = struct {
     /// under `<config>/teak/<app_name>/`). Empty: the Host's default, the
     /// window title. Ignored by hosts without `setAppName`.
     app_name: []const u8 = "",
+    /// Agent control channel: the Unix socket path the Host listens on
+    /// (`TEAK_CONTROL` wins). Needs a Host with the control surface. See
+    /// `docs/features/agent-driver.md`.
+    control_path: ?[]const u8 = null,
+    /// Record the per-frame input stream to this file (`TEAK_RECORD` wins).
+    record_path: ?[]const u8 = null,
+    /// Replay a recording made with `record_path` (`TEAK_REPLAY` wins); needs
+    /// a Host with `injectInput` (the headless Host).
+    replay_path: ?[]const u8 = null,
+    /// Show the dev inspector panel from the first frame (`TEAK_INSPECT=1`).
+    inspect: bool = false,
+    /// F12 toggles the inspector (the key is consumed). On in Debug builds;
+    /// elsewhere F12 reaches the app like any key.
+    inspect_hotkey: bool = builtin.mode == .debug,
     /// Event-driven idle. When true, a frame in which nothing happened (no
     /// input event, no Msg dispatched by a sub / effect result / window hook,
     /// secondary window, not the first frame; a caret toggle is a cheap
@@ -427,6 +442,8 @@ pub fn run(
 pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type {
     return struct {
         const Self = @This();
+        /// The App type, for `control.zig`'s optional hooks.
+        pub const AppDecl = App;
         const Msg = App.Msg;
         const CmdBufT = cmd.CmdBuffer(Msg);
         /// The Host's per-frame input snapshot type (`platform/host.zig`'s
@@ -543,6 +560,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         suppressed_spec: ?SecondaryWindowSpec = null,
 
         snap: SnapshotSink,
+        /// Agent control channel + record/replay + Msg ring (`control.zig`).
+        ctl: control.State,
         /// Force a first snapshot write even if the opening frame happens to
         /// match the empty previous buffer.
         snap_first: bool = true,
@@ -583,7 +602,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (comptime @hasDecl(Host, "setAppName")) {
                 if (opts.app_name.len > 0) host.setAppName(opts.app_name);
             }
+            var ctl = control.State.init(gpa);
+            control.start(&ctl, host, opts);
             return .{
+                .ctl = ctl,
                 .gpa = gpa,
                 .host = host,
                 .gpu = gpu,
@@ -604,6 +626,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 }
             }
             self.snap.deinit();
+            self.ctl.deinit();
             self.secondary.deinit(self.gpa);
             if (has_resources) self.res_table.deinit(self.gpu);
             self.scene_draws.deinit(self.gpa);
@@ -619,7 +642,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// One loop iteration. Returns early, before presenting, when the
         /// host reports close during the input poll.
         pub fn frame(self: *Self) !void {
+            control.beforePoll(self);
+            // Runs on EVERY exit (quiet frames included): finishes the control
+            // command in flight and advances the frame number.
+            defer control.afterFrame(self);
             const input = self.host.pollInputs();
+            control.afterPoll(self, input);
             if (self.host.shouldClose()) return;
             // The window's DPI scale changed (Win32 per-monitor DPI): the Gpu
             // reconfigures its surfaces at the new device size. The initial
@@ -656,7 +684,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
             // Event-driven idle: nothing changed since the frame on screen.
             self.quiet = self.opts.idle_skip and self.built_once and
-                self.dispatch_count == dispatched_before and self.inputIdle(input);
+                self.dispatch_count == dispatched_before and self.inputIdle(input) and !self.ctl.consumeDirty();
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
@@ -698,12 +726,14 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const secondary_open = has_secondary and App.secondaryWindow(&self.model) != null;
             // A resource upload/release changes the handles the draws map to
             // even when no Cmd changed, so it forces a re-stage too.
+            const t_render = control.stamp(&self.ctl);
             if (diff.changed() or secondary_open or res_changed) {
                 self.uploadFrame(cur_cmds, cur_rects, self.ts);
             }
             self.prev_ts = self.ts;
 
             self.gpu.renderFrame(self.opts.clear_color);
+            self.ctl.timings.render_ms = control.msBetween(t_render, control.stamp(&self.ctl));
 
             const sec = if (has_secondary) try self.driveSecondary() else SecondaryFrame{};
 
@@ -760,7 +790,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         pub fn idleTimeoutMs(self: *Self) u32 {
             // Effect results arrive from the Host asynchronously; poll them
             // at frame rate while any effect is outstanding.
-            const cap: u32 = if (self.issued.len != 0) 16 else 1000;
+            // A listening control channel is polled at frame rate too, so a
+            // command arriving while the app is quiet waits at most one frame
+            // (the Host cannot wake on the socket by itself).
+            const cap: u32 = if (self.issued.len != 0 or self.ctl.active) 16 else 1000;
             var wait: u32 = cap;
             const now = self.host.nowMs();
             if (self.opts.blink_half_ms != 0 and self.ts.focus_index != null) {
@@ -780,6 +813,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn dispatch(self: *Self, msg: Msg) void {
             self.dispatch_count +%= 1;
             self.last_msg = @tagName(std.meta.activeTag(msg));
+            if (self.ctl.log_msgs) self.ctl.logMsg(Msg, msg);
             App.update(&self.model, msg);
         }
 
@@ -933,6 +967,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 }
             }
             for (input.keys) |k| {
+                if (k == .f12 and self.opts.inspect_hotkey) {
+                    control.toggleInspect(&self.ctl);
+                    continue;
+                }
                 // Visual motion in a focused text area is resolved against the
                 // wrapped layout, so it becomes a `move` TextEvent (key consumed).
                 if (has_text_hook) {
@@ -1455,11 +1493,16 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn buildView(self: *Self, input: Input) !u1 {
             self.current ^= 1;
             const cur = self.current;
+            const t_view = control.stamp(&self.ctl);
             self.bufs[cur].reset();
             if (@hasDecl(App, "themeFor")) self.bufs[cur].theme = App.themeFor(&self.model);
             App.view(&self.model, &self.bufs[cur]);
+            checkBalance(self.bufs[cur].cmds.items, "view");
+            // Dev inspector: appended after the (pure) view, from the previous
+            // frame's data; a no-op unless it is switched on.
+            control.appendInspectorFor(self, &self.bufs[cur], cur, cur ^ 1, @floatFromInt(input.width), @floatFromInt(input.height));
             const cmds = self.bufs[cur].cmds.items;
-            checkBalance(cmds, "view");
+            const t_layout = control.stamp(&self.ctl);
 
             try self.rects[cur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
@@ -1469,6 +1512,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 @floatFromInt(input.height),
                 self.measurer,
             );
+            const t_done = control.stamp(&self.ctl);
+            self.ctl.timings.view_ms = control.msBetween(t_view, t_layout);
+            self.ctl.timings.layout_ms = control.msBetween(t_layout, t_done);
             return cur;
         }
 

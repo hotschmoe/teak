@@ -136,6 +136,44 @@ pub fn shot(
     try writeFramePng(&gpu, gpa, path);
 }
 
+pub const ServeOptions = struct {
+    width: u32 = 1280,
+    height: u32 = 800,
+    msaa: bool = true,
+    /// Real milliseconds slept between frames, so an idle headless app does
+    /// not spin a core. The Host clock stays fake (16 ms per frame).
+    frame_sleep_ms: u32 = 4,
+    /// `control_path` / `record_path` / `replay_path` / `inspect` here are
+    /// overridden by `TEAK_CONTROL` / `TEAK_RECORD` / `TEAK_REPLAY` /
+    /// `TEAK_INSPECT`.
+    run: run_mod.RunOptions = .{},
+};
+
+/// Run `App` headlessly until the Host closes (the control channel's `quit`
+/// command, or never): the "launch me for an agent" entry point. Pair it with
+/// `TEAK_CONTROL=<socket>` and `tools/teak-drive`. See
+/// docs/features/agent-driver.md.
+pub fn serve(
+    comptime App: type,
+    comptime Host: type,
+    comptime Gpu: type,
+    gpa: std.mem.Allocator,
+    o: ServeOptions,
+) !void {
+    var host = try Host.init(gpa, o.width, o.height);
+    defer host.deinit();
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa });
+    defer gpu.deinit();
+    var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
+    defer rt.deinit();
+    while (!host.shouldClose()) {
+        try rt.frame();
+        if (o.frame_sleep_ms > 0) {
+            std.Io.sleep(std.Options.debug_io, .fromMilliseconds(o.frame_sleep_ms), .awake) catch {};
+        }
+    }
+}
+
 /// `argv[1]` of a `pub fn main(init: std.process.Init)` program, or
 /// `default` when absent: the output path of a `zig build shot -- out.png`.
 pub fn pathArg(init: anytype, default: []const u8) []const u8 {
