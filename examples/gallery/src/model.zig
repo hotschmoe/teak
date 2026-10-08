@@ -190,7 +190,7 @@ pub const Model = struct {
 
     /// Subscriptions listed this frame; rebuilt by `refreshSubs` after every
     /// `update` so `subscribe` can stay a pure read of the Model.
-    subs: [5]teak.Sub(Msg) = undefined,
+    subs: [6]teak.Sub(Msg) = undefined,
     subs_len: usize = 0,
 };
 
@@ -379,6 +379,10 @@ fn refreshSubs(m: *Model) void {
     var n: usize = 0;
     if (Toasts.active(&m.toasts)) {
         m.subs[n] = .{ .every = .{ .interval_ms = W.toast.TICK_MS, .msg = .{ .toast = .tick } } };
+        n += 1;
+    }
+    if (Toasts.animating(&m.toasts)) {
+        m.subs[n] = .animation_frame;
         n += 1;
     }
     if (Tooltip.deadline(&m.tip)) |d| {

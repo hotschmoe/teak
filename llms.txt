@@ -21,6 +21,15 @@
   Requires Zig 0.17.0+.
 -->
 
+## Companion files
+
+- `llms-full.txt` — this file plus the generated API reference (every public signature and `///` doc comment).
+  The generated half is also `docs/api.md`. Both come from `tools/gen_api.zig` (`zig build api`); `zig build audit`
+  fails when they are stale. Prose in THIS file stays hand-curated; never edit the generated files.
+- Migration notes, one per Zig version bump (newest last): [docs/migration-0.17.md](docs/migration-0.17.md) — build.zig
+  changes (`b.args`, lowercase optimize modes), toolchain, what did not change in teak's API. A new `docs/migration-<ver>.md`
+  must be linked here (audit-enforced).
+
 ## The core loop
 
 ```
@@ -617,7 +626,7 @@ DEFAULT_FONT: FontSpec        // sans 14px
 TextMetrics = struct { width, height, ascent, descent: f32 }
 TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
                         pub fn prefixWidth(text, font, byte_prefix: usize) f32 }
-ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32 }  // logical order; sum(advance)==width
+ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32, y: f32 = 0 }  // logical order (RTL runs from the optional HarfBuzz shaper: visual); y = baseline offset px, down; sum(advance)==width
 ShapeResult = struct { count: usize, width: f32, consumed: usize }   // consumed < text.len only when `out` filled
 Shaper = struct { ctx: *anyopaque, shape_fn; pub fn shape(text, font, out: []ShapedGlyph) ShapeResult }
 TextureHandle = u32
@@ -708,6 +717,11 @@ widgets.toast.Toast(cap, text_cap): Model{items,len,next_id}; Msg{push: Push{kin
   Kind = enum { info, success, warning, danger };  TICK_MS; default_ttl
 widgets.dialog: view(cb, Opts{window_w, window_h, title, message, confirm_label, cancel_label: ?[]const u8, width, danger,
   dismiss_on_backdrop, scrim}, msgs /*.confirm .cancel*/); begin / end (own body between); keyMsg(key, msgs, has_cancel) ?AppMsg
+widgets.date: Date{year: i32, month 1..12, day}; isLeap, daysInMonth, valid, toDays/fromDays (days since 1970-01-01), weekday(Mon=0), addDays/addMonths(clamps)/addYears,
+  fromUnixMs(unix_ms, utc_offset_min) Date, parseIso("YYYY-MM-DD") ?Date (strict), formatIso(d, buf); month_names, weekday_short
+widgets.date_field: Model{text, open, selected: ?Date, today: ?Date, cursor}; Msg{edit, toggle, close, pick: Date, go: Nav, commit, today, clear, set_today: Date, set: ?Date};
+  Nav = enum{day_prev,day_next,week_prev,week_next,month_prev,month_next,year_prev,year_next,month_start,month_end}; update; textValid(model);
+  charMsg(c) / keyMsg(model, key) ?Msg; viewWith(model, cb, .{ .focus .toggle .close .today .clear AppMsgs, .pickMsg(Date) .goMsg(Nav) fns }, ViewOpts{list_x,list_y,window_w,window_h,cell_w,cell_h}); panelWidth(opts)
 widgets.menu.MenuBar(Action) type: Item (= MenuItem(Action){label "&File" mnemonic, action: ?Action, shortcut, enabled, checked,
     separator, children}; Item.sep); Model{st: State}; Msg{goto: State, close}; update; isActive(model);
     viewWith(model, cb, items, msgs /*.menu(Msg) .run(Action)*/, ViewOpts{x,y,window_w,window_h,top_width,bar_height,panel_w,row_h,cols,bar_bg});
@@ -763,6 +777,20 @@ measureWrapped(text, font, max_w, mode, max_lines, m) Measured{w, h, lines}
 minContent / maxContent(text, font, m) f32
 caretPos(text, index, font, max_w, mode, max_lines, m) Caret{x, y, line}
 indexAt(text, x, y, font, max_w, mode, max_lines, m) usize  // inverse of caretPos at grapheme boundaries
+```
+
+### Bidi (`teak.bidi`, UAX #9; core/bidi.zig, docs/features/bidi.md)
+One paragraph per `analyze` (split at hard breaks). Pure; allocator only for working storage / results.
+```zig
+analyze(gpa, text, Direction(.auto|.ltr|.rtl)) !Analysis{ para_level, levels: []u8, classes: []Class, offsets: []u32 }  // per code point; .deinit(gpa)
+Analysis.isPlainLtr() bool            // skip all bidi work
+Analysis.isRemoved(i) bool            // X9-removed (embeddings, BN); they keep their predecessor's level
+lineLevels(an, start, end, out) []u8  // L1 on a wrapped line (byte range, e.g. text_wrap.Line.start..hang)
+lineRuns(gpa, an, start, end) ![]Run{ start, end, level }   // L2: runs left-to-right as shown; odd level = draw right-to-left
+visualOrder(levels, order) void       // L2 on any level array (code points or clusters)
+caretMove(gpa, text, an, start, end, Caret{ index, trailing }, Arrow(.left|.right)) !?Caret   // visual arrows; null = line edge; word jumps stay logical
+selectionSpans(gpa, text, an, start, end, advances_per_cluster, sel_start, sel_end) ![]Span{ x0, x1 }
+mirrored(cp) ?u21;  classOf(cp) Class
 ```
 
 ### Host interface (`teak.host` → platform/host.zig)

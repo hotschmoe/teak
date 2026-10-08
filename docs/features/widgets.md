@@ -280,7 +280,10 @@ right-aligns near the window's lower-right so it stays on screen.
 **toast.** `Toast(cap, text_cap)`. `Toast.push(&m.toasts, kind, text, ttl)`
 from any `update` arm; `ttl` counts `TICK_MS` ticks (0 = sticky). List
 `Sub.every(TICK_MS)` only while `Toast.active`. A full stack drops its oldest.
-No slide / fade yet (it needs the animation layer); cards appear and vanish.
+Cards slide in from the right and fade (and out again on expiry or dismiss): a `teak.anim.Tween` per entry,
+advanced by `Toast.Msg.frame` (the app's `animationMsg`) while `Toast.animating`; an app that never forwards frames
+still works (toasts appear shown and are dropped a couple of ticks after they expire). Each card is its own overlay at a
+fixed slot (`ViewOpts.height`), newest at the bottom.
 
 **dialog.** `Dialog.view(cb, opts, .{ .confirm = ..., .cancel = ... })` while
 the app's flag is set; `begin` / `end` wrap custom body content. Enter / Escape
@@ -300,6 +303,15 @@ read layout, geometry is computed from fixed sizes (`top_width`, `row_h`,
 in a monospaced font. Panels clamp to the window. A transparent full-window
 modal "scrim" overlay behind the panels makes a click anywhere else dismiss
 the menu. The navigation logic (`Nav`) is pure and exhaustively tested.
+
+**date_field.** An ISO text field (`YYYY-MM-DD`) plus a calendar popover: a modal overlay with a month header (`<<` `<`
+`>` `>>`), weekday headings (Monday first), a 6 x 7 grid of day buttons (other-month days muted, today outlined,
+selected inverted, the keyboard cursor in a heavy border) and Today / Clear. The date maths (`widgets.date`: days from
+civil, weekday, add days / months with day clamping, strict ISO parse) is pure. **No wall clock in `view`:** "today" is
+Model data set with `Msg.set_today`, typically `date.fromUnixMs(c.unix_ms, c.utc_offset_min)` from a `clock` effect
+result. Typing a full valid date selects it; a partial or impossible one is plain text with a danger border. Keys
+(`keyMsg`): arrows move by day / week, Page Up / Down by month, Home / End to the month's first / last day, Enter picks,
+Escape closes; Down on a closed field opens it.
 
 ### Host support for the keys
 
