@@ -689,6 +689,16 @@ validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uplo
 //                                              //   the overlay's, so an opaque overlay hides base text (hatch 5)
 ```
 
+### Hot reload (`teak.dev` → dev.zig; docs/features/hot-reload.md)
+Dev builds only: the App as `libapp.so` behind a stable loader; Model + TransientState survive a rebuild when the Model type is unchanged.
+```zig
+teak.dev.Plugin(App, Host, Gpu, Init).exportAll()   // in the lib root, comptime; Init = struct { host(gpa) !Host, gpu(*Host) !Gpu }
+teak.dev.runLoader(init: std.process.Init, default_lib_path) !void   // the loader exe's main
+teak.dev.typeFingerprint(T) u64   // comptime: name/size/field names+offsets+types, recursive
+teak.dev.Loader{ init, pollReload() ReloadResult, reload(), frame() bool, idle(cap_ms), lastNote() }   // embed the loader yourself
+```
+Build: `zig build dev [--watch] [-Dbackend=headless]` in examples/todo, run `zig-out/bin/todo-dev`.
+
 ### Headless runs (`teak.headless` → headless_run.zig; docs/features/headless.md)
 No display needed; Linux + a Vulkan device. In build.zig: `teak.linkHeadless(b, exe, .{})` adds imports
 `teak-platform-headless` (`Host`: scripted input, fake 16 ms/frame clock, stb text, captured effects) and
@@ -778,6 +788,7 @@ More worked examples and idioms: **docs/cookbook.md**.
 - `docs/features/transient-state.md` — presentation-only state.
 - `docs/features/text.md` — TextMeasurer + FontSpec.
 - `docs/features/host.md` — Host interface (window + input; DPI/scaling notes).
+- `docs/features/hot-reload.md` — hot reload: libapp.so + stable loader, Model kept across rebuilds.
 - `docs/features/headless.md` — headless native runs: scripted input -> PNG (`linkHeadless`, `teak.headless`).
 - `docs/features/gpu.md` — Gpu interface (vertex upload + present).
 - `docs/features/snapshot.md` — golden snapshot tests + live TEAK_SNAPSHOT streaming.

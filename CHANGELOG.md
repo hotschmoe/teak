@@ -68,6 +68,10 @@
 
 ### Added
 
+- **Hot reload** (docs/features/hot-reload.md): `teak.dev` + `zig build dev` (examples/todo): the App as `libapp.so` behind a stable loader
+  that keeps the window, GPU and control socket; the Model (when `typeFingerprint` matches) and TransientState carry across rebuilds.
+  `tools/hot_reload_check.sh` is the end-to-end test.
+
 - **Agent driver** (docs/features/agent-driver.md): `TEAK_CONTROL=<unix socket>` control channel in `teak.run`
   (snapshot, a11y `tree`, click/hover/type/key/scroll by role+label selector, screenshot, msglog, state, wait),
   injected through the Host's real input queue (`Host.injectInput`; headless + X11 hosts); `TEAK_RECORD` /

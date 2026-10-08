@@ -96,6 +96,45 @@ pub fn build(b: *std.Build) void {
         drive_step.dependOn(&b.addInstallArtifact(drive_exe, .{}).step);
     }
 
+    // --- Hot reload (Linux, dev builds): `libapp.so` + a stable loader. ---
+    // `zig build dev [--watch] [-Dbackend=headless]`, then run
+    // `zig-out/bin/todo-dev`; every rebuild of libapp.so is swapped in with
+    // the Model kept (docs/features/hot-reload.md).
+
+    if (target.result.os.tag == .linux) {
+        const dev_backend: []const u8 = b.option([]const u8, "backend", "dev backend: native (window) or headless") orelse "native";
+        const dev_headless = std.mem.eql(u8, dev_backend, "headless");
+        const dev_step = b.step("dev", "Build libapp.so + the todo-dev loader for hot reload");
+        const lib = b.addLibrary(.{
+            .name = "app",
+            .linkage = .dynamic,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(if (dev_headless) "src/dev_lib_headless.zig" else "src/dev_lib_native.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        if (dev_headless) {
+            teak.linkHeadless(b, lib, .{});
+        } else if (teak.hasNativeBackend(target.result.os.tag)) {
+            teak.linkNativeWgpu(b, lib, .{});
+        }
+        dev_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
+
+        const loader = b.addExecutable(.{
+            .name = "todo-dev",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/dev_main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+                .imports = &.{.{ .name = "teak", .module = teak_mod }},
+            }),
+        });
+        dev_step.dependOn(&b.addInstallArtifact(loader, .{}).step);
+    }
+
     // --- Web (wasm + zunk) ---
 
     const wasm_target = b.resolveTargetQuery(.{
