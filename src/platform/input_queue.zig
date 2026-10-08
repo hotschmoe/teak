@@ -67,7 +67,7 @@ pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey {
         .end => if (ctrl) (if (shift) .ctrl_shift_end else .ctrl_end) else if (shift) .shift_end else .end,
         .page_up => .page_up,
         .page_down => .page_down,
-        .enter => .enter,
+        .enter => if (shift) .shift_enter else .enter,
         .tab => if (shift) .shift_tab else .tab,
         .escape => .escape,
         .f10 => .f10,
@@ -251,6 +251,8 @@ test "resolveKey applies the Shift / Ctrl policy" {
     try testing.expectEqual(SpecialKey.shift_home, resolveKey(.home, shift).?);
     try testing.expectEqual(SpecialKey.shift_end, resolveKey(.end, shift).?);
     try testing.expectEqual(SpecialKey.shift_tab, resolveKey(.tab, shift).?);
+    try testing.expectEqual(SpecialKey.shift_enter, resolveKey(.enter, shift).?);
+    try testing.expectEqual(SpecialKey.enter, resolveKey(.enter, .{}).?);
     try testing.expectEqual(SpecialKey.tab, resolveKey(.tab, none).?);
     try testing.expectEqual(SpecialKey.delete, resolveKey(.delete, none).?);
     try testing.expectEqual(SpecialKey.escape, resolveKey(.escape, shift).?);

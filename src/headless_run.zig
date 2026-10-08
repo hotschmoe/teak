@@ -86,7 +86,17 @@ pub fn play(rt: anytype, host: anytype, steps: []const Step) !void {
 
 // ── One-call screenshot ────────────────────────────────────────────
 
+/// A face to register on the Host before the first frame (`Host.registerFont`).
+/// `bytes` must outlive the shot.
+pub const ShotFont = struct {
+    family: @import("core/text.zig").FontFamily,
+    weight: @import("core/text.zig").FontWeight,
+    bytes: []const u8,
+};
+
 pub const ShotOptions = struct {
+    /// Faces registered before the run starts.
+    fonts: []const ShotFont = &.{},
     width: u32 = 1280,
     height: u32 = 800,
     /// 4x MSAA of the UI pass (as a windowed app would run it).
@@ -115,6 +125,7 @@ pub fn shot(
 ) !void {
     var host = try Host.init(gpa, o.width, o.height);
     defer host.deinit();
+    for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
     var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = o.scale });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);

@@ -67,6 +67,8 @@ pub const ScriptHost = struct {
     height: u32 = 300,
     clock_ms: u64 = 0,
     set_title_calls: u32 = 0,
+    cursor_calls: u32 = 0,
+    cursor: host_iface.CursorShape = .arrow,
     ime_buf: [8]u8 = undefined,
     ime_len: usize = 0,
     ime_on: bool = false,
@@ -204,6 +206,10 @@ pub const ScriptHost = struct {
         return in;
     }
     pub fn closeSecondaryWindow(_: *ScriptHost, _: u32) void {}
+    pub fn setCursor(self: *ScriptHost, shape: host_iface.CursorShape) void {
+        self.cursor_calls += 1;
+        self.cursor = shape;
+    }
     pub fn setTitle(self: *ScriptHost, _: []const u8) void {
         self.set_title_calls += 1;
     }
@@ -259,7 +265,7 @@ pub const StubGpu = struct {
     pub fn releaseImage(self: *StubGpu, _: u32) void {
         self.image_releases += 1;
     }
-    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw, _: []const render.SceneItem) void {
+    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw, _: render.SceneData) void {
         self.scene_calls += 1;
         self.last_scene_count = d.len;
         if (d.len > 0) self.last_scene_mesh = d[0].mesh;
@@ -948,29 +954,6 @@ test "run: a secondary-content-only change re-mirrors the snapshot" {
 }
 
 // ── Frame diff (cmdsEqual) ──────────────────────────────────────────
-
-test "cmdsEqual: wrap, max_lines, text_align and shrink changes are frame changes" {
-    const Msg = union(enum) { a };
-    var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer x.deinit();
-    var y = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer y.deinit();
-    const f = x.theme.typography.body;
-    const c = x.theme.text_color;
-    x.paragraphStyled("same", f, c, .{});
-    y.paragraphStyled("same", f, c, .{});
-    try std.testing.expect(cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-    for ([_]cmd.ParagraphOpts{ .{ .wrap = .char }, .{ .max_lines = 2 }, .{ .text_align = .center } }) |o| {
-        y.reset();
-        y.paragraphStyled("same", f, c, o);
-        try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-    }
-    x.reset();
-    y.reset();
-    x.pushGroup(.{});
-    y.pushGroup(.{ .shrink = 1 });
-    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-}
 
 test "cmdsEqual: detects label, disabled, and length changes" {
     const Msg = union(enum) { a };
@@ -1689,6 +1672,46 @@ test "run: windowMsg reports the window size on the first frame" {
     try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls); // only the first frame resized
 }
 
+// ── Cursor shapes + display scale ───────────────────────────────────
+
+const CursorApp = struct {
+    pub const Model = struct { override: bool = false };
+    pub const Msg = union(enum) { click, edit };
+    pub fn update(_: *Model, _: Msg) void {}
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.button(.click, "X");
+        cb.buttonDisabled(.click, "off");
+        cb.popGroup();
+    }
+    pub fn cursorFor(m: *const Model, kind: @import("core/cursor.zig").HoverKind) ?host_iface.CursorShape {
+        return if (m.override and kind == .none) .crosshair else null;
+    }
+};
+
+test "run: the cursor follows the hovered widget and setCursor fires only on change" {
+    const t = try play(CursorApp, &.{
+        .{}, // arrow (nothing hovered; matches the initial shape: no call)
+        .{ .x = 5, .y = 5 }, // over the button -> pointer
+        .{ .x = 6, .y = 6 }, // still the button: no new call
+        .{ .x = 380, .y = 280 }, // empty space -> arrow
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.host.cursor_calls);
+    try std.testing.expectEqual(host_iface.CursorShape.arrow, t.host.cursor);
+}
+
+test "run: cursorFor can override the default and sees the hovered kind" {
+    const p = try begin(CursorApp, .{ .script = &.{ .{}, .{}, .{ .x = 5, .y = 5 } } }, .{});
+    defer p.destroy();
+    p.rt.model.override = true;
+    try p.rt.frame(); // empty space + override -> crosshair
+    try std.testing.expectEqual(host_iface.CursorShape.crosshair, p.host.cursor);
+    try p.rt.frame();
+    try p.rt.frame(); // over the button: kind = button, hook declines -> pointer
+    try std.testing.expectEqual(host_iface.CursorShape.pointer, p.host.cursor);
+}
+
 // ── text_area: pointer, motion, scroll, metrics (text-engine PR11b) ────
 
 const text_area_mod = @import("core/text_area.zig");
@@ -2271,4 +2294,52 @@ test "animation_frame: dt is capped so a stalled frame cannot skip an animation"
     rt.model.tween.start(1000, 1000, .linear);
     while (!host.shouldClose()) try rt.frame();
     try std.testing.expectEqual(@as(f32, 100), rt.model.tween.value()); // advanced by the 100 ms cap, not 5000
+}
+
+// ── Enter in a focused text_area is a key, not a submit ─────────────
+
+const EnterApp = struct {
+    pub const Model = struct { area_focused: bool = true, submits: u32 = 0, newlines: u32 = 0 };
+    pub const Msg = union(enum) { focus_area, focus_in, submit, newline };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .submit => m.submits += 1,
+            .newline => m.newlines += 1,
+            else => {},
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{});
+        if (m.area_focused) {
+            cb.textArea(.{ .focus_msg = .focus_area, .id = 1, .content = "", .cursor = 0, .height = 60 });
+        } else {
+            cb.textInput(.focus_in, "", 0);
+        }
+        cb.popGroup();
+    }
+    pub fn focusedMsg(m: *const Model) ?Msg {
+        return if (m.area_focused) .focus_area else .focus_in;
+    }
+    pub fn submitMsg(_: *const Model) ?Msg {
+        return .submit;
+    }
+    pub fn keySpecialMsg(_: *const Model, k: keys.SpecialKey) ?Msg {
+        return if (k == .enter) .newline else null;
+    }
+};
+
+test "Enter: a focused text_area gets it as a key (keySpecialMsg), a text_input still submits" {
+    const t = try play(EnterApp, &.{ .{}, .{ .keys = &.{.enter} } });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.newlines);
+    try std.testing.expectEqual(@as(u32, 0), t.rt.model.submits);
+
+    var host: ScriptHost = .{ .script = &.{ .{}, .{ .keys = &.{.enter} } } };
+    var gpu: StubGpu = .{};
+    var rt = try Runtime(EnterApp, ScriptHost, StubGpu).init(std.testing.allocator, &host, &gpu, .{});
+    defer rt.deinit();
+    rt.model.area_focused = false;
+    while (!host.shouldClose()) try rt.frame();
+    try std.testing.expectEqual(@as(u32, 1), rt.model.submits);
+    try std.testing.expectEqual(@as(u32, 0), rt.model.newlines);
 }

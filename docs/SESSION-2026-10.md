@@ -97,3 +97,27 @@ every example's web build → push → merge). One incident: an agent opened a P
 Bugs found and fixed in passing: todo labels read a by-value loop copy (garbled text), counter_greeter light theme kept a dark clear colour,
 combining marks rendered as separate glyphs ("cafe´"), double HiDPI scale on the primary window uniform, kerf_viewer web build missing `logFn`.
 Open: an intermittent, load-dependent `zig build test` failure seen 3× by agents (not reproduced in 27 isolated runs).
+
+### Kerf dogfood (scam, kerf_viewer)
+
+The Kerf app rebuilt on teak without touching the framework core beyond one key: `examples/kerf_viewer` (README there).
+Mesh viewer -> SECTION / ISO / 3D with one shared selection, a chat console and NOTES.
+
+What the framework carried unchanged: the Kerf tessellator output as one `CanvasPrimitive.triangles` batch with a `key`
+(a pan/zoom frame re-tessellates in `update` in ~0.3 ms and costs nothing when nothing changed); `canvasInteractive`
+events for pick/hover/pan/zoom; `viewport3d` items for per-part highlight; `TextArea` for notes and chat; `effects`
+(`open_file`, `query_param`, `http`, drops); `Sub.every` for reply pacing; web build and headless shots identical.
+
+Friction found (each is a possible follow-up):
+- `SpecialKey` had no Shift+Enter, so a chat box could not tell send from newline: added `shift_enter`.
+- `rich_text` does not wrap; the console wraps `**bold**` markup itself (`chat.wrapMarkup`, 36 columns for the 360 px panel
+  in the monospace face). A wrapping rich text (spans across wrapped lines) would remove that code.
+- `Sub.at` needs a deadline on the host clock but the Model cannot read the clock, so a one-shot "reply after N ms" is a
+  tick counter on `Sub.every`. A `Sub.after(ms, msg)` (armed by the runtime when first listed) would fit HARDLINE.
+- Scroll "stick to bottom" needs the extent hook plus a flag in the Model; a `scroll_to_end` field would be simpler.
+- A text area's Tab / focus state lives in `TransientState` while the app keeps its own `focus` for key routing: two
+  sources of truth for "who has the keyboard", easy to desync (clicking a canvas must blur the Model flag by hand).
+- Branch hygiene: master's `buildFrame` signature changes (scene items, sprites) silently broke tests on other
+  branches; a thin config struct instead of positional args would stop that.
+- Bug found by the evaluator while this was in flight: SDF records read through a stale bind group after the vertex
+  buffer grew (PR #86).

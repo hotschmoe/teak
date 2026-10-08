@@ -49,6 +49,8 @@ pub const ImeState = struct {
     cursor: usize = 0,
 };
 
+pub const CursorShape = @import("../core/cursor.zig").CursorShape;
+
 pub const A11yNode = @import("../input/a11y.zig").A11yNode;
 
 const effects = @import("../core/effects.zig");
@@ -215,6 +217,11 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   Gpu has it) so the swap-chain is physical-sized. Win32 (per-monitor
 ///   DPI v2) declares it; X11 and wasm report physical / CSS pixels and do
 ///   not. Distinct from `scaleFactor`, which is informational only.
+/// - `setCursor(shape)` — **optional**: show the OS mouse cursor for a
+///   `CursorShape`. `teak.run` calls it only when the shape picked from
+///   the hovered cmd (or the App's `cursorFor` hook) changes. X11 maps to
+///   XCursor theme names (font cursors as fallback), Win32 to `IDC_*` via
+///   `WM_SETCURSOR`, web to CSS `cursor` through zunk.
 /// - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
 ///   surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
 ///   a pair** (a Host with neither answers every effect as unsupported;
@@ -276,6 +283,7 @@ pub fn validateHost(comptime T: type) void {
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
         .{ .name = "renderScale", .sig = "fn(*const Host) f32" },
+        .{ .name = "setCursor", .sig = "fn(*Host, CursorShape) void" },
         .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
         .{ .name = "pollEffectResults", .sig = "fn(*Host, []EffectResult) usize" },
     };

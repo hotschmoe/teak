@@ -41,12 +41,19 @@ const Fixture = struct {
 
     /// Same with placed items (`draw.item_count` is set from the slice).
     fn renderItems(self: *Fixture, draw_in: teak.SceneDraw, items: []const teak.SceneItem) ![]u8 {
+        return self.renderFull(draw_in, items, &.{}, wgpu_scene.NoImages{});
+    }
+
+    /// Items, sprites and an image source (sprites sample `images.viewOf`).
+    fn renderFull(self: *Fixture, draw_in: teak.SceneDraw, items: []const teak.SceneItem, sprites: []const teak.SceneSprite, images: anytype) ![]u8 {
         var draw = draw_in;
+        draw.sprite_first = 0;
+        draw.sprite_count = @intCast(sprites.len);
         draw.item_first = 0;
         draw.item_count = @intCast(items.len);
         var enc_desc = std.mem.zeroes(c.WGPUCommandEncoderDescriptor);
         const encoder = c.wgpuDeviceCreateCommandEncoder(self.ctx.device, &enc_desc);
-        const size = self.renderer.renderInto(encoder, 0, draw, items, 1) orelse return error.NoTarget;
+        const size = self.renderer.renderInto(encoder, 0, draw, items, sprites, images, 1) orelse return error.NoTarget;
         var cb_desc = std.mem.zeroes(c.WGPUCommandBufferDescriptor);
         const cmd = c.wgpuCommandEncoderFinish(encoder, &cb_desc);
         c.wgpuCommandEncoderRelease(encoder);
@@ -458,6 +465,141 @@ test "section cut: a plane that misses the item draws no cap and no outline" {
     try std.testing.expect(!(chan(mid, .r) >= 170 and chan(mid, .g) < 20));
 }
 
+fn planeAt(z: f32, rgba: [4]f32, layer: i16, size: f32) teak.ScenePlane {
+    return .{
+        .origin = .{ -size / 2, -size / 2, z },
+        .u = .{ 1, 0, 0 },
+        .v = .{ 0, 1, 0 },
+        .size = .{ size, size },
+        .background = rgba,
+        .layer = layer,
+    };
+}
+
+test "planes: opaque sheets depth-test, layers stack coplanar sheets, content tessellates" {
+    var fx = try Fixture.init(true);
+    defer fx.deinit();
+    var d = drawFor(0);
+
+    // a far red sheet behind a nearer blue one covering only the left part
+    var list = [_]teak.ScenePlane{ planeAt(0.8, .{ 1, 0, 0, 1 }, 0, 1.6), planeAt(0.3, .{ 0, 0, 1, 1 }, 0, 0.8) };
+    list[1].origin = .{ -0.8, -0.4, 0.3 };
+    d.planes = &list;
+    const a = try fx.render(d);
+    defer std.testing.allocator.free(a);
+    try expectNear(px(a, 48, 32), .{ 0, 0, 255 }, 4); // right of the blue sheet (x=0.5): the red one
+    try expectNear(px(a, 16, 32), .{ 255, 0, 0 }, 4); // left: blue in front (bgr)
+    try expectNear(px(a, 2, 2), .{ 0, 0, 0 }, 3); // outside both
+
+    // coplanar: the higher layer wins whichever is listed first
+    list = .{ planeAt(0.5, .{ 1, 0, 0, 1 }, 1, 1.2), planeAt(0.5, .{ 0, 0, 1, 1 }, 0, 1.2) };
+    const b = try fx.render(d);
+    defer std.testing.allocator.free(b);
+    try expectNear(px(b, 32, 32), .{ 0, 0, 255 }, 4); // layer 1 (red) on top
+    list = .{ planeAt(0.5, .{ 1, 0, 0, 1 }, 0, 1.2), planeAt(0.5, .{ 0, 0, 1, 1 }, 1, 1.2) };
+    const c2 = try fx.render(d);
+    defer std.testing.allocator.free(c2);
+    try expectNear(px(c2, 32, 32), .{ 255, 0, 0 }, 4); // layer 1 (blue) on top
+
+    // content: a filled rect in plane-local units (y up = +v) on a white sheet
+    const prims = [_]teak.CanvasPrimitive{.{ .filled_rect = .{ .x = 0, .y = 0, .w = 0.5, .h = 0.5, .color = .{ 0, 1, 0, 1 } } }};
+    var content = [_]teak.ScenePlane{planeAt(0.5, .{ 1, 1, 1, 1 }, 0, 1.6)};
+    content[0].content = &prims;
+    d.planes = &content;
+    const e = try fx.render(d);
+    defer std.testing.allocator.free(e);
+    // local (0..0.5, 0..0.5) is x in -0.8..-0.3, y in -0.8..-0.3 -> pixels x 6..22, y (flipped) 39..58
+    try expectNear(px(e, 12, 48), .{ 0, 255, 0 }, 4);
+    try expectNear(px(e, 40, 16), .{ 255, 255, 255 }, 4);
+}
+
+test "planes: translucent sheets blend back to front and do not write depth" {
+    var fx = try Fixture.init(true);
+    defer fx.deinit();
+    var d = drawFor(0);
+    // two half-opaque sheets: red at z=0.2, blue at z=0.6; the eye at +z sees blue nearer; clear is black
+    var list = [_]teak.ScenePlane{ planeAt(0.2, .{ 1, 0, 0, 1 }, 0, 1.6), planeAt(0.6, .{ 0, 0, 1, 1 }, 0, 1.6) };
+    list[0].opacity = 0.5;
+    list[1].opacity = 0.5;
+    d.planes = &list;
+    d.camera.eye = .{ 0, 0, 5 };
+    const a = try fx.render(d);
+    defer std.testing.allocator.free(a);
+    // drawn far (red) then near (blue): red*0.5 = (.5,0,0); blue 0.5 over that = r .25, b .5
+    const q = px(a, 32, 32);
+    try std.testing.expect(chan(q, .b) > 110 and chan(q, .b) < 145);
+    try std.testing.expect(chan(q, .r) > 50 and chan(q, .r) < 80);
+    // the listing order does not matter: sorting is by distance from the eye
+    std.mem.swap(teak.ScenePlane, &list[0], &list[1]);
+    const b = try fx.render(d);
+    defer std.testing.allocator.free(b);
+    try std.testing.expect(std.meta.eql(px(b, 32, 32), q));
+    // eye on the other side: the red sheet is now nearer, so it ends up on top
+    d.camera.eye = .{ 0, 0, -5 };
+    const c2 = try fx.render(d);
+    defer std.testing.allocator.free(c2);
+    const q2 = px(c2, 32, 32);
+    try std.testing.expect(chan(q2, .r) > 110 and chan(q2, .r) < 145 and chan(q2, .b) > 50 and chan(q2, .b) < 80);
+}
+
+/// Image source over one view (a solid-colour texture made by the test).
+const OneImage = struct {
+    view: c.WGPUTextureView,
+    pub fn hasImage(_: OneImage, h: u32) bool {
+        return h == 3;
+    }
+    pub fn viewOf(self: OneImage, h: u32) ?c.WGPUTextureView {
+        return if (h == 3) self.view else null;
+    }
+};
+
+test "sprites: screen_px quads keep their pixel size, tint multiplies, anchor offsets" {
+    var fx = try Fixture.init(true);
+    defer fx.deinit();
+    // 2x2 white image
+    const tex = wgpu_c.createTexture2D(fx.ctx.device, "test-sprite", .{ .width = 2, .height = 2, .format = c.WGPUTextureFormat_RGBA8Unorm, .usage = c.WGPUTextureUsage_TextureBinding | c.WGPUTextureUsage_CopyDst }).?;
+    defer c.wgpuTextureRelease(tex);
+    const white: [16]u8 = @splat(255);
+    var dst = std.mem.zeroes(c.WGPUTexelCopyTextureInfo);
+    dst.texture = tex;
+    dst.aspect = c.WGPUTextureAspect_All;
+    var layout = std.mem.zeroes(c.WGPUTexelCopyBufferLayout);
+    layout.bytesPerRow = 8;
+    layout.rowsPerImage = 2;
+    const extent = c.WGPUExtent3D{ .width = 2, .height = 2, .depthOrArrayLayers = 1 };
+    c.wgpuQueueWriteTexture(fx.ctx.queue, &dst, &white, white.len, &layout, &extent);
+    const view = wgpu_c.createView2D(tex, "test-sprite-view", c.WGPUTextureFormat_RGBA8Unorm).?;
+    defer c.wgpuTextureViewRelease(view);
+    const imgs = OneImage{ .view = view };
+
+    var d = drawFor(0); // identity camera: positions are clip space; px = 32 + 32 * x
+    const sprites = [_]teak.SceneSprite{
+        // 20x10 px centred at the origin, tinted red
+        .{ .pos = .{ 0, 0, 0.5 }, .image = 3, .size = .{ 20, 10 }, .tint = .{ 1, 0, 0, 1 } },
+        // bottom-left anchored 8x8 at (-0.75, 0.5) -> extends up and right of px (8, 16)
+        .{ .pos = .{ -0.75, 0.5, 0.5 }, .image = 3, .size = .{ 8, 8 }, .anchor = .{ 0, 0 }, .tint = .{ 0, 1, 0, 1 } },
+        // an unknown image draws nothing
+        .{ .pos = .{ 0.5, -0.5, 0.5 }, .image = 77, .size = .{ 16, 16 } },
+    };
+    const a = try fx.renderFull(d, &.{}, &sprites, imgs);
+    defer std.testing.allocator.free(a);
+    try expectNear(px(a, 32, 32), .{ 0, 0, 255 }, 4); // red, centre
+    try expectNear(px(a, 23, 32), .{ 0, 0, 255 }, 4); // within 10 px half width (22..42)
+    try expectNear(px(a, 20, 32), .{ 0, 0, 0 }, 4); // just outside on the left
+    try expectNear(px(a, 32, 26), .{ 0, 0, 0 }, 4); // above the 10 px height (27..37)
+    try expectNear(px(a, 12, 12), .{ 0, 255, 0 }, 4); // anchored sprite: x 8..16, y 8..16 -> green
+    try expectNear(px(a, 6, 12), .{ 0, 0, 0 }, 4); // left of its anchor
+    try expectNear(px(a, 48, 48), .{ 0, 0, 0 }, 4); // unknown image
+
+    // a sprite behind a mesh quad is depth-tested away (z 0.9 vs quad at 0.5)
+    const mesh = quadMesh(&fx, 0.5, .{ 0, 0, 1 }, &.{});
+    const behind = [_]teak.SceneSprite{.{ .pos = .{ 0, 0, 0.9 }, .image = 3, .size = .{ 20, 10 } }};
+    d.camera.light_dir = .{ 0, 0, -1 };
+    const b = try fx.renderFull(d, &.{.{ .mesh = mesh }}, &behind, imgs);
+    defer std.testing.allocator.free(b);
+    try expectNear(px(b, 32, 32), .{ 255, 0, 0 }, 4); // the blue quad (bgr), not white
+}
+
 test "scene_common is linked into the gpu test" {
-    try std.testing.expectEqual(@as(usize, 176), @sizeOf(common.Globals));
+    try std.testing.expectEqual(@as(usize, 208), @sizeOf(common.Globals));
 }

@@ -120,6 +120,12 @@
 //!     extension (`uploadMesh`, `releaseMesh`, `renderScenes`,
 //!     `releaseImage`). See `docs/features/scene3d.md`.
 //!
+//!   - `cursorFor(*const Model, HoverKind) ?CursorShape` — override the mouse
+//!     cursor the framework picks from the hovered cmd (button/checkbox/
+//!     radio/slider -> pointer, text_input -> ibeam, canvas -> its `cursor`
+//!     field). Pure data in, data out; `Host.setCursor` is called only when
+//!     the shape changes, and only on hosts that declare it.
+//!
 //! IME composition state (`Host.imeState`) is folded into `TransientState`
 //! every frame with no opt-in — hosts without IME report inactive and it
 //! costs nothing.
@@ -138,6 +144,7 @@ const effects_mod = @import("core/effects.zig");
 const transient = @import("core/transient.zig");
 const text = @import("core/text.zig");
 const pointer = @import("core/pointer.zig");
+const cursor_mod = @import("core/cursor.zig");
 const text_event = @import("core/text_event.zig");
 const text_wrap = @import("core/text_wrap.zig");
 const layout = @import("layout/engine.zig");
@@ -465,6 +472,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         image_draws: std.ArrayList(render.ImageDraw) = .empty,
         scene_draws: std.ArrayList(render.SceneDraw) = .empty,
         scene_items: std.ArrayList(render.SceneItem) = .empty,
+        scene_sprites: std.ArrayList(render.SceneSprite) = .empty,
 
         /// Declarative GPU resources (HARDLINE §2 hatch 8): which
         /// (kind, key, rev) is resident and under which Gpu handle. Loop
@@ -545,6 +553,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
         title_len: usize = 0,
+        /// Last cursor shape handed to `Host.setCursor` (change detection).
+        cursor: cursor_mod.CursorShape = .arrow,
 
         /// Loop-owned IME composition buffers. `Host.imeState().text`
         /// aliases the Host's single mutable global, so `ts.ime_text` and
@@ -583,6 +593,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (has_resources) self.res_table.deinit(self.gpu);
             self.scene_draws.deinit(self.gpa);
             self.scene_items.deinit(self.gpa);
+            self.scene_sprites.deinit(self.gpa);
             self.image_draws.deinit(self.gpa);
             self.text_draws.deinit(self.gpa);
             self.verts.deinit(self.gpa);
@@ -650,6 +661,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const cur_cmds = self.bufs[cur].cmds.items;
             const cur_rects = self.rects[cur].items;
             self.updateTransient(input, cur);
+            self.updateCursor(cur);
             self.updateImeSpot(cur);
             self.pushTitle();
 
@@ -890,9 +902,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     }
                 }
                 // Enter-to-submit — apps opt in with `submitMsg`. Takes
-                // precedence over `keySpecialMsg` for the Enter key only.
+                // precedence over `keySpecialMsg` for the Enter key only,
+                // EXCEPT while a `text_area` has focus: Enter is a key there
+                // (a newline), delivered through `keySpecialMsg`.
                 if (@hasDecl(App, "submitMsg")) {
-                    if (k == .enter) {
+                    if (k == .enter and !focusIsTextArea(App, &self.model, prev_cmds)) {
                         if (App.submitMsg(&self.model)) |m| self.dispatch(m);
                         continue;
                     }
@@ -1391,6 +1405,26 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.ts.ime_cursor = ime.cursor;
         }
 
+        /// Pick the cursor for whatever the pointer is over and push it to the
+        /// Host when it changed. Compiles away on hosts without `setCursor`.
+        fn updateCursor(self: *Self, cur: u1) void {
+            if (comptime !@hasDecl(Host, "setCursor")) return;
+            const cmds = self.bufs[cur].cmds.items;
+            const hovered: ?usize = self.ts.hover_index;
+            var shape: cursor_mod.CursorShape = .arrow;
+            var kind: cursor_mod.HoverKind = .none;
+            if (hovered) |i| if (i < cmds.len) {
+                kind = cursor_mod.kindOf(cmds[i]);
+                shape = cursor_mod.defaultFor(cmds[i]);
+            };
+            if (comptime @hasDecl(App, "cursorFor")) {
+                if (App.cursorFor(&self.model, kind)) |s| shape = s;
+            }
+            if (shape == self.cursor) return;
+            self.cursor = shape;
+            self.host.setCursor(shape);
+        }
+
         /// Push the app's dynamic window title, only on change.
         fn pushTitle(self: *Self) void {
             if (!@hasDecl(App, "windowTitle")) return;
@@ -1406,13 +1440,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         }
 
         fn uploadFrame(self: *Self, cmds: []const cmd.Cmd(Msg), rects: []const Rect, ts: TransientState) void {
-            const split = render.buildFrame(&self.verts, &self.text_draws, &self.image_draws, &self.scene_draws, &self.scene_items, self.gpa, cmds, rects, ts, self.measurer);
+            const split = render.buildFrame(&self.verts, &self.text_draws, &self.image_draws, &self.scene_draws, &self.scene_items, &self.scene_sprites, self.gpa, cmds, rects, ts, self.measurer);
             // Tell a layering-aware Gpu where the overlay layer starts, so an
             // opaque overlay hides the base layer's text and images.
             if (comptime @hasDecl(Gpu, "setOverlayStart")) self.gpu.setOverlayStart(split);
             self.gpu.uploadVertices(self.verts.items);
             self.gpu.uploadText(self.text_draws.items);
-            resources.stageDraws(self.gpu, if (has_resources) &self.res_table else null, self.image_draws.items, self.scene_draws.items, self.scene_items.items);
+            resources.stageDraws(self.gpu, if (has_resources) &self.res_table else null, self.image_draws.items, self.scene_draws.items, .{ .items = self.scene_items.items, .sprites = self.scene_sprites.items });
         }
 
         /// What the secondary window did this frame, for the snapshot gate.
@@ -1634,6 +1668,12 @@ fn checkBalance(cmds: anytype, view_name: []const u8) void {
             view_name, cmd.formatBalanceError(bal_err, &buf),
         });
     }
+}
+
+/// The focused widget (by `focusedMsg`) is a `text_area`.
+fn focusIsTextArea(comptime App: type, model: *const App.Model, cmds: anytype) bool {
+    const i = focusIndex(App, model, cmds) orelse return false;
+    return cmds[i] == .text_area;
 }
 
 /// Resolve the focused widget's cmd index for this frame. Apps that

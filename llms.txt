@@ -21,6 +21,15 @@
   Requires Zig 0.17.0+.
 -->
 
+## Companion files
+
+- `llms-full.txt` — this file plus the generated API reference (every public signature and `///` doc comment).
+  The generated half is also `docs/api.md`. Both come from `tools/gen_api.zig` (`zig build api`); `zig build audit`
+  fails when they are stale. Prose in THIS file stays hand-curated; never edit the generated files.
+- Migration notes, one per Zig version bump (newest last): [docs/migration-0.17.md](docs/migration-0.17.md) — build.zig
+  changes (`b.args`, lowercase optimize modes), toolchain, what did not change in teak's API. A new `docs/migration-<ver>.md`
+  must be linked here (audit-enforced).
+
 ## The core loop
 
 ```
@@ -85,7 +94,10 @@ someone else's paradigm. When a change bumps HARDLINE, the change yields.
 4. Host layer — window/GPU/input mutable state, only in `platform/*`+`gpu/*`,
    behind `validateHost`/`validateGpu`; `teak.run` orchestrates it.
 5. Overlay z-layer (`push_overlay`/`pop_overlay`) — exactly two z-levels.
-6. Subscriptions (`Sub`) — declarative, data-only timers.
+6. Subscriptions (`Sub`) — declarative, data-only timers (+ `animation_frame`).
+7. Declarative effects (`effects` / `effectMsg`) — data the Host performs
+   (HTTP, files, storage, clock, clipboard); results return as Msgs.
+8. Resources (`resources`) — declarative GPU meshes/images by (key, rev).
 
 ## The App contract (`teak.run`)
 
@@ -121,6 +133,7 @@ pub fn submitMsg(*const Model) ?Msg                   // Enter key (precedes key
 pub fn themeFor(*const Model) Theme                   // per-frame theme (dark/light toggle)
 pub fn windowMsg(*const Model, f32, f32) ?Msg          // window size in logical px: first frame + every resize
 pub fn windowTitle(*const Model) ?[]const u8          // dynamic title bar; setTitle only on change
+pub fn cursorFor(*const Model, HoverKind) ?CursorShape // override the cursor picked from the hovered cmd
 pub fn secondaryWindow(*const Model) ?SecondaryWindowSpec  // 2nd top-level window, open when non-null
 pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view (pairs with above)
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
@@ -148,6 +161,9 @@ pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: 
 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
+`cmd component component_list transient text sub anim theme text_field text_area text_event numeric_field
+`cmd component component_list transient text sub theme text_field numeric_field
+dropdown debug_overlay snapshot chart table cursor layout scroll_extent hit_test focus keys a11y render
 `cmd component component_list transient text sub theme text_field text_area text_event numeric_field
 `cmd component component_list transient text sub anim theme text_field numeric_field
 dropdown data_table var_list tree_list debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
@@ -214,6 +230,7 @@ ScrollStyle = struct { direction = .vertical, padding, gap, flex, width, height,
                        id: u32 = 0 }                        // width/height 0 = measured; flex scroll has zero basis;
                                                             //   id != 0 => scrollMsg / scrollLayoutMsg routing
 OverlayStyle(Msg) = struct { x, y, width, height, padding = 8, gap = 4,
+                             anchor_msg: ?Msg = null, anchor_side: AnchorSide = .below_start, anchor_gap: f32 = 0, /* place against the earlier widget whose click/focus Msg == anchor_msg */
                        direction = .vertical, align_cross: Align = .start, backdrop: [4]f32 = {0,0,0,0},
                        anchor_x_frac, anchor_y_frac: f32 = 0, modal: bool = false,
                        border: ?[4]f32 = null, border_width: f32 = 1,
@@ -325,7 +342,7 @@ focusMsgAt(cmds, index: usize) ?Msg           // the Msg the leaf at index would
 ```zig
 SpecialKey = enum { backspace, delete, left, right, up, down, home, end, page_up, page_down,
                     enter, tab, escape, shift_left, shift_right, shift_up, shift_down,
-                    shift_home, shift_end, shift_tab, ctrl_a, ctrl_c, ctrl_x, ctrl_v,
+                    shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v,
                     ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left,
                     ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end,
                     ctrl_backspace, ctrl_delete, f10, alt_tap }   // f10 / alt_tap (a bare Alt press+release) activate a MenuBar
@@ -418,7 +435,8 @@ NumericConfig = struct { capacity: usize = 16, min: ?f64 = null, max: ?f64 = nul
 Dropdown(comptime cap: usize) type          // closed button + open overlay list; Msg = toggle,
                                             //   close, select:usize, scroll_by, highlight.
                                             //   Real view is viewWith(model, cb, options, msgs, opts)
-DropdownViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200,
+DropdownViewOpts = struct { auto_anchor: bool = true, anchor_side: AnchorSide = .below_start,
+                            list_x, list_y: f32 = 0 /*only if !auto_anchor*/, list_width: f32 = 200,
                             list_max_height: f32 = 320, max_visible: usize = 0 }
 ```
 
@@ -528,12 +546,12 @@ TransientState = struct { hover_index, press_index, focus_index: ?usize = null,
 
 ### Render (`teak.render`, `teak.vertex`)
 ```zig
-buildFrame(verts, text_draws, image_draws, scene_draws, scene_items: *std.ArrayList(...), alloc, cmds, rects,
+buildFrame(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites: *std.ArrayList(...), alloc, cmds, rects,
            transient: TransientState, measurer: TextMeasurer) OverlaySplit   // what teak.run uses
 OverlaySplit = struct { verts, text, images, scenes: u32 }   // counts the BASE layer produced = where the overlay starts
 buildVertices(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer) void  // = buildFrame, scenes skipped
 ResourceTable = struct { sync(self, gpu, []const Resource) bool /*changed*/, deinit(self, gpu), handleOf(kind, key) u32 }
-stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw, items: []SceneItem) void  // remap keys (incl. item keys), uploadImages, renderScenes
+stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw, data: SceneData{items: []SceneItem, sprites: []SceneSprite}) void  // remap keys (incl. item keys), uploadImages, renderScenes
                                       // (hand-written web loops call these; teak.run does it for you)
 ImageDraw = struct { rect_x, rect_y, rect_w, rect_h: f32, handle: TextureHandle,
                      tint: [4]f32, clip_x, clip_y, clip_w, clip_h: f32 }
@@ -579,7 +597,20 @@ SceneView = struct { items: []const SceneItem, grid: ?Grid, gizmo: ?Gizmo, cut: 
                      material: enum{lambert,flat}, highlight_color: [4]f32, highlight_mix: f32; pub fn eql }
 ```
 `buildFrame` flattens each scene's visible items into `scene_items` (`SceneDraw.item_first/item_count`); `stageDraws` remaps their
-keys to handles; `Gpu.renderScenes(draws, items)` draws them. Snapshot suffix: `items=N grid cut gizmo flat`.
+keys to handles; `Gpu.renderScenes(draws, SceneData{items, sprites})` draws them. Snapshot suffix: `items=N grid cut gizmo flat`.
+
+### 2.5D layers: planes and sprites (`View.planes`, `View.sprites`; `ScenePlane`, `SceneSprite`)
+```zig
+ScenePlane = struct { origin, u, v: [3]f32 /*local (x,y) -> origin + x*u + y*v*/, size: [2]f32,
+                      content: []const CanvasPrimitive /*plane-local units*/, layer: i16 /*depth bias, higher on top*/,
+                      opacity: f32 = 1, background: ?[4]f32, double_sided: bool = true, flags, id: u32 }
+SceneSprite = struct { pos: [3]f32, image: u32 /*image resource key*/, size: [2]f32, size_in: .world | .screen_px (default),
+                       anchor: [2]f32 = .{.5,.5}, mode: .camera_facing | .axis_locked_y | .fixed, uv: [4]f32, tint, id, layer, flags }
+```
+Planes reuse the 2D canvas tessellator (sharp at any tilt, MSAA, depth-correct with meshes). Opaque planes (opacity 1 and an opaque
+`background`) write depth; every other plane and every sprite is blended, sorted back to front (`scene.sort.byDepth`) and does not.
+`screen_px` sizes apply to `camera_facing` sprites. Picking: `scene.pick.planes(ray, planes) ?PlaneHit{id,index,t,point,local}` and
+`scene.pick.sprites(cam, w, h, x, y, sprites) ?SpriteHit{id,index,depth}`.
 
 ### Scene camera, picking, section cuts (`teak.scene.{Orbit,camera,pick,section,mat}`; design: docs/features/scene.md)
 Pure math, no allocation except where noted. Right-handed, column-major, depth 0..1.
@@ -617,7 +648,7 @@ DEFAULT_FONT: FontSpec        // sans 14px
 TextMetrics = struct { width, height, ascent, descent: f32 }
 TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
                         pub fn prefixWidth(text, font, byte_prefix: usize) f32 }
-ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32 }  // logical order; sum(advance)==width
+ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32, y: f32 = 0 }  // logical order (RTL runs from the optional HarfBuzz shaper: visual); y = baseline offset px, down; sum(advance)==width
 ShapeResult = struct { count: usize, width: f32, consumed: usize }   // consumed < text.len only when `out` filled
 Shaper = struct { ctx: *anyopaque, shape_fn; pub fn shape(text, font, out: []ShapedGlyph) ShapeResult }
 TextureHandle = u32
@@ -682,7 +713,8 @@ Combobox(comptime cap: usize) type      // cap = query bytes; Model/Msg/update/v
   viewWith(model, cb, options: []const []const u8, msgs /*.focus .close .selectMsg(i)*/, opts: ComboboxViewOpts)
   charMsg(u8) Msg;  keyMsg(model, SpecialKey, options, opts) ?Msg;  enterMsg / highlightMsg / scrollByMsg(...)
   shownText(model, options) []const u8
-ComboboxViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200, max_visible: usize = 8,
+ComboboxViewOpts = struct { auto_anchor: bool = true, anchor_side: AnchorSide = .below_start,
+                            list_x, list_y: f32 = 0 /*only if !auto_anchor*/, list_width: f32 = 200, max_visible: usize = 8,
                             match: Match(.substring|.prefix) = .substring, input_style: ?TextInputStyle = null }
 // pure: combobox.matches(query, option, mode) bool, countMatches, nthMatch, ordinalOf, foldCase
 ```
@@ -708,6 +740,11 @@ widgets.toast.Toast(cap, text_cap): Model{items,len,next_id}; Msg{push: Push{kin
   Kind = enum { info, success, warning, danger };  TICK_MS; default_ttl
 widgets.dialog: view(cb, Opts{window_w, window_h, title, message, confirm_label, cancel_label: ?[]const u8, width, danger,
   dismiss_on_backdrop, scrim}, msgs /*.confirm .cancel*/); begin / end (own body between); keyMsg(key, msgs, has_cancel) ?AppMsg
+widgets.date: Date{year: i32, month 1..12, day}; isLeap, daysInMonth, valid, toDays/fromDays (days since 1970-01-01), weekday(Mon=0), addDays/addMonths(clamps)/addYears,
+  fromUnixMs(unix_ms, utc_offset_min) Date, parseIso("YYYY-MM-DD") ?Date (strict), formatIso(d, buf); month_names, weekday_short
+widgets.date_field: Model{text, open, selected: ?Date, today: ?Date, cursor}; Msg{edit, toggle, close, pick: Date, go: Nav, commit, today, clear, set_today: Date, set: ?Date};
+  Nav = enum{day_prev,day_next,week_prev,week_next,month_prev,month_next,year_prev,year_next,month_start,month_end}; update; textValid(model);
+  charMsg(c) / keyMsg(model, key) ?Msg; viewWith(model, cb, .{ .focus .toggle .close .today .clear AppMsgs, .pickMsg(Date) .goMsg(Nav) fns }, ViewOpts{list_x,list_y,window_w,window_h,cell_w,cell_h}); panelWidth(opts)
 widgets.menu.MenuBar(Action) type: Item (= MenuItem(Action){label "&File" mnemonic, action: ?Action, shortcut, enabled, checked,
     separator, children}; Item.sep); Model{st: State}; Msg{goto: State, close}; update; isActive(model);
     viewWith(model, cb, items, msgs /*.menu(Msg) .run(Action)*/, ViewOpts{x,y,window_w,window_h,top_width,bar_height,panel_w,row_h,cols,bar_bg});
@@ -765,6 +802,20 @@ caretPos(text, index, font, max_w, mode, max_lines, m) Caret{x, y, line}
 indexAt(text, x, y, font, max_w, mode, max_lines, m) usize  // inverse of caretPos at grapheme boundaries
 ```
 
+### Bidi (`teak.bidi`, UAX #9; core/bidi.zig, docs/features/bidi.md)
+One paragraph per `analyze` (split at hard breaks). Pure; allocator only for working storage / results.
+```zig
+analyze(gpa, text, Direction(.auto|.ltr|.rtl)) !Analysis{ para_level, levels: []u8, classes: []Class, offsets: []u32 }  // per code point; .deinit(gpa)
+Analysis.isPlainLtr() bool            // skip all bidi work
+Analysis.isRemoved(i) bool            // X9-removed (embeddings, BN); they keep their predecessor's level
+lineLevels(an, start, end, out) []u8  // L1 on a wrapped line (byte range, e.g. text_wrap.Line.start..hang)
+lineRuns(gpa, an, start, end) ![]Run{ start, end, level }   // L2: runs left-to-right as shown; odd level = draw right-to-left
+visualOrder(levels, order) void       // L2 on any level array (code points or clusters)
+caretMove(gpa, text, an, start, end, Caret{ index, trailing }, Arrow(.left|.right)) !?Caret   // visual arrows; null = line edge; word jumps stay logical
+selectionSpans(gpa, text, an, start, end, advances_per_cluster, sel_start, sel_end) ![]Span{ x0, x1 }
+mirrored(cp) ?u21;  classOf(cp) Class
+```
+
 ### Host interface (`teak.host` → platform/host.zig)
 Backends live in `platform/{win32,x11,wasm}.zig` — NOT re-exported (web entry points must also declare `pub const std_options: std.Options = .{ .logFn = platform.logFn };` — the default std.log sink does not build on wasm32-freestanding); the build
 picks one under the import name `teak-platform-native`.
@@ -786,13 +837,18 @@ resolveKey(NavKey, Modifiers) ?SpecialKey   // the one Shift/Ctrl policy every h
 input_queue         // module: platform/input_queue.zig
 Clipboard = struct { ctx, read_fn, write_fn; pub fn read() []const u8; pub fn write(t) void }
 ImeState = struct { active: bool = false, text: []const u8 = "", cursor: usize = 0 }
+CursorShape = enum { arrow, pointer, ibeam, crosshair, move, resize_ew, resize_ns, resize_nwse, resize_nesw,
+                     not_allowed, grab, grabbing }   // Host.setCursor (optional); default per hovered cmd:
+                                                     //   button/checkbox/radio/slider pointer, text_input ibeam,
+                                                     //   canvas -> CanvasCmd.cursor (null = arrow)
+HoverKind = enum { none, button, checkbox, radio, slider, text_input, canvas, scene3d }  // arg of cursorFor
 FileDialogResult = ?[]const u8
 FileDialogFilter = struct { name: []const u8 = "All files", pattern: []const u8 = "*.*" }
 FileDialogPoll = union(enum) { pending, ok: []const u8, cancelled }
 validateHost(comptime T: type) void   // comptime contract: deinit, pollInputs, shouldClose,
                                        //   nativeHandle, textMeasurer, clipboard, imeState,
                                        //   publishA11yTree, open/save/request/pollFileDialog,
-                                       //   secondary-window decls, setTitle, nowMs (scaleFactor optional)
+                                       //   secondary-window decls, setTitle, nowMs (scaleFactor, setCursor optional)
 ```
 
 ### Gpu interface (`teak.gpu` → gpu/context.zig)
@@ -806,7 +862,7 @@ validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uplo
                                        //   renderFrame, rasterizeText, uploadText, uploadImage, uploadImages, releaseImage
 // Optional extension (checked only when present; the scene trio is all-or-none):
 //   uploadMesh(*Gpu, MeshData) MeshHandle      releaseMesh(*Gpu, MeshHandle) void
-//   renderScenes(*Gpu, []const SceneDraw, []const SceneItem) void  // before renderFrame; offscreen 3D -> composite quads
+//   renderScenes(*Gpu, []const SceneDraw, SceneData) void  // before renderFrame; offscreen 3D -> composite quads
 //   setOverlayStart(*Gpu, OverlaySplit) void    // before the uploads: draw base solids/images/scenes/text, THEN
 //                                              //   the overlay's, so an opaque overlay hides base text (hatch 5)
 ```

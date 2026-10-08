@@ -133,6 +133,9 @@ zunk's `docs/ARCHITECTURE.md` ("Host services: `web.fx`").
 
 ### Native (Linux/X11 and Windows in `src/platform/native_effects.zig`)
 
+
+The Wayland host (`wayland.zig`) implements `write_clipboard`, paste (`pasted_text` / PNG `dropped`) and file/text drops on `wl_data_device` with the same result shapes as X11 below (pipes instead of selections; no INCR needed); `Clipboard.read` is a bounded 250 ms pipe read.
+
 | Effect | Implementation |
 |---|---|
 | `http` | `std.http.Client` (TLS, system CA bundle) on a short-lived worker thread per request, at most 8 at once (`busy` beyond that), so a frame never blocks. Method, headers and body are copied at `submit`. The timeout is enforced at poll time: at the deadline the app gets `status = 0`, `err = "timeout after N ms"` and the worker's late answer is discarded (std's client has no socket timeout, so a hung connect lingers on its own thread until the OS gives up). Failures give `status = 0` and a reason ("network error: connection refused", "invalid URL", ...). Responses up to 32 MB. |
