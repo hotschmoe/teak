@@ -21,6 +21,7 @@ const builtin = @import("builtin");
 const teak = @import("teak");
 
 pub const c = @import("stb-c");
+const fallback = @import("fallback.zig");
 
 /// Font search order. `TEAK_FONT` (absolute path) overrides everything;
 /// otherwise the first readable candidate wins. DejaVuSansMono leads
@@ -208,6 +209,7 @@ pub fn registerFace(family: teak.FontFamily, weight: teak.FontWeight, ttf: []con
 
 /// Forget every registered face and the loaded fallback.
 pub fn releaseFaces() void {
+    fallback.release();
     if (registry.fallback) |*f| f.deinit();
     registry = .{};
     epoch += 1;
@@ -227,7 +229,7 @@ pub fn faceById(id: u16) ?*const Font {
         if (registry.fallback) |*f| return f;
         return null;
     }
-    if (id > fallback_face_id) return null;
+    if (id > fallback_face_id) return fallback.faceByExtraId(id);
     const fam = id / weight_count;
     const w = id % weight_count;
     if (registry.faces[fam][w]) |*f| return f;
