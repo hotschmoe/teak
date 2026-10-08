@@ -150,6 +150,7 @@ pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: 
 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
+`cmd component component_list transient text sub theme text_field text_area text_event numeric_field
 `cmd component component_list transient text sub anim theme text_field numeric_field
 dropdown debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
@@ -587,6 +588,25 @@ TextDraw = struct { rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x
 monoMeasurer() TextMeasurer    // stateless 10px/byte, 20px line — for headless tests + CLI
 ```
 
+### TextArea and text events (`teak.TextArea`, `teak.text_area`, `teak.text_event`)
+Multi-line editing: `cb.textArea(TextAreaCmd{ focus_msg, id, content, cursor, selection_anchor, scroll_x/y, goal_x,
+wrap: Wrap = .word, font, style: TextInputStyle, width, min_width = 120, height = 120, flex, padding = 6, disabled })`
+(`cb.textAreaThemed(...)`). Layout sizes it like a canvas; render wraps to the inner box, draws per-line selection,
+caret and IME composition, clipped. The runtime turns input over it into `TextEvent`s for the optional hook
+`textMsg(*const Model, TextEvent) ?Msg`; the focused area also gets Up/Down/PageUp/PageDown/Home/End (and Shift
+variants) as `move` events resolved on the wrapped layout, and its caret rect feeds `Host.setImeSpot` when present.
+```zig
+TextEventKind = enum { down, drag, up, double_click, triple_click, wheel, move, metrics, leave }
+TextEvent = struct { id, kind, index: u32 /*nearest grapheme boundary*/, line: u32, x, y, dx, dy, goal_x, keep_goal,
+                     mods, clicks, viewport_w/h, content_w/h, caret_x/y/h }   // metrics fields only for .metrics
+TextArea(comptime cap: usize) type   // Model { ed: Editor (multiline), scroll_x/y, viewport/content/caret metrics }
+  Msg = union(enum) { focus, char: u8, newline, key: SpecialKey, paste: []const u8, event: TextEvent }
+  update(model, msg)   // events: Editor.applyPointer for caret/selection; wheel scrolls; metrics clamp + reveal caret
+  eventMsg(ev) / charMsg(c) / pasteMsg(bytes) / keyMsg(SpecialKey) ?Msg
+  viewWith(model, cb, .{ .focus = msg }, ViewOpts{ id = 1, width, min_width, height, flex, wrap, padding, style, font, disabled })
+Editor.applyPointer(ev) bool          // down / drag / double / triple / move -> caret + selection
+text_wrap.resolveNav(text, cursor, goal_x, NavKind, page, font, max_w, mode, m) NavResult{index, goal_x, line}
+layout.textAreaInner(rect, ta) Rect;  layout.textAreaWrapWidth(inner, ta) f32
 ### Combobox (`teak.Combobox` → core/combobox.zig)
 Searchable select: text query + filtered modal overlay list (Dropdown-style, zero new Cmds).
 ```zig

@@ -140,6 +140,77 @@ fn emitWrapped(
     }
 }
 
+/// A `text_area`: border + bg, selection quads per wrapped line, one
+/// `TextDraw` per visible line (culled by scroll), the IME composition at the
+/// caret, and the blinking caret -- all clipped to the inner box. Line breaks
+/// come from the same `text_wrap` walk the metrics event and pointer
+/// resolution use, so caret, selection and hit-testing agree.
+fn emitTextArea(
+    verts: *std.ArrayList(Vertex),
+    text_draws: *std.ArrayList(TextDraw),
+    alloc: std.mem.Allocator,
+    ta: anytype,
+    rect: Rect,
+    cur_clip: Rect,
+    transient: TransientState,
+    measurer: TextMeasurer,
+    focused: bool,
+) void {
+    const st = ta.style;
+    const border_color = if (ta.disabled) st.disabled_border else if (focused) st.focus_border else st.border;
+    emit(verts, alloc, rect, border_color, cur_clip);
+    emit(verts, alloc, insetRect(rect, st.border_width), if (ta.disabled) st.disabled_bg else st.bg, cur_clip);
+
+    const inner = layout.textAreaInner(rect, ta);
+    const clip = clipRect(inner, cur_clip);
+    if (clip.w <= 0 or clip.h <= 0) return;
+    const wrap_w = layout.textAreaWrapWidth(inner, ta);
+    const mode: text_wrap.Wrap = if (ta.wrap == .ellipsis) .none else ta.wrap;
+    const lh = text_wrap.lineHeight(ta.font, measurer);
+    const ox = inner.x - ta.scroll_x;
+    const oy = inner.y - ta.scroll_y;
+    const fg = if (ta.disabled) st.disabled_fg else st.fg;
+
+    const sel_lo: usize = if (ta.selection_anchor) |a| @min(a, ta.cursor) else 0;
+    const sel_hi: usize = if (ta.selection_anchor) |a| @max(a, ta.cursor) else 0;
+    const has_sel = !ta.disabled and sel_hi > sel_lo;
+
+    var it = text_wrap.LineIter.init(ta.content, ta.font, wrap_w, mode, 0, measurer);
+    var li: f32 = 0;
+    while (it.next()) |line| : (li += 1) {
+        const y = oy + li * lh;
+        if (y >= clip.y + clip.h) break;
+        if (y + lh <= clip.y) continue;
+        if (has_sel and sel_hi > line.start and sel_lo < line.next) {
+            const a = @max(sel_lo, @as(usize, line.start));
+            const b = @min(sel_hi, @as(usize, line.hang));
+            const x0 = if (a > line.start) measurer.measure(ta.content[line.start..a], ta.font).width else 0;
+            var x1 = if (b > line.start) measurer.measure(ta.content[line.start..b], ta.font).width else x0;
+            // A selection that runs past the line end shows a newline stub.
+            if (sel_hi > line.hang) x1 += lh * 0.3;
+            if (x1 > x0) emit(verts, alloc, .{ .x = ox + x0, .y = y, .w = x1 - x0, .h = lh }, st.selection_bg, clip);
+        }
+        if (line.end > line.start) {
+            emitText(text_draws, alloc, ta.content[line.start..line.end], ta.font, fg, .{ .x = ox, .y = y, .w = line.width, .h = lh }, clip);
+        }
+    }
+
+    if (!focused) return;
+    const caret = text_wrap.caretPos(ta.content, ta.cursor, ta.font, wrap_w, mode, 0, measurer);
+    var cx = ox + caret.x;
+    const cy = oy + caret.y;
+    const ime_drawn = transient.ime_active and transient.ime_text.len > 0;
+    if (ime_drawn) {
+        const m = measurer.measure(transient.ime_text, ta.font);
+        emitText(text_draws, alloc, transient.ime_text, ta.font, st.fg, .{ .x = cx, .y = cy, .w = m.width, .h = lh }, clip);
+        emit(verts, alloc, .{ .x = cx, .y = cy + lh - 1, .w = m.width, .h = 1 }, st.cursor, clip);
+        cx += measurer.prefixWidth(transient.ime_text, ta.font, transient.ime_cursor);
+    }
+    if (((transient.frame_counter / 30) & 1) == 0) {
+        emit(verts, alloc, .{ .x = cx, .y = cy, .w = CURSOR_WIDTH, .h = lh }, st.cursor, clip);
+    }
+}
+
 /// A `width`-thick frame INSIDE `r`: four non-overlapping edge quads (so a
 /// translucent border doesn't double-blend at the corners). `width` is
 /// clamped to half the smaller side.
@@ -499,6 +570,11 @@ fn buildLayer(
                     };
                     emit(verts, alloc, cursor_rect, ti.style.cursor, cur_clip);
                 }
+            },
+            .text_area => |ta| {
+                if (!visible) continue;
+                const focused = !ta.disabled and (if (transient.focus_index) |fi| fi == i else false);
+                emitTextArea(verts, text_draws, alloc, ta, rect, cur_clip, transient, measurer, focused);
             },
             .checkbox => |cb| {
                 if (!visible) continue;
@@ -1815,4 +1891,73 @@ test "layout height equals the rendered line count for random strings and widths
             return e;
         };
     }
+}
+
+test "text_area: multi-line selection quads, per-line text, scroll culling, caret" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    const sel: [4]f32 = .{ 0.2, 0.4, 0.9, 0.5 };
+    var style = cb.theme.text_input;
+    style.selection_bg = sel;
+    // Inner box: border 2 + padding 6 -> 184 wide = 18 chars; 5 rows of 20 px.
+    const content = "aaaa bbbb cccc dddd eeee ffff gggg"; // wraps to 3 lines
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.textArea(.{ .focus_msg = .focus, .id = 1, .content = content, .cursor = 24, .selection_anchor = 7, .style = style, .width = 200, .height = 116 });
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    var ts: TransientState = .{};
+    ts.focus_index = 1;
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws: std.ArrayList(TextDraw) = .empty;
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    var scenes: std.ArrayList(SceneDraw) = .empty;
+    defer scenes.deinit(testing.allocator);
+    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], ts, text_mod.monoMeasurer());
+
+    // Three wrapped lines of text.
+    try testing.expectEqual(@as(usize, 3), text_draws.items.len);
+    try testing.expectEqualStrings("aaaa bbbb cccc", text_draws.items[0].content);
+    try testing.expectEqualStrings("dddd eeee ffff", text_draws.items[1].content);
+    try testing.expectEqualStrings("gggg", text_draws.items[2].content);
+    // Selection [7, 24) covers the tail of line 0, all of line 1 and nothing of line 2: two quads.
+    var sel_quads: usize = 0;
+    var i: usize = 0;
+    while (i + 6 <= verts.items.len) : (i += 6) {
+        const v = verts.items[i];
+        if (v.r == sel[0] and v.g == sel[1] and v.b == sel[2] and v.a == sel[3]) sel_quads += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), sel_quads);
+    // Selection quads sit on rows 0 and 1 (origin y = 8).
+    try testing.expectEqual(@as(f32, 8), text_draws.items[0].rect_y);
+    try testing.expectEqual(@as(f32, 28), text_draws.items[1].rect_y);
+}
+
+test "text_area: scrolled content culls lines above the viewport" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.textArea(.{ .focus_msg = .focus, .id = 1, .content = "1\n2\n3\n4\n5\n6\n7\n8", .scroll_y = 60, .width = 200, .height = 56 });
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws: std.ArrayList(TextDraw) = .empty;
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    // Inner height 40: rows 4..5 are visible (scroll 60 = 3 lines), lines 1-3 above are culled.
+    try testing.expectEqual(@as(usize, 2), text_draws.items.len);
+    try testing.expectEqualStrings("4", text_draws.items[0].content);
+    try testing.expectEqualStrings("5", text_draws.items[1].content);
 }
