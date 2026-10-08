@@ -253,7 +253,7 @@ pub fn TextStage(comptime Raster: type) type {
                 // generation (and the glyph's subpixel bin) is unchanged.
                 const entries = self.run_entries.items[run.off..][0..run.len];
                 for (glyphs, entries) |g, *cached| {
-                    self.emitGlyph(layer, draw.content, font, g, cached, base_x + g.x * scale, baseline, size_q, snap, color, clip);
+                    self.emitGlyph(layer, draw.content, font, g, cached, base_x + g.x * scale, baseline + @round(g.y * scale), size_q, snap, color, clip);
                 }
             }
         }
