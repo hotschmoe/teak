@@ -201,6 +201,10 @@ const State = struct {
     xkb_state: ?*anyopaque = null,
     last_serial: u32 = 0,
     pointer_serial: u32 = 0,
+    /// Serial of the last pointer button event (drag-and-drop origin).
+    button_serial: u32 = 0,
+    /// The pointer is over our surface (enter .. leave).
+    pointer_inside: bool = false,
     paste_requested: bool = false,
     now_ms: u64 = 0,
 
@@ -650,9 +654,13 @@ const seat_listener = wl.wl_seat_listener{ .capabilities = onSeatCaps };
 fn onPtrEnter(d: ?*anyopaque, _: *wl.wl_pointer, serial: u32, _: *wl.wl_surface, x: i32, y: i32) callconv(.c) void {
     const s = S(d);
     s.pointer_serial = serial;
+    s.pointer_inside = true;
     s.last_serial = serial;
     s.queue.pointerMoved(client.fixedToF32(x), client.fixedToF32(y));
     s.applyCursor();
+}
+fn onPtrLeave(d: ?*anyopaque, _: *wl.wl_pointer, _: u32, _: *wl.wl_surface) callconv(.c) void {
+    S(d).pointer_inside = false;
 }
 fn onPtrMotion(d: ?*anyopaque, _: *wl.wl_pointer, _: u32, x: i32, y: i32) callconv(.c) void {
     S(d).queue.pointerMoved(client.fixedToF32(x), client.fixedToF32(y));
@@ -660,6 +668,7 @@ fn onPtrMotion(d: ?*anyopaque, _: *wl.wl_pointer, _: u32, x: i32, y: i32) callco
 fn onPtrButton(d: ?*anyopaque, _: *wl.wl_pointer, serial: u32, _: u32, code: u32, state: u32) callconv(.c) void {
     const s = S(d);
     s.last_serial = serial;
+    s.button_serial = serial;
     const b = data.buttonFromCode(code) orelse return;
     if (state == wl.wl_pointer__button_state.pressed) s.queue.buttonDown(b) else s.queue.buttonUp(b);
 }
@@ -677,6 +686,7 @@ fn onPtrFrame(d: ?*anyopaque, _: *wl.wl_pointer) callconv(.c) void {
 }
 const pointer_listener = wl.wl_pointer_listener{
     .enter = onPtrEnter,
+    .leave = onPtrLeave,
     .motion = onPtrMotion,
     .button = onPtrButton,
     .axis = onPtrAxis,
@@ -961,7 +971,11 @@ pub const Host = struct {
             s.fractional = f;
             wl.wp_fractional_scale_v1_add_listener(f, &fractional_listener, s);
         }
-        if (s.viewporter) |vp| s.viewport = wl.wp_viewporter_get_viewport(vp, s.surface);
+        // TEAK_WL_NO_VIEWPORT=1 forces the integer `set_buffer_scale` path
+        // (debugging compositors with a misbehaving wp_viewporter).
+        if (s.viewporter) |vp| {
+            if (std.c.getenv("TEAK_WL_NO_VIEWPORT") == null) s.viewport = wl.wp_viewporter_get_viewport(vp, s.surface);
+        }
         wl.wl_surface_commit(s.surface);
 
         // Wait for the first configure (and the scale announcements).

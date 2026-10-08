@@ -6,6 +6,7 @@
 const std = @import("std");
 const native_effects = @import("native_effects.zig");
 const x11_data = @import("x11_data.zig");
+const teak = @import("teak");
 
 const Service = native_effects.Service;
 
@@ -75,4 +76,20 @@ pub fn droppedFiles(svc: *Service, uri_list: []const u8) void {
         } });
         count += 1;
     }
+}
+
+test "droppedFiles reads a file:// URI into a Drop; remote and missing URIs are skipped" {
+    const svc = try Service.create("drops-test");
+    defer svc.destroy();
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_n = try std.process.currentPath(std.Options.debug_io, &cwd_buf);
+    var list_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    const list = try std.fmt.bufPrint(&list_buf, "# c\r\nfile://remote/etc/passwd\r\nfile://{s}/no-such-file\r\nfile://{s}/build.zig.zon\r\n", .{ cwd_buf[0..cwd_n], cwd_buf[0..cwd_n] });
+    droppedFiles(svc, list);
+    var out: [4]teak.EffectResult = undefined;
+    const n = svc.poll(&out, 0);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(teak.DropKind.file, out[0].dropped.kind);
+    try std.testing.expectEqualStrings("build.zig.zon", out[0].dropped.name);
+    try std.testing.expect(out[0].dropped.bytes.len > 0);
 }

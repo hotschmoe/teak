@@ -245,3 +245,85 @@ test "Ctrl+V without an app claim becomes pasted_text" {
     if (got == null) return error.SkipZigTest; // the owner could not take the selection (focus policy)
     try std.testing.expectEqualStrings("pasted via ctrl+v", got.?);
 }
+
+const wl = @import("wayland/protocols.zig");
+const client = @import("wayland/client.zig");
+
+var drag_payload: [256]u8 = undefined;
+var drag_len: usize = 0;
+
+fn dragSend(_: ?*anyopaque, _: *wl.wl_data_source, _: [*:0]const u8, fd: i32) callconv(.c) void {
+    extern_write(fd);
+}
+extern "c" fn write(fd: c_int, buf: [*]const u8, n: usize) isize;
+extern "c" fn close(fd: c_int) c_int;
+fn extern_write(fd: i32) void {
+    _ = write(fd, &drag_payload, drag_len);
+    _ = close(fd);
+}
+const drag_listener = wl.wl_data_source_listener{ .send = dragSend };
+
+test "drag and drop: a text/uri-list dropped on a window becomes a file Drop" {
+    try requireWayland();
+    if (getenv("DISPLAY") == null) return error.SkipZigTest;
+    const path = ".x11_test/wl_dropped.txt";
+    std.Io.Dir.cwd().createDirPath(std.Options.debug_io, ".x11_test") catch {};
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = path, .data = "dropped bytes" });
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_n = try std.process.currentPath(std.Options.debug_io, &cwd_buf);
+    const uri = try std.fmt.bufPrint(&drag_payload, "file://{s}/{s}\r\n", .{ cwd_buf[0..cwd_n], path });
+    drag_len = uri.len;
+
+    // One window is both the drag origin and the drop target: the compositor
+    // drives the whole offer -> accept -> drop -> receive -> send -> finish
+    // exchange, which is what the host's drop path implements. (weston's
+    // random window placement makes a two-window test unreliable.)
+    var h = try focusedHost("teak wl dnd");
+    defer h.deinit();
+    const s = h.st;
+    // Press inside the window (the pointer is already inside after focusing).
+    _ = system("xdotool mousedown 1 >/dev/null 2>&1");
+    var spins: usize = 0;
+    while (!s.queue.buttons.left and spins < 300) : (spins += 1) {
+        _ = h.pollInputs();
+        sleepMs(4);
+    }
+    if (!s.queue.buttons.left) return error.SkipZigTest;
+    const source = wl.wl_data_device_manager_create_data_source(s.data_mgr.?);
+    wl.wl_data_source_add_listener(source, &drag_listener, null);
+    wl.wl_data_source_offer(source, "text/uri-list");
+    wl.wl_data_source_set_actions(source, wl.wl_data_device_manager__dnd_action.copy);
+    wl.wl_data_device_start_drag(s.data_device.?, source, s.surface, null, s.button_serial);
+    _ = client.api.display_flush(s.display);
+    // Wiggle over the window, then release.
+    var step: u32 = 0;
+    while (step < 6) : (step += 1) {
+        _ = system(if (step % 2 == 0) "xdotool mousemove_relative 6 4 >/dev/null 2>&1" else "xdotool mousemove_relative -4 -2 >/dev/null 2>&1");
+        var k: usize = 0;
+        while (k < 6) : (k += 1) {
+            _ = h.pollInputs();
+            sleepMs(4);
+        }
+    }
+    _ = system("xdotool mouseup 1 >/dev/null 2>&1");
+    var got: ?[]const u8 = null;
+    var copy: [64]u8 = undefined;
+    var buf: [16]EffectResult = undefined;
+    spins = 0;
+    while (spins < 400 and got == null) : (spins += 1) {
+        _ = h.pollInputs();
+        const n = h.pollEffectResults(&buf);
+        for (buf[0..n]) |r| switch (r) {
+            .dropped => |d| {
+                try std.testing.expectEqual(teak.DropKind.file, d.kind);
+                try std.testing.expectEqualStrings("wl_dropped.txt", d.name);
+                @memcpy(copy[0..d.bytes.len], d.bytes);
+                got = copy[0..d.bytes.len];
+            },
+            else => {},
+        };
+        sleepMs(5);
+    }
+    if (got == null) return error.SkipZigTest; // the compositor did not start the drag
+    try std.testing.expectEqualStrings("dropped bytes", got.?);
+}
