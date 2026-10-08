@@ -43,12 +43,13 @@ pub fn main(init: std.process.Init) !void {
     const o = parseArgs(init);
     if (o.stress > 0) return stress(init, o);
     if (o.anim) |n| {
+        const steps = slide_steps(n);
         try teak.headless.shot(App, Host, Gpu, init.gpa, o.path, .{
             .width = 1280,
             .height = 800,
             .scale = o.scale,
             .run = .{ .clear_color = App.paper },
-            .steps = &slide_steps(n),
+            .steps = &steps,
         });
         std.debug.print("wrote {s} ({d} frames into the slide-in)\n", .{ o.path, n });
         return;
@@ -78,12 +79,12 @@ pub fn main(init: std.process.Init) !void {
         // The first-load state without MSAA: matches the web build pixel for pixel.
         .{ .name = "plain", .steps = &.{.{ .frames = 40 }}, .msaa = false },
         // Mid-slide of the popover's re-open animation (deterministic: 16 ms per frame).
-        .{ .name = "popover_sliding", .steps = &slide_steps(6) },
+        .{ .name = "popover_sliding", .steps = &comptime slide_steps(6) },
     });
 }
 
 /// Close the help popover, let it settle, re-open it, run `n` frames into the slide-in.
-fn slide_steps(comptime n: u32) [5]teak.headless.Step {
+fn slide_steps(n: u32) [5]teak.headless.Step {
     return .{
         .{ .frames = 2 },
         .{ .click = .{ 1240, 20 } }, // HELP: close the popover
