@@ -70,7 +70,10 @@ If a field fails any rule, it goes in `Model`.
 **Bounded by**:
 - Fixed-depth stack (currently 32); exceeding it is a bug, not an
   allocation trigger.
-- Two O(n) linear passes (measure bottom-up, position top-down).
+- Two to four O(n) linear passes: measure bottom-up and position top-down
+  always; resolve-widths (top-down) and re-measure-heights (bottom-up) run
+  in between ONLY when the frame has wrapped text or shrinkable nodes, and
+  are skipped (instrumented test) otherwise.
 - Each pass function is replaceable — swap in a constraint solver or
   grid engine without touching `view`, hit-test, or render.
 

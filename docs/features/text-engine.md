@@ -12,6 +12,8 @@ It replaces the "per-string texture" text path described in
 Zig 0.16, `-O2`/`ReleaseFast`/`ReleaseSmall` as stated, DejaVuSansMono).
 Scratch sources are not committed; each number says how to re-measure it.
 
+> **Status (PR8/PR9):** wrap + shrink in layout and per-line render are implemented; `cb.wrap_nodes` was not needed (pass 1 detects wrapped nodes itself) and the text field is `text_align` (`align` is a Zig keyword). See layout.md.
+
 ## 0. Summary of decisions
 
 | # | Question | Decision |

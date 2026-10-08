@@ -5,6 +5,7 @@ const ClipStack = layout.ClipStack;
 const clipRect = layout.clipRect;
 const TransientState = @import("../core/transient.zig").TransientState;
 const text_mod = @import("../core/text.zig");
+const text_wrap = @import("../core/text_wrap.zig");
 const TextDraw = text_mod.TextDraw;
 const TextMeasurer = text_mod.TextMeasurer;
 const FontSpec = text_mod.FontSpec;
@@ -98,6 +99,45 @@ fn emitText(
         .clip_w = clip.w,
         .clip_h = clip.h,
     }) catch {};
+}
+
+/// One TextDraw per wrapped line of a `text` Cmd with `wrap != .none`, using
+/// the same `text_wrap` line walk layout used for the height, so the line
+/// count drawn equals the height reserved. Lines wholly outside `clip` are
+/// skipped; an ellipsized line is the kept text plus a second draw of U+2026
+/// (no allocation: `alloc` is the long-lived run-loop allocator).
+fn emitWrapped(
+    text_draws: *std.ArrayList(TextDraw),
+    alloc: std.mem.Allocator,
+    txt: anytype,
+    rect: Rect,
+    clip: Rect,
+    measurer: TextMeasurer,
+) void {
+    if (rect.w <= 0 or rect.h <= 0) return;
+    const lh = text_wrap.lineHeight(txt.font, measurer);
+    var it = text_wrap.LineIter.init(txt.content, txt.font, rect.w, txt.wrap, txt.max_lines, measurer);
+    var li: f32 = 0;
+    while (it.next()) |line| : (li += 1) {
+        const y = rect.y + li * lh;
+        if (y + lh <= clip.y or y >= clip.y + clip.h) continue;
+        const x = switch (txt.text_align) {
+            .start => rect.x,
+            .center => rect.x + (rect.w - line.width) * 0.5,
+            .end => rect.x + rect.w - line.width,
+        };
+        const piece = txt.content[line.start..line.end];
+        if (line.ellipsized) {
+            // Two draws, no allocation: the kept text, then a static "…"
+            // right after it (the run loop's allocator is the long-lived gpa).
+            const ew = measurer.measure(text_wrap.ELLIPSIS, txt.font).width;
+            const kept_w = line.width - ew;
+            emitText(text_draws, alloc, piece, txt.font, txt.color, .{ .x = x, .y = y, .w = kept_w, .h = lh }, clip);
+            emitText(text_draws, alloc, text_wrap.ELLIPSIS, txt.font, txt.color, .{ .x = x + kept_w, .y = y, .w = ew, .h = lh }, clip);
+        } else {
+            emitText(text_draws, alloc, piece, txt.font, txt.color, .{ .x = x, .y = y, .w = line.width, .h = lh }, clip);
+        }
+    }
 }
 
 /// A `width`-thick frame INSIDE `r`: four non-overlapping edge quads (so a
@@ -229,7 +269,12 @@ fn buildLayer(
             },
             .pop_group, .push_virtual_list, .pop_virtual_list => {},
             .text => |txt| {
-                if (visible) emitText(text_draws, alloc, txt.content, txt.font, txt.color, rect, cur_clip);
+                if (!visible) continue;
+                if (txt.wrap == .none) {
+                    emitText(text_draws, alloc, txt.content, txt.font, txt.color, rect, cur_clip);
+                } else {
+                    emitWrapped(text_draws, alloc, txt, rect, cur_clip, measurer);
+                }
             },
             .rich_text => |rt| {
                 if (!visible) continue;
@@ -1657,4 +1702,117 @@ test "buildFrame without an overlay splits at the end of every list" {
     defer f.deinit(testing.allocator);
     try testing.expectEqual(@as(u32, @intCast(f.verts.items.len)), f.split.verts);
     try testing.expectEqual(@as(u32, 1), f.split.text);
+}
+
+fn renderTexts(comptime Msg: type, cb: *cmd_mod.CmdBuffer(Msg), rects: []Rect, w: f32, h: f32, draws: *std.ArrayList(TextDraw)) !void {
+    const testing = std.testing;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, w, h, text_mod.monoMeasurer());
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    draws.clearRetainingCapacity();
+    buildVertices(&verts, draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+}
+
+test "wrapped text emits one TextDraw per line, stacked at the line height" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+    cb.paragraph("hello world foo bar");
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    var draws: std.ArrayList(TextDraw) = .empty;
+    defer draws.deinit(testing.allocator);
+    try renderTexts(Msg, &cb, &rects, 100, 200, &draws);
+    try testing.expectEqual(@as(usize, 3), draws.items.len);
+    try testing.expectEqualStrings("hello", draws.items[0].content);
+    try testing.expectEqualStrings("world foo", draws.items[1].content);
+    try testing.expectEqualStrings("bar", draws.items[2].content);
+    try testing.expectEqual(@as(f32, 20), draws.items[1].rect_y);
+    try testing.expectEqual(@as(f32, 40), draws.items[2].rect_y);
+}
+
+test "ellipsis and max_lines draw U+2026; center alignment offsets each line" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+    cb.textEllipsis("one two three four five");
+    cb.paragraphStyled("aa bb cc dd ee ff gg hh", cb.theme.typography.body, cb.theme.text_color, .{ .max_lines = 2, .text_align = .center });
+    cb.popGroup();
+    var rects: [8]Rect = undefined;
+    var draws: std.ArrayList(TextDraw) = .empty;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 200, text_mod.monoMeasurer());
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    buildVertices(&verts, &draws, &image_draws, arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    try testing.expectEqualStrings("one two", draws.items[0].content);
+    try testing.expectEqualStrings("\u{2026}", draws.items[1].content);
+    try testing.expectEqual(@as(f32, 70), draws.items[1].rect_x); // right after the kept text
+    try testing.expectEqualStrings("aa bb cc", draws.items[2].content);
+    // Centered: line width 80 in a 100-wide rect.
+    try testing.expectEqual(@as(f32, 10), draws.items[2].rect_x);
+    try testing.expectEqualStrings("dd ee f", draws.items[3].content);
+    try testing.expectEqualStrings("\u{2026}", draws.items[4].content);
+}
+
+test "layout height equals the rendered line count for random strings and widths" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var prng = std.Random.DefaultPrng.init(0xBEEF);
+    const rnd = prng.random();
+    const words = [_][]const u8{ "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "supercalifragilistic", "日本", "。", "-", "x-y", "e\u{0301}e\u{0301}" };
+    var buf: [256]u8 = undefined;
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    var rects: [4]Rect = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var iter: usize = 0;
+    while (iter < 1000) : (iter += 1) {
+        var n: usize = 0;
+        for (0..1 + rnd.uintLessThan(usize, 12)) |_| {
+            const w = words[rnd.uintLessThan(usize, words.len)];
+            if (n + w.len + 1 > buf.len) break;
+            @memcpy(buf[n..][0..w.len], w);
+            n += w.len;
+            if (rnd.boolean()) {
+                buf[n] = ' ';
+                n += 1;
+            }
+        }
+        const width: f32 = @floatFromInt(20 + rnd.uintLessThan(u32, 300));
+        const max_lines: u16 = @intCast(rnd.uintLessThan(u32, 4));
+        const mode: cmd_mod.Wrap = if (rnd.uintLessThan(u8, 5) == 0) .char else .word;
+        cb.reset();
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+        cb.paragraphStyled(buf[0..n], cb.theme.typography.body, cb.theme.text_color, .{ .wrap = mode, .max_lines = max_lines });
+        cb.popGroup();
+        _ = arena.reset(.retain_capacity);
+        var draws: std.ArrayList(TextDraw) = .empty;
+        layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, width, 2000, text_mod.monoMeasurer());
+        var verts: std.ArrayList(Vertex) = .empty;
+        var image_draws: std.ArrayList(ImageDraw) = .empty;
+        buildVertices(&verts, &draws, &image_draws, arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+        var drawn_lines: f32 = 0;
+        var last_y: f32 = -1;
+        for (draws.items) |d| {
+            if (d.rect_y != last_y) drawn_lines += 1;
+            last_y = d.rect_y;
+        }
+        testing.expectEqual(rects[1].h, drawn_lines * 20) catch |e| {
+            std.debug.print("text='{s}' w={d} mode={s} max_lines={d}\n", .{ buf[0..n], width, @tagName(mode), max_lines });
+            var it = text_wrap.LineIter.init(buf[0..n], cb.theme.typography.body, rects[1].w, mode, max_lines, text_mod.monoMeasurer());
+            while (it.next()) |l| std.debug.print("  line {d}..{d} hang {d} next {d}\n", .{ l.start, l.end, l.hang, l.next });
+            return e;
+        };
+    }
 }
