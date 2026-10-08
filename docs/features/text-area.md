@@ -39,76 +39,36 @@ The metrics table remembers 8 areas; more are re-reported only when they differ 
 
 An `Editor` (multiline) plus scroll state. `Msg = focus | char | newline | key | paste | event`. `update` applies
 `Editor.applyPointer` (down = caret, Shift extends, drag extends, double = word, triple = hard line, `move` = target +
-sticky column), the wheel scrolls (clamped to the content), and `metrics` clamps and reveals the caret. Wiring: see the
-header of `src/core/text_area.zig` and `examples/notes` (a notes editor and a chat box, ~10 lines of glue each).
+sticky column), the wheel scrolls (clamped to the content), and `metrics` clamps and reveals the caret.
 
-### Complete wiring (one area, copy-paste)
+### Wiring (the whole contract, no source reading needed)
 
-Everything an app needs, in one place (no need to read `examples/notes`):
+1. **Model / Msg / update**: a `TextArea(cap).Model` field, a `TextArea(cap).Msg` variant, and one `update` arm that
+   forwards to `TextArea(cap).update(&m.area, a)`. Record focus yourself when the Msg is `.focus` (the area cannot know
+   which of your widgets owns the keyboard).
+2. **view**: `Area.viewWith(&m.area, cb, .{ .focus = Msg{ .area = .focus } }, .{ .id = 1, .height = 200 })`. `id` is a
+   distinct non-zero number per area; options: `width`, `min_width`, `height`, `flex`, `wrap` (`.word` / `.char` /
+   `.none`), `padding`, `style`, `font`, `disabled`. The area fills the width of a stretching parent.
+3. **Hooks** (optional declarations on the app struct that `teak.run` looks for):
 
-```zig
-const std = @import("std");
-const teak = @import("teak");
+| hook | one-line body | carries |
+|---|---|---|
+| `textMsg(m, ev) ?Msg` | `.{ .area = Area.eventMsg(ev) }` (route on `ev.id` with several areas) | pointer, wheel, `move` (Up/Down/PageUp/PageDown/Home/End), `metrics` |
+| `keyCharMsg(m, c) ?Msg` | `if (focused) .{ .area = Area.charMsg(c) } else null` | typed UTF-8 bytes |
+| `keySpecialMsg(m, k) ?Msg` | `if (focused) if (Area.keyMsg(k)) \|a\| .{ .area = a }` | Enter, Backspace/Delete, Left/Right (+Shift, +Ctrl), Ctrl+A/Z/Y |
+| `focusedMsg(m) ?Msg` | `if (focused) .{ .area = .focus } else null` | focus for Tab traversal, caret blink, IME spot |
+| `keyNeedsClipboard(k)` + `handleClipboard(m, k, clip)` | see below | Ctrl+C / X / V |
 
-const Notes = teak.TextArea(8192);       // capacity in bytes
-const NOTES_ID = 1;                      // distinct, non-zero per area on screen
+4. **Clipboard** is the app's policy: copy with `clip.write(m.area.selectionText())`, cut = copy then
+   `update(m, .{ .area = .{ .key = .backspace } })`, paste with `Area.pasteMsg(clip.read())`.
 
-pub const Model = struct {
-    notes: Notes.Model = .{},
-    notes_focused: bool = false,         // YOUR focus bit: the Msg carries no data
-};
+The complete, compiled version of exactly this is [cookbook recipe 23](../cookbook.md#23-add-a-multi-line-textarea)
+(it is a test in `src/run_test.zig`, so it cannot drift); `examples/notes` has two areas, a chat log and Send/Clear.
 
-pub const Msg = union(enum) { notes: Notes.Msg };
+Motion: Left/Right and Shift variants go to the `Editor` (grapheme-aware; word jumps with Ctrl). Up/Down/Home/End/PageUp/
+PageDown never arrive as keys: the run loop resolves them against the real wrapped layout and sends a `move` event with
+the target byte offset and the sticky column. Undo/redo (Ctrl+Z / Ctrl+Y) and select-all (Ctrl+A) are handled by the
+editor and grouped by typing bursts.
 
-pub fn update(m: *Model, msg: Msg) void {
-    switch (msg) {
-        .notes => |a| {
-            if (a == .focus) m.notes_focused = true;      // a click on the area
-            Notes.update(&m.notes, a);
-        },
-    }
-}
-
-pub fn view(m: *const Model, cb: anytype) void {
-    cb.pushGroup(.{ .padding = 16, .align_cross = .stretch });
-    Notes.viewWith(&m.notes, cb, .{ .focus = Msg{ .notes = .focus } }, .{ .id = NOTES_ID, .height = 200 });
-    cb.popGroup();
-}
-
-// ── hooks the run loop calls ─────────────────────────────────────────
-/// Pointer, wheel, caret motion (Up/Down/Home/End/PageUp/PageDown) and layout
-/// metrics arrive as `TextEvent`s already resolved against the wrapped layout.
-pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
-    return if (ev.id == NOTES_ID) Msg{ .notes = Notes.eventMsg(ev) } else null;
-}
-/// Typed characters (UTF-8 bytes; the editor assembles them atomically).
-pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
-    return if (m.notes_focused) Msg{ .notes = Notes.charMsg(c) } else null;
-}
-/// Editing keys and chords (Backspace, Delete, arrows with Shift/Ctrl, Ctrl+A,
-/// Ctrl+Z/Y, ...) AND Enter (-> `.newline`). `Notes.keyMsg(k)` is null for keys
-/// it does not handle.
-pub fn keySpecialMsg(m: *const Model, k: teak.SpecialKey) ?Msg {
-    if (!m.notes_focused) return null;
-    return if (Notes.keyMsg(k)) |a| Msg{ .notes = a } else null;
-}
-/// So the loop draws the caret, enables Tab traversal and (see below) knows
-/// that Enter belongs to the area.
-pub fn focusedMsg(m: *const Model) ?Msg {
-    return if (m.notes_focused) Msg{ .notes = .focus } else null;
-}
-```
-
-* **Enter** is a key in a focused text area: the loop delivers it to
-  `keySpecialMsg` (where `Notes.keyMsg(.enter)` is `.newline`) **even when the App
-  also declares `submitMsg`** — `submitMsg` is only used while the focused widget
-  is *not* a `text_area` (needs `focusedMsg`, as above). A form with a chat box
-  (`submitMsg` -> send) and a notes area (Enter -> newline) therefore needs no
-  trick.
-* **Set the text from code** with `Model.set(bytes)` (`m.notes.set("")` clears;
-  caret to the end, history cleared) from `update`. Read it with `m.notes.content()`.
-* **Several areas**: one `Model` field + `Msg` variant + `update` arm + `viewWith`
-  per area, distinct `id`s, and one `switch (ev.id)` in `textMsg`.
-* The IME caret rect goes to `Host.setImeSpot` automatically.
-
-Clipboard stays the app's: `clipboardText` returns `Model.selectionText()` for Ctrl+C / Ctrl+X and `clipboardMsg` returns `Notes.pasteMsg(paste)` for Ctrl+V and a backspace key Msg for Ctrl+X (the older `handleClipboard` pair is deprecated).
+Not here: bidi / complex scripts (see [text.md](text.md) for what is supported and what is queued), spell-check, rich
+formatting inside the area (use `rich_text` for read-only styled text).

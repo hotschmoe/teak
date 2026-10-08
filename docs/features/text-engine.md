@@ -1,6 +1,6 @@
 # Text engine (M1 design)
 
-**Status**: DESIGN SPIKE. Nothing here is implemented; this document is the
+**Status**: DESIGN RECORD (implemented; see the status table below). Written as the
 plan for review milestone M1 ("make-or-break", `docs/REVIEW-2026-10.md`).
 It replaces the "per-string texture" text path described in
 [text.md](text.md) and closes issues
@@ -11,6 +11,32 @@ It replaces the "per-string texture" text path described in
 **Measurements** in this document were taken on the dev box (aarch64 Linux,
 Zig 0.16, `-O2`/`ReleaseFast`/`ReleaseSmall` as stated, DejaVuSansMono).
 Scratch sources are not committed; each number says how to re-measure it.
+
+> **Status (PR18, docs close-out):** this is the design record. The shipped engine and the supported subset are described
+> in [text.md](text.md); the table below maps each planned PR to its GitHub PR and state at the time of writing.
+>
+> | Plan | Shipped as | State |
+> |---|---|---|
+> | PR1 teak-text, Shaper, SimpleShaper | [#18](https://github.com/hotschmoe/teak/pull/18) | merged |
+> | PR2a/2b unicode, linebreak, text_wrap | [#15](https://github.com/hotschmoe/teak/pull/15) | merged |
+> | PR3 GlyphAtlas | [#14](https://github.com/hotschmoe/teak/pull/14) | merged |
+> | PR4 instanced glyph pass (native) | [#28](https://github.com/hotschmoe/teak/pull/28) | merged |
+> | PR7 web on the atlas, stb in wasm, combining marks | [#45](https://github.com/hotschmoe/teak/pull/45) | merged |
+> | PR8/9 wrap, shrink, per-line render | [#35](https://github.com/hotschmoe/teak/pull/35) | merged |
+> | PR10/12 Editor, UndoLog, TextField on Editor | [#20](https://github.com/hotschmoe/teak/pull/20) | merged |
+> | PR11a/b text_area, textMsg, TextArea, notes | [#40](https://github.com/hotschmoe/teak/pull/40) | merged |
+> | PR14 MeasureCache + bench | [#36](https://github.com/hotschmoe/teak/pull/36) | merged |
+> | X11 clipboard / XDND / IME | [#21](https://github.com/hotschmoe/teak/pull/21) | merged |
+> | PR13 web IME bridge | [#49](https://github.com/hotschmoe/teak/pull/49) | open |
+> | PR15 scalable (SDF) text | [#66](https://github.com/hotschmoe/teak/pull/66) | open |
+> | PR16 colour emoji | [#71](https://github.com/hotschmoe/teak/pull/71) | open |
+> | PR17 Windows stb path (+ Win32 parity) | [#31](https://github.com/hotschmoe/teak/pull/31) | open |
+> | Font fallback chain | [#44](https://github.com/hotschmoe/teak/pull/44) | open |
+> | NFC compose | [#76](https://github.com/hotschmoe/teak/pull/76) | open |
+> | HarfBuzz option (section 5.3) | [#77](https://github.com/hotschmoe/teak/pull/77) | open |
+> | Bidi (section 6.6): algorithm, rendering + editing | [#74](https://github.com/hotschmoe/teak/pull/74), [#85](https://github.com/hotschmoe/teak/pull/85) | open |
+>
+> Sections 3.6 (SDF), 5.3 (HarfBuzz) and 6.6 (bidi) describe the original deferral; the PRs above supersede them once merged.
 
 > **Status (fallback):** `src/text/fallback.zig` implements the native fallback chain (risk 2); wrapped `rich_text` reuses `text_wrap` through `RichMeasure` (a measurer over spans). Colour emoji and bidi remain out of scope.
 >
