@@ -766,6 +766,9 @@ fn webFontDataModule(
 }
 
 fn addFontArgs(run: *std.Build.Step.Run, fonts: []const WebFont) void {
+    // The faces are embedded in the wasm and shaped by stb, so the page fonts are only the canvas
+    // fallback's: preload them but do not hold startup for them.
+    if (fonts.len > 0) run.addArg("--font-nowait");
     for (fonts) |f| {
         run.addArg("--font");
         run.addArg(f.family);
