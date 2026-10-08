@@ -8,6 +8,7 @@
 //! automated half.
 
 const std = @import("std");
+const gen_api = @import("gen_api.zig");
 const Io = std.Io;
 const Dir = Io.Dir;
 
@@ -61,6 +62,13 @@ const RULE_CMD_HAS_NO_FN_PTRS = Rule{
     },
 };
 
+const RULE_NO_HASDECL_EXTERNS = Rule{
+    .name = "no @hasDecl gate on the private `externs` namespace",
+    .reason = "@hasDecl is false for non-pub decls, so the guarded call was silently dead (file dialog, a11y mirror).",
+    .dirs = &.{ "src/platform", "src/gpu" },
+    .forbid_any = &.{"@hasDecl(externs"},
+};
+
 const RULE_NO_CHAR_WIDTH = Rule{
     .name = "no CHAR_WIDTH constant anywhere in src/",
     .reason = "WS3 — real text measurement goes through TextMeasurer; the 10-px-per-byte placeholder must not return.",
@@ -73,6 +81,7 @@ const simple_rules = [_]Rule{
     RULE_NO_COND_COMP,
     RULE_CMD_HAS_NO_FN_PTRS,
     RULE_NO_CHAR_WIDTH,
+    RULE_NO_HASDECL_EXTERNS,
 };
 
 const NO_MODULE_VARS_RULE = Rule{
@@ -109,6 +118,63 @@ const DOC_DRIFT_RULE = Rule{
 const TEAK_ROOT_FILE = "src/teak.zig";
 const LLMS_TXT_FILE = "llms.txt";
 
+// Generated API reference: docs/api.md and llms-full.txt must equal what
+// tools/gen_api.zig produces from the current sources + llms.txt.
+const API_RULE_NAME = "docs/api.md and llms-full.txt are up to date (tools/gen_api.zig)";
+
+fn auditApiReference(gpa: std.mem.Allocator, io: Io) usize {
+    const fresh = gen_api.generate(gpa, io) catch |e| {
+        std.debug.print("  FAIL  {s}\n        generator error: {s}\n", .{ API_RULE_NAME, @errorName(e) });
+        return 1;
+    };
+    defer fresh.deinit(gpa);
+    var stale: usize = 0;
+    const pairs = [_]struct { path: []const u8, want: []const u8 }{
+        .{ .path = gen_api.API_FILE, .want = fresh.api },
+        .{ .path = gen_api.FULL_FILE, .want = fresh.full },
+    };
+    for (pairs) |p| {
+        const have = std.Io.Dir.cwd().readFileAlloc(io, p.path, gpa, .unlimited) catch {
+            std.debug.print("  FAIL  {s}\n        {s} is missing\n", .{ API_RULE_NAME, p.path });
+            stale += 1;
+            continue;
+        };
+        defer gpa.free(have);
+        if (!std.mem.eql(u8, have, p.want)) {
+            std.debug.print("  FAIL  {s}\n        {s} is stale\n", .{ API_RULE_NAME, p.path });
+            stale += 1;
+        }
+    }
+    if (stale == 0) {
+        std.debug.print("  PASS  {s}\n", .{API_RULE_NAME});
+    } else {
+        std.debug.print("        Regenerate with `zig build api` and commit the result.\n", .{});
+    }
+    return stale;
+}
+
+/// Every docs/migration-*.md must be linked from llms.txt.
+fn auditMigrationLinks(gpa: std.mem.Allocator, io: Io) usize {
+    const name = "every docs/migration-*.md is linked from llms.txt";
+    const llms = std.Io.Dir.cwd().readFileAlloc(io, LLMS_TXT_FILE, gpa, .unlimited) catch return 1;
+    defer gpa.free(llms);
+    var dir = std.Io.Dir.cwd().openDir(io, "docs", .{ .iterate = true }) catch return 0;
+    defer dir.close(io);
+    var bad: usize = 0;
+    var it = dir.iterate();
+    while (it.next(io) catch null) |e| {
+        if (!std.mem.startsWith(u8, e.name, "migration-") or !std.mem.endsWith(u8, e.name, ".md")) continue;
+        var buf: [128]u8 = undefined;
+        const needle = std.fmt.bufPrint(&buf, "docs/{s}", .{e.name}) catch continue;
+        if (std.mem.indexOf(u8, llms, needle) == null) {
+            std.debug.print("  FAIL  {s}\n        not linked: {s}\n", .{ name, needle });
+            bad += 1;
+        }
+    }
+    if (bad == 0) std.debug.print("  PASS  {s}\n", .{name});
+    return bad;
+}
+
 // ── Main ───────────────────────────────────────────────────────────
 
 pub fn main(init: std.process.Init) !void {
@@ -138,6 +204,8 @@ pub fn main(init: std.process.Init) !void {
     const doc_hits = try auditDocDrift(gpa, io);
     defer freeHits(gpa, doc_hits);
     total_violations += reportRule(DOC_DRIFT_RULE, doc_hits);
+    total_violations += auditApiReference(gpa, io);
+    total_violations += auditMigrationLinks(gpa, io);
 
     if (total_violations > 0) {
         std.debug.print("\nHARDLINE audit FAILED with {d} violation(s).\n", .{total_violations});
