@@ -1160,6 +1160,29 @@ pub const Host = struct {
         return .{ .pending = {} };
     }
 
+    /// Event-driven idle: block until the compositor socket is readable (input,
+    /// configure, clipboard / DnD traffic) or `timeout_ms` passes. Nothing is
+    /// read or dispatched here: `pollInputs` does that into the frame's input
+    /// queue, so no event can be lost between the wait and the next poll.
+    pub fn waitEvents(self: *Host, timeout_ms: u32) void {
+        const s = self.st;
+        const api = &client.api;
+        // Events already queued client-side: the next pollInputs handles them.
+        if (api.display_prepare_read(s.display) != 0) return;
+        _ = api.display_flush(s.display);
+        var t: u32 = timeout_ms;
+        // Client-side key repeat, and clipboard transfers on their own fds,
+        // are driven from pollInputs on a clock, not by display events.
+        if (s.repeat.active and s.repeat.rate != 0) {
+            const now = monotonicMs();
+            t = @min(t, if (s.repeat.next_ms > now) @as(u32, @intCast(@min(s.repeat.next_ms - now, std.math.maxInt(u32)))) else 0);
+        }
+        if (s.xfer != null) t = @min(t, 10);
+        var pfd = [1]PollFd{.{ .fd = api.display_get_fd(s.display), .events = POLLIN, .revents = 0 }};
+        _ = poll(&pfd, 1, @intCast(@min(t, std.math.maxInt(c_int))));
+        api.display_cancel_read(s.display);
+    }
+
     pub fn nowMs(_: *const Host) u64 {
         return monotonicMs();
     }
