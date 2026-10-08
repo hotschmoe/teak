@@ -368,14 +368,33 @@ Theme = struct { palette, text_color, heading_color, muted_color, danger_color, 
                  typography, button, text_input, checkbox, radio, slider, divider, card: GroupStyle,
                  field: TextInputStyle (underline);   // all default to their struct defaults
                  // a fully custom Theme is a plain literal; see docs/features/ergonomic-helpers.md
+                 tokens: ThemeTokens, button_primary: ButtonStyle (accent call-to-action);
                  pub const dark_default: Theme; pub const light_default: Theme;
-                 pub fn fromPalette(p: Palette) Theme }
+                 pub const modern_light: Theme; pub const modern_dark: Theme;   // rounded, soft shadows, indigo accent
+                 pub fn fromPalette(p: Palette) Theme;  pub fn fromPaletteTokens(p: Palette, t: ThemeTokens) Theme }
+ThemeTokens = struct { radius_sm, radius_md, radius_lg, border_width: f32, space: [5]f32 /*xs..xl*/,
+                       elevation: [4]?Shadow /*steps 0..3*/; pub fn radii(Size) Radii; pub fn shadowAt(level: u2) ?Shadow }
+                       // default = retro (square, no soft shadows); theme.modern_tokens = rounded + soft elevations
 Palette = struct { bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted,
                    accent, danger, border: [4]f32 }
 Typography = struct { body, heading, mono, small: FontSpec }
 dark_palette: Palette      // built-in dark
 light_palette: Palette     // built-in light
 ```
+
+### Surface decoration: radii, soft shadows, gradients (`core/surface.zig`, drawn by `render/sdf.zig`)
+```zig
+Radii = struct { tl, tr, br, bl: f32 = 0; pub fn all(r) Radii; top(r); bottom(r) }     // clamped to half the short side
+Shadow = struct { dx: f32 = 0, dy: f32 = 2, blur: f32 = 8, spread: f32 = 0, color: [4]f32 }  // CSS box-shadow, outside only
+Gradient = struct { from, to: [4]f32, kind: .linear | .radial, angle_deg: f32 = 180 /*CSS: 90 = left to right*/;
+                    pub fn vertical(from, to); horizontal(from, to) }
+// fields: GroupStyle / ButtonStyle { radius: Radii, gradient: ?Gradient, soft_shadow: ?Shadow }, TextInputStyle.radius,
+//         OverlayStyle { radius, soft_shadow } (the hard retro `shadow` is separate), Theme.tokens
+```
+A rect that sets none of these draws as plain solid quads, pixel for pixel as before. With any of them it is ONE SDF quad in the same
+vertex stream (painter's order kept): anti-aliased edges (one device pixel at any DPR), per-corner radii, an inside border stroke that
+follows the corners, a two-stop gradient, a Gaussian-blurred shadow. Not covered: rounded clipping of scroll regions, images and canvas
+primitives (they stay rectangular).
 
 ### Text components (`teak.text_field`, `teak.numeric_field`, `teak.dropdown`)
 ```zig
