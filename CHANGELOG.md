@@ -17,6 +17,18 @@
 
 ### Added
 
+- **Widgets wave 1** (`teak.widgets`, `src/core/widgets/`; zero new Cmd variants): toggle switch,
+  progress bar (determinate + indeterminate), tabs (keyboard), split pane (draggable, min sizes, ratio
+  in the Model), tooltip (hover delay via `Sub.at`), toast stack (tick countdown), modal dialog helper,
+  menu bar with submenus / mnemonics / F10 + Alt activation, and context menu. See
+  `docs/features/widgets.md` and cookbook recipes.
+- App hooks `hoverMsg` / `contextMsg` (`teak.PointerEvent`, `teak.Box`): the widget under the pointer
+  and its previous-frame rect, as data.
+- `SpecialKey.f10` and `SpecialKey.alt_tap` (a bare Alt press + release), wired in the Win32, X11 and web
+  hosts through `InputQueue.altDown` / `altUp`.
+- Tab traversal (`focus.nextFocusable` / `prevFocusable`) is confined to the topmost modal overlay.
+- `cb.buttonStyledDisabled`.
+
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
     selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,

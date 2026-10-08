@@ -69,7 +69,7 @@ initial state if present, else `.{}`.
 Optional App decls, each detected with `@hasDecl` — present only what you
 need (full table in [consuming-teak.md §5](../consuming-teak.md)):
 `keyCharMsg`, `keySpecialMsg`, `keyNeedsClipboard` + `handleClipboard`,
-`wheelMsg`, `windowMsg` (window size on the first frame and each resize), `canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
+`wheelMsg`, `windowMsg` (window size on the first frame and each resize), `canvasMsg`, `hoverMsg`, `contextMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
 `secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`),
 `subscribe`.
 
@@ -81,6 +81,8 @@ route against the **previous** frame's layout, exactly like hit-testing.
 | Decl | Signature | Role |
 |------|-----------|------|
 | `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer events over `CanvasCmd.pointer` canvases: `down` / `move` / `up` / `wheel` / `leave`, and `layout` on first layout and whenever the rect size changes. Semantics in [canvas.md](canvas.md). |
+| `hoverMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the interactive widget under the pointer changed (entered, left, replaced). `ev.hit` is that widget's click Msg, `ev.box` its rect (previous frame), `ev.now_ms` the host clock. Drives `widgets.tooltip`. |
+| `contextMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the right button went down; `ev.hit` is the Msg of the widget under the cursor, `null` over empty space. Drives `widgets.menu.ContextMenu`. |
 | `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over the innermost hovered scroll region whose `ScrollStyle.id != 0`. `dx`/`dy` are DOM-signed px. Return `null` to ignore; the wheel is still consumed. |
 | `scrollLayoutMsg` | `(*const Model, id: u32, viewport_w, viewport_h, content_w, content_h: f32) ?Msg` | for every `ScrollStyle.id != 0` region, on its first layout and whenever its viewport or content size changes. Content is the extent of its children (`teak.scrollExtent`: nested scroll interiors and overlays excluded), independent of the scroll offset — enough to clamp `scroll_y` and size a scrollbar thumb. |
 
