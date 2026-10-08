@@ -454,8 +454,9 @@ pub fn DataTable(comptime cfg: Config) type {
                     const w = m.widths[i];
                     var bs = cb.theme.button;
                     bs.bg = bg;
-                    bs.hover_bg = if (selected) bg else pal.bg_hover;
-                    bs.press_bg = bs.hover_bg;
+                    // No per-cell hover: a lone lit cell reads as a bug; the row colours carry the state.
+                    bs.hover_bg = bg;
+                    bs.press_bg = bg;
                     bs.fg = pal.fg;
                     bs.h_padding = opts.pad_x;
                     bs.min_width = w;
