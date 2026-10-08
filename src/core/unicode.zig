@@ -483,7 +483,7 @@ test "UAX #29 GraphemeBreakTest excerpt (forward, backward, boundary query)" {
         var tl: usize = 0;
         var expect: [64]usize = undefined;
         var ne: usize = 0;
-        var toks = std.mem.tokenizeAny(u8, line, " \t");
+        var toks = std.mem.tokenizeAny(u8, line, " \t\r");
         while (toks.next()) |tok| {
             if (std.mem.eql(u8, tok, "\u{00F7}")) {
                 expect[ne] = tl;
