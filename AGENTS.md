@@ -258,6 +258,7 @@ src/                                          -- the library, consumable as a Zi
     wasm.zig                                  -- Wasm host backed by zunk's web.input + web.app modules
     wayland.zig                               -- Wayland host backend: the platform/host.zig contract on top of xdg-shell, the Linux counterpart
     win32.zig                                 -- Win32 host backend
+    win32_data.zig                            -- Pure data conversions for the Win32 host's clipboard / drag-and-drop (no Win32 calls, so they
     x11.zig                                   -- X11 host backend
     x11_data.zig                              -- Pure, display-free helpers for the X11 host's clipboard / drag-and-drop / input-method support
     wayland/
