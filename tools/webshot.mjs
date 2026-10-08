@@ -20,7 +20,7 @@ const opt = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] :
 const valueFlags = ['--wait-ms', '--width', '--height', '--min-colors', '--chrome', '--args'];
 const pos = argv.filter((a, i) => !a.startsWith('--') && !valueFlags.includes(argv[i - 1]));
 if (pos.length < 2) {
-  console.error('usage: webshot.mjs <dist-dir> <out.png> [--wait-ms N] [--width W --height H] [--min-colors N] [--chrome PATH] [--args "--flag ..."]');
+  console.error('usage: webshot.mjs <dist-dir> <out.png> [--wait-ms N] [--width W --height H] [--min-colors N] [--chrome PATH] [--args "--flag ..."] [--page-shot]');
   process.exit(2);
 }
 const root = path.resolve(pos[0]);
@@ -59,7 +59,7 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const url = `http://127.0.0.1:${server.address().port}/`;
 
-const browser = await puppeteer.launch({
+const browser = await puppeteer.launch({ dumpio: process.env.WEBSHOT_DUMPIO === "1",
   executablePath: chrome,
   headless: true,
   protocolTimeout: 120000,
@@ -87,12 +87,12 @@ try {
   if (!adapter.startsWith('ok')) problems.push(`WebGPU unavailable: ${adapter}`);
   await new Promise((r) => setTimeout(r, waitMs));
 
-  const canvas = await page.$('canvas');
+  const canvas = argv.includes('--page-shot') ? null : await page.$('canvas');
   const png = canvas ? await canvas.screenshot({ type: 'png' }) : await page.screenshot({ type: 'png' });
   fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
   fs.writeFileSync(out, png);
   console.log(`[shot] wrote ${out} (${canvas ? 'canvas element' : 'full page, no <canvas>'})`);
-  if (!canvas) problems.push('no <canvas> element on page');
+  if (!canvas && !argv.includes('--page-shot')) problems.push('no <canvas> element on page');
 
   // Decode the PNG in a scratch page and measure pixel variance there.
   const scratch = await browser.newPage();

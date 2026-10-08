@@ -1,0 +1,35 @@
+name: webdebug
+on: pull_request
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - { name: base, args: "" , extra: "" }
+          - { name: pageshot, args: "", extra: "--page-shot" }
+          - { name: noangle, args: "--use-angle=swiftshader", extra: "" }
+          - { name: gl, args: "--use-gl=angle --use-angle=swiftshader-webgl", extra: "" }
+          - { name: disablegpu, args: "--disable-gpu", extra: "" }
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: 0.16.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - working-directory: teak/examples/chrome
+        run: zig build web
+      - working-directory: teak/tools
+        run: npm ci --no-audit --no-fund
+      - working-directory: teak
+        run: |
+          google-chrome --version
+          WEBSHOT_DUMPIO=1 node tools/webshot.mjs examples/chrome/dist out.png --wait-ms 6000 --chrome /usr/bin/google-chrome --args "${{ matrix.variant.args }}" ${{ matrix.variant.extra }} || true
+          node -e "
+          " 
+      - uses: actions/upload-artifact@v4
+        with: { name: dbg-${{ matrix.variant.name }}, path: teak/out.png }
