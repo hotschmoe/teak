@@ -72,6 +72,7 @@
 //!     services the returned subs each frame via `runSubs` on the host's
 //!     monotonic clock (`Host.nowMs`) and dispatches any fired `Msg`
 //!     through the normal `update` loop. See `docs/features/subscriptions.md`.
+//!   - `animationMsg(*const Model, dt_ms: u32) ?Msg`   — frame time while a `Sub.animation_frame` is listed (core/anim.zig)
 //!   - `effects(*const Model) []const Effect`         — declarative effects
 //!     (HARDLINE §2 hatch 7): HTTP, downloads, file picker, storage, clock,
 //!     clipboard, query params. Pure; each effect `id` is handed to the host
@@ -146,6 +147,15 @@ pub const RunOptions = struct {
     /// under `<config>/teak/<app_name>/`). Empty: the Host's default, the
     /// window title. Ignored by hosts without `setAppName`.
     app_name: []const u8 = "",
+    /// Event-driven idle. When true, a frame in which nothing happened (no
+    /// input event, no Msg dispatched by a sub / effect result / window hook,
+    /// no focused text input blinking, no secondary window, not the first
+    /// frame) skips view, layout, diff, upload and present entirely —
+    /// `Runtime.quiet` reports it — and `run` then blocks in the Host's
+    /// optional `waitEvents(timeout_ms)` until input or the next sub is due.
+    /// Set false for an app that needs a frame every tick. The web Host stays
+    /// rAF-driven but still skips the work. See docs/features/run.md.
+    idle_skip: bool = true,
 };
 
 /// The target has a host filesystem to mirror snapshots into. Freestanding
@@ -340,7 +350,12 @@ pub fn run(
 ) !void {
     var rt = try Runtime(App, @TypeOf(host.*), @TypeOf(gpu.*)).init(gpa, host, gpu, opts);
     defer rt.deinit();
-    while (!host.shouldClose()) try rt.frame();
+    while (!host.shouldClose()) {
+        try rt.frame();
+        if (comptime @hasDecl(@TypeOf(host.*), "waitEvents")) {
+            if (rt.quiet and !host.shouldClose()) host.waitEvents(rt.idleTimeoutMs());
+        }
+    }
 }
 
 /// The canonical loop body, one `frame` call per iteration, parameterized on
@@ -451,6 +466,23 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         snap_first: bool = true,
         prev_secondary_open: bool = false,
 
+        /// True when the last `frame()` found nothing to do and skipped the
+        /// pipeline (see `RunOptions.idle_skip`). `run` blocks in
+        /// `Host.waitEvents` while this holds.
+        quiet: bool = false,
+        /// Count of Msgs dispatched so far; a frame that leaves it unchanged
+        /// changed no state.
+        dispatch_count: u64 = 0,
+        /// Pointer position / buttons of the previous frame, to tell a still
+        /// mouse from a moved one.
+        last_mouse_x: f32 = -1,
+        last_mouse_y: f32 = -1,
+        last_buttons: pointer.Buttons = .{},
+        /// A `Sub.animation_frame` is listed: frames must keep flowing.
+        animating: bool = false,
+        /// The first frame always builds (nothing to show yet).
+        built_once: bool = false,
+
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
         title_len: usize = 0,
@@ -513,6 +545,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // Input is routed against the PREVIOUS frame's layout — the one
             // the user is looking at — so `prev` is captured before the swap.
             const prev = self.current;
+            const dispatched_before = self.dispatch_count;
             self.routeMouse(input, prev);
             self.routeCanvasPointer(input, prev);
             self.routeKeys(input, prev);
@@ -520,6 +553,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.deliverEffectResults();
             self.fireSubs();
             self.serviceEffects();
+
+            // Event-driven idle: nothing changed since the frame on screen.
+            self.quiet = self.opts.idle_skip and self.built_once and
+                self.dispatch_count == dispatched_before and self.inputIdle(input);
+            self.last_mouse_x = input.mouse_x;
+            self.last_mouse_y = input.mouse_y;
+            self.last_buttons = input.buttons;
+            if (self.quiet) return;
+            self.built_once = true;
 
             const cur = try self.buildView(input);
             self.reportLayout(prev, cur);
@@ -573,10 +615,39 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
         }
 
+        /// True when `input` carries nothing the pipeline must react to and no
+        /// loop-owned animation (cursor blink, live secondary window, IME
+        /// composition) needs the next frame.
+        fn inputIdle(self: *Self, input: Input) bool {
+            if (input.resized or input.mouse_down or input.mouse_up) return false;
+            if (input.mouse_x != self.last_mouse_x or input.mouse_y != self.last_mouse_y) return false;
+            if (!std.meta.eql(input.buttons, self.last_buttons)) return false;
+            if (input.wheel_dx != 0 or input.wheel_dy != 0) return false;
+            if (input.chars.len != 0 or input.keys.len != 0) return false;
+            if (self.animating) return false;
+            if (self.ts.ime_active or self.host.imeState().active) return false;
+            if (self.opts.blink_period > 0 and self.ts.focus_index != null) return false;
+            if (has_secondary and App.secondaryWindow(&self.model) != null) return false;
+            if (has_secondary and self.secondary.window_id != null) return false;
+            return true;
+        }
+
+        /// How long the Host may block after a quiet frame: until the next
+        /// `Sub` is due, capped so a Host without its own wake-ups is polled.
+        pub fn idleTimeoutMs(self: *Self) u32 {
+            // Effect results arrive from the Host asynchronously; poll them
+            // at frame rate while any effect is outstanding.
+            const cap: u32 = if (self.issued.len != 0) 16 else 1000;
+            if (!@hasDecl(App, "subscribe")) return cap;
+            const due = sub_mod.nextDueMs(Msg, App.subscribe(&self.model), self.host.nowMs()) orelse return cap;
+            return @intCast(@min(due, cap));
+        }
+
         /// Every Msg is routed through here so the live snapshot's header can
         /// name the last transition. Adds nothing to the TEA loop — it is
         /// `App.update` plus one string assignment.
         fn dispatch(self: *Self, msg: Msg) void {
+            self.dispatch_count +%= 1;
             self.last_msg = @tagName(std.meta.activeTag(msg));
             App.update(&self.model, msg);
         }
@@ -828,8 +899,16 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             };
             const now_ms = self.host.nowMs();
             const since = self.last_sub_ms orelse now_ms; // first frame: no window, no fire
-            sub_mod.runSubs(Msg, App.subscribe(&self.model), since, now_ms, Dispatch{ .rt = self });
+            const subs = App.subscribe(&self.model);
+            sub_mod.runSubs(Msg, subs, since, now_ms, Dispatch{ .rt = self });
             self.last_sub_ms = now_ms;
+            // `.animation_frame`: feed the frame time to the App while it asks
+            // for it, and keep frames flowing (no idle skip) meanwhile.
+            self.animating = sub_mod.wantsAnimationFrame(Msg, subs);
+            if (self.animating and @hasDecl(App, "animationMsg")) {
+                const dt: u32 = @intCast(@min(now_ms -| since, sub_mod.max_animation_dt_ms));
+                if (App.animationMsg(&self.model, dt)) |m| self.dispatch(m);
+            }
         }
 
         /// Hand the host's finished effect results (and unsolicited drops /
@@ -1187,6 +1266,7 @@ pub fn rectsEqual(a: []const Rect, b: []const Rect) bool {
 test {
     _ = @import("core/eql.zig");
     _ = @import("core/oom.zig");
+    _ = @import("core/anim.zig");
     _ = @import("run_test.zig");
     _ = @import("run_effects_test.zig");
 }
