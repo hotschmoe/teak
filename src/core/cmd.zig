@@ -1476,6 +1476,27 @@ pub fn CmdBuffer(comptime Msg: type) type {
             } }) catch oom();
         }
 
+        /// `canvasInteractive` that is also a keyboard-navigable leaf: Tab lands on
+        /// it (focus ring), Space / Enter dispatch `focus_msg` (a no-op Msg is fine)
+        /// and the keys the app's hooks decline reach `canvasMsg` as `.key` events.
+        pub fn canvasInteractiveFocusable(
+            self: *Self,
+            style: CanvasStyle,
+            primitives: []const CanvasPrimitive,
+            id: u32,
+            label: []const u8,
+            focus_msg: Msg,
+        ) void {
+            self.cmds.append(self.backing, .{ .canvas = .{
+                .style = style,
+                .primitives = primitives,
+                .label = label,
+                .pointer = true,
+                .id = id,
+                .msg = focus_msg,
+            } }) catch oom();
+        }
+
         pub fn textInputSelected(
             self: *Self,
             focus_msg: Msg,

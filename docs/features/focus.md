@@ -55,15 +55,15 @@ test `examples/gallery/src/focus_audit.zig` asserts reach for every enabled inte
 | Context menu | GAP: opens by right click only | highlight | Enter | arrows, Esc | yes | |
 | Dialog | trapped, first widget focused | yes | Enter confirms, Esc cancels | n/a | yes | focus returns to the opener |
 | Data table / list / tree rows | yes (every row is a Tab stop) | yes | Space, Enter | GAP: arrows / Home / End not wired (components have `keyMsg`) | n/a | 26 Tab stops on the data page |
-| Split pane divider | GAP | GAP | n/a | GAP: pointer only | n/a | |
-| Scroll regions | n/a | n/a | n/a | GAP: wheel only (no PageUp/Down / arrows) | n/a | |
-| Tooltip | GAP: hover only | n/a | n/a | n/a | n/a | |
-| Toast | not focusable | n/a | n/a | GAP: no keyboard dismiss | n/a | |
+| Split pane divider | yes (`Split.dividerFocusable`) | yes | Space, Enter (no-op focus Msg) | arrows resize by `Opts.key_step`, Home / End collapse (via `canvasMsg` `.key` events) | n/a | the plain `divider` stays pointer-only |
+| Scroll regions | n/a | n/a | n/a | yes: keys the focused widget declines scroll its innermost id-bearing region through `scrollMsg` (arrows a line, PageUp/Down a viewport, Home/End) | n/a | scrolling the focus into view is not done yet |
+| Tooltip | yes: keyboard focus is reported to `hoverMsg` as if the pointer rested on the widget | n/a | n/a | n/a | n/a | clears when focus leaves non-text widgets |
+| Toast | its close button is a Tab stop | yes | Space, Enter | Escape dismisses the newest toast (`Toast.keyMsg`, after menus / dialogs) | n/a | |
 | Date field | N/A: no such widget | | | | | |
 | Focus after list mutation | yes | | | | | Msg-keyed, tested (insert before the focused widget) |
 | Escape closes overlays | app hooks (`dialog.keyMsg`, `MenuBar.keyMsg`, `ContextMenu.keyMsg`) | | | | | the framework does not know how to close an overlay (no Msg) |
 
-The GAP rows are tracked as follow-up PRs.
+The remaining GAP rows are tracked as follow-up PRs.
 
 ## Contract
 
