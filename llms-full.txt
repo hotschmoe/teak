@@ -1,0 +1,3068 @@
+# Teak — LLM context pack
+
+> Teak is a Zig-native GUI framework: The Elm Architecture (TEA) for state
+> plus a flat command-buffer renderer (wgpu-native on desktop, WebGPU on
+> web). It is a NOVEL framework, not a port of React/Flutter/SwiftUI —
+> governed by docs/HARDLINE.md. This file is the whole public API in one
+> read; an agent building an app on Teak should be able to work from this
+> file plus docs/cookbook.md alone.
+
+<!--
+  llms.txt is HAND-CURATED and AUDIT-ENFORCED.
+  - Hand-curated: prose, signatures, and grouping are written by a human/agent,
+    not generated. Keep signatures grep-accurate against src/*.zig.
+  - Audit-enforced: `zig build audit` runs a rule that extracts every
+    `pub const NAME` re-export from src/teak.zig and fails if any NAME is
+    absent from this file (rule: "llms.txt lists every src/teak.zig re-export"
+    in tools/audit.zig).
+  TO UPDATE: when you add/rename a `pub const` in src/teak.zig, add the new
+  name here — put it in the "Public API reference" section with its real
+  signature and a one-clause purpose. Re-run `zig build audit` until green.
+  Requires Zig 0.17.0+.
+-->
+
+## Companion files
+
+- `llms-full.txt` — this file plus the generated API reference (every public signature and `///` doc comment).
+  The generated half is also `docs/api.md`. Both come from `tools/gen_api.zig` (`zig build api`); `zig build audit`
+  fails when they are stale. Prose in THIS file stays hand-curated; never edit the generated files.
+- Migration notes, one per Zig version bump (newest last): [docs/migration-0.17.md](docs/migration-0.17.md) — build.zig
+  changes (`b.args`, lowercase optimize modes), toolchain, what did not change in teak's API. A new `docs/migration-<ver>.md`
+  must be linked here (audit-enforced).
+
+## The core loop
+
+```
+Model ─view()─▶ []Cmd ─layout─▶ []Rect ─render─▶ pixels
+                  ▲
+   mouse/key ─hit_test─▶ Msg ─update─▶ Model'
+```
+
+Every arrow is a plain function call — no globals, no event bus, no
+singletons. `view` emits a flat `[]Cmd` (tagged unions) into a per-frame
+arena. Layout, hit-test, and render are three independent linear passes
+over that same buffer. Input maps back to a `Msg` embedded in the Cmd;
+`update` is the only place `Model` mutates. Hit-test runs against the
+PREVIOUS frame's cmds/rects (one-frame latency, imperceptible).
+
+Adding a feature is four mechanical steps: (1) add a field to `Model`,
+(2) add a variant to `Msg`, (3) add a switch arm to `update`, (4) add
+`cb.*` calls in `view`. The exhaustive switch makes step 3 un-skippable.
+
+## HARDLINE — what you MUST and MUST NOT do
+
+These are non-negotiable (docs/HARDLINE.md). Drift = accidentally rebuilding
+someone else's paradigm. When a change bumps HARDLINE, the change yields.
+
+### §1 Core invariants
+1. **All app state lives in `Model`.** No hidden retained widget state —
+   cursor positions, scroll offsets, focus field, selection: explicit fields.
+2. **Every state transition is a `Msg` variant.** The switch in `update` is
+   the only place `Model` changes.
+3. **`view` is a pure function `Model → []Cmd`.** No side effects, no I/O,
+   no wall-clock reads, no allocation outside the per-frame arena, no
+   importing `platform/*` or `gpu/*`.
+4. **Layout, hit-test, render are independent passes** over `[]Cmd`+`[]Rect`.
+   No shared mutable state; each pass is replaceable in isolation.
+5. **Per-frame data is arena-allocated and bulk-freed.** No per-widget
+   alloc/free. Two arenas alternate.
+
+### §3 Forbidden patterns (reject these)
+- Widget-internal `static`/module-`var` state keyed by widget identity.
+- Function-pointer-plus-context callbacks smuggled onto `Cmd`. Cmds carry
+  DATA (labels, styles, `Msg` values), never `*const fn`.
+- ID hashing for widget identity. Hit-test/layout key off cmd INDEX;
+  persistent identity (focus across reorders) goes on `Model` as a field.
+- Virtual DOM diffing / reconcilers / keyed trees. We diff flat buffers.
+- Fine-grained reactive signals. Observers are the next frame's `view`.
+- Per-widget lifecycle hooks (`onMount`/`onUnmount`). Host-level
+  `init`/`frame`/`resize`/`cleanup` are allowed (escape hatch 4).
+- Components importing `platform/*` or `gpu/*`. Dependency arrow points in.
+- Conditional compilation (`builtin.os.tag`, `@import("builtin")`) in
+  `src/{core,layout,input,render}/*`. Platform branching lives in
+  `platform/*`/`gpu/*` only.
+- A `std.mem.Allocator` parameter on `view()` — the arena reaches it via
+  `CmdBuffer`. Reading wall-clock time in `view()`.
+- Leaking platform handle types (HWND, wgpu, zunk handles) into the
+  framework API.
+
+### §2 Deliberate escape hatches (the only sanctioned breaks)
+1. Comptime component stitching (`Components`, `ComponentList`).
+2. `TransientState` — presentation-only hover/press/focus, host-written,
+   render-only, safely losable.
+3. Flat-buffer + fixed-depth-stack layout (no tree recursion).
+4. Host layer — window/GPU/input mutable state, only in `platform/*`+`gpu/*`,
+   behind `validateHost`/`validateGpu`; `teak.run` orchestrates it.
+5. Overlay z-layer (`push_overlay`/`pop_overlay`) — exactly two z-levels.
+6. Subscriptions (`Sub`) — declarative, data-only timers.
+
+## The App contract (`teak.run`)
+
+You write an `App` struct (a Zig file works — `@This()` is the struct) and
+call `teak.run(App, gpa, &host, &gpu, opts)`. Teak owns the window loop.
+
+### Required decls
+```zig
+pub const Model = struct { ... };            // default-init'able, or pub fn init() Model
+pub const Msg   = union(enum) { ... };       // tagged union
+pub fn update(m: *Model, msg: Msg) void;     // the only mutation site
+pub fn view(m: *const Model, cb: *CmdBuffer(Msg)) void;   // pure; cb passed as anytype in practice
+```
+
+### Optional decls — detected at comptime via `@hasDecl`; add only what you need
+```zig
+pub fn keyCharMsg(*const Model, u8) ?Msg              // typed character → Msg
+pub fn keySpecialMsg(*const Model, SpecialKey) ?Msg   // arrows/backspace/etc → Msg
+pub fn keyNeedsClipboard(SpecialKey) bool             // pairs with handleClipboard
+pub fn handleClipboard(*Model, SpecialKey, Clipboard) void   // cut/copy/paste policy
+pub fn wheelMsg(*const Model, f32) ?Msg               // vertical wheel delta → Msg (when no canvas / scroll region took it)
+pub fn canvasMsg(*const Model, CanvasEvent) ?Msg      // pointer events over CanvasCmd.pointer canvases and SceneCmd.pointer scenes (shared id space) (see "Pointer events")
+pub fn hoverMsg(*const Model, PointerEvent(Msg)) ?Msg     // the interactive widget under the pointer changed (drives Tooltip)
+pub fn sliderMsg(*const Model, grab: Msg, value: f32) ?Msg     // a `slider` cmd is dragged (pointer captured); value 0..1; without it a slider is click-only
+pub fn contextMsg(*const Model, PointerEvent(Msg)) ?Msg   // right button down; ev.hit = Msg of the widget under the cursor (drives ContextMenu)
+pub fn scrollMsg(*const Model, id: u32, dx: f32, dy: f32) ?Msg   // wheel over innermost hovered ScrollStyle.id != 0 region
+pub fn scrollLayoutMsg(*const Model, id: u32, viewport_w: f32, viewport_h: f32,
+                       content_w: f32, content_h: f32) ?Msg      // id != 0 scroll region: first layout + on size change
+pub fn focusedMsg(*const Model) ?Msg                  // focus Msg of focused widget;
+                                                      //   enables focus ring + cursor blink
+                                                      //   + built-in Tab/Shift+Tab traversal
+pub fn submitMsg(*const Model) ?Msg                   // Enter key (precedes keySpecialMsg for Enter)
+pub fn themeFor(*const Model) Theme                   // per-frame theme (dark/light toggle)
+pub fn windowMsg(*const Model, f32, f32) ?Msg          // window size in logical px: first frame + every resize
+pub fn windowTitle(*const Model) ?[]const u8          // dynamic title bar; setTitle only on change
+pub fn secondaryWindow(*const Model) ?SecondaryWindowSpec  // 2nd top-level window, open when non-null
+pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view (pairs with above)
+pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
+pub fn subscribe(*const Model) []const Sub(Msg)       // declarative timers; run services them each
+                                                      //   frame via runSubs on Host.nowMs() (§2 hatch 6)
+pub fn animationMsg(*const Model, dt_ms: u32) ?Msg    // frame time while a Sub.animation_frame is listed
+                                                      //   (core/anim.zig; run loop idles when none is listed)
+pub fn resources(*const Model) []const Resource       // declarative GPU meshes/images by (key, rev);
+                                                      //   run uploads/releases + maps keys to handles (§2 hatch 8)
+```
+IME composition (`Host.imeState`) is folded into `TransientState` every
+frame with no opt-in. A static read-only app is just Model/Msg/update/view.
+
+### RunOptions
+```zig
+pub const RunOptions = struct {
+    clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },  // scene clear each frame
+    blink_half_ms: u32 = 500, // caret blink half-period in Host-clock ms (0 = no blink); idle wakes at each toggle
+    snapshot_path: ?[]const u8 = null,   // live snapshot sink; TEAK_SNAPSHOT env wins (see below)
+};
+pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: u32 };
+```
+
+## Public API reference
+
+Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
+Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
+`cmd component component_list transient text sub theme text_field text_area text_event numeric_field
+`cmd component component_list transient text sub anim theme text_field numeric_field
+dropdown data_table var_list tree_list debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
+vertex host input_queue gpu runtime`.
+
+### Version (`teak.version`)
+`teak.version: []const u8` — library semver, derived from `build.zig.zon` `.version` (plus `+<meta>` when built with
+`-Dversion-meta=<meta>`); the single source is documented in docs/VERSIONING.md.
+
+### Commands & CmdBuffer (`teak.cmd` → core/cmd.zig)
+```zig
+Cmd(comptime Msg: type) type          // tagged union: push_group/pop_group, push_scroll/pop_scroll,
+                                       //   push_overlay/pop_overlay, push_virtual_list/pop_virtual_list,
+                                       //   text, rich_text, image, button, text_input, checkbox,
+                                       //   radio, slider, divider, canvas. Exposes .MsgT.
+CmdBuffer(comptime Msg: type) type     // arena-backed cmd list + emitter methods + .theme field.
+Direction = enum { vertical, horizontal }
+Align = enum { start, center, end, stretch }      // cross-axis placement of a container's children
+Justify = enum { start, center, end, space_between }   // main-axis leftover (no flex children)
+TextAlign = enum { start, center, end }           // button label / paragraph line placement
+Wrap = enum { none, word, char, ellipsis }       // TextCmd.wrap
+ParagraphOpts = struct { wrap: Wrap = .word, max_lines: u16 = 0, text_align: TextAlign = .start }
+InputVariant = enum { boxed, underline }          // text_input look (underline: 1px rule, 2px focused)
+```
+Any slice stored on a Cmd (a text label, an option list, chart primitives)
+must borrow from `Model` or from `cb.arena.allocator()` — NEVER a stack
+buffer. Layout/render read it after `view` returns, so a `bufPrint(&buf,…)`
+into a local is a use-after-return.
+
+`CmdBuffer(Msg)` fields: `.theme: Theme` (assign before view; drives un-styled
+emitters), `.arena` (per-frame allocator), `.cmds`. Methods:
+`init(backing)`, `deinit()`, `reset()`, `setTheme(t) Theme`.
+Emitters (all `catch unreachable` on arena OOM):
+- text: `text(s)`, `heading(s)`, `textMuted(s)`, `textDanger(s)`, `textMono(s)`,
+  `textStyled(s, font, color)`, `mixedText(parts: []const MixedPart)`
+- `divider()`, `dividerStyled(DividerStyle)`
+- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`
+- `textInput(focus_msg, content, cursor)`, `textInputStyled(...)`, `textInputDisabled(...)`,
+  `textInputSelected(focus_msg, content, cursor, ?selection_anchor, TextInputStyle)`
+- `checkbox(msg, checked, label)`, `radio(msg, selected, label)`, `slider(grab_msg, value)`
+- `spacer(flex)` — invisible flex filler (empty zero-padding group)
+- containers: `pushGroup(GroupStyle)`/`popGroup()`, `pushScroll(ScrollStyle)`/`popScroll()`,
+  `pushOverlay(OverlayStyle(Msg))`/`popOverlay()`, `pushVirtualList(VirtualListStyle)`/`popVirtualList()`,
+  `pushFormRow(FormRowOpts)`/`popFormRow()`
+- `scene3d(SceneCmd(Msg))` — 3D mesh leaf (see "3D scenes" below).
+- `image(TextureHandle, ImageStyle)`, `canvas(CanvasStyle, prims)`, `canvasLabeled(...)`,
+  `canvasClickable(msg, style, prims, label)`, `canvasInteractive(style, prims, id, label)`,
+  `richText(content, spans)`, `richTextStyled(RichTextCmd)`
+
+Style / option structs an app constructs:
+```zig
+GroupStyle = struct { direction: Direction = .vertical, padding: f32 = 8,
+                      pad_x, pad_y: ?f32 = null,           // per-axis override of padding
+                      gap: f32 = 8, flex: f32 = 0,         // flex 0 = no growth, >0 = weight (on top of own size)
+                      width, height: f32 = 0,              // fixed OUTER size on that axis; 0 = measured
+                      min_width, min_height: f32 = 0,      // floor (beats fixed + stretch)
+                      align_cross: Align = .start,         // .stretch: every child fills the inner cross extent
+                      justify: Justify = .start,           // leftover main-axis space when no child has flex
+                      bg: ?[4]f32 = null,
+                      border: ?[4]f32 = null, border_width: f32 = 1 }   // border drawn INSIDE the rect
+ScrollStyle = struct { direction = .vertical, padding, gap, flex, width, height,
+                       align_cross: Align = .start,
+                       scroll_x, scroll_y: f32 = 0,
+                       id: u32 = 0 }                        // width/height 0 = measured; flex scroll has zero basis;
+                                                            //   id != 0 => scrollMsg / scrollLayoutMsg routing
+OverlayStyle(Msg) = struct { x, y, width, height, padding = 8, gap = 4,
+                       direction = .vertical, align_cross: Align = .start, backdrop: [4]f32 = {0,0,0,0},
+                       anchor_x_frac, anchor_y_frac: f32 = 0, modal: bool = false,
+                       border: ?[4]f32 = null, border_width: f32 = 1,
+                       shadow: ?[4]f32 = null, shadow_offset: [2]f32 = {2,2},   // hard offset shadow
+                       backdrop_msg: ?Msg = null }          // modal swallows click-through;
+                                                            //   backdrop_msg = click-outside-to-close
+VirtualListStyle = struct { direction, total_count: u32, item_extent: f32,
+                       visible_start: u32, visible_end: u32, padding, gap }
+ImageStyle = struct { width = 64, height = 64, flex: f32 = 0, tint: [4]f32 = {1,1,1,1} }
+ImageCmd = struct { handle: TextureHandle, style: ImageStyle }
+ButtonStyle = struct { bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg: [4]f32,
+                       hover_fg, press_fg: ?[4]f32 = null, border: ?[4]f32 = null, border_width = 1,
+                       press_offset_y: f32 = 0, label_align: TextAlign = .start,
+                       h_padding: f32 = 8, min_width: f32 = 60, height: f32 = 36, flex: f32 = 0 }
+                       // corners are square (no corner_radius: the quad renderer has no rounding)
+ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false }
+TextCmd = struct { content: []const u8, font: FontSpec, color: [4]f32 }
+TextInputStyle = struct { bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg,
+                       disabled_border, selection_bg: [4]f32, variant: InputVariant = .boxed,
+                       border_width: f32 = 2, flex: f32 = 1, min_width: f32 = 120, height: f32 = 28 }  
+TextInputCmd(Msg) = struct { focus_msg, content, cursor, selection_anchor: ?usize,
+                       style, font, disabled: bool }
+CheckboxStyle = struct { box_bg, box_border, check, fg: [4]f32, size = 18, label_gap = 8 }
+CheckboxCmd(Msg) = struct { msg, checked, label, style, font }
+RadioStyle = struct { box_bg, box_border, dot, fg: [4]f32, size = 18, label_gap = 8 }
+RadioCmd(Msg) = struct { msg, selected, label, style, font }
+SliderStyle = struct { track_bg, track_fill, thumb: [4]f32, track_height = 6,
+                       thumb_size = 16, flex: f32 = 1, min_width: f32 = 120 }
+SliderCmd(Msg) = struct { grab_msg, value: f32 = 0, style }   // app computes value from mouse+rect
+DividerStyle = struct { thickness: f32 = 1, color: [4]f32 }
+CanvasStyle = struct { width = 200, height = 120, flex: f32 = 0, bg: ?[4]f32 = null }
+CanvasCmd(Msg) = struct { style, primitives: []const CanvasPrimitive, msg: ?Msg, label,
+                          pointer: bool = false, id: u32 = 0 }   // pointer+id => interactive (canvasMsg)
+CanvasPrimitive = union(enum) { polyline, filled_rect, hline, vline, marker,
+    triangles: struct { verts: []const TriVertex /*x,y,r,g,b,a*/, key: u64 = 0 },       // per-vertex RGBA triangle list
+    lines: struct { segs: []const [4]f32, color, thickness, key: u64 = 0 } }            // canvas-local px
+// triangles/lines: CPU-clipped to canvas+scroll clip; `key` = content revision for the frame diff
+// (same non-zero key+len => treated equal; 0 => bytes compared). Bump it when the batch changes.
+CanvasPoint = struct { x: f32, y: f32 }
+RichTextSpan = struct { start, end: u32, color: [4]f32, font: FontSpec, bold, italic: bool }
+RichTextCmd = struct { content: []const u8, spans: []const RichTextSpan,
+                       default_color: [4]f32, default_font: FontSpec }
+MixedPart = struct { text: []const u8, font: ?FontSpec = null, color: ?[4]f32 = null,
+                     bold, italic: bool = false }   // null → theme body font / text color
+FormRowOpts = struct { label, units, validation: []const u8 = "", gap = 8, validation_gap = 4 }
+```
+Cmd-buffer balance validation (catches unbalanced push/pop):
+```zig
+validateBalance(cmds) ?BalanceError            // pure O(n); null when balanced
+formatBalanceError(err: BalanceError, buf: []u8) []const u8   // one actionable line
+BalanceKind = enum { group, scroll, overlay, virtual_list }
+BalanceError = struct { tag, open_kind, open_index, close_kind, close_index }
+MAX_BALANCE_DEPTH = 32                          // mirrors LayoutEngine's fixed stack
+```
+
+### Charts (`teak.chart` → core/chart.zig)
+```zig
+LineChartOpts = struct { width, height, min, max: f32, padding: f32 = 4,
+                         line_color, grid_color: [4]f32, line_thickness: f32 = 2,
+                         grid_lines: u32 = 5 }
+lineChartPrimitives(arena, series: []const f32, opts: LineChartOpts) []const CanvasPrimitive
+```
+
+### Tables (`teak.table` → core/table.zig)
+Fixed-column monospace tables: pad/truncate cells to a character width, emit rows as groups of text cmds.
+```zig
+Table = struct { columns: []const TableColumn, gutter: u8 = 1, ellipsis: []const u8 = "\u{2026}",
+                 pub fn header(self, cb, TableRowStyle) void,
+                 pub fn row(self, cb, cells: []const []const u8, TableRowStyle) void,
+                 pub fn totalChars(self) usize }
+TableColumn = struct { title: []const u8 = "", chars: u16, cell_align: CellAlign = .left }
+CellAlign = enum { left, right, center }
+TableRowStyle = struct { font = mono, color, bg: ?[4]f32 = null, rule: ?[4]f32 = null,
+                         pad_x = 4, pad_y = 2, height: f32 = 0 }
+fitCell(alloc, text, width: usize, align: CellAlign, ellipsis, trailing: usize) ![]u8
+```
+
+### Layout (`teak.layout` → layout/engine.zig)
+```zig
+Rect = struct { x, y, w, h: f32 = 0, /* +internal fixed_main/flex_total/child_count */ }
+LayoutEngine = struct { pub fn doLayout(rects: []Rect, cmds, window_w: f32, window_h: f32,
+                        measurer: TextMeasurer) void }   // measure (bottom-up) + position (top-down)
+```
+
+### Hit-test & hover (`teak.hit_test` → input/hit_test.zig)
+```zig
+hitTest(cmds, rects: []const Rect, mouse_x, mouse_y: f32) ?HitResult(Msg)
+                                     // HitResult{ index: usize, msg: ?Msg };
+                                     //   msg null = modal consumed click, don't fall through
+hoverTest(cmds, rects, mouse_x, mouse_y: f32) ?usize      // cmd index under the cursor
+canvasLocalPoint(rect: Rect, mouse_x, mouse_y: f32) ?struct { x, y: f32 }   // window→canvas-local
+pointerTarget(cmds, rects, x, y) ?PointerTarget           // {index, id}: pointer canvas a press lands on (overlays/modals win)
+wheelTarget(cmds, rects, x, y) ?WheelTarget               // innermost pointer canvas | id!=0 scroll region under the cursor
+scrollExtent(cmds, rects, scroll_index) ScrollExtent      // teak.scrollExtent: {viewport_w/h, content_w/h} of a push_scroll
+sliderValueAt(rect: Rect, mouse_x: f32) f32               // normalized [0,1]
+sliderDrag(cmds, rects, press_target: ?usize, mouse_x: f32) ?SliderDrag(Msg)
+SliderDrag(Msg) = struct { index: usize, grab_msg: Msg, value: f32 }
+```
+
+### Focus traversal (`teak.focus` → input/focus.zig)
+```zig
+nextFocusable(cmds, current: ?usize) ?usize   // wraps; null only if no focusable widget
+prevFocusable(cmds, current: ?usize) ?usize
+indexOfFocusMsg(cmds, msg) ?usize             // cmd index whose leaf carries msg (by value) — stable
+focusMsgAt(cmds, index: usize) ?Msg           // the Msg the leaf at index would dispatch
+```
+
+### Keys (`teak.keys` → input/keys.zig)
+```zig
+SpecialKey = enum { backspace, delete, left, right, up, down, home, end, page_up, page_down,
+                    enter, tab, escape, shift_left, shift_right, shift_up, shift_down,
+                    shift_home, shift_end, shift_tab, ctrl_a, ctrl_c, ctrl_x, ctrl_v,
+                    ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left,
+                    ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end,
+                    ctrl_backspace, ctrl_delete, f10, alt_tap }   // f10 / alt_tap (a bare Alt press+release) activate a MenuBar
+```
+
+### Accessibility (`teak.a11y` → input/a11y.zig)
+```zig
+A11yRole = enum { group, scroll, text, rich_text, button, text_input, checkbox, radio,
+                  slider, divider, image, canvas, overlay }
+A11yNode = struct { role: A11yRole, cmd_index: u32, bounds: Rect, label: []const u8,
+                    focused: bool, state: f32, disabled: bool }
+buildA11yTree(arena, cmds, rects: []const Rect, focus_index: ?usize) ![]A11yNode
+```
+
+### Subscriptions (`teak.sub` → core/sub.zig)
+```zig
+Sub(Msg) = union(enum) { every: {interval_ms: u32, msg}, at: {deadline_ms: u64, msg}, animation_frame }
+runSubs(Msg, subs: []const Sub(Msg), last_frame_ms, now_ms: u64, dispatch: anytype) void
+```
+App declares `pub fn subscribe(*const Model) []const Sub` (pure). `teak.run`
+services it each frame — `runSubs(subscribe(model))` on `Host.nowMs()` — and
+dispatches any fired sub as a normal `Msg` through `update` (no second
+mutation path). See docs/features/subscriptions.md.
+`animation_frame` carries no Msg: while listed, the loop calls the App's
+`animationMsg(model, dt_ms) ?Msg` each frame and does not idle-skip.
+
+### Animation (`teak.anim` → core/anim.zig)
+```zig
+Tween(T)            // plain struct for the Model: still(v), start(target, ms, Ease), advance(dt_ms),
+                    //   active(), progress(), value()   (retargeting continues from value())
+Ease                // linear in_quad out_quad in_out_quad in_cubic out_cubic in_out_cubic out_back
+ease(Ease, t) f32   // eased progress, t clamped to [0,1]
+lerp(T, a, b, t) T  // floats/ints/arrays ([4]f32 colours)/vectors/structs of those
+```
+Frame time is a Msg (HARDLINE: no wall clock in view). See docs/features/animation.md.
+
+### Theme (`teak.theme` → core/theme.zig)
+```zig
+Theme = struct { palette, text_color, heading_color, muted_color, danger_color, panel_bg: [4]f32,  // required
+                 typography, button, text_input, checkbox, radio, slider, divider, card: GroupStyle,
+                 field: TextInputStyle (underline);   // all default to their struct defaults
+                 // a fully custom Theme is a plain literal; see docs/features/ergonomic-helpers.md
+                 tokens: ThemeTokens, button_primary: ButtonStyle (accent call-to-action);
+                 pub const dark_default: Theme; pub const light_default: Theme;
+                 pub const modern_light: Theme; pub const modern_dark: Theme;   // rounded, soft shadows, indigo accent
+                 pub fn fromPalette(p: Palette) Theme;  pub fn fromPaletteTokens(p: Palette, t: ThemeTokens) Theme }
+ThemeTokens = struct { radius_sm, radius_md, radius_lg, border_width: f32, space: [5]f32 /*xs..xl*/,
+                       elevation: [4]?Shadow /*steps 0..3*/; pub fn radii(Size) Radii; pub fn shadowAt(level: u2) ?Shadow }
+                       // default = retro (square, no soft shadows); theme.modern_tokens = rounded + soft elevations
+Palette = struct { bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted,
+                   accent, danger, border: [4]f32 }
+Typography = struct { body, heading, mono, small: FontSpec }
+dark_palette: Palette      // built-in dark
+light_palette: Palette     // built-in light
+```
+
+### Surface decoration: radii, soft shadows, gradients (`core/surface.zig`, drawn by `render/sdf.zig`)
+```zig
+Radii = struct { tl, tr, br, bl: f32 = 0; pub fn all(r) Radii; top(r); bottom(r) }     // clamped to half the short side
+Shadow = struct { dx: f32 = 0, dy: f32 = 2, blur: f32 = 8, spread: f32 = 0, color: [4]f32 }  // CSS box-shadow, outside only
+Gradient = struct { from, to: [4]f32, kind: .linear | .radial, angle_deg: f32 = 180 /*CSS: 90 = left to right*/;
+                    pub fn vertical(from, to); horizontal(from, to) }
+// fields: GroupStyle / ButtonStyle { radius: Radii, gradient: ?Gradient, soft_shadow: ?Shadow }, TextInputStyle.radius,
+//         OverlayStyle { radius, soft_shadow } (the hard retro `shadow` is separate), Theme.tokens
+```
+A rect that sets none of these draws as plain solid quads, pixel for pixel as before. With any of them it is ONE SDF quad in the same
+vertex stream (painter's order kept): anti-aliased edges (one device pixel at any DPR), per-corner radii, an inside border stroke that
+follows the corners, a two-stop gradient, a Gaussian-blurred shadow. Not covered: rounded clipping of scroll regions, images and canvas
+primitives (they stay rectangular).
+
+### Text components (`teak.text_field`, `teak.numeric_field`, `teak.dropdown`)
+```zig
+TextField(comptime capacity: usize) type   // component (Model/Msg/update/view); Msg = focus,
+                                            //   char:u8 (UTF-8 bytes assembled atomically), backspace, delete,
+                                            //   cursor_left/right, select_left/right/all/none, home/end/select_home/
+                                            //   select_end, word_left/right/select_word_*, delete_word_left/right,
+                                            //   undo/redo, replace_selection:[]const u8
+                                            //   Model = Editor(capacity, undo_bytes): fields len/cursor/selection_anchor,
+                                            //   content()/selectionText()/hasSelection()
+textFieldChar(comptime AppMsg, comptime field_name: []const u8, c: u8) AppMsg
+textFieldSpecial(comptime AppMsg, comptime field_name, key: SpecialKey) ?AppMsg
+textFieldReplaceSelection(comptime AppMsg, comptime field_name, bytes: []const u8) AppMsg
+keyNeedsClipboard(key: SpecialKey) bool     // true for ctrl_c/ctrl_x/ctrl_v
+
+NumericField(comptime config: NumericConfig) type   // TextField + parse/validate; adds
+                                                     //   value()?f64, isValid(), content(), formatValue()
+NumericConfig = struct { capacity: usize = 16, min: ?f64 = null, max: ?f64 = null,
+                         precision: u8 = 2, invalid_message: []const u8 = "invalid number" }
+
+Dropdown(comptime cap: usize) type          // closed button + open overlay list; Msg = toggle,
+                                            //   close, select:usize, scroll_by, highlight.
+                                            //   Real view is viewWith(model, cb, options, msgs, opts)
+DropdownViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200,
+                            list_max_height: f32 = 320, max_visible: usize = 0 }
+```
+
+### Pointer events on canvases (`teak.pointer` -> core/pointer.zig)
+Delivered by `teak.run` / `Runtime` through `canvasMsg`; semantics in docs/features/canvas.md.
+```zig
+Buttons = packed struct(u8) { left, middle, right: bool }   // held buttons; .any()
+Modifiers = packed struct(u8) { shift, ctrl, alt, meta: bool }
+Button = enum { none, left, middle, right }
+CanvasEventKind = enum { down, move, up, wheel, leave, layout }   // layout = first layout / size change
+CanvasEvent = struct { id: u32, kind: CanvasEventKind, x, y, dx, dy: f32, button: Button,
+                       buttons: Buttons, mods: Modifiers, w, h: f32 }  // canvas-local px
+```
+```zig
+Box = struct { x, y, w, h: f32 }
+PointerEvent(Msg) = struct { x, y: f32, hit: ?Msg /*click Msg of the widget under the cursor; its identity*/,
+                             box: Box /*that widget's rect, previous frame*/, mods: Modifiers, now_ms: u64 }
+```
+`PointerEvent` is what the `hoverMsg` / `contextMsg` App hooks receive (see Widgets below).
+An interactive canvas is `cb.canvasInteractive(style, prims, id, label)` (`CanvasCmd.pointer = true`, `id != 0`);
+its events arrive through `pub fn canvasMsg(*const Model, CanvasEvent) ?Msg`. `down` starts a capture (move/up keep
+going to that canvas, even off its rect, until all buttons release); `move` while hovering; a wheel over it is a
+`wheel` event INSTEAD of `wheelMsg`/`scrollMsg`; `leave` when the cursor exits with no capture; `layout` (w/h) on
+first layout and whenever its size changes. Overlays and modals in front of a canvas win. Wheel routing, innermost
+first: pointer canvas -> `ScrollStyle.id != 0` region (`scrollMsg`) -> `wheelMsg`. `scrollLayoutMsg` reports each
+id-bearing scroll region's viewport + content size (`teak.scrollExtent`) so apps can clamp offsets / draw scrollbars.
+
+### Declarative effects (`teak.effects` -> core/effects.zig; HARDLINE hatch 7, sibling of Sub; docs/features/effects.md)
+```zig
+// App decls: pub fn effects(*const Model) []const Effect;  pub fn effectMsg(*const Model, EffectResult) ?Msg
+// (effectMsg alone = an app that only wants dropped images / pasted text)
+Effect = union(enum) { http: HttpRequest, download: Download, open_file: OpenFile,
+                       write_clipboard: WriteClipboard, storage_set: StorageSet,
+                       storage_get: StorageGet, clock: ClockRequest, query_param: QueryParam }
+    // every payload has `id: u32` (yours, unique per request); Effect.id(), Effect.wantsResult()
+HttpRequest = struct { id: u32, method: HttpMethod, url, headers: []const Header, body: []const u8, timeout_ms: u32 }
+HttpResult = struct { id, status: u16 /*0 = transport failure*/, body, err }
+Download = struct { id, name, mime, bytes }      OpenFile = struct { id, accept: []const u8 /* ".json,image/*" */ }
+StorageSet = struct { id, key, value /* "" deletes */ }   StorageGet = struct { id, key }
+QueryParam = struct { id, name }   // web ?name=v ; native --name=v argv or env TEAK_<NAME_UPPER>
+EffectResult = union(enum) { http: HttpResult, file_opened: {id,name,mime,bytes}, file_cancelled: {id},
+                             downloaded: {id,ok}, storage_value: {id, value: ?[]const u8},
+                             query_value: {id, value: ?[]const u8}, clock: {id, unix_ms: i64, utc_offset_min: i32},
+                             dropped: Drop, pasted_text: {text} }
+Drop = struct { kind: DropKind /*file|image|text*/, name, mime, bytes,
+                width: u32 = 0, height: u32 = 0,                        // images: size of the encoded bytes
+                thumb_rgba: []const u8 = "", thumb_w: u32 = 0, thumb_h: u32 = 0 }  // images: <=64 px RGBA8 preview
+Header = struct { name, value }     HttpMethod = enum { get, post, put, delete }
+EffectSubmit = enum { accepted, busy, unsupported }   // Host.submit's answer
+// Host (optional pair, validateHost): submit(*Host, Effect) EffectSubmit ; pollEffectResults(*Host, []EffectResult) usize
+```
+`run` hands each listed `id` to `Host.submit` once, leaves it alone while it stays listed, forgets it when it is
+delisted (a late result for an unlisted id is dropped = cancellation). Results flow `effectMsg` -> `update`
+(`last_msg` names them). Effect slices live for the `submit` call; result slices until the `update` returns.
+Keep the request in `Model` (`effects()` returns a slice of it). 32 ids at once.
+Native: HTTP on worker threads, storage under `$XDG_CONFIG_HOME/teak/<app>/` (`RunOptions.app_name` or the window title), downloads to `$TEAK_OUT`,
+`TEAK_OPEN=path` feeds `open_file`, `query_param` reads `--name=value` / `TEAK_<NAME>`.
+
+### Fonts (docs/features/text.md)
+```zig
+FontSpec = struct { size_px: f32 = 14 /* em size, like CSS px */, family: FontFamily = .sans,
+                    weight: FontWeight = .regular /* regular 400, medium 500, bold 700 */, letter_spacing: f32 = 0 }
+// web (build.zig):  teak.linkWebWgpu(b, exe, .{ .fonts = &.{ .{ .family = "IBM Plex Mono", .weight = 400,
+//                       .path = b.path("assets/IBMPlexMono-Regular.ttf"), .slot = .mono /* default */ }, ... } })
+//                   -> copied to dist/fonts/, @font-face, app starts after document.fonts.load; slot text uses "<family>", monospace
+// native Linux:     try host.registerFont(.mono, .bold, @embedFile("plex-Bold"));   // <= 3 weights per family; Gpu shares the table
+```
+
+### Components composition (`teak.component`, `teak.component_list`)
+```zig
+Components(comptime components: anytype, comptime AppLevel: ?type) type
+    // synthesizes Model/Msg/update/view from a struct of components; AppLevel adds
+    // app-wide state + Msgs (null for none). e.g.
+    // teak.Components(.{ .counter = Counter, .name = teak.TextField(64) }, AppLevel)
+validateComponent(comptime T: type) void    // comptime contract check (Model/Msg/update/view shape)
+ComponentList(comptime Child: type, comptime capacity: usize) type
+    // dynamic homogeneous list; Msg = clear, append, remove_at, insert_at, swap, child.
+    // Stable u64 keys per item (focus survives reorder). Helpers: keyAt, indexOfKey,
+    // childMsg, childAt, focusedMsgForKey, focusedMsgFor.
+```
+A component is any type with `pub const Model`/`Msg` + `pub fn update(*Model, Msg) void`
++ `pub fn view(*const Model, cb: anytype, msgs: anytype) void`.
+
+### Debug overlay (`teak.debug_overlay` → core/debug_overlay.zig)
+```zig
+DebugOverlayOpts = struct { x = 8, y = 8, padding = 8, gap = 2, backdrop, fg: [4]f32,
+                            font: FontSpec, skip_pops = true, skip_pushes = false,
+                            max_lines: usize = 512 }
+appendDebugOverlay(cb, cmds, rects: []const Rect, opts: DebugOverlayOpts) void
+```
+
+### Snapshot / golden tests (`teak.snapshot` → core/snapshot.zig)
+```zig
+SnapshotOptions = struct { transient: ?*const TransientState = null, header: ?SnapshotHeader = null }
+SnapshotHeader  = struct { window_w, window_h: f32 = 0, frame: u32 = 0, last_msg: []const u8 = "" }
+writeSnapshot(writer, cmds, rects: []const Rect, opts) !void   // one grep-able line per cmd
+snapshotAlloc(allocator, cmds, rects, opts) ![]u8              // caller owns the slice
+expectSnapshot(cmds, rects, opts, expected: []const u8) !void // golden assertion (like expectEqualStrings)
+```
+
+### Transient state (`teak.transient` → core/transient.zig)
+```zig
+TransientState = struct { hover_index, press_index, focus_index: ?usize = null,
+                          frame_counter: u32 = 0, mouse_x, mouse_y: f32 = 0,
+                          ime_active: bool = false, ime_text: []const u8 = "", ime_cursor: usize = 0 }
+```
+
+### Render (`teak.render`, `teak.vertex`)
+```zig
+buildFrame(verts, text_draws, image_draws, scene_draws: *std.ArrayList(...), alloc, cmds, rects,
+           transient: TransientState, measurer: TextMeasurer) OverlaySplit   // what teak.run uses
+OverlaySplit = struct { verts, text, images, scenes: u32 }   // counts the BASE layer produced = where the overlay starts
+buildVertices(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer) void  // = buildFrame, scenes skipped
+ResourceTable = struct { sync(self, gpu, []const Resource) bool /*changed*/, deinit(self, gpu), handleOf(kind, key) u32 }
+stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw) void  // remap keys, uploadImages, renderScenes
+                                      // (hand-written web loops call these; teak.run does it for you)
+ImageDraw = struct { rect_x, rect_y, rect_w, rect_h: f32, handle: TextureHandle,
+                     tint: [4]f32, clip_x, clip_y, clip_w, clip_h: f32 }
+Vertex = extern struct { x, y, r, g, b, a, u, v: f32 }
+emitQuad(verts, alloc, rect: Rect, color: [4]f32) void
+emitQuadCorners(verts, alloc, c0, c1, c2, c3: [2]f32, color: [4]f32) void   // rotated quads
+```
+
+### 3D scenes (`teak.scene` → core/scene.zig; see docs/features/scene3d.md)
+```zig
+MeshHandle = u32;  MESH_HANDLE_NONE: MeshHandle = 0
+MeshVertex = extern struct { pos: [3]f32, normal: [3]f32, color: [4]f32 }   // 40 B
+LineVertex = extern struct { pos: [3]f32, color: [4]f32 }                   // 28 B
+MeshData = struct { vertices: []const MeshVertex = &.{}, indices: []const u32 = &.{},
+                    lines: []const LineVertex = &.{} /* consecutive pairs = segments */;
+                    pub fn validate(self) error{IndexOutOfRange,PartialTriangle}!void }
+Camera = struct { view_proj: [16]f32 /* column-major, WebGPU clip: z 0..1 */ = identity,
+                  eye: [3]f32 = .{0,0,0}, light_dir: [3]f32 /* travel dir; zero = headlight */ }
+SceneDraw = struct { mesh: MeshHandle, rect_x, rect_y, rect_w, rect_h: f32, clip_x, clip_y, clip_w, clip_h: f32,
+                     camera: Camera, clear: [4]f32, edge_color: [4]f32, edge_px: f32 }
+```
+```zig
+SceneStyle = struct { width: f32 = 320, height: f32 = 240, flex: f32 = 0 }
+SceneCmd(Msg) = struct { style, mesh: MeshHandle /*or resource key*/, camera: Camera, clear: [4]f32,
+                         edge_color: [4]f32, edge_px: f32 = 1.5, key: u64 /*bump with mesh rev*/,
+                         id: u32 = 0, pointer: bool = false, msg: ?Msg, label: []const u8 }
+Resource = union(enum) { mesh: MeshResource{key,rev,data: MeshData}, image: ImageResource{key,rev,width,height,rgba} }
+```
+Flat-shaded two-sided lighting (one directional light + ambient), depth-tested, feature lines
+as camera-facing pixel-width quads (colour = vertex colour * `edge_color`). The Gpu renders each
+`SceneDraw` offscreen, then composites it like an image.
+
+### Scene camera, picking, section cuts (`teak.scene.{Orbit,camera,pick,section,mat}`; design: docs/features/scene.md)
+Pure math, no allocation except where noted. Right-handed, column-major, depth 0..1.
+```zig
+Orbit = struct { target: [3]f32, yaw, pitch: f32 /*clamped +-(pi/2-0.01)*/, dist: f32, up: enum{y,z},
+                 projection: Projection /* .{.perspective=.{.fov_y}} | .ortho (half-height = dist*tan(0.35)) */,
+                 near_far: ?[2]f32;
+                 pub fn setPreset(*Orbit, Preset{front,back,left,right,top,bottom,iso}) void
+                 pub fn frame(*Orbit, lo, hi: [3]f32, aspect) void       // fit bounding sphere
+                 pub fn toggleProjection(*Orbit) void                     // keeps apparent size at target
+                 pub fn onEvent(*Orbit, CanvasEvent, Bindings) bool       // orbit / pan (middle or shift) / wheel zoom-to-cursor
+                 pub fn camera(Orbit, w, h: f32, ?Bounds) Camera          // near/far from bounds
+                 pub fn eye / basis / halfHeight / rotate / panPx / zoomAt }
+Ray = struct { origin, dir: [3]f32 };  Bounds = struct { lo, hi: [3]f32 }
+pickRay(Camera, w, h, x, y) Ray            // viewport-local logical px
+project(Camera, w, h, p: [3]f32) ?[3]f32   // px + ndc depth; null behind the eye
+pick.items(Ray, []const pick.Item, []const pick.MeshRef, pick.Options{cull_back, cut}) ?pick.Hit  // {id,item,triangle,t,point,normal}
+pick.Item = struct { mesh: u32, transform: [12]f32 /*3x4 rows*/, id: u32, hidden, no_pick: bool }
+pick.MeshRef = struct { key: u32, mesh: MeshData, bvh: ?*const pick.Bvh, bounds: ?Bounds }
+pick.Bvh.build(gpa, MeshData) !Bvh;  pick.rayTriangle / pick.rayAabb / pick.nearestBrute
+pick.gizmoHit(Orbit, GizmoLayout, w, h, x, y) ?GizmoAxis;  pick.gizmoTips;  GizmoAxis.preset(up) Preset
+section.outline(gpa, MeshData, transform, plane [nx,ny,nz,d] /*keeps n.p+d<=0*/, *ArrayList(Segment)) !void
+section.chain(gpa, []const Segment) !Loops;  section.isClosed(gpa, MeshData) !bool   // even-edge watertight check
+```
+
+### Text measurement (`teak.text` → core/text.zig)
+```zig
+FontFamily = enum { sans, serif, mono }
+FontWeight = enum { regular, medium, bold }
+FontSpec = struct { size_px: f32 = 14, family: FontFamily = .sans, weight: FontWeight = .regular,
+                    letter_spacing: f32 = 0, snap_advance: ?bool = null }   // px per glyph; snap_advance rounds advances to whole px (null: on for .mono)
+DEFAULT_FONT: FontSpec        // sans 14px
+TextMetrics = struct { width, height, ascent, descent: f32 }
+TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
+                        pub fn prefixWidth(text, font, byte_prefix: usize) f32 }
+ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32 }  // logical order; sum(advance)==width
+ShapeResult = struct { count: usize, width: f32, consumed: usize }   // consumed < text.len only when `out` filled
+Shaper = struct { ctx: *anyopaque, shape_fn; pub fn shape(text, font, out: []ShapedGlyph) ShapeResult }
+TextureHandle = u32
+TEXTURE_HANDLE_NONE: TextureHandle = 0
+TextDraw = struct { rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x..clip_h }
+monoMeasurer() TextMeasurer    // stateless 10px/byte, 20px line — for headless tests + CLI
+```
+
+### Tables & lists at scale (`teak.DataTable`, `teak.VarList`, `teak.TreeList`, `teak.Scroller`)
+Virtualized components for 100k-row data (docs/features/tables-at-scale.md). All state in the Model; rows are the app's,
+passed as a `src` value; each emits only the visible rows. Wire the hooks `scrollMsg`, `scrollLayoutMsg`, `animationMsg` + `subscribe`.
+```zig
+Scroller = struct { pos, target, vel, max, smooth_ms = 70, friction_ms = 325 }   // smooth wheel + fling, as Model data
+  wheel(dy) / glideTo(y) / jumpTo(y) / fling(px_per_s) / shift(d) /*anchor*/ / setExtent(viewport, content)
+  animating() bool  /* list Sub.animation_frame while true */ ;  step(dt_ms)
+DataTable(comptime cfg: struct { max_rows = 131072, max_cols = 16 }) type
+  Model: n_rows, order/rank (display<->data permutation), sort_col/sort_desc, widths, selection (bitset by DATA row),
+         cursor/anchor, focused, mods, sc: Scroller, view_h;  setRows(n) / setColumns(cols) / isSelected(row) / selectedRows(out)
+  Msg = union(enum) { sort: u8, grip: {col, dx}, row: u32 /*display idx*/, key: Key, wheel: f32, viewport: {vw,vh,cw,ch}, mods: Modifiers, frame: u32, blur }
+  update(model, msg, src)   // src.compare(col: u8, a: u32, b: u32) std.math.Order  (stable index sort); src.cell(arena, col: u8, row: u32) []const u8
+  view(model, cb, cols: []const DataTableColumn, src, msgs /*.sort(col) .row(display)*/, ViewOpts{ id, grip_base, row_h = 22, header_h = 26, char_w = 8, ... })
+  keyMsg(SpecialKey, mods) ?Msg;  gripMsg(CanvasEvent, grip_base) ?Msg;  charMsg(u8) ?Msg /*type-to-search*/;  searchText(model) []const u8;  reveal(model, display_row)
+DataTableColumn = struct { title, width = 120, min_width = 36, cell_align: CellAlign = .left, sortable = true }
+VarList(comptime cap: usize) type      // rows of different heights, measured by layout, scroll-anchored
+  Model: n, est, h[], prefix[], sc, view_h;  setCount(n, est) / insert(at, h) / remove(at) / rowAt(y) / total()
+  Msg = union(enum) { wheel, viewport, measured: {first, count, heights[96]}, frame };  measuredMsg(first, heights) Msg
+  view(model, cb, src /* src.row(cb, i) emits ONE child */, ViewOpts{ id, height, ... })
+TreeList(comptime cap: usize) type     // preorder nodes + depth; expand/collapse; keyboard
+  Model: n_nodes, expanded (bitset), visible[], n_visible, selected, sc;  setNodes(n, src, expand_depth) / rowOf(node)
+  Msg = union(enum) { toggle: u32, select: u32, key: Key, wheel, viewport, frame, blur };  update(model, msg, src)  // src.depth(node) u16, src.label(arena, node) []const u8
+  view(model, cb, src, msgs /*.toggle(node) .select(node)*/, ViewOpts{ id, row_h = 22, indent = 16, ... });  keyMsg(SpecialKey) ?Msg
+// VirtualListStyle gained total_extent / start_offset (variable rows), id (measured-row reports) and align_cross.
+// App hooks added: virtualRowsMsg(model, id, first_row, heights: []const f32) ?Msg;  modsMsg(model, mods: Modifiers) ?Msg
+```
+
+### TextArea and text events (`teak.TextArea`, `teak.text_area`, `teak.text_event`)
+Multi-line editing: `cb.textArea(TextAreaCmd{ focus_msg, id, content, cursor, selection_anchor, scroll_x/y, goal_x,
+wrap: Wrap = .word, font, style: TextInputStyle, width, min_width = 120, height = 120, flex, padding = 6, disabled })`
+(`cb.textAreaThemed(...)`). Layout sizes it like a canvas; render wraps to the inner box, draws per-line selection,
+caret and IME composition, clipped. The runtime turns input over it into `TextEvent`s for the optional hook
+`textMsg(*const Model, TextEvent) ?Msg`; the focused area also gets Up/Down/PageUp/PageDown/Home/End (and Shift
+variants) as `move` events resolved on the wrapped layout, and its caret rect feeds `Host.setImeSpot` when present.
+```zig
+TextEventKind = enum { down, drag, up, double_click, triple_click, wheel, move, metrics, leave }
+TextEvent = struct { id, kind, index: u32 /*nearest grapheme boundary*/, line: u32, x, y, dx, dy, goal_x, keep_goal,
+                     mods, clicks, viewport_w/h, content_w/h, caret_x/y/h }   // metrics fields only for .metrics
+TextArea(comptime cap: usize) type   // Model { ed: Editor (multiline), scroll_x/y, viewport/content/caret metrics }
+  Msg = union(enum) { focus, char: u8, newline, key: SpecialKey, paste: []const u8, event: TextEvent }
+  update(model, msg)   // events: Editor.applyPointer for caret/selection; wheel scrolls; metrics clamp + reveal caret
+  eventMsg(ev) / charMsg(c) / pasteMsg(bytes) / keyMsg(SpecialKey) ?Msg
+  viewWith(model, cb, .{ .focus = msg }, ViewOpts{ id = 1, width, min_width, height, flex, wrap, padding, style, font, disabled })
+Editor.applyPointer(ev) bool          // down / drag / double / triple / move -> caret + selection
+text_wrap.resolveNav(text, cursor, goal_x, NavKind, page, font, max_w, mode, m) NavResult{index, goal_x, line}
+layout.textAreaInner(rect, ta) Rect;  layout.textAreaWrapWidth(inner, ta) f32
+### Combobox (`teak.Combobox` → core/combobox.zig)
+Searchable select: text query + filtered modal overlay list (Dropdown-style, zero new Cmds).
+```zig
+Combobox(comptime cap: usize) type      // cap = query bytes; Model/Msg/update/view + viewWith
+  Model = struct { query: TextField(cap).Model, open: bool, selected: ?usize, highlighted: usize, scroll_offset: f32 }
+  Msg = union(enum) { focus, close, select: usize /*original option index*/, edit: TextField(cap).Msg,
+                      highlight: Highlight, scroll_by: ScrollBy }
+  viewWith(model, cb, options: []const []const u8, msgs /*.focus .close .selectMsg(i)*/, opts: ComboboxViewOpts)
+  charMsg(u8) Msg;  keyMsg(model, SpecialKey, options, opts) ?Msg;  enterMsg / highlightMsg / scrollByMsg(...)
+  shownText(model, options) []const u8
+ComboboxViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200, max_visible: usize = 8,
+                            match: Match(.substring|.prefix) = .substring, input_style: ?TextInputStyle = null }
+// pure: combobox.matches(query, option, mode) bool, countMatches, nthMatch, ordinalOf, foldCase
+```
+
+### Widgets (`teak.widgets` → core/widgets/*.zig; docs/features/widgets.md; zero new Cmd variants)
+Each is Model/Msg/update + view helpers in the Dropdown mould; all state in the app's Model.
+```zig
+widgets.toggle.view(cb, msg, on: bool, label) / viewStyled(cb, msg, on, label, toggle.Style)   // switch (clickable canvas)
+widgets.progress: bar(cb, value 0..1, Style{width,height,flex,track_color,fill_color,border_color,block});
+  indeterminate(cb, phase: u16, Style); Model{phase}; Msg{tick}; update; TICK_MS; PERIOD   // phase advanced by Sub.every
+widgets.tabs: Model{selected, focused}; Msg{select: usize, move: {move: Move, count}, blur}; update;
+  viewWith(model, cb, labels: []const []const u8, msgs /*.selectMsg(i)*/, ViewOpts{min_width,height,rule});
+  keyMsg(model, SpecialKey, count) ?Msg (Left/Right wrap, Home/End, Escape=blur); moveMsg(Move, count)
+widgets.split: Model{ratio, dragging}; Msg{grab, drag: Drag, release, set: f32}; update;
+  Opts{orientation(.horizontal|.vertical), width, height, divider, min_a, min_b, id, pane_padding, pane_gap};
+  begin(model, cb, opts); divider(model, cb, opts); end(cb);   // emit pane A, divider, pane B, end
+  canvasMsg(model, CanvasEvent, opts) ?Msg;  paneA(model, opts) f32;  paneB(model, opts) f32
+widgets.tooltip: Model{item, box, deadline, shown}; Msg{hover: Hover, show, hide}; update;
+  hoverMsg(comptime AppMsg, PointerEvent(AppMsg), targets: []const AppMsg, delay_ms) Msg;  deadline(model) ?u64 (-> Sub.at);
+  view(model, cb, texts: []const []const u8, ViewOpts{window_w, window_h, gap})
+widgets.toast.Toast(cap, text_cap): Model{items,len,next_id}; Msg{push: Push{kind,text,ttl}, dismiss: u32, tick, clear};
+  update; push(model, Kind, text, ttl_ticks); active(model) bool; viewWith(model, cb, msgs /*.dismissMsg(id)*/, ViewOpts{window_w,window_h,width,margin,gap});
+  Kind = enum { info, success, warning, danger };  TICK_MS; default_ttl
+widgets.dialog: view(cb, Opts{window_w, window_h, title, message, confirm_label, cancel_label: ?[]const u8, width, danger,
+  dismiss_on_backdrop, scrim}, msgs /*.confirm .cancel*/); begin / end (own body between); keyMsg(key, msgs, has_cancel) ?AppMsg
+widgets.menu.MenuBar(Action) type: Item (= MenuItem(Action){label "&File" mnemonic, action: ?Action, shortcut, enabled, checked,
+    separator, children}; Item.sep); Model{st: State}; Msg{goto: State, close}; update; isActive(model);
+    viewWith(model, cb, items, msgs /*.menu(Msg) .run(Action)*/, ViewOpts{x,y,window_w,window_h,top_width,bar_height,panel_w,row_h,cols,bar_bg});
+    keyMsg(model, SpecialKey, items, msgs) ?AppMsg (F10/Alt activate; arrows, Enter, Escape); charMsg(model, u8, items, msgs) ?AppMsg (mnemonics)
+widgets.menu.ContextMenu(Action) type: Model{x,y,st}; Msg{open_at, goto, close}; openAt(x, y) Msg; isOpen; viewWith / keyMsg / charMsg as MenuBar
+widgets.menu.State{active, hot, open, depth, sel[4]}; menu.displayLabel(cb, label); menu.max_depth; menu.SEP_H
+```
+Choosing a leaf dispatches `msgs.run(action)`; the app's update also runs `MenuBar.update(&m.bar, .close)`.
+Tab traversal (`focus.nextFocusable` / `prevFocusable`) stays inside the topmost modal overlay (dialogs, menus).
+`cb.buttonStyledDisabled(msg, label, ButtonStyle)` is a disabled button with an explicit style.
+
+### Editor (`teak.editor` → core/editor.zig)
+Fixed-capacity UTF-8 text editor state for the component Model (TextField is a thin wrapper).
+Cursor and anchor always sit on grapheme boundaries; invalid UTF-8 tolerated; no op splits a cluster.
+```zig
+Editor(comptime cap: usize, comptime undo_cap: usize) type   // undo_cap = history bytes (0 = no undo)
+  fields: buf, len, cursor, selection_anchor: ?usize, goal_x: ?f32, multiline: bool, undo: UndoLog
+  content() / selection() / selectionRange() / hasSelection()
+  set(s) / clear() / selectAll() / deselect() / setSelection(a, c) / selectWordAt(i) / moveTo(i, extend)
+  move(Move{left,right,home,end,word_left,word_right,doc_start,doc_end}, extend)
+  moveLineEdge(.start|.end, extend, font, max_w, mode, m)      // visual-line Home/End via text_wrap
+  moveVertical(lines: i32, extend, font, max_w, mode, m)       // Up/Down/Page, sticky goal_x
+  insert(bytes) / paste(bytes) / typeByte(u8) / backspace() / delete() / deleteWordLeft() / deleteWordRight()
+  undoEdit() bool / redoEdit() bool                            // typed words coalesce; undo.dropped counts overflow
+  applyKey(SpecialKey) bool                                    // layout-free keys; false = not handled here
+  window(max_cols) Window{start,end,cursor,anchor}             // visible slice of a wide single-line field
+UndoLog(rec_cap, byte_cap) type
+```
+
+### Unicode, line breaking, wrapping (`teak.unicode`, `teak.linebreak`, `teak.text_wrap`)
+Pure, allocation-free, std-only; byte offsets everywhere; invalid UTF-8 tolerated (1 bad byte = 1 unit).
+// Wrapped text and shrink (layout passes 2-3 run only when present; see docs/features/layout.md)
+cb.paragraph(s) / cb.paragraphStyled(s, font, color, ParagraphOpts{ wrap = .word, max_lines: u16 = 0, text_align }) / cb.textEllipsis(s)
+Wrap = enum { none, word, char, ellipsis }          // TextCmd.wrap (default none)
+GroupStyle.shrink / ScrollStyle.shrink: f32 = 0      // shrink weight; wrapped text shrinks implicitly
+LayoutEngine.doLayoutStats(rects, cmds, w, h, measurer) Stats{ wrap_passes: bool }
+```zig
+// core/unicode.zig (Unicode 16 tables generated by tools/gen_unicode.zig)
+utf8DecodeLossy(bytes, i) Decoded{cp: u21, len: u3}      // bad byte -> U+FFFD, len 1
+nextGrapheme(text, i) usize        // end of the UAX#29 cluster starting at i
+prevGrapheme(text, i) usize        // start of the cluster containing byte i-1
+isGraphemeBoundary(text, i) bool;  snapBackward(text, i) usize;  graphemeCount(text) usize
+GraphemeIterator{text, pos}.next() ?[]const u8
+wordClass(cp) WordClass(space|word|punct|han);  nextWordBoundary / prevWordBoundary(text, i) usize
+wordRangeAt(text, i) Span{start,end}                      // double-click selection
+lineBreakClass(cp) Lb;  graphemeBreakClass(cp) Gcb;  isWide(cp) bool
+// core/linebreak.zig: UAX#14-lite opportunities (kinsoku, NBSP/WJ, ZWSP, hyphen)
+Breaker.init(text, start).next() ?Break{end, kind: soft|hard|end}
+// core/text_wrap.zig
+Line = struct { start, end, hang, next: u32, width: f32, hard_break, ellipsized: bool }
+nextLine(text, start, font, max_w, mode, m) Line;  LineIter.init(text, font, max_w, mode, max_lines, m).next() ?Line
+measureWrapped(text, font, max_w, mode, max_lines, m) Measured{w, h, lines}
+minContent / maxContent(text, font, m) f32
+caretPos(text, index, font, max_w, mode, max_lines, m) Caret{x, y, line}
+indexAt(text, x, y, font, max_w, mode, max_lines, m) usize  // inverse of caretPos at grapheme boundaries
+```
+
+### Host interface (`teak.host` → platform/host.zig)
+Backends live in `platform/{win32,x11,wasm}.zig` — NOT re-exported (web entry points must also declare `pub const std_options: std.Options = .{ .logFn = platform.logFn };` — the default std.log sink does not build on wasm32-freestanding); the build
+picks one under the import name `teak-platform-native`.
+```zig
+InputState = struct { mouse_x, mouse_y: f32,
+                      buttons: Buttons,                       // held now (left/middle/right)
+                      button_down, button_up: Buttons,        // edges this frame (a fast click sets both)
+                      mouse_down, mouse_up: bool,             // left-button edges (== button_down.left / button_up.left)
+                      mods: Modifiers,                        // shift/ctrl/alt/meta at the latest event
+                      wheel_dx, wheel_dy: f32,                // CSS-style px, + = down/right; web pinch = wheel + mods.ctrl
+                      chars: []const u8,                      // UTF-8 text typed this frame (whole code points)
+                      keys: []const SpecialKey,               // arrows, Delete/Home/End, Shift+motion, Ctrl+A/C/X/V/Y/Z, Tab, ...
+                      resized: bool, width, height: u32 }
+InputQueue          // per-window accumulator shared by event-driven hosts: beginFrame(), pointerMoved(x,y),
+                    //   buttonDown/buttonUp(Button), wheel(dx,dy), pushNav(NavKey), pushKey(SpecialKey),
+                    //   pushCodepoint(u21), pushText(utf8), pushUtf16Unit(u16), finish(resized,w,h) InputState
+NavKey = enum { backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, a, c, x, v, y, z }
+resolveKey(NavKey, Modifiers) ?SpecialKey   // the one Shift/Ctrl policy every host shares (plain letters -> null)
+input_queue         // module: platform/input_queue.zig
+Clipboard = struct { ctx, read_fn, write_fn; pub fn read() []const u8; pub fn write(t) void }
+ImeState = struct { active: bool = false, text: []const u8 = "", cursor: usize = 0 }
+FileDialogResult = ?[]const u8
+FileDialogFilter = struct { name: []const u8 = "All files", pattern: []const u8 = "*.*" }
+FileDialogPoll = union(enum) { pending, ok: []const u8, cancelled }
+validateHost(comptime T: type) void   // comptime contract: deinit, pollInputs, shouldClose,
+                                       //   nativeHandle, textMeasurer, clipboard, imeState,
+                                       //   publishA11yTree, open/save/request/pollFileDialog,
+                                       //   secondary-window decls, setTitle, nowMs (scaleFactor optional)
+```
+
+### Gpu interface (`teak.gpu` → gpu/context.zig)
+Backends live in `gpu/{native,native_linux,web}.zig` — picked by the build under
+`teak-gpu-native`.
+```zig
+ClearColor = [4]f32
+InitOptions = struct { msaa: bool = false /* 4x main UI pass */, scene_msaa: bool = true }
+                                       // backends: Gpu.init(handle, w, h) | Gpu.initWithOptions(handle, w, h, InitOptions)
+validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uploadVertices,
+                                       //   renderFrame, rasterizeText, uploadText, uploadImage, uploadImages, releaseImage
+// Optional extension (checked only when present; the scene trio is all-or-none):
+//   uploadMesh(*Gpu, MeshData) MeshHandle      releaseMesh(*Gpu, MeshHandle) void
+//   renderScenes(*Gpu, []const SceneDraw) void  // before renderFrame; offscreen 3D -> composite quads
+//   setOverlayStart(*Gpu, OverlaySplit) void    // before the uploads: draw base solids/images/scenes/text, THEN
+//                                              //   the overlay's, so an opaque overlay hides base text (hatch 5)
+```
+
+### Headless runs (`teak.headless` → headless_run.zig; docs/features/headless.md)
+No display needed; Linux + a Vulkan device. In build.zig: `teak.linkHeadless(b, exe, .{})` adds imports
+`teak-platform-headless` (`Host`: scripted input, fake 16 ms/frame clock, stb text, captured effects) and
+`teak-gpu-headless` (`Gpu.initOffscreen(w,h,InitOptions)`, `Gpu.readFrame(alloc) ![]u8` RGBA8).
+```zig
+Step = union(enum) { frames: u32, move: [2]f32, down, up: Button, wheel: [2]f32, chars: []const u8,
+                     key: SpecialKey, mods: Modifiers, click: [2]f32, drag: [2][2]f32 }
+headless.play(rt: anytype, host: anytype, steps: []const Step) !void
+headless.shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa, steps, settle, run }) !void  // script -> PNG
+headless.writeFramePng(gpu, gpa, path) !void;  encodePng(gpa, rgba, w, h) ![]u8;  pathArg(init, default) []const u8
+// Host: pushMouseMove/Down/Up, pushWheel, pushChars, pushKey, setModifiers, close, injectEffectResult(EffectResult),
+//       submittedEffects() []const Captured{kind,id,name,bytes,mime,method}, countEffects(kind), clearSubmittedEffects()
+```
+
+### Application loop (`teak.run` / `teak.runtime` → run.zig)
+```zig
+run(comptime App: type, gpa, host: anytype, gpu: anytype, opts: RunOptions) !void
+Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
+    // the loop body `run` is built on, for hosts that own the loop (web rAF):
+    //   Runtime.init(gpa, *Host, *Gpu, RunOptions) !Runtime   (keep it in one place; don't move it)
+    //   rt.frame() !void   // ONE iteration: poll, route, subs, view, layout, render
+    //   rt.deinit()
+    // run == init + `while (!host.shouldClose()) try rt.frame()` + deinit.
+RunOptions          // see "The App contract" above
+SecondaryWindowSpec // see above
+```
+
+## Recipes
+
+### Add a feature (4 steps)
+1. `Model`: add a field for the new state.
+2. `Msg`: add a variant for the new transition.
+3. `update`: add the switch arm (compiler forces exhaustiveness).
+4. `view`: emit the UI with `cb.*` calls.
+
+### Add a widget (new Cmd variant)
+1. Add a variant to `Cmd(Msg)` (core/cmd.zig) + its style/cmd struct.
+2. Add a case in each pass: layout (measure+position), hit-test, render.
+3. Add a convenience emitter method on `CmdBuffer`.
+4. Extend `snapshot.zig`, `a11y.zig`, and `run.zig`'s `cmdsEqual` for it.
+5. Map the new a11y `Role` in `platform/win32.zig` (`controlTypeForRole`,
+   + `isFocusableRole` if interactive); `input/focus.zig`'s `isFocusable`
+   if Tab-focusable; re-export in `src/teak.zig` + add to THIS file (the
+   audit fails the build otherwise).
+
+More worked examples and idioms: **docs/cookbook.md**.
+
+## Testing story
+
+- **Golden snapshot tests (headless, no Host/GPU).** view → layout with
+  `teak.monoMeasurer()` → `teak.expectSnapshot(cmds, rects, opts, expected)`.
+  The `[]Cmd`+`[]Rect`(+`TransientState`) triple fully describes a frame, so
+  one text block asserts the whole screen: layout, labels, hover/press/focus
+  markers (`.{ .transient = &ts }`), header (`.{ .header = ... }`). Output is
+  deterministic and grep-able (one line per cmd, `tag (x,y,w,h) payload`).
+- **`validateBalance(cmds)`** guards push/pop balance; `teak.run` calls it in
+  Debug builds and panics with a named cmd index on an unbalanced buffer.
+- **Live `TEAK_SNAPSHOT` streaming (implemented).** `teak.run` mirrors each
+  changed frame's snapshot to a file — set `RunOptions.snapshot_path` or the
+  `TEAK_SNAPSHOT` env var (env wins, read once at `run` start). Writes are
+  atomic (`<path>.tmp` then rename) and change-gated (idle frames never touch
+  disk); the header's `last_msg` names the transition that caused the change,
+  including sub-fired Msgs. An agent driving a running app greps/diffs the
+  file to "see" the GUI as data. See docs/features/snapshot.md.
+- `zig build test` runs library tests from the repo root (no wgpu link).
+- `zig build audit` runs the HARDLINE drift audit + wasm canary — including
+  the rule that keeps THIS file in sync with `src/teak.zig` re-exports.
+
+## Doc map
+
+- `docs/HARDLINE.md` — the non-negotiable rules (§1 invariants, §2 hatches,
+  §3 forbidden, §5 audit). Read before any design-touching change.
+- `spec.md` — full architecture specification.
+- `docs/consuming-teak.md` — consumer onboarding: build.zig.zon → working app.
+- `docs/cookbook.md` — worked recipes/idioms for building on Teak.
+- `docs/pitfalls.md` — common traps.
+- `docs/features/run.md` — `teak.run` loop + optional App hooks + secondary window.
+- `docs/features/subscriptions.md` — declarative timers (`Sub`/`subscribe`); `run` wiring.
+- `docs/features/widgets.md` — disabled state, NumericField, Dropdown, Combobox, setTitle, and the primitive-built widgets (toggle, progress, tabs, split pane, tooltip, toast, dialog, menu bar, context menu).
+- `docs/features/components.md` — comptime component composition.
+- `docs/features/canvas.md` — charts & custom 2D drawing (+ triangle/line batches).
+- `docs/features/scene3d.md` — 3D meshes in the UI, `resources()` hook, Gpu scene extension.
+- `docs/features/tables.md` — fixed-column monospace tables (`teak.table`).
+- `docs/features/layout.md` — layout engine (measure + position passes).
+- `docs/features/hit-test.md` — hit-test + hover-test.
+- `docs/features/focus.md` — Msg-keyed stable focus traversal.
+- `docs/features/transient-state.md` — presentation-only state.
+- `docs/features/text.md` — TextMeasurer + FontSpec.
+- `docs/features/host.md` — Host interface (window + input; DPI/scaling notes).
+- `docs/features/headless.md` — headless native runs: scripted input -> PNG (`linkHeadless`, `teak.headless`).
+- `docs/features/gpu.md` — Gpu interface (vertex upload + present).
+- `docs/features/snapshot.md` — golden snapshot tests + live TEAK_SNAPSHOT streaming.
+- `docs/features/functional-gaps.md` — overlay, image, selection/clipboard,
+  subs, multi-window/dialogs, virtual list, a11y, rich text.
+- `docs/features/ergonomic-helpers.md` — Theme, mixedText, sliderDrag, TextField
+  key dispatch, form rows, ComponentList, debug overlay.
+
+## Build & consume
+
+Requires **Zig 0.17.0+**. Teak is a pure library (no external deps); wgpu-native
+prebuilts are lazy deps fetched only on native/web UI builds.
+
+`build.zig.zon`:
+```zig
+.dependencies = .{
+    .teak = .{
+        .url = "git+https://github.com/hotschmoe/teak.git#<commit>",
+        .hash = "...",   // zig fetch --save fills this in
+    },
+},
+```
+
+`build.zig` wiring (module + native UI):
+```zig
+const teak = @import("teak");            // teak's build.zig is importable
+const teak_dep = b.dependency("teak", .{ .target = target, .optimize = optimize });
+// pure-logic module:  teak_dep.module("teak")
+// native UI (gated on backend availability):
+if (teak.hasNativeBackend(target.result.os.tag)) {
+    // ...addExecutable(src/ui_main.zig)...
+    teak.linkNativeWgpu(b, ui, .{});     // Win32 (GDI) or X11 (stb_truetype) + wgpu, per OS
+}
+// web: teak.linkWebWgpu(b, exe, .{})    // wasm + WebGPU (zunk)
+```
+`ui_main.zig` imports `teak-platform-native` + `teak-gpu-native`, inits
+`Host`/`Gpu`, and calls `teak.run(App, gpa, &host, &gpu, .{})`.
+
+Per-OS notes: **Windows** = Win32 window + GDI text; **Linux** = X11 (libX11
+`dlopen`ed at runtime — no dev package; needs libX11.so.6 + a Vulkan driver +
+a monospace TTF, `TEAK_FONT` to override); Wayland via XWayland. **Web** =
+wasm + WebGPU. Windows-ARM64 hosts use the native
+aarch64-windows Zig 0.17 toolchain with no extra flags (cross-compile with
+`-Dtarget=aarch64-windows-gnu` from other hosts).
+
+---
+
+<!-- GENERATED API REFERENCE BELOW: tools/gen_api.zig, do not edit -->
+
+# Teak API reference (generated)
+
+<!-- GENERATED by tools/gen_api.zig from src/teak.zig and the files it imports.
+     Do not edit: run `zig build api`. `zig build audit` fails when this is stale. -->
+
+Signatures and `///` doc comments of every public declaration reachable from
+`@import("teak")`. Hand-written guidance lives in `llms.txt` and
+`docs/cookbook.md`; this file is the exhaustive, always-current index.
+
+## Re-exports of `teak`
+
+> Library version (semver), derived from `build.zig.zon` `.version` at build
+> time; `-Dversion-meta=<str>` appends `+<str>`. See docs/VERSIONING.md.
+- `teak.version`: `pub const version: []const u8 = @import("build_options").version`
+> The flat `Cmd` union, `CmdBuffer` and balance validation.
+- `teak.cmd`: module `src/core/cmd.zig`; see below
+> Comptime component composition (`Components`, `validateComponent`).
+- `teak.component`: module `src/core/component.zig`; see below
+> `TransientState`: hover / press / focus / IME state that bypasses the TEA loop.
+- `teak.transient`: module `src/core/transient.zig`; see below
+> Text measurement, fonts and text-draw records.
+- `teak.text`: module `src/core/text.zig`; see below
+> UAX#29 graphemes, word boundaries, lossy UTF-8 decoding and Unicode property lookups.
+- `teak.unicode`: module `src/core/unicode.zig`; see below
+> UAX#14-lite line-break opportunities over grapheme clusters.
+- `teak.linebreak`: module `src/core/linebreak.zig`; see below
+> Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.
+- `teak.text_wrap`: module `src/core/text_wrap.zig`; see below
+> `Editor(cap, undo_cap)`: grapheme-aware text editing model with undo/redo (used by TextField/TextArea).
+- `teak.editor`: module `src/core/editor.zig`; see below
+> `TextEvent` and friends: pointer, motion and metrics events for `text_area`.
+- `teak.text_event`: module `src/core/text_event.zig`; see below
+> `TextArea(cap)`: multi-line editor component (Editor + scroll + textMsg events).
+- `teak.text_area`: module `src/core/text_area.zig`; see below
+> Declarative subscriptions (`Sub`): timers serviced by the run loop.
+- `teak.sub`: module `src/core/sub.zig`; see below
+> Model-driven animation: `Tween(T)`, easing curves and `lerp`.
+- `teak.anim`: module `src/core/anim.zig`; see below
+> `Theme`, `Palette` and `Typography` presets consulted by the theme-aware emitters.
+- `teak.theme`: module `src/core/theme.zig`; see below
+> `TextField`: the canonical text-input component and its key-dispatch helpers.
+- `teak.text_field`: module `src/core/text_field.zig`; see below
+> `NumericField`: a `TextField` with float parsing and range validation.
+- `teak.numeric_field`: module `src/core/numeric_field.zig`; see below
+> `Dropdown`: a closed button plus an open overlay list.
+- `teak.dropdown`: module `src/core/dropdown.zig`; see below
+> `Scroller`: scroll position with smooth wheel and kinetic fling, as Model data.
+- `teak.Scroller`: `pub const Scroller = @import("core/scroller.zig").Scroller`
+> `DataTable(cfg)`: virtualized, sortable, resizable, selectable table for 100k+ rows.
+- `teak.data_table`: module `src/core/data_table.zig`; see below
+- `teak.DataTable`: `pub const DataTable = data_table.DataTable`
+> Column definition of a `DataTable`.
+- `teak.DataTableColumn` = `data_table.Column`
+  - fields: `title, width, min_width, cell_align, sortable`
+> `VarList(cap)`: virtualized list with per-row heights measured by layout, scroll-anchored.
+- `teak.var_list`: module `src/core/var_list.zig`; see below
+- `teak.VarList`: `pub const VarList = var_list.VarList`
+> `TreeList(cap)`: virtualized tree over a preorder node set; expand/collapse + keyboard.
+- `teak.tree_list`: module `src/core/tree_list.zig`; see below
+- `teak.TreeList`: `pub const TreeList = tree_list.TreeList`
+> `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
+- `teak.combobox`: module `src/core/combobox.zig`; see below
+> Widgets built from existing Cmd primitives: toggle, progress, tabs, split pane,
+> tooltip, toast, dialog, menu bar, context menu.
+- `teak.widgets`: module `src/core/widgets.zig`; see below
+> `ComponentList`: a dynamic homogeneous list of components.
+- `teak.component_list`: module `src/core/component_list.zig`; see below
+> `appendDebugOverlay`: dump the frame's cmds and rects as an overlay.
+- `teak.debug_overlay`: module `src/core/debug_overlay.zig`; see below
+> LLM-readable text serialization of a frame (`[]Cmd` + `[]Rect`).
+- `teak.snapshot`: module `src/core/snapshot.zig`; see below
+> Pure line-chart primitive builder for canvases.
+- `teak.chart`: module `src/core/chart.zig`; see below
+> Fixed-column monospace tables built from text cmds.
+- `teak.table`: module `src/core/table.zig`; see below
+> Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
+- `teak.pointer`: module `src/core/pointer.zig`; see below
+> Declarative effects (HARDLINE hatch 7): data describing I/O the Host performs.
+- `teak.effects`: module `src/core/effects.zig`; see below
+> Data types for `scene3d`: meshes, camera and per-frame scene draws.
+- `teak.scene`: module `src/core/scene.zig`; see below
+> Declarative GPU resources (HARDLINE hatch 8) for the App `resources()` hook.
+- `teak.resources`: module `src/core/resources.zig`; see below
+> The two-pass layout engine, `Rect` and the clip stack.
+- `teak.layout`: module `src/layout/engine.zig`; see below
+> Viewport and content size of a scroll region, measured from layout rects.
+- `teak.scroll_extent`: module `src/layout/scroll_extent.zig`; see below
+> Mouse-to-`Msg` hit-testing over the previous frame's cmds and rects.
+- `teak.hit_test`: module `src/input/hit_test.zig`; see below
+> Keyboard focus traversal and Msg-keyed focus lookup.
+- `teak.focus`: module `src/input/focus.zig`; see below
+> `SpecialKey`: the host-neutral non-text key set.
+- `teak.keys`: module `src/input/keys.zig`; see below
+> Accessibility tree built from cmds and rects.
+- `teak.a11y`: module `src/input/a11y.zig`; see below
+> Cmd-to-vertex render pass (`buildFrame`, draw records).
+- `teak.render`: module `src/render/build.zig`; see below
+> The GPU `Vertex` and quad emitters.
+- `teak.vertex`: module `src/render/vertex.zig`; see below
+> The `Host` contract (window and input source) plus its input types.
+- `teak.host`: module `src/platform/host.zig`; see below
+> `InputQueue`: event accumulator shared by the Win32 and X11 Hosts.
+- `teak.input_queue`: module `src/platform/input_queue.zig`; see below
+> The `Gpu` contract (`validateGpu`) that backends implement.
+- `teak.gpu`: module `src/gpu/context.zig`; see below
+> The canonical host loop (`teak.run`, `Runtime`).
+- `teak.runtime`: module `src/run.zig`; see below
+> Scripted-input headless runs for tests and tooling.
+- `teak.headless`: module `src/headless_run.zig`; see below
+> The flat command union for a given `Msg`; the unit every pass walks.
+- `teak.Cmd`: `pub const Cmd = cmd.Cmd`
+> Per-frame arena-backed command buffer with the widget emitters.
+- `teak.CmdBuffer`: `pub const CmdBuffer = cmd.CmdBuffer`
+> Layout and look of a `push_group` container.
+- `teak.GroupStyle` = `cmd.GroupStyle`
+  - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, bg, border, border_width, radius, gradient, soft_shadow`
+  - `pub fn padX(self: GroupStyle) f32`
+  - `pub fn padY(self: GroupStyle) f32`
+> Layout and scroll offsets of a `push_scroll` region.
+- `teak.ScrollStyle` = `cmd.ScrollStyle`
+  - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, id`
+> Placement and look of a `push_overlay` (second z-layer).
+- `teak.OverlayStyle`: `pub const OverlayStyle = cmd.OverlayStyle`
+> Geometry of a `push_virtual_list` (only visible rows are emitted).
+- `teak.VirtualListStyle` = `cmd.VirtualListStyle`
+  - fields: `direction, total_count, item_extent, visible_start, visible_end, padding, gap, total_extent, start_offset, align_cross, id`
+> Intrinsic size and flex of an `image` leaf.
+- `teak.ImageStyle` = `cmd.ImageStyle`
+  - fields: `width, height, flex, tint`
+> An image leaf referencing an uploaded texture.
+- `teak.ImageCmd` = `cmd.ImageCmd`
+  - fields: `handle, style`
+> A styled byte range inside a `RichTextCmd`.
+- `teak.RichTextSpan` = `cmd.RichTextSpan`
+  - fields: `start, end, color, font, bold, italic`
+> Multi-style text: shared content plus spans.
+- `teak.RichTextCmd` = `cmd.RichTextCmd`
+  - fields: `content, spans, default_color, default_font`
+> One run of a `mixedText` line (own font, color, weight).
+- `teak.MixedPart` = `cmd.MixedPart`
+  - fields: `text, font, color, bold, italic`
+> Options for `pushFormRow`: label, units, validation message.
+- `teak.FormRowOpts` = `cmd.FormRowOpts`
+  - fields: `label, units, validation, gap, validation_gap`
+> The four container kinds that `validateBalance` pairs up.
+- `teak.BalanceKind` = `cmd.BalanceKind`
+  - fields: `group, scroll, overlay, virtual_list`
+  > Name of the opening cmd, e.g. `"push_group"`.
+  - `pub fn pushName(self: BalanceKind) []const u8`
+  > Name of the closing cmd, e.g. `"pop_group"`.
+  - `pub fn popName(self: BalanceKind) []const u8`
+> First push/pop imbalance found by `validateBalance`.
+- `teak.BalanceError` = `cmd.BalanceError`
+  - fields: `tag, open_kind, open_index, close_kind, close_index`
+  - `enum Tag`
+> Return the first push/pop imbalance in a cmd buffer, or null.
+- `teak.validateBalance`: `pub const validateBalance = cmd.validateBalance`
+> Format a `BalanceError` as one actionable line.
+- `teak.formatBalanceError`: `pub const formatBalanceError = cmd.formatBalanceError`
+> Maximum container nesting depth accepted by the framework.
+- `teak.MAX_BALANCE_DEPTH`: `pub const MAX_BALANCE_DEPTH = cmd.MAX_BALANCE_DEPTH`
+> A clickable button leaf.
+- `teak.ButtonCmd`: `pub const ButtonCmd = cmd.ButtonCmd`
+> Colors, size and alignment of a button.
+- `teak.ButtonStyle` = `cmd.ButtonStyle`
+  - fields: `bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg, hover_fg, press_fg, border, border_width, press_offset_y, label_align, h_padding, min_width, height, radius, gradient, soft_shadow, flex, ellipsis`
+> Per-corner radii for SDF surfaces.
+- `teak.Radii`: `pub const Radii = cmd.Radii`
+> Soft box shadow.
+- `teak.Shadow`: `pub const Shadow = cmd.Shadow`
+> Two-stop gradient.
+- `teak.Gradient`: `pub const Gradient = cmd.Gradient`
+> A single-style text leaf.
+- `teak.TextCmd` = `cmd.TextCmd`
+  - fields: `content, font, color, wrap, max_lines, text_align`
+> A single-line text input leaf (cursor, selection, focus Msg).
+- `teak.TextInputCmd`: `pub const TextInputCmd = cmd.TextInputCmd`
+> Colors and size of a text input.
+- `teak.TextInputStyle` = `cmd.TextInputStyle`
+  - fields: `bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg, disabled_border, selection_bg, variant, border_width, flex, min_width, height, radius`
+> A checkbox leaf; the app owns the checked state.
+- `teak.CheckboxCmd`: `pub const CheckboxCmd = cmd.CheckboxCmd`
+> Colors and size of a checkbox.
+- `teak.CheckboxStyle` = `cmd.CheckboxStyle`
+  - fields: `box_bg, box_border, check, fg, size, label_gap`
+> A radio leaf; the app owns the selection.
+- `teak.RadioCmd`: `pub const RadioCmd = cmd.RadioCmd`
+> Colors and size of a radio button.
+- `teak.RadioStyle` = `cmd.RadioStyle`
+  - fields: `box_bg, box_border, dot, fg, size, label_gap`
+> A slider leaf; the app owns the value.
+- `teak.SliderCmd`: `pub const SliderCmd = cmd.SliderCmd`
+> Colors and size of a slider.
+- `teak.SliderStyle` = `cmd.SliderStyle`
+  - fields: `track_bg, track_fill, thumb, track_height, thumb_size, flex, min_width`
+> Color and thickness of a divider.
+- `teak.DividerStyle` = `cmd.DividerStyle`
+  - fields: `thickness, color`
+> A canvas leaf holding pure-data draw primitives.
+- `teak.CanvasCmd`: `pub const CanvasCmd = cmd.CanvasCmd`
+> Intrinsic size, background and flex of a canvas.
+- `teak.CanvasStyle` = `cmd.CanvasStyle`
+  - fields: `width, height, flex, bg`
+> One draw op inside a canvas (polyline, rect, lines, triangles, ...).
+- `teak.CanvasPrimitive` = `cmd.CanvasPrimitive`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines`
+  - `struct Polyline`
+  - `struct FilledRect`
+  - `struct HLine`
+  - `struct VLine`
+  - `struct Marker`
+  > One vertex of a `Triangles` list: canvas-local position + RGBA.
+  - `struct TriVertex`
+  > A plain triangle list (three consecutive vertices = one triangle,
+  > either winding) with a color per vertex, interpolated across the
+  > triangle. Per-vertex alpha is what lets an app feather 1 px edges
+  > for antialiasing without MSAA. The render pass clips the list to the
+  > canvas rect and the active scroll clip (CPU Sutherland–Hodgman, with
+  > a straight-copy fast path when everything is inside); triangles with
+  > a non-finite vertex are dropped, a trailing partial triangle ignored.
+  > `key` is a cheap revision of the content: the run loop's frame diff
+  > treats two frames with the same non-zero `key` and length as
+  > identical without comparing the vertices. Bump it whenever `verts`
+  > changes; leave it 0 to have the diff compare the vertex bytes.
+  - `struct Triangles`
+  > `segs[i] = {x0, y0, x1, y1}`, each drawn as a `thickness`-wide quad
+  > (no joins), clipped like polyline segments. For hatching and other
+  > large sets of unconnected strokes. `key`: as for `Triangles`.
+  - `struct Lines`
+  > Content equality for the frame diff (arena slices have fresh
+  > addresses every frame, so compare what they point at).
+  - `pub fn eql(a: CanvasPrimitive, b: CanvasPrimitive) bool`
+> A point in canvas-local logical pixels.
+- `teak.CanvasPoint` = `cmd.CanvasPoint`
+  - fields: `x, y`
+> Main axis of a container: horizontal or vertical.
+- `teak.Direction` = `cmd.Direction`
+  - fields: `vertical, horizontal`
+> Cross-axis placement of a container's children.
+- `teak.Align` = `cmd.Align`
+  - fields: `start, center, end, stretch`
+> Horizontal placement of text inside its box.
+- `teak.TextAlign` = `cmd.TextAlign`
+  - fields: `start, center, end`
+> Line-breaking mode of a `text` Cmd (`none`, `word`, `char`, `ellipsis`).
+- `teak.Wrap`: `pub const Wrap = cmd.Wrap`
+> Options for `CmdBuffer.paragraphStyled` / `richParagraph`.
+- `teak.ParagraphOpts` = `cmd.ParagraphOpts`
+  - fields: `wrap, max_lines, text_align`
+> Visual variant of a text input.
+- `teak.InputVariant` = `cmd.InputVariant`
+  - fields: `boxed, underline`
+> Main-axis distribution of leftover space.
+- `teak.Justify` = `cmd.Justify`
+  - fields: `start, center, end, space_between`
+> Mouse buttons currently held.
+- `teak.Buttons` = `pointer.Buttons`
+  - fields: `left, middle, right, _pad`
+  - `pub fn any(self: Buttons) bool`
+> Keyboard modifier state at the time of an event.
+- `teak.Modifiers` = `pointer.Modifiers`
+  - fields: `shift, ctrl, alt, meta, _pad`
+> A mouse button.
+- `teak.Button` = `pointer.Button`
+  - fields: `none, left, middle, right`
+> One pointer event on an interactive canvas or scene.
+- `teak.CanvasEvent` = `pointer.CanvasEvent`
+  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h`
+> What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
+- `teak.PointerEvent`: `pub const PointerEvent = pointer.PointerEvent`
+> A window-space rectangle (`PointerEvent.box`).
+- `teak.Box` = `pointer.Box`
+  - fields: `x, y, w, h`
+> Kind of a `CanvasEvent` (press, move, release, wheel, ...).
+- `teak.CanvasEventKind` = `pointer.CanvasEventKind`
+  - fields: `down, move, up, wheel, leave, layout`
+> Opaque backend mesh handle.
+- `teak.MeshHandle`: `pub const MeshHandle = scene.MeshHandle`
+> The "no mesh" handle; a scene with it draws only the clear colour.
+- `teak.MESH_HANDLE_NONE`: `pub const MESH_HANDLE_NONE = scene.MESH_HANDLE_NONE`
+> Vertex of a lit mesh triangle.
+- `teak.MeshVertex` = `scene.MeshVertex`
+  - fields: `pos, normal, color`
+> Vertex of an instanced edge line.
+- `teak.LineVertex` = `scene.LineVertex`
+  - fields: `pos, color`
+> Mesh geometry for `Gpu.uploadMesh`.
+- `teak.MeshData` = `scene.MeshData`
+  - fields: `vertices, indices, lines`
+  - `pub fn triangleCount(self: MeshData) usize`
+  - `pub fn segmentCount(self: MeshData) usize`
+  > Check the invariants the GPU upload relies on.
+  - `pub fn validate(self: MeshData) error{ IndexOutOfRange, PartialTriangle }!void`
+> View and projection parameters of a `scene3d`.
+- `teak.Camera` = `scene.Camera`
+  - fields: `view_proj, eye, light_dir`
+> One 3D scene to render this frame.
+- `teak.SceneDraw` = `scene.SceneDraw`
+  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px`
+> A declared GPU resource (image or mesh) keyed by an app-chosen key.
+- `teak.Resource` = `resources.Resource`
+  - fields: `mesh, image`
+  - `pub fn kind(self: Resource) Kind`
+  - `pub fn key(self: Resource) u32`
+  - `pub fn rev(self: Resource) u32`
+> A declared mesh resource.
+- `teak.MeshResource` = `resources.MeshResource`
+  - fields: `key, rev, data`
+> A declared image resource.
+- `teak.ImageResource` = `resources.ImageResource`
+  - fields: `key, rev, width, height, rgba`
+> Intrinsic size and flex of a `scene3d` leaf.
+- `teak.SceneStyle` = `cmd.SceneStyle`
+  - fields: `width, height, flex`
+> A 3D scene leaf rendered offscreen by the Gpu.
+- `teak.SceneCmd`: `pub const SceneCmd = cmd.SceneCmd`
+> Data describing an I/O request the Host performs.
+- `teak.Effect` = `effects.Effect`
+  - fields: `http, download, open_file, write_clipboard, storage_set, storage_get, clock, query_param`
+  > The app-chosen request id.
+  - `pub fn id(self: Effect) u32`
+  > Fire-and-forget effects (`storage_set`, `write_clipboard`) produce no
+  > result; every other effect is answered exactly once.
+  - `pub fn wantsResult(self: Effect) bool`
+> The outcome of an effect, delivered back as a Msg.
+- `teak.EffectResult` = `effects.EffectResult`
+  - fields: `http, file_opened, file_cancelled, downloaded, storage_value, query_value, clock, dropped, pasted_text`
+> An HTTP request effect.
+- `teak.HttpRequest` = `effects.HttpRequest`
+  - fields: `id, method, url, headers, body, timeout_ms`
+> The response (or failure) of an HTTP effect.
+- `teak.HttpResult` = `effects.HttpResult`
+  - fields: `id, status, body, err`
+> HTTP method of an `HttpRequest`.
+- `teak.HttpMethod` = `effects.HttpMethod`
+  - fields: `get, post, put, delete`
+> A name/value HTTP header.
+- `teak.Header` = `effects.Header`
+  - fields: `name, value`
+> Something the user pasted or dropped onto the window.
+- `teak.Drop` = `effects.Drop`
+  - fields: `kind, name, mime, bytes, width, height, thumb_rgba, thumb_w, thumb_h`
+> What kind of payload a `Drop` carries.
+- `teak.DropKind` = `effects.DropKind`
+  - fields: `file, image, text`
+> What `Host.submit` did with an effect.
+- `teak.EffectSubmit` = `effects.EffectSubmit`
+  - fields: `accepted, busy, unsupported`
+> Fixed-column monospace table helpers.
+- `teak.Table` = `table.Table`
+  - fields: `columns, gutter, ellipsis`
+  > Characters in one full row (cells plus gutters).
+  - `pub fn totalChars(self: Table) usize`
+  > Emit the header row: each column's `title` in `style`.
+  - `pub fn header(self: Table, cb: anytype, style: RowStyle) void`
+  > Emit one body row. `cells[i]` goes in column `i`; missing cells are
+  > blank, extra cells are ignored.
+  - `pub fn row(self: Table, cb: anytype, cells: []const []const u8, style: RowStyle) void`
+> One column of a `Table`.
+- `teak.TableColumn` = `table.Column`
+  - fields: `title, chars, cell_align`
+> How one emitted table row looks.
+- `teak.TableRowStyle` = `table.RowStyle`
+  - fields: `font, color, bg, rule, pad_x, pad_y, height`
+> Alignment of a cell within its column.
+- `teak.CellAlign` = `table.CellAlign`
+  - fields: `left, right, center`
+> Fit text into a fixed number of characters (pad or ellipsize).
+- `teak.fitCell`: `pub const fitCell = table.fitCell`
+> Size, bounds and colors for `lineChartPrimitives`.
+- `teak.LineChartOpts` = `chart.LineChartOpts`
+  - fields: `width, height, min, max, padding, line_color, line_thickness, grid_color, grid_lines`
+> Build the canvas primitives for a line chart of a data series.
+- `teak.lineChartPrimitives`: `pub const lineChartPrimitives = chart.lineChartPrimitives`
+> An axis-aligned rectangle in logical pixels.
+- `teak.Rect` = `layout.Rect`
+  - fields: `x, y, w, h, fixed_main, flex_total, child_count, end`
+> Runs the measure and position passes over a cmd buffer.
+- `teak.LayoutEngine` = `layout.LayoutEngine`
+  > What `doLayoutStats` did, for tests that pin the pass structure.
+  - `struct Stats`
+  > Run the layout passes: measure, position -- and, only when the frame
+  > contains wrapped text or shrinkable containers, resolve widths and
+  > re-measure heights in between. The first push_group (the root) is
+  > resized to the window before widths resolve, so flex and wrapping
+  > resolve against the real window size.
+  - `pub fn doLayout( rects: []Rect, cmds: anytype, window_w: f32, window_h: f32, measurer: TextMeasurer, ) void`
+  > `doLayout`, reporting which passes ran.
+  - `pub fn doLayoutStats( rects: []Rect, cmds: anytype, window_w: f32, window_h: f32, measurer: TextMeasurer, ) Stats`
+  > Pass 1 — measure. Bottom-up via an explicit stack. Each command
+  > writes its intrinsic size to rects[i]; container entries also
+  > record fixed_main, flex_total, child_count for the position pass.
+  - `pub fn measurePass(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void`
+  > Pass 2: settle the widths of every container's direct children.
+  - `pub fn resolveWidths(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void`
+  > Pass 3: re-measure heights bottom-up with the resolved widths. Widths
+  > are final (pass 2); containers recompute their height and their
+  > `fixed_main` (so the position pass sees the real child sizes).
+  - `pub fn remeasureHeights(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void`
+  > Pass 4 — position (pass 2 when the frame has no wrapped nodes). Top-down, forward scan. A container is sized
+  > (flex growth, stretch) while it is placed in its parent, so by the
+  > time its own children are placed its final rect is known; each child
+  > goes at the running cursor.
+  - `pub fn positionPass(rects: []Rect, cmds: anytype) void`
+> Viewport and content size of a scroll region.
+- `teak.ScrollExtent` = `scroll_extent.Extent`
+  - fields: `viewport_w, viewport_h, content_w, content_h`
+> Measure a scroll region's viewport and content from the layout rects.
+- `teak.scrollExtent`: `pub const scrollExtent = scroll_extent.scrollExtent`
+> Return the topmost interactive leaf (and its Msg) under a point.
+- `teak.hitTest`: `pub const hitTest = hit_test.hitTest`
+> Like `hitTest` but returns only the cmd index.
+- `teak.hoverTest`: `pub const hoverTest = hit_test.hoverTest`
+> Convert a window-space point to canvas-local coordinates.
+- `teak.canvasLocalPoint`: `pub const canvasLocalPoint = hit_test.canvasLocalPoint`
+> Normalized [0, 1] slider value for a mouse x within the slider's rect.
+- `teak.sliderValueAt`: `pub const sliderValueAt = hit_test.sliderValueAt`
+> Describe an in-progress slider drag from the pressed cmd index.
+- `teak.sliderDrag`: `pub const sliderDrag = hit_test.sliderDrag`
+> Drag state of a slider currently held.
+- `teak.SliderDrag`: `pub const SliderDrag = hit_test.SliderDrag`
+> Next focusable cmd index after `current`, wrapping around.
+- `teak.nextFocusable`: `pub const nextFocusable = focus.nextFocusable`
+> Previous focusable cmd index before `current`, wrapping around.
+- `teak.prevFocusable`: `pub const prevFocusable = focus.prevFocusable`
+> Cmd index of the interactive leaf carrying a given focus Msg.
+- `teak.indexOfFocusMsg`: `pub const indexOfFocusMsg = focus.indexOfFocusMsg`
+> The activation / focus Msg of the leaf at an index, if any.
+- `teak.focusMsgAt`: `pub const focusMsgAt = focus.focusMsgAt`
+> Host-neutral non-text keys and chords.
+- `teak.SpecialKey` = `keys.SpecialKey`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_tap`
+> One accessibility-tree node derived from a cmd.
+- `teak.A11yNode` = `a11y.A11yNode`
+  - fields: `role, cmd_index, bounds, label, focused, state, disabled`
+> Semantic role of an `A11yNode`.
+- `teak.A11yRole` = `a11y.Role`
+  - fields: `group, scroll, text, rich_text, button, text_input, text_area, checkbox, radio, slider, divider, image, canvas, overlay`
+> Build the flat accessibility tree for a frame.
+- `teak.buildA11yTree`: `pub const buildA11yTree = a11y.buildTree`
+> A declarative subscription (timer) producing a Msg.
+- `teak.Sub`: `pub const Sub = sub.Sub`
+> Fire the subscriptions due this frame via a dispatch callback.
+- `teak.runSubs`: `pub const runSubs = sub.runSubs`
+> Bundled palette, typography and per-widget styles for the theme-aware emitters.
+- `teak.Theme` = `theme.Theme`
+  - fields: `palette, typography, text_color, heading_color, muted_color, danger_color, panel_bg, tokens, button, button_primary, text_input, checkbox, radio, slider, divider, card, field`
+  > Build a Theme by deriving widget styles from a palette. Apps
+  > that want a custom brand palette call this and then optionally
+  > tweak individual style fields.
+  - `pub fn fromPalette(p: Palette) Theme`
+  > `fromPalette` with shape tokens: the derived button / input / card
+  > styles get the radii, borders and elevations from `t`.
+  - `pub fn fromPaletteTokens(p: Palette, t: Tokens) Theme`
+> Semantic color set of a theme.
+- `teak.Palette` = `theme.Palette`
+  - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border`
+> Radii, border width, spacing and shadow elevations of a theme.
+- `teak.ThemeTokens` = `theme.Tokens`
+  - fields: `radius_sm, radius_md, radius_lg, border_width, space, elevation`
+  - `enum Size`
+  - `pub fn radii(self: Tokens, size: Size) cmd.Radii`
+  - `pub fn shadowAt(self: Tokens, level: u2) ?cmd.Shadow`
+> Font set of a theme.
+- `teak.Typography` = `theme.Typography`
+  - fields: `body, heading, mono, small`
+> The default dark palette.
+- `teak.dark_palette`: `pub const dark_palette = theme.dark_palette`
+> The default light palette.
+- `teak.light_palette`: `pub const light_palette = theme.light_palette`
+> Text-input component with cursor, selection and editing `update`.
+- `teak.TextField`: `pub const TextField = text_field.TextField`
+> Multi-line text component driven by `textMsg` events.
+- `teak.TextArea`: `pub const TextArea = text_area.TextArea`
+> One pointer / motion / metrics event over a `text_area`.
+- `teak.TextEvent` = `text_event.TextEvent`
+  - fields: `id, kind, index, line, x, y, dx, dy, goal_x, keep_goal, mods, clicks, viewport_w, viewport_h, content_w, content_h, caret_x, caret_y, caret_h`
+> Kind of a `TextEvent`.
+- `teak.TextEventKind` = `text_event.TextEventKind`
+  - fields: `down, drag, up, double_click, triple_click, wheel, move, metrics, leave`
+> Text field specialised for numbers (parse, validate, value).
+- `teak.NumericField`: `pub const NumericField = numeric_field.NumericField`
+> Comptime configuration for `NumericField`.
+- `teak.NumericConfig` = `numeric_field.NumericConfig`
+  - fields: `capacity, min, max, precision, invalid_message`
+> Closed button plus an open overlay list of options.
+- `teak.Dropdown`: `pub const Dropdown = dropdown.Dropdown`
+> Anchor and sizing for the open dropdown list.
+- `teak.DropdownViewOpts` = `dropdown.DropdownViewOpts`
+  - fields: `list_x, list_y, list_width, list_max_height, max_visible`
+> Searchable select component (see `combobox`).
+- `teak.Combobox`: `pub const Combobox = combobox.Combobox`
+> Anchor and sizing options for the open combobox list.
+- `teak.ComboboxViewOpts` = `combobox.ViewOpts`
+  - fields: `list_x, list_y, list_width, max_visible, match, input_style`
+> Build the app Msg for a typed character into a named field.
+- `teak.textFieldChar`: `pub const textFieldChar = text_field.textFieldChar`
+> Build the app Msg for a `SpecialKey` into a named field.
+- `teak.textFieldSpecial`: `pub const textFieldSpecial = text_field.textFieldSpecial`
+> Build the app Msg for pasted text into a named field.
+- `teak.textFieldReplaceSelection`: `pub const textFieldReplaceSelection = text_field.textFieldReplaceSelection`
+> True if a key needs host-level clipboard access.
+- `teak.keyNeedsClipboard`: `pub const keyNeedsClipboard = text_field.keyNeedsClipboard`
+> The GPU vertex layout shared by every quad (position, color, uv).
+- `teak.Vertex` = `vertex.Vertex`
+  - fields: `x, y, r, g, b, a, u, v`
+> Append a solid or textured axis-aligned quad as two triangles.
+- `teak.emitQuad`: `pub const emitQuad = vertex.emitQuad`
+> Append a quad from four explicit corners as two triangles.
+- `teak.emitQuadCorners`: `pub const emitQuadCorners = vertex.emitQuadCorners`
+> Render cmds + rects into a vertex list (no text/image/scene output).
+- `teak.buildVertices`: `pub const buildVertices = render.buildVertices`
+> An image draw record produced by the render pass.
+- `teak.ImageDraw` = `render.ImageDraw`
+  - fields: `rect_x, rect_y, rect_w, rect_h, handle, tint, clip_x, clip_y, clip_w, clip_h`
+> Render cmds + rects + transient state into vertices and draw records.
+- `teak.buildFrame`: `pub const buildFrame = render.buildFrame`
+> Vertex/draw-list offsets separating the base layer from the overlay layer.
+- `teak.OverlaySplit` = `render.OverlaySplit`
+  - fields: `verts, text, images, scenes`
+> Run-loop resource bookkeeping for hand-written host loops (web): `sync`
+> the table with `App.resources(model)`, then `stageDraws` instead of
+> `uploadImages`. `teak.run` does both for you.
+- `teak.ResourceTable`: `pub const ResourceTable = @import("resources.zig").Table`
+> Map app resource keys in a frame's draws to backend handles.
+- `teak.stageDraws`: `pub const stageDraws = @import("resources.zig").stageDraws`
+> Hover / press / focus state that short-circuits input to render.
+- `teak.TransientState` = `transient.TransientState`
+  - fields: `hover_index, press_index, focus_index, frame_counter, blink_on, mouse_x, mouse_y, ime_active, ime_text, ime_cursor`
+> Comptime-compose components into one Model / Msg / update / view.
+- `teak.Components`: `pub const Components = component.Components`
+> Compile-time check that a type satisfies the component contract.
+- `teak.validateComponent`: `pub const validateComponent = component.validateComponent`
+> A comptime-generated dynamic list of homogeneous components.
+- `teak.ComponentList`: `pub const ComponentList = component_list.ComponentList`
+> Options for `appendDebugOverlay`.
+- `teak.DebugOverlayOpts` = `debug_overlay.DebugOverlayOpts`
+  - fields: `x, y, padding, gap, backdrop, fg, font, skip_pops, skip_pushes, max_lines`
+> Append an overlay listing every cmd and its rect.
+- `teak.appendDebugOverlay`: `pub const appendDebugOverlay = debug_overlay.appendDebugOverlay`
+> Options for snapshot serialization.
+- `teak.SnapshotOptions` = `snapshot.SnapshotOptions`
+  - fields: `transient, header`
+> Optional header line (window size, frame, last Msg) for a snapshot.
+- `teak.SnapshotHeader` = `snapshot.Header`
+  - fields: `window_w, window_h, frame, last_msg`
+> Serialize a frame's cmds + rects to a writer.
+- `teak.writeSnapshot`: `pub const writeSnapshot = snapshot.write`
+> Serialize a frame to an allocated string.
+- `teak.snapshotAlloc`: `pub const snapshotAlloc = snapshot.snapshotAlloc`
+> Golden-test helper: compare a frame's snapshot with expected text.
+- `teak.expectSnapshot`: `pub const expectSnapshot = snapshot.expectSnapshot`
+> Per-frame input snapshot returned by `Host.pollInputs`.
+- `teak.InputState` = `host.InputState`
+  - fields: `mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, resized, width, height`
+> Event accumulator turning native events into an `InputState`.
+- `teak.InputQueue` = `input_queue.InputQueue`
+  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, alt_clean`
+  > Drop last frame's text and keys. Call once at the top of a poll,
+  > before pumping events: the slices handed out by `finish` alias the
+  > queue's buffers and stay valid until this runs.
+  - `pub fn beginFrame(self: *InputQueue) void`
+  - `pub fn pointerMoved(self: *InputQueue, x: f32, y: f32) void`
+  - `pub fn buttonDown(self: *InputQueue, b: Button) void`
+  - `pub fn buttonUp(self: *InputQueue, b: Button) void`
+  - `pub fn wheel(self: *InputQueue, dx: f32, dy: f32) void`
+  > Alt went down. A following `altUp` with nothing in between queues `alt_tap`.
+  - `pub fn altDown(self: *InputQueue) void`
+  > Alt went up: queue `alt_tap` when no other input arrived since `altDown`.
+  - `pub fn altUp(self: *InputQueue) void`
+  - `pub fn pushKey(self: *InputQueue, k: SpecialKey) void`
+  > Resolve a navigation/chord key under the current modifiers and queue it.
+  - `pub fn pushNav(self: *InputQueue, k: NavKey) void`
+  > Queue one typed code point as UTF-8. Control codes and invalid
+  > scalars are dropped (special keys own those); a code point that does
+  > not fit is dropped whole rather than split.
+  - `pub fn pushCodepoint(self: *InputQueue, cp: u21) void`
+  > Queue already-encoded UTF-8 text, one code point at a time (so a
+  > full buffer never splits a character). Malformed input is skipped.
+  - `pub fn pushText(self: *InputQueue, utf8: []const u8) void`
+  > Queue one UTF-16 code unit (Win32 `WM_CHAR`), pairing surrogates.
+  - `pub fn pushUtf16Unit(self: *InputQueue, unit: u16) void`
+  > Build this frame's `InputState` and clear the per-frame edges and
+  > wheel accumulators. Text/key slices alias the queue; see `beginFrame`.
+  - `pub fn finish(self: *InputQueue, resized: bool, width: u32, height: u32) host.InputState`
+> Navigation keys a Host may deliver.
+- `teak.NavKey` = `input_queue.NavKey`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f10, a, c, x, v, y, z`
+> The one Shift/Ctrl policy: map a key plus modifiers to a `SpecialKey`.
+- `teak.resolveKey`: `pub const resolveKey = input_queue.resolveKey`
+> Host-owned clipboard surface.
+- `teak.Clipboard` = `host.Clipboard`
+  - fields: `ctx, read_fn, write_fn`
+  - `pub fn read(self: Clipboard) []const u8`
+  - `pub fn write(self: Clipboard, t: []const u8) void`
+> IME composition state.
+- `teak.ImeState` = `host.ImeState`
+  - fields: `active, text, cursor`
+> Result of a file dialog.
+- `teak.FileDialogResult`: `pub const FileDialogResult = host.FileDialogResult`
+> A file-type filter for a file dialog.
+- `teak.FileDialogFilter` = `host.FileDialogFilter`
+  - fields: `name, pattern`
+> Result of polling an async file dialog.
+- `teak.FileDialogPoll` = `host.FileDialogPoll`
+  - fields: `pending, ok, cancelled`
+> Compile-time check that a type satisfies the `Host` contract.
+- `teak.validateHost`: `pub const validateHost = host.validateHost`
+> Background clear color passed to the Gpu.
+- `teak.ClearColor`: `pub const ClearColor = gpu.ClearColor`
+> Compile-time check that a type satisfies the `Gpu` contract.
+- `teak.validateGpu`: `pub const validateGpu = gpu.validateGpu`
+> Run an App against a Host and Gpu until the window closes.
+- `teak.run`: `pub const run = runtime.run`
+> The frame-stepping runtime behind `run` (one `frame()` per iteration).
+- `teak.Runtime`: `pub const Runtime = runtime.Runtime`
+> Options for `run` (title, clear color, snapshot sink, ...).
+- `teak.RunOptions` = `runtime.RunOptions`
+  - fields: `clear_color, blink_half_ms, snapshot_path, app_name, idle_skip`
+> A second top-level window the app wants open this frame.
+- `teak.SecondaryWindowSpec` = `runtime.SecondaryWindowSpec`
+  - fields: `title, width, height`
+> Font family selector (monospace or sans).
+- `teak.FontFamily` = `text.FontFamily`
+  - fields: `sans, serif, mono`
+> A font request: family, size and weight.
+- `teak.FontSpec` = `text.FontSpec`
+  - fields: `size_px, family, weight, letter_spacing, snap_advance`
+  > The resolved `snap_advance` (see the field).
+  - `pub fn snapsAdvance(self: FontSpec) bool`
+> Regular or bold.
+- `teak.FontWeight` = `text.FontWeight`
+  - fields: `regular, medium, bold`
+> The default font request.
+- `teak.DEFAULT_FONT`: `pub const DEFAULT_FONT = text.DEFAULT_FONT`
+> Measured width and height of a text run.
+- `teak.TextMetrics` = `text.TextMetrics`
+  - fields: `width, height, ascent, descent`
+> The Host-provided text measurement interface.
+- `teak.TextMeasurer` = `text.TextMeasurer`
+  - fields: `ctx, measure_fn`
+  - `pub fn measure(self: TextMeasurer, text: []const u8, font: FontSpec) TextMetrics`
+  > Width of `text[0..byte_prefix]`. Used for text-input cursor
+  > placement. `byte_prefix == 0` short-circuits to zero width to
+  > avoid measuring an empty slice.
+  - `pub fn prefixWidth(self: TextMeasurer, text: []const u8, font: FontSpec, byte_prefix: usize) f32`
+> One positioned glyph produced by a `Shaper`.
+- `teak.ShapedGlyph` = `text.ShapedGlyph`
+  - fields: `glyph, face, cluster, x, advance`
+> A shaped run: glyphs plus total advance.
+- `teak.ShapeResult` = `text.ShapeResult`
+  - fields: `count, width, consumed`
+> Pluggable shaping interface (runs -> positioned glyph ids); `SimpleShaper` lives in teak-text.
+- `teak.Shaper` = `text.Shaper`
+  - fields: `ctx, shape_fn`
+  - `pub fn shape(self: Shaper, text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult`
+> Opaque GPU texture token.
+- `teak.TextureHandle`: `pub const TextureHandle = text.TextureHandle`
+> The "no texture" handle.
+- `teak.TEXTURE_HANDLE_NONE`: `pub const TEXTURE_HANDLE_NONE = text.TEXTURE_HANDLE_NONE`
+> Render-pass output for one run of text.
+- `teak.TextDraw` = `text.TextDraw`
+  - fields: `rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x, clip_y, clip_w, clip_h`
+> Stateless fixed-advance measurer for CLI canaries and tests.
+- `teak.monoMeasurer`: `pub const monoMeasurer = text.monoMeasurer`
+
+## Modules
+
+### `teak.cmd` (`src/core/cmd.zig`)
+
+- `pub const Radii = surface.Radii`
+- `pub const Shadow = surface.Shadow`
+- `pub const Gradient = surface.Gradient`
+- `pub const FontSpec = text.FontSpec`
+> How a `text` Cmd breaks into lines: `none | word | char | ellipsis`.
+- `pub const Wrap = text_wrap.Wrap`
+- `enum Direction`
+  - fields: `vertical, horizontal`
+> Cross-axis placement of a container's children (the axis perpendicular
+> to `direction`).
+- `enum Align`
+  - fields: `start, center, end, stretch`
+> Main-axis distribution of leftover space. Only applies when no child
+> has a flex weight (flex children absorb the leftover first).
+- `enum Justify`
+  - fields: `start, center, end, space_between`
+> Horizontal placement of a label inside its box (button labels).
+- `enum TextAlign`
+  - fields: `start, center, end`
+> Options for `CmdBuffer.paragraphStyled`.
+- `struct ParagraphOpts`
+  - fields: `wrap, max_lines, text_align`
+> Look of a `text_input`.
+- `enum InputVariant`
+  - fields: `boxed, underline`
+- `struct GroupStyle`
+  - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, bg, border, border_width, radius, gradient, soft_shadow`
+  - `pub fn padX(self: GroupStyle) f32`
+  - `pub fn padY(self: GroupStyle) f32`
+- `struct TextCmd`
+  - fields: `content, font, color, wrap, max_lines, text_align`
+- `struct ButtonStyle`
+  - fields: `bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg, hover_fg, press_fg, border, border_width, press_offset_y, label_align, h_padding, min_width, height, radius, gradient, soft_shadow, flex, ellipsis`
+- `struct TextInputStyle`
+  - fields: `bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg, disabled_border, selection_bg, variant, border_width, flex, min_width, height, radius`
+- `struct CheckboxStyle`
+  - fields: `box_bg, box_border, check, fg, size, label_gap`
+- `struct RadioStyle`
+  - fields: `box_bg, box_border, dot, fg, size, label_gap`
+- `struct SliderStyle`
+  - fields: `track_bg, track_fill, thumb, track_height, thumb_size, flex, min_width`
+- `struct DividerStyle`
+  - fields: `thickness, color`
+- `struct ScrollStyle`
+  - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, id`
+- `pub fn OverlayStyle(comptime Msg: type) type`
+- `struct ImageStyle`
+  - fields: `width, height, flex, tint`
+- `struct ImageCmd`
+  - fields: `handle, style`
+- `struct VirtualListStyle`
+  - fields: `direction, total_count, item_extent, visible_start, visible_end, padding, gap, total_extent, start_offset, align_cross, id`
+- `struct RichTextSpan`
+  - fields: `start, end, color, font, bold, italic`
+- `struct RichTextCmd`
+  - fields: `content, spans, default_color, default_font`
+- `struct MixedPart`
+  - fields: `text, font, color, bold, italic`
+> A point in canvas-local logical pixels.
+- `struct CanvasPoint`
+  - fields: `x, y`
+> One 2D draw op inside a canvas. All coordinates are canvas-local.
+- `union CanvasPrimitive`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines`
+  - `struct Polyline`
+  - `struct FilledRect`
+  - `struct HLine`
+  - `struct VLine`
+  - `struct Marker`
+  > One vertex of a `Triangles` list: canvas-local position + RGBA.
+  - `struct TriVertex`
+  > A plain triangle list (three consecutive vertices = one triangle,
+  > either winding) with a color per vertex, interpolated across the
+  > triangle. Per-vertex alpha is what lets an app feather 1 px edges
+  > for antialiasing without MSAA. The render pass clips the list to the
+  > canvas rect and the active scroll clip (CPU Sutherland–Hodgman, with
+  > a straight-copy fast path when everything is inside); triangles with
+  > a non-finite vertex are dropped, a trailing partial triangle ignored.
+  > `key` is a cheap revision of the content: the run loop's frame diff
+  > treats two frames with the same non-zero `key` and length as
+  > identical without comparing the vertices. Bump it whenever `verts`
+  > changes; leave it 0 to have the diff compare the vertex bytes.
+  - `struct Triangles`
+  > `segs[i] = {x0, y0, x1, y1}`, each drawn as a `thickness`-wide quad
+  > (no joins), clipped like polyline segments. For hatching and other
+  > large sets of unconnected strokes. `key`: as for `Triangles`.
+  - `struct Lines`
+  > Content equality for the frame diff (arena slices have fresh
+  > addresses every frame, so compare what they point at).
+  - `pub fn eql(a: CanvasPrimitive, b: CanvasPrimitive) bool`
+- `struct CanvasStyle`
+  - fields: `width, height, flex, bg`
+- `pub fn CanvasCmd(comptime Msg: type) type`
+- `struct SceneStyle`
+  - fields: `width, height, flex`
+- `pub fn SceneCmd(comptime Msg: type) type`
+- `pub fn ButtonCmd(comptime Msg: type) type`
+- `pub fn TextInputCmd(comptime Msg: type) type`
+> Multi-line editable text (`text_area`). Layout sizes it like a canvas
+> (`width`/`min_width`, `height`, `flex`; it fills a stretching parent's
+> cross axis); render wraps `content` to the inner width, draws the
+> selection across lines, the caret, and the IME composition (from
+> `TransientState`) clipped to the box. Pointer input over it becomes
+> `TextEvent`s for the app's `textMsg` hook (see `core/text_event.zig`) -- the
+> framework never builds a Msg from a pointer, and nothing here is a callback.
+- `pub fn TextAreaCmd(comptime Msg: type) type`
+- `pub fn CheckboxCmd(comptime Msg: type) type`
+- `pub fn RadioCmd(comptime Msg: type) type`
+- `pub fn SliderCmd(comptime Msg: type) type`
+- `pub fn Cmd(comptime Msg: type) type`
+> The four container kinds that bracket a region of the flat buffer.
+> `pushFormRow` / `popFormRow` are sugar over `push_group` / `pop_group`
+> (they emit exactly those Cmds), so a form row shows up here as
+> `.group` — no separate kind, matching what the buffer actually
+> records.
+- `enum BalanceKind`
+  - fields: `group, scroll, overlay, virtual_list`
+  > Name of the opening cmd, e.g. `"push_group"`.
+  - `pub fn pushName(self: BalanceKind) []const u8`
+  > Name of the closing cmd, e.g. `"pop_group"`.
+  - `pub fn popName(self: BalanceKind) []const u8`
+> First balance fault found by `validateBalance`. A small POD struct so
+> callers can format a precise message (see `formatBalanceError`) or
+> branch on `tag` without any allocation.
+- `struct BalanceError`
+  - fields: `tag, open_kind, open_index, close_kind, close_index`
+  - `enum Tag`
+> Container nesting cap for the whole framework: the layout passes' stacks
+> and the hit-test / render / a11y clip stacks are all sized to it. A
+> buffer nesting deeper is rejected by `validateBalance` as
+> `depth_overflow` (the run loop checks every frame, in every optimize
+> mode), and the stacks themselves `@panic` on overflow rather than write
+> out of bounds.
+- `pub const MAX_BALANCE_DEPTH = 64`
+> Walk `cmds` once (O(n), zero allocation) and return the first
+> push/pop imbalance, or `null` if every container is balanced. `cmds`
+> is any slice of `Cmd(Msg)` — only Msg-independent tags are read, so
+> it takes `anytype` the same way the layout passes do.
+> Detects: unclosed push, stray pop, crossed pair (`mismatched_pop`),
+> and nesting past `MAX_BALANCE_DEPTH` (`depth_overflow`). Leaves
+> (text, button, …) are ignored.
+- `pub fn validateBalance(cmds: anytype) ?BalanceError`
+> Render a `BalanceError` as one human/LLM-actionable line into `buf`,
+> returning the written slice. Zero allocation — the caller owns the
+> buffer; 128 bytes is always enough. If `buf` is too small the result
+> is an empty slice rather than a partial line.
+- `pub fn formatBalanceError(err: BalanceError, buf: []u8) []const u8`
+- `struct FormRowOpts`
+  - fields: `label, units, validation, gap, validation_gap`
+- `pub fn CmdBuffer(comptime Msg: type) type`
+
+### `teak.component` (`src/core/component.zig`)
+
+- `pub fn validateComponent(comptime T: type) void`
+> Build an anonymous struct type with one field per payloadless variant
+> of `Comp.Msg`. Each field's type is `AppMsg`; when the composed view
+> runs, we populate each field with a pre-wrapped AppMsg value.
+> Public so `ComponentList` (and any future per-index msg generator)
+> can reuse the same shape — the msgs struct passed to a child view
+> is always `MsgsStructFor(Child, AppMsg)`, no matter who built it.
+- `pub fn MsgsStructFor(comptime Comp: type, comptime AppMsg: type) type`
+> Fill in a MsgsStruct with pre-wrapped AppMsg values. Runs once per
+> component per frame; the inline for unrolls to a handful of assignments.
+> Exposed publicly so apps can hand-call it when composing views outside
+> the generated `view` (e.g. to override a single field with an app-level
+> Msg while keeping the rest of the wiring automatic).
+- `pub fn buildMsgs( comptime Comp: type, comptime variant_name: []const u8, comptime AppMsg: type, ) MsgsStructFor(Comp, AppMsg)`
+- `pub fn Components(comptime components: anytype, comptime AppLevel: ?type) type`
+
+### `teak.transient` (`src/core/transient.zig`)
+
+> Presentation-only state. Never consulted by update(); never affects routing.
+> Holds the pieces of visual state that would be pathological to funnel
+> through the TEA loop (e.g. per-pixel hover updates at 60+ Hz).
+- `struct TransientState`
+  - fields: `hover_index, press_index, focus_index, frame_counter, blink_on, mouse_x, mouse_y, ime_active, ime_text, ime_cursor`
+
+### `teak.text` (`src/core/text.zig`)
+
+Text measurement and rasterization types.
+
+- `enum FontFamily`
+  - fields: `sans, serif, mono`
+- `enum FontWeight`
+  - fields: `regular, medium, bold`
+> A font request. Backends map it to a face: `weight` and `letter_spacing`
+> are interpreted by the backend and ignored by one that cannot honor them
+> (web: CSS `font-weight` + canvas `letterSpacing`; native: face selection).
+> Both take part in the glyph-cache key, so changing them re-rasterizes.
+- `struct FontSpec`
+  - fields: `size_px, family, weight, letter_spacing, snap_advance`
+  > The resolved `snap_advance` (see the field).
+  - `pub fn snapsAdvance(self: FontSpec) bool`
+- `pub const DEFAULT_FONT: FontSpec = .{}`
+- `struct TextMetrics`
+  - fields: `width, height, ascent, descent`
+- `struct TextMeasurer`
+  - fields: `ctx, measure_fn`
+  - `pub fn measure(self: TextMeasurer, text: []const u8, font: FontSpec) TextMetrics`
+  > Width of `text[0..byte_prefix]`. Used for text-input cursor
+  > placement. `byte_prefix == 0` short-circuits to zero width to
+  > avoid measuring an empty slice.
+  - `pub fn prefixWidth(self: TextMeasurer, text: []const u8, font: FontSpec, byte_prefix: usize) f32`
+> One positioned glyph produced by a `Shaper`. Plain data, logical order.
+- `struct ShapedGlyph`
+  - fields: `glyph, face, cluster, x, advance`
+- `struct ShapeResult`
+  - fields: `count, width, consumed`
+> Interface value (like `TextMeasurer`) through which core reaches a shaper.
+> No allocation; data in, data out.
+- `struct Shaper`
+  - fields: `ctx, shape_fn`
+  - `pub fn shape(self: Shaper, text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult`
+> Opaque GPU texture token. Backends map this to their real resource
+> (wgpu-native `WGPUTexture`, zunk `zgpu.Texture`, etc.). Framework
+> code above the GPU layer never unpacks it.
+- `pub const TextureHandle = u32`
+- `pub const TEXTURE_HANDLE_NONE: TextureHandle = 0`
+> Render-pass output for one run of text. The GPU backend consumes
+> these in `uploadText` — rasterizes (cached) via `rasterizeText`,
+> emits 6 textured vertices per draw, records draw metadata for the
+> text pass. `clip` carries the scroll-clip rect at emit time so
+> offscreen text draws can be dropped before rasterization.
+- `struct TextDraw`
+  - fields: `rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x, clip_y, clip_w, clip_h`
+> Stateless 10-px-per-byte (plus `letter_spacing`), 20-px-line-height measurer. Used by CLI
+> canaries that run layout without a Host, and by tests that assert
+> on these exact pre-glyph-metrics numbers. Not a production
+> measurer — real platforms return glyph-accurate metrics via their
+> Host's `textMeasurer()`.
+- `pub fn monoMeasurer() TextMeasurer`
+
+### `teak.unicode` (`src/core/unicode.zig`)
+
+Unicode support for text entry and layout: lossy UTF-8 decoding, UAX #29
+extended grapheme clusters (Unicode 16, including GB9c Indic conjuncts and
+GB11 emoji ZWJ sequences), word classes for Ctrl+Arrow / double-click, and
+property lookups (line-break class, East Asian wide) used by `linebreak.zig`.
+
+- `pub const Gcb = t.Gcb`
+- `pub const Lb = t.Lb`
+> U+FFFD, what an invalid byte decodes to.
+- `pub const replacement: u21 = 0xFFFD`
+- `struct Decoded`
+  - fields: `cp, len`
+> Decode the unit at `bytes[i]` (`i < bytes.len`). Well-formed sequences decode
+> to their code point (overlongs, surrogates and values above U+10FFFF are
+> rejected); anything else is one byte of U+FFFD.
+- `pub fn utf8DecodeLossy(bytes: []const u8, i: usize) Decoded`
+> Start of the decode unit that ends at `i` (`0 < i <= bytes.len`), consistent
+> with forward `utf8DecodeLossy` segmentation.
+- `pub fn utf8PrevStart(bytes: []const u8, i: usize) usize`
+> UAX #29 Grapheme_Cluster_Break of `cp`.
+- `pub fn graphemeBreakClass(cp: u21) Gcb`
+> UAX #14 class of `cp`, reduced to the "lite" set (see `linebreak.zig`).
+- `pub fn lineBreakClass(cp: u21) Lb`
+> East_Asian_Width is W or F (occupies two cells; CJK break rules apply).
+- `pub fn isWide(cp: u21) bool`
+> Incremental UAX #29 boundary decider. Feed code points in order; `step`
+> answers whether there is a boundary *before* the fed code point.
+- `struct GraphemeState`
+  - fields: `prev, pict, ri_odd, conj, started`
+  - `pub fn step(self: *GraphemeState, cp: u21) bool`
+> End offset of the grapheme cluster that starts at `i` (`i < text.len`).
+> Always `> i`.
+- `pub fn nextGrapheme(text: []const u8, i: usize) usize`
+> Start offset of the grapheme cluster that contains byte `i - 1`
+> (`0 < i <= text.len`); equals the previous boundary when `i` is one.
+- `pub fn prevGrapheme(text: []const u8, i: usize) usize`
+> True when `i` is a grapheme boundary of `text` (0 and `text.len` always are).
+- `pub fn isGraphemeBoundary(text: []const u8, i: usize) bool`
+> Largest grapheme boundary <= `i` (clamped to `text.len`).
+- `pub fn snapBackward(text: []const u8, i: usize) usize`
+> Iterates grapheme clusters as byte slices.
+- `struct GraphemeIterator`
+  - fields: `text, pos`
+  - `pub fn next(self: *GraphemeIterator) ?[]const u8`
+> First code point of a (non-empty) cluster slice.
+- `pub fn firstCodepoint(cluster: []const u8) u21`
+> Number of grapheme clusters in `text`.
+- `pub fn graphemeCount(text: []const u8) usize`
+- `enum WordClass`
+  - fields: `space, word, punct, han`
+> Class used for word motion: whitespace / word (letters, digits, `_`, every
+> non-ASCII letter or symbol, emoji) / punctuation / Han (one ideograph per
+> word). Non-ASCII punctuation is approximated from the line-break classes.
+- `pub fn wordClass(cp: u21) WordClass`
+> Offset after the next word: skips whitespace, then one run of a single
+> class (a Han ideograph is a run of one). `text.len` at the end.
+- `pub fn nextWordBoundary(text: []const u8, i: usize) usize`
+> Offset of the start of the previous word (mirror of `nextWordBoundary`).
+- `pub fn prevWordBoundary(text: []const u8, i: usize) usize`
+- `struct Span`
+  - fields: `start, end`
+> The run of same-class clusters containing the grapheme at `i` (double-click
+> selection). `i >= text.len` selects the run before the end. Empty text gives
+> an empty span.
+- `pub fn wordRangeAt(text: []const u8, i: usize) Span`
+
+### `teak.linebreak` (`src/core/linebreak.zig`)
+
+UAX #14 "lite" line-break opportunities over grapheme clusters.
+
+- `enum Kind`
+  - fields: `soft, hard, end`
+- `struct Break`
+  - fields: `end, kind`
+> Walks the break opportunities of `text` starting at a line start `start`
+> (a grapheme boundary). Yields segments in order; the last has kind `.end`
+> (or `.hard` when the text ends in a terminator). Empty remainder yields null.
+- `struct Breaker`
+  - fields: `text, pos, started, finished, a, a_wide, a2, ln`
+  - `pub fn init(text: []const u8, start: usize) Breaker`
+  - `pub fn next(self: *Breaker) ?Break`
+> True for the line terminators `Breaker` treats as mandatory (U+000A, 000B,
+> 000C, 000D, 0085, 2028, 2029) and for the zero-width/space classes that hang
+> off the end of a line (spaces, ZWSP). Used to trim a segment for measuring.
+- `pub fn isTrailing(cp: u21) bool`
+> True when `cp` is a hard line terminator.
+- `pub fn isTerminator(cp: u21) bool`
+
+### `teak.text_wrap` (`src/core/text_wrap.zig`)
+
+Pure text wrapping, height-for-width measurement and caret/point mapping.
+
+> How a text run is broken into lines. (`TextCmd.wrap` uses this type.)
+- `enum Wrap`
+  - fields: `none, word, char, ellipsis`
+- `pub const ELLIPSIS = "\u{2026}"`
+- `struct Line`
+  - fields: `start, end, hang, next, width, hard_break, ellipsized`
+> Line height for `font` as the measurer reports it.
+- `pub fn lineHeight(font: FontSpec, m: TextMeasurer) f32`
+> Next line of `text[start..]` for a maximum width (`start` must be a line
+> start: 0 or a previous `Line.next`). O(line length) measurer calls.
+> `.ellipsis` behaves like `.none` here; truncation is applied by `LineIter`
+> (it needs to know whether this is the last visible line).
+- `pub fn nextLine(text: []const u8, start: usize, font: FontSpec, max_w: f32, mode: Wrap, m: TextMeasurer) Line`
+> Iterates the visible lines of a text: honours `max_lines` (0 = unlimited)
+> and ellipsizes the last visible line when text remains (or, for
+> `.ellipsis`, when the line is too wide). `.ellipsis` shows exactly one line.
+- `struct LineIter`
+  - fields: `text, font, max_w, mode, max_lines, m, pos, index, done`
+  - `pub fn init(text: []const u8, font: FontSpec, max_w: f32, mode: Wrap, max_lines: u32, m: TextMeasurer) LineIter`
+  - `pub fn next(self: *LineIter) ?Line`
+- `struct Measured`
+  - fields: `w, h, lines`
+> Height-for-width: the widest visible line, `lines * line_height`.
+> Non-increasing in `max_w` for `lines` (greedy wrapping is monotone).
+- `pub fn measureWrapped(text: []const u8, font: FontSpec, max_w: f32, mode: Wrap, max_lines: u32, m: TextMeasurer) Measured`
+> Width of the widest unbreakable segment (the narrowest width that does not
+> force a mid-token cut is this; layout uses it as the shrink floor).
+- `pub fn minContent(text: []const u8, font: FontSpec, m: TextMeasurer) f32`
+> Min-content width for a wrap mode: the narrowest width layout may shrink
+> the text to. `.word` = widest unbreakable segment, `.char` = widest
+> grapheme, `.ellipsis` = the ellipsis glyph, `.none` = never shrinks.
+- `pub fn minContentFor(text: []const u8, font: FontSpec, mode: Wrap, m: TextMeasurer) f32`
+> Unwrapped width of the longest hard line.
+- `pub fn maxContent(text: []const u8, font: FontSpec, m: TextMeasurer) f32`
+- `struct Caret`
+  - fields: `x, y, line`
+> Caret position (relative to the text origin) of byte offset `index`, which
+> should be a grapheme boundary; other values are clamped to the text. At a
+> soft wrap the caret sits at the start of the following line. Offsets past
+> the visible lines (`max_lines`) or past the content of an ellipsized line
+> clamp to the visible end.
+- `pub fn caretPos(text: []const u8, index: usize, font: FontSpec, max_w: f32, mode: Wrap, max_lines: u32, m: TextMeasurer) Caret`
+> Byte offset of the grapheme boundary nearest to the point `(x, y)` in the
+> same coordinates as `caretPos`; `y` picks the line (clamped), `x` the
+> boundary on it (ties go left). Inverse of `caretPos` at every boundary.
+- `pub fn indexAt(text: []const u8, x: f32, y: f32, font: FontSpec, max_w: f32, mode: Wrap, max_lines: u32, m: TextMeasurer) usize`
+> Visual motion keys resolved against the wrapped layout.
+- `enum NavKind`
+  - fields: `up, down, page_up, page_down, line_start, line_end`
+- `struct NavResult`
+  - fields: `index, goal_x, line`
+> Where the caret goes for a visual-motion key. `goal_x` is the Model's
+> sticky column (null = use the caret's own x). `page_lines` is the page
+> size for PageUp/PageDown. Up/Down past the first/last line go to the start/
+> end of the text; line_end stops before a soft wrap's hanging spaces.
+- `pub fn resolveNav(text: []const u8, cursor: usize, goal_x: ?f32, kind: NavKind, page_lines: u32, font: FontSpec, max_w: f32, mode: Wrap, m: TextMeasurer) NavResult`
+
+### `teak.editor` (`src/core/editor.zig`)
+
+Text-editing state: a fixed-capacity UTF-8 buffer with a cursor, an
+optional selection anchor, a sticky-column goal and an undo log. Pure data
+plus pure methods; the whole thing lives in the component Model (HARDLINE:
+all state in Model).
+
+> Bounded undo history. `byte_cap` bounds the stored bytes (removed + inserted
+> text of all records); `rec_cap` bounds the record count.
+- `pub fn UndoLog(comptime rec_cap: usize, comptime byte_cap: usize) type`
+> Editor with `cap` bytes of text and `undo_cap` bytes of undo history
+> (`0` disables undo). The record count is `undo_cap / 16` (at least 4).
+- `pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type`
+> Start of the hard line containing `i`.
+- `pub fn lineStart(t: []const u8, i: usize) usize`
+> End of the hard line containing `i` (before its terminator).
+- `pub fn lineEnd(t: []const u8, i: usize) usize`
+
+### `teak.text_event` (`src/core/text_event.zig`)
+
+Pointer / navigation / metrics events for `text_area` (text-engine 6.3-6.4).
+
+- `enum TextEventKind`
+  - fields: `down, drag, up, double_click, triple_click, wheel, move, metrics, leave`
+- `struct TextEvent`
+  - fields: `id, kind, index, line, x, y, dx, dy, goal_x, keep_goal, mods, clicks, viewport_w, viewport_h, content_w, content_h, caret_x, caret_y, caret_h`
+> Which visual-motion key a `move` resolves.
+- `enum NavKind`
+  - fields: `up, down, page_up, page_down, line_start, line_end`
+
+### `teak.text_area` (`src/core/text_area.zig`)
+
+`TextArea(cap)`: the canonical multi-line editor component -- an `Editor`
+plus scroll state, driven by the runtime's `TextEvent`s.
+
+- `pub const TextEvent = text_event.TextEvent`
+> Options for `viewWith`.
+- `struct ViewOpts`
+  - fields: `id, width, min_width, height, flex, wrap, padding, style, font, disabled`
+- `pub fn TextArea(comptime cap: usize) type`
+
+### `teak.sub` (`src/core/sub.zig`)
+
+Subscriptions — declarative timers / external-event listeners.
+
+> Longest frame step `animationMsg` is given; a stalled frame must not make
+> an animation jump to its end.
+- `pub const max_animation_dt_ms: u32 = 100`
+> True if any listed sub is `.animation_frame`.
+- `pub fn wantsAnimationFrame(comptime Msg: type, subs: []const Sub(Msg)) bool`
+- `pub fn Sub(comptime Msg: type) type`
+> Walk `subs` and call `dispatch(msg)` for each that should fire this
+> frame. `last_frame_ms` and `now_ms` come from the host's monotonic
+> clock; on the first frame, pass `last_frame_ms = now_ms` (no subs
+> fire on the very first tick — they need a window to compare).
+> `dispatch` is an `anytype` carrying a `call(msg)` method — a value (or
+> pointer to one) whose bound context travels *inside* it, not through
+> module-level statics. `runSubs` invokes `dispatch.call(msg)` for each
+> fired sub. It's NOT a Cmd-borne fn pointer (§3 forbids those) — this is
+> a runtime helper, not part of the Cmd protocol. Passing the context by
+> value keeps `runSubs` (and its caller `run`) free of retained mutable
+> state, so two concurrent `run` calls can't cross-wire their models.
+- `pub fn runSubs( comptime Msg: type, subs: []const Sub(Msg), last_frame_ms: u64, now_ms: u64, dispatch: anytype, ) void`
+> Milliseconds from `now_ms` until the next sub would fire, or null when no
+> sub is armed (every `.every` has interval 0 and every `.at` deadline has
+> passed). A Host that blocks while the app is idle uses it as the wait
+> timeout so timers still fire on time.
+- `pub fn nextDueMs(comptime Msg: type, subs: []const Sub(Msg), now_ms: u64) ?u64`
+
+### `teak.anim` (`src/core/anim.zig`)
+
+Model-driven animation: tweens, easing curves and interpolation.
+
+> Easing curves: map linear progress `t` in [0, 1] to eased progress.
+- `enum Ease`
+  - fields: `linear, in_quad, out_quad, in_out_quad, in_cubic, out_cubic, in_out_cubic, out_back`
+> Eased progress for linear `t` (clamped to [0, 1]); 0 -> 0 and 1 -> 1 for
+> every curve.
+- `pub fn ease(kind: Ease, t_in: f32) f32`
+> Linear interpolation of `a` -> `b` at `t` (not clamped, so eased overshoot
+> works). Works for floats, integers (rounded), arrays and vectors of
+> those (colors are `[4]f32`), and structs whose fields are all such types
+> (a `Rect`, a style). Bools and enums switch at `t >= 0.5`.
+- `pub fn lerp(comptime T: type, a: T, b: T, t: f32) T`
+> An interpolation from `from` to `to` over `duration_ms`, advanced by
+> `advance(dt_ms)` and read with `value()`. Plain data: keep it in the Model.
+- `pub fn Tween(comptime T: type) type`
+
+### `teak.theme` (`src/core/theme.zig`)
+
+Theme: bundled style + typography defaults consulted by un-styled
+convenience emitters.
+
+- `struct Palette`
+  - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border`
+- `struct Typography`
+  - fields: `body, heading, mono, small`
+> Shape and depth vocabulary next to the palette's colours: corner radii,
+> stroke width, a spacing scale and shadow elevations. The retro look is
+> the default (square corners, no soft shadows); `modern_tokens` is the
+> rounded, softly-lit one. Widget styles derived by `fromPaletteTokens`
+> read these, and apps can read them too (`theme.tokens.space[2]`) to keep
+> custom layouts on the same scale.
+- `struct Tokens`
+  - fields: `radius_sm, radius_md, radius_lg, border_width, space, elevation`
+  - `enum Size`
+  - `pub fn radii(self: Tokens, size: Size) cmd.Radii`
+  - `pub fn shadowAt(self: Tokens, level: u2) ?cmd.Shadow`
+> Rounded corners, thin strokes and soft shadows: the "modern app" look.
+- `pub const modern_tokens: Tokens = .{ .radius_sm = 5, .radius_md = 8, .radius_lg = 14, .border_width = 1, .space = .{ 4, 8, 12, 16, 24 }, .elevation = .{ null, .{ .dx = 0, .dy = 1, .blur = 3, .color = .{ 0.06, 0.09, 0.16,`
+> Everything the un-styled emitters consult. A plain struct: build one
+> with `fromPalette`, tweak a derived theme, or write a literal from
+> scratch. Only the palette and the five text/panel colors have no
+> default; the widget styles and typography fall back to their own
+> struct defaults, so a custom theme need only override what it cares about.
+- `struct Theme`
+  - fields: `palette, typography, text_color, heading_color, muted_color, danger_color, panel_bg, tokens, button, button_primary, text_input, checkbox, radio, slider, divider, card, field`
+  > Build a Theme by deriving widget styles from a palette. Apps
+  > that want a custom brand palette call this and then optionally
+  > tweak individual style fields.
+  - `pub fn fromPalette(p: Palette) Theme`
+  > `fromPalette` with shape tokens: the derived button / input / card
+  > styles get the radii, borders and elevations from `t`.
+  - `pub fn fromPaletteTokens(p: Palette, t: Tokens) Theme`
+- `pub const dark_palette: Palette = .{ .bg = .{ 0.08, 0.08, 0.10, 1.0 }, .bg_panel = .{ 0.15, 0.15, 0.18, 1.0 }, .bg_sunken = .{ 0.12, 0.12, 0.14, 1.0 }, .bg_raised = .{ 0.25, 0.25, 0.28, 1.0 }, .bg_hover = .{ 0.35, 0.35, `
+- `pub const light_palette: Palette = .{ .bg = .{ 0.96, 0.96, 0.97, 1.0 }, .bg_panel = .{ 0.97, 0.97, 0.98, 1.0 }, .bg_sunken = .{ 1.00, 1.00, 1.00, 1.0 }, .bg_raised = .{ 0.88, 0.88, 0.92, 1.0 }, .bg_hover = .{ 0.82, 0.82,`
+- `pub const modern_light_palette: Palette = .{ .bg = .{ 0.957, 0.961, 0.973, 1.0 }, .bg_panel = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_sunken = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_raised = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_hover = .{ 0.945, 0.9`
+- `pub const modern_dark_palette: Palette = .{ .bg = .{ 0.067, 0.075, 0.098, 1.0 }, .bg_panel = .{ 0.110, 0.122, 0.153, 1.0 }, .bg_sunken = .{ 0.082, 0.090, 0.118, 1.0 }, .bg_raised = .{ 0.141, 0.157, 0.192, 1.0 }, .bg_hove`
+
+### `teak.text_field` (`src/core/text_field.zig`)
+
+Canonical text-input component + key-dispatch helpers.
+
+- `pub fn TextField(comptime capacity: usize) type`
+> Build the AppMsg for a typed character into the named field.
+> `field_name` is the field on the composed AppMsg (e.g. "search").
+- `pub fn textFieldChar( comptime AppMsg: type, comptime field_name: []const u8, c: u8, ) AppMsg`
+> Build the AppMsg for a SpecialKey into the named field. Returns null
+> for keys that don't map to a single TextField Msg (ctrl_c / ctrl_x /
+> ctrl_v — the host loop handles clipboard at its boundary and then
+> dispatches `replace_selection` via `textFieldReplaceSelection`).
+- `pub fn textFieldSpecial( comptime AppMsg: type, comptime field_name: []const u8, key: SpecialKey, ) ?AppMsg`
+> True if the key requires host-level clipboard interaction (the host
+> reads/writes the OS clipboard and then dispatches a normal Msg).
+- `pub fn keyNeedsClipboard(key: SpecialKey) bool`
+> Build the AppMsg for a paste into the named field. The host calls
+> this after `clipboard.read()` returns the bytes to insert.
+- `pub fn textFieldReplaceSelection( comptime AppMsg: type, comptime field_name: []const u8, bytes: []const u8, ) AppMsg`
+
+### `teak.numeric_field` (`src/core/numeric_field.zig`)
+
+Numeric input component: TextField + float parsing + range validation.
+
+- `struct NumericConfig`
+  - fields: `capacity, min, max, precision, invalid_message`
+- `pub fn NumericField(comptime config: NumericConfig) type`
+
+### `teak.dropdown` (`src/core/dropdown.zig`)
+
+> Height of a single open-list option row, in pixels. Matches
+> `LayoutEngine.BUTTON_HEIGHT` (the option buttons are plain buttons, so
+> every row is exactly this tall regardless of label font). Scroll math
+> — viewport sizing, `maxScroll`, and scroll-to-reveal — is expressed in
+> multiples of this constant so it stays in lock-step with the rects the
+> layout pass actually produces.
+- `pub const ITEM_HEIGHT: f32 = 36`
+> Anchor + sizing for the open list overlay.
+- `struct DropdownViewOpts`
+  - fields: `list_x, list_y, list_width, list_max_height, max_visible`
+> Placeholder shown when there is no valid selection (empty options or a
+> `selected` index that is out of range).
+- `pub const PLACEHOLDER = "Select\u{2026}"`
+> A dropdown/select holding `selected` as an index into the app-owned
+> options slice. `cap` documents the intended maximum option count for
+> the call site; it is not enforced on the slice (the app owns the
+> options) but keeps the type self-describing alongside its siblings
+> (e.g. `Dropdown(64)` for a long species list).
+- `pub fn Dropdown(comptime cap: usize) type`
+
+### `teak.data_table` (`src/core/data_table.zig`)
+
+`DataTable`: a virtualized, sortable, resizable, selectable table for large
+row counts (100k rows scroll at the display rate).
+
+- `pub const Align = table.CellAlign`
+> One column. `width` is the initial width in px; the live width is in the Model.
+- `struct Column`
+  - fields: `title, width, min_width, cell_align, sortable`
+- `struct Config`
+  - fields: `max_rows, max_cols`
+> Keyboard commands (`keyMsg` maps `SpecialKey`s to these).
+- `enum Key`
+  - fields: `up, down, page_up, page_down, home, end, select_all, clear`
+> Narrowest header-edge grab handle, px.
+- `pub const grip_w: f32 = 6`
+- `pub fn DataTable(comptime cfg: Config) type`
+
+### `teak.var_list` (`src/core/var_list.zig`)
+
+`VarList`: a virtualized list whose rows have different heights.
+
+> Rows one `.measured` Msg carries (a viewport rarely shows more; extra rows keep
+> their estimate until they scroll into a smaller window).
+- `pub const max_measured = 96`
+- `pub fn VarList(comptime cap: usize) type`
+
+### `teak.tree_list` (`src/core/tree_list.zig`)
+
+`TreeList`: a virtualized tree view over a very large node set.
+
+- `enum Key`
+  - fields: `up, down, left, right, home, end, page_up, page_down, toggle`
+- `pub fn TreeList(comptime cap: usize) type`
+
+### `teak.combobox` (`src/core/combobox.zig`)
+
+Searchable select ("combobox"): a text input that filters an app-owned
+option list shown in the same modal-overlay list `Dropdown` uses.
+
+> Height of one list row (matches `Dropdown`'s `ITEM_HEIGHT`).
+- `pub const ITEM_HEIGHT: f32 = dropdown.ITEM_HEIGHT`
+> Label of the disabled row shown when the query matches nothing.
+- `pub const NO_MATCHES = "No matches"`
+- `enum Match`
+  - fields: `substring, prefix`
+- `struct ViewOpts`
+  - fields: `list_x, list_y, list_width, max_visible, match, input_style`
+> Simple case fold: ASCII, Latin-1 Supplement, Latin Extended-A (paired
+> forms), Greek and Cyrillic capitals map to their lowercase.
+- `pub fn foldCase(cp: u21) u21`
+> True when `option` matches `query` (empty queries match everything).
+- `pub fn matches(query: []const u8, option: []const u8, mode: Match) bool`
+> Number of options matching `query`.
+- `pub fn countMatches(query: []const u8, options: []const []const u8, mode: Match) usize`
+> Original index of the `n`th (0-based) matching option.
+- `pub fn nthMatch(query: []const u8, options: []const []const u8, mode: Match, n: usize) ?usize`
+> Ordinal of original option `index` among the matches, or null if filtered out.
+- `pub fn ordinalOf(query: []const u8, options: []const []const u8, mode: Match, index: usize) ?usize`
+> A combobox whose query field holds up to `cap` bytes.
+- `pub fn Combobox(comptime cap: usize) type`
+
+### `teak.widgets` (`src/core/widgets.zig`)
+
+Widgets built purely from existing Cmd primitives (zero new Cmd
+variants). Each is data + pure functions in the Dropdown / Combobox
+mould: a `Model` and `Msg` the app embeds (HARDLINE §1: all state in the
+Model), `update`, and view helpers that emit ordinary cmds. See
+docs/features/widgets.md for the contract of each.
+
+
+### `teak.component_list` (`src/core/component_list.zig`)
+
+ComponentList: a comptime-generated dynamic list of homogeneous
+sub-components. Closes ergonomic gap 5 — apps no longer hand-roll a
+`[]ChildModel` + manual dispatch + manual per-index msg wrapping.
+
+- `pub fn ComponentList(comptime Child: type, comptime capacity: usize) type`
+
+### `teak.debug_overlay` (`src/core/debug_overlay.zig`)
+
+Debug overlay: dump the current frame's cmds + rects into an
+overlay-layer panel for visual inspection. Closes ergonomic gap 6
+— complex forms no longer require std.debug.print breadcrumbs.
+
+- `struct DebugOverlayOpts`
+  - fields: `x, y, padding, gap, backdrop, fg, font, skip_pops, skip_pushes, max_lines`
+> Walk `cmds` + `rects` and append an overlay region to `cb` showing
+> per-cmd diagnostics. `cmds.len` must equal `rects.len` (the standard
+> pairing produced by the layout pass).
+> The overlay sits above all base-layer content but uses the regular
+> `push_overlay` arms so hit-test and render handle it like any other
+> modal. Apps that have their own overlays opening at the same time
+> will see this one painted in document order — emit `appendDebugOverlay`
+> last to keep it on top.
+- `pub fn appendDebugOverlay( cb: anytype, cmds: anytype, rects: []const Rect, opts: DebugOverlayOpts, ) void`
+
+### `teak.snapshot` (`src/core/snapshot.zig`)
+
+teak.snapshot — LLM-readable serialization of a rendered frame.
+
+> Optional header printed once above the cmd lines. Every field is
+> caller-supplied data — this module never reads a clock or a global,
+> so passing a header keeps the output deterministic for a fixed frame.
+- `struct Header`
+  - fields: `window_w, window_h, frame, last_msg`
+- `struct SnapshotOptions`
+  - fields: `transient, header`
+> Serialize the frame `cmds` + `rects` to `writer`. `cmds` is any slice
+> of `Cmd(Msg)` — taken as `anytype` like the layout passes, since only
+> Msg-independent fields are read. `rects[i]` is the resolved rect for
+> `cmds[i]`; a short `rects` slice yields zero-rects for the tail rather
+> than erroring (mirrors the layout/render pairing contract).
+> Output shape (one line per non-pop cmd, two-space indent per open
+> container):
+> group (0,0,800,600) vertical
+> button (16,16,60,36) "+"
+> text (16,60,80,20) "Count: 0"
+- `pub fn write(writer: anytype, cmds: anytype, rects: []const Rect, opts: SnapshotOptions) !void`
+> Allocate a snapshot string. Caller owns the returned slice. Convenience
+> over `write` for tests and one-off dumps.
+- `pub fn snapshotAlloc( allocator: std.mem.Allocator, cmds: anytype, rects: []const Rect, opts: SnapshotOptions, ) ![]u8`
+> Golden-test helper, styled after `std.testing.expectEqualStrings`: on
+> mismatch it prints a readable diff and fails the test. This is the
+> canonical way to golden-test a view headlessly —
+> view → layout (monoMeasurer) → `expectSnapshot`.
+- `pub fn expectSnapshot( cmds: anytype, rects: []const Rect, opts: SnapshotOptions, expected: []const u8, ) !void`
+
+### `teak.chart` (`src/core/chart.zig`)
+
+teak.chart — pure line-chart primitive builder.
+
+- `struct LineChartOpts`
+  - fields: `width, height, min, max, padding, line_color, line_thickness, grid_color, grid_lines`
+> Build the primitives for a line chart of `series`. Returns an
+> arena-allocated slice owned by the caller's per-frame arena. Ordering
+> is gridlines first, then the polyline, so the line paints on top.
+> A series shorter than 2 points emits gridlines only (a single point has
+> no line to draw). An empty `series` with `grid_lines <= 1` returns an
+> empty slice.
+- `pub fn lineChartPrimitives( arena: std.mem.Allocator, series: []const f32, opts: LineChartOpts, ) []const CanvasPrimitive`
+
+### `teak.table` (`src/core/table.zig`)
+
+Fixed-column monospace tables, as pure helpers.
+
+> The default truncation marker: one column in IBM Plex Mono and most
+> monospace faces. (Under `monoMeasurer`, which counts bytes, it measures 3.)
+- `pub const ELLIPSIS = "\u{2026}"`
+- `enum CellAlign`
+  - fields: `left, right, center`
+- `struct Column`
+  - fields: `title, chars, cell_align`
+> How one emitted row looks. Use a different `RowStyle` per row kind
+> (header, body, selected, added/removed in a diff).
+- `struct RowStyle`
+  - fields: `font, color, bg, rule, pad_x, pad_y, height`
+- `struct Table`
+  - fields: `columns, gutter, ellipsis`
+  > Characters in one full row (cells plus gutters).
+  - `pub fn totalChars(self: Table) usize`
+  > Emit the header row: each column's `title` in `style`.
+  - `pub fn header(self: Table, cb: anytype, style: RowStyle) void`
+  > Emit one body row. `cells[i]` goes in column `i`; missing cells are
+  > blank, extra cells are ignored.
+  - `pub fn row(self: Table, cb: anytype, cells: []const []const u8, style: RowStyle) void`
+> Number of columns `s` occupies: one per UTF-8 code point (an invalid
+> byte counts as one).
+- `pub fn columns(s: []const u8) usize`
+> Byte length of the first `cols` columns of `s` (all of it if shorter).
+- `pub fn prefixBytes(s: []const u8, cols: usize) usize`
+> `text` forced to exactly `width` columns, plus `trailing` blank columns,
+> in a fresh allocation: padded by `al` when short, cut and ended with
+> `ellipsis` when long (never splitting a multi-byte character). If
+> `ellipsis` itself is wider than `width` it is cut to fit.
+- `pub fn fitCell( alloc: Allocator, s: []const u8, width: usize, al: CellAlign, ellipsis: []const u8, trailing: usize, ) Allocator.Error![]u8`
+
+### `teak.pointer` (`src/core/pointer.zig`)
+
+Pointer / canvas-event types shared by the Host, `teak.run`, hit-test
+and the App.
+
+> Mouse buttons currently held. Layout is stable (packed u8) so hosts can
+> build it from a bitmask.
+- `struct Buttons`
+  - fields: `left, middle, right, _pad`
+  - `pub fn any(self: Buttons) bool`
+> Keyboard modifier state at the time of the event.
+- `struct Modifiers`
+  - fields: `shift, ctrl, alt, meta, _pad`
+- `enum Button`
+  - fields: `none, left, middle, right`
+- `enum CanvasEventKind`
+  - fields: `down, move, up, wheel, leave, layout`
+> One pointer event on an interactive canvas / scene. Coordinates are
+> canvas-LOCAL logical pixels (origin = the canvas rect's top-left), the
+> same space as `CanvasPrimitive` coordinates.
+- `struct CanvasEvent`
+  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h`
+> A window-space rectangle (`PointerEvent.box`).
+- `struct Box`
+  - fields: `x, y, w, h`
+> What the App's `hoverMsg` / `contextMsg` hooks receive: where the pointer
+> is and which interactive widget is under it. `hit` is the Msg that widget
+> would dispatch on a left click (its identity: the app compares it with
+> `std.meta.eql`, no id hashing); `null` over empty or non-interactive
+> space. `box` is that widget's rect from the previous frame's layout (the
+> view cannot read layout, so this is how a tooltip or menu learns where to
+> anchor); all zero when `hit` is null. `now_ms` is the host's monotonic
+> clock, so the app can derive deadlines for `Sub.at`.
+- `pub fn PointerEvent(comptime Msg: type) type`
+
+### `teak.effects` (`src/core/effects.zig`)
+
+Declarative effects (HARDLINE §2 escape hatch 7 — the sibling of
+`Sub`, hatch 6).
+
+- `struct Header`
+  - fields: `name, value`
+- `enum HttpMethod`
+  - fields: `get, post, put, delete`
+- `struct HttpRequest`
+  - fields: `id, method, url, headers, body, timeout_ms`
+- `struct HttpResult`
+  - fields: `id, status, body, err`
+> Offer bytes to the user as a file: browser download / native save to
+> the app's output directory (or a save dialog).
+- `struct Download`
+  - fields: `id, name, mime, bytes`
+> Ask the user to pick a file; result is `file_opened` / `file_cancelled`.
+- `struct OpenFile`
+  - fields: `id, accept`
+- `struct WriteClipboard`
+  - fields: `id, text`
+> Persistent key/value storage (browser localStorage / a file under the
+> user's config dir on native). `set` with an empty `value` deletes.
+- `struct StorageSet`
+  - fields: `id, key, value`
+- `struct StorageGet`
+  - fields: `id, key`
+> Ask the host for the wall clock (unix epoch ms + local UTC offset
+> minutes). `view` must stay pure, so the time of day reaches the app as
+> a result Msg.
+- `struct ClockRequest`
+  - fields: `id`
+> Read a startup parameter: the URL query string value `?name=...` on the
+> web, a `--name=value` argv entry or the env var `TEAK_<NAME_UPPER>` on
+> native. Answered once with `EffectResult.query_value`.
+- `struct QueryParam`
+  - fields: `id, name`
+- `union Effect`
+  - fields: `http, download, open_file, write_clipboard, storage_set, storage_get, clock, query_param`
+  > The app-chosen request id.
+  - `pub fn id(self: Effect) u32`
+  > Fire-and-forget effects (`storage_set`, `write_clipboard`) produce no
+  > result; every other effect is answered exactly once.
+  - `pub fn wantsResult(self: Effect) bool`
+> What `Host.submit` did with an effect.
+- `enum EffectSubmit`
+  - fields: `accepted, busy, unsupported`
+- `enum DropKind`
+  - fields: `file, image, text`
+> Something the user pasted or dropped onto the window (unsolicited, so
+> it has no request id). Web: paste event / drag-and-drop. Native hosts
+> report `file` drops where the OS supports it.
+- `struct Drop`
+  - fields: `kind, name, mime, bytes, width, height, thumb_rgba, thumb_w, thumb_h`
+- `union EffectResult`
+  - fields: `http, file_opened, file_cancelled, downloaded, storage_value, query_value, clock, dropped, pasted_text`
+> Result of an effect, as the app's `effectMsg` sees it.
+- `pub fn resultId(r: EffectResult) ?u32`
+> The "failed" answer for an effect the host cannot service, so an app
+> never waits forever: HTTP status 0, a cancelled picker, an absent key.
+> Null for fire-and-forget effects.
+- `pub fn unsupportedResult(e: Effect) ?EffectResult`
+> The runtime's table of effect ids it has handed to the host. Fixed size
+> (no allocation); loop bookkeeping, not application state.
+> Per frame: `beginFrame`, then `listed(id)` for every effect in the app's
+> list (true = already issued, so skip it), `issue(id)` after the host took
+> a new one, and `sweep` to forget ids that were not listed this frame.
+- `pub fn IssuedTable(comptime capacity: usize) type`
+
+### `teak.scene` (`src/core/scene.zig`)
+
+Data types for 3D scene rendering: mesh geometry, camera, and the
+per-frame `SceneDraw` record the render pass hands to the Gpu.
+
+> Opaque backend mesh handle. 0 is "none".
+- `pub const MeshHandle = u32`
+- `pub const MESH_HANDLE_NONE: MeshHandle = 0`
+> 40 bytes, tightly packed — the GPU vertex layout is exactly this.
+- `struct MeshVertex`
+  - fields: `pos, normal, color`
+> 28 bytes. Lines are consecutive pairs: `lines[2i]`, `lines[2i + 1]` are
+> the two ends of segment `i`; each end carries its own color.
+- `struct LineVertex`
+  - fields: `pos, color`
+> Geometry for `Gpu.uploadMesh`. The slices are copied during upload;
+> they only need to live for the call.
+- `struct MeshData`
+  - fields: `vertices, indices, lines`
+  - `pub fn triangleCount(self: MeshData) usize`
+  - `pub fn segmentCount(self: MeshData) usize`
+  > Check the invariants the GPU upload relies on.
+  - `pub fn validate(self: MeshData) error{ IndexOutOfRange, PartialTriangle }!void`
+- `struct Camera`
+  - fields: `view_proj, eye, light_dir`
+> One scene to render this frame. Emitted by the render pass for each
+> `scene3d` Cmd, in painter order; consumed by `Gpu.renderScenes`.
+- `struct SceneDraw`
+  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px`
+- `pub const Orbit = camera.Orbit`
+- `pub const Projection = camera.Projection`
+- `pub const Bounds = camera.Bounds`
+- `pub const Ray = camera.Ray`
+- `pub const pickRay = camera.pickRay`
+- `pub const project = camera.project`
+
+### `teak.resources` (`src/core/resources.zig`)
+
+Declarative GPU resources (HARDLINE §2 escape hatch 8).
+
+- `enum Kind`
+  - fields: `mesh, image`
+- `struct MeshResource`
+  - fields: `key, rev, data`
+- `struct ImageResource`
+  - fields: `key, rev, width, height, rgba`
+- `union Resource`
+  - fields: `mesh, image`
+  - `pub fn kind(self: Resource) Kind`
+  - `pub fn key(self: Resource) u32`
+  - `pub fn rev(self: Resource) u32`
+
+### `teak.layout` (`src/layout/engine.zig`)
+
+- `struct Rect`
+  - fields: `x, y, w, h, fixed_main, flex_total, child_count, end`
+> Intersect two rects. Returns a zero-size rect if fully disjoint.
+- `pub fn clipRect(a: Rect, b: Rect) Rect`
+> The content box of a `text_area` inside its layout rect: inset by the
+> border and padding. Render, pointer resolution and the metrics event all
+> use this one function so they agree on where text starts and how wide it
+> wraps.
+- `pub fn textAreaInner(rect: Rect, ta: anytype) Rect`
+> Width a `text_area` wraps at: its inner width, or unbounded for `.none`.
+- `pub fn textAreaWrapWidth(inner: Rect, ta: anytype) f32`
+> Scroll-clip stack shared by hit-test, render and a11y. Fixed depth
+> (`MAX_DEPTH`, same as the layout stacks) — exceeding it is a bug, not an
+> allocation trigger. `top()` returns a huge sentinel rect when empty so
+> callers don't branch on depth.
+> Overflow on `push` and underflow on `pop` are programmer errors (an
+> unbalanced or too-deep buffer), reported with an unconditional `@panic`
+> in EVERY optimize mode — never an out-of-bounds write. The run loop runs
+> `cmd.validateBalance` first, which names the offending cmd index.
+- `struct ClipStack`
+  - fields: `buffer, len`
+  - `pub fn push(self: *ClipStack, r: Rect) void`
+  - `pub fn pop(self: *ClipStack) void`
+  - `pub fn top(self: *const ClipStack) Rect`
+- `struct LayoutEngine`
+  > What `doLayoutStats` did, for tests that pin the pass structure.
+  - `struct Stats`
+  > Run the layout passes: measure, position -- and, only when the frame
+  > contains wrapped text or shrinkable containers, resolve widths and
+  > re-measure heights in between. The first push_group (the root) is
+  > resized to the window before widths resolve, so flex and wrapping
+  > resolve against the real window size.
+  - `pub fn doLayout( rects: []Rect, cmds: anytype, window_w: f32, window_h: f32, measurer: TextMeasurer, ) void`
+  > `doLayout`, reporting which passes ran.
+  - `pub fn doLayoutStats( rects: []Rect, cmds: anytype, window_w: f32, window_h: f32, measurer: TextMeasurer, ) Stats`
+  > Pass 1 — measure. Bottom-up via an explicit stack. Each command
+  > writes its intrinsic size to rects[i]; container entries also
+  > record fixed_main, flex_total, child_count for the position pass.
+  - `pub fn measurePass(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void`
+  > Pass 2: settle the widths of every container's direct children.
+  - `pub fn resolveWidths(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void`
+  > Pass 3: re-measure heights bottom-up with the resolved widths. Widths
+  > are final (pass 2); containers recompute their height and their
+  > `fixed_main` (so the position pass sees the real child sizes).
+  - `pub fn remeasureHeights(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void`
+  > Pass 4 — position (pass 2 when the frame has no wrapped nodes). Top-down, forward scan. A container is sized
+  > (flex growth, stretch) while it is placed in its parent, so by the
+  > time its own children are placed its final rect is known; each child
+  > goes at the running cursor.
+  - `pub fn positionPass(rects: []Rect, cmds: anytype) void`
+
+### `teak.scroll_extent` (`src/layout/scroll_extent.zig`)
+
+Content extent of a scroll region, measured from the rects the layout
+passes already produced.
+
+- `struct Extent`
+  - fields: `viewport_w, viewport_h, content_w, content_h`
+> Viewport + content size of the `push_scroll` at `index`.
+> Content is measured from the scroll's content origin (`rect - scroll
+> offset`) to the far edge of its farthest descendant, plus the container's
+> trailing padding. Nested scroll regions contribute their own rect but not
+> their interiors (those are clipped to the nested viewport), and overlays
+> are absolute-positioned and do not contribute at all — the same rules the
+> layout pass uses to size a container from its children.
+- `pub fn scrollExtent(cmds: anytype, rects: []const Rect, index: usize) Extent`
+
+### `teak.hit_test` (`src/input/hit_test.zig`)
+
+- `pub fn HitResult(comptime Msg: type) type`
+> Forward-walk cmds/rects maintaining a scroll-clip stack; keep the
+> *last* hit so painter's order wins (a later draw is on top). Two
+> passes — overlay first, then base — so the overlay layer
+> (HARDLINE §2 escape hatch 5) wins z-order without per-cmd z fields.
+> A backward walk would be simpler for z-order but couldn't honor
+> scroll clips that accumulate top-down.
+> `HitResult.msg` is `?Msg`: a `null` msg means a modal overlay
+> consumed the click but the app didn't supply a `backdrop_msg` (or the
+> hit was a pointer-only canvas). The host must NOT fall through to
+> widgets behind the modal in that case — see the doc on `HitResult.msg`.
+- `pub fn hitTest( cmds: anytype, rects: []const Rect, mouse_x: f32, mouse_y: f32, ) ?HitResult(CmdMsg(@TypeOf(cmds)))`
+> Like hitTest but returns only the cmd index (no msg). Hosts arm their
+> press target on it: a modal backdrop reports the overlay's index, so
+> press and release over it compare equal and its `backdrop_msg` is
+> reachable.
+- `pub fn hoverTest( cmds: anytype, rects: []const Rect, mouse_x: f32, mouse_y: f32, ) ?usize`
+> The pointer canvas (`CanvasCmd.pointer`) under the cursor.
+- `struct PointerTarget`
+  - fields: `index, id`
+> The pointer canvas a press / hover at (x, y) lands on, or null. Uses the
+> exact `hitTest` rules, so a later widget, an overlay leaf, or a modal
+> backdrop in front of the canvas wins and the canvas gets nothing.
+- `pub fn pointerTarget(cmds: anytype, rects: []const Rect, x: f32, y: f32) ?PointerTarget`
+> `index` as a pointer target, or null when that cmd is not a pointer canvas.
+> The one place that knows which cmd kinds are pointer surfaces.
+- `pub fn pointerSurface(cmds: anytype, index: usize) ?PointerTarget`
+> Where a wheel event at (x, y) goes.
+- `union WheelTarget`
+  - fields: `canvas, scroll`
+> The innermost wheel consumer under (x, y): a pointer canvas or a scroll
+> region with `id != 0`, whichever is last in document order among those
+> containing the point (children follow their container, so last = innermost
+> = topmost). Overlay-layer candidates win over base ones, and a modal
+> overlay under the point blocks everything behind it — the same layering
+> as `hitTest`.
+- `pub fn wheelTarget(cmds: anytype, rects: []const Rect, x: f32, y: f32) ?WheelTarget`
+> Compute a slider's normalized value [0, 1] from an x position, given
+> the slider's rect. Intended for the host: after `hitTest` returns a
+> slider's `grab_msg` + index, the host reads `rects[index]` and calls
+> this to drive subsequent drag Msgs (one per frame while the button is
+> held).
+- `pub fn sliderValueAt(rect: Rect, mouse_x: f32) f32`
+> Convert a window-space mouse position into canvas-LOCAL coordinates
+> (origin at the canvas rect's top-left), given the canvas's rect.
+> Returns null when the point is outside the rect. Mirrors
+> `sliderValueAt`'s shape: after `hitTest` returns a canvas's click Msg
+> + index, the app reads `rects[index]` and calls this to recover the
+> data coordinate that was clicked (then maps it to its own value-space
+> via a Msg it owns — fn-pointer-free per HARDLINE §3).
+- `pub fn canvasLocalPoint(rect: Rect, mouse_x: f32, mouse_y: f32) ?struct { x: f32, y: f32 }`
+> Drag state for a slider currently being held. The host computes this
+> each frame while `press_target` points at a slider; the app reads
+> `.value` and dispatches its own value-carrying Msg (typically a
+> component Msg accepting `f32`) — fn-pointer-free per HARDLINE §3.
+- `pub fn SliderDrag(comptime Msg: type) type`
+> Combine `press_target` + the previous frame's slider rect into a
+> `SliderDrag` whenever the held widget is a slider. Returns null if
+> nothing is pressed or the pressed widget isn't a slider. The host
+> calls this each frame while the mouse button is held and dispatches
+> the resulting value to a value-carrying Msg the app supplies.
+> Closes ergonomic gap 1 — every numeric input no longer rewrites the
+> "fetch rect by index, compute value, build Msg" dance.
+- `pub fn sliderDrag( cmds: anytype, rects: []const Rect, press_target: ?usize, mouse_x: f32, ) ?SliderDrag(CmdMsg(@TypeOf(cmds)))`
+
+### `teak.focus` (`src/input/focus.zig`)
+
+Focus traversal helpers: walk `[]Cmd` to find the next/previous
+focusable widget. Framework-level primitive; the app decides how to
+translate a resulting cmd index into its own `Model.focused` field.
+
+> Find the next focusable cmd index strictly after `current`. If
+> `current` is null (or outside the traversal scope), start at the scope's
+> beginning. Wraps at the end of the scope - the whole buffer, or the
+> topmost modal overlay when one is open (see `focusScope`). Returns null
+> only if the scope has no focusable widgets at all.
+- `pub fn nextFocusable(cmds: anytype, current: ?usize) ?usize`
+> Find the previous focusable cmd index strictly before `current`. If
+> `current` is null (or outside the traversal scope), start from the
+> scope's last index. Wraps at the start of the scope.
+- `pub fn prevFocusable(cmds: anytype, current: ?usize) ?usize`
+> The activation/focus Msg of the focusable leaf at `index`, or null if
+> that cmd is not an interactive leaf. The inverse of `indexOfFocusMsg`:
+> Tab traversal lands on an index via `nextFocusable`/`prevFocusable`,
+> then asks this for the Msg to dispatch so the app moves its focus
+> field (same Msg a click on that widget would fire).
+- `pub fn focusMsgAt(cmds: anytype, index: usize) ?std.meta.Elem(@TypeOf(cmds)).MsgT`
+> Find the cmd index whose interactive leaf carries `msg`, comparing by
+> value (`std.meta.eql`). Returns the first match in buffer order, or
+> null if no interactive leaf emits that Msg this frame.
+> This is the stable alternative to "the Nth text_input": the app names
+> a field by the Msg its focus click dispatches (e.g. the value it set
+> `Model.focused` from), and this maps that Msg back to a cmd index
+> regardless of how many widgets sit before it or whether earlier
+> widgets are conditionally emitted. Msgs are data (HARDLINE §3), so
+> keying focus off a Msg value introduces no widget-identity hashing —
+> it's the same value the cmd already carries.
+> `msg` is taken as `anytype` so callers pass a plain `Msg` value; it
+> must be the same `Msg` the cmd buffer was built over.
+- `pub fn indexOfFocusMsg(cmds: anytype, msg: anytype) ?usize`
+
+### `teak.keys` (`src/input/keys.zig`)
+
+Framework-authoritative list of non-text keys that Hosts may deliver.
+Text characters flow through InputState.chars; everything else is a
+variant here. Hosts map their native key codes onto this enum.
+
+- `enum SpecialKey`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_tap`
+
+### `teak.a11y` (`src/input/a11y.zig`)
+
+Accessibility tree builder.
+
+> Semantic role of a UI element. Mirrors the subset of WAI-ARIA roles
+> that map cleanly onto Teak's Cmd variants. New widget = new role.
+- `enum Role`
+  - fields: `group, scroll, text, rich_text, button, text_input, text_area, checkbox, radio, slider, divider, image, canvas, overlay`
+- `struct A11yNode`
+  - fields: `role, cmd_index, bounds, label, focused, state, disabled`
+> Build a flat list of A11yNodes for the given frame. Allocates the
+> output slice from `arena`; caller's per-frame arena reset frees it
+> in bulk along with everything else.
+> `focus_index` is the (optional) cmd index of the currently focused
+> element — typically the same value the renderer takes via
+> TransientState.focus_index, so the a11y tree agrees with the
+> rendered focus ring.
+> Mirrors `hit_test.zig`'s two-pass-by-layer structure so screen-
+> reader visibility tracks mouse-input visibility: scroll-clipped
+> nodes are emitted with their clipped bounds (and dropped if fully
+> clipped to zero area), and base-layer nodes are suppressed when a
+> modal overlay is open. Non-modal overlays (tooltips, debug
+> overlays) do NOT suppress the base layer — same rule hit_test uses.
+- `pub fn buildTree( arena: std.mem.Allocator, cmds: anytype, rects: []const Rect, focus_index: ?usize, ) ![]A11yNode`
+
+### `teak.render` (`src/render/build.zig`)
+
+- `pub const SceneDraw = scene_types.SceneDraw`
+> Image draw record. Parallel to TextDraw — the GPU backend consumes
+> these in `uploadImages` and emits 6 textured vertices per draw using
+> the tint as the vertex color (modulated against the texture alpha
+> and rgb in the shader, like text).
+- `struct ImageDraw`
+  - fields: `rect_x, rect_y, rect_w, rect_h, handle, tint, clip_x, clip_y, clip_w, clip_h`
+> Fixed outline of checkbox / radio boxes.
+> Where the overlay layer (HARDLINE §2 hatch 5: base z=0, overlay z=1)
+> starts inside each staged list, as counts of what the base layer
+> produced. A Gpu that honours it draws base solids, images, scene
+> composites and text first, THEN the overlay's solids, images, composites
+> and text, so an opaque overlay panel hides base-layer text and images
+> beneath it. Without a split (all lists drawn by kind) the base layer's
+> text and images would show through overlay quads.
+- `struct OverlaySplit`
+  - fields: `verts, text, images, scenes`
+> Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits
+> solid-fill quads into `verts`, textured glyph records into
+> `text_draws`, textured image records into `image_draws`, and 3D scene
+> records into `scene_draws`. Presentation state (hover, press, focus,
+> blink) pulls from TransientState without touching Model. Two passes —
+> base layer (cmds outside any push_overlay), then overlay layer — so
+> overlays (HARDLINE §2 escape hatch 5) draw on top.
+- `pub fn buildFrame( verts: *std.ArrayList(Vertex), text_draws: *std.ArrayList(TextDraw), image_draws: *std.ArrayList(ImageDraw), scene_draws: *std.ArrayList(SceneDraw), alloc: std.mem.Allocator, cmds: anytype, rects: []co`
+> `buildFrame` without scene output: `scene3d` Cmds are skipped. For
+> hand-rolled host loops that predate 3D scenes; `teak.run` uses
+> `buildFrame`.
+- `pub fn buildVertices( verts: *std.ArrayList(Vertex), text_draws: *std.ArrayList(TextDraw), image_draws: *std.ArrayList(ImageDraw), alloc: std.mem.Allocator, cmds: anytype, rects: []const Rect, transient: TransientState, `
+
+### `teak.vertex` (`src/render/vertex.zig`)
+
+- `struct Vertex`
+  - fields: `x, y, r, g, b, a, u, v`
+- `pub fn emitQuad( verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, rect: Rect, color: [4]f32, ) void`
+> Emit a solid-color quad from four explicit corners winding around the
+> quad (`c0 → c1 → c2 → c3`), as two triangles `(c0,c1,c2)` and
+> `(c0,c2,c3)`. Unlike `emitQuad`, the corners need not be axis-aligned —
+> this is what lets the canvas draw arbitrary-angle polyline segments
+> (each segment is a rotated rectangle) through the same colored-quad
+> pipeline. `u`/`v` are left at 0 since the solid-quad shader ignores
+> them; only `emitQuad` (textured-capable path) sets meaningful UVs.
+- `pub fn emitQuadCorners( verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, c0: [2]f32, c1: [2]f32, c2: [2]f32, c3: [2]f32, color: [4]f32, ) void`
+> The six vertices of an image-style quad covering `rect`, trimmed to
+> `clip` with UVs adjusted so the texture is cropped, not squashed. `null`
+> when nothing is visible. Both GPU backends build image and scene
+> composite quads through this so their clip rules cannot drift.
+- `pub fn clippedTexturedQuad(rect: Rect, clip: Rect, tint: [4]f32) ?[6]Vertex`
+
+### `teak.host` (`src/platform/host.zig`)
+
+Host interface: window + input event source. A Host owns the window
+and whatever mechanism produces events (Win32 message pump, X11 event
+loop, zunk's rAF callbacks). It does NOT own the render loop — the
+application drives `pollInputs` each frame and hands a
+viewport-agnostic snapshot back.
+
+- `pub const SpecialKey = @import("../input/keys.zig").SpecialKey`
+- `pub const Buttons = pointer.Buttons`
+- `pub const Modifiers = pointer.Modifiers`
+- `pub const TextMeasurer = text.TextMeasurer`
+- `pub const TextMetrics = text.TextMetrics`
+- `pub const FontSpec = text.FontSpec`
+> Clipboard surface — Host-owned because clipboards are an OS concept.
+> `read` returns a UTF-8 slice valid until the next `read` call (Host
+> owns the buffer). `write` copies the bytes into the OS clipboard. A
+> no-op implementation is acceptable for headless / wasm hosts (return
+> "" and discard writes).
+- `struct Clipboard`
+  - fields: `ctx, read_fn, write_fn`
+  - `pub fn read(self: Clipboard) []const u8`
+  - `pub fn write(self: Clipboard, t: []const u8) void`
+> IME composition state. `text` is the pre-commit composition buffer
+> (UTF-8); `cursor` is the byte offset inside it. When `active` is
+> false the app should display the regular cursor and ignore `text`.
+> Hosts that don't support IME (yet) return `.{ .active = false }`.
+- `struct ImeState`
+  - fields: `active, text, cursor`
+- `pub const A11yNode = @import("../input/a11y.zig").A11yNode`
+- `pub const Effect = effects.Effect`
+- `pub const EffectResult = effects.EffectResult`
+- `pub const EffectSubmit = effects.EffectSubmit`
+> File dialog result. `path` is UTF-8; lives in the Host's internal
+> buffer and is valid until the next dialog call. null when the user
+> cancels.
+- `pub const FileDialogResult = ?[]const u8`
+> File dialog filter — `name` is shown in the OS dialog, `pattern` is
+> a `;`-separated list of `*.ext` globs (matches the Win32 convention;
+> hosts that need different semantics translate at the call site).
+- `struct FileDialogFilter`
+  - fields: `name, pattern`
+> Async file dialog poll result. Returned by `pollFileDialogResult` for
+> requests submitted via `requestFileDialog` / `requestSaveFileDialog`.
+> Required because browser file pickers are async + gesture-gated and
+> can't fit the synchronous `openFileDialog` shape. Win32 still implements
+> the sync API and additionally supports the async API by completing
+> the request immediately and parking the result in a slot.
+> `pending` means the host is still waiting on the user / browser.
+> `ok` carries the chosen path (UTF-8, valid until the next poll for
+> the same id). `cancelled` is a terminal state — the host frees the
+> slot and a subsequent poll on the same id returns `pending` (treated
+> as "request unknown / already consumed").
+- `union FileDialogPoll`
+  - fields: `pending, ok, cancelled`
+> Per-frame input snapshot returned by `Host.pollInputs`.
+> `mouse_x` / `mouse_y` are the current cursor position (state, not an
+> event), in logical pixels relative to the window's client area.
+> Buttons: `buttons` is what is held now; `button_down` / `button_up` are
+> the edges that happened since the previous poll — a press and release
+> inside one frame sets both (and `buttons` then reads released), so a
+> fast click is never lost. `mouse_down` / `mouse_up` are the left-button
+> edges (== `button_down.left` / `button_up.left`), kept for the
+> click-only code path. `mods` is the Shift/Ctrl/Alt/Meta state at the
+> time of the most recent input event.
+> `chars` is UTF-8 text typed this frame (whole code points, no control
+> codes, no Ctrl/Cmd chords); `keys` is the special-key queue (arrows,
+> Delete/Home/End, Shift-extended motion, Ctrl+A/C/X/V/Y/Z, Tab, Escape,
+> Enter...). Both are drained and returned in receive order; the slices
+> reference Host-internal storage and are valid only until the next
+> `pollInputs` call.
+> `wheel_dx` / `wheel_dy` are accumulated pixels of intended scroll
+> since the previous `pollInputs`. Sign convention matches the DOM
+> `WheelEvent.deltaX` / `deltaY`: positive `wheel_dy` means the user
+> wants the content to scroll **down** (visible viewport advances
+> toward higher y) and positive `wheel_dx` means scroll right. Hosts
+> translate native wheel notches into pixels (typically 120 raw units
+> = ~48 px on Win32). Zero when no wheel events arrived this frame. A
+> trackpad pinch on the web arrives as a wheel event with `mods.ctrl` set.
+- `struct InputState`
+  - fields: `mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, resized, width, height`
+> Comptime contract. A Host must expose these declarations; `init`
+> signatures vary per backend and are NOT validated (some hosts take a
+> title, some take a canvas selector, etc.).
+> Surface extensions (HARDLINE §4(d)) — added in functional-gaps push:
+> - `clipboard()` returns a `Clipboard` vtable for OS-level cut/copy/paste.
+> - `imeState()` returns the current IME composition snapshot.
+> - `publishA11yTree(nodes)` hands the accessibility tree to whatever
+> screen-reader API the platform exposes (UI Automation on Windows,
+> AT-SPI on Linux, mirrored DOM on web). No-op on hosts without one.
+> - `openFileDialog(filter)` / `saveFileDialog(filter)` block until the
+> user picks a path. Return `null` on cancel. Native hosts call the
+> OS file picker; web stubs return `null` (browser file APIs need a
+> completely different flow).
+> - Optional `waitEvents(timeout_ms: u32) void` (NOT checked by
+> `validateHost`): event-driven idle. `teak.run` calls it after a frame
+> that did nothing (`Runtime.quiet`, see `RunOptions.idle_skip`); the Host
+> should block until an input event arrives (including resize / expose,
+> which must surface as `InputState.resized`), an async effect result is
+> ready, or `timeout_ms` elapses — then return. Hosts without it keep
+> polling at their own pace (the skipped frames are still nearly free).
+> X11: `XPending` + `poll` on the connection fd; Win32:
+> `MsgWaitForMultipleObjects`; web: n/a (rAF drives `frame`).
+> - `openSecondaryWindow(title, w, h)` returns an opaque window handle
+> for a second top-level window sharing this Host's event source.
+> Tracked as a Host-internal id; the app holds it and renders into
+> it via the GPU layer's `renderToWindow`. Single-window hosts
+> (wasm) return `null`.
+> - `pollSecondaryInputs(window_id)` returns the per-frame input
+> snapshot for the given secondary window, or `null` if the id is
+> invalid or the host is single-window. The primary window keeps
+> using the legacy `pollInputs()` — secondaries are additive.
+> - `closeSecondaryWindow(window_id)` destroys the window and frees
+> its slot. No-op on single-window hosts or invalid ids.
+> - `secondaryWindowHandle(window_id)` returns the `NativeHandle` for
+> a secondary window so the app can hand it to `gpu.openSecondarySurface`.
+> Returns `null` for invalid ids.
+> - `requestFileDialog(filter)` / `requestSaveFileDialog(filter)` submit
+> an async file dialog and return an opaque `u32` request id (0 = the
+> submission failed; valid ids are non-zero). The app polls the same
+> id via `pollFileDialogResult` each frame (or via a `Sub`) until the
+> union resolves to `.ok` or `.cancelled`. Win32 completes the request
+> immediately on the same call so the very first poll returns the
+> result; wasm dispatches to the browser's async file picker and
+> stays in `.pending` until the JS bridge fires the resolution
+> callback (zunk issue #14).
+> - `pollFileDialogResult(id)` returns `.pending` / `.ok(path)` /
+> `.cancelled` for the given request id. On a `.ok` / `.cancelled`
+> return the host MAY recycle the slot — apps must consume the path
+> immediately and not poll the same id again.
+> - `setTitle(text)` updates the main window's title bar (UTF-8 in).
+> Lets an app reflect dynamic state — e.g. a "* unsaved" marker or
+> the current document name. Native hosts call the OS window-title
+> API; the web host sets `document.title`. No-op is acceptable for
+> headless hosts.
+> - `scaleFactor()` reports the number of physical device pixels per
+> logical UI unit at the window's current DPI (1.0 = no scaling).
+> HARDLINE §4(d) surface extension, but kept **optional** in
+> `validateHost` (existence-checked only when present) so Hosts that
+> predate it — and `run.zig`'s test stubs — still satisfy the
+> contract. Per-host truth: Win32 returns `GetDpiForWindow/96` (which
+> is 1.0 while the process is DPI-*unaware*, the default today); X11
+> returns `Xft.dpi/96` from the X resource manager; wasm returns 1.0
+> (teak's web coordinate space is CSS pixels — zunk owns the
+> devicePixelRatio backing store internally). Nothing in the
+> framework consumes it yet; see docs/features/host.md "DPI and
+> scaling" for the end-to-end render-at-scale follow-up.
+> - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
+> surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
+> a pair** (a Host with neither answers every effect as unsupported;
+> declaring only one is a compile error):
+> `submit(*Host, Effect) EffectSubmit` starts one effect. The slices
+> inside the effect are valid only during the call — copy what an async
+> request needs. Fire-and-forget effects (`storage_set`,
+> `write_clipboard`) are performed here and never answered.
+> `pollEffectResults(*Host, []EffectResult) usize` fills `buf` with the
+> results that arrived (async completions plus unsolicited
+> `dropped` / `pasted_text`) and returns the count; the result slices
+> stay valid until the Host's next `pollInputs` call (the runtime
+> dispatches them within the same frame). Called once per frame, after
+> key routing, so `Clipboard.read` can claim a paste first.
+- `pub fn validateHost(comptime T: type) void`
+
+### `teak.input_queue` (`src/platform/input_queue.zig`)
+
+Shared per-window input accumulator for event-driven Hosts (Win32, X11).
+
+> Host-neutral navigation / chord keys. Each backend maps its native key
+> codes onto this (a small switch) and `resolveKey` applies the
+> Shift/Ctrl policy once, so the `SpecialKey` variants (shift_left,
+> ctrl_a, ...) are derived in one place instead of per host.
+- `enum NavKey`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f10, a, c, x, v, y, z`
+> The `SpecialKey` for `k` under `mods`, or null when the combination is
+> not a special key (a plain letter, or Ctrl/Alt/Meta-less letter chord).
+> Shift extends motion keys and reverses Tab; Ctrl+letter is a chord; Ctrl
+> with Left/Right/Home/End/Backspace/Delete selects the word/document variants.
+- `pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey`
+- `struct InputQueue`
+  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, alt_clean`
+  > Drop last frame's text and keys. Call once at the top of a poll,
+  > before pumping events: the slices handed out by `finish` alias the
+  > queue's buffers and stay valid until this runs.
+  - `pub fn beginFrame(self: *InputQueue) void`
+  - `pub fn pointerMoved(self: *InputQueue, x: f32, y: f32) void`
+  - `pub fn buttonDown(self: *InputQueue, b: Button) void`
+  - `pub fn buttonUp(self: *InputQueue, b: Button) void`
+  - `pub fn wheel(self: *InputQueue, dx: f32, dy: f32) void`
+  > Alt went down. A following `altUp` with nothing in between queues `alt_tap`.
+  - `pub fn altDown(self: *InputQueue) void`
+  > Alt went up: queue `alt_tap` when no other input arrived since `altDown`.
+  - `pub fn altUp(self: *InputQueue) void`
+  - `pub fn pushKey(self: *InputQueue, k: SpecialKey) void`
+  > Resolve a navigation/chord key under the current modifiers and queue it.
+  - `pub fn pushNav(self: *InputQueue, k: NavKey) void`
+  > Queue one typed code point as UTF-8. Control codes and invalid
+  > scalars are dropped (special keys own those); a code point that does
+  > not fit is dropped whole rather than split.
+  - `pub fn pushCodepoint(self: *InputQueue, cp: u21) void`
+  > Queue already-encoded UTF-8 text, one code point at a time (so a
+  > full buffer never splits a character). Malformed input is skipped.
+  - `pub fn pushText(self: *InputQueue, utf8: []const u8) void`
+  > Queue one UTF-16 code unit (Win32 `WM_CHAR`), pairing surrogates.
+  - `pub fn pushUtf16Unit(self: *InputQueue, unit: u16) void`
+  > Build this frame's `InputState` and clear the per-frame edges and
+  > wheel accumulators. Text/key slices alias the queue; see `beginFrame`.
+  - `pub fn finish(self: *InputQueue, resized: bool, width: u32, height: u32) host.InputState`
+
+### `teak.gpu` (`src/gpu/context.zig`)
+
+Gpu interface: the only layer allowed to touch wgpu-native or
+zunk.web.gpu. Everything above (render/, layout/, input/, core/)
+compiles wasm32-freestanding-clean.
+
+- `pub const ClearColor = [4]f32`
+- `pub const FontSpec = text.FontSpec`
+- `pub const TextureHandle = text.TextureHandle`
+- `pub const TEXTURE_HANDLE_NONE = text.TEXTURE_HANDLE_NONE`
+- `pub const TextDraw = text.TextDraw`
+> Options a backend's `initWithOptions` accepts (it also keeps a plain
+> `init(handle, w, h)` that behaves like `.{}`).
+- `struct InitOptions`
+  - fields: `msaa, scene_msaa, scale, max_atlas_pages`
+- `pub fn validateGpu(comptime T: type) void`
+
+### `teak.runtime` (`src/run.zig`)
+
+Canonical application loop — the `teak.run` wrapper.
+
+- `struct RunOptions`
+  - fields: `clear_color, blink_half_ms, snapshot_path, app_name, idle_skip`
+> Declares a second top-level window the app wants open this frame.
+> Data-only (HARDLINE §3): `secondaryWindow(*const Model)` returns this
+> or `null`; `run` diffs it against the live window to open / close /
+> resize the OS window + its GPU surface. The app never touches
+> `Host.openSecondaryWindow` / `Gpu.openSecondarySurface` itself.
+- `struct SecondaryWindowSpec`
+  - fields: `title, width, height`
+> Run the application against `host` + `gpu` until the host signals
+> close. `gpa` backs the per-frame command buffers, the rect store,
+> and the vertex/text/image upload lists (all bulk-managed, never
+> per-widget). `host` must satisfy `validateHost`, `gpu`
+> `validateGpu`; both are taken as `anytype` pointers so `run` never
+> imports a backend.
+> This is `Runtime` driven in a `while (!host.shouldClose())` loop. Hosts
+> that own the loop themselves (the web: the browser calls an exported
+> `frame` once per rAF tick) build a `Runtime` and call `frame` directly.
+- `pub fn run( comptime App: type, gpa: std.mem.Allocator, host: anytype, gpu: anytype, opts: RunOptions, ) !void`
+> The canonical loop body, one `frame` call per iteration, parameterized on
+> the App and the concrete Host/Gpu types (duck-typed against
+> `validateHost` / `validateGpu`; this file imports neither backend).
+> `init` builds the retained loop-orchestration state — double-buffered
+> cmd + rect storage, the Model, the press target, the snapshot sink — and
+> `frame` runs exactly one iteration: poll input, route it against the
+> PREVIOUS frame's layout, service subscriptions, build + lay out the
+> view, fold transient state, rebuild/upload vertices when something
+> changed, present, then the secondary window and the snapshot mirror.
+> The value must not move after `init` returns anything that points into
+> it; none does today, but keep it in one place (a local or a module-level
+> `var`, as the web entry does).
+- `pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type`
+> True if two cmd buffers would render identically. Derived by comptime
+> reflection over `Cmd(Msg)` (`core/eql.zig`): every field of every
+> variant participates, so a new widget or a new style field can never be
+> forgotten here.
+- `pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd(Msg)) bool`
+> True if two rect slices are identical (position + size only).
+- `pub fn rectsEqual(a: []const Rect, b: []const Rect) bool`
+
+### `teak.headless` (`src/headless_run.zig`)
+
+Tool API for headless runs: script input, run frames, grab pixels, write
+a PNG. Everything here is duck-typed over the Host / Gpu / Runtime (it
+imports no backend), so it works with `platform/headless.zig` +
+`Gpu.initOffscreen`; `teak.linkHeadless` wires those up. See
+docs/features/headless.md.
+
+> One scripted step. Steps that only queue input (`move`, `down`, `up`,
+> `wheel`, `chars`, `key`, `mods`) do not run a frame; `frames` and the
+> compound steps do.
+- `union Step`
+  - fields: `frames, move, down, up, wheel, chars, key, mods, click, drag`
+> Run `steps` against a Runtime + Host (anything with `frame()` and the
+> scripting `push*` API of `platform/headless.zig`).
+- `pub fn play(rt: anytype, host: anytype, steps: []const Step) !void`
+- `struct ShotOptions`
+  - fields: `width, height, msaa, scale, steps, settle, run`
+> Run `App` headlessly: build the Host and offscreen Gpu, play the
+> script, capture the last frame to `path` as a PNG. `Host` is
+> `teak-platform-headless`'s `Host`, `Gpu` is `teak-gpu-headless`'s `Gpu`.
+- `pub fn shot( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, path: []const u8, o: ShotOptions, ) !void`
+> `argv[1]` of a `pub fn main(init: std.process.Init)` program, or
+> `default` when absent: the output path of a `zig build shot -- out.png`.
+- `pub fn pathArg(init: anytype, default: []const u8) []const u8`
+> Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). The
+> zlib stream uses stored (uncompressed) blocks: dependency-free and
+> instant, at the cost of ~raw size (1280x800 -> 4 MB). Caller frees.
+- `pub fn encodePng(gpa: std.mem.Allocator, rgba: []const u8, width: u32, height: u32) ![]u8`
+> Write RGBA8 pixels to `path` (relative to the cwd) as a PNG.
+- `pub fn writePng(gpa: std.mem.Allocator, path: []const u8, rgba: []const u8, width: u32, height: u32) !void`
+> Read back the Gpu's last offscreen frame (`Gpu.readFrame`) and write it
+> to `path` as a PNG.
+- `pub fn writeFramePng(gpu: anytype, gpa: std.mem.Allocator, path: []const u8) !void`

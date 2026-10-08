@@ -343,6 +343,21 @@ pub fn build(b: *std.Build) void {
     audit_run.has_side_effects = true;
     audit_run.stdio = .inherit;
 
+    // Generated API reference (docs/api.md + llms-full.txt); `audit` checks it is current.
+    const api_exe = b.addExecutable(.{
+        .name = "teak-gen-api",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gen_api.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const api_run = b.addRunArtifact(api_exe);
+    api_run.setCwd(b.path("."));
+    api_run.has_side_effects = true;
+    api_run.stdio = .inherit;
+    b.step("api", "Regenerate docs/api.md and llms-full.txt from src/teak.zig").dependOn(&api_run.step);
+
     const audit_step = b.step("audit", "Run HARDLINE drift audit (greppable rules from HARDLINE §5)");
     audit_step.dependOn(&audit_run.step);
     audit_step.dependOn(wasm_step);

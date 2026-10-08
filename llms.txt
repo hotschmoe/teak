@@ -21,6 +21,15 @@
   Requires Zig 0.17.0+.
 -->
 
+## Companion files
+
+- `llms-full.txt` — this file plus the generated API reference (every public signature and `///` doc comment).
+  The generated half is also `docs/api.md`. Both come from `tools/gen_api.zig` (`zig build api`); `zig build audit`
+  fails when they are stale. Prose in THIS file stays hand-curated; never edit the generated files.
+- Migration notes, one per Zig version bump (newest last): [docs/migration-0.17.md](docs/migration-0.17.md) — build.zig
+  changes (`b.args`, lowercase optimize modes), toolchain, what did not change in teak's API. A new `docs/migration-<ver>.md`
+  must be linked here (audit-enforced).
+
 ## The core loop
 
 ```
