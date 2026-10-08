@@ -20,7 +20,7 @@ Every arrow is an explicit function call with typed inputs and outputs. No globa
 
 ## Status
 
-- **Proto-2 shipped** on three hosts: **Windows** (Win32 + wgpu-native), **Linux** (X11 + wgpu-native), and **WebAssembly** (WebGPU via [zunk](https://github.com/hotschmoe/zunk)). One `linkNativeWgpu` call picks the native backend by target OS. *(Linux X11 runs under XWayland; a native Wayland backend is not yet implemented.)*
+- **Proto-2 shipped** on three hosts: **Windows** (Win32 + wgpu-native), **Linux** (X11 + wgpu-native), and **WebAssembly** (WebGPU via [zunk](https://github.com/hotschmoe/zunk)). One `linkNativeWgpu` call picks the native backend by target OS. *(Linux picks **Wayland** when `WAYLAND_DISPLAY` is set and its libraries load, else X11/XWayland, at runtime from one binary; `TEAK_BACKEND=x11|wayland` forces one.)*
 - **Text rendering shipped.** Both backends rasterize glyph-accurate text into a texture atlas and draw via `uploadText` / `renderFrame`.
 - **Functional-gaps push landed** on `functional_gaps_yolo`: overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs surface, virtual list, a11y tree, rich text. See [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md).
 - **Declarative effects:** `effects` / `effectMsg` (HARDLINE hatch 7) — HTTP, downloads, file open, storage, clock, clipboard, query params, plus pasted / dropped images and files; see [`docs/features/effects.md`](docs/features/effects.md).
@@ -45,7 +45,7 @@ zig build web            # wasm + WebGPU via zunk — writes dist/
 zig build web-run        # same, then serves dist/ on localhost:8080
 ```
 
-Building the Linux UI needs no X11 dev package (libX11 is `dlopen`ed at runtime); at runtime it needs `libX11.so.6`, a Vulkan driver, and a monospace TTF (DejaVuSansMono by default; override with `TEAK_FONT`, or register your own with `Host.registerFont`).
+Building the Linux UI needs no X11 or Wayland dev packages (libX11, libwayland-client, libxkbcommon are `dlopen`ed at runtime); at runtime it needs `libX11.so.6` (X11) or `libwayland-client.so.0` + `libxkbcommon.so.0` (Wayland), a Vulkan driver, and a monospace TTF (DejaVuSansMono by default; override with `TEAK_FONT`, or register your own with `Host.registerFont`).
 
 Examples (the full list is in the tree below; `zig build audit` fails if one is missing): **counter_greeter** (composed app via `Components`, one counter + one greeter), **todo** (dynamic-list stress: N rows from `Model.items`, `Msg`-with-index for per-row actions, scroll-clipped list), **tree** (recursive view emission, conditional visibility by ancestor state, expand/collapse over a flat pre-order node array), **chrome** (an engineering-workstation shell: header / 360 | flex | 320 columns / status line, bordered cards, bracket tabs, a `teak.Table`, underline fields, hover-inverting buttons, a hard-shadowed overlay, a fully custom `Theme`), **viewport** (an interactive canvas you pan and zoom, plus a scroll list whose scrollbar is sized from `scrollLayoutMsg`), and **effects** (every `teak.Effect` with a visible result: HTTP, download, file open, storage, clock, clipboard, query params, dropped / pasted images), **fonts** (IBM Plex Mono at three weights with tracking: `linkWebWgpu(.fonts)` on the web, `Host.registerFont` on Linux), **scene3d** (depth-tested meshes and orbit camera through `scene3d` + declarative `resources()`), and **kerf_viewer** (a Kerf `mesh.json` 3D viewer with CPU picking and a parts panel).
 
@@ -118,8 +118,12 @@ examples/chrome/           engineering-workstation chrome: cards, tables, bracke
 examples/viewport/         pan/zoom interactive canvas + scroll list with scrollbar
 examples/scene3d/          depth-tested 3D scene: meshes, camera, declarative resources, headless shot
 examples/kerf_viewer/      Kerf mesh.json 3D viewer: Orbit camera, CPU pick, parts panel (scene3d path)
+examples/scene_layers/     2.5D: tilted drawing sheets, translucent annotation layer and image billboards around a 3D model
 examples/effects/          declarative effects: HTTP, files, storage, clock, clipboard, paste/drop
 examples/fonts/            IBM Plex Mono at three weights + tracking (web .fonts, native registerFont)
+examples/tables/            DataTable / VarList / TreeList / Scroller at 100k rows
+examples/gallery/           every widget in one place
+examples/notes/             multi-line TextArea editor
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)

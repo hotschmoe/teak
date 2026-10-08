@@ -115,6 +115,9 @@ route against the **previous** frame's layout, exactly like hit-testing.
 | Decl | Signature | Role |
 |------|-----------|------|
 | `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer events over `CanvasCmd.pointer` canvases: `down` / `move` / `up` / `wheel` / `leave`, and `layout` on first layout and whenever the rect size changes. Semantics in [canvas.md](canvas.md). |
+| `hoverMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the interactive widget under the pointer changed (entered, left, replaced). `ev.hit` is that widget's click Msg, `ev.box` its rect (previous frame), `ev.now_ms` the host clock. Drives `widgets.tooltip`. |
+| `contextMsg` | `(*const Model, PointerEvent(Msg)) ?Msg` | the right button went down; `ev.hit` is the Msg of the widget under the cursor, `null` over empty space. Drives `widgets.menu.ContextMenu`. |
+| `sliderMsg` | `(*const Model, grab: Msg, value: f32) ?Msg` | a `slider` cmd is being dragged: `grab` is its `grab_msg` (which slider), `value` the 0..1 position under the pointer. Fired on press and every frame the left button stays down (pointer captured, so the drag survives leaving the track); the slider's plain click Msg is not dispatched. Without the hook a slider is click-only. |
 | `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over the innermost hovered scroll region whose `ScrollStyle.id != 0`. `dx`/`dy` are DOM-signed px. Return `null` to ignore; the wheel is still consumed. |
 | `scrollLayoutMsg` | `(*const Model, id: u32, viewport_w, viewport_h, content_w, content_h: f32) ?Msg` | for every `ScrollStyle.id != 0` region, on its first layout and whenever its viewport or content size changes. Content is the extent of its children (`teak.scrollExtent`: nested scroll interiors and overlays excluded), independent of the scroll offset — enough to clamp `scroll_y` and size a scrollbar thumb. |
 
@@ -227,9 +230,9 @@ the primary window is unaffected on the other backends.
 
 `RunOptions`:
 - `clear_color: [4]f32` — scene clear color (default dark).
-- `blink_period: u32` — frames between forced rebuilds while a widget is
-  focused, so the text cursor blinks (default 30; matches the renderer's
-  cursor phase). Apps with no text input pay nothing.
+- `blink_half_ms: u32` — text-cursor blink half-period in Host-clock ms
+  (default 500; 0 = no blinking). The caret phase is `TransientState.blink_on`,
+  set from the clock; while idle the loop wakes only at each toggle.
 - `snapshot_path: ?[]const u8` — live-snapshot sink (default `null`).
 - `app_name: []const u8` — names the app for hosts that keep per-app files (native storage under `<config>/teak/<app_name>/`); empty = the window title.
 
@@ -375,16 +378,28 @@ With `RunOptions.idle_skip` (default true) a frame in which nothing happened
 does no pipeline work at all: no view, layout, diff, upload or present. A
 frame is *quiet* when, after routing, there was no input event (pointer
 moved / button / wheel / key / char / resize), no Msg was dispatched (so no
-sub fired, no effect result or window hook arrived), no text input is
-focused (the cursor blink needs frames; `blink_period = 0` lifts this), no
-IME composition, no secondary window, and it is not the first frame.
+sub fired, no effect result or window hook arrived), no
+IME composition, no secondary window, and it is not the first frame. A focused
+text input does not prevent idling: the loop sleeps until the caret's next
+toggle (`RunOptions.blink_half_ms`) and then re-uploads vertices for the last
+built frame with the new phase (`TransientState.blink_on`) — no view or layout.
 `Runtime.quiet` reports it, and `run` then calls the Host's optional
 `waitEvents(timeout_ms)` (documented in `platform/host.zig`) with the time to
-the next due `Sub` (`sub.nextDueMs`; 16 ms while an effect is outstanding,
-else at most 1 s). The web loop stays rAF-driven but skips the same work.
+the nearer of the next due `Sub` (`sub.nextDueMs`) and the next caret toggle
+(16 ms while an effect is outstanding, else at most 1 s). Implemented by the
+X11 (`XPending` + `poll` on the connection fd), Win32
+(`MsgWaitForMultipleObjectsEx`) and headless Hosts; Expose / WM_PAINT surface as
+`InputState.resized` so an uncovered window repaints. The web loop stays
+rAF-driven but skips the same work: a quiet rAF tick costs about 0.2 ms
+in headless Chromium (median, including the JS tick), against 0.8 ms median
+(and heavy tails) with `idle_skip = false` for the chrome example.
 
 Consequences: `ts.frame_counter` and the snapshot `frame=` header count
 frames that actually built; an app that animates must do it through a `Sub`
 (a model field advanced by `.every`), which is the HARDLINE way anyway.
 Measured (headless, 600 identical frames, an 8k-cmd view, ReleaseFast): 337 ms
 without idle skip, 30 ms with it (all of it the one real first frame).
+Idle CPU on a live X11 Host (Xvfb, `TEAK_IDLE_PROBE=1 zig build test-x11
+-Doptimize=ReleaseFast`, a 1000-cmd view with a focused input, 10 s): 6.5% of a
+core with `idle_skip = false` (vsync-paced at 60 Hz) -> 0.05% with it (21 renders:
+the 20 caret toggles plus the first frame).

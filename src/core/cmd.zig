@@ -3,8 +3,14 @@ const oom = @import("oom.zig").oom;
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
 const scene = @import("scene.zig");
-const text_wrap = @import("text_wrap.zig");
+const CursorShape = @import("cursor.zig").CursorShape;
+const surface = @import("surface.zig");
+
+pub const Radii = surface.Radii;
+pub const Shadow = surface.Shadow;
+pub const Gradient = surface.Gradient;
 const eql = @import("eql.zig");
+const text_wrap = @import("text_wrap.zig");
 
 pub const FontSpec = text.FontSpec;
 
@@ -95,6 +101,15 @@ pub const GroupStyle = struct {
     /// keep `padding >= border_width` so children don't paint over it.
     border: ?[4]f32 = null,
     border_width: f32 = 1,
+    /// Rounded corners of the fill and border. With any of `radius`,
+    /// `gradient` or `soft_shadow` set the group draws as one SDF quad (the
+    /// border becomes an inside stroke that follows the corners); with none
+    /// it draws exactly as before.
+    radius: Radii = .{},
+    /// Replaces `bg` as the fill when set.
+    gradient: ?Gradient = null,
+    /// Blurred drop shadow outside the group's rect.
+    soft_shadow: ?Shadow = null,
 
     pub fn padX(self: GroupStyle) f32 {
         return self.pad_x orelse self.padding;
@@ -158,8 +173,18 @@ pub const ButtonStyle = struct {
     min_width: f32 = 60,
     /// Outer height in pixels.
     height: f32 = 36,
+    /// Rounded corners of the fill and border (0 = square, as before).
+    radius: Radii = .{},
+    /// Replaces the state background (`bg` / `hover_bg` / ...) with a
+    /// gradient in the idle state; hover and press keep their flat colours.
+    gradient: ?Gradient = null,
+    /// Blurred drop shadow outside the button (not drawn while pressed or disabled).
+    soft_shadow: ?Shadow = null,
     /// Flex weight on the parent's main axis (see `GroupStyle.flex`).
     flex: f32 = 0,
+    /// Fixed-width label: the button is exactly `min_width` wide whatever the label,
+    /// and a label that does not fit is cut with U+2026 at the pixel (table cells).
+    ellipsis: bool = false,
 };
 
 pub const TextInputStyle = struct {
@@ -186,6 +211,8 @@ pub const TextInputStyle = struct {
     min_width: f32 = 120,
     /// Outer height in pixels.
     height: f32 = 28,
+    /// Rounded corners of the `.boxed` variant (0 = square, as before).
+    radius: Radii = .{},
 };
 
 pub const CheckboxStyle = struct {
@@ -320,12 +347,51 @@ pub fn OverlayStyle(comptime Msg: type) type {
         /// passthrough behavior tooltips / popovers / the debug overlay
         /// rely on.
         modal: bool = false,
+        /// Rounded corners of the backdrop and border.
+        radius: Radii = .{},
+        /// Blurred drop shadow outside the overlay (the hard retro
+        /// `shadow` above is unrelated and can coexist).
+        soft_shadow: ?Shadow = null,
         /// Dispatched when the click lands inside the overlay's rect but
         /// on no interactive leaf — pair with `modal = true` for the
         /// "click outside the dialog to dismiss it" idiom. The Msg is
         /// data only (HARDLINE §3 bans fn-pointer callbacks). Independent
         /// of `modal`, but only meaningful together.
         backdrop_msg: ?Msg = null,
+        /// Anchor the overlay to a widget instead of (x, y): the overlay is
+        /// placed against the rect of the nearest EARLIER leaf in the buffer
+        /// whose click / focus Msg equals this value (`leafMsg`, compared
+        /// by value like `focusedMsg`; the nearest preceding match wins).
+        /// Resolved by the layout pass from the same frame's final rects, so
+        /// there is no frame of latency, no layout event and no app state.
+        /// No match (or null): `x` / `y` / `anchor_*_frac` apply as before.
+        anchor_msg: ?Msg = null,
+        /// Which side of the anchor widget the overlay opens on.
+        anchor_side: AnchorSide = .below_start,
+        /// Pixels between the anchor's edge and the overlay.
+        anchor_gap: f32 = 0,
+    };
+}
+
+/// Where an `OverlayStyle.anchor_msg` overlay sits relative to its widget.
+/// `*_start` aligns the overlay's left (or top) edge with the widget's,
+/// `*_end` aligns the right edge. No flipping at the window edge.
+pub const AnchorSide = enum { below_start, below_end, above_start, above_end, right_start, left_start };
+
+/// The click / focus Msg a leaf carries (what `OverlayStyle.anchor_msg`
+/// matches), or null for containers and decorative leaves. Exhaustive, so a
+/// new Cmd variant must decide whether it can anchor an overlay.
+pub fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
+    return switch (c) {
+        .button => |b| b.msg,
+        .text_input => |t| t.focus_msg,
+        .text_area => |t| t.focus_msg,
+        .checkbox => |x| x.msg,
+        .radio => |r| r.msg,
+        .slider => |s| s.grab_msg,
+        .canvas => |cv| cv.msg,
+        .scene3d => |sc| sc.msg,
+        .push_group, .pop_group, .push_scroll, .pop_scroll, .push_overlay, .pop_overlay, .push_virtual_list, .pop_virtual_list, .text, .rich_text, .image, .divider => null,
     };
 }
 
@@ -383,6 +449,19 @@ pub const VirtualListStyle = struct {
     visible_end: u32 = 0,
     padding: f32 = 0,
     gap: f32 = 0,
+    /// Variable-height rows. When > 0 the list claims exactly this much main-axis
+    /// space (the app knows the rows' prefix sums), `item_extent` and
+    /// `total_count` are ignored, and the emitted rows (`visible_start`..
+    /// `visible_end`, any heights) start `start_offset` px from the list's start.
+    total_extent: f32 = 0,
+    start_offset: f32 = 0,
+    /// Cross-axis placement of the rows (`.stretch` fills the list's width).
+    align_cross: Align = .start,
+    /// Non-zero opts into measured-row reports: `teak.run` hands the heights
+    /// of the emitted rows (direct children) to the App's
+    /// `virtualRowsMsg(model, id, first_row, heights)` whenever they change, so
+    /// a variable-height list can learn real heights from layout.
+    id: u32 = 0,
 };
 
 // ── Rich text (functional gap #8) ───────────────────────────────────
@@ -608,6 +687,9 @@ pub fn CanvasCmd(comptime Msg: type) type {
         /// Identifies the canvas in `CanvasEvent.id`. Non-zero and distinct
         /// per interactive canvas.
         id: u32 = 0,
+        /// Cursor shown while the pointer is over this (interactive) canvas;
+        /// null keeps the arrow. The App's `cursorFor` hook still wins.
+        cursor: ?CursorShape = null,
     };
 }
 
@@ -655,6 +737,9 @@ pub fn SceneCmd(comptime Msg: type) type {
         msg: ?Msg = null,
         /// Accessible name for the a11y tree.
         label: []const u8 = "",
+        /// Placed items, grid, gizmo, cut, material (`viewport3d`). With no
+        /// items this is the legacy single-mesh scene.
+        view: scene.view.View = .{},
     };
 }
 
@@ -674,6 +759,9 @@ pub fn ButtonCmd(comptime Msg: type) type {
         /// (hit-test/hover skip it). Layout is unaffected — same rect either
         /// way, so a disabled button stays where it is without shifting.
         disabled: bool = false,
+        /// Byte index into `label` of one ASCII character to underline (a
+        /// menu mnemonic: the "F" of "File"). Null = no underline.
+        underline: ?u16 = null,
     };
 }
 
@@ -1217,6 +1305,30 @@ pub fn CmdBuffer(comptime Msg: type) type {
             } }) catch oom();
         }
 
+        /// A styled button whose label has one underlined character (a
+        /// mnemonic hint). `at` indexes `label`; out of range draws nothing.
+        pub fn buttonStyledUnderlined(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle, at: ?usize) void {
+            self.cmds.append(self.backing, .{ .button = .{
+                .msg = msg,
+                .label = label,
+                .style = style,
+                .font = self.theme.typography.body,
+                .underline = if (at) |i| @intCast(i) else null,
+            } }) catch unreachable;
+        }
+
+        /// `buttonDisabled` with an explicit style (a compact menu row stays
+        /// its own height when disabled).
+        pub fn buttonStyledDisabled(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle) void {
+            self.cmds.append(self.backing, .{ .button = .{
+                .msg = msg,
+                .label = label,
+                .style = style,
+                .font = self.theme.typography.body,
+                .disabled = true,
+            } }) catch unreachable;
+        }
+
         pub fn textInput(
             self: *Self,
             focus_msg: Msg,
@@ -1376,6 +1488,10 @@ pub fn CmdBuffer(comptime Msg: type) type {
         pub fn scene3d(self: *Self, cmd: SceneCmd(Msg)) void {
             self.cmds.append(self.backing, .{ .scene3d = cmd }) catch oom();
         }
+
+        /// The 3D viewport: `scene3d` with `cmd.view` populated (placed
+        /// `Item`s, grid, gizmo, section cut). Same Cmd, same passes.
+        pub const viewport3d = scene3d;
 
         /// Interactive canvas: pointer input over it (down/move/up/wheel/
         /// leave, plus `layout` on first layout and resize) reaches the
@@ -2099,11 +2215,22 @@ test "CmdBuffer.pushFormRow: documented depth of 8 is reachable without tripping
     while (i < DEPTH) : (i += 1) {
         cb.pushFormRow(.{ .label = "row" });
     }
-    try testing.expectEqual(DEPTH, cb.form_row_depth);
+    try std.testing.expectEqual(DEPTH, cb.form_row_depth);
 
     i = 0;
     while (i < DEPTH) : (i += 1) cb.popFormRow();
-    try testing.expectEqual(@as(u8, 0), cb.form_row_depth);
+    try std.testing.expectEqual(@as(u8, 0), cb.form_row_depth);
+}
+
+test "SceneCmd.eql compares view content (items by value)" {
+    const SC = SceneCmd(void);
+    const items_a = [_]scene.view.Item{.{ .mesh = 1, .id = 4 }};
+    const items_b = [_]scene.view.Item{.{ .mesh = 1, .id = 4 }};
+    const a: SC = .{ .view = .{ .items = &items_a } };
+    var b: SC = .{ .view = .{ .items = &items_b } };
+    try std.testing.expect(eql.deepEql(SC, a, b));
+    b.view.grid = .{};
+    try std.testing.expect(!eql.deepEql(SC, a, b));
 }
 
 test "CmdBuffer.scene3d emits a scene3d cmd with defaults" {

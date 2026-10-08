@@ -131,7 +131,9 @@ pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize; // fills 
 The lifecycle and the JS/wasm buffer protocol are written down once, in
 zunk's `docs/ARCHITECTURE.md` ("Host services: `web.fx`").
 
-### Native (Linux/X11 in `src/platform/native_effects.zig`; Win32 answers `unsupported`)
+### Native (Linux X11 + Wayland in `src/platform/native_effects.zig`; Win32 answers `unsupported`)
+
+The Wayland host (`wayland.zig`) implements `write_clipboard`, paste (`pasted_text` / PNG `dropped`) and file/text drops on `wl_data_device` with the same result shapes as X11 below (pipes instead of selections; no INCR needed); `Clipboard.read` is a bounded 250 ms pipe read.
 
 | Effect | Implementation |
 |---|---|
