@@ -114,7 +114,7 @@ Same App, same layout engine, same shaders, same MSAA path, so geometry, colours
 
 ## Limits
 
-- `linkHeadless` is Linux-only for now (the stb-text headless stitch; Windows would need its own).
+- `linkHeadless` works on Linux and Windows. On Windows `zig build shot` runs the exe from the zig cache, where `wgpu_native.dll` is not beside it: the build installs the DLL to `zig-out\bin`, so add that directory to `PATH` (or run the installed exe) — CI does the former. On a machine without a GPU (CI runners, containers) set `TEAK_GPU_FALLBACK=1` to ask wgpu for a software adapter (DX12 WARP on Windows, lavapipe / SwiftShader on Linux); CI does this on `windows-latest` and uploads the PNG.
 - One primary window; secondary windows are not simulated.
 - `zig build shot` runs the GPU for real: it needs a Vulkan driver (no software fallback is guaranteed) and exits with an error where none opens.
 - The PNG writer stores uncompressed blocks; run an external optimizer if size matters.
@@ -127,3 +127,12 @@ and plays one of several named scripts (`ShotState{ .name, .steps }`; the first 
 example's `zig build shot` uses it. `ShotOptions.fonts` registers embedded TTFs on the Host (the
 fonts example). `decodePng` reads PNGs back (8-bit RGB/RGBA, any filter). See
 [visual-regression.md](visual-regression.md).
+
+## Step ordering inside one frame
+
+A real `InputState` carries `chars` and `keys` as two separate lists, and the
+run loop handles all characters first, then all special keys. The scripted
+steps (`.chars`, `.key`, `.click`, ...) queue into the same shape, so within a
+single `.frames` batch **characters are delivered before special keys** no matter
+the order you wrote them in. To interleave (type, Enter, type), put a
+`.frames = 1` between the steps.

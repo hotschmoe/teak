@@ -36,6 +36,9 @@ pub const SpecialKey = enum {
     // hasn't been taught to emit it yet simply never delivers it; forward
     // Tab still works.
     shift_tab,
+    // Shift+Enter: a newline where plain Enter submits (chat boxes). `teak.run`
+    // treats only plain `enter` as submit; this one reaches `keySpecialMsg`.
+    shift_enter,
 
     // Ctrl chords for the text-input prose path. Apps that don't care
     // can ignore them — the Host still delivers them when the user
@@ -59,4 +62,15 @@ pub const SpecialKey = enum {
     ctrl_shift_end,
     ctrl_backspace,
     ctrl_delete,
+
+    /// F12. `teak.run` consumes it to toggle the dev inspector panel when
+    /// `RunOptions.inspect_hotkey` is on (Debug builds by default); otherwise
+    /// it reaches the app like any other key.
+    f12,
+    // Menu-bar activation (see `teak.MenuBar`). F10 is the portable one; a
+    // bare Alt tap (Alt pressed and released with no other key or button in
+    // between) activates the bar on hosts that can see Alt on its own. Both
+    // are *requests*; the app decides whether a menu bar exists.
+    f10,
+    alt_tap,
 };

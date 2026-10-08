@@ -8,9 +8,15 @@ const teak = @import("teak");
 const Host = @import("teak-platform-headless").Host;
 const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
+const script_fonts = @import("script_fonts.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const faces = script_fonts.load(init.gpa, init.io);
+    defer script_fonts.free(init.gpa, faces);
+    var shot_fonts: [8]teak.headless.ShotFont = undefined;
+    for (faces, 0..) |f, i| shot_fonts[i] = .{ .family = f.family, .weight = f.weight, .bytes = f.bytes };
     try teak.headless.shotCli(App, Host, Gpu, init, "notes.png", .{
+        .fonts = shot_fonts[0..faces.len],
         .width = 1280,
         .height = 800,
         .run = .{ .clear_color = App.bg },
@@ -36,5 +42,11 @@ pub fn main(init: std.process.Init) !void {
                 .{ .frames = 2 },
             },
         },
+        // With script faces present (see script_fonts.zig), the "Show scripts" line opened.
+        .{ .name = "scripts", .steps = &.{
+            .{ .frames = 3 },
+            .{ .click = .{ 60, 765 } },
+            .{ .frames = 2 },
+        } },
     });
 }

@@ -28,7 +28,18 @@ pub const GlyphBitmap = struct {
     bearing_y: i32,
 };
 
+/// SDF glyphs are rasterized once at this em size (px), with `sdf_padding` px of
+/// distance field around the outline: value `sdf_onedge` (of 255) is the edge,
+/// `sdf_dist_scale` byte steps per source pixel. Drawn at any size by scaling the quad.
+const sdf_source_em: f32 = 32;
+const sdf_padding: c_int = 6;
+const sdf_onedge: u8 = 128;
+const sdf_dist_scale: f32 = 32;
+
 pub const StbttRasterizer = struct {
+    /// Source em size of `rasterizeSdf` bitmaps (px).
+    pub const sdf_em: f32 = sdf_source_em;
+
     allocator: std.mem.Allocator,
     cover: std.ArrayList(u8) = .empty,
 
@@ -53,6 +64,25 @@ pub const StbttRasterizer = struct {
     pub fn ascent(_: *StbttRasterizer, font: teak.FontSpec, scale: f32) f32 {
         const r = face_mod.resolveFace(font.family, font.weight) orelse return 0;
         return r.face.vMetrics(font.size_px * scale).ascent;
+    }
+
+    /// The glyph's signed distance field at `sdf_em` (padding included in the
+    /// bitmap; bearings are in source px at that size, relative to the baseline pen).
+    /// Blank glyphs return a zero-size bitmap. `pixels` is valid until the next call.
+    pub fn rasterizeSdf(self: *StbttRasterizer, face: u16, gid: u16) ?GlyphBitmap {
+        const f = face_mod.faceById(face) orelse return null;
+        const s = f.scaleForEm(sdf_source_em);
+        var w: c_int = 0;
+        var h: c_int = 0;
+        var xoff: c_int = 0;
+        var yoff: c_int = 0;
+        const px = c.stbtt_GetGlyphSDF(&f.info, s, gid, sdf_padding, sdf_onedge, sdf_dist_scale, &w, &h, &xoff, &yoff);
+        if (px == null or w <= 0 or h <= 0) return .{ .pixels = &.{}, .width = 0, .height = 0, .bearing_x = xoff, .bearing_y = yoff };
+        defer c.stbtt_FreeSDF(px, null);
+        const n: usize = @as(usize, @intCast(w)) * @as(usize, @intCast(h));
+        self.cover.resize(self.allocator, n) catch return null;
+        @memcpy(self.cover.items, px[0..n]);
+        return .{ .pixels = self.cover.items, .width = @intCast(w), .height = @intCast(h), .bearing_x = xoff, .bearing_y = yoff };
     }
 
     pub fn rasterizeGlyph(self: *StbttRasterizer, face: u16, gid: u16, size_px: f32, bin: u2) ?GlyphBitmap {
@@ -80,6 +110,23 @@ pub const StbttRasterizer = struct {
         };
     }
 };
+
+test "rasterizeSdf: edge value at the outline, ~0 far outside, ~255 deep inside" {
+    defer face_mod.releaseFaces();
+    var rast = StbttRasterizer.init(std.testing.allocator) catch unreachable;
+    defer rast.deinit();
+    const r = face_mod.resolveFace(.mono, .regular) orelse return;
+    const bmp = rast.rasterizeSdf(r.id, r.face.glyphIndex('I')) orelse return error.SdfFailed;
+    try std.testing.expect(bmp.width > 2 * sdf_padding and bmp.height > 2 * sdf_padding);
+    try std.testing.expectEqual(@as(usize, bmp.width * bmp.height), bmp.pixels.len);
+    // The padded corner is far outside the glyph: low; the centre of the stem is inside: high.
+    try std.testing.expect(bmp.pixels[0] < 40);
+    const cx = bmp.width / 2;
+    const cy = bmp.height / 2;
+    try std.testing.expect(bmp.pixels[cy * bmp.width + cx] > sdf_onedge);
+    const sp = rast.rasterizeSdf(r.id, r.face.glyphIndex(' ')).?;
+    try std.testing.expectEqual(@as(u32, 0), sp.width);
+}
 
 test "rasterizeGlyph: ink for 'H', blank for space, bins shift coverage" {
     defer face_mod.releaseFaces();

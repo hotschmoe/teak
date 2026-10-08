@@ -20,6 +20,8 @@ pub const transient = @import("core/transient.zig");
 pub const text = @import("core/text.zig");
 /// UAX#29 graphemes, word boundaries, lossy UTF-8 decoding and Unicode property lookups.
 pub const unicode = @import("core/unicode.zig");
+/// UAX #9 bidirectional algorithm: levels, per-line visual runs, visual caret movement, selection spans.
+pub const bidi = @import("core/bidi.zig");
 /// UAX#14-lite line-break opportunities over grapheme clusters.
 pub const linebreak = @import("core/linebreak.zig");
 /// Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.
@@ -42,12 +44,30 @@ pub const text_field = @import("core/text_field.zig");
 pub const numeric_field = @import("core/numeric_field.zig");
 /// `Dropdown`: a closed button plus an open overlay list.
 pub const dropdown = @import("core/dropdown.zig");
+/// `Scroller`: scroll position with smooth wheel and kinetic fling, as Model data.
+pub const Scroller = @import("core/scroller.zig").Scroller;
+/// `DataTable(cfg)`: virtualized, sortable, resizable, selectable table for 100k+ rows.
+pub const data_table = @import("core/data_table.zig");
+pub const DataTable = data_table.DataTable;
+/// Column definition of a `DataTable`.
+pub const DataTableColumn = data_table.Column;
+/// `VarList(cap)`: virtualized list with per-row heights measured by layout, scroll-anchored.
+pub const var_list = @import("core/var_list.zig");
+pub const VarList = var_list.VarList;
+/// `TreeList(cap)`: virtualized tree over a preorder node set; expand/collapse + keyboard.
+pub const tree_list = @import("core/tree_list.zig");
+pub const TreeList = tree_list.TreeList;
 /// `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
 pub const combobox = @import("core/combobox.zig");
+/// Widgets built from existing Cmd primitives: toggle, progress, tabs, split pane,
+/// tooltip, toast, dialog, menu bar, context menu.
+pub const widgets = @import("core/widgets.zig");
 /// `ComponentList`: a dynamic homogeneous list of components.
 pub const component_list = @import("core/component_list.zig");
 /// `appendDebugOverlay`: dump the frame's cmds and rects as an overlay.
 pub const debug_overlay = @import("core/debug_overlay.zig");
+/// Dev inspector panel (widget tree, hovered cmd, Msg log, timings) as overlay cmds.
+pub const inspector = @import("core/inspector.zig");
 /// LLM-readable text serialization of a frame (`[]Cmd` + `[]Rect`).
 pub const snapshot = @import("core/snapshot.zig");
 /// Pure line-chart primitive builder for canvases.
@@ -56,6 +76,10 @@ pub const chart = @import("core/chart.zig");
 pub const table = @import("core/table.zig");
 /// Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
 pub const pointer = @import("core/pointer.zig");
+/// Mouse-cursor shapes and the hovered-cmd picker (`Host.setCursor`, App `cursorFor`).
+pub const cursor = @import("core/cursor.zig");
+pub const CursorShape = cursor.CursorShape;
+pub const HoverKind = cursor.HoverKind;
 /// Declarative effects (HARDLINE hatch 7): data describing I/O the Host performs.
 pub const effects = @import("core/effects.zig");
 /// Data types for `scene3d`: meshes, camera and per-frame scene draws.
@@ -88,6 +112,12 @@ pub const gpu = @import("gpu/context.zig");
 pub const runtime = @import("run.zig");
 /// Scripted-input headless runs for tests and tooling.
 pub const headless = @import("headless_run.zig");
+/// Hot reload for dev builds: the App as a shared library behind a stable loader (docs/features/hot-reload.md).
+pub const dev = @import("dev.zig");
+/// Agent control channel + input record/replay (docs/features/agent-driver.md).
+pub const control = @import("control.zig");
+/// Input record/replay file format.
+pub const input_record = @import("input_record.zig");
 
 /// The flat command union for a given `Msg`; the unit every pass walks.
 pub const Cmd = cmd.Cmd;
@@ -99,6 +129,8 @@ pub const GroupStyle = cmd.GroupStyle;
 pub const ScrollStyle = cmd.ScrollStyle;
 /// Placement and look of a `push_overlay` (second z-layer).
 pub const OverlayStyle = cmd.OverlayStyle;
+/// Which side of its anchor widget an `OverlayStyle.anchor_msg` overlay opens on.
+pub const AnchorSide = cmd.AnchorSide;
 /// Geometry of a `push_virtual_list` (only visible rows are emitted).
 pub const VirtualListStyle = cmd.VirtualListStyle;
 /// Intrinsic size and flex of an `image` leaf.
@@ -127,6 +159,12 @@ pub const MAX_BALANCE_DEPTH = cmd.MAX_BALANCE_DEPTH;
 pub const ButtonCmd = cmd.ButtonCmd;
 /// Colors, size and alignment of a button.
 pub const ButtonStyle = cmd.ButtonStyle;
+/// Per-corner radii for SDF surfaces.
+pub const Radii = cmd.Radii;
+/// Soft box shadow.
+pub const Shadow = cmd.Shadow;
+/// Two-stop gradient.
+pub const Gradient = cmd.Gradient;
 /// A single-style text leaf.
 pub const TextCmd = cmd.TextCmd;
 /// A single-line text input leaf (cursor, selection, focus Msg).
@@ -178,6 +216,10 @@ pub const Modifiers = pointer.Modifiers;
 pub const Button = pointer.Button;
 /// One pointer event on an interactive canvas or scene.
 pub const CanvasEvent = pointer.CanvasEvent;
+/// What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
+pub const PointerEvent = pointer.PointerEvent;
+/// A window-space rectangle (`PointerEvent.box`).
+pub const Box = pointer.Box;
 /// Kind of a `CanvasEvent` (press, move, release, wheel, ...).
 pub const CanvasEventKind = pointer.CanvasEventKind;
 
@@ -195,6 +237,12 @@ pub const MeshData = scene.MeshData;
 pub const Camera = scene.Camera;
 /// One 3D scene to render this frame.
 pub const SceneDraw = scene.SceneDraw;
+pub const SceneItem = scene.Item;
+pub const SceneSprite = scene.Sprite;
+pub const ScenePlane = scene.Plane;
+pub const SceneData = scene.SceneData;
+pub const SceneItemFlags = scene.ItemFlags;
+pub const SceneView = scene.View;
 
 /// A declared GPU resource (image or mesh) keyed by an app-chosen key.
 pub const Resource = resources.Resource;
@@ -268,6 +316,10 @@ pub const SliderDrag = hit_test.SliderDrag;
 pub const nextFocusable = focus.nextFocusable;
 /// Previous focusable cmd index before `current`, wrapping around.
 pub const prevFocusable = focus.prevFocusable;
+/// `nextFocusable` over every keyboard-operable leaf (buttons, checkboxes, radios, sliders, text fields): the Tab order of `RunOptions.keyboard_nav`.
+pub const nextNavigable = focus.nextNavigable;
+/// `prevFocusable` over every keyboard-operable leaf.
+pub const prevNavigable = focus.prevNavigable;
 /// Cmd index of the interactive leaf carrying a given focus Msg.
 pub const indexOfFocusMsg = focus.indexOfFocusMsg;
 /// The activation / focus Msg of the leaf at an index, if any.
@@ -290,6 +342,8 @@ pub const runSubs = sub.runSubs;
 pub const Theme = theme.Theme;
 /// Semantic color set of a theme.
 pub const Palette = theme.Palette;
+/// Radii, border width, spacing and shadow elevations of a theme.
+pub const ThemeTokens = theme.Tokens;
 /// Font set of a theme.
 pub const Typography = theme.Typography;
 /// The default dark palette.
@@ -325,6 +379,10 @@ pub const textFieldSpecial = text_field.textFieldSpecial;
 pub const textFieldReplaceSelection = text_field.textFieldReplaceSelection;
 /// True if a key needs host-level clipboard access.
 pub const keyNeedsClipboard = text_field.keyNeedsClipboard;
+/// The Msg for a clipboard chord on a field, for the App's `clipboardMsg` hook.
+pub const textFieldClipboardMsg = text_field.textFieldClipboardMsg;
+/// What Ctrl+C / Ctrl+X copy from a field Model, for the App's `clipboardText` hook.
+pub const textFieldCopyText = text_field.textFieldCopyText;
 
 /// The GPU vertex layout shared by every quad (position, color, uv).
 pub const Vertex = vertex.Vertex;

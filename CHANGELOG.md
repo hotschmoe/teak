@@ -2,6 +2,87 @@
 
 ## Unreleased
 
+### `pointerMsg`: one pointer hook, blank-space clicks delivered
+
+- New optional App hook `pointerMsg(*const Model, PointerEvent(Msg)) ?Msg`.
+  `PointerEvent` gained `kind` (`hover` / `down` / `up` / `context`), `button`
+  and `isBlank()`. A press on blank space arrives as `kind = .down, hit = null`,
+  so an app can clear its own focus (the old hooks never reported it).
+  `hoverMsg` / `contextMsg` keep working. chrome and gallery now clear their
+  text focus on a blank click.
+
+### Clipboard: Msg-returning hooks (HARDLINE §1 fix)
+
+- New optional App hooks `clipboardText(*const Model, SpecialKey) ?[]const u8`
+  (what Ctrl+C / Ctrl+X copy; a pure query, the loop writes the Host clipboard)
+  and `clipboardMsg(*const Model, SpecialKey, paste) ?Msg` (the Msg for the
+  chord; `paste` is the clipboard text for Ctrl+V, an empty paste is not
+  delivered). Helpers `teak.textFieldClipboardMsg` / `teak.textFieldCopyText`.
+- **Deprecated:** `keyNeedsClipboard` + `handleClipboard(*Model, ...)` mutated the
+  Model outside `update`. They still work when neither new hook is declared, and
+  are removed next release. See docs/migration-clipboard.md.
+### Kerf dogfood
+
+- `examples/kerf_viewer` is now the Kerf workstation: SECTION / ISO drawings on a pan/zoom canvas (vellum + blue grid,
+  the Kerf tessellator ported into the example), the 3D tab, one selection/hover shared by the table, the sheets and the
+  3D view, a `TextArea` NOTES card, and an OPERATOR CONSOLE with a scripted Claude (no network). See its README.
+- `SpecialKey.shift_enter` (resolved by `InputQueue.resolveKey` on every host); `TextArea.keyMsg` maps it to a newline,
+  so "Enter submits, Shift+Enter newline" needs no host code (`submitMsg` still fires only for plain Enter).
+### Text perf: 10k runs 8.4 -> ~3.2 ms per warm frame
+
+- teak-text: short pure-ASCII runs measure straight from the face's ASCII tables
+  (no cache probe, no shaper); kern pairs are cached per face; the native measure
+  cache is 4096 slots / 96 bytes. Results are bit-identical to `shape`.
+- `TextStage`: a draw whose geometry, font, colour, clip and text match the same
+  draw index last frame replays its glyph instances (Host-side, losable; guarded
+  by atlas page generation).
+- `tools/bench` compiles again; the chrome `--stress` bench disables idle skip.
+
+### Optional HarfBuzz shaper
+
+- `-Dharfbuzz=true` (library tests) / `.harfbuzz = true` (`NativeWgpuOptions`,
+  `HeadlessOptions`): complex scripts (Arabic joining, Hebrew, Indic reordering and
+  conjuncts, GPOS mark attachment) are shaped by HarfBuzz 11.2.1, built from its
+  single-source `harfbuzz.cc` as a lazy package (default builds fetch nothing and
+  are unchanged). Native only. `ShapedGlyph` gains `y` (baseline offset).
+  Direction is a stand-in until bidi lands. `examples/notes`: "Show scripts".
+  See docs/features/harfbuzz.md.
+### Fixed
+
+- **SDF quads lost their records when the vertex buffer grew** (visible with `modern_light`: after a dropdown
+  opened, buttons lost their fill, one drew shifted, stray dots appeared). The solid bind group (vertex buffer as
+  read-only storage) was rebuilt only when the buffer *handle* changed; a reallocation can hand the old handle
+  back, leaving the group on the stale buffer. It now also tracks the buffer size. Regression test:
+  `sdf: records survive the vertex buffer growing and shrinking between frames` (`zig build test-gpu`).
+
+### Bidi (UAX #9)
+
+- New `teak.bidi` (pure, `src/core/bidi.zig`): the full Unicode 16 bidirectional algorithm
+  (P2-P3, X1-X10 with isolates, W1-W7, N0 bracket pairs, N1-N2, I1-I2, L1-L2) plus per-line
+  visual runs, visual-order left/right caret movement (with affinity) and selection highlight
+  spans. Passes all 91,707 lines of BidiCharacterTest.txt (a 306-line excerpt is the committed
+  regression test). `tools/gen_unicode.zig` now also generates `Bidi_Class` and paired-bracket
+  tables. Not yet wired into rendering / `Editor` (see docs/features/bidi.md).
+### Overlay anchoring
+
+- `OverlayStyle.anchor_msg` / `anchor_side` / `anchor_gap`: an overlay can be
+  placed against a widget by its click / focus Msg (`cmd.leafMsg`), resolved by
+  the layout pass from the same frame's rects. `Dropdown` and `Combobox` use it
+  by default (`auto_anchor = true`): apps no longer compute `list_x` / `list_y`
+  (they apply only with `auto_anchor = false`). Behaviour change: callers that
+  passed coordinates now get the auto position; set `.auto_anchor = false` to keep
+  the old placement. New `teak.AnchorSide`.
+
+### Idle hosts and blink-aware idle
+
+- `Host.waitEvents(timeout_ms)` on X11 (poll on the connection fd), Win32
+  (`MsgWaitForMultipleObjectsEx`); `Expose` / `WM_PAINT` now request a repaint.
+  Wayland: see its branch.
+- **Breaking:** `RunOptions.blink_period` (frames) is replaced by
+  `blink_half_ms` (Host-clock ms, default 500; 0 = no blink). The caret phase is
+  the new `TransientState.blink_on`; a focused text input no longer prevents
+  idle skipping — the loop wakes at each toggle and re-uploads vertices only.
+
 ### Animation primitive
 
 - New `teak.anim`: `Tween(T)` (Model-resident), `Ease`/`ease`, `lerp`. New
@@ -81,17 +162,130 @@
   build left the shown frame stale: the next frame had nothing of its own to do and was skipped as idle, so e.g.
   the viewport example kept showing `canvas 0 x 0` and no grid until the first input. `Runtime.layout_dirty` now
   forces that follow-up frame.
+- **"café" (e + U+0301) rendered as "cafe" with faces that lack the combining mark** (the web default face). The shaper now NFC-composes a base + combining
+  mark when the face has the precomposed letter (`src/text/compose_table.zig`, generated by `tools/gen_compose.py`: Latin-1/Extended-A/B, Greek and Cyrillic
+  pairs, ~330 entries), and the web default face now includes the common combining marks (U+0300-030C, 0327, 0328), so accents it cannot compose are still
+  drawn, centred over the base. Wasm: about +2 KB gzip.
 
 ### Added
 
+- Keyboard gaps closed: a focusable split divider (`Split.dividerFocusable`, arrows / Home / End via new `CanvasEventKind.key` events), keyboard scrolling of the region around the focused widget (arrows, PageUp / PageDown, Home / End through `scrollMsg`), keyboard focus reported to `hoverMsg` (tooltips show for the focused widget), Escape dismisses toasts (`Toast.keyMsg`). `cb.canvasInteractiveFocusable`.
+- **HiDPI scenes.** Native 3D scene targets are rendered at device resolution (logical size x scale) instead of logical-then-magnified; `TEAK_SCALE=2 zig build shot` takes any headless example at 2x. test-gpu pins scene seam position, 1-logical-px line width and 1:1 image texels at scale 2.
+
+- Keyboard navigation everywhere (`RunOptions.keyboard_nav`, default on): Tab / Shift+Tab over buttons, checkboxes, radios, sliders, clickable canvases (toggle switch) and text fields; a focus ring (`Palette.accent`, `Tokens.focus_ring_width`) in every look; Space / Enter activate; arrows move and select inside radio groups and set sliders (`sliderMsg`); modal overlays move focus inside and restore it to the opener on close; focus is keyed by the widget's Msg so it survives list mutations; optional `blurMsg` hook; `nextNavigable` / `prevNavigable`. Focus audit matrix in docs/features/focus.md; gallery asserts every enabled widget is Tab-reachable.
+- **Colour emoji (web).** Glyphs no face has and that are emoji / pictographs go through a second, RGBA atlas
+  (`TextStage.catlas`, 1024x1024 pages, glyph key `mode = 2`; instance `flags` mode 2 draws the texels as they are, instance alpha
+  fades them). The web backend fills it from canvas 2D via zunk's new `gpu.rasterClusterRgba` (needs the zunk change), so the browser's colour
+  emoji font shows in colour. Emoji advance one em. Native has the whole RGBA path (pixel-tested with a stub rasterizer) but no source of colour glyphs yet:
+  stb cannot read COLR/CBDT/sbix, and decoding sbix/CBDT PNG strikes needs the PNG decoder from the visual-regression PR; until then native shows the face's
+  missing-glyph box. Providers opt in with `rasterizeColor(utf8, FontSpec, size_px) ?GlyphBitmap` (RGBA).
+
+- **Scalable (SDF) text.** `FontSpec.scalable = true` draws a glyph from a signed distance field rasterized ONCE (stb
+  `GetGlyphSDF`, 32 px source, shared R8 atlas pages, `GlyphKey.mode = 1`) instead of once per size: crisp from below 1x to 8x+ with no
+  re-rasterization or blur, positioned at exact (unsnapped) coordinates. `shaders/glyph.wgsl` branches per instance on `flags` (bits 0-1 mode,
+  bits 16-31 quad scale) and samples bilinearly. New `CanvasPrimitive.text` draws labels inside a canvas; `examples/viewport` labels its grid
+  with scalable text and gains `zig build shot -- out.png --zoom Z`. Native and web (the wasm math shim gained small cbrt/cos/acos; chrome-sized
+  apps pay about 4-5 KB gzip for the SDF code). Not for UI text: a distance field is softer than a hinted bitmap at 12-16 px.
+
+- **Win32 leftovers.** The window is an OLE drop target (`IDropTarget`): files, text and images dragged in arrive as `dropped` results (images as PNG <= 1568 px plus an RGBA thumbnail, like web). A Ctrl+V that `handleClipboard` does not claim becomes `pasted_text` or, for a clipboard image (PNG / CF_DIB), a `dropped` image. PNG / JPEG files dropped are `kind = .image` on every native host. The IME mirror (`imeState()`) has a synthetic-message unit test.
+- **Hot reload** (docs/features/hot-reload.md): `teak.dev` + `zig build dev` (examples/todo): the App as `libapp.so` behind a stable loader
+  that keeps the window, GPU and control socket; the Model (when `typeFingerprint` matches) and TransientState carry across rebuilds.
+  `tools/hot_reload_check.sh` is the end-to-end test.
+
+- Native glyph fallback chain (`src/text/fallback.zig`): per code point the shaper tries the requested face, the family's other weights,
+  the other registered families, `registerFallbackFace` faces, then lazily-probed system fonts (DejaVu Sans, Noto Sans / CJK / Emoji,
+  WenQuanYi, FreeSans, Unifont; `TEAK_FALLBACK_FONTS` prepends paths). Tofu only when nothing has the glyph; ZWJ / variation selectors /
+  other default-ignorables take no space. Measurement, raster and atlas agree (one shaper decision, face ids above `fallback_face_id`).
+- Wrapped `rich_text` (`RichTextCmd.wrap/max_lines/text_align`, `cb.richParagraph`): lines break across spans with mixed fonts and colours.
+- `InputQueue` caps raised to 256 chars / 64 keys per frame and overflow is counted (`dropped`) and logged.
 - `text_area` Cmd + `TextArea(cap)` component + `textMsg` hook (text-engine PR11a/PR11b, closes the multi-line half of #6):
   wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,
   drag incl. outside, double/triple click, wheel), visual Up/Down/Home/End with a sticky column, layout `metrics` events,
   `Host.setImeSpot` from the focused caret; `Editor.applyPointer`; `examples/notes`. See docs/features/text-area.md.
+- **Scalable (SDF) text.** `FontSpec.scalable = true` draws a glyph from a signed distance field rasterized ONCE (stb
+  `GetGlyphSDF`, 32 px source, shared R8 atlas pages, `GlyphKey.mode = 1`) instead of once per size: crisp from below 1x to 8x+ with no
+  re-rasterization or blur, positioned at exact (unsnapped) coordinates. `shaders/glyph.wgsl` branches per instance on `flags` (bits 0-1 mode,
+  bits 16-31 quad scale) and samples bilinearly. New `CanvasPrimitive.text` draws labels inside a canvas; `examples/viewport` labels its grid
+  with scalable text and gains `zig build shot -- out.png --zoom Z`. Native and web (the wasm math shim gained small cbrt/cos/acos; chrome-sized
+  apps pay about 4-5 KB gzip for the SDF code). Not for UI text: a distance field is softer than a hinted bitmap at 12-16 px.
+
 - Wrapped text and flex shrink (text-engine PR8/PR9, closes #8): `text` gains `wrap` (`none|word|char|ellipsis`),
   `max_lines`, `text_align`; groups/scrolls gain `shrink`; emitters `paragraph`, `paragraphStyled`, `textEllipsis`.
   Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;
   render draws one `TextDraw` per line. HARDLINE hatch 3 amended accordingly. Chrome's NOTES panel shows it.
+- **Agent driver** (docs/features/agent-driver.md): `TEAK_CONTROL=<unix socket>` control channel in `teak.run`
+  (snapshot, a11y `tree`, click/hover/type/key/scroll by role+label selector, screenshot, msglog, state, wait),
+  injected through the Host's real input queue (`Host.injectInput`; headless + X11 hosts); `TEAK_RECORD` /
+  `TEAK_REPLAY` input record/replay; `tools/teak-drive` CLI + MCP server (`zig build drive`);
+  `teak.headless.serve`; dev inspector overlay (`TEAK_INSPECT=1` / F12, `teak.inspector`);
+  `SpecialKey.f12`; optional App hook `debugState`. `examples/todo` gains a `drive` step.
+- `widgets.date` (pure calendar maths, ISO parse / format) and `widgets.date_field` (ISO text field + calendar popover, keyboard navigation; "today" comes from a clock effect).
+- **Generated API reference**: `tools/gen_api.zig` (`zig build api`) walks `src/teak.zig` with `std.zig.Ast`, follows its `@import`s and writes
+  every public signature + `///` doc to `docs/api.md` and `llms-full.txt` (= hand-curated `llms.txt` + the generated part). `zig build audit` fails
+  when either is stale, and when a `docs/migration-*.md` is not linked from `llms.txt`.
+- Toasts slide in from the right and fade (and slide out on expiry / dismiss) with `teak.anim` tweens; the app
+  forwards `animationMsg` frames as `Toast.Msg.frame` and lists `Sub.animation_frame` while `Toast.animating`.
+- **Native Wayland host** (`src/platform/wayland.zig`) and a runtime-selecting
+  Linux host (`src/platform/linux.zig`, `teak-platform-native` on Linux): one
+  binary uses Wayland when `WAYLAND_DISPLAY` is set and works, else X11
+  (`TEAK_BACKEND=x11|wayland` forces). xdg-shell window, xkbcommon keyboard
+  with client-side repeat, pointer/wheel, clipboard + paste + file/text drops
+  on `wl_data_device`, text-input-v3 IME, cursor themes, fractional / integer
+  HiDPI, all libraries `dlopen`ed. Protocol tables are generated by
+  `tools/gen_wayland.zig` (committed output). `gpu/surface_linux.zig` builds
+  the Xlib or Wayland wgpu surface from the host's `NativeHandle` union.
+  `zig build test-wayland` runs live tests against weston.
+
+- `teak.unicode`, `teak.linebreak`, `teak.text_wrap`: UAX#29 graphemes, word classes, UAX#14-lite line
+  breaking, wrapping/measure/caret mapping (text-engine PR2a/b).
+- `teak.editor`: `Editor(cap, undo_cap)` with grapheme-aware editing, word jumps, undo/redo (PR10).
+- `SpecialKey`: `ctrl_left/right/home/end` (+ `ctrl_shift_*`), `ctrl_backspace`, `ctrl_delete`,
+  `ctrl_shift_z`; `resolveKey` maps them.
+
+
+- **Cursor shapes**: `teak.CursorShape`, optional `Host.setCursor` (X11, Win32,
+  web), `CanvasCmd.cursor`, App hook `cursorFor(model, HoverKind)`. The runtime
+  picks the shape from the hovered cmd and calls the Host only on change.
+- **X11 HiDPI**: scale from `TEAK_SCALE` / `GDK_SCALE` / `Xft.dpi`; the Host
+  reports logical size and pointer coordinates, `InitOptions.scale` from `host.scaleFactor()`
+  configures a physical surface and bakes text at device resolution. Headless
+  `shot` takes `ShotOptions.scale`.
+
+- `ButtonCmd.underline` / `cb.buttonStyledUnderlined`: one underlined character in a button label (a 1 px quad under the
+  glyph). Menu bars and panels use it for their `&` mnemonics.
+
+- **DataTable: pixel-accurate ellipsis and type-to-search.** New `ButtonStyle.ellipsis` (fixed-width button whose label is cut with U+2026 at the pixel, any
+  font); DataTable cells and headers use it instead of counting characters (`ViewOpts.char_w` is gone). Type a prefix to jump to the first row whose
+  sort-column cell starts with it (`Table.charMsg`, `Table.searchText`).
+
+- **Tables and lists at scale**: `teak.DataTable` (virtualized, sortable, resizable, selectable, sticky header), `teak.VarList`
+  (rows of different heights, measured by layout, scroll-anchored), `teak.TreeList` (virtualized tree, keyboard) and `teak.Scroller`
+  (smooth wheel + fling as Model data, driven by `Sub.animation_frame`). New App hooks `virtualRowsMsg` and `modsMsg`;
+  `VirtualListStyle` gains `total_extent`, `start_offset`, `id`, `align_cross`. `examples/tables`, `tools/web-frame-bench.mjs`,
+  docs/features/tables-at-scale.md.
+- **SDF surfaces**: `Radii` (per-corner), soft `Shadow` (blur / spread / offset, CSS semantics), two-stop `Gradient` (linear /
+  radial) on `GroupStyle`, `ButtonStyle`, `OverlayStyle`, `TextInputStyle` (`radius`, `gradient`, `soft_shadow`). A rect using
+  any of them is one signed-distance quad in the solid vertex stream (`render/sdf.zig`; `shaders/quad.wgsl` reads its record
+  back from the vertex buffer bound read-only), anti-aliased with one device pixel at any DPR, with an inside border stroke that
+  follows the corners and dithered shadows / gradients. Rects using none draw exactly as before (kerf_viewer / scene3d shots
+  are byte-identical). Both backends.
+- **Theme tokens**: `Theme.tokens` (`ThemeTokens`: radii, border width, spacing scale, shadow elevations),
+  `Theme.fromPaletteTokens`, `button_primary`, and the `Theme.modern_light` / `Theme.modern_dark` presets. The chrome example
+  renders both looks (`M` key, header toggle, `zig build shot -- out.png --state modern`).
+- **Widgets wave 1** (`teak.widgets`, `src/core/widgets/`; zero new Cmd variants): toggle switch,
+  progress bar (determinate + indeterminate), tabs (keyboard), split pane (draggable, min sizes, ratio
+  in the Model), tooltip (hover delay via `Sub.at`), toast stack (tick countdown), modal dialog helper,
+  menu bar with submenus / mnemonics / F10 + Alt activation, and context menu. See
+  `docs/features/widgets.md` and cookbook recipes.
+- App hook `sliderMsg(model, grab_msg, value)`: slider drags under `teak.run` (they were click-only: nothing
+  turned the pointer position into a value).
+- App hooks `hoverMsg` / `contextMsg` (`teak.PointerEvent`, `teak.Box`): the widget under the pointer
+  and its previous-frame rect, as data.
+- `SpecialKey.f10` and `SpecialKey.alt_tap` (a bare Alt press + release), wired in the Win32, X11 and web
+  hosts through `InputQueue.altDown` / `altUp`.
+- Tab traversal (`focus.nextFocusable` / `prevFocusable`) is confined to the topmost modal overlay.
+- `cb.buttonStyledDisabled`.
+
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
     selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,
@@ -111,6 +305,16 @@
 
 - X11 host failed to compile on first use under Zig 0.17 (`Xlib.load` still
   used the removed `@typeInfo(...).fields`).
+- `examples/todo`: item labels pointed at a by-value loop copy (garbled text); iterate by pointer.
+
+- `text_area` Cmd + `TextArea(cap)` component + `textMsg` hook (text-engine PR11a/PR11b, closes the multi-line half of #6):
+  wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,
+  drag incl. outside, double/triple click, wheel), visual Up/Down/Home/End with a sticky column, layout `metrics` events,
+  `Host.setImeSpot` from the focused caret; `Editor.applyPointer`; `examples/notes`. See docs/features/text-area.md.
+- Wrapped text and flex shrink (text-engine PR8/PR9, closes #8): `text` gains `wrap` (`none|word|char|ellipsis`),
+  `max_lines`, `text_align`; groups/scrolls gain `shrink`; emitters `paragraph`, `paragraphStyled`, `textEllipsis`.
+  Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;
+  render draws one `TextDraw` per line. HARDLINE hatch 3 amended accordingly. Chrome's NOTES panel shows it.
 
 - `teak.Combobox(cap)`: searchable select (query field + filtered overlay list with scrolling, type-ahead
   highlight, keyboard, "No matches" row), composed from existing primitives; chrome's MATERIAL field uses it (#2).
@@ -126,6 +330,28 @@
   (same exports). Measurement and rasterization both place glyphs from the shaper; invalid
   UTF-8 now yields U+FFFD per bad byte (was byte-as-codepoint).
 
+### Added
+
+- **Win32 parity (closes #5).** Windows now uses the shared stb_truetype text module (so `registerFont` and `letter_spacing` work and layout == render; the GDI measurer/rasterizer and `raster_gdi.zig` are gone), services declarative effects (HTTP via std.http on worker threads, storage under `%APPDATA%\teak\<app>`, clock, command-line `query_param`, native Open/Save dialogs for `open_file`/`download`, clipboard write, `WM_DROPFILES` drops), supports `teak.linkHeadless` (set `TEAK_GPU_FALLBACK=1` for a software adapter), and runs per-monitor DPI v2 with an optional `Host.renderScale` / `Gpu.setScale` pair (`Gpu.setScale` for runtime DPI changes). CI renders headless shots on the Windows runners.
+- `viewport3d` (= `scene3d` with `SceneCmd.view`): `SceneItem` (mesh key + 3x4 transform + tint + id + flags), grid / gizmo /
+  section-cut options, material and highlight colour as data (`core/scene/view.zig`).
+- Both scene backends draw `viewport3d` items: one instanced `drawIndexed` per mesh run, per-item transform / tint /
+  `highlight` blend / `unlit` / `no_edges` / `hidden`, flat material, and a section-plane `discard` (faces and edges).
+  `shaders/scene.wgsl` Globals grew to 176 B; new backend-neutral plan in `src/gpu/scene_pass.zig`.
+- Section cut with caps (`View.cut`): stencil-parity caps per closed item (per-item `Item.cap_color`, hatched; `no_cap` for open
+  shells), exact cut outlines from a CPU copy of each uploaded mesh (`section.outlinePositions`). Scene targets now use
+  `Depth24PlusStencil8`. The canvas `layout` event also carries the rect's window origin (`x`, `y`) and fires when it moves;
+  `pick.gizmoLabels` turns that into axis-letter anchors for overlay text.
+- 2.5D layers in `viewport3d`: `View.planes` (`ScenePlane`: tilted sheets drawn from `CanvasPrimitive`s through the shared
+  canvas tessellator, now `render/canvas_tess.zig`; `layer` depth bias, opacity, background, double-sided) and `View.sprites`
+  (`SceneSprite`: camera-facing / axis-locked / fixed billboards from image resources, `screen_px` or world size). Opaque
+  planes write depth; blended planes and sprites sort back to front (`scene.sort.byDepth`). CPU picking: `pick.planes`,
+  `pick.sprites`. `Globals` is 208 B; `Gpu.renderScenes` / `stageDraws` take `SceneData{ items, sprites }` and
+  `buildFrame` a `scene_sprites` list. New example `examples/scene_layers`.
+- `viewport3d` grid and gizmo: `shaders/scene_grid.wgsl` ray-intersects a world plane per pixel (anti-aliased minor / major
+  lines, two axis lines, distance and far-plane fade, depth-tested), and a corner axis triad is drawn in a sub-viewport
+  from the camera's own rotation. Hit-testing the gizmo is `scene.pick.gizmoHit` (S2).
+
 ### Changed
 
 - `Dropdown`/`Combobox`: the keyboard-highlighted row now also takes the theme's `hover_fg` (fixes invisible labels on inverting themes).
@@ -137,6 +363,9 @@
 
 ### Changed (breaking)
 
+- **Scene staging takes the flat item list**: `render.buildFrame(..., scene_draws, scene_items, ...)`,
+  `stageDraws(gpu, table, images, scenes, items)` and `Gpu.renderScenes(draws, items)` (one extra slice each; pass
+  `scene_items` through from `buildFrame`). `SceneDraw` gained `item_first/item_count`, grid, gizmo, cut, material.
 - **Zig 0.17.0 is now required; 0.16 support is dropped.** See
   [docs/migration-0.17.md](docs/migration-0.17.md).
   - Array/string `**` repeats replaced with `@splat` (library, examples, tests).

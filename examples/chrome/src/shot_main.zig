@@ -23,17 +23,26 @@ const Opts = struct { path: []const u8, scale: f32 = 1, stress: usize = 0, max_p
 
 fn parseArgs(init: std.process.Init) Opts {
     var o: Opts = .{ .path = "chrome.png" };
-    var it = init.minimal.args.iterate();
-    _ = it.next();
-    while (it.next()) |a| {
+    // `toSlice` (not `iterate`) so this also builds for Windows.
+    const args = init.minimal.args.toSlice(init.arena.allocator()) catch return o;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        const next: ?[]const u8 = if (i + 1 < args.len) args[i + 1] else null;
         if (std.mem.eql(u8, a, "--scale")) {
-            o.scale = std.fmt.parseFloat(f32, it.next() orelse "1") catch 1;
+            i += 1;
+            o.scale = std.fmt.parseFloat(f32, next orelse "1") catch 1;
         } else if (std.mem.eql(u8, a, "--stress")) {
-            o.stress = std.fmt.parseInt(usize, it.next() orelse "640", 10) catch 640;
+            i += 1;
+            o.stress = std.fmt.parseInt(usize, next orelse "640", 10) catch 640;
+        } else if (std.mem.eql(u8, a, "--state") or std.mem.eql(u8, a, "--prefix") or std.mem.eql(u8, a, "--all")) {
+            i += 1; // values read again by `shotCli`
         } else if (std.mem.eql(u8, a, "--max-pages")) {
-            o.max_pages = std.fmt.parseInt(u8, it.next() orelse "8", 10) catch 8;
+            i += 1;
+            o.max_pages = std.fmt.parseInt(u8, next orelse "8", 10) catch 8;
         } else if (std.mem.eql(u8, a, "--anim")) {
-            o.anim = std.fmt.parseInt(u32, it.next() orelse "8", 10) catch 8;
+            i += 1;
+            o.anim = std.fmt.parseInt(u32, next orelse "8", 10) catch 8;
         } else if (!std.mem.startsWith(u8, a, "--")) o.path = a;
     }
     return o;
@@ -60,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
         .width = 1280,
         .height = 800,
         .scale = o.scale,
-        .run = .{ .clear_color = App.paper },
+        // No fixed clear colour: it follows the theme (retro paper / modern).
     }, &.{
         .{
             .name = "edited",
@@ -76,6 +85,17 @@ pub fn main(init: std.process.Init) !void {
             },
         },
         .{ .name = "initial", .steps = &.{.{ .frames = 40 }} },
+        // The modern look (rounded, shadowed); `m` flips the theme.
+        .{
+            .name = "modern",
+            .steps = &.{
+                .{ .frames = 2 },
+                .{ .chars = "m" },
+                .{ .frames = 40 }, // let the help popover settle
+                .{ .move = .{ 640, 500 } },
+                .{ .frames = 1 },
+            },
+        },
         // The first-load state without MSAA: matches the web build pixel for pixel.
         .{ .name = "plain", .steps = &.{.{ .frames = 40 }}, .msaa = false },
         // Mid-slide of the popover's re-open animation (deterministic: 16 ms per frame).
@@ -108,7 +128,7 @@ fn stress(init: std.process.Init, o: Opts) !void {
     defer host.deinit();
     var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false, .scale = o.scale, .max_atlas_pages = o.max_pages });
     defer gpu.deinit();
-    var rt = try teak.Runtime(Stress, Host, Gpu).init(gpa, &host, &gpu, .{});
+    var rt = try teak.Runtime(Stress, Host, Gpu).init(gpa, &host, &gpu, .{ .idle_skip = false });
     defer rt.deinit();
     rt.model.cols = cols;
     rt.model.rows = rows;
@@ -122,7 +142,7 @@ fn stress(init: std.process.Init, o: Opts) !void {
     rt.model.labels = labels;
     for (0..3) |_| try rt.frame(); // cold: shaping + rasterizing + atlas uploads
 
-    const frames = 30;
+    const frames = 200;
     const t0 = std.Io.Clock.awake.now(init.io);
     for (0..frames) |_| {
         rt.model.tick +%= 1; // changes the label so the frame is not skipped as identical

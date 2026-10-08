@@ -27,6 +27,13 @@ pub fn main(init: std.process.Init) !void {
                 .{ .frames = 2 },
             },
         },
+        // Canvas labels are scalable text (one distance-field glyph set serves every zoom).
+        .{ .name = "zoomed_in", .steps = &.{
+            .{ .frames = 2 },
+            .{ .move = .{ 290, 240 } },
+            .{ .wheel = .{ 0, -600 } },
+            .{ .frames = 3 },
+        } },
         .{ .name = "list_scrolled", .steps = &.{
             .{ .frames = 2 },
             .{ .move = .{ 660, 300 } },
