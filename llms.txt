@@ -130,6 +130,7 @@ pub fn submitMsg(*const Model) ?Msg                   // Enter key (precedes key
 pub fn themeFor(*const Model) Theme                   // per-frame theme (dark/light toggle)
 pub fn windowMsg(*const Model, f32, f32) ?Msg          // window size in logical px: first frame + every resize
 pub fn windowTitle(*const Model) ?[]const u8          // dynamic title bar; setTitle only on change
+pub fn cursorFor(*const Model, HoverKind) ?CursorShape // override the cursor picked from the hovered cmd
 pub fn secondaryWindow(*const Model) ?SecondaryWindowSpec  // 2nd top-level window, open when non-null
 pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view (pairs with above)
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
@@ -158,6 +159,10 @@ pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 `cmd component component_list transient text sub anim theme text_field text_area text_event numeric_field
+`cmd component component_list transient text sub theme text_field numeric_field
+dropdown debug_overlay snapshot chart table cursor layout scroll_extent hit_test focus keys a11y render
+`cmd component component_list transient text sub theme text_field text_area text_event numeric_field
+`cmd component component_list transient text sub anim theme text_field numeric_field
 dropdown data_table var_list tree_list debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
 
@@ -222,6 +227,7 @@ ScrollStyle = struct { direction = .vertical, padding, gap, flex, width, height,
                        id: u32 = 0 }                        // width/height 0 = measured; flex scroll has zero basis;
                                                             //   id != 0 => scrollMsg / scrollLayoutMsg routing
 OverlayStyle(Msg) = struct { x, y, width, height, padding = 8, gap = 4,
+                             anchor_msg: ?Msg = null, anchor_side: AnchorSide = .below_start, anchor_gap: f32 = 0, /* place against the earlier widget whose click/focus Msg == anchor_msg */
                        direction = .vertical, align_cross: Align = .start, backdrop: [4]f32 = {0,0,0,0},
                        anchor_x_frac, anchor_y_frac: f32 = 0, modal: bool = false,
                        border: ?[4]f32 = null, border_width: f32 = 1,
@@ -426,7 +432,8 @@ NumericConfig = struct { capacity: usize = 16, min: ?f64 = null, max: ?f64 = nul
 Dropdown(comptime cap: usize) type          // closed button + open overlay list; Msg = toggle,
                                             //   close, select:usize, scroll_by, highlight.
                                             //   Real view is viewWith(model, cb, options, msgs, opts)
-DropdownViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200,
+DropdownViewOpts = struct { auto_anchor: bool = true, anchor_side: AnchorSide = .below_start,
+                            list_x, list_y: f32 = 0 /*only if !auto_anchor*/, list_width: f32 = 200,
                             list_max_height: f32 = 320, max_visible: usize = 0 }
 ```
 
@@ -703,7 +710,8 @@ Combobox(comptime cap: usize) type      // cap = query bytes; Model/Msg/update/v
   viewWith(model, cb, options: []const []const u8, msgs /*.focus .close .selectMsg(i)*/, opts: ComboboxViewOpts)
   charMsg(u8) Msg;  keyMsg(model, SpecialKey, options, opts) ?Msg;  enterMsg / highlightMsg / scrollByMsg(...)
   shownText(model, options) []const u8
-ComboboxViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200, max_visible: usize = 8,
+ComboboxViewOpts = struct { auto_anchor: bool = true, anchor_side: AnchorSide = .below_start,
+                            list_x, list_y: f32 = 0 /*only if !auto_anchor*/, list_width: f32 = 200, max_visible: usize = 8,
                             match: Match(.substring|.prefix) = .substring, input_style: ?TextInputStyle = null }
 // pure: combobox.matches(query, option, mode) bool, countMatches, nthMatch, ordinalOf, foldCase
 ```
@@ -826,13 +834,18 @@ resolveKey(NavKey, Modifiers) ?SpecialKey   // the one Shift/Ctrl policy every h
 input_queue         // module: platform/input_queue.zig
 Clipboard = struct { ctx, read_fn, write_fn; pub fn read() []const u8; pub fn write(t) void }
 ImeState = struct { active: bool = false, text: []const u8 = "", cursor: usize = 0 }
+CursorShape = enum { arrow, pointer, ibeam, crosshair, move, resize_ew, resize_ns, resize_nwse, resize_nesw,
+                     not_allowed, grab, grabbing }   // Host.setCursor (optional); default per hovered cmd:
+                                                     //   button/checkbox/radio/slider pointer, text_input ibeam,
+                                                     //   canvas -> CanvasCmd.cursor (null = arrow)
+HoverKind = enum { none, button, checkbox, radio, slider, text_input, canvas, scene3d }  // arg of cursorFor
 FileDialogResult = ?[]const u8
 FileDialogFilter = struct { name: []const u8 = "All files", pattern: []const u8 = "*.*" }
 FileDialogPoll = union(enum) { pending, ok: []const u8, cancelled }
 validateHost(comptime T: type) void   // comptime contract: deinit, pollInputs, shouldClose,
                                        //   nativeHandle, textMeasurer, clipboard, imeState,
                                        //   publishA11yTree, open/save/request/pollFileDialog,
-                                       //   secondary-window decls, setTitle, nowMs (scaleFactor optional)
+                                       //   secondary-window decls, setTitle, nowMs (scaleFactor, setCursor optional)
 ```
 
 ### Gpu interface (`teak.gpu` → gpu/context.zig)

@@ -74,6 +74,10 @@ pub const chart = @import("core/chart.zig");
 pub const table = @import("core/table.zig");
 /// Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
 pub const pointer = @import("core/pointer.zig");
+/// Mouse-cursor shapes and the hovered-cmd picker (`Host.setCursor`, App `cursorFor`).
+pub const cursor = @import("core/cursor.zig");
+pub const CursorShape = cursor.CursorShape;
+pub const HoverKind = cursor.HoverKind;
 /// Declarative effects (HARDLINE hatch 7): data describing I/O the Host performs.
 pub const effects = @import("core/effects.zig");
 /// Data types for `scene3d`: meshes, camera and per-frame scene draws.
@@ -117,6 +121,8 @@ pub const GroupStyle = cmd.GroupStyle;
 pub const ScrollStyle = cmd.ScrollStyle;
 /// Placement and look of a `push_overlay` (second z-layer).
 pub const OverlayStyle = cmd.OverlayStyle;
+/// Which side of its anchor widget an `OverlayStyle.anchor_msg` overlay opens on.
+pub const AnchorSide = cmd.AnchorSide;
 /// Geometry of a `push_virtual_list` (only visible rows are emitted).
 pub const VirtualListStyle = cmd.VirtualListStyle;
 /// Intrinsic size and flex of an `image` leaf.
