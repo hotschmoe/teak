@@ -141,7 +141,18 @@ pub const Font = struct {
     /// Kerning between two glyphs of this face, in font units (legacy `kern`
     /// table or GPOS pair adjustment, whichever stb finds).
     pub fn kernUnits(self: *const Font, left: u16, right: u16) i32 {
-        return c.stbtt_GetGlyphKernAdvance(&self.info, left, right);
+        // stb re-walks the kern/GPOS tables per call; a direct-mapped cache keyed by
+        // (face, pair) turns repeat pairs into one load. Losable: a miss recomputes.
+        if (kern_epoch != epoch) {
+            kern_cache = std.mem.zeroes([8192]KernSlot);
+            kern_epoch = epoch;
+        }
+        const key: u64 = (@as(u64, @intFromPtr(self)) << 20) ^ (@as(u64, left) << 16) ^ right;
+        const slot = &kern_cache[@as(usize, @truncate((key *% 0x9E3779B97F4A7C15) >> 51))];
+        if (slot.used and slot.face == @intFromPtr(self) and slot.left == left and slot.right == right) return slot.value;
+        const v = c.stbtt_GetGlyphKernAdvance(&self.info, left, right);
+        slot.* = .{ .used = true, .face = @intFromPtr(self), .left = left, .right = right, .value = v };
+        return v;
     }
 
     /// True when the face has one advance for every glyph probed ('i' and 'W').
@@ -153,6 +164,10 @@ pub const Font = struct {
         return self.advanceUnits(i) == self.advanceUnits(w);
     }
 };
+
+const KernSlot = struct { used: bool, left: u16, right: u16, value: i32, face: usize };
+var kern_epoch: u64 = 0;
+var kern_cache: [8192]KernSlot = std.mem.zeroes([8192]KernSlot);
 
 // ── Face table ─────────────────────────────────────────────────────
 

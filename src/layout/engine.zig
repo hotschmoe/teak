@@ -1,5 +1,6 @@
 const std = @import("std");
 const cmd = @import("../core/cmd.zig");
+const eql_mod = @import("../core/eql.zig");
 const text = @import("../core/text.zig");
 const text_wrap = @import("../core/text_wrap.zig");
 const Direction = cmd.Direction;
@@ -26,6 +27,50 @@ pub const Rect = struct {
     /// passes hop over a child's subtree, keeping them linear.
     end: u32 = 0,
 };
+
+/// The rect of the nearest leaf BEFORE `overlay_index` whose click / focus
+/// Msg equals `want` (by value). Rects of earlier cmds are final by the time
+/// the position pass reaches a later overlay, so this needs no extra pass.
+fn findAnchor(cmds: anytype, rects: []const Rect, overlay_index: usize, want: anytype) ?Rect {
+    const Msg = @TypeOf(want);
+    var j = overlay_index;
+    while (j > 0) {
+        j -= 1;
+        const m = cmd.leafMsg(cmds[j]) orelse continue;
+        if (eql_mod.deepEql(Msg, m, want)) return rects[j];
+    }
+    return null;
+}
+
+/// Move `r` (whose w/h are already measured) against the anchor rect `a`.
+fn placeAnchored(r: *Rect, a: Rect, side: cmd.AnchorSide, gap: f32) void {
+    switch (side) {
+        .below_start => {
+            r.x = a.x;
+            r.y = a.y + a.h + gap;
+        },
+        .below_end => {
+            r.x = a.x + a.w - r.w;
+            r.y = a.y + a.h + gap;
+        },
+        .above_start => {
+            r.x = a.x;
+            r.y = a.y - r.h - gap;
+        },
+        .above_end => {
+            r.x = a.x + a.w - r.w;
+            r.y = a.y - r.h - gap;
+        },
+        .right_start => {
+            r.x = a.x + a.w + gap;
+            r.y = a.y;
+        },
+        .left_start => {
+            r.x = a.x - r.w - gap;
+            r.y = a.y;
+        },
+    }
+}
 
 /// Intersect two rects. Returns a zero-size rect if fully disjoint.
 pub fn clipRect(a: Rect, b: Rect) Rect {
@@ -300,8 +345,9 @@ pub const LayoutEngine = struct {
                         .pad_y = vl.padding,
                         .gap = vl.gap,
                         .is_virtual = true,
-                        .total_count = @floatFromInt(vl.total_count),
-                        .item_extent = vl.item_extent,
+                        // Variable-height mode claims `total_extent` as one "item".
+                        .total_count = if (vl.total_extent > 0) 1 else @floatFromInt(vl.total_count),
+                        .item_extent = if (vl.total_extent > 0) vl.total_extent else vl.item_extent,
                     });
                 },
                 .pop_group, .pop_scroll => {
@@ -375,7 +421,7 @@ pub const LayoutEngine = struct {
                 },
                 .button => |btn| {
                     const label_w = measurer.measure(btn.label, btn.font).width + 2 * btn.style.h_padding;
-                    const w = @max(label_w, btn.style.min_width);
+                    const w = if (btn.style.ellipsis) btn.style.min_width else @max(label_w, btn.style.min_width);
                     const h = btn.style.height;
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, btn.style.flex);
@@ -832,6 +878,9 @@ pub const LayoutEngine = struct {
                     // the parent cursor.
                     rects[i].x = ov.x - rects[i].w * ov.anchor_x_frac;
                     rects[i].y = ov.y - rects[i].h * ov.anchor_y_frac;
+                    if (ov.anchor_msg) |am| {
+                        if (findAnchor(cmds, rects, i, am)) |a| placeAnchored(&rects[i], a, ov.anchor_side, ov.anchor_gap);
+                    }
                     pushChildren(rects, &stack, i, .{
                         .direction = ov.direction,
                         .pad_x = ov.padding,
@@ -847,11 +896,12 @@ pub const LayoutEngine = struct {
                         .pad_x = vl.padding,
                         .pad_y = vl.padding,
                         .gap = vl.gap,
+                        .align_cross = vl.align_cross,
                     });
                     // Bump the cursor so the first emitted child sits at
                     // row visible_start, not row 0.
                     const ctx = stack.top();
-                    const offset: f32 = @as(f32, @floatFromInt(vl.visible_start)) * vl.item_extent;
+                    const offset: f32 = if (vl.total_extent > 0) vl.start_offset else @as(f32, @floatFromInt(vl.visible_start)) * vl.item_extent;
                     switch (vl.direction) {
                         .horizontal => ctx.x += offset,
                         .vertical => ctx.y += offset,
@@ -1352,6 +1402,24 @@ test "virtual list claims total_count * item_extent on main axis" {
     try testing.expectEqual(@as(f32, 240000), rects[0].h);
 }
 
+test "variable-height virtual list claims total_extent and starts at start_offset" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushScroll(.{ .direction = .vertical, .padding = 0, .gap = 0, .width = 400, .height = 200 });
+    cb.pushVirtualList(.{ .total_extent = 5000, .start_offset = 1234, .visible_start = 40, .visible_end = 42 });
+    cb.text("row 40");
+    cb.text("row 41");
+    cb.popVirtualList();
+    cb.popScroll();
+    var rects: [16]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
+    try testing.expectEqual(@as(f32, 5000), rects[1].h);
+    try testing.expectEqual(@as(f32, 1234), rects[2].y);
+    try testing.expect(rects[3].y >= rects[2].y + rects[2].h); // rows flow after each other
+}
+
 test "virtual list children sit at visible_start * item_extent offset" {
     const testing = std.testing;
     const Msg = union(enum) { a };
@@ -1499,4 +1567,70 @@ test "scene3d is a fixed-size leaf sized from its style" {
     try testing.expectEqual(@as(f32, 200), rects[2].h);
     try testing.expectEqual(@as(f32, 10), rects[2].x);
     try testing.expectEqual(@as(f32, 30), rects[2].y);
+}
+
+test "overlay anchored to a widget by Msg: every side" {
+    const testing = std.testing;
+    const Msg = union(enum) { open, other };
+    for (std.enums.values(cmd.AnchorSide)) |side| {
+        var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+        defer cb.deinit();
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .width = 100, .height = 40 }); // offsets the button from the origin
+        cb.popGroup();
+        cb.buttonStyled(.open, "Open", .{ .min_width = 80, .height = 20 });
+        cb.pushOverlay(.{ .width = 50, .height = 30, .padding = 0, .anchor_msg = .open, .anchor_side = side, .anchor_gap = 3 });
+        cb.popOverlay();
+        cb.popGroup();
+        var rects: [16]Rect = undefined;
+        const n = cb.cmds.items.len;
+        LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 800, 600, test_measurer);
+        const a = rects[3];
+        const ov = rects[4];
+        const want: [2]f32 = switch (side) {
+            .below_start => .{ a.x, a.y + a.h + 3 },
+            .below_end => .{ a.x + a.w - ov.w, a.y + a.h + 3 },
+            .above_start => .{ a.x, a.y - ov.h - 3 },
+            .above_end => .{ a.x + a.w - ov.w, a.y - ov.h - 3 },
+            .right_start => .{ a.x + a.w + 3, a.y },
+            .left_start => .{ a.x - ov.w - 3, a.y },
+        };
+        try testing.expectApproxEqAbs(want[0], ov.x, 0.01);
+        try testing.expectApproxEqAbs(want[1], ov.y, 0.01);
+        try testing.expect(a.y >= 40); // the anchor really was laid out below the spacer
+    }
+}
+
+test "overlay anchor: no matching widget falls back to x / y" {
+    const testing = std.testing;
+    const Msg = union(enum) { open, other };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.button(.other, "x");
+    cb.pushOverlay(.{ .x = 33, .y = 44, .width = 50, .height = 30, .padding = 0, .anchor_msg = .open });
+    cb.popOverlay();
+    cb.popGroup();
+    var rects: [8]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..4], cb.cmds.items, 800, 600, test_measurer);
+    try testing.expectEqual(@as(f32, 33), rects[2].x);
+    try testing.expectEqual(@as(f32, 44), rects[2].y);
+}
+
+test "overlay anchor: the nearest EARLIER widget with an equal Msg wins" {
+    const testing = std.testing;
+    const Msg = union(enum) { open: u8 };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.button(.{ .open = 1 }, "first");
+    cb.button(.{ .open = 2 }, "second");
+    cb.pushOverlay(.{ .width = 50, .height = 30, .padding = 0, .anchor_msg = .{ .open = 1 } });
+    cb.popOverlay();
+    cb.popGroup();
+    var rects: [8]Rect = undefined;
+    LayoutEngine.doLayout(rects[0..6], cb.cmds.items, 800, 600, test_measurer);
+    const first = rects[1];
+    try testing.expectEqual(first.x, rects[3].x);
+    try testing.expectEqual(first.y + first.h, rects[3].y);
 }

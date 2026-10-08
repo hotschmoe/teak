@@ -49,6 +49,7 @@ const key_mappings = [_]struct { from: zinput.Key, to: NavKey }{
     .{ .from = .enter, .to = .enter },
     .{ .from = .tab, .to = .tab },
     .{ .from = .escape, .to = .escape },
+    .{ .from = .f10, .to = .f10 },
     .{ .from = .arrow_left, .to = .left },
     .{ .from = .arrow_right, .to = .right },
     .{ .from = .arrow_up, .to = .up },
@@ -217,9 +218,8 @@ fn serializeA11yTree(nodes: []const A11yNode) struct { records_len: u32, strings
 
 /// JS-side imports (wired by zunk's resolver — see zunk issue #14 for
 /// the file-dialog shim and zunk issue #15 for the a11y DOM mirror).
-/// Stays in a sub-namespace so `@hasDecl` callers can short-circuit
-/// cleanly when a symbol isn't resolved yet (browser builds where
-/// zunk's bridge hasn't shipped).
+/// Never gate a call on a has-decl check of this namespace: the decls are non-`pub`, so
+/// it is always false (audit rule NO_HASDECL_EXTERNS).
 const externs = struct {
     extern "env" fn __zunk_request_file_dialog(
         id: u32,
@@ -318,9 +318,11 @@ pub const Host = struct {
         // the reported `mods` keep the real state.
         const reported = q.mods;
         q.mods.ctrl = reported.ctrl or reported.meta;
+        if (zinput.isKeyPressed(.alt)) q.altDown();
         for (key_mappings) |m| {
             if (zinput.isKeyPressed(m.from)) q.pushNav(m.to);
         }
+        if (zinput.isKeyReleased(.alt)) q.altUp();
         q.mods = reported;
         // Zunk delivers whole UTF-8 code points and no control codes or
         // Ctrl/Cmd chords; `pushText` re-validates and drops anything else.
@@ -419,14 +421,12 @@ pub const Host = struct {
     /// retain into the DOM synchronously before returning.
     pub fn publishA11yTree(_: *Host, nodes: []const A11yNode) void {
         const lens = serializeA11yTree(nodes);
-        if (comptime @hasDecl(externs, "__zunk_publish_a11y_tree")) {
-            externs.__zunk_publish_a11y_tree(
-                &g_a11y_records,
-                lens.records_len,
-                &g_a11y_strings,
-                lens.strings_len,
-            );
-        }
+        externs.__zunk_publish_a11y_tree(
+            &g_a11y_records,
+            lens.records_len,
+            &g_a11y_strings,
+            lens.strings_len,
+        );
     }
 
     // Browser file dialogs go through the showOpenFilePicker API which
@@ -488,10 +488,9 @@ pub const Host = struct {
         self.file_dialog_slots[slot_idx].state = .pending;
         self.file_dialog_slots[slot_idx].path_len = 0;
         const id: u32 = @intCast(slot_idx + 1);
-        // Best-effort dispatch. If zunk hasn't wired the JS shim yet,
-        // the request just stays `.pending` forever (apps treat that
-        // as "no file picker available on this host").
-        if (@hasDecl(externs, "__zunk_request_file_dialog")) {
+        // Unconditional: a has-decl check on the private externs is always false for non-`pub`
+        // decls, which silently dropped every request (audit-enforced).
+        {
             externs.__zunk_request_file_dialog(
                 id,
                 mode,
@@ -583,6 +582,11 @@ pub const Host = struct {
 
     /// Update the browser tab title via zunk (sets `document.title`).
     /// Same call `init` uses for the initial title.
+    /// CSS `cursor` on the page body through zunk (`app.setCursor`).
+    pub fn setCursor(_: *Host, shape: teak.CursorShape) void {
+        zapp.setCursor(shape.cssName());
+    }
+
     pub fn setTitle(_: *Host, title: []const u8) void {
         zapp.setTitle(title);
     }
@@ -776,7 +780,10 @@ test "wasm key table reaches every SpecialKey through the shared policy" {
             if (teak.resolveKey(m.to, mods)) |sk| seen.insert(sk);
         }
     }
-    for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
+    for (std.enums.values(SpecialKey)) |sk| {
+        if (sk == .alt_tap) continue; // synthesized by InputQueue.altUp, not a table key
+        try std.testing.expect(seen.contains(sk));
+    }
 }
 
 test "effectResult maps every completion kind to the contract type" {

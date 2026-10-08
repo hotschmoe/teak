@@ -92,6 +92,9 @@ pub const ShapedGlyph = extern struct {
     /// Advance in logical px, kerning with the next glyph and letter_spacing included,
     /// so `sum(advance) == ShapeResult.width`.
     advance: f32,
+    /// Vertical offset from the baseline in logical px, positive down (mark
+    /// attachment from a complex-script shaper; 0 for the built-in shaper).
+    y: f32 = 0,
 };
 
 pub const ShapeResult = struct {
