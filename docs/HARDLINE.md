@@ -365,9 +365,8 @@ human review.
 - [ ] **[manual]** Every optional App hook is a function of `*const Model`
       plus loop-supplied data and returns data (a `Msg`, a spec, a theme);
       no hook receives a mutable `*Model`, a callback, or a Host handle it
-      may keep. Known deviation: `handleClipboard(*Model, ...)` mutates the
-      Model directly (§1); the fix is a `Msg`-returning clipboard hook plus
-      the `write_clipboard` effect, tracked in `tasks.md`.
+      may keep. (The one historical exception, `handleClipboard(*Model, ...)`, is
+      a deprecated one-release adapter over `clipboardMsg` / `clipboardText`.)
 - [ ] **[manual]** Host-side extras (`setCursor`, `setImeSpot`,
       `waitEvents`, a11y publish, control channel / `injectInput`) are
       output-only or input-source surfaces: they may not read the Model or

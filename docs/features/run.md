@@ -82,8 +82,9 @@ table does not name.
 |---|---|---|---|
 | `keyCharMsg` | `(*const Model, u8) ?Msg` | each typed character, in order | a Msg (null = ignore) |
 | `keySpecialMsg` | `(*const Model, SpecialKey) ?Msg` | each non-text key / chord | a Msg |
-| `keyNeedsClipboard` | `(SpecialKey) bool` | on a special key | whether `handleClipboard` should take it |
-| `handleClipboard` | `(*Model, SpecialKey, Clipboard) void` | cut/copy/paste chords that `keyNeedsClipboard` claims | **mutates the Model directly** (a known HARDLINE §1 exception, see the audit note below) |
+| `clipboardText` | `(*const Model, SpecialKey) ?[]const u8` | Ctrl+C / Ctrl+X, before `clipboardMsg` | the text to copy (a pure query; the loop writes the Host clipboard) |
+| `clipboardMsg` | `(*const Model, SpecialKey, paste: []const u8) ?Msg` | Ctrl+C / Ctrl+X / Ctrl+V; `paste` is the clipboard text for Ctrl+V (an empty paste is not delivered) | a Msg (Ctrl+X: the cut, after the copy) |
+| `keyNeedsClipboard` + `handleClipboard` | `(SpecialKey) bool` / `(*Model, SpecialKey, Clipboard) void` | **deprecated**; only when neither new hook exists | mutates the Model outside `update` (HARDLINE §1); removed next release, see [migration-clipboard.md](../migration-clipboard.md) |
 | `submitMsg` | `(*const Model) ?Msg` | Enter key (before `keySpecialMsg`) | a Msg |
 | `focusedMsg` | `(*const Model) ?Msg` | every frame | the focus Msg of the focused widget; enables Tab traversal + the focus ring + caret |
 | `wheelMsg` | `(*const Model, f32) ?Msg` | vertical wheel not claimed by a scroll region / pointer canvas | a Msg |
@@ -257,7 +258,7 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
 3. Keyboard: chars via `keyCharMsg`; then special keys — built-in
    Tab/Shift+Tab traversal and Enter→`submitMsg` first (if the app
    exposes the relevant hooks), then clipboard chords via
-   `handleClipboard`, else `keySpecialMsg`.
+   `clipboardText` / `clipboardMsg` (or the deprecated `handleClipboard`), else `keySpecialMsg`.
 4. Pointer canvases (`canvasMsg`): hover / move / down / up / leave +
    capture. Wheel: pointer canvas -> `scrollMsg` region -> `wheelMsg`.
 5. Effect results (`effectMsg`), then subscriptions: `runSubs(subscribe(model))`

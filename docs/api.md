@@ -522,6 +522,10 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.textFieldReplaceSelection`: `pub const textFieldReplaceSelection = text_field.textFieldReplaceSelection`
 > True if a key needs host-level clipboard access.
 - `teak.keyNeedsClipboard`: `pub const keyNeedsClipboard = text_field.keyNeedsClipboard`
+> The Msg for a clipboard chord on a field, for the App's `clipboardMsg` hook.
+- `teak.textFieldClipboardMsg`: `pub const textFieldClipboardMsg = text_field.textFieldClipboardMsg`
+> What Ctrl+C / Ctrl+X copy from a field Model, for the App's `clipboardText` hook.
+- `teak.textFieldCopyText`: `pub const textFieldCopyText = text_field.textFieldCopyText`
 > The GPU vertex layout shared by every quad (position, color, uv).
 - `teak.Vertex` = `vertex.Vertex`
   - fields: `x, y, r, g, b, a, u, v`
@@ -1297,6 +1301,15 @@ Canonical text-input component + key-dispatch helpers.
 > Build the AppMsg for a paste into the named field. The host calls
 > this after `clipboard.read()` returns the bytes to insert.
 - `pub fn textFieldReplaceSelection( comptime AppMsg: type, comptime field_name: []const u8, bytes: []const u8, ) AppMsg`
+> The Msg for a clipboard chord on the named field, for an App's
+> `clipboardMsg` hook: Ctrl+V -> `replace_selection(paste)`, Ctrl+X ->
+> `replace_selection("")` (deletes the selection; the copy itself is the
+> App's `clipboardText`), anything else (Ctrl+C included) -> null.
+- `pub fn textFieldClipboardMsg( comptime AppMsg: type, comptime field_name: []const u8, key: SpecialKey, paste: []const u8, ) ?AppMsg`
+> What Ctrl+C / Ctrl+X copy from a field `Model` (a `TextField(cap).Model`):
+> its selection, or null when nothing is selected. For the App's
+> `clipboardText` hook; the slice borrows from the Model.
+- `pub fn textFieldCopyText(model: anytype, key: SpecialKey) ?[]const u8`
 
 ### `teak.numeric_field` (`src/core/numeric_field.zig`)
 
