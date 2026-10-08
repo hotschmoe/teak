@@ -460,6 +460,8 @@ const DRAGDROP_S_USEDEFAULTCURSORS: HRESULT = 0x00040102;
 var drop_path_w: [300:0]u16 = undefined;
 var drop_path_len: usize = 0;
 var drag_polls: u32 = 0;
+var drag_deadline: u64 = 0;
+var drag_running = std.atomic.Value(bool).init(false);
 
 fn hdropBlock() ?HANDLE {
     const header = 20; // sizeof(DROPFILES)
@@ -561,8 +563,8 @@ fn dsAddRef(_: *DropSource) callconv(WINAPI) c_ulong {
 fn dsQuery(_: *DropSource, escape: BOOL, _: DWORD) callconv(WINAPI) HRESULT {
     if (escape != 0) return 0x00040101; // DRAGDROP_S_CANCEL
     drag_polls += 1;
-    // Let OLE hover over the target for a few polls, then drop.
-    return if (drag_polls > 12) DRAGDROP_S_DROP else 0;
+    // Hover over the target for a moment, then drop.
+    return if (drag_polls > 12 or GetTickCount64() > drag_deadline) DRAGDROP_S_DROP else 0;
 }
 fn dsFeedback(_: *DropSource, _: DWORD) callconv(WINAPI) HRESULT {
     return DRAGDROP_S_USEDEFAULTCURSORS;
@@ -576,6 +578,15 @@ const source_vtbl: @typeInfo(@FieldType(DropSource, "vtbl")).pointer.child = .{
 };
 var drop_source: DropSource = .{ .vtbl = &source_vtbl };
 
+fn nudge(lx: f32, ly: f32) void {
+    var flip = false;
+    while (drag_running.load(.acquire)) {
+        moveTo(lx + (if (flip) @as(f32, 2) else 0), ly);
+        flip = !flip;
+        sleepMs(40);
+    }
+}
+
 /// Drag `path` over the window and drop it through OLE, as Explorer would.
 fn dragFile(path: []const u8, over_lx: f32, over_ly: f32) bool {
     drop_path_len = std.unicode.utf8ToUtf16Le(drop_path_w[0..299], path) catch return false;
@@ -583,8 +594,14 @@ fn dragFile(path: []const u8, over_lx: f32, over_ly: f32) bool {
     drag_polls = 0;
     moveTo(over_lx, over_ly);
     mouse(2); // hold the left button like a real drag
+    // OLE's drag loop only polls the source on input; keep nudging the cursor.
+    drag_deadline = GetTickCount64() + 1500;
+    drag_running.store(true, .release);
+    const nudger = std.Thread.spawn(.{}, nudge, .{ over_lx, over_ly }) catch null;
     var effect: DWORD = 0;
     const hr = DoDragDrop(&data_object, &drop_source, 1, &effect);
+    drag_running.store(false, .release);
+    if (nudger) |t| t.join();
     mouse(4);
     log("DoDragDrop hr=0x{x} effect={d}", .{ @as(u32, @bitCast(hr)), effect });
     sleepMs(300);
@@ -758,7 +775,16 @@ fn effectsScenario() void {
     capture("effects-3-resized");
 }
 
+/// A scenario that wedges (a modal OLE loop, a dead window) must not hold the
+/// CI job for its whole timeout.
+fn watchdog() void {
+    sleepMs(300_000);
+    log("watchdog: the scenario did not finish in 5 minutes", .{});
+    std.process.exit(3);
+}
+
 pub fn main(init: std.process.Init) !void {
+    _ = std.Thread.spawn(.{}, watchdog, .{}) catch null;
     io_ = init.io;
     gpa_ = init.gpa;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
