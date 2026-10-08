@@ -234,7 +234,11 @@ test "combining mark: zero advance, so cafe + U+0301 measures like café" {
     try std.testing.expectApproxEqAbs(e.x + e.advance * 0.5, ink_mid, 0.01);
     // A mark with no base, or one the face lacks, adds no width and no box.
     try std.testing.expectApproxEqAbs(@as(f32, 12), text.measure("\u{301}a", f).width, 0.001);
-    try std.testing.expectEqual(@as(usize, 1), text.SimpleShaper.shape("a\u{300}", f, &out).count);
+    // A mark the face lacks: drawn from a fallback face when one has it (system
+    // fonts differ per machine), always at zero advance; dropped otherwise.
+    const lacking = text.SimpleShaper.shape("a\u{300}", f, &out);
+    try std.testing.expect(lacking.count == 1 or lacking.count == 2);
+    if (lacking.count == 2) try std.testing.expectEqual(@as(f32, 0), out[1].advance);
 }
 
 test "combining mark pixels: the accent is drawn over the e, not beside it" {
