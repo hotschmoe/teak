@@ -87,6 +87,15 @@
 
 ### Added
 
+- **SDF surfaces**: `Radii` (per-corner), soft `Shadow` (blur / spread / offset, CSS semantics), two-stop `Gradient` (linear /
+  radial) on `GroupStyle`, `ButtonStyle`, `OverlayStyle`, `TextInputStyle` (`radius`, `gradient`, `soft_shadow`). A rect using
+  any of them is one signed-distance quad in the solid vertex stream (`render/sdf.zig`; `shaders/quad.wgsl` reads its record
+  back from the vertex buffer bound read-only), anti-aliased with one device pixel at any DPR, with an inside border stroke that
+  follows the corners and dithered shadows / gradients. Rects using none draw exactly as before (kerf_viewer / scene3d shots
+  are byte-identical). Both backends.
+- **Theme tokens**: `Theme.tokens` (`ThemeTokens`: radii, border width, spacing scale, shadow elevations),
+  `Theme.fromPaletteTokens`, `button_primary`, and the `Theme.modern_light` / `Theme.modern_dark` presets. The chrome example
+  renders both looks (`M` key, header toggle, `zig build shot -- out.png --state modern`).
 - **Widgets wave 1** (`teak.widgets`, `src/core/widgets/`; zero new Cmd variants): toggle switch,
   progress bar (determinate + indeterminate), tabs (keyboard), split pane (draggable, min sizes, ratio
   in the Model), tooltip (hover delay via `Sub.at`), toast stack (tick countdown), modal dialog helper,
