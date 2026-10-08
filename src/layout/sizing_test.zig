@@ -2,7 +2,6 @@
 //! stretch, flex, min sizes, scroll overflow, overlays. Golden snapshots
 //! assert whole screens; direct rect checks pin single numbers.
 
-
 const std = @import("std");
 const cmd = @import("../core/cmd.zig");
 const text = @import("../core/text.zig");

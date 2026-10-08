@@ -68,11 +68,11 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
 
         pub const Model = struct {
             /// Items 0..len are live; the rest are stale storage.
-            items: [capacity]Child.Model = [_]Child.Model{.{}} ** capacity,
+            items: [capacity]Child.Model = @splat(.{}),
             /// Parallel to `items`: `keys[i]` is the stable identity of
             /// `items[i]`, assigned at append time and carried through
             /// shifts. `0` is reserved as "no key".
-            keys: [capacity]u64 = [_]u64{0} ** capacity,
+            keys: [capacity]u64 = @splat(0),
             len: usize = 0,
             /// Next key to hand out. Monotonic; never reused within a
             /// list's lifetime, so a key uniquely identifies one item.
@@ -237,9 +237,9 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
             const app_info = @typeInfo(AppMsg).@"union";
             var name: []const u8 = "";
             var match_count: usize = 0;
-            inline for (app_info.fields) |f| {
-                if (f.type == Msg) {
-                    name = f.name;
+            inline for (app_info.field_names, app_info.field_types) |field_name, field_type| {
+                if (field_type == Msg) {
+                    name = field_name;
                     match_count += 1;
                 }
             }
@@ -272,11 +272,11 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
                 // moves with the item.
                 const key = model.keys[i];
                 var child_msgs: component_mod.MsgsStructFor(Child, AppMsg) = undefined;
-                inline for (child_msg_info.fields) |f| {
-                    if (f.type == void) {
-                        const child_local: Child.Msg = @unionInit(Child.Msg, f.name, {});
+                inline for (child_msg_info.field_names, child_msg_info.field_types) |field_name, field_type| {
+                    if (field_type == void) {
+                        const child_local: Child.Msg = @unionInit(Child.Msg, field_name, {});
                         const list_msg: Msg = .{ .child = .{ .key = key, .child_msg = child_local } };
-                        @field(child_msgs, f.name) = @unionInit(AppMsg, list_tag_name, list_msg);
+                        @field(child_msgs, field_name) = @unionInit(AppMsg, list_tag_name, list_msg);
                     }
                 }
                 Child.view(&model.items[i], cb, child_msgs);

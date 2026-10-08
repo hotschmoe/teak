@@ -9,7 +9,7 @@ pub const MAX_NAME: usize = 63;
 const BUFFER_LEN: usize = MAX_NAME + 1;
 
 pub const Model = struct {
-    name: [BUFFER_LEN]u8 = [_]u8{0} ** BUFFER_LEN,
+    name: [BUFFER_LEN]u8 = @splat(0),
     name_len: usize = 0,
     cursor: usize = 0,
     /// Selection anchor. null = no selection (cursor only). When non-null

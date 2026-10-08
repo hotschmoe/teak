@@ -146,7 +146,7 @@ test "lineChartPrimitives: single point emits gridlines only, no polyline" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const series = [_]f32{ 42 };
+    const series = [_]f32{42};
     const prims = lineChartPrimitives(arena.allocator(), &series, .{
         .width = 100,
         .height = 50,

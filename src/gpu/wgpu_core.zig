@@ -21,7 +21,7 @@
 //!   3. `renderFrame` / `renderToWindow` runs the main pass: solids, images,
 //!      scene composites, text — optionally 4x multisampled.
 //!
-//! `pub const c` is the single `@cImport` of the wgpu headers (it lives in
+//! `pub const c` is the single translate-c module (`wgpu-c`) of the wgpu headers (it lives in
 //! `wgpu_c.zig`); the provider files re-import it
 //! (`@import("wgpu_core.zig").c`) so the `WGPUSurface`/`WGPUInstance`
 //! types have one identity across the seam.

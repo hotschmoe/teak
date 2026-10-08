@@ -34,7 +34,7 @@ pub const SCROLL_LINE_PX: f32 = 24;
 // ── Model ──────────────────────────────────────────────────────────
 
 pub const Node = struct {
-    label: [MAX_LABEL]u8 = [_]u8{0} ** MAX_LABEL,
+    label: [MAX_LABEL]u8 = @splat(0),
     label_len: u8 = 0,
     depth: u8 = 0,
     /// False collapses this node's children; they stay in the pre-order
@@ -47,7 +47,7 @@ pub const Node = struct {
 };
 
 pub const Model = struct {
-    nodes: [MAX_NODES]Node = [_]Node{.{}} ** MAX_NODES,
+    nodes: [MAX_NODES]Node = @splat(.{}),
     nodes_len: u16 = 0,
     /// Click-selected node, highlighted in the render pass (optional —
     /// kept for future expansion, unused today beyond storage).

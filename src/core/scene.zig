@@ -103,7 +103,7 @@ pub const SceneDraw = struct {
 };
 
 test "MeshData.validate rejects bad indices and partial triangles" {
-    const v = [_]MeshVertex{.{ .pos = .{ 0, 0, 0 }, .normal = .{ 0, 0, 1 }, .color = .{ 1, 1, 1, 1 } }} ** 3;
+    const v: [3]MeshVertex = @splat(.{ .pos = .{ 0, 0, 0 }, .normal = .{ 0, 0, 1 }, .color = .{ 1, 1, 1, 1 } });
     const ok = MeshData{ .vertices = &v, .indices = &.{ 0, 1, 2 } };
     try ok.validate();
     try std.testing.expectEqual(@as(usize, 1), ok.triangleCount());
