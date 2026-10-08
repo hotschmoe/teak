@@ -32,9 +32,10 @@ pub const InitOptions = struct {
     msaa: bool = false,
     /// 4x multisampling of offscreen 3D scene targets (see `renderScenes`).
     scene_msaa: bool = true,
-    /// Device pixels per logical pixel. The UI is laid out in logical px; the
-    /// backend renders `width x height` device pixels, so the surface is
-    /// `logical * scale` large. Text is rasterized at the physical size (true
+    /// Device pixels per logical pixel. The UI is laid out in logical px and
+    /// `init`/`resize` take the logical size, so the surface is
+    /// `logical * scale` device px (a Host that already reports device px
+    /// keeps the default 1). Text is rasterized at the physical size (true
     /// HiDPI), solids scale as vectors.
     scale: f32 = 1,
     /// Glyph-atlas page cap (1024x1024 R8 each, 1 MiB). Running out logs loudly

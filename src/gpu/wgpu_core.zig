@@ -298,7 +298,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const ctx = try wgpu_c.requestDevice(instance, null);
             var gpu = try initFromDevice(instance, null, ctx, width, height, options);
             errdefer gpu.deinit();
-            try gpu.recreateOffscreen(width, height);
+            try gpu.recreateOffscreen(gpu.width, gpu.height);
             return gpu;
         }
 
@@ -674,7 +674,16 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             c.wgpuSurfaceConfigure(surface, &surf_config);
         }
 
-        pub fn resize(self: *Self, width: u32, height: u32) void {
+        /// Device pixels for a logical extent: `InitOptions.scale` times it.
+        /// `resize`, `init*` and the secondary-surface calls take the logical
+        /// window size (identical to device pixels while the scale is 1).
+        fn devicePx(self: *const Self, logical: u32) u32 {
+            return @intFromFloat(@round(@as(f32, @floatFromInt(logical)) * self.scale));
+        }
+
+        pub fn resize(self: *Self, logical_w: u32, logical_h: u32) void {
+            const width = self.devicePx(logical_w);
+            const height = self.devicePx(logical_h);
             self.width = width;
             self.height = height;
             if (self.surface != null) self.configureSurface(self.surface, width, height);
@@ -934,12 +943,14 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const surface = Surface.createSurface(self.instance, handle) catch return null;
 
             // Configure the surface with the same format the primary uses.
-            self.configureSurface(surface, w, h);
+            const dw = self.devicePx(w);
+            const dh = self.devicePx(h);
+            self.configureSurface(surface, dw, dh);
 
             self.secondary_surfaces[slot_idx] = .{
                 .surface = surface,
-                .width = w,
-                .height = h,
+                .width = dw,
+                .height = dh,
                 .active = true,
             };
             return @intCast(slot_idx + 1);
@@ -969,9 +980,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const slot = &self.secondary_surfaces[window_id - 1];
             if (!slot.active or slot.surface == null) return;
 
-            slot.width = w;
-            slot.height = h;
-            self.configureSurface(slot.surface, w, h);
+            slot.width = self.devicePx(w);
+            slot.height = self.devicePx(h);
+            self.configureSurface(slot.surface, slot.width, slot.height);
         }
 
         // ── Text: shaped glyphs -> atlas -> instanced quads ────────

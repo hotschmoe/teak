@@ -1,7 +1,9 @@
 //! Shared glyph cache for GPU backends.
 //!
-//! Both `gpu/native.zig` and `gpu/web.zig` rasterize text strings into
-//! GPU textures and cache the results. The cache's data layout, keying,
+//! Used by `gpu/web.zig` only: the native backends moved to the glyph-atlas
+//! text path (`glyph_atlas.zig`, text-engine PR4) and the web backend follows
+//! in PR7, which retires this module. It rasterizes text strings into
+//! GPU textures and caches the results. The cache's data layout, keying,
 //! lookup, LRU policy, and insert path are identical across backends —
 //! only the concrete resource types (`WGPUTexture` vs `zgpu.Texture`,
 //! etc.) and the destroy semantics differ. Factoring the cache here
