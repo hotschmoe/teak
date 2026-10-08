@@ -26,6 +26,10 @@ pub const linebreak = @import("core/linebreak.zig");
 pub const text_wrap = @import("core/text_wrap.zig");
 /// `Editor(cap, undo_cap)`: grapheme-aware text editing model with undo/redo (used by TextField/TextArea).
 pub const editor = @import("core/editor.zig");
+/// `TextEvent` and friends: pointer, motion and metrics events for `text_area`.
+pub const text_event = @import("core/text_event.zig");
+/// `TextArea(cap)`: multi-line editor component (Editor + scroll + textMsg events).
+pub const text_area = @import("core/text_area.zig");
 /// Declarative subscriptions (`Sub`): timers serviced by the run loop.
 pub const sub = @import("core/sub.zig");
 /// Model-driven animation: `Tween(T)`, easing curves and `lerp`.
@@ -295,6 +299,12 @@ pub const light_palette = theme.light_palette;
 
 /// Text-input component with cursor, selection and editing `update`.
 pub const TextField = text_field.TextField;
+/// Multi-line text component driven by `textMsg` events.
+pub const TextArea = text_area.TextArea;
+/// One pointer / motion / metrics event over a `text_area`.
+pub const TextEvent = text_event.TextEvent;
+/// Kind of a `TextEvent`.
+pub const TextEventKind = text_event.TextEventKind;
 /// Text field specialised for numbers (parse, validate, value).
 pub const NumericField = numeric_field.NumericField;
 /// Comptime configuration for `NumericField`.

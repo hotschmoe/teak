@@ -716,6 +716,45 @@ pub fn TextInputCmd(comptime Msg: type) type {
     };
 }
 
+/// Multi-line editable text (`text_area`). Layout sizes it like a canvas
+/// (`width`/`min_width`, `height`, `flex`; it fills a stretching parent's
+/// cross axis); render wraps `content` to the inner width, draws the
+/// selection across lines, the caret, and the IME composition (from
+/// `TransientState`) clipped to the box. Pointer input over it becomes
+/// `TextEvent`s for the app's `textMsg` hook (see `core/text_event.zig`) -- the
+/// framework never builds a Msg from a pointer, and nothing here is a callback.
+pub fn TextAreaCmd(comptime Msg: type) type {
+    return struct {
+        /// Msg emitted when the area is clicked (the app sets its focus).
+        focus_msg: Msg,
+        /// Distinct non-zero id: `TextEvent.id` names the target.
+        id: u32,
+        content: []const u8,
+        cursor: usize = 0,
+        selection_anchor: ?usize = null,
+        /// Scroll offsets into the wrapped content, from the Model.
+        scroll_x: f32 = 0,
+        scroll_y: f32 = 0,
+        /// Sticky x for Up/Down (from the Model); lets the runtime resolve
+        /// vertical motion against the real layout.
+        goal_x: ?f32 = null,
+        /// `.word` / `.char` wrap to the inner width; `.none` scrolls
+        /// horizontally. (`.ellipsis` behaves like `.none`.)
+        wrap: Wrap = .word,
+        font: FontSpec = DEFAULT_FONT,
+        style: TextInputStyle = .{},
+        /// Box sizing: `width > 0` fixes the width, else `min_width` (or the
+        /// parent's cross extent when it stretches); `flex` grows the main axis.
+        width: f32 = 0,
+        min_width: f32 = 120,
+        height: f32 = 120,
+        flex: f32 = 0,
+        /// Inner padding inside the border.
+        padding: f32 = 6,
+        disabled: bool = false,
+    };
+}
+
 pub fn CheckboxCmd(comptime Msg: type) type {
     return struct {
         /// Msg fired on click. The app flips `Model.checked` in its
@@ -774,6 +813,7 @@ pub fn Cmd(comptime Msg: type) type {
         image: ImageCmd,
         button: ButtonCmd(Msg),
         text_input: TextInputCmd(Msg),
+        text_area: TextAreaCmd(Msg),
         checkbox: CheckboxCmd(Msg),
         radio: RadioCmd(Msg),
         slider: SliderCmd(Msg),
@@ -1390,6 +1430,25 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = style,
                 .font = self.theme.typography.body,
             } }) catch oom();
+        }
+
+        /// Multi-line editable text; see `TextAreaCmd`. The theme's
+        /// `text_input` style and body font are used.
+        pub fn textArea(self: *Self, c: TextAreaCmd(Msg)) void {
+            self.cmds.append(self.backing, .{ .text_area = c }) catch oom();
+        }
+
+        /// `textArea` with the theme's input style + body font filled in.
+        pub fn textAreaThemed(self: *Self, focus_msg: Msg, id: u32, content: []const u8, cursor: usize, selection_anchor: ?usize) void {
+            self.textArea(.{
+                .focus_msg = focus_msg,
+                .id = id,
+                .content = content,
+                .cursor = cursor,
+                .selection_anchor = selection_anchor,
+                .style = self.theme.text_input,
+                .font = self.theme.typography.body,
+            });
         }
 
         pub fn richText(
