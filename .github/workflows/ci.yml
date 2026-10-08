@@ -206,7 +206,7 @@ jobs:
             zig build shot -- "$env:GITHUB_WORKSPACE\shots\win-$ex-${{ matrix.arch }}.png"
             if ($LASTEXITCODE -ne 0) {
               # Rerun the exe by hand (DLL beside it) so its stderr shows up.
-              $exe = Get-ChildItem .zig-cache -Recurse -Filter "$ex-shot.exe" | Select-Object -First 1
+              $exe = Get-ChildItem $env:ZIG_LOCAL_CACHE_DIR -Recurse -Filter "$ex-shot.exe" | Select-Object -First 1
               $dll = Get-ChildItem zig-out\bin -Filter wgpu_native.dll -ErrorAction SilentlyContinue | Select-Object -First 1
               Write-Host "exe=$($exe.FullName) dll=$($dll.FullName)"
               if ($exe -and $dll) { Copy-Item $dll.FullName $exe.DirectoryName -Force }
