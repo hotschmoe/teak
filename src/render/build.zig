@@ -556,7 +556,11 @@ fn buildLayer(
                 if (canvas_clip.w <= 0 or canvas_clip.h <= 0) continue;
                 if (cv.style.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
                 for (cv.primitives) |prim| {
-                    emitCanvasPrimitive(verts, alloc, rect, prim, canvas_clip);
+                    if (prim == .text) {
+                        const t = prim.text;
+                        const m = measurer.measure(t.content, t.font);
+                        emitText(text_draws, alloc, t.content, t.font, t.color, .{ .x = rect.x + t.x, .y = rect.y + t.y, .w = m.width, .h = m.height }, canvas_clip);
+                    } else emitCanvasPrimitive(verts, alloc, rect, prim, canvas_clip);
                 }
             },
         }
@@ -612,6 +616,7 @@ fn emitCanvasPrimitive(
                 .h = mk.size,
             }, mk.color, clip);
         },
+        .text => {}, // drawn by the caller (needs the text list and the measurer)
         .triangles => |tr| emitTriangles(verts, alloc, canvas, tr.verts, clip),
         .lines => |ln| {
             verts.ensureUnusedCapacity(alloc, ln.segs.len * 6) catch return;

@@ -213,13 +213,14 @@ pub fn TextStage(comptime Raster: type) type {
             const bits: u64 = @as(u64, @as(u32, @bitCast(font.size_px))) |
                 (@as(u64, @as(u32, @bitCast(font.letter_spacing))) << 32);
             const tags: u64 = @as(u64, @backingInt(font.family)) | (@as(u64, @backingInt(font.weight)) << 8) |
-                (@as(u64, if (font.snap_advance) |v| @intFromBool(v) + 1 else 0) << 16);
+                (@as(u64, if (font.snap_advance) |v| @intFromBool(v) + 1 else 0) << 16) |
+                (@as(u64, @intFromBool(font.scalable)) << 24);
             return std.hash.Wyhash.hash(bits ^ std.math.rotl(u64, tags, 40), text);
         }
 
         fn sameFont(a: teak.FontSpec, b: teak.FontSpec) bool {
             return a.size_px == b.size_px and a.family == b.family and a.weight == b.weight and
-                a.letter_spacing == b.letter_spacing and a.snap_advance == b.snap_advance;
+                a.letter_spacing == b.letter_spacing and a.snap_advance == b.snap_advance and a.scalable == b.scalable;
         }
 
         /// Glyphs of `text` in `font` with run-relative logical x positions
@@ -327,6 +328,9 @@ pub fn TextStage(comptime Raster: type) type {
             color: u32,
             clip: DeviceClip,
         ) void {
+            if (font.scalable and g.glyph != 0 and @hasDecl(Raster, "rasterizeSdf")) {
+                return self.emitSdf(layer, font, g, pen_x, baseline, color, clip);
+            }
             const fx = @floor(pen_x);
             const bin: u2 = if (snap) 0 else @intCast(@min(3, @as(u32, @intFromFloat((pen_x - fx) * 4))));
             var key: glyph_atlas.GlyphKey = .{ .face = g.face, .glyph = g.glyph, .size_q = size_q, .bin = bin };
@@ -352,6 +356,49 @@ pub fn TextStage(comptime Raster: type) type {
             const e = self.atlas.lookup(key) orelse self.pack(key, font, cluster_cp) orelse return;
             if (cached) |c| c.* = e;
             self.appendInstance(layer, e, fx, baseline, color, clip);
+        }
+
+        /// A scalable glyph: one distance-field entry (`mode = 1`, fixed source size)
+        /// drawn at `font.size_px * scale / sdf_em` times its stored size, at an exact
+        /// (unsnapped) position so zooming and panning stay smooth.
+        fn emitSdf(
+            self: *Self,
+            layer: usize,
+            font: teak.FontSpec,
+            g: teak.ShapedGlyph,
+            pen_x: f32,
+            baseline: f32,
+            color: u32,
+            clip: DeviceClip,
+        ) void {
+            const key: glyph_atlas.GlyphKey = .{ .face = g.face, .glyph = g.glyph, .size_q = quantizeSize(Raster.sdf_em), .bin = 0, .mode = 1 };
+            const e = self.atlas.lookup(key) orelse self.pack(key, font, 0) orelse return;
+            if (e.rect.w == 0 or e.rect.h == 0) return;
+            const k_q: u32 = @intFromFloat(std.math.clamp(@round(font.size_px * self.scale / Raster.sdf_em * 256), 0, 65535));
+            if (k_q == 0) return;
+            const k = @as(f32, @floatFromInt(k_q)) / 256;
+            const gx = pen_x + @as(f32, @floatFromInt(e.bearing_x)) * k;
+            const gy = baseline + @as(f32, @floatFromInt(e.bearing_y)) * k;
+            const gw = @as(f32, @floatFromInt(e.rect.w)) * k;
+            const gh = @as(f32, @floatFromInt(e.rect.h)) * k;
+            if (gx + gw <= clip.x0 or gy + gh <= clip.y0 or gx >= clip.x1 or gy >= clip.y1) return;
+            const inside = gx >= clip.x0 and gy >= clip.y0 and gx + gw <= clip.x1 and gy + gh <= clip.y1;
+            while (self.insts.items.len <= e.page) {
+                self.insts.append(self.gpa, .{}) catch return;
+            }
+            self.insts.items[e.page].list[layer].append(self.gpa, .{
+                .x = gx,
+                .y = gy,
+                .w = e.rect.w,
+                .h = e.rect.h,
+                .u = e.rect.x,
+                .v = e.rect.y,
+                .color = color,
+                .clip_xy = if (inside) .{ 0, 0 } else clip.xy,
+                .clip_wh = if (inside) .{ 0, 0 } else clip.wh,
+                // bits 0-1: mode 1 (SDF); bits 16-31: quad scale in 1/256 units.
+                .flags = 1 | (k_q << 16),
+            }) catch return;
         }
 
         fn appendInstance(self: *Self, layer: usize, e: glyph_atlas.Entry, fx: f32, baseline: f32, color: u32, clip: DeviceClip) void {
@@ -402,6 +449,7 @@ pub fn TextStage(comptime Raster: type) type {
         fn pack(self: *Self, key: glyph_atlas.GlyphKey, font: teak.FontSpec, cluster_cp: u21) ?glyph_atlas.Entry {
             const size_px = @as(f32, @floatFromInt(key.size_q)) / 4.0;
             const bmp = blk: {
+                if (@hasDecl(Raster, "rasterizeSdf") and key.mode == 1) break :blk self.raster.rasterizeSdf(key.face, key.glyph);
                 if (@hasDecl(Raster, "rasterizeCluster") and key.face == cluster_face) {
                     var utf8: [4]u8 = undefined;
                     const n = std.unicode.utf8Encode(cluster_cp, &utf8) catch 0;

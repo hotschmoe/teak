@@ -68,6 +68,13 @@
 
 ### Added
 
+- **Scalable (SDF) text.** `FontSpec.scalable = true` draws a glyph from a signed distance field rasterized ONCE (stb
+  `GetGlyphSDF`, 32 px source, shared R8 atlas pages, `GlyphKey.mode = 1`) instead of once per size: crisp from below 1x to 8x+ with no
+  re-rasterization or blur, positioned at exact (unsnapped) coordinates. `shaders/glyph.wgsl` branches per instance on `flags` (bits 0-1 mode,
+  bits 16-31 quad scale) and samples bilinearly. New `CanvasPrimitive.text` draws labels inside a canvas; `examples/viewport` labels its grid
+  with scalable text and gains `zig build shot -- out.png --zoom Z`. Native and web (the wasm math shim gained small cbrt/cos/acos; chrome-sized
+  apps pay about 4-5 KB gzip for the SDF code). Not for UI text: a distance field is softer than a hinted bitmap at 12-16 px.
+
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
     selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,

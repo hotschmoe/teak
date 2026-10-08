@@ -443,6 +443,10 @@ pub const CanvasPrimitive = union(enum) {
     triangles: Triangles,
     /// A big batch of independent segments sharing one color / thickness.
     lines: Lines,
+    /// A text label at a canvas-local position (top-left of the text box).
+    /// Drawn above the canvas' solid primitives, clipped to the canvas. Set
+    /// `font.scalable` for labels that zoom with the canvas.
+    text: Text,
 
     pub const Polyline = struct {
         points: []const CanvasPoint,
@@ -465,6 +469,13 @@ pub const CanvasPrimitive = union(enum) {
         x: f32,
         color: [4]f32 = .{ 0.3, 0.3, 0.35, 1.0 },
         thickness: f32 = 1,
+    };
+    pub const Text = struct {
+        x: f32,
+        y: f32,
+        content: []const u8,
+        font: FontSpec = DEFAULT_FONT,
+        color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
     };
     pub const Marker = struct {
         x: f32,
@@ -532,6 +543,11 @@ pub const CanvasPrimitive = union(enum) {
             .hline => |x| std.meta.eql(x, b.hline),
             .vline => |x| std.meta.eql(x, b.vline),
             .marker => |x| std.meta.eql(x, b.marker),
+            .text => |t| blk: {
+                const o = b.text;
+                break :blk t.x == o.x and t.y == o.y and std.meta.eql(t.font, o.font) and
+                    std.meta.eql(t.color, o.color) and std.mem.eql(u8, t.content, o.content);
+            },
         };
     }
 

@@ -30,6 +30,13 @@ pub const FontSpec = struct {
     /// null = the family default: on for `.mono`, off otherwise. Snapped text
     /// also uses one subpixel bin, so every glyph lands on the pixel grid.
     snap_advance: ?bool = null,
+    /// A hint that this text changes size continuously (zoomable canvases,
+    /// animated scale): its glyphs are rasterized ONCE as signed distance
+    /// fields and drawn at any size, instead of once per `size_px`. Crisp from
+    /// well below 1x to 8x+ with no re-rasterization. Costs a little at small sizes
+    /// (a distance field is softer than a hinted bitmap at 12-16 px), so leave it
+    /// off for UI text. Ignored by backends without an SDF rasterizer.
+    scalable: bool = false,
 
     /// The resolved `snap_advance` (see the field).
     pub fn snapsAdvance(self: FontSpec) bool {

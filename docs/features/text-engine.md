@@ -207,6 +207,12 @@ stepping on native and zunk exposes `VertexStepMode.instance`, so no new capabil
 
 ### 3.6 SDF / MSDF decision
 
+**Shipped (PR15): `FontSpec.scalable`.** Scalable text uses glyph key `mode = 1` at a fixed 32 px source size; the SDF bitmaps live in the *same*
+R8 pages as coverage glyphs (the instance's `flags` pick the shader branch, so no second page kind was needed). The quad is drawn at
+`size_px * scale / 32` times the stored size (scale in `flags` bits 16-31, 1/256 units) at an unsnapped position, sampled bilinearly and cut with
+`smoothstep(0.502 +- 0.7 * fwidth(d))`. The stb cubic solver needs cbrt/cos/acos; the wasm build carries small polynomial/Newton versions
+(`src/text/stb_wasm_impl.c`) instead of libm. The original analysis follows.
+
 **Recommendation: coverage atlas now; SDF page kind later and only for zoomable canvas text.**
 
 Evidence and reasoning:
