@@ -299,6 +299,10 @@ pub const SliderDrag = hit_test.SliderDrag;
 pub const nextFocusable = focus.nextFocusable;
 /// Previous focusable cmd index before `current`, wrapping around.
 pub const prevFocusable = focus.prevFocusable;
+/// `nextFocusable` over every keyboard-operable leaf (buttons, checkboxes, radios, sliders, text fields): the Tab order of `RunOptions.keyboard_nav`.
+pub const nextNavigable = focus.nextNavigable;
+/// `prevFocusable` over every keyboard-operable leaf.
+pub const prevNavigable = focus.prevNavigable;
 /// Cmd index of the interactive leaf carrying a given focus Msg.
 pub const indexOfFocusMsg = focus.indexOfFocusMsg;
 /// The activation / focus Msg of the leaf at an index, if any.

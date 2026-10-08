@@ -265,6 +265,11 @@ pub fn focusedMsg(m: *const Model) ?Msg {
     };
 }
 
+/// Tab moved the keyboard focus off the text fields: stop typing into them.
+pub fn blurMsg(m: *const Model) ?Msg {
+    return if (m.focus != null) .blur else null;
+}
+
 pub fn scrollMsg(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
     if (id == page_data.list_id) return Msg{ .list_scroll_by = dy };
     if (id == page_data.note_id) return Msg{ .note_scroll_by = dy };

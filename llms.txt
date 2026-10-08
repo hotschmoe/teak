@@ -319,7 +319,16 @@ nextFocusable(cmds, current: ?usize) ?usize   // wraps; null only if no focusabl
 prevFocusable(cmds, current: ?usize) ?usize
 indexOfFocusMsg(cmds, msg) ?usize             // cmd index whose leaf carries msg (by value) — stable
 focusMsgAt(cmds, index: usize) ?Msg           // the Msg the leaf at index would dispatch
+nextNavigable(cmds, current) ?usize           // same walk over EVERY keyboard-operable leaf (button, checkbox, radio, slider, text field)
+prevNavigable(cmds, current) ?usize
 ```
+Keyboard navigation (`RunOptions.keyboard_nav`, default on): Tab / Shift+Tab walk `nextNavigable` (disabled skipped, modal overlay traps).
+A text leaf gets its focus Msg dispatched (the Model owns text focus); any other leaf becomes the run loop's own focus: a ring in
+`palette.accent` / `tokens.focus_ring_width` is drawn around it, Space / Enter dispatch the Msg a click would, Left/Right/Up/Down move
+and select inside a radio group, arrows / Home / End / PageUp / PageDown set a slider through `sliderMsg`. Optional App hook
+`blurMsg(*const Model) ?Msg` clears the app's text focus when Tab leaves a text field (so typing keys stop reaching it). App key
+hooks (`keyCharMsg`, `keySpecialMsg`, `submitMsg`, menus, dialogs) run first; the focused widget only gets keys they decline.
+Focus is keyed by the leaf's Msg, so it follows the widget through list inserts / removals; a click on a widget moves it there.
 
 ### Keys (`teak.keys` → input/keys.zig)
 ```zig
