@@ -150,6 +150,9 @@ src/                           -- the library, consumable as a Zig module
                                --    services `subscribe` via runSubs on Host.nowMs();
                                --    mirrors changed frames to the TEAK_SNAPSHOT sink).
                                --   Imports only the pure passes; outside framework core.
+  control.zig                  -- agent control channel (TEAK_CONTROL) + TEAK_RECORD/REPLAY; driven
+                               --   from run.zig; injects via Host.injectInput (no second mutation path)
+  input_record.zig             -- record/replay file format
   core/
     cmd.zig                    -- Cmd union, CmdBuffer, arena management
                                --   (incl. overlay, image, virtual_list, rich_text, canvas
@@ -171,6 +174,7 @@ src/                           -- the library, consumable as a Zig module
     sub.zig                    -- Sub(Msg) declarative timers (HARDLINE §2 hatch 6)
     chart.zig                  -- lineChartPrimitives — canvas line-chart helper
     snapshot.zig               -- []Cmd+[]Rect -> text; golden tests + TEAK_SNAPSHOT
+    inspector.zig              -- dev inspector panel (tree, hovered cmd, Msgs, timings) as overlay cmds
   layout/
     engine.zig                 -- measure + position passes
     scroll_extent.zig          -- viewport + content size of a scroll region, from rects

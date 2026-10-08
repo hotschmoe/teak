@@ -20,6 +20,7 @@ const std = @import("std");
 const teak = @import("teak");
 const text = @import("teak-text");
 const native_effects = @import("native_effects.zig");
+const control_socket = @import("control_socket.zig");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -177,6 +178,7 @@ const XK_ISO_Left_Tab: KeySym = 0xfe20;
 const XK_Return: KeySym = 0xff0d;
 const XK_KP_Enter: KeySym = 0xff8d;
 const XK_Escape: KeySym = 0xff1b;
+const XK_F12: KeySym = 0xffc9;
 const XK_Delete: KeySym = 0xffff;
 const XK_Home: KeySym = 0xff50;
 const XK_Left: KeySym = 0xff51;
@@ -216,9 +218,10 @@ const Xlib = struct {
 
     fn load(lib: *std.DynLib) !Xlib {
         var x: Xlib = undefined;
-        inline for (@typeInfo(Xlib).@"struct".fields) |field| {
-            if (field.type == void) continue;
-            @field(x, field.name) = lib.lookup(field.type, field.name ++ "") orelse
+        inline for (comptime std.meta.fieldNames(Xlib)) |name| {
+            const T = @FieldType(Xlib, name);
+            if (T == void) continue;
+            @field(x, name) = lib.lookup(T, name ++ "") orelse
                 return error.X11SymbolMissing;
         }
         return x;
@@ -261,6 +264,11 @@ pub const Host = struct {
 
     /// Pointer, buttons, wheel, text and key queues — see `InputQueue`.
     queue: InputQueue,
+
+    /// Agent control channel (`controlListen`, src/control.zig): the socket
+    /// and the synthetic events waiting to join the next poll's queue.
+    ctl: control_socket.Server = .{},
+    inject: teak.input_queue.InjectBuffer = .{},
 
     /// Owned buffer for clipboard reads (stub returns empty; see below).
     clipboard_buf: [65536]u8,
@@ -320,6 +328,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        self.ctl.deinit();
         text.releaseFaces();
         self.effects.destroy();
         _ = self.x.XDestroyWindow(self.display, self.window);
@@ -390,6 +399,9 @@ pub const Host = struct {
             }
         }
 
+        // Synthetic input (agent control channel) joins the real events.
+        self.inject.apply(q);
+
         const resized = self.resized_pending or self.first_resize;
         self.first_resize = false;
         self.resized_pending = false;
@@ -422,6 +434,26 @@ pub const Host = struct {
 
     pub fn shouldClose(self: *const Host) bool {
         return !self.running;
+    }
+
+    // ── Agent control channel (optional Host surface; src/control.zig) ──
+
+    pub fn controlListen(self: *Host, path: []const u8) bool {
+        return self.ctl.listen(path);
+    }
+    pub fn controlRecv(self: *Host, out: []u8) ?[]u8 {
+        return self.ctl.recvLine(out);
+    }
+    pub fn controlSend(self: *Host, bytes: []const u8) void {
+        self.ctl.send(bytes);
+    }
+    /// Queue a synthetic event for the next `pollInputs`.
+    pub fn injectInput(self: *Host, ev: teak.host.InjectEvent) void {
+        self.inject.push(ev);
+    }
+    /// Make `shouldClose` true (the control `quit` command).
+    pub fn requestClose(self: *Host) void {
+        self.running = false;
     }
 
     pub fn nativeHandle(self: *const Host) NativeHandle {
@@ -609,6 +641,7 @@ fn navFromKeysym(keysym: KeySym) ?NavKey {
         XK_Return, XK_KP_Enter => .enter,
         XK_Tab, XK_ISO_Left_Tab => .tab,
         XK_Escape => .escape,
+        XK_F12 => .f12,
         else => null,
     };
 }
@@ -646,7 +679,7 @@ test "X11 key tables reach every SpecialKey through the shared policy" {
     const keysyms = [_]KeySym{
         XK_BackSpace, XK_Delete,   XK_Left, XK_Right,        XK_Up,     XK_Down, XK_Home, XK_End, XK_Prior, XK_Next,
         XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, 'a',     'c',     'x',    'v',      'y',
-        'z',
+        'z',          XK_F12,
     };
     const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = true } };
     for (mod_sets) |mods| {
@@ -700,4 +733,39 @@ test "scaleFromXrm derives a clamped scale, defaulting to 1.0" {
     try std.testing.expectEqual(@as(f32, 1.0), scaleFromXrm("Xft.dpi:\t0\n")); // non-positive guard
     // Absurd values clamp into range rather than producing a giant scale.
     try std.testing.expectEqual(@as(f32, 8.0), scaleFromXrm("Xft.dpi:\t9999\n"));
+}
+
+test "control surface: injected input joins the real queue; socket lines round-trip" {
+    // Needs a reachable X server (Xvfb is fine); skipped without one.
+    var h = Host.init("teak control test", 320, 200) catch return error.SkipZigTest;
+    defer h.deinit();
+
+    var path_buf: [64]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "/tmp/teak-x11-ctl-{d}.sock", .{std.os.linux.getpid()});
+    try std.testing.expect(h.controlListen(path));
+
+    var cl = try control_socket.Client.connect(path);
+    defer cl.close();
+    try cl.sendLine("{\"cmd\":\"ping\"}");
+    var line: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("{\"cmd\":\"ping\"}", h.controlRecv(&line) orelse return error.TestUnexpectedResult);
+
+    h.injectInput(.{ .move = .{ 40, 50 } });
+    h.injectInput(.{ .down = .left });
+    h.injectInput(.{ .up = .left });
+    h.injectInput(.{ .chars = "hi" });
+    h.injectInput(.{ .key = .enter });
+    const in = h.pollInputs();
+    try std.testing.expectEqual(@as(f32, 40), in.mouse_x);
+    try std.testing.expect(in.mouse_down and in.mouse_up);
+    try std.testing.expectEqualStrings("hi", in.chars);
+    try std.testing.expectEqual(@as(usize, 1), in.keys.len);
+
+    // Nothing queued: the injected text and key are gone, not repeated.
+    const next = h.pollInputs();
+    try std.testing.expectEqual(@as(usize, 0), next.chars.len);
+
+    try std.testing.expect(!h.shouldClose());
+    h.requestClose();
+    try std.testing.expect(h.shouldClose());
 }

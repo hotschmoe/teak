@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Agent driver** (docs/features/agent-driver.md): `TEAK_CONTROL=<unix socket>` control channel in `teak.run`
+  (snapshot, a11y `tree`, click/hover/type/key/scroll by role+label selector, screenshot, msglog, state, wait),
+  injected through the Host's real input queue (`Host.injectInput`; headless + X11 hosts); `TEAK_RECORD` /
+  `TEAK_REPLAY` input record/replay; `tools/teak-drive` CLI + MCP server (`zig build drive`);
+  `teak.headless.serve`; dev inspector overlay (`TEAK_INSPECT=1` / F12, `teak.inspector`);
+  `SpecialKey.f12`; optional App hook `debugState`. `examples/todo` gains a `drive` step.
+
+### Fixed
+
+- `examples/todo`: item labels pointed at a by-value loop copy (garbled text); iterate by pointer.
+- X11 host: `Xlib.load` used the removed `@typeInfo(...).fields` (did not compile on Zig 0.17).
+
 - `teak.Combobox(cap)`: searchable select (query field + filtered overlay list with scrolling, type-ahead
   highlight, keyboard, "No matches" row), composed from existing primitives; chrome's MATERIAL field uses it (#2).
 - Cookbook recipe 6b + tested `LoadRow`/`LoadApp` example: rows owning several focusable fields (#1).

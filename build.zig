@@ -17,6 +17,23 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
 
+    // tools/teak-drive: the agent-driver CLI + MCP server
+    // (docs/features/agent-driver.md). `zig build drive` installs it.
+    const drive_mod = b.createModule(.{
+        .root_source_file = b.path("tools/teak_drive.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "control_socket", .module = b.createModule(.{
+            .root_source_file = b.path("src/platform/control_socket.zig"),
+            .target = target,
+            .optimize = optimize,
+        }) }},
+    });
+    const drive_exe = b.addExecutable(.{ .name = "teak-drive", .root_module = drive_mod });
+    b.step("drive", "Build zig-out/bin/teak-drive (agent driver CLI + MCP server)")
+        .dependOn(&b.addInstallArtifact(drive_exe, .{}).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = drive_mod })).step);
+
     // Integration tests: full-pipeline round trip + wasm-canary.
     const integ_mod = b.createModule(.{
         .root_source_file = b.path("test/integration_test.zig"),

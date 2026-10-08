@@ -135,7 +135,7 @@ pub fn view(m: *const Model, cb: anytype) void {
         .width = 0, // 0 → inherit parent width
         .height = 320,
     });
-    for (m.items[0..m.items_len], 0..) |item, i| {
+    for (m.items[0..m.items_len], 0..) |*item, i| {
         cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 4 });
         cb.checkbox(.{ .toggle = i }, item.done, item.label[0..item.label_len]);
         // Spacer claims the middle so the delete button pins right.
@@ -182,6 +182,14 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
 /// is `.input_focus`, so `run` maps this back to its cmd index by value.
 pub fn focusedMsg(m: *const Model) ?Msg {
     return if (m.input_focused) Msg.input_focus else null;
+}
+
+/// Agent-driver hook (`state` command): the Model as text, read-only.
+pub fn debugState(m: *const Model, w: *std.Io.Writer) void {
+    w.print("items={d} input=\"{s}\" focused={}\n", .{ m.items_len, m.input[0..m.input_len], m.input_focused }) catch return;
+    for (m.items[0..m.items_len], 0..) |it, i| {
+        w.print("  [{d}] {s} \"{s}\"\n", .{ i, if (it.done) "x" else " ", it.label[0..it.label_len] }) catch return;
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

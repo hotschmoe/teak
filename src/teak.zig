@@ -22,6 +22,8 @@ pub const dropdown = @import("core/dropdown.zig");
 pub const combobox = @import("core/combobox.zig");
 pub const component_list = @import("core/component_list.zig");
 pub const debug_overlay = @import("core/debug_overlay.zig");
+/// Dev inspector panel (widget tree, hovered cmd, Msg log, timings) as overlay cmds.
+pub const inspector = @import("core/inspector.zig");
 pub const snapshot = @import("core/snapshot.zig");
 pub const chart = @import("core/chart.zig");
 pub const table = @import("core/table.zig");
@@ -42,6 +44,10 @@ pub const input_queue = @import("platform/input_queue.zig");
 pub const gpu = @import("gpu/context.zig");
 pub const runtime = @import("run.zig");
 pub const headless = @import("headless_run.zig");
+/// Agent control channel + input record/replay (docs/features/agent-driver.md).
+pub const control = @import("control.zig");
+/// Input record/replay file format.
+pub const input_record = @import("input_record.zig");
 
 pub const Cmd = cmd.Cmd;
 pub const CmdBuffer = cmd.CmdBuffer;

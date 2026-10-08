@@ -29,6 +29,7 @@
 const std = @import("std");
 const teak = @import("teak");
 const text = @import("teak-text");
+const control_socket = @import("control_socket.zig");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -86,6 +87,9 @@ pub const Host = struct {
     clip: [4096]u8 = undefined,
     clip_len: usize = 0,
 
+    /// Agent control channel (`controlListen`); inactive unless listened.
+    ctl: control_socket.Server = .{},
+
     captured: std.ArrayList(Captured) = .empty,
     injected: [MAX_INJECTED]EffectResult = undefined,
     injected_len: usize = 0,
@@ -95,6 +99,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        self.ctl.deinit();
         for (self.captured.items) |c| freeCaptured(self.gpa, c);
         self.captured.deinit(self.gpa);
     }
@@ -176,6 +181,38 @@ pub const Host = struct {
 
     pub fn title(self: *const Host) []const u8 {
         return self.title_buf[0..self.title_len];
+    }
+
+    // ── Agent control channel (optional Host surface; src/control.zig) ──
+
+    /// Start listening on the Unix socket `path`. False: unsupported OS or
+    /// the socket could not be created.
+    pub fn controlListen(self: *Host, path: []const u8) bool {
+        return self.ctl.listen(path);
+    }
+    /// The next complete protocol line from the client, or null. Never blocks.
+    pub fn controlRecv(self: *Host, out: []u8) ?[]u8 {
+        return self.ctl.recvLine(out);
+    }
+    pub fn controlSend(self: *Host, bytes: []const u8) void {
+        self.ctl.send(bytes);
+    }
+    /// Queue a synthetic event: same queue, same path as the scripted
+    /// `push*` API (applied by the next `pollInputs`).
+    pub fn injectInput(self: *Host, ev: teak.host.InjectEvent) void {
+        switch (ev) {
+            .move => |p| self.pushMouseMove(p[0], p[1]),
+            .down => |b| self.pushMouseDown(b),
+            .up => |b| self.pushMouseUp(b),
+            .wheel => |w| self.pushWheel(w[0], w[1]),
+            .chars => |t| self.pushChars(t),
+            .key => |k| self.pushKey(k),
+            .mods => |m| self.setModifiers(m),
+        }
+    }
+    /// Make `shouldClose` true (the control `quit` command).
+    pub fn requestClose(self: *Host) void {
+        self.close();
     }
 
     // ── validateHost surface ───────────────────────────────────────
@@ -473,4 +510,8 @@ test "clipboard round-trips, titles are kept, close ends the run" {
     try std.testing.expect(!h.shouldClose());
     h.close();
     try std.testing.expect(h.shouldClose());
+}
+
+test {
+    _ = @import("headless_drive_test.zig");
 }

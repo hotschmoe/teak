@@ -87,6 +87,22 @@ pub const FileDialogPoll = union(enum) {
     cancelled: void,
 };
 
+/// One synthetic input event, injected by the agent control channel
+/// (`src/control.zig`) through the Host's optional `injectInput`. It lands in
+/// the same queue real OS events do, so injected input takes exactly the path
+/// real input takes (HARDLINE: no second mutation path).
+pub const InjectEvent = union(enum) {
+    move: [2]f32,
+    down: pointer.Button,
+    up: pointer.Button,
+    /// DOM sign convention: positive `dy` scrolls content down.
+    wheel: [2]f32,
+    /// UTF-8 text; at most `InputQueue.CHARS_CAP` bytes land per frame.
+    chars: []const u8,
+    key: SpecialKey,
+    mods: Modifiers,
+};
+
 /// Per-frame input snapshot returned by `Host.pollInputs`.
 ///
 /// `mouse_x` / `mouse_y` are the current cursor position (state, not an
