@@ -126,6 +126,8 @@ pub fn secondaryView(*const Model, *CmdBuffer(Msg)) void   // 2nd window's view 
 pub fn secondaryClosedMsg(*const Model) ?Msg          // dispatched when user OS-closes the 2nd window
 pub fn subscribe(*const Model) []const Sub(Msg)       // declarative timers; run services them each
                                                       //   frame via runSubs on Host.nowMs() (§2 hatch 6)
+pub fn animationMsg(*const Model, dt_ms: u32) ?Msg    // frame time while a Sub.animation_frame is listed
+                                                      //   (core/anim.zig; run loop idles when none is listed)
 pub fn resources(*const Model) []const Resource       // declarative GPU meshes/images by (key, rev);
                                                       //   run uploads/releases + maps keys to handles (§2 hatch 8)
 ```
@@ -146,7 +148,7 @@ pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: 
 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
-`cmd component component_list transient text sub theme text_field numeric_field
+`cmd component component_list transient text sub anim theme text_field numeric_field
 dropdown debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
 
@@ -337,13 +339,25 @@ buildA11yTree(arena, cmds, rects: []const Rect, focus_index: ?usize) ![]A11yNode
 
 ### Subscriptions (`teak.sub` → core/sub.zig)
 ```zig
-Sub(Msg) = union(enum) { every: {interval_ms: u32, msg}, at: {deadline_ms: u64, msg} }
+Sub(Msg) = union(enum) { every: {interval_ms: u32, msg}, at: {deadline_ms: u64, msg}, animation_frame }
 runSubs(Msg, subs: []const Sub(Msg), last_frame_ms, now_ms: u64, dispatch: anytype) void
 ```
 App declares `pub fn subscribe(*const Model) []const Sub` (pure). `teak.run`
 services it each frame — `runSubs(subscribe(model))` on `Host.nowMs()` — and
 dispatches any fired sub as a normal `Msg` through `update` (no second
 mutation path). See docs/features/subscriptions.md.
+`animation_frame` carries no Msg: while listed, the loop calls the App's
+`animationMsg(model, dt_ms) ?Msg` each frame and does not idle-skip.
+
+### Animation (`teak.anim` → core/anim.zig)
+```zig
+Tween(T)            // plain struct for the Model: still(v), start(target, ms, Ease), advance(dt_ms),
+                    //   active(), progress(), value()   (retargeting continues from value())
+Ease                // linear in_quad out_quad in_out_quad in_cubic out_cubic in_out_cubic out_back
+ease(Ease, t) f32   // eased progress, t clamped to [0,1]
+lerp(T, a, b, t) T  // floats/ints/arrays ([4]f32 colours)/vectors/structs of those
+```
+Frame time is a Msg (HARDLINE: no wall clock in view). See docs/features/animation.md.
 
 ### Theme (`teak.theme` → core/theme.zig)
 ```zig
