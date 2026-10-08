@@ -846,6 +846,10 @@ test "snapshot: viewport3d notes items, grid, cut and gizmo" {
     try expectSnapshot(cb.cmds.items, rs, .{},
         \\group (0,0,400,300) vertical
         \\  scene3d (0,0,320,200) mesh=0 key=2 items=2 grid cut gizmo flat
+        \\
+    );
+}
+
 test "snapshot: text_area with caret, selection and scroll" {
     const testing = std.testing;
     const Msg = union(enum) { focus };
