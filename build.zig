@@ -1,5 +1,13 @@
 const std = @import("std");
 
+/// Single source of truth: build.zig.zon `.version` (docs/VERSIONING.md). `-Dversion-meta=<str>` appends "+<str>".
+fn versionString(b: *std.Build) []const u8 {
+    const base: []const u8 = @import("build.zig.zon").version;
+    _ = std.SemanticVersion.parse(base) catch @panic("build.zig.zon .version is not valid semver");
+    const meta = b.option([]const u8, "version-meta", "Semver build metadata appended as +<meta>") orelse return base;
+    return b.fmt("{s}+{s}", .{ base, meta });
+}
+
 const BuildZig = @This();
 
 pub fn build(b: *std.Build) void {
@@ -11,6 +19,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const version_options = b.addOptions();
+    version_options.addOption([]const u8, "version", versionString(b));
+    version_options.addOption([]const u8, "manifest_version", @import("build.zig.zon").version);
+    mod.addOptions("build_options", version_options);
 
     const mod_tests = b.addTest(.{ .root_module = mod });
 
