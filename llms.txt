@@ -655,11 +655,10 @@ ClearColor = [4]f32
 InitOptions = struct { msaa: bool = false /* 4x main UI pass */, scene_msaa: bool = true }
                                        // backends: Gpu.init(handle, w, h) | Gpu.initWithOptions(handle, w, h, InitOptions)
 validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uploadVertices,
-                                       //   renderFrame, rasterizeText, uploadText, uploadImage, uploadImages
+                                       //   renderFrame, rasterizeText, uploadText, uploadImage, uploadImages, releaseImage
 // Optional extension (checked only when present; the scene trio is all-or-none):
 //   uploadMesh(*Gpu, MeshData) MeshHandle      releaseMesh(*Gpu, MeshHandle) void
 //   renderScenes(*Gpu, []const SceneDraw) void  // before renderFrame; offscreen 3D -> composite quads
-//   releaseImage(*Gpu, TextureHandle) void
 //   setOverlayStart(*Gpu, OverlaySplit) void    // before the uploads: draw base solids/images/scenes/text, THEN
 //                                              //   the overlay's, so an opaque overlay hides base text (hatch 5)
 ```
