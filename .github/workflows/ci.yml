@@ -10,7 +10,9 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Supersede stale PR runs, never master runs (master pushes arrive every few
+  # minutes; cancelling them left no completed master result to read).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   ZIG_VERSION: 0.17.0
@@ -174,7 +176,7 @@ jobs:
         env:
           TEAK_BACKEND: wayland
         run: |
-          zig build
+          zig build ui-install
           timeout 20 ./zig-out/bin/chrome-ui; rc=$?
           test $rc -eq 124
 
@@ -343,8 +345,14 @@ jobs:
           zig version
           $env:PROCESSOR_ARCHITECTURE
           zig env | Select-String "target"
+      # The first build on a restored zig cache has twice lost
+      # compiler_rt.lib on windows-11-arm (lld-link "could not open ...
+      # compiler_rt.lib"), a cache-race artifact that a second run clears.
       - name: Library tests (Debug)
-        run: zig build test --summary all
+        run: |
+          zig build test --summary all
+          if ($LASTEXITCODE -ne 0) { Write-Host "::warning::retrying once (stale zig cache?)"; zig build test --summary all }
+          if ($LASTEXITCODE -ne 0) { throw "library tests failed" }
       - name: Library tests (ReleaseSafe)
         run: zig build test -Doptimize=ReleaseSafe --summary all
       - name: Examples (test + build incl. Win32 UI exe)

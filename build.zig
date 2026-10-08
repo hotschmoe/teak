@@ -212,20 +212,22 @@ pub fn build(b: *std.Build) void {
     // the one piece of host logic worth unit-testing headlessly (no
     // libX11 / display needed; the test calls only pure mapping fns).
     // Imports the stb text module under `teak-text`, same as the build's
-    // linkLinux wiring. Built unconditionally on the host target; harmless
-    // on non-Linux since it never opens a display in tests.
-    const x11_mod = b.createModule(.{
-        .root_source_file = b.path("src/platform/x11.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "teak", .module = mod },
-            .{ .name = "teak-text", .module = stbtt_mod },
-        },
-    });
-    const x11_tests = b.addTest(.{ .root_module = x11_mod });
-    test_step.dependOn(&b.addRunArtifact(x11_tests).step);
+    // linkLinux wiring. Linux hosts only: the module loads libX11 through
+    // std.DynLib, which has no Windows backend (a compile error there).
+    if (target.result.os.tag == .linux) {
+        const x11_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/x11.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "teak", .module = mod },
+                .{ .name = "teak-text", .module = stbtt_mod },
+            },
+        });
+        const x11_tests = b.addTest(.{ .root_module = x11_mod });
+        test_step.dependOn(&b.addRunArtifact(x11_tests).step);
+    }
 
     // Wayland host (src/platform/wayland.zig + wayland/): pure decoding
     // tests run everywhere; live tests are `zig build test-wayland`.
@@ -240,19 +242,6 @@ pub fn build(b: *std.Build) void {
         },
     });
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = wl_mod })).step);
-    // The runtime-selecting Linux host (comptime-validates both backends).
-    const linux_host_mod = b.createModule(.{
-        .root_source_file = b.path("src/platform/linux.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "teak", .module = mod },
-            .{ .name = "teak-text", .module = stbtt_mod },
-        },
-    });
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = linux_host_mod })).step);
-
     if (target.result.os.tag == .linux) {
         const wl_live_mod = b.createModule(.{
             .root_source_file = b.path("src/platform/wayland_test.zig"),
@@ -268,6 +257,22 @@ pub fn build(b: *std.Build) void {
         const run_wl = b.addRunArtifact(b.addTest(.{ .root_module = wl_live_mod }));
         run_wl.has_side_effects = true; // depends on $WAYLAND_DISPLAY: never cache
         test_wl_step.dependOn(&run_wl.step);
+    }
+
+    // The runtime-selecting Linux host (comptime-validates both backends; it
+    // pulls in x11, which loads libX11 through std.DynLib: Linux only).
+    if (target.result.os.tag == .linux) {
+        const linux_host_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/linux.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "teak", .module = mod },
+                .{ .name = "teak-text", .module = stbtt_mod },
+            },
+        });
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = linux_host_mod })).step);
     }
 
     // Display-backed X11 host tests (src/platform/x11_test.zig): clipboard

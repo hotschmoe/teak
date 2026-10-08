@@ -22,9 +22,8 @@ const ITERS = 20;
 const SIZES = [_]usize{ 100, 1_000, 10_000, 50_000 };
 
 fn nowNs() u64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
-    return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+    // `std.Io` clock: works on every OS (the raw Linux vDSO call does not build elsewhere).
+    return @intCast(std.Io.Clock.awake.now(std.Options.debug_io).nanoseconds);
 }
 
 fn ms(total_ns: u64) f64 {

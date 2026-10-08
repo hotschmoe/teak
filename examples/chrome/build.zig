@@ -63,6 +63,9 @@ pub fn build(b: *std.Build) void {
         ui_run.step.dependOn(&install_ui.step);
         ui_run.addPassthruArgs();
 
+        // Build + install the UI exe without running it (CI launches it itself).
+        b.step("ui-install", "Build and install the native UI exe (no run)").dependOn(&install_ui.step);
+
         const ui_step = b.step("ui", "Run Teak chrome UI (wgpu native: Win32 / X11)");
         ui_step.dependOn(&ui_run.step);
     }

@@ -62,12 +62,31 @@ example_lane() {
     step "chrome: windows x86_64 cross" "$d" "$ZIG" build -Dtarget=x86_64-windows-gnu --prefix zig-out/win
   fi
 }
-export -f example_lane step skip have_vulkan
+# cross_compile_check <target>: compile (never run) every library test root for
+# another OS. The tests cannot execute here, so each run step "fails" with an
+# exec-format error; only real compile errors count. This catches the
+# Linux-only code (std.DynLib, vDSO clocks, posix sockets) that slips past a
+# Linux-only gate and turns Windows / macOS CI red.
+cross_compile_check() {
+  local out rc
+  out="$("$ZIG" build test -Dtarget="$1" 2>&1)"; rc=$?
+  printf '%s\n' "$out"
+  [ "$rc" -eq 0 ] && return 0
+  # Anything that is not a foreign-binary exec failure is a real problem.
+  if printf '%s\n' "$out" | grep -E 'compile .* [0-9]+ errors?|^[^ ]+:[0-9]+:[0-9]+: error:' >/dev/null; then return 1; fi
+  printf '%s\n' "$out" | grep -Ev 'unable to (execute|spawn)|failed command|consider using|run test failure|transitive failure|^\+-|^[| ]*$|^test$|^Build Summary|^error: ' | grep -q . && return 1
+  return 0
+}
+export -f example_lane step skip have_vulkan cross_compile_check
 export ROOT OUT ZIG
 
 step "lib: test" "$ROOT" "$ZIG" build test
 step "lib: audit" "$ROOT" "$ZIG" build audit
 step "fmt" "$ROOT" bash -c 'git ls-files -z "*.zig" "*.zon" | xargs -0 "$ZIG" fmt --check'
+
+for t in x86_64-windows-gnu aarch64-windows-gnu aarch64-macos; do
+  step "lib: compile for $t" "$ROOT" bash -c "cross_compile_check $t"
+done
 
 if [ "$QUICK" = 1 ]; then
   step "chrome: test" "$ROOT/examples/chrome" "$ZIG" build test
