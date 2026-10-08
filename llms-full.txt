@@ -157,8 +157,7 @@ pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: 
 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
-`cmd component component_list transient text sub theme text_field text_area text_event numeric_field
-`cmd component component_list transient text sub anim theme text_field numeric_field
+`cmd component component_list transient text sub anim theme text_field text_area text_event numeric_field
 dropdown data_table var_list tree_list debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
 
