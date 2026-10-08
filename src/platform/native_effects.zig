@@ -120,10 +120,12 @@ pub const Service = struct {
                 self.finish(.{ .downloaded = .{ .id = d.id, .ok = ok } });
             },
             .open_file => |o| self.openFile(o.id),
+            // The X11 host intercepts this before it reaches the service
+            // (it owns the selection); any other embedder gets a one-time note.
             .write_clipboard => {
                 if (!self.clipboard_warned) {
                     self.clipboard_warned = true;
-                    warn("teak: write_clipboard is not supported on this host; ignored", .{});
+                    warn("teak: write_clipboard is not handled by this host; ignored", .{});
                 }
             },
             .storage_set => |s| self.storageSet(s.key, s.value),
@@ -134,19 +136,20 @@ pub const Service = struct {
         return .accepted;
     }
 
-    fn newArena() ?*std.heap.ArenaAllocator {
+    /// A fresh arena for a result's slices (null on OOM).
+    pub fn newArena() ?*std.heap.ArenaAllocator {
         const a = gpa.create(std.heap.ArenaAllocator) catch return null;
         a.* = .init(gpa);
         return a;
     }
 
-    fn freeArena(a: *std.heap.ArenaAllocator) void {
+    pub fn freeArena(a: *std.heap.ArenaAllocator) void {
         a.deinit();
         gpa.destroy(a);
     }
 
     /// Queue a result whose slices live in `arena` (null: the result has none).
-    fn push(self: *Service, arena: ?*std.heap.ArenaAllocator, r: EffectResult) void {
+    pub fn push(self: *Service, arena: ?*std.heap.ArenaAllocator, r: EffectResult) void {
         const a = arena orelse newArena() orelse return;
         self.lock();
         defer self.unlock();
@@ -487,7 +490,7 @@ fn writeDownload(io: Io, name: []const u8, bytes: []const u8) bool {
     return true;
 }
 
-fn mimeFromName(name: []const u8) []const u8 {
+pub fn mimeFromName(name: []const u8) []const u8 {
     const table = [_]struct { ext: []const u8, mime: []const u8 }{
         .{ .ext = ".json", .mime = "application/json" },
         .{ .ext = ".txt", .mime = "text/plain" },
