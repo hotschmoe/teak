@@ -29,6 +29,18 @@
             .hash = "N-V-__8AAAVLrgM9jWFLs7n4rHyodpjIYxtBBE1No8nK0pRz",
             .lazy = true,
         },
+        // macOS prebuilts (same wgpu-native release): `libwgpu_native.dylib`
+        // + `.a`, Metal backend.
+        .@"wgpu-native-macos-aarch64" = .{
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-macos-aarch64-release.zip",
+            .hash = "N-V-__8AAAUNfQJBPHGd3KMhFvl4WLpzHDx9rFkwSf2rFVhr",
+            .lazy = true,
+        },
+        .@"wgpu-native-macos-x86_64" = .{
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-macos-x86_64-release.zip",
+            .hash = "N-V-__8AAFWheQIu8DV1xiTixrDsCJ0xr7-Ssy-XhEIkgx5u",
+            .lazy = true,
+        },
         // Path dep during zunk co-development. Switch to a
         // `git+https://github.com/hotschmoe/zunk.git#<sha>` + hash once zunk
         // cuts a release tag teak CI can pin to.

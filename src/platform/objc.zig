@@ -26,11 +26,15 @@ pub const CGRect = extern struct { origin: CGPoint = .{}, size: CGSize = .{} };
 pub const NSRange = extern struct { location: u64 = 0, length: u64 = 0 };
 pub const NSNotFound: u64 = std.math.maxInt(i64);
 
+/// `objc_msgSend` and friends are re-typed per call site, so they are held as
+/// an opaque function pointer.
+const RawFn = *const fn () callconv(.c) void;
+
 const Api = struct {
     objc_getClass: *const fn ([*:0]const u8) callconv(.c) Class,
     objc_getProtocol: *const fn ([*:0]const u8) callconv(.c) ?*anyopaque,
     sel_registerName: *const fn ([*:0]const u8) callconv(.c) Sel,
-    objc_msgSend: *const anyopaque,
+    objc_msgSend: RawFn,
     objc_allocateClassPair: *const fn (Class, [*:0]const u8, usize) callconv(.c) Class,
     objc_registerClassPair: *const fn (Class) callconv(.c) void,
     class_addMethod: *const fn (Class, Sel, Imp, [*:0]const u8) callconv(.c) bool,
@@ -44,7 +48,7 @@ const Api = struct {
 };
 
 var api: Api = undefined;
-var stret: ?*const anyopaque = null;
+var stret: ?RawFn = null;
 var libs: [4]?std.DynLib = @splat(null);
 var loaded = false;
 
@@ -62,7 +66,7 @@ pub fn load() error{ObjcUnavailable}!void {
         };
     }
     api = a;
-    stret = objc.lookup(*const anyopaque, "objc_msgSend_stret");
+    stret = objc.lookup(RawFn, "objc_msgSend_stret");
     libs[0] = objc;
     const frameworks = [_][:0]const u8{
         "/System/Library/Frameworks/Foundation.framework/Foundation",

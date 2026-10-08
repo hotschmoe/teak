@@ -181,10 +181,14 @@ pub fn build(b: *std.Build) void {
     // decoding runs on every OS; the AppKit glue (cocoa.zig) is exercised by
     // the macOS CI job.
     const cocoa_mod = b.createModule(.{
-        .root_source_file = b.path("src/platform/cocoa_data.zig"),
+        .root_source_file = b.path("src/platform/cocoa.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "teak", .module = mod }},
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = mod },
+            .{ .name = "teak-text", .module = stbtt_mod },
+        },
     });
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cocoa_mod })).step);
 
@@ -340,7 +344,7 @@ pub const NativeWgpuOptions = struct {};
 /// the step is simply absent where there is no native backend. Today:
 /// Windows (Win32 + GDI) and Linux (X11 + stb_truetype).
 pub fn hasNativeBackend(os: std.Target.Os.Tag) bool {
-    return os == .windows or os == .linux;
+    return os == .windows or os == .linux or os == .macos;
 }
 
 /// Wire teak's native backend onto `exe`, dispatching on the resolved
@@ -370,6 +374,7 @@ pub fn linkNativeWgpu(
     switch (target.result.os.tag) {
         .windows => linkWindows(b, exe, teak_dep, teak_mod, target, optimize),
         .linux => linkLinux(b, exe, teak_dep, teak_mod, target, optimize),
+        .macos => linkMacos(b, exe, teak_dep, teak_mod, target, optimize),
         else => @panic("teak.linkNativeWgpu: no native backend for this OS (Windows or Linux)"),
     }
 }
@@ -451,6 +456,70 @@ fn linkWindows(
     // places the DLL in zig-out/bin.
     const install_dll = b.addInstallBinFile(wgpu_dep.path("lib/wgpu_native.dll"), "wgpu_native.dll");
     exe.step.dependOn(&install_dll.step);
+}
+
+/// macOS: the Cocoa host (`platform/cocoa.zig`) + Metal via wgpu-native.
+/// AppKit, QuartzCore and libobjc are `dlopen`ed by path at run time, so the
+/// build needs no SDK and no `-framework` flags (cross-compiling from any
+/// OS works); only `libwgpu_native.dylib` is linked, installed beside the
+/// executable and found through an `@executable_path` rpath.
+fn linkMacos(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    teak_dep: *std.Build.Dependency,
+    teak_mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) void {
+    const wgpu_dep_name: []const u8 = switch (target.result.cpu.arch) {
+        .aarch64 => "wgpu-native-macos-aarch64",
+        .x86_64 => "wgpu-native-macos-x86_64",
+        else => @panic("teak.linkNativeWgpu: unsupported macOS arch (aarch64 or x86_64 only)"),
+    };
+    const wgpu_dep = teak_dep.builder.lazyDependency(wgpu_dep_name, .{}) orelse return;
+
+    const shaders_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("shaders/shaders.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const text_mod = stbTextModule(b, teak_dep, teak_mod, target, optimize);
+
+    const platform_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("src/platform/cocoa.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-text", .module = text_mod },
+        },
+    });
+
+    const gpu_mod = b.createModule(.{
+        .root_source_file = teak_dep.path("src/gpu/native_macos.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-shaders", .module = shaders_mod },
+            .{ .name = "teak-text", .module = text_mod },
+        },
+    });
+    gpu_mod.addImport("wgpu-c", translateC(b, teak_dep.path("src/gpu/vendor/wgpu_c.h"), wgpu_dep.path("include/webgpu"), target, optimize));
+    gpu_mod.addLibraryPath(wgpu_dep.path("lib"));
+    gpu_mod.linkSystemLibrary("wgpu_native", .{}); // libwgpu_native.dylib
+
+    const root = exe.root_module;
+    root.link_libc = true;
+    root.addImport("teak", teak_mod);
+    root.addImport("teak-platform-native", platform_mod);
+    root.addImport("teak-gpu-native", gpu_mod);
+    root.addRPathSpecial("@executable_path");
+
+    const install_dylib = b.addInstallBinFile(wgpu_dep.path("lib/libwgpu_native.dylib"), "libwgpu_native.dylib");
+    exe.step.dependOn(&install_dylib.step);
 }
 
 fn linkLinux(
@@ -590,7 +659,8 @@ pub fn linkHeadless(
     const root = exe.root_module;
     const target = root.resolved_target.?;
     const optimize = root.optimize.?;
-    if (target.result.os.tag != .linux) @panic("teak.linkHeadless: Linux only for now (Windows has no stb-text headless stitch yet)");
+    const os = target.result.os.tag;
+    if (os != .linux and os != .macos) @panic("teak.linkHeadless: Linux and macOS only for now (Windows has no stb-text headless stitch yet)");
 
     const teak_dep = b.dependencyFromBuildZig(BuildZig, .{
         .target = target,
@@ -598,9 +668,9 @@ pub fn linkHeadless(
     });
     const teak_mod = teak_dep.module("teak");
     const wgpu_dep_name: []const u8 = switch (target.result.cpu.arch) {
-        .aarch64 => "wgpu-native-linux-aarch64",
-        .x86_64 => "wgpu-native-linux-x86_64",
-        else => @panic("teak.linkHeadless: unsupported Linux arch (aarch64 or x86_64 only)"),
+        .aarch64 => if (os == .macos) "wgpu-native-macos-aarch64" else "wgpu-native-linux-aarch64",
+        .x86_64 => if (os == .macos) "wgpu-native-macos-x86_64" else "wgpu-native-linux-x86_64",
+        else => @panic("teak.linkHeadless: unsupported arch (aarch64 or x86_64 only)"),
     };
     const wgpu_dep = teak_dep.builder.lazyDependency(wgpu_dep_name, .{}) orelse return;
 
@@ -640,9 +710,15 @@ pub fn linkHeadless(
     root.addImport("teak", teak_mod);
     root.addImport("teak-platform-headless", platform_mod);
     root.addImport("teak-gpu-headless", gpu_mod);
-    root.addRPathSpecial("$ORIGIN");
-    const install_so = b.addInstallBinFile(wgpu_dep.path("lib/libwgpu_native.so"), "libwgpu_native.so");
-    exe.step.dependOn(&install_so.step);
+    if (os == .macos) {
+        root.addRPathSpecial("@executable_path");
+        const install_dylib = b.addInstallBinFile(wgpu_dep.path("lib/libwgpu_native.dylib"), "libwgpu_native.dylib");
+        exe.step.dependOn(&install_dylib.step);
+    } else {
+        root.addRPathSpecial("$ORIGIN");
+        const install_so = b.addInstallBinFile(wgpu_dep.path("lib/libwgpu_native.so"), "libwgpu_native.so");
+        exe.step.dependOn(&install_so.step);
+    }
 }
 
 pub const WebWgpuOptions = struct {
