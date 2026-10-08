@@ -177,6 +177,17 @@ pub fn build(b: *std.Build) void {
     const x11_tests = b.addTest(.{ .root_module = x11_mod });
     test_step.dependOn(&b.addRunArtifact(x11_tests).step);
 
+    // macOS host helpers (src/platform/cocoa_data.zig, objc.zig): the pure
+    // decoding runs on every OS; the AppKit glue (cocoa.zig) is exercised by
+    // the macOS CI job.
+    const cocoa_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/cocoa_data.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "teak", .module = mod }},
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cocoa_mod })).step);
+
     // Display-backed X11 host tests (src/platform/x11_test.zig): clipboard
     // via xclip, XDND via a second in-process source, key/IME fallback via
     // xdotool. Opt-in (`zig build test-x11`, run under Xvfb or any X

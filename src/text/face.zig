@@ -33,6 +33,12 @@ const FONT_CANDIDATES = [_][]const u8{
     "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    // macOS (collections load through `stbtt_GetFontOffsetForIndex`).
+    "/System/Library/Fonts/Menlo.ttc",
+    "/System/Library/Fonts/Monaco.ttf",
+    "/System/Library/Fonts/Courier.ttc",
+    "/System/Library/Fonts/SFNSMono.ttf",
+    "/Library/Fonts/Courier New.ttf",
 };
 
 const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
