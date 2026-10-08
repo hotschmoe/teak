@@ -314,6 +314,14 @@ the four fields; dragging or a swatch rewrites the texts, typing a valid value u
 fields (never the one being typed in), and an unparseable field is drawn with a danger border. Route the canvases from
 `canvasMsg` (`color_picker.canvasMsg`), the fields from the app's key hooks (`charMsg(field, c)` / `keyMsg(field, key)`),
 read the result with `rgb(model)` / `rgba(model)`.
+**date_field.** An ISO text field (`YYYY-MM-DD`) plus a calendar popover: a modal overlay with a month header (`<<` `<`
+`>` `>>`), weekday headings (Monday first), a 6 x 7 grid of day buttons (other-month days muted, today outlined,
+selected inverted, the keyboard cursor in a heavy border) and Today / Clear. The date maths (`widgets.date`: days from
+civil, weekday, add days / months with day clamping, strict ISO parse) is pure. **No wall clock in `view`:** "today" is
+Model data set with `Msg.set_today`, typically `date.fromUnixMs(c.unix_ms, c.utc_offset_min)` from a `clock` effect
+result. Typing a full valid date selects it; a partial or impossible one is plain text with a danger border. Keys
+(`keyMsg`): arrows move by day / week, Page Up / Down by month, Home / End to the month's first / last day, Enter picks,
+Escape closes; Down on a closed field opens it.
 
 ### Host support for the keys
 

@@ -150,7 +150,7 @@ Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 `cmd component component_list transient text sub theme text_field text_area text_event numeric_field
 `cmd component component_list transient text sub anim theme text_field numeric_field
-dropdown debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
+dropdown data_table var_list tree_list debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
 
 ### Version (`teak.version`)
@@ -609,6 +609,33 @@ TextDraw = struct { rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x
 monoMeasurer() TextMeasurer    // stateless 10px/byte, 20px line — for headless tests + CLI
 ```
 
+### Tables & lists at scale (`teak.DataTable`, `teak.VarList`, `teak.TreeList`, `teak.Scroller`)
+Virtualized components for 100k-row data (docs/features/tables-at-scale.md). All state in the Model; rows are the app's,
+passed as a `src` value; each emits only the visible rows. Wire the hooks `scrollMsg`, `scrollLayoutMsg`, `animationMsg` + `subscribe`.
+```zig
+Scroller = struct { pos, target, vel, max, smooth_ms = 70, friction_ms = 325 }   // smooth wheel + fling, as Model data
+  wheel(dy) / glideTo(y) / jumpTo(y) / fling(px_per_s) / shift(d) /*anchor*/ / setExtent(viewport, content)
+  animating() bool  /* list Sub.animation_frame while true */ ;  step(dt_ms)
+DataTable(comptime cfg: struct { max_rows = 131072, max_cols = 16 }) type
+  Model: n_rows, order/rank (display<->data permutation), sort_col/sort_desc, widths, selection (bitset by DATA row),
+         cursor/anchor, focused, mods, sc: Scroller, view_h;  setRows(n) / setColumns(cols) / isSelected(row) / selectedRows(out)
+  Msg = union(enum) { sort: u8, grip: {col, dx}, row: u32 /*display idx*/, key: Key, wheel: f32, viewport: {vw,vh,cw,ch}, mods: Modifiers, frame: u32, blur }
+  update(model, msg, src)   // src.compare(col: u8, a: u32, b: u32) std.math.Order  (stable index sort); src.cell(arena, col: u8, row: u32) []const u8
+  view(model, cb, cols: []const DataTableColumn, src, msgs /*.sort(col) .row(display)*/, ViewOpts{ id, grip_base, row_h = 22, header_h = 26, char_w = 8, ... })
+  keyMsg(SpecialKey, mods) ?Msg;  gripMsg(CanvasEvent, grip_base) ?Msg;  reveal(model, display_row)
+DataTableColumn = struct { title, width = 120, min_width = 36, cell_align: CellAlign = .left, sortable = true }
+VarList(comptime cap: usize) type      // rows of different heights, measured by layout, scroll-anchored
+  Model: n, est, h[], prefix[], sc, view_h;  setCount(n, est) / insert(at, h) / remove(at) / rowAt(y) / total()
+  Msg = union(enum) { wheel, viewport, measured: {first, count, heights[96]}, frame };  measuredMsg(first, heights) Msg
+  view(model, cb, src /* src.row(cb, i) emits ONE child */, ViewOpts{ id, height, ... })
+TreeList(comptime cap: usize) type     // preorder nodes + depth; expand/collapse; keyboard
+  Model: n_nodes, expanded (bitset), visible[], n_visible, selected, sc;  setNodes(n, src, expand_depth) / rowOf(node)
+  Msg = union(enum) { toggle: u32, select: u32, key: Key, wheel, viewport, frame, blur };  update(model, msg, src)  // src.depth(node) u16, src.label(arena, node) []const u8
+  view(model, cb, src, msgs /*.toggle(node) .select(node)*/, ViewOpts{ id, row_h = 22, indent = 16, ... });  keyMsg(SpecialKey) ?Msg
+// VirtualListStyle gained total_extent / start_offset (variable rows), id (measured-row reports) and align_cross.
+// App hooks added: virtualRowsMsg(model, id, first_row, heights: []const f32) ?Msg;  modsMsg(model, mods: Modifiers) ?Msg
+```
+
 ### TextArea and text events (`teak.TextArea`, `teak.text_area`, `teak.text_event`)
 Multi-line editing: `cb.textArea(TextAreaCmd{ focus_msg, id, content, cursor, selection_anchor, scroll_x/y, goal_x,
 wrap: Wrap = .word, font, style: TextInputStyle, width, min_width = 120, height = 120, flex, padding = 6, disabled })`
@@ -672,6 +699,11 @@ widgets.color_picker: Rgb{r,g,b: u8}; Hsv{h,s,v}; Field = enum{hex,r,g,b}; swatc
   Model{h,s,v,texts,dragging}; init(Rgb) Model; Msg{drag, release, swatch: u8, set: Rgb, edit: {field, TextField.Msg}}; update;
   rgb(model) Rgb; rgba(model) [4]f32; fieldValid / fieldText(model, Field); charMsg(Field, u8) / keyMsg(Field, key) ?Msg / pasteMsg;
   canvasMsg(model, CanvasEvent, Opts{sv_w,sv_h,hue_h,sv_id,hue_id}) ?Msg; viewWith(model, cb, .{ .focus(Field) .swatch(i) } fns, Opts)
+widgets.date: Date{year: i32, month 1..12, day}; isLeap, daysInMonth, valid, toDays/fromDays (days since 1970-01-01), weekday(Mon=0), addDays/addMonths(clamps)/addYears,
+  fromUnixMs(unix_ms, utc_offset_min) Date, parseIso("YYYY-MM-DD") ?Date (strict), formatIso(d, buf); month_names, weekday_short
+widgets.date_field: Model{text, open, selected: ?Date, today: ?Date, cursor}; Msg{edit, toggle, close, pick: Date, go: Nav, commit, today, clear, set_today: Date, set: ?Date};
+  Nav = enum{day_prev,day_next,week_prev,week_next,month_prev,month_next,year_prev,year_next,month_start,month_end}; update; textValid(model);
+  charMsg(c) / keyMsg(model, key) ?Msg; viewWith(model, cb, .{ .focus .toggle .close .today .clear AppMsgs, .pickMsg(Date) .goMsg(Nav) fns }, ViewOpts{list_x,list_y,window_w,window_h,cell_w,cell_h}); panelWidth(opts)
 widgets.menu.MenuBar(Action) type: Item (= MenuItem(Action){label "&File" mnemonic, action: ?Action, shortcut, enabled, checked,
     separator, children}; Item.sep); Model{st: State}; Msg{goto: State, close}; update; isActive(model);
     viewWith(model, cb, items, msgs /*.menu(Msg) .run(Action)*/, ViewOpts{x,y,window_w,window_h,top_width,bar_height,panel_w,row_h,cols,bar_bg});
