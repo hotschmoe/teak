@@ -87,6 +87,8 @@ pub const Msg = union(enum) {
     dialog: Dialog,
     dialog_confirm,
     dialog_cancel,
+    demo: u8,
+    toast_push: struct { kind: W.toast.Kind, sticky: bool = false },
     // controls
     clicked,
     check_a,
@@ -110,6 +112,8 @@ pub const Msg = union(enum) {
     row_pick: u8,
     list_scroll_by: f32,
     list_extent: [2]f32,
+    note_scroll_by: f32,
+    note_extent: [2]f32,
     chart_run,
     chart_tick,
     // layout
@@ -165,6 +169,9 @@ pub const Model = struct {
     list_scroll: f32 = 0,
     list_viewport: f32 = list_h,
     list_content: f32 = @as(f32, @floatFromInt(list_rows)) * list_row_h,
+    note_scroll: f32 = 0,
+    note_viewport: f32 = 150,
+    note_content: f32 = 0,
     chart_on: bool = false,
     chart_t: u32 = 0,
     series: [series_len]f32 = initialSeries(),
@@ -229,6 +236,24 @@ pub fn update(m: *Model, msg: Msg) void {
             m.dialog = .none;
         },
         .dialog_cancel => m.dialog = .none,
+        .demo => |i| {
+            const text = switch (i) {
+                0 => "Saved",
+                1 => "Opened a file",
+                else => "Exported",
+            };
+            Toasts.push(&m.toasts, .success, text, Toasts.default_ttl);
+            Tooltip.update(&m.tip, .hide);
+        },
+        .toast_push => |p| {
+            const text = switch (p.kind) {
+                .info => "Heads up: just so you know",
+                .success => "Done: that worked",
+                .warning => "Careful: disk almost full",
+                .danger => "Failed: could not connect",
+            };
+            Toasts.push(&m.toasts, p.kind, if (p.sticky) "Sticky: dismiss me with x" else text, if (p.sticky) 0 else Toasts.default_ttl);
+        },
         .run => |a| {
             MB.update(&m.menubar, .close);
             CM.update(&m.ctx, .close);
@@ -268,6 +293,12 @@ pub fn update(m: *Model, msg: Msg) void {
             m.list_viewport = e[0];
             m.list_content = e[1];
             m.list_scroll = clampList(m, m.list_scroll);
+        },
+        .note_scroll_by => |dy| m.note_scroll = std.math.clamp(m.note_scroll + dy, 0, @max(0, m.note_content - m.note_viewport)),
+        .note_extent => |e| {
+            m.note_viewport = e[0];
+            m.note_content = e[1];
+            m.note_scroll = std.math.clamp(m.note_scroll, 0, @max(0, m.note_content - m.note_viewport));
         },
         .chart_run => m.chart_on = !m.chart_on,
         .chart_tick => {

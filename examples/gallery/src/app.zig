@@ -11,6 +11,8 @@ const model_mod = @import("model.zig");
 const ui = @import("ui.zig");
 const page_controls = @import("page_controls.zig");
 const page_inputs = @import("page_inputs.zig");
+const page_data = @import("page_data.zig");
+const page_overlays = @import("page_overlays.zig");
 
 pub const Model = model_mod.Model;
 pub const Msg = model_mod.Msg;
@@ -107,6 +109,8 @@ pub fn view(m: *const Model, cb: anytype) void {
     switch (m.page) {
         .controls => page_controls.view(m, cb),
         .inputs => page_inputs.view(m, cb),
+        .data => page_data.view(m, cb),
+        .overlays => page_overlays.view(m, cb),
         else => cb.text("(page pending)"),
     }
     cb.popGroup();
@@ -121,7 +125,44 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     cb.popGroup();
 
+    W.tooltip.view(&m.tip, cb, &page_overlays.tip_texts, .{ .window_w = m.win_w, .window_h = m.win_h });
+    CM.viewWith(&m.ctx, cb, &context_items, ctx_msgs, .{ .window_w = m.win_w, .window_h = m.win_h });
     Toasts.viewWith(&m.toasts, cb, .{ .dismissMsg = dismissToast }, .{ .window_w = m.win_w, .window_h = m.win_h - ui.status_h });
+    dialogs(m, cb);
+}
+
+fn dialogs(m: *const Model, cb: anytype) void {
+    const o: W.dialog.Opts = .{ .window_w = m.win_w, .window_h = m.win_h, .title = "", .confirm_label = "OK" };
+    const msgs = .{ .confirm = Msg{ .dialog_confirm = {} }, .cancel = Msg{ .dialog_cancel = {} } };
+    switch (m.dialog) {
+        .none => {},
+        .about => {
+            var d = o;
+            d.title = "About Teak gallery";
+            d.message = "Every Teak widget, built from flat commands.";
+            d.cancel_label = null;
+            W.dialog.view(cb, d, msgs);
+        },
+        .shortcuts => {
+            var d = o;
+            d.title = "Keyboard shortcuts";
+            d.cancel_label = null;
+            W.dialog.begin(cb, d, msgs);
+            cb.text("F10 / Alt      menu bar");
+            cb.text("Tab            next field");
+            cb.text("Enter / Esc    confirm / cancel");
+            cb.text("Ctrl+Z / Y     undo / redo in fields");
+            W.dialog.end(cb, d, msgs);
+        },
+        .confirm_reset => {
+            var d = o;
+            d.title = "Reset the demo?";
+            d.message = "Every control returns to its initial value.";
+            d.confirm_label = "Reset";
+            d.danger = true;
+            W.dialog.view(cb, d, msgs);
+        },
+    }
 }
 
 fn dismissToast(id: u32) Msg {
@@ -214,6 +255,29 @@ pub fn focusedMsg(m: *const Model) ?Msg {
         .combo => .{ .combo = .focus },
         else => .{ .focus_set = f },
     };
+}
+
+pub fn scrollMsg(_: *const Model, id: u32, _: f32, dy: f32) ?Msg {
+    if (id == page_data.list_id) return Msg{ .list_scroll_by = dy };
+    if (id == page_data.note_id) return Msg{ .note_scroll_by = dy };
+    return null;
+}
+
+pub fn scrollLayoutMsg(_: *const Model, id: u32, _: f32, vh: f32, _: f32, ch: f32) ?Msg {
+    if (id == page_data.list_id) return Msg{ .list_extent = .{ vh, ch } };
+    if (id == page_data.note_id) return Msg{ .note_extent = .{ vh, ch } };
+    return null;
+}
+
+pub fn hoverMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (m.dialog != .none or m.menubar.st.open or CM.isOpen(&m.ctx)) return null;
+    return .{ .tip = W.tooltip.hoverMsg(Msg, ev, &page_overlays.tip_targets, 550) };
+}
+
+pub fn contextMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (m.dialog != .none or m.menubar.st.open) return null;
+    if (ev.x < ui.sidebar_w or ev.y < ui.menu_h or ev.y > m.win_h - ui.status_h) return null;
+    return .{ .ctx = CM.openAt(ev.x, ev.y) };
 }
 
 pub fn windowTitle(m: *const Model) ?[]const u8 {

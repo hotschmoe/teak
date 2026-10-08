@@ -13,6 +13,8 @@ const State = struct { name: []const u8, steps: []const Step };
 
 const states = [_]State{
     .{ .name = "controls", .steps = &.{.{ .frames = 3 }} },
+    .{ .name = "data", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 142 } }, .{ .frames = 2 } } },
+    .{ .name = "data_scrolled", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 142 } }, .{ .frames = 2 }, .{ .move = .{ 600, 240 } }, .{ .wheel = .{ 0, 4400 } }, .{ .frames = 3 } } },
     .{ .name = "inputs", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 110 } }, .{ .frames = 2 } } },
     .{ .name = "inputs_dropdown", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 110 } }, .{ .click = .{ 300, 125 } }, .{ .frames = 2 } } },
     .{ .name = "inputs_combo", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 110 } }, .{ .click = .{ 720, 125 } }, .{ .chars = "a" }, .{ .frames = 2 } } },
