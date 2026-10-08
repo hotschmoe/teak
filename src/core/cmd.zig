@@ -352,6 +352,19 @@ pub const VirtualListStyle = struct {
     visible_end: u32 = 0,
     padding: f32 = 0,
     gap: f32 = 0,
+    /// Variable-height rows. When > 0 the list claims exactly this much main-axis
+    /// space (the app knows the rows' prefix sums), `item_extent` and
+    /// `total_count` are ignored, and the emitted rows (`visible_start`..
+    /// `visible_end`, any heights) start `start_offset` px from the list's start.
+    total_extent: f32 = 0,
+    start_offset: f32 = 0,
+    /// Cross-axis placement of the rows (`.stretch` fills the list's width).
+    align_cross: Align = .start,
+    /// Non-zero opts into measured-row reports: `teak.run` hands the heights
+    /// of the emitted rows (direct children) to the App's
+    /// `virtualRowsMsg(model, id, first_row, heights)` whenever they change, so
+    /// a variable-height list can learn real heights from layout.
+    id: u32 = 0,
 };
 
 // ── Rich text (functional gap #8) ───────────────────────────────────

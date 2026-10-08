@@ -1,0 +1,14 @@
+.{
+    .name = .tables,
+    .version = "0.0.0",
+    .fingerprint = 0x844702218ce92cd7,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .teak = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
