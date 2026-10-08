@@ -118,23 +118,31 @@ The compiler enforces exhaustive switching -- missing a `Msg` arm won't compile.
 
 ### Adding Widgets
 
-A genuinely new `Cmd` variant touches every pass over the flat buffer — miss
-one and you get a silent wrong-rects bug or an un-clickable widget, not a
-compile error (the passes take `anytype`). Full checklist:
+A genuinely new `Cmd` variant touches every pass over the flat buffer. The
+passes take `anytype`, but every switch over the `Cmd` tag in layout
+(`measurePass`, `positionPass`), hit-test, focus, render, snapshot, a11y,
+scroll extent is **exhaustive (no `else =>`)**, so adding a variant makes each
+of them fail to compile until it is handled (a pass that legitimately ignores
+it lists it explicitly). The frame diff (`cmdsEqual`) is derived by comptime
+reflection (`core/eql.zig`) — nothing to write. Do not add `else =>` to a
+switch over Cmd tags. Checklist:
+
+*Compiler-enforced (follow the errors):*
 
 1. **`Cmd` variant + style/cmd struct** in `src/core/cmd.zig` (data only, no
    fn-pointers) + a convenience **emitter** method on `CmdBuffer`.
 2. **Layout** (`layout/engine.zig`): arms in `measurePass` + `positionPass`.
-3. **Hit-test** (`input/hit_test.zig`): return its click `Msg` (or `null`).
+3. **Hit-test / focus** (`input/hit_test.zig`, `input/focus.zig`): return its
+   click `Msg` (or `null`); say whether it is focusable.
 4. **Render** (`render/build.zig`; + `render/vertex.zig` for a new quad shape).
 5. **Snapshot** (`core/snapshot.zig`): a `writeCmd` arm (`tag (x,y,w,h) …`).
 6. **A11y** (`input/a11y.zig`): a `Role` member + mapping arm.
-7. **Frame-diff** (`src/run.zig`): a `cmdsEqual` arm comparing observable
-   content (the arena hands out fresh addresses each frame).
-8. **Win32 UIA** (`platform/win32.zig`): map the `Role` in
-   `controlTypeForRole` (+ `isFocusableRole` / `input/focus.zig`'s
-   `isFocusable` if keyboard-focusable).
-9. **Re-export** in `src/teak.zig` **and** document in `llms.txt` — the
+
+*Manual (nothing fails to compile):*
+
+7. **Win32 UIA** (`platform/win32.zig`): map the `Role` in
+   `controlTypeForRole` (+ `isFocusableRole` if keyboard-focusable).
+8. **Re-export** in `src/teak.zig` **and** document in `llms.txt` — the
    `zig build audit` `LLMS_TXT_RULE` fails the build otherwise.
 
 Prefer composing from existing primitives (that's how `Dropdown` works — zero
