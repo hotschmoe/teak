@@ -38,7 +38,7 @@ The core vocabulary, usable above the platform layer:
 - **native Linux** (X11 + stb_truetype): face selection by weight from the registered faces (below); spacing added after every code point in both the measurer and the rasterizer. `size_px` is the **em** size on every backend (CSS px = GDI negative height = stb em scale).
 - **native Windows** (stb_truetype, same module as Linux): face selection and `letter_spacing` behave exactly as on Linux; the fallback face is the first of Consolas, Courier New, Lucida Console, Segoe UI, Arial found under `%WINDIR%\Fonts` (`TEAK_FONT` overrides).
 - A backend that cannot honor a field **ignores it**: the text still renders, just regular and untracked. The measurer must agree with the rasterizer so layout matches pixels; `monoMeasurer` adds `letter_spacing` per byte and ignores `weight`.
-- Both fields are part of the glyph-cache key (`textCacheKey` in `src/gpu/glyph_cache.zig`), so changing them re-rasterizes instead of reusing a stale texture.
+- `size_px` and `letter_spacing` change the glyph run (and `size_px` the atlas key), so changing them re-shapes/re-rasterizes instead of reusing a stale glyph.
 
 ```zig
 const label: teak.FontSpec = .{ .size_px = 11, .family = .mono, .weight = .bold, .letter_spacing = 1 };

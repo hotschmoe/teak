@@ -33,7 +33,7 @@ compiles on both.
 `extern`s (GDI vs Xlib) only land in *that* OS's translation unit — the
 Linux build never sees the GDI externs and vice-versa, so there is no
 comptime platform gating inside the gpu layer (the same idiom as
-`glyph_cache.GlyphCache(Backend)`). `wgpu_core.zig` owns the **single**
+`text_stage.TextStage(Raster)`). `wgpu_core.zig` owns the **single**
 `@cImport` of the wgpu headers; both surface providers re-import it
 (`@import("wgpu_core.zig").c`) so `WGPUSurface` / `WGPUInstance` have one
 type identity across the seam — without that, each file's `@cImport` would

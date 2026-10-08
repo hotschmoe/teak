@@ -100,12 +100,18 @@ pub fn build(b: *std.Build) void {
         "Optimize mode for the wasm build (default: ReleaseFast)",
     ) orelse .ReleaseFast;
 
+    // `zig build web -Dstress=N` builds the text stress app (N mono runs) instead
+    // of chrome: the glyph-atlas check for the web backend.
+    const stress = b.option(usize, "stress", "Web: build the N-run text stress app instead of chrome") orelse 0;
+    const web_opts = b.addOptions();
+    web_opts.addOption(usize, "stress", stress);
     const web_exe = b.addExecutable(.{
         .name = "chrome-web",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/web_main.zig"),
             .target = wasm_target,
             .optimize = web_optimize,
+            .imports = &.{.{ .name = "build_options", .module = web_opts.createModule() }},
         }),
     });
     teak.linkWebWgpu(b, web_exe, .{});

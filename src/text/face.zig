@@ -67,8 +67,11 @@ pub const Font = struct {
         return font;
     }
 
-    /// Load the system fallback face (`TEAK_FONT`, else the candidate list).
+    /// Load the fallback face: the bytes given to `setFallbackBytes` if any
+    /// (the web Host embeds one), else the system font (`TEAK_FONT`, then the
+    /// candidate list).
     pub fn loadSystem(allocator: std.mem.Allocator) !Font {
+        if (fallback_bytes) |bytes| return fromBytes(bytes);
         const data = try readFontFile(allocator);
         errdefer allocator.free(data);
         var font = try fromBytes(data);
@@ -116,6 +119,16 @@ pub const Font = struct {
         return if (g < 0 or g > std.math.maxInt(u16)) 0 else @intCast(g);
     }
 
+    /// Horizontal centre of glyph `gid`'s outline, in font units (0 when it has none).
+    pub fn inkCenterUnits(self: *const Font, gid: u16) f32 {
+        var x0: c_int = 0;
+        var y0: c_int = 0;
+        var x1: c_int = 0;
+        var y1: c_int = 0;
+        if (c.stbtt_GetGlyphBox(&self.info, gid, &x0, &y0, &x1, &y1) == 0) return 0;
+        return @as(f32, @floatFromInt(x0 + x1)) * 0.5;
+    }
+
     /// Horizontal advance of glyph `gid`, in font units.
     pub fn advanceUnits(self: *const Font, gid: u16) i32 {
         var advance: c_int = 0;
@@ -155,16 +168,34 @@ const Registry = struct {
 
 var registry: Registry = .{};
 
+/// Bumped whenever the face table changes; caches of shaped text compare it.
+pub var epoch: u64 = 1;
+
+/// Embedded fallback face for hosts without a file system (wasm).
+var fallback_bytes: ?[]const u8 = null;
+
+/// Use `ttf` (borrowed; keep it alive) as the fallback face instead of probing
+/// for a system font. Call before the first text is shaped.
+pub fn setFallbackBytes(ttf: []const u8) void {
+    fallback_bytes = ttf;
+    epoch += 1;
+}
+
+/// freestanding (wasm) has no libc and no file system: only embedded faces.
+const has_files = builtin.os.tag != .freestanding;
+
 /// Register `ttf` as the face for (`family`, `weight`), replacing an earlier
 /// one. The bytes are borrowed: keep them alive (an `@embedFile` slice is).
 pub fn registerFace(family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) error{FontInitFailed}!void {
     registry.faces[@backingInt(family)][@backingInt(weight)] = Font.fromBytes(ttf) catch return error.FontInitFailed;
+    epoch += 1;
 }
 
 /// Forget every registered face and the loaded fallback.
 pub fn releaseFaces() void {
     if (registry.fallback) |*f| f.deinit();
     registry = .{};
+    epoch += 1;
 }
 
 /// Face-table index of (`family`, `weight`); also the `ShapedGlyph.face` value.
@@ -226,7 +257,9 @@ pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
     if (!registry.fallback_tried) {
         registry.fallback_tried = true;
         registry.fallback = Font.loadSystem(std.heap.page_allocator) catch null;
-        if (registry.fallback == null) std.log.warn("teak: no font found (register one or set TEAK_FONT); text will not draw", .{});
+        if (comptime has_files) {
+            if (registry.fallback == null) std.log.warn("teak: no font found (register one or set TEAK_FONT); text will not draw", .{});
+        }
     }
     if (registry.fallback) |*f| return f;
     for (&registry.faces) |*r| {
@@ -250,7 +283,13 @@ pub fn windowsFontCandidate(buf: []u8, windir: []const u8, i: usize) ?[]const u8
     return std.fmt.bufPrint(buf, "{s}\\Fonts\\{s}", .{ std.mem.trimEnd(u8, windir, "\\/"), WINDOWS_FONT_FILES[i] }) catch null;
 }
 
-fn readFontFile(allocator: std.mem.Allocator) ![]u8 {
+const readFontFile = if (has_files) readFontFileLibc else readFontFileNone;
+
+fn readFontFileNone(_: std.mem.Allocator) ![]u8 {
+    return error.FontNotFound;
+}
+
+fn readFontFileLibc(allocator: std.mem.Allocator) ![]u8 {
     // libc getenv (this module always links libc for stb); non-allocating.
     if (std.c.getenv("TEAK_FONT")) |env_ptr| {
         const env_path = std.mem.span(env_ptr);
