@@ -67,7 +67,7 @@ export ROOT OUT ZIG
 
 step "lib: test" "$ROOT" "$ZIG" build test
 step "lib: audit" "$ROOT" "$ZIG" build audit
-step "fmt" "$ROOT" "$ZIG" fmt --check src build.zig build.zig.zon tools test shaders examples
+step "fmt" "$ROOT" bash -c 'git ls-files -z "*.zig" "*.zon" | xargs -0 "$ZIG" fmt --check'
 
 if [ "$QUICK" = 1 ]; then
   step "chrome: test" "$ROOT/examples/chrome" "$ZIG" build test

@@ -34,7 +34,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with: { version: "${{ env.ZIG_VERSION }}" }
       - name: zig fmt --check
-        run: zig fmt --check src build.zig build.zig.zon tools test shaders examples
+        run: git ls-files -z "*.zig" "*.zon" | xargs -0 zig fmt --check
       - name: Library tests (Debug)
         run: zig build test --summary all
       - name: Library tests (ReleaseSafe)
