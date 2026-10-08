@@ -69,6 +69,56 @@ pub const Typography = struct {
     small: FontSpec = .{ .size_px = 12, .family = .sans },
 };
 
+// ── Tokens ─────────────────────────────────────────────────────────
+
+/// Shape and depth vocabulary next to the palette's colours: corner radii,
+/// stroke width, a spacing scale and shadow elevations. The retro look is
+/// the default (square corners, no soft shadows); `modern_tokens` is the
+/// rounded, softly-lit one. Widget styles derived by `fromPaletteTokens`
+/// read these, and apps can read them too (`theme.tokens.space[2]`) to keep
+/// custom layouts on the same scale.
+pub const Tokens = struct {
+    /// Corner radii: small (inputs, checkboxes), medium (buttons), large (cards, popovers).
+    radius_sm: f32 = 0,
+    radius_md: f32 = 0,
+    radius_lg: f32 = 0,
+    /// Stroke width of borders and rules.
+    border_width: f32 = 1,
+    /// Spacing scale for padding and gaps: xs, sm, md, lg, xl.
+    space: [5]f32 = .{ 4, 8, 12, 16, 24 },
+    /// Elevation steps 0..3 as soft shadows (step 0 and a retro theme: none).
+    elevation: [4]?cmd.Shadow = .{ null, null, null, null },
+
+    pub const Size = enum { sm, md, lg };
+
+    pub fn radii(self: Tokens, size: Size) cmd.Radii {
+        return cmd.Radii.all(switch (size) {
+            .sm => self.radius_sm,
+            .md => self.radius_md,
+            .lg => self.radius_lg,
+        });
+    }
+
+    pub fn shadowAt(self: Tokens, level: u2) ?cmd.Shadow {
+        return self.elevation[level];
+    }
+};
+
+/// Rounded corners, thin strokes and soft shadows: the "modern app" look.
+pub const modern_tokens: Tokens = .{
+    .radius_sm = 5,
+    .radius_md = 8,
+    .radius_lg = 14,
+    .border_width = 1,
+    .space = .{ 4, 8, 12, 16, 24 },
+    .elevation = .{
+        null,
+        .{ .dx = 0, .dy = 1, .blur = 3, .color = .{ 0.06, 0.09, 0.16, 0.14 } },
+        .{ .dx = 0, .dy = 4, .blur = 14, .color = .{ 0.06, 0.09, 0.16, 0.14 } },
+        .{ .dx = 0, .dy = 12, .blur = 28, .color = .{ 0.06, 0.09, 0.16, 0.20 } },
+    },
+};
+
 // ── Theme ──────────────────────────────────────────────────────────
 
 /// Everything the un-styled emitters consult. A plain struct: build one
@@ -94,7 +144,12 @@ pub const Theme = struct {
     /// top with this fill, and text reads against the opaque card.
     panel_bg: [4]f32,
 
+    /// Shape and depth tokens (radii, spacing scale, elevations); see `Tokens`.
+    tokens: Tokens = .{},
+
     button: cmd.ButtonStyle = .{},
+    /// The call-to-action button: accent fill, light text.
+    button_primary: cmd.ButtonStyle = .{},
     text_input: cmd.TextInputStyle = .{},
     checkbox: cmd.CheckboxStyle = .{},
     radio: cmd.RadioStyle = .{},
@@ -110,11 +165,21 @@ pub const Theme = struct {
     /// these and override specific fields.
     pub const dark_default: Theme = fromPalette(dark_palette);
     pub const light_default: Theme = fromPalette(light_palette);
+    /// Rounded corners, soft shadows, indigo accent (see `modern_tokens`).
+    pub const modern_light: Theme = fromPaletteTokens(modern_light_palette, modern_tokens);
+    pub const modern_dark: Theme = fromPaletteTokens(modern_dark_palette, modern_tokens);
 
     /// Build a Theme by deriving widget styles from a palette. Apps
     /// that want a custom brand palette call this and then optionally
     /// tweak individual style fields.
     pub fn fromPalette(p: Palette) Theme {
+        return fromPaletteTokens(p, .{});
+    }
+
+    /// `fromPalette` with shape tokens: the derived button / input / card
+    /// styles get the radii, borders and elevations from `t`.
+    pub fn fromPaletteTokens(p: Palette, t: Tokens) Theme {
+        const rounded = !t.radii(.md).isZero();
         const input: cmd.TextInputStyle = .{
             .bg = p.bg_sunken,
             .fg = p.fg,
@@ -123,8 +188,11 @@ pub const Theme = struct {
             .cursor = p.fg,
             .flex = 1,
             .min_width = 120,
+            .radius = t.radii(.sm),
+            .border_width = if (rounded) t.border_width else 2,
         };
         return .{
+            .tokens = t,
             .palette = p,
             .typography = .{},
             .text_color = p.fg,
@@ -137,6 +205,18 @@ pub const Theme = struct {
                 .hover_bg = p.bg_hover,
                 .press_bg = p.bg_press,
                 .fg = p.fg,
+                .radius = t.radii(.md),
+                .border = if (rounded) p.border else null,
+                .border_width = t.border_width,
+                .soft_shadow = t.shadowAt(1),
+            },
+            .button_primary = .{
+                .bg = p.accent,
+                .hover_bg = lighten(p.accent, 0.10),
+                .press_bg = lighten(p.accent, -0.10),
+                .fg = .{ 1, 1, 1, 1 },
+                .radius = t.radii(.md),
+                .soft_shadow = t.shadowAt(1),
             },
             .text_input = input,
             .field = blk: {
@@ -144,7 +224,7 @@ pub const Theme = struct {
                 f.variant = .underline;
                 break :blk f;
             },
-            .card = .{ .padding = 12, .gap = 8, .bg = p.bg_panel, .border = p.border },
+            .card = .{ .padding = 12, .gap = 8, .bg = p.bg_panel, .border = p.border, .border_width = t.border_width, .radius = t.radii(.lg), .soft_shadow = t.shadowAt(2) },
             .checkbox = .{
                 .box_bg = p.bg_sunken,
                 .box_border = p.border,
@@ -178,6 +258,13 @@ pub const Theme = struct {
     }
 };
 
+/// Move a colour toward white (`amount` > 0) or black (< 0), keeping alpha.
+fn lighten(c: [4]f32, amount: f32) [4]f32 {
+    const target: f32 = if (amount >= 0) 1 else 0;
+    const t = @abs(amount);
+    return .{ c[0] + (target - c[0]) * t, c[1] + (target - c[1]) * t, c[2] + (target - c[2]) * t, c[3] };
+}
+
 // ── Built-in palettes ──────────────────────────────────────────────
 
 pub const dark_palette: Palette = .{
@@ -206,6 +293,34 @@ pub const light_palette: Palette = .{
     .accent = .{ 0.18, 0.45, 0.95, 1.0 },
     .danger = .{ 0.85, 0.25, 0.20, 1.0 },
     .border = .{ 0.72, 0.72, 0.78, 1.0 },
+};
+
+pub const modern_light_palette: Palette = .{
+    .bg = .{ 0.957, 0.961, 0.973, 1.0 },
+    .bg_panel = .{ 1.0, 1.0, 1.0, 1.0 },
+    .bg_sunken = .{ 1.0, 1.0, 1.0, 1.0 },
+    .bg_raised = .{ 1.0, 1.0, 1.0, 1.0 },
+    .bg_hover = .{ 0.945, 0.953, 0.973, 1.0 },
+    .bg_press = .{ 0.894, 0.910, 0.941, 1.0 },
+    .fg = .{ 0.106, 0.122, 0.165, 1.0 },
+    .fg_muted = .{ 0.420, 0.447, 0.502, 1.0 },
+    .accent = .{ 0.310, 0.420, 0.929, 1.0 },
+    .danger = .{ 0.898, 0.282, 0.302, 1.0 },
+    .border = .{ 0.851, 0.863, 0.890, 1.0 },
+};
+
+pub const modern_dark_palette: Palette = .{
+    .bg = .{ 0.067, 0.075, 0.098, 1.0 },
+    .bg_panel = .{ 0.110, 0.122, 0.153, 1.0 },
+    .bg_sunken = .{ 0.082, 0.090, 0.118, 1.0 },
+    .bg_raised = .{ 0.141, 0.157, 0.192, 1.0 },
+    .bg_hover = .{ 0.188, 0.208, 0.251, 1.0 },
+    .bg_press = .{ 0.106, 0.118, 0.149, 1.0 },
+    .fg = .{ 0.929, 0.937, 0.961, 1.0 },
+    .fg_muted = .{ 0.604, 0.631, 0.690, 1.0 },
+    .accent = .{ 0.392, 0.490, 0.969, 1.0 },
+    .danger = .{ 0.953, 0.435, 0.443, 1.0 },
+    .border = .{ 0.204, 0.224, 0.267, 1.0 },
 };
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -309,4 +424,32 @@ test "Theme.typography has body, heading, mono, small" {
     try std.testing.expectEqual(FontFamily.sans, t.typography.small.family);
     try std.testing.expect(t.typography.heading.size_px > t.typography.body.size_px);
     try std.testing.expect(t.typography.small.size_px < t.typography.body.size_px);
+}
+
+test "default tokens keep the retro look: square corners, no soft shadows, fromPalette unchanged" {
+    const t = Theme.dark_default;
+    try std.testing.expect(t.button.radius.isZero());
+    try std.testing.expect(t.button.soft_shadow == null);
+    try std.testing.expect(t.button.border == null);
+    try std.testing.expect(t.card.radius.isZero() and t.card.soft_shadow == null);
+    try std.testing.expectEqual(@as(f32, 2), t.text_input.border_width); // the long-standing default
+    try std.testing.expect(t.text_input.radius.isZero());
+}
+
+test "modern preset: radii, borders and elevation flow into the widget styles" {
+    const t = Theme.modern_light;
+    try std.testing.expectEqual(@as(f32, 8), t.button.radius.tl);
+    try std.testing.expectEqual(@as(f32, 14), t.card.radius.br);
+    try std.testing.expectEqual(@as(f32, 5), t.text_input.radius.tr);
+    try std.testing.expectEqual(@as(f32, 1), t.text_input.border_width);
+    try std.testing.expect(t.button.border != null);
+    try std.testing.expect(t.card.soft_shadow != null and t.card.soft_shadow.?.blur > t.button.soft_shadow.?.blur);
+    try std.testing.expectEqual(modern_light_palette.accent, t.button_primary.bg);
+    try std.testing.expect(t.button_primary.hover_bg[0] > t.button_primary.bg[0]); // lighter
+    try std.testing.expect(t.button_primary.press_bg[0] < t.button_primary.bg[0]); // darker
+    try std.testing.expectEqual(@as(f32, 12), t.tokens.space[2]);
+    try std.testing.expect(t.tokens.shadowAt(0) == null);
+    // dark and light share the shape tokens
+    try std.testing.expectEqual(t.tokens.radius_lg, Theme.modern_dark.tokens.radius_lg);
+    try std.testing.expect(Theme.modern_dark.palette.bg[0] < 0.2);
 }

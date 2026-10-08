@@ -34,6 +34,9 @@ pub fn deepEql(comptime T: type, a: T, b: T) bool {
         .@"struct" => |info| {
             if (info.layout == .@"packed") return a == b;
             if (@hasDecl(T, "eql")) return T.eql(a, b);
+            // Padding-free plain data (styles: floats, ints, bools, enums, arrays of
+            // them): bitwise equality IS memcmp, and one memcmp beats a field walk.
+            if (comptime isBitwise(T)) return std.mem.eql(u8, std.mem.asBytes(&a), std.mem.asBytes(&b));
             inline for (info.field_names, info.field_types) |name, F| {
                 if (!deepEql(F, @field(a, name), @field(b, name))) return false;
             }
@@ -100,6 +103,27 @@ fn isPlainBytes(comptime T: type) bool {
         },
         else => false,
     };
+}
+
+/// True if `T` is padding-free plain data whose equality is exactly byte
+/// equality: ints, bools, enums, floats (compared bitwise, as `deepEql` does),
+/// and arrays / auto structs of those with no padding and no `eql` override.
+fn isBitwise(comptime T: type) bool {
+    switch (@typeInfo(T)) {
+        .int, .bool, .float => return true,
+        .@"enum" => return true,
+        .array => |i| return isBitwise(i.child),
+        .@"struct" => |info| {
+            if (info.layout == .@"packed" or @hasDecl(T, "eql")) return false;
+            var sum: usize = 0;
+            for (info.field_types) |F| {
+                if (!isBitwise(F)) return false;
+                sum += @sizeOf(F);
+            }
+            return sum == @sizeOf(T);
+        },
+        else => return false,
+    }
 }
 
 const testing = std.testing;
