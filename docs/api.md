@@ -1297,10 +1297,12 @@ Numeric input component: TextField + float parsing + range validation.
 > `selected` index that is out of range).
 - `pub const PLACEHOLDER = "Select\u{2026}"`
 > A dropdown/select holding `selected` as an index into the app-owned
-> options slice. `cap` documents the intended maximum option count for
-> the call site; it is not enforced on the slice (the app owns the
-> options) but keeps the type self-describing alongside its siblings
-> (e.g. `Dropdown(64)` for a long species list).
+> options slice.
+> **`cap` is documentation only**: it is exposed as `Dropdown(cap).capacity`
+> and has no effect on layout, storage or `update` (the Model holds indices,
+> not options, so its size does not depend on `cap`). Pass the intended
+> maximum option count (e.g. `Dropdown(64)` for a long species list) so call
+> sites stay self-describing; any positive number works.
 - `pub fn Dropdown(comptime cap: usize) type`
 
 ### `teak.data_table` (`src/core/data_table.zig`)
