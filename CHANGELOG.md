@@ -170,6 +170,11 @@
 ### Added
 
 - `widgets.color_picker`: SV square + hue strip (canvas triangles), hex / R / G / B fields, swatches.
+- **Web IME.** Composition input (Japanese, Chinese, Korean) works in the browser: zunk's new IME bridge keeps a
+  hidden `<textarea>` focused while a text field is, the preedit shows inline with an underline and the candidate
+  window opens at the caret. New optional Host extension `setImeActive(bool)` next to `setImeSpot`; the preedit
+  stays presentation-only (TransientState, see docs/features/text-engine.md 6.7). `tools/web-ime-test.mjs` is the
+  CDP acceptance test.
 - `widgets.spinner.Spinner`: NumericField with step buttons, arrow / Page / wheel stepping.
 
 - Win32 UIA control patterns (Invoke / Toggle / Value) route AT requests back as input through `teak.A11yActionQueue` and `Host.pollA11yActions`; `ValuePattern` replaces the value-as-Name fallback.
@@ -338,6 +343,14 @@
   Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;
   render draws one `TextDraw` per line. HARDLINE hatch 3 amended accordingly. Chrome's NOTES panel shows it.
 
+- `text_area` Cmd + `TextArea(cap)` component + `textMsg` hook (text-engine PR11a/PR11b, closes the multi-line half of #6):
+  wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,
+  drag incl. outside, double/triple click, wheel), visual Up/Down/Home/End with a sticky column, layout `metrics` events,
+  `Host.setImeSpot` from the focused caret; `Editor.applyPointer`; `examples/notes`. See docs/features/text-area.md.
+- Wrapped text and flex shrink (text-engine PR8/PR9, closes #8): `text` gains `wrap` (`none|word|char|ellipsis`),
+  `max_lines`, `text_align`; groups/scrolls gain `shrink`; emitters `paragraph`, `paragraphStyled`, `textEllipsis`.
+  Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;
+  render draws one `TextDraw` per line. HARDLINE hatch 3 amended accordingly. Chrome's NOTES panel shows it.
 - `teak.Combobox(cap)`: searchable select (query field + filtered overlay list with scrolling, type-ahead
   highlight, keyboard, "No matches" row), composed from existing primitives; chrome's MATERIAL field uses it (#2).
 - Cookbook recipe 6b + tested `LoadRow`/`LoadApp` example: rows owning several focusable fields (#1).

@@ -327,6 +327,7 @@ tools/
   teak_drive.zig                              -- teak-drive: drive a running teak app from a shell or from an LLM agent
   vreg.zig                                    -- vreg: the visual-regression runner. Renders every example's named
   web-frame-bench.mjs                         -- rAF cost of a web example under scrolling: serve a zunk `dist/`, load it in headless Chromium
+  web-ime-test.mjs                            -- Web IME acceptance test: drive an input-method composition into a teak app in
   web-startup.mjs                             -- Web startup profile: serve a zunk `dist/`, load it in headless Chromium and print where the
   webshot.mjs                                 -- Web smoke test: serve a zunk `dist/`, load it in headless Chromium with
 ```
