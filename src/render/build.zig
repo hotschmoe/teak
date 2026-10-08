@@ -20,6 +20,7 @@ const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
 const emitQuadCorners = vertex.emitQuadCorners;
+pub const sdf = @import("sdf.zig");
 
 /// Image draw record. Parallel to TextDraw — the GPU backend consumes
 /// these in `uploadImages` and emits 6 textured vertices per draw using
@@ -100,6 +101,35 @@ fn emitText(
         .clip_w = clip.w,
         .clip_h = clip.h,
     }) catch {};
+}
+
+/// A rect with rounded corners, a gradient and / or a soft shadow, plus an
+/// inside border stroke, as one SDF quad. Returns false (nothing emitted)
+/// when the rect uses none of those, so the caller keeps its plain solid
+/// quads, which is what makes the defaults pixel-identical to before.
+fn emitSurface(
+    verts: *std.ArrayList(Vertex),
+    alloc: std.mem.Allocator,
+    r: Rect,
+    radii: cmd_types.Radii,
+    fill: ?[4]f32,
+    gradient: ?cmd_types.Gradient,
+    border: ?[4]f32,
+    border_width: f32,
+    shadow: ?cmd_types.Shadow,
+    clip: Rect,
+) bool {
+    if (!sdf.needed(radii, gradient, shadow)) return false;
+    sdf.emitRect(verts, alloc, .{
+        .rect = r,
+        .radii = radii,
+        .fill = fill orelse .{ 0, 0, 0, 0 },
+        .gradient = gradient,
+        .border_width = if (border != null) border_width else 0,
+        .border = border orelse .{ 0, 0, 0, 0 },
+        .shadow = shadow,
+    }, clip);
+    return true;
 }
 
 /// One TextDraw per wrapped line of a `text` Cmd with `wrap != .none`, using
@@ -315,8 +345,10 @@ fn buildLayer(
                         const shadow_rect = Rect{ .x = rect.x + ov.shadow_offset[0], .y = rect.y + ov.shadow_offset[1], .w = rect.w, .h = rect.h };
                         emit(verts, alloc, shadow_rect, sh, cur_clip);
                     }
-                    if (ov.backdrop[3] > 0) emit(verts, alloc, rect, ov.backdrop, cur_clip);
-                    if (ov.border) |bc| emitBorder(verts, alloc, rect, ov.border_width, bc, cur_clip);
+                    if (!emitSurface(verts, alloc, rect, ov.radius, if (ov.backdrop[3] > 0) ov.backdrop else null, null, ov.border, ov.border_width, ov.soft_shadow, cur_clip)) {
+                        if (ov.backdrop[3] > 0) emit(verts, alloc, rect, ov.backdrop, cur_clip);
+                        if (ov.border) |bc| emitBorder(verts, alloc, rect, ov.border_width, bc, cur_clip);
+                    }
                     clip.push(clipRect(rect, cur_clip));
                 } else {
                     // Base-layer must still push a clip so the
@@ -340,8 +372,10 @@ fn buildLayer(
                 // paint on top. Layout already gives us the group's full
                 // (padded) rect; no inset.
                 if (visible) {
-                    if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
-                    if (grp.border) |bc| emitBorder(verts, alloc, rect, grp.border_width, bc, cur_clip);
+                    if (!emitSurface(verts, alloc, rect, grp.radius, grp.bg, grp.gradient, grp.border, grp.border_width, grp.soft_shadow, cur_clip)) {
+                        if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+                        if (grp.border) |bc| emitBorder(verts, alloc, rect, grp.border_width, bc, cur_clip);
+                    }
                 }
             },
             .pop_group, .push_virtual_list, .pop_virtual_list => {},
@@ -444,9 +478,11 @@ fn buildLayer(
                 var bg = btn.style.disabled_bg;
                 var fg = btn.style.disabled_fg;
                 var label_dy: f32 = 0;
+                var idle = false;
                 if (!btn.disabled) {
                     const pressed = if (transient.press_index) |pi| pi == i else false;
                     const hovered = if (transient.hover_index) |hi| hi == i else false;
+                    idle = !pressed and !hovered;
                     if (pressed) {
                         bg = btn.style.press_bg;
                         fg = btn.style.press_fg orelse btn.style.fg;
@@ -459,12 +495,31 @@ fn buildLayer(
                         fg = btn.style.fg;
                     }
                 }
-                emit(verts, alloc, rect, bg, cur_clip);
-                if (btn.style.border) |bc| emitBorder(verts, alloc, rect, btn.style.border_width, bc, cur_clip);
+                // Rounded / gradient / shadowed buttons are one SDF quad; the
+                // gradient is the idle look, a raised shadow is dropped while
+                // pressed or disabled.
+                const raised = idle or (!btn.disabled and (if (transient.hover_index) |hi| hi == i else false));
+                const sdf_drawn = emitSurface(verts, alloc, rect, btn.style.radius, bg, if (idle) btn.style.gradient else null, btn.style.border, btn.style.border_width, if (raised) btn.style.soft_shadow else null, cur_clip);
+                if (!sdf_drawn) {
+                    emit(verts, alloc, rect, bg, cur_clip);
+                    if (btn.style.border) |bc| emitBorder(verts, alloc, rect, btn.style.border_width, bc, cur_clip);
+                }
 
                 if (btn.label.len > 0) {
                     const m = measurer.measure(btn.label, btn.font);
                     const avail = @max(0, rect.w - 2 * btn.style.h_padding);
+                    if (btn.style.ellipsis and m.width > avail) {
+                        // Cut at the pixel with U+2026, like `wrap = .ellipsis` text (two draws, no allocation).
+                        var it = text_wrap.LineIter.init(btn.label, btn.font, avail, .ellipsis, 1, measurer);
+                        const line = it.next() orelse continue;
+                        const ew = measurer.measure(text_wrap.ELLIPSIS, btn.font).width;
+                        const kept_w = @max(0, line.width - ew);
+                        const y = rect.y + @max(0, (rect.h - m.height) * 0.5) + label_dy;
+                        const x = rect.x + btn.style.h_padding;
+                        emitText(text_draws, alloc, btn.label[line.start..line.end], btn.font, fg, .{ .x = x, .y = y, .w = kept_w, .h = m.height }, cur_clip);
+                        emitText(text_draws, alloc, text_wrap.ELLIPSIS, btn.font, fg, .{ .x = x + kept_w, .y = y, .w = ew, .h = m.height }, cur_clip);
+                        continue;
+                    }
                     const label_w = @min(m.width, avail);
                     const label_dx: f32 = switch (btn.style.label_align) {
                         .start => 0,
@@ -478,6 +533,17 @@ fn buildLayer(
                         .h = m.height,
                     };
                     emitText(text_draws, alloc, btn.label, btn.font, fg, label_rect, cur_clip);
+                    if (btn.underline) |at| if (at < btn.label.len and label_w >= m.width) {
+                        // One glyph's width under the mnemonic letter, just below the baseline.
+                        const before = measurer.measure(btn.label[0..at], btn.font).width;
+                        const glyph = measurer.measure(btn.label[at .. at + 1], btn.font).width;
+                        emit(verts, alloc, .{
+                            .x = label_rect.x + before,
+                            .y = label_rect.y + m.ascent + 2,
+                            .w = glyph,
+                            .h = 1,
+                        }, fg, cur_clip);
+                    };
                 }
             },
             .text_input => |ti| {
@@ -503,9 +569,12 @@ fn buildLayer(
                     emit(verts, alloc, .{ .x = rect.x, .y = rect.y + rect.h - rule, .w = rect.w, .h = rule }, border_color, cur_clip);
                     inner.h = @max(0, rect.h - rule);
                 } else {
-                    emit(verts, alloc, rect, border_color, cur_clip);
+                    const input_bg = if (ti.disabled) ti.style.disabled_bg else ti.style.bg;
                     inner = insetRect(rect, ti.style.border_width);
-                    emit(verts, alloc, inner, if (ti.disabled) ti.style.disabled_bg else ti.style.bg, cur_clip);
+                    if (!emitSurface(verts, alloc, rect, ti.style.radius, input_bg, null, border_color, ti.style.border_width, null, cur_clip)) {
+                        emit(verts, alloc, rect, border_color, cur_clip);
+                        emit(verts, alloc, inner, input_bg, cur_clip);
+                    }
                 }
 
                 // Selection highlight before the text so text draws on top.
@@ -1016,6 +1085,7 @@ fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
 
 // Chrome (border / shadow / hover / underline) tests live in their own file.
 test {
+    _ = sdf;
     _ = @import("chrome_test.zig");
 }
 
@@ -1053,6 +1123,31 @@ test "buildVertices emits one bg quad per button and one TextDraw per label/text
     // 1 button bg = 1 quad * 6 verts. Text and label go to text_draws.
     try testing.expectEqual(@as(usize, 6), verts.items.len);
     try testing.expectEqual(@as(usize, 2), text_draws.items.len); // "hello" + "+"
+}
+
+test "buildVertices: an underlined button label adds one thin quad under that glyph" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0 });
+    cb.buttonStyledUnderlined(.a, "File", cb.theme.button, 0);
+    cb.buttonStyledUnderlined(.a, "Edit", cb.theme.button, null);
+    cb.buttonStyledUnderlined(.a, "Save", cb.theme.button, 9); // out of range: nothing drawn
+    cb.popGroup();
+    var rects: [8]Rect = undefined;
+    const n = cb.cmds.items.len;
+    layout.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..n], .{}, text_mod.monoMeasurer());
+    // three button bgs (3 quads) + one underline quad
+    try testing.expectEqual(@as(usize, 4 * 6), verts.items.len);
 }
 
 test "buildVertices clips child widgets to scroll container" {
@@ -2014,4 +2109,33 @@ test "text_area: scrolled content culls lines above the viewport" {
     try testing.expectEqual(@as(usize, 2), text_draws.items.len);
     try testing.expectEqualStrings("4", text_draws.items[0].content);
     try testing.expectEqualStrings("5", text_draws.items[1].content);
+}
+
+test "a button with `ellipsis` keeps its width and cuts its label at the pixel" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    var st = cb.theme.button;
+    st.min_width = 100; // mono measurer: 10 px per byte; 8 px padding each side -> 84 px for text
+    st.h_padding = 8;
+    st.ellipsis = true;
+    cb.buttonStyled(.a, "a long label here", st);
+    cb.buttonStyled(.a, "short", st);
+    cb.popGroup();
+    var rects: [8]Rect = undefined;
+    var draws: std.ArrayList(TextDraw) = .empty;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 200, text_mod.monoMeasurer());
+    try testing.expectEqual(@as(f32, 100), rects[1].w); // fixed, though the label is 170 px wide
+    try testing.expectEqual(@as(f32, 100), rects[2].w);
+    var verts: std.ArrayList(Vertex) = .empty;
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    buildVertices(&verts, &draws, &image_draws, arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    try testing.expectEqualStrings("a lon", draws.items[0].content); // 5 x 10 + "\u{2026}" (3 bytes = 30 under the mono measurer) = 80 <= 84
+    try testing.expectEqualStrings("\u{2026}", draws.items[1].content);
+    try testing.expect(draws.items[1].rect_x + draws.items[1].rect_w <= rects[1].x + rects[1].w - st.h_padding + 0.01);
+    try testing.expectEqualStrings("short", draws.items[2].content); // fits: drawn plain
 }
