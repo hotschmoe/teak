@@ -579,6 +579,8 @@ Chord = struct { key: Key, mod: bool = false /* Ctrl (Cmd on mac) */, shift: boo
 Chord.ctrl(k) Chord.ctrlShift(k) Chord.altKey(k) Chord.plain(k)   Chord.format(w, ShortcutPlatform{pc,mac}) !void   Chord.parse("ctrl+shift+p") ?Chord
 Command(Msg) = struct { id, label: []const u8, shortcut: ?Chord = null, alt_shortcut: ?Chord = null, enabled = true, hidden = false, msg: Msg }
 Command.menuLabel(arena, platform, column) []const u8        // "Save    Ctrl+S"
+commands.menuItems(MenuItem, arena, &list, platform, ids: []const []const u8) []const MenuItem  // rows from the table ("-" = separator); action = command index (MenuBar(u16))
+Chord.text(comptime chord, comptime platform) []const u8         // comptime shortcut string for const menu trees
 CommandList(Msg): add(Command) / slice() / match(Chord) ?*const Command / byId(id) / paletteOptions(&labels,&map) usize / paletteCommand(option) ?*const Command
 CommandPalette(cap): Model/Msg/update (Combobox-shaped: .focus opens, .select(option_index)), charMsg(c), keyMsg(model,key,&list,PaletteViewOpts) ?Msg,
                      scrollByMsg, viewPalette(model, cb, &list, .{ .focus, .close, .selectMsg }, PaletteViewOpts{ window_w, window_h, width, max_visible, platform, column })
