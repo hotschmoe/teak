@@ -109,6 +109,8 @@ const Options = struct {
     budget: ?u32 = null,
     examples: ?[]const u8 = null,
     state: ?[]const u8 = null,
+    /// Examples processed concurrently.
+    jobs: usize = 4,
 };
 
 const Row = struct {
@@ -143,6 +145,8 @@ pub fn main(init: std.process.Init) !void {
             o.budget = std.fmt.parseInt(u32, it.next() orelse return usage(), 10) catch return usage();
         } else if (std.mem.eql(u8, a, "--examples")) {
             o.examples = it.next() orelse return usage();
+        } else if (std.mem.eql(u8, a, "--jobs")) {
+            o.jobs = @max(1, std.fmt.parseInt(usize, it.next() orelse return usage(), 10) catch return usage());
         } else if (std.mem.eql(u8, a, "--state")) {
             o.state = it.next() orelse return usage();
         } else return usage();
@@ -158,25 +162,22 @@ pub fn main(init: std.process.Init) !void {
     const arena = arena_state.allocator();
 
     const examples = try listExamples(arena, io, o);
-    var rows: std.ArrayList(Row) = .empty;
 
-    for (examples) |ex| {
-        if (o.web) {
-            if (for (web_skip) |sk| {
-                if (std.mem.eql(u8, sk, ex)) break true;
-            } else false) continue;
-            try webShot(arena, io, o, ex, tol, budget, &rows);
-        } else {
-            const states = listStates(arena, io, o, ex) catch |e| {
-                try rows.append(arena, .{ .name = ex, .status = "ERROR", .detail = @errorName(e), .ok = false });
-                continue;
-            };
-            for (states) |st| {
-                if (o.state) |want| if (!std.mem.eql(u8, want, st)) continue;
-                try nativeShot(arena, io, o, ex, st, tol, budget, &rows);
-            }
+    // One worker per example (each `zig build shot` compiles its own exe,
+    // which dominates a cold run), `o.jobs` at a time.
+    const jobs = try arena.alloc(Job, examples.len);
+    for (jobs, examples) |*j, ex| j.* = .{ .ex = ex, .arena = std.heap.ArenaAllocator.init(gpa) };
+    defer for (jobs) |*j| j.arena.deinit();
+    var start: usize = 0;
+    while (start < jobs.len) : (start += o.jobs) {
+        var group: std.Io.Group = .init;
+        for (jobs[start..@min(jobs.len, start + o.jobs)]) |*j| {
+            group.concurrent(io, runExample, .{ j, io, o, tol, budget }) catch runExample(j, io, o, tol, budget);
         }
+        try group.await(io);
     }
+    var rows: std.ArrayList(Row) = .empty;
+    for (jobs) |j| try rows.appendSlice(arena, j.rows.items);
 
     // Table.
     var w = std.Io.Writer.Allocating.init(arena);
@@ -195,6 +196,39 @@ pub fn main(init: std.process.Init) !void {
     if (failed > 0) std.process.exit(1);
 }
 
+const Job = struct {
+    ex: []const u8,
+    arena: std.heap.ArenaAllocator,
+    rows: std.ArrayList(Row) = .empty,
+};
+
+fn runExample(j: *Job, io: std.Io, o: Options, tol: u8, budget: u32) void {
+    runExampleInner(j, io, o, tol, budget) catch |e| {
+        const a = j.arena.allocator();
+        j.rows.append(a, .{ .name = j.ex, .status = "ERROR", .detail = @errorName(e), .ok = false }) catch {};
+    };
+}
+
+fn runExampleInner(j: *Job, io: std.Io, o: Options, tol: u8, budget: u32) !void {
+    const arena = j.arena.allocator();
+    const ex = j.ex;
+    if (o.web) {
+        if (for (web_skip) |sk| {
+            if (std.mem.eql(u8, sk, ex)) break true;
+        } else false) return;
+        try webShot(arena, io, o, ex, tol, budget, &j.rows);
+        return;
+    }
+    const states = listStates(arena, io, o, ex) catch |e| {
+        try j.rows.append(arena, .{ .name = ex, .status = "ERROR", .detail = @errorName(e), .ok = false });
+        return;
+    };
+    for (states) |st| {
+        if (o.state) |want| if (!std.mem.eql(u8, want, st)) continue;
+        try nativeShot(arena, io, o, ex, st, tol, budget, &j.rows);
+    }
+}
+
 fn writeRow(w: *std.Io.Writer, name_w: usize, name: []const u8, status: []const u8, detail: []const u8) !void {
     try w.writeAll(name);
     try w.splatByteAll(' ', name_w + 1 - name.len);
@@ -204,7 +238,7 @@ fn writeRow(w: *std.Io.Writer, name_w: usize, name: []const u8, status: []const 
 }
 
 fn usage() error{BadArgs} {
-    std.debug.print("usage: vreg [--update] [--web] [--examples a,b] [--state name] [--tol N] [--budget N] [--out dir] [--golden dir] [--zig path] [--node path]\n", .{});
+    std.debug.print("usage: vreg [--update] [--web] [--examples a,b] [--state name] [--jobs N] [--tol N] [--budget N] [--out dir] [--golden dir] [--zig path] [--node path]\n", .{});
     return error.BadArgs;
 }
 
