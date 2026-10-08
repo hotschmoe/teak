@@ -10,6 +10,8 @@ pub const tabs = @import("widgets/tabs.zig");
 pub const split = @import("widgets/split.zig");
 pub const tooltip = @import("widgets/tooltip.zig");
 pub const menu = @import("widgets/menu.zig");
+pub const toast = @import("widgets/toast.zig");
+pub const dialog = @import("widgets/dialog.zig");
 pub const util = @import("widgets/util.zig");
 
 test {
