@@ -79,10 +79,10 @@ test "css names are distinct" {
 
 test "defaultFor / kindOf over a real Cmd" {
     const Cmd = @import("cmd.zig").Cmd(u8);
-    const btn: Cmd = .{ .button = .{ .msg = 1, .label = "x" } };
-    const inp: Cmd = .{ .text_input = .{ .focus_msg = 1, .content = "", .cursor = 0 } };
-    const cv: Cmd = .{ .canvas = .{ .cursor = .move } };
-    const plain_cv: Cmd = .{ .canvas = .{} };
+    const btn: Cmd = .{ .button = &.{ .msg = 1, .label = "x" } };
+    const inp: Cmd = .{ .text_input = &.{ .focus_msg = 1, .content = "", .cursor = 0 } };
+    const cv: Cmd = .{ .canvas = &.{ .cursor = .move } };
+    const plain_cv: Cmd = .{ .canvas = &.{} };
     try std.testing.expectEqual(CursorShape.pointer, defaultFor(btn));
     try std.testing.expectEqual(CursorShape.ibeam, defaultFor(inp));
     try std.testing.expectEqual(CursorShape.move, defaultFor(cv));
