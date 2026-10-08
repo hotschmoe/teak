@@ -57,6 +57,14 @@
 - X11 host failed to compile on first use under Zig 0.17 (`Xlib.load` still
   used the removed `@typeInfo(...).fields`).
 
+- `text_area` Cmd + `TextArea(cap)` component + `textMsg` hook (text-engine PR11a/PR11b, closes the multi-line half of #6):
+  wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,
+  drag incl. outside, double/triple click, wheel), visual Up/Down/Home/End with a sticky column, layout `metrics` events,
+  `Host.setImeSpot` from the focused caret; `Editor.applyPointer`; `examples/notes`. See docs/features/text-area.md.
+- Wrapped text and flex shrink (text-engine PR8/PR9, closes #8): `text` gains `wrap` (`none|word|char|ellipsis`),
+  `max_lines`, `text_align`; groups/scrolls gain `shrink`; emitters `paragraph`, `paragraphStyled`, `textEllipsis`.
+  Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;
+  render draws one `TextDraw` per line. HARDLINE hatch 3 amended accordingly. Chrome's NOTES panel shows it.
 - `teak.Combobox(cap)`: searchable select (query field + filtered overlay list with scrolling, type-ahead
   highlight, keyboard, "No matches" row), composed from existing primitives; chrome's MATERIAL field uses it (#2).
 - Cookbook recipe 6b + tested `LoadRow`/`LoadApp` example: rows owning several focusable fields (#1).

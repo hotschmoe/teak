@@ -770,6 +770,29 @@ test "run: a secondary-content-only change re-mirrors the snapshot" {
 
 // ── Frame diff (cmdsEqual) ──────────────────────────────────────────
 
+test "cmdsEqual: wrap, max_lines, text_align and shrink changes are frame changes" {
+    const Msg = union(enum) { a };
+    var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer x.deinit();
+    var y = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer y.deinit();
+    const f = x.theme.typography.body;
+    const c = x.theme.text_color;
+    x.paragraphStyled("same", f, c, .{});
+    y.paragraphStyled("same", f, c, .{});
+    try std.testing.expect(cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+    for ([_]cmd.ParagraphOpts{ .{ .wrap = .char }, .{ .max_lines = 2 }, .{ .text_align = .center } }) |o| {
+        y.reset();
+        y.paragraphStyled("same", f, c, o);
+        try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+    }
+    x.reset();
+    y.reset();
+    x.pushGroup(.{});
+    y.pushGroup(.{ .shrink = 1 });
+    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
+}
+
 test "cmdsEqual: detects label, disabled, and length changes" {
     const Msg = union(enum) { a };
     var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
@@ -1655,4 +1678,245 @@ test "cmdsEqual: Msg slices compare by content; variant swaps are detected" {
     try std.testing.expect(cmdsEqual(Msg, &x, &same));
     try std.testing.expect(!cmdsEqual(Msg, &x, &diff));
     try std.testing.expect(!cmdsEqual(Msg, &x, &other_tag));
+}
+
+// ── text_area: pointer, motion, scroll, metrics (text-engine PR11b) ────
+
+const text_area_mod = @import("core/text_area.zig");
+
+/// A one-area app wired the documented way: `textMsg` -> `eventMsg`, chars and
+/// special keys while focused, focus from the click.
+const AreaApp = struct {
+    const TA = text_area_mod.TextArea(1024);
+    pub const Msg = union(enum) { area: TA.Msg };
+    pub const Model = struct {
+        area: TA.Model = .{},
+        focused: bool = false,
+        metrics_seen: u32 = 0,
+        log: EventLog2 = .{},
+    };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .area => |a| {
+                if (a == .focus) m.focused = true;
+                if (a == .event) {
+                    m.log.push(a.event.kind);
+                    if (a.event.kind == .metrics) m.metrics_seen += 1;
+                }
+                TA.update(&m.area, a);
+            },
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        TA.viewWith(&m.area, cb, .{ .focus = Msg{ .area = .focus } }, .{ .id = 1, .width = 200, .height = 100 });
+        cb.popGroup();
+    }
+    pub fn textMsg(_: *const Model, ev: text_area_mod.TextEvent) ?Msg {
+        return .{ .area = TA.eventMsg(ev) };
+    }
+    pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+        return if (m.focused) Msg{ .area = TA.charMsg(c) } else null;
+    }
+    pub fn keySpecialMsg(m: *const Model, k: keys.SpecialKey) ?Msg {
+        if (!m.focused) return null;
+        return if (TA.keyMsg(k)) |tm| Msg{ .area = tm } else null;
+    }
+    pub fn focusedMsg(m: *const Model) ?Msg {
+        return if (m.focused) Msg{ .area = .focus } else null;
+    }
+};
+
+const EventLog2 = struct {
+    kinds: [64]@import("core/text_event.zig").TextEventKind = undefined,
+    n: usize = 0,
+    fn push(self: *EventLog2, k: @import("core/text_event.zig").TextEventKind) void {
+        if (self.n < self.kinds.len) {
+            self.kinds[self.n] = k;
+            self.n += 1;
+        }
+    }
+    fn count(self: *const EventLog2, k: @import("core/text_event.zig").TextEventKind) usize {
+        var c: usize = 0;
+        for (self.kinds[0..self.n]) |x| c += @intFromBool(x == k);
+        return c;
+    }
+};
+
+/// Area at (0,0): border 2 + padding 6 -> text origin (8, 8); inner width 184
+/// = 18 mono chars per line, 20 px lines.
+fn playArea(initial: []const u8, script: []const Frame) !*Played(AreaApp) {
+    const p = try begin(AreaApp, .{ .script = script }, .{});
+    errdefer p.destroy();
+    p.rt.model.area.set(initial);
+    p.rt.model.area.ed.cursor = 0;
+    while (!p.host.shouldClose()) try p.rt.frame();
+    return p;
+}
+
+fn at(col: f32, row: f32) [2]f32 {
+    return .{ 8 + col * 10 + 1, 8 + row * 20 + 5 };
+}
+
+test "text_area: click puts the caret mid-word, Shift+click extends" {
+    const c = at(3, 0);
+    const c2 = at(8, 0);
+    const t = try playArea("hello world", &.{
+        .{},
+        .{ .x = c[0], .y = c[1], .held = left, .down = left },
+        .{ .x = c[0], .y = c[1], .up = left },
+        .{ .x = c2[0], .y = c2[1], .held = left, .down = left, .mods = .{ .shift = true } },
+        .{ .x = c2[0], .y = c2[1], .up = left, .mods = .{ .shift = true } },
+        .{},
+    });
+    defer t.destroy();
+    const m = &t.rt.model.area;
+    try std.testing.expectEqual(@as(usize, 8), m.ed.cursor);
+    try std.testing.expectEqualStrings("lo wo", m.selectionText());
+    try std.testing.expect(t.rt.model.focused); // the click also focused it
+}
+
+test "text_area: drag selects across wrapped lines and keeps selecting outside the rect" {
+    // 18 chars per line: "aaaa bbbb cccc dddd eeee ffff" wraps to 2 lines ("aaaa bbbb cccc dddd" is 19).
+    const a = at(2, 0);
+    const b = at(6, 1);
+    const t = try playArea("aaaa bbbb cccc dddd eeee ffff", &.{
+        .{},
+        .{ .x = a[0], .y = a[1], .held = left, .down = left },
+        .{ .x = b[0], .y = b[1], .held = left },
+        .{ .x = 700, .y = 600, .held = left }, // far outside the rect: still captured
+        .{ .x = 700, .y = 600, .up = left },
+        .{},
+    });
+    defer t.destroy();
+    const m = &t.rt.model.area;
+    try std.testing.expectEqual(@as(usize, 2), m.ed.selection_anchor.?);
+    try std.testing.expectEqual(m.content().len, m.ed.cursor); // dragged past the end
+    try std.testing.expect(t.rt.model.log.count(.drag) >= 2);
+    try std.testing.expectEqual(@as(usize, 1), t.rt.model.log.count(.up));
+}
+
+test "text_area: double click selects a word, triple click the line" {
+    const p = at(6, 0); // inside "world"
+    const t = try playArea("hello world\nsecond line", &.{
+        .{ .clock_ms = 1000 },
+        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1000 },
+        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1050 },
+        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1100 },
+        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1150 },
+    });
+    defer t.destroy();
+    try std.testing.expectEqualStrings("world", t.rt.model.area.selectionText());
+
+    const t3 = try playArea("hello world\nsecond line", &.{
+        .{ .clock_ms = 1000 },
+        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1000 },
+        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1050 },
+        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1100 },
+        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1150 },
+        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1200 },
+        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1250 },
+    });
+    defer t3.destroy();
+    try std.testing.expectEqualStrings("hello world\n", t3.rt.model.area.selectionText());
+
+    // Too slow (> 400 ms): two single clicks, no word selection.
+    const ts = try playArea("hello world", &.{
+        .{ .clock_ms = 1000 },
+        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1000 },
+        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1050 },
+        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1900 },
+        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1950 },
+    });
+    defer ts.destroy();
+    try std.testing.expect(!ts.rt.model.area.ed.hasSelection());
+}
+
+test "text_area: Up/Down/Home/End resolve against the wrapped layout, with a sticky column" {
+    const c = at(4, 0);
+    const t = try playArea("aaaa bbbb cccc dddd eeee ffff\nshort", &.{
+        .{},
+        .{ .x = c[0], .y = c[1], .held = left, .down = left },
+        .{ .x = c[0], .y = c[1], .up = left },
+        .{ .keys = &.{.down} }, // visual line 1: "eeee ffff"
+        .{ .keys = &.{.down} }, // hard line "short" (5 chars): clamps, goal stays col 4
+        .{ .keys = &.{.down} }, // past the end -> document end
+    });
+    defer t.destroy();
+    const m = &t.rt.model.area;
+    try std.testing.expectEqual(m.content().len, m.ed.cursor);
+
+    const t2 = try playArea("aaaa bbbb cccc dddd eeee ffff\nshort", &.{
+        .{},
+        .{ .x = c[0], .y = c[1], .held = left, .down = left },
+        .{ .x = c[0], .y = c[1], .up = left },
+        .{ .keys = &.{.down} },
+        .{ .keys = &.{.down} },
+        .{ .keys = &.{.up} },
+        .{ .keys = &.{.shift_end} },
+    });
+    defer t2.destroy();
+    const m2 = &t2.rt.model.area;
+    // Down, down (clamped to "short"), up: the sticky column returns to col 4 of
+    // the wrapped second line; shift+End extends to that line's visual end.
+    try std.testing.expect(m2.ed.hasSelection());
+    try std.testing.expectEqual(@as(usize, 29), m2.ed.cursor); // end of "eeee ffff"
+    try std.testing.expectEqual(@as(usize, 19), m2.ed.selection_anchor.?); // col 4 of that line
+}
+
+test "text_area: wheel scrolls; typing at the bottom reveals the caret via metrics" {
+    // 12 hard lines = 240 px of content in an inner height of 84.
+    const body = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12";
+    const p = at(1, 1);
+    const t = try playArea(body, &.{
+        .{},
+        .{ .x = p[0], .y = p[1], .wheel_dy = 60 },
+        .{ .x = p[0], .y = p[1], .wheel_dy = 1000 },
+        .{ .x = p[0], .y = p[1], .wheel_dy = -30 },
+    });
+    defer t.destroy();
+    const m = &t.rt.model.area;
+    try std.testing.expect(t.rt.model.metrics_seen >= 1);
+    try std.testing.expectEqual(@as(f32, 84), m.viewport_h);
+    try std.testing.expectEqual(@as(f32, 240), m.content_h);
+    try std.testing.expectEqual(@as(f32, 156 - 30), m.scroll_y); // clamped at content_h - viewport_h, then -30
+
+    // Typing at the end of a long document scrolls the caret into view.
+    const q = at(1, 0);
+    const t2 = try playArea(body, &.{
+        .{},
+        .{ .x = q[0], .y = q[1], .held = left, .down = left },
+        .{ .x = q[0], .y = q[1], .up = left },
+        .{ .keys = &.{.ctrl_end} },
+        .{ .chars = "z" },
+        .{},
+    });
+    defer t2.destroy();
+    const m2 = &t2.rt.model.area;
+    try std.testing.expect(m2.scroll_y > 0);
+    try std.testing.expectEqual(@as(f32, 240 - 84), m2.scroll_y); // caret on the last line
+}
+
+test "text_area: metrics fire on layout and on change only" {
+    const t = try playArea("abc", &.{ .{}, .{}, .{}, .{} });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.metrics_seen);
+
+    const q = at(1, 0);
+    const t2 = try playArea("abc", &.{
+        .{},
+        .{ .x = q[0], .y = q[1], .held = left, .down = left },
+        .{ .x = q[0], .y = q[1], .up = left },
+        .{ .chars = "d" },
+        .{},
+        .{},
+    });
+    defer t2.destroy();
+    try std.testing.expectEqual(@as(u32, 3), t2.rt.model.metrics_seen); // layout, caret moved to 1, typed
+}
+
+test "text_area: a draw frame renders the area (quads + per-line text)" {
+    const t = try playArea("hello\nworld", &.{ .{}, .{}, .{} });
+    defer t.destroy();
+    try std.testing.expect(t.rt.text_draws.items.len >= 2);
 }

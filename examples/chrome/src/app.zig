@@ -350,9 +350,17 @@ fn rightColumn(cb: anytype) void {
     cb.pushGroup(cb.theme.card);
     cb.heading("NOTES");
     cb.divider();
-    cb.textMuted("1. BREAK ALL SHARP EDGES.");
-    cb.textMuted("2. DIMENSIONS IN MM.");
-    cb.textMuted("3. FINISH: ANODIZE CLEAR.");
+    // Wrapped paragraphs: they take the card's width, re-wrap when the window
+    // or the card changes, and grow the card's height with their line count.
+    cb.paragraphStyled("1. BREAK ALL SHARP EDGES AND DEBURR HOLES; NO BURRS ABOVE 0.1 MM ON MATING FACES.", plex, muted, .{});
+    cb.paragraphStyled("2. DIMENSIONS IN MM, TOLERANCES PER ISO 2768-M UNLESS NOTED.", plex, muted, .{});
+    cb.paragraphStyled("3. FINISH: ANODIZE CLEAR, 10-15 MICRON; MASK THE BORE BEFORE COATING.", plex, muted, .{ .max_lines = 2 });
+    // A shrinking row: the tag keeps its width, the paragraph beside it gives
+    // way (and re-wraps) as the column narrows.
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .align_cross = .start });
+    cb.buttonStyled(.noop, "REV C", key_button);
+    cb.paragraphStyled("SUPERSEDES REV B; RE-INSPECT ALL FIRST-ARTICLE PARTS.", plex, ink, .{});
+    cb.popGroup();
     cb.popGroup();
 
     cb.popGroup();
