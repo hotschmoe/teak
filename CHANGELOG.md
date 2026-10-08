@@ -35,6 +35,16 @@
   spans. Passes all 91,707 lines of BidiCharacterTest.txt (a 306-line excerpt is the committed
   regression test). `tools/gen_unicode.zig` now also generates `Bidi_Class` and paired-bracket
   tables. Not yet wired into rendering / `Editor` (see docs/features/bidi.md).
+### Overlay anchoring
+
+- `OverlayStyle.anchor_msg` / `anchor_side` / `anchor_gap`: an overlay can be
+  placed against a widget by its click / focus Msg (`cmd.leafMsg`), resolved by
+  the layout pass from the same frame's rects. `Dropdown` and `Combobox` use it
+  by default (`auto_anchor = true`): apps no longer compute `list_x` / `list_y`
+  (they apply only with `auto_anchor = false`). Behaviour change: callers that
+  passed coordinates now get the auto position; set `.auto_anchor = false` to keep
+  the old placement. New `teak.AnchorSide`.
+
 ### Idle hosts and blink-aware idle
 
 - `Host.waitEvents(timeout_ms)` on X11 (poll on the connection fd), Win32

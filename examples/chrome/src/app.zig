@@ -331,11 +331,8 @@ const materials = [_][]const u8{
 
 /// Searchable material picker (a `teak.Combobox`: query field + filtered overlay list).
 const Material = teak.Combobox(24);
-/// The list anchors under the input at a fixed window position (the app does not see
-/// layout rects in `view`; real apps pass the previous frame's rect, see the cookbook).
+/// The list anchors itself under the input (`auto_anchor`): no window coordinates.
 const material_opts: teak.ComboboxViewOpts = .{
-    .list_x = 12,
-    .list_y = 390,
     .list_width = 336,
     .max_visible = 6,
     .input_style = theme.field,
@@ -514,10 +511,7 @@ fn leftColumn(m: *const Model, cb: anytype, l: *const Look) void {
 fn optsFor(m: *const Model) teak.ComboboxViewOpts {
     var o = material_opts;
     if (m.modern) {
-        // The modern panel sits inside 16 px padding plus a 16 px card inset.
-        o.list_x = 32;
-        o.list_y = 448;
-        o.list_width = 296;
+        o.list_width = 296; // the modern panel's card inset
         o.input_style = modern.field;
     }
     return o;
