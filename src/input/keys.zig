@@ -44,6 +44,19 @@ pub const SpecialKey = enum {
     ctrl_c, // copy
     ctrl_x, // cut
     ctrl_v, // paste
-    ctrl_z, // undo (app-defined; not wired in MVP)
-    ctrl_y, // redo (app-defined; not wired in MVP)
+    ctrl_z, // undo
+    ctrl_y, // redo
+    ctrl_shift_z, // redo (alternate chord)
+
+    // Ctrl-modified motion and deletion: word jumps and document start/end.
+    ctrl_left,
+    ctrl_right,
+    ctrl_shift_left,
+    ctrl_shift_right,
+    ctrl_home,
+    ctrl_end,
+    ctrl_shift_home,
+    ctrl_shift_end,
+    ctrl_backspace,
+    ctrl_delete,
 };

@@ -13,6 +13,7 @@ pub const text = @import("core/text.zig");
 pub const unicode = @import("core/unicode.zig");
 pub const linebreak = @import("core/linebreak.zig");
 pub const text_wrap = @import("core/text_wrap.zig");
+pub const editor = @import("core/editor.zig");
 pub const sub = @import("core/sub.zig");
 pub const theme = @import("core/theme.zig");
 pub const text_field = @import("core/text_field.zig");
