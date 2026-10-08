@@ -75,6 +75,10 @@
 //!     `ev.hit` is that widget's click Msg, `ev.box` its rect, `ev.now_ms` the
 //!     host clock: enough to drive a tooltip (`teak.Tooltip`) with a
 //!     `Sub.at` delay, all in the Model.
+//!   - `pointerMsg(*const Model, PointerEvent(Msg)) ?Msg` — ONE hook for the
+//!     pointer over widgets: `kind` = hover (target changed) / down / up /
+//!     context (right press); `hit` is the widget's Msg or null for blank
+//!     space, so an app can clear its own focus (`ev.isBlank()`)
 //!   - `contextMsg(*const Model, PointerEvent(Msg)) ?Msg` — the right button
 //!     went down. `ev.hit` is the Msg of the widget under the cursor (null on
 //!     empty space), so one hook opens a context menu for any region
@@ -512,6 +516,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// `press_target` (a lost value only repeats one hover event).
         hover_reported: ?usize = null,
         hover_seen: bool = false,
+        pm_hover_reported: ?usize = null,
+        pm_hover_seen: bool = false,
         /// The `grab_msg` of the slider being dragged (`sliderMsg` hook).
         slider_grab: ?Msg = null,
 
@@ -798,7 +804,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn routePointerHooks(self: *Self, input: Input, prev: u1) void {
             const has_hover = comptime @hasDecl(App, "hoverMsg");
             const has_context = comptime @hasDecl(App, "contextMsg");
-            if (!has_hover and !has_context) return;
+            const has_pm = comptime @hasDecl(App, "pointerMsg");
+            if (!has_hover and !has_context and !has_pm) return;
             const cmds = self.bufs[prev].cmds.items;
             const rects = self.rects[prev].items;
             const hit = if (cmds.len > 0) hit_test.hitTest(cmds, rects, input.mouse_x, input.mouse_y) else null;
@@ -811,17 +818,56 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     self.hover_reported = under;
                     // Nothing to report before the first frame laid anything out.
                     if (!(first and under == null)) {
-                        if (App.hoverMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+                        const ev = self.pointerEvent(input, hit, rects, .hover, .none);
+                        if (App.hoverMsg(&self.model, ev)) |m| self.dispatch(m);
                     }
                 }
             }
             if (has_context and input.button_down.right) {
-                if (App.contextMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+                const ev = self.pointerEvent(input, hit, rects, .context, .right);
+                if (App.contextMsg(&self.model, ev)) |m| self.dispatch(m);
+            }
+            if (has_pm) self.routePointerMsg(input, hit, rects, under);
+        }
+
+        /// The unified `pointerMsg` hook: hover changes, every press (blank
+        /// space included: `hit == null`), every release, and the right-button
+        /// `context` press. Resolved against the previous frame like a click.
+        fn routePointerMsg(self: *Self, input: Input, hit: anytype, rects: []const Rect, under: ?usize) void {
+            // Hover changes (tracked separately from `hoverMsg`'s bookkeeping so
+            // an app may use either, or both).
+            if (!self.pm_hover_seen or under != self.pm_hover_reported) {
+                const first = !self.pm_hover_seen;
+                self.pm_hover_seen = true;
+                self.pm_hover_reported = under;
+                if (!(first and under == null)) {
+                    if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, .hover, .none))) |m| self.dispatch(m);
+                }
+            }
+            const downs = [_]struct { on: bool, button: pointer.Button, kind: pointer.PointerEvent(Msg).Kind }{
+                .{ .on = input.button_down.left, .button = .left, .kind = .down },
+                .{ .on = input.button_down.middle, .button = .middle, .kind = .down },
+                .{ .on = input.button_down.right, .button = .right, .kind = .context },
+            };
+            for (downs) |d| {
+                if (!d.on) continue;
+                if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, d.kind, d.button))) |m| self.dispatch(m);
+            }
+            const ups = [_]struct { on: bool, button: pointer.Button }{
+                .{ .on = input.button_up.left, .button = .left },
+                .{ .on = input.button_up.middle, .button = .middle },
+                .{ .on = input.button_up.right, .button = .right },
+            };
+            for (ups) |u| {
+                if (!u.on) continue;
+                if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, .up, u.button))) |m| self.dispatch(m);
             }
         }
 
-        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect) pointer.PointerEvent(Msg) {
+        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect, kind: pointer.PointerEvent(Msg).Kind, button: pointer.Button) pointer.PointerEvent(Msg) {
             var ev: pointer.PointerEvent(Msg) = .{
+                .kind = kind,
+                .button = button,
                 .x = input.mouse_x,
                 .y = input.mouse_y,
                 .mods = input.mods,

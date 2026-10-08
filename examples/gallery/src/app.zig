@@ -257,6 +257,13 @@ fn dialogKey(m: *const Model, key: teak.SpecialKey) ?Msg {
     return W.dialog.keyMsg(key, .{ .confirm = Msg{ .dialog_confirm = {} }, .cancel = Msg{ .dialog_cancel = {} } }, m.dialog != .about and m.dialog != .shortcuts);
 }
 
+/// A press on blank space clears the text-field focus (the loop reports it as
+/// `kind = .down` with `hit == null`; widgets with a Msg report that instead).
+pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (ev.kind == .down and ev.isBlank() and m.focus != null) return .focus_clear;
+    return null;
+}
+
 pub fn focusedMsg(m: *const Model) ?Msg {
     const f = m.focus orelse return null;
     return switch (f) {

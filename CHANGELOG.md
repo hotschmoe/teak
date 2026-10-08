@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### `pointerMsg`: one pointer hook, blank-space clicks delivered
+
+- New optional App hook `pointerMsg(*const Model, PointerEvent(Msg)) ?Msg`.
+  `PointerEvent` gained `kind` (`hover` / `down` / `up` / `context`), `button`
+  and `isBlank()`. A press on blank space arrives as `kind = .down, hit = null`,
+  so an app can clear its own focus (the old hooks never reported it).
+  `hoverMsg` / `contextMsg` keep working. chrome and gallery now clear their
+  text focus on a blank click.
+
 ### Clipboard: Msg-returning hooks (HARDLINE §1 fix)
 
 - New optional App hooks `clipboardText(*const Model, SpecialKey) ?[]const u8`

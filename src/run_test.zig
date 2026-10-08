@@ -2457,3 +2457,64 @@ test "Enter: a focused text_area gets it as a key (keySpecialMsg), a text_input 
     try std.testing.expectEqual(@as(u32, 1), rt.model.submits);
     try std.testing.expectEqual(@as(u32, 0), rt.model.newlines);
 }
+
+// ── pointerMsg: one hook, blank-space clicks included ───────────────
+
+const PmApp = struct {
+    pub const Model = struct { focused: bool = true, blank_downs: u32 = 0, widget_downs: u32 = 0, ups: u32 = 0, contexts: u32 = 0, hovers: u32 = 0, last_button: pointer.Button = .none };
+    pub const Msg = union(enum) { a, b, blur, saw: struct { kind: pointer.PointerEvent(Msg).Kind, blank: bool, button: pointer.Button } };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .blur => m.focused = false,
+            .saw => |s| {
+                m.last_button = s.button;
+                switch (s.kind) {
+                    .down => if (s.blank) {
+                        m.blank_downs += 1;
+                    } else {
+                        m.widget_downs += 1;
+                    },
+                    .up => m.ups += 1,
+                    .context => m.contexts += 1,
+                    .hover => m.hovers += 1,
+                }
+            },
+            .a, .b => {},
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .direction = .vertical });
+        cb.button(.a, "A");
+        cb.popGroup();
+    }
+    pub fn pointerMsg(m: *const Model, ev: pointer.PointerEvent(Msg)) ?Msg {
+        // The documented recipe: a press on blank space clears focus.
+        if (ev.kind == .down and ev.isBlank() and m.focused) return .blur;
+        return .{ .saw = .{ .kind = ev.kind, .blank = ev.isBlank(), .button = ev.button } };
+    }
+};
+
+test "pointerMsg: blank-space press (kind=down, hit=null) lets the app clear focus; widget presses carry their Msg" {
+    const t = try play(PmApp, &.{
+        .{}, // lays out
+        .{ .x = 300, .y = 200, .held = left, .down = left }, // press on blank space
+        .{ .x = 300, .y = 200, .up = left },
+        .{ .x = 5, .y = 5, .held = left, .down = left }, // press on button A
+        .{ .x = 5, .y = 5, .up = left },
+    });
+    defer t.destroy();
+    try std.testing.expect(!t.rt.model.focused); // the blank press delivered .blur
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.widget_downs);
+    try std.testing.expectEqual(@as(u32, 2), t.rt.model.ups);
+    try std.testing.expect(t.rt.model.hovers >= 1); // entering A
+}
+
+test "pointerMsg: the right button arrives as kind=context with button=right" {
+    const t = try play(PmApp, &.{
+        .{},
+        .{ .x = 5, .y = 5, .held = right, .down = right },
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.contexts);
+    try std.testing.expectEqual(pointer.Button.right, t.rt.model.last_button);
+}
