@@ -898,7 +898,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (@hasDecl(App, "themeFor")) self.bufs[cur].theme = App.themeFor(&self.model);
             App.view(&self.model, &self.bufs[cur]);
             const cmds = self.bufs[cur].cmds.items;
-            debugCheckBalance(cmds, "view");
+            checkBalance(cmds, "view");
 
             try self.rects[cur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
@@ -1010,7 +1010,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             App.secondaryView(&self.model, &sec.bufs[scur]);
 
             const cmds = sec.bufs[scur].cmds.items;
-            debugCheckBalance(cmds, "secondaryView");
+            checkBalance(cmds, "secondaryView");
             try sec.rects[scur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
                 sec.rects[scur].items,
@@ -1135,14 +1135,12 @@ fn transientSame(a: TransientState, b: TransientState) bool {
         std.mem.eql(u8, a.ime_text, b.ime_text);
 }
 
-/// Debug-only cmd-buffer balance check. A missed pop_group (or friends)
-/// is otherwise a silent layout bug; in Debug builds this panics naming
-/// the offending cmd index before the layout passes consume the buffer.
-/// Compiled out entirely in release modes. run.zig sits outside the
-/// framework-core dirs, so the builtin.mode gate is allowed here
-/// (HARDLINE §3 scopes the conditional-compilation ban to core).
-fn debugCheckBalance(cmds: anytype, view_name: []const u8) void {
-    if (@import("builtin").mode != .debug) return;
+/// Per-frame cmd-buffer balance check, in EVERY optimize mode. An unbalanced
+/// or too-deeply-nested buffer (`cmd.MAX_BALANCE_DEPTH`) is otherwise a
+/// silent wrong-rects bug or an out-of-bounds stack write in release; this
+/// panics naming the view and the offending cmd index before any pass runs.
+/// O(n), allocation-free (a few microseconds at thousands of cmds).
+fn checkBalance(cmds: anytype, view_name: []const u8) void {
     if (cmd.validateBalance(cmds)) |bal_err| {
         var buf: [128]u8 = undefined;
         std.debug.panic("teak: unbalanced cmd buffer from {s}() — {s}", .{

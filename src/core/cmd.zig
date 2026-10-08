@@ -798,7 +798,7 @@ pub const BalanceError = struct {
         mismatched_pop,
         /// Container nesting exceeded the validator's fixed depth
         /// (`MAX_BALANCE_DEPTH`, mirroring LayoutEngine's
-        /// `FixedStack(_, 32)`); deeper input would also overflow the
+        /// `MAX_BALANCE_DEPTH`); deeper input would also overflow the
         /// layout stack. Reported instead of panicked so the caller gets
         /// a named error. `open_kind` / `open_index` name the push that
         /// overflowed.
@@ -819,11 +819,13 @@ pub const BalanceError = struct {
     close_index: usize = 0,
 };
 
-/// Validator depth cap. Mirrors LayoutEngine's `FixedStack(_, 32)` — a
-/// buffer nesting deeper than this would overflow the layout stack
-/// anyway, so the validator flags it as `depth_overflow` rather than
-/// silently accepting it.
-pub const MAX_BALANCE_DEPTH = 32;
+/// Container nesting cap for the whole framework: the layout passes' stacks
+/// and the hit-test / render / a11y clip stacks are all sized to it. A
+/// buffer nesting deeper is rejected by `validateBalance` as
+/// `depth_overflow` (the run loop checks every frame, in every optimize
+/// mode), and the stacks themselves `@panic` on overflow rather than write
+/// out of bounds.
+pub const MAX_BALANCE_DEPTH = 64;
 
 /// `.group` / `.scroll` / … if `c` opens a container, else `null`.
 /// `anytype` so it works for any `Cmd(Msg)` instantiation (the tag set
@@ -1906,7 +1908,7 @@ test "formatBalanceError: each tag renders an actionable line" {
         }, &buf),
     );
     try testing.expectEqualStrings(
-        "push_scroll at cmd #33 exceeds the max container nesting depth (32)",
+        "push_scroll at cmd #33 exceeds the max container nesting depth (64)",
         formatBalanceError(.{ .tag = .depth_overflow, .open_kind = .scroll, .open_index = 33 }, &buf),
     );
 }
@@ -2065,4 +2067,28 @@ test "CanvasPrimitive.eql: batches compare by key (or by bytes when key is 0)" {
     try testing.expect(l1.eql(l1));
     try testing.expect(!l1.eql(l2));
     try testing.expect(!l1.eql(pa));
+}
+
+test "validateBalance: nesting at MAX_BALANCE_DEPTH passes, one deeper is depth_overflow (every optimize mode)" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    var i: usize = 0;
+    while (i < MAX_BALANCE_DEPTH) : (i += 1) cb.pushGroup(.{});
+    i = 0;
+    while (i < MAX_BALANCE_DEPTH) : (i += 1) cb.popGroup();
+    try testing.expect(validateBalance(cb.cmds.items) == null);
+
+    // One more level: reported with the offending cmd index, not a crash.
+    cb.reset();
+    i = 0;
+    while (i <= MAX_BALANCE_DEPTH) : (i += 1) cb.pushGroup(.{});
+    const err = validateBalance(cb.cmds.items).?;
+    try testing.expectEqual(BalanceError.Tag.depth_overflow, err.tag);
+    try testing.expectEqual(@as(usize, MAX_BALANCE_DEPTH), err.open_index);
+    var buf: [128]u8 = undefined;
+    const msg = formatBalanceError(err, &buf);
+    try testing.expect(std.mem.indexOf(u8, msg, "cmd #64") != null);
 }
