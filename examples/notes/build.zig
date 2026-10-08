@@ -12,6 +12,9 @@ pub fn build(b: *std.Build) void {
     };
     const optimize = b.standardOptimizeOption(.{});
 
+    // Shape complex scripts (Arabic, Hebrew, Indic) with HarfBuzz: off by default.
+    const harfbuzz = b.option(bool, "harfbuzz", "Shape complex scripts with HarfBuzz (native)") orelse false;
+
     const teak_dep = b.dependency("teak", .{ .target = target, .optimize = optimize });
     const teak_mod = teak_dep.module("teak");
 
@@ -56,7 +59,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             }),
         });
-        teak.linkNativeWgpu(b, ui_exe, .{});
+        teak.linkNativeWgpu(b, ui_exe, .{ .harfbuzz = harfbuzz });
 
         const install_ui = b.addInstallArtifact(ui_exe, .{});
         const ui_run = b.addRunArtifact(ui_exe);
@@ -80,7 +83,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             }),
         });
-        teak.linkHeadless(b, shot_exe, .{});
+        teak.linkHeadless(b, shot_exe, .{ .harfbuzz = harfbuzz });
         const shot_run = b.addRunArtifact(shot_exe);
         shot_run.addPassthruArgs();
         const shot_step = b.step("shot", "Render a headless PNG screenshot: zig build shot -- out.png");

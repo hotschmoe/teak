@@ -10,6 +10,15 @@
   spans. Passes all 91,707 lines of BidiCharacterTest.txt (a 306-line excerpt is the committed
   regression test). `tools/gen_unicode.zig` now also generates `Bidi_Class` and paired-bracket
   tables. Not yet wired into rendering / `Editor` (see docs/features/bidi.md).
+### Optional HarfBuzz shaper
+
+- `-Dharfbuzz=true` (library tests) / `.harfbuzz = true` (`NativeWgpuOptions`,
+  `HeadlessOptions`): complex scripts (Arabic joining, Hebrew, Indic reordering and
+  conjuncts, GPOS mark attachment) are shaped by HarfBuzz 11.2.1, built from its
+  single-source `harfbuzz.cc` as a lazy package (default builds fetch nothing and
+  are unchanged). Native only. `ShapedGlyph` gains `y` (baseline offset).
+  Direction is a stand-in until bidi lands. `examples/notes`: "Show scripts".
+  See docs/features/harfbuzz.md.
 
 ### Animation primitive
 
