@@ -9,3 +9,4 @@ pub const textured_quad_wgsl = @embedFile("textured_quad.wgsl");
 pub const image_wgsl = @embedFile("image.wgsl");
 pub const scene_wgsl = @embedFile("scene.wgsl");
 pub const scene_grid_wgsl = @embedFile("scene_grid.wgsl");
+pub const glyph_wgsl = @embedFile("glyph.wgsl");

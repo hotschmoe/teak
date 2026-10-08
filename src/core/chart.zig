@@ -15,6 +15,7 @@
 //! function is pure: same inputs → same primitives.
 
 const std = @import("std");
+const oom = @import("oom.zig").oom;
 const cmd = @import("cmd.zig");
 
 const CanvasPrimitive = cmd.CanvasPrimitive;
@@ -67,13 +68,13 @@ pub fn lineChartPrimitives(
         while (g < opts.grid_lines) : (g += 1) {
             const frac = @as(f32, @floatFromInt(g)) / @as(f32, @floatFromInt(opts.grid_lines - 1));
             const y = plot_top + frac * plot_h;
-            list.append(arena, .{ .hline = .{ .y = y, .color = opts.grid_color, .thickness = 1 } }) catch unreachable;
+            list.append(arena, .{ .hline = .{ .y = y, .color = opts.grid_color, .thickness = 1 } }) catch oom();
         }
     }
 
     // Polyline through the mapped data points.
     if (series.len >= 2) {
-        const pts = arena.alloc(CanvasPoint, series.len) catch unreachable;
+        const pts = arena.alloc(CanvasPoint, series.len) catch oom();
         const span = opts.max - opts.min;
         for (series, 0..) |v, i| {
             const xf = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(series.len - 1));
@@ -86,10 +87,10 @@ pub fn lineChartPrimitives(
             .points = pts,
             .color = opts.line_color,
             .thickness = opts.line_thickness,
-        } }) catch unreachable;
+        } }) catch oom();
     }
 
-    return list.toOwnedSlice(arena) catch unreachable;
+    return list.toOwnedSlice(arena) catch oom();
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

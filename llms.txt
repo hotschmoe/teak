@@ -314,7 +314,9 @@ focusMsgAt(cmds, index: usize) ?Msg           // the Msg the leaf at index would
 SpecialKey = enum { backspace, delete, left, right, up, down, home, end, page_up, page_down,
                     enter, tab, escape, shift_left, shift_right, shift_up, shift_down,
                     shift_home, shift_end, shift_tab, ctrl_a, ctrl_c, ctrl_x, ctrl_v,
-                    ctrl_z, ctrl_y }
+                    ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left,
+                    ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end,
+                    ctrl_backspace, ctrl_delete }
 ```
 
 ### Accessibility (`teak.a11y` → input/a11y.zig)
@@ -354,8 +356,12 @@ light_palette: Palette     // built-in light
 ### Text components (`teak.text_field`, `teak.numeric_field`, `teak.dropdown`)
 ```zig
 TextField(comptime capacity: usize) type   // component (Model/Msg/update/view); Msg = focus,
-                                            //   char:u8, backspace, cursor_left/right,
-                                            //   select_left/right/all/none, replace_selection:[]const u8
+                                            //   char:u8 (UTF-8 bytes assembled atomically), backspace, delete,
+                                            //   cursor_left/right, select_left/right/all/none, home/end/select_home/
+                                            //   select_end, word_left/right/select_word_*, delete_word_left/right,
+                                            //   undo/redo, replace_selection:[]const u8
+                                            //   Model = Editor(capacity, undo_bytes): fields len/cursor/selection_anchor,
+                                            //   content()/selectionText()/hasSelection()
 textFieldChar(comptime AppMsg, comptime field_name: []const u8, c: u8) AppMsg
 textFieldSpecial(comptime AppMsg, comptime field_name, key: SpecialKey) ?AppMsg
 textFieldReplaceSelection(comptime AppMsg, comptime field_name, bytes: []const u8) AppMsg
@@ -570,7 +576,7 @@ section.chain(gpa, []const Segment) !Loops;  section.isClosed(gpa, MeshData) !bo
 FontFamily = enum { sans, serif, mono }
 FontWeight = enum { regular, medium, bold }
 FontSpec = struct { size_px: f32 = 14, family: FontFamily = .sans, weight: FontWeight = .regular,
-                    letter_spacing: f32 = 0, snap_advance: bool = false }   // px per glyph; snap_advance rounds advances to whole px
+                    letter_spacing: f32 = 0, snap_advance: ?bool = null }   // px per glyph; snap_advance rounds advances to whole px (null: on for .mono)
 DEFAULT_FONT: FontSpec        // sans 14px
 TextMetrics = struct { width, height, ascent, descent: f32 }
 TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
@@ -582,6 +588,39 @@ TextureHandle = u32
 TEXTURE_HANDLE_NONE: TextureHandle = 0
 TextDraw = struct { rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x..clip_h }
 monoMeasurer() TextMeasurer    // stateless 10px/byte, 20px line — for headless tests + CLI
+```
+
+### Combobox (`teak.Combobox` → core/combobox.zig)
+Searchable select: text query + filtered modal overlay list (Dropdown-style, zero new Cmds).
+```zig
+Combobox(comptime cap: usize) type      // cap = query bytes; Model/Msg/update/view + viewWith
+  Model = struct { query: TextField(cap).Model, open: bool, selected: ?usize, highlighted: usize, scroll_offset: f32 }
+  Msg = union(enum) { focus, close, select: usize /*original option index*/, edit: TextField(cap).Msg,
+                      highlight: Highlight, scroll_by: ScrollBy }
+  viewWith(model, cb, options: []const []const u8, msgs /*.focus .close .selectMsg(i)*/, opts: ComboboxViewOpts)
+  charMsg(u8) Msg;  keyMsg(model, SpecialKey, options, opts) ?Msg;  enterMsg / highlightMsg / scrollByMsg(...)
+  shownText(model, options) []const u8
+ComboboxViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200, max_visible: usize = 8,
+                            match: Match(.substring|.prefix) = .substring, input_style: ?TextInputStyle = null }
+// pure: combobox.matches(query, option, mode) bool, countMatches, nthMatch, ordinalOf, foldCase
+```
+
+### Editor (`teak.editor` → core/editor.zig)
+Fixed-capacity UTF-8 text editor state for the component Model (TextField is a thin wrapper).
+Cursor and anchor always sit on grapheme boundaries; invalid UTF-8 tolerated; no op splits a cluster.
+```zig
+Editor(comptime cap: usize, comptime undo_cap: usize) type   // undo_cap = history bytes (0 = no undo)
+  fields: buf, len, cursor, selection_anchor: ?usize, goal_x: ?f32, multiline: bool, undo: UndoLog
+  content() / selection() / selectionRange() / hasSelection()
+  set(s) / clear() / selectAll() / deselect() / setSelection(a, c) / selectWordAt(i) / moveTo(i, extend)
+  move(Move{left,right,home,end,word_left,word_right,doc_start,doc_end}, extend)
+  moveLineEdge(.start|.end, extend, font, max_w, mode, m)      // visual-line Home/End via text_wrap
+  moveVertical(lines: i32, extend, font, max_w, mode, m)       // Up/Down/Page, sticky goal_x
+  insert(bytes) / paste(bytes) / typeByte(u8) / backspace() / delete() / deleteWordLeft() / deleteWordRight()
+  undoEdit() bool / redoEdit() bool                            // typed words coalesce; undo.dropped counts overflow
+  applyKey(SpecialKey) bool                                    // layout-free keys; false = not handled here
+  window(max_cols) Window{start,end,cursor,anchor}             // visible slice of a wide single-line field
+UndoLog(rec_cap, byte_cap) type
 ```
 
 ### Unicode, line breaking, wrapping (`teak.unicode`, `teak.linebreak`, `teak.text_wrap`)
@@ -609,7 +648,7 @@ indexAt(text, x, y, font, max_w, mode, max_lines, m) usize  // inverse of caretP
 ```
 
 ### Host interface (`teak.host` → platform/host.zig)
-Backends live in `platform/{win32,x11,wasm}.zig` — NOT re-exported; the build
+Backends live in `platform/{win32,x11,wasm}.zig` — NOT re-exported (web entry points must also declare `pub const std_options: std.Options = .{ .logFn = platform.logFn };` — the default std.log sink does not build on wasm32-freestanding); the build
 picks one under the import name `teak-platform-native`.
 ```zig
 InputState = struct { mouse_x, mouse_y: f32,
@@ -646,7 +685,7 @@ ClearColor = [4]f32
 InitOptions = struct { msaa: bool = false /* 4x main UI pass */, scene_msaa: bool = true }
                                        // backends: Gpu.init(handle, w, h) | Gpu.initWithOptions(handle, w, h, InitOptions)
 validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uploadVertices,
-                                       //   renderFrame, rasterizeText, uploadText, uploadImage, uploadImages
+                                       //   renderFrame, rasterizeText, uploadText, uploadImage, uploadImages, releaseImage
 // Optional extension (checked only when present; the scene trio is all-or-none):
 //   uploadMesh(*Gpu, MeshData) MeshHandle      releaseMesh(*Gpu, MeshHandle) void
 //   renderScenes(*Gpu, []const SceneDraw, SceneData) void  // before renderFrame; offscreen 3D -> composite quads

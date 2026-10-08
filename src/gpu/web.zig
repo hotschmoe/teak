@@ -21,6 +21,7 @@ const glyph_cache = @import("glyph_cache.zig");
 const web_scene = @import("web_scene.zig");
 const scene_common = @import("scene_common.zig");
 const SlotTable = @import("slot_table.zig").SlotTable;
+const GrowSlotTable = @import("slot_table.zig").GrowSlotTable;
 const overlay = @import("overlay.zig");
 
 const zgpu = zunk.web.gpu;
@@ -38,8 +39,10 @@ const SHADER_SOLID = @import("teak-shaders").quad_wgsl;
 const SHADER_TEXT = @import("teak-shaders").textured_quad_wgsl;
 const SHADER_IMAGE = @import("teak-shaders").image_wgsl;
 
-const IMAGE_CACHE_CAPACITY: usize = 64;
-const IMAGE_VERT_BUF_CAPACITY: usize = IMAGE_CACHE_CAPACITY * 6;
+/// Allocator for the growable image tables.
+const image_gpa = std.heap.wasm_allocator;
+/// Ceiling on live app images (handles are `u32`; this bounds a runaway app).
+const IMAGE_MAX_SLOTS: u32 = 1 << 16;
 const SCENE_VERT_BUF_CAPACITY: usize = scene_common.max_scenes * 6;
 const TEXT_VERT_BUF_CAPACITY: usize = glyph_cache.CAPACITY * 6;
 
@@ -64,16 +67,16 @@ const Sampled = struct {
     }
 };
 
-// ── Image cache (app-driven, no LRU) ────────────────────────────────
+// ── Image cache (app-driven, growable, no eviction) ────────────────────────────────
 //
 // The app uploads an RGBA8 image once via `uploadImage`, stashes the
 // returned handle, and emits `cmd.image(handle, ...)` each frame; it
-// frees the slot with `releaseImage`. A fixed 64-slot table keeps the
-// memory budget bounded; `uploadImage` returns TEXTURE_HANDLE_NONE once
-// full and the renderer falls back to the tinted-placeholder quad
-// emitted by `render/build.zig`.
+// frees the slot with `releaseImage`. The table grows on demand up to
+// 65536 live images; `uploadImage` returns TEXTURE_HANDLE_NONE (with a
+// log line) only at that ceiling, and the renderer falls back to the
+// tinted-placeholder quad emitted by `render/build.zig`.
 
-const ImageCache = SlotTable(Sampled, IMAGE_CACHE_CAPACITY);
+const ImageCache = GrowSlotTable(Sampled, IMAGE_MAX_SLOTS);
 
 // ── Text cache ─────────────────────────────────────────────────────
 //
@@ -128,10 +131,8 @@ pub const Gpu = struct {
     // `textured_quad.wgsl` modulates the alpha-only glyph by the color.
     image_pipeline: zgpu.RenderPipeline,
     images: ImageCache,
-    image_draws: [IMAGE_CACHE_CAPACITY]QuadDraw,
-    image_draw_count: usize,
-    image_verts: [IMAGE_VERT_BUF_CAPACITY]Vertex,
-    image_vert_count: u32,
+    image_draws: std.ArrayList(QuadDraw),
+    image_verts: std.ArrayList(Vertex),
     image_vert_buf: ?zgpu.Buffer,
     image_vert_buf_size: u32,
 
@@ -241,10 +242,8 @@ pub const Gpu = struct {
             .text_vert_buf_size = 0,
             .image_pipeline = image_pipeline,
             .images = .{},
-            .image_draws = undefined,
-            .image_draw_count = 0,
-            .image_verts = undefined,
-            .image_vert_count = 0,
+            .image_draws = .empty,
+            .image_verts = .empty,
             .image_vert_buf = null,
             .image_vert_buf_size = 0,
             .scene = web_scene.Renderer.init(options.scene_msaa),
@@ -291,6 +290,9 @@ pub const Gpu = struct {
 
         var images = self.images.iterator();
         while (images.next()) |e| e.release();
+        self.images.deinit(image_gpa);
+        self.image_draws.deinit(image_gpa);
+        self.image_verts.deinit(image_gpa);
         self.text_cache.clear();
         zgpu.destroySampler(self.sampler);
         if (self.image_vert_buf) |ib| zgpu.bufferDestroy(ib);
@@ -390,12 +392,12 @@ pub const Gpu = struct {
         // solids after the base's TEXT is what lets an opaque popup hide the
         // text beneath it. Matches gpu/wgpu_core.zig's draw order.
         const solid = overlay.Range.of(self.splitOf("verts", self.vert_count), self.vert_count);
-        const imgs = overlay.Range.of(self.image_ov, self.image_draw_count);
+        const imgs = overlay.Range.of(self.image_ov, self.image_draws.items.len);
         const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
         const txts = overlay.Range.of(self.text_ov, self.text_draw_count);
         inline for (.{ "base", "overlay" }) |layer| {
             self.drawSolids(pass, @field(overlay.Range, layer)(solid));
-            drawQuads(pass, self.image_pipeline, self.image_vert_buf, self.image_vert_count, self.image_draws[0..self.image_draw_count], @field(overlay.Range, layer)(imgs));
+            drawQuads(pass, self.image_pipeline, self.image_vert_buf, @intCast(self.image_verts.items.len), self.image_draws.items, @field(overlay.Range, layer)(imgs));
             drawQuads(pass, self.image_pipeline, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count], @field(overlay.Range, layer)(scns));
             drawQuads(pass, self.text_pipeline, self.text_vert_buf, self.text_vert_count, self.text_draws[0..self.text_draw_count], @field(overlay.Range, layer)(txts));
         }
@@ -565,9 +567,9 @@ pub const Gpu = struct {
 
     /// Upload an RGBA8 image. `bytes.len` must equal `width * height * 4`.
     /// Returns an opaque handle (slot index + 1) the app stashes in
-    /// `ImageCmd.handle`. Returns `TEXTURE_HANDLE_NONE` on bad dims or
-    /// when the 64-slot cache is full — the renderer falls back to a
-    /// tinted-placeholder quad in either case so apps still render.
+    /// `ImageCmd.handle`. Returns `TEXTURE_HANDLE_NONE` on bad dims or at
+    /// the 65536-image ceiling (the cache grows on demand) — the renderer
+    /// falls back to a tinted-placeholder quad so apps still render.
     pub fn uploadImage(self: *Gpu, bytes: []const u8, width: u32, height: u32) TextureHandle {
         if (width == 0 or height == 0) return teak.TEXTURE_HANDLE_NONE;
         const need = @as(usize, width) * @as(usize, height) * 4;
@@ -576,7 +578,7 @@ pub const Gpu = struct {
         const texture = zgpu.createTexture(width, height, .rgba8unorm, zgpu.TextureUsage.TEXTURE_BINDING | zgpu.TextureUsage.COPY_DST);
         zgpu.writeTexture(texture, bytes[0..need], width * 4, width, height);
         const sampled = self.sampledFrom(texture);
-        return self.images.insert(sampled) orelse {
+        return self.images.insert(image_gpa, sampled) orelse {
             sampled.release();
             return teak.TEXTURE_HANDLE_NONE;
         };
@@ -602,7 +604,7 @@ pub const Gpu = struct {
     /// reused by the next upload. Call between frames, never while a
     /// frame recorded with the image is still unpresented.
     pub fn releaseImage(self: *Gpu, handle: TextureHandle) void {
-        if (self.images.remove(handle)) |e| e.release();
+        if (self.images.remove(image_gpa, handle)) |e| e.release();
     }
 
     /// Per-frame draw orchestration for images. Walks ImageDraws, emits 6
@@ -611,13 +613,13 @@ pub const Gpu = struct {
     /// gpu/wgpu_core.zig structurally so the two backends produce
     /// identical per-frame draw lists.
     pub fn uploadImages(self: *Gpu, draws: []const teak.ImageDraw) void {
-        self.image_draw_count = 0;
-        self.image_vert_count = 0;
+        self.image_draws.clearRetainingCapacity();
+        self.image_verts.clearRetainingCapacity();
         var mark: overlay.Marker = .{ .start = self.splitOf("images", draws.len) };
-        defer self.image_ov = mark.finish(self.image_draw_count);
+        defer self.image_ov = mark.finish(self.image_draws.items.len);
 
         for (draws, 0..) |draw, di| {
-            mark.visit(di, self.image_draw_count);
+            mark.visit(di, self.image_draws.items.len);
             const entry = self.images.get(draw.handle) orelse continue;
             const quad = teak.vertex.clippedTexturedQuad(
                 .{ .x = draw.rect_x, .y = draw.rect_y, .w = draw.rect_w, .h = draw.rect_h },
@@ -625,15 +627,13 @@ pub const Gpu = struct {
                 draw.tint,
             ) orelse continue;
 
-            const offset = self.image_vert_count;
-            if (offset + 6 > self.image_verts.len) break;
-            @memcpy(self.image_verts[offset..][0..6], &quad);
-            self.image_vert_count += 6;
-            self.image_draws[self.image_draw_count] = .{ .bind_group = entry.bind_group, .vert_offset = offset };
-            self.image_draw_count += 1;
+            const offset: u32 = @intCast(self.image_verts.items.len);
+            self.image_draws.ensureUnusedCapacity(image_gpa, 1) catch break;
+            self.image_verts.appendSlice(image_gpa, &quad) catch break;
+            self.image_draws.appendAssumeCapacity(.{ .bind_group = entry.bind_group, .vert_offset = offset });
         }
 
-        writeVerts(&self.image_vert_buf, &self.image_vert_buf_size, self.image_verts[0..self.image_vert_count]);
+        writeVerts(&self.image_vert_buf, &self.image_vert_buf_size, self.image_verts.items);
     }
 
     // ── 3D scenes ──────────────────────────────────────────────────
