@@ -301,6 +301,13 @@ in a monospaced font. Panels clamp to the window. A transparent full-window
 modal "scrim" overlay behind the panels makes a click anywhere else dismiss
 the menu. The navigation logic (`Nav`) is pure and exhaustively tested.
 
+**spinner.** `Spinner(.{ .min, .max, .step, .big_step, .precision })` wraps a `NumericField`: its `Msg` *is* the
+NumericField's, so typing routes through `textFieldChar` / `textFieldSpecial` unchanged, and stepping is a function the
+app calls from its own `update` arm (`Spinner.step(&m.qty, .up)`). `keyStep` maps Up / Down / Page Up / Page Down,
+`wheelStep(dy, shift)` maps the wheel (Shift = big step). A step starts from the current value (the minimum when the
+text is empty or invalid), rounds to `precision` (no `0.30000000000000004`), clamps to `[min, max]` and rewrites the
+text; the `-` / `+` buttons disable at the limits.
+
 ### Host support for the keys
 
 `SpecialKey.f10` is mapped on Win32 (`WM_SYSKEYDOWN`), X11 (`XK_F10`) and the

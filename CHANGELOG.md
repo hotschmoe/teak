@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Idle hosts and blink-aware idle
+
+- `Host.waitEvents(timeout_ms)` on X11 (poll on the connection fd), Win32
+  (`MsgWaitForMultipleObjectsEx`); `Expose` / `WM_PAINT` now request a repaint.
+  Wayland: see its branch.
+- **Breaking:** `RunOptions.blink_period` (frames) is replaced by
+  `blink_half_ms` (Host-clock ms, default 500; 0 = no blink). The caret phase is
+  the new `TransientState.blink_on`; a focused text input no longer prevents
+  idle skipping — the loop wakes at each toggle and re-uploads vertices only.
+
 ### Animation primitive
 
 - New `teak.anim`: `Tween(T)` (Model-resident), `Ease`/`ease`, `lerp`. New
@@ -76,6 +86,8 @@
   `Host.registerFont` now works on Windows.
 
 ### Added
+
+- `widgets.spinner.Spinner`: NumericField with step buttons, arrow / Page / wheel stepping.
 
 - **Widgets wave 1** (`teak.widgets`, `src/core/widgets/`; zero new Cmd variants): toggle switch,
   progress bar (determinate + indeterminate), tabs (keyboard), split pane (draggable, min sizes, ratio
