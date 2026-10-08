@@ -8,7 +8,9 @@
 //        [--min-colors 8] [--chrome /path/to/chrome]
 //
 // Chrome is found via --chrome, $CHROME_PATH, then google-chrome / chromium on
-// PATH. Exit: 0 ok, 1 check failed, 2 usage.
+// PATH. WEBSHOT_ANGLE=vulkan is needed on hosts with a (Mali) GPU driver whose
+// Vulkan lacks swapchain support in ANGLE-swiftshader; CI uses the default.
+// Exit: 0 ok, 1 check failed, 2 usage.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -66,7 +68,7 @@ const browser = await puppeteer.launch({ dumpio: process.env.WEBSHOT_DUMPIO === 
   args: ['--no-sandbox', '--disable-dev-shm-usage', '--hide-scrollbars', `--window-size=${width},${height}`,
     '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--enable-webgpu-developer-features',
     '--enable-unsafe-swiftshader', '--enable-features=Vulkan,WebGPU', '--use-vulkan=swiftshader',
-    '--use-webgpu-adapter=swiftshader', '--use-angle=swiftshader', ...(opt('--args', '').split(/\s+/).filter(Boolean))],
+    '--use-webgpu-adapter=swiftshader', `--use-angle=${process.env.WEBSHOT_ANGLE || 'swiftshader'}`, ...(opt('--args', '').split(/\s+/).filter(Boolean))],
 });
 const problems = [];
 try {
