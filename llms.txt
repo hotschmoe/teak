@@ -155,7 +155,7 @@ frame with no opt-in. A static read-only app is just Model/Msg/update/view.
 ### RunOptions
 ```zig
 pub const RunOptions = struct {
-    clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },  // scene clear each frame
+    clear_color: ?[4]f32 = null,  // scene clear each frame; null = theme.palette.bg (follows themeFor)
     blink_half_ms: u32 = 500, // caret blink half-period in Host-clock ms (0 = no blink); idle wakes at each toggle
     snapshot_path: ?[]const u8 = null,   // live snapshot sink; TEAK_SNAPSHOT env wins (see below)
     control_path: ?[]const u8 = null,    // agent control socket; TEAK_CONTROL env wins (see "Agent driver")
@@ -933,7 +933,13 @@ Step = union(enum) { frames: u32, move: [2]f32, down, up: Button, wheel: [2]f32,
                      key: SpecialKey, mods: Modifiers, click: [2]f32, drag: [2][2]f32 }
 headless.play(rt: anytype, host: anytype, steps: []const Step) !void
 headless.shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa, steps, settle, run }) !void  // script -> PNG
-headless.writeFramePng(gpu, gpa, path) !void;  encodePng(gpa, rgba, w, h) ![]u8;  pathArg(init, default) []const u8
+headless.writeFramePng(gpu, gpa, path) !void;  pathArg(init, default) []const u8
+headless.encodePng(gpa, rgba, w, h) ![]u8      // deflate-compressed + per-row PNG filters, deterministic (tens of KB)
+headless.decodePng(gpa, png_bytes) !Image{width,height,rgba}   // 8-bit RGB/RGBA, any filter
+headless.shotCli(App, Host, Gpu, init, default_path, ShotOptions, states: []const ShotState{name, steps}) !void
+    // a whole shot_main.zig: `[out.png] [--state name] [--list]`; ShotOptions.fonts registers embedded TTFs
+// Visual regression: `zig build vreg [-- --update | --web | --examples a,b | --state s | --tol N --budget N]`
+//   compares every example's states with test/golden/ (docs/features/visual-regression.md)
 // Host: pushMouseMove/Down/Up, pushWheel, pushChars, pushKey, setModifiers, close, injectEffectResult(EffectResult),
 //       submittedEffects() []const Captured{kind,id,name,bytes,mime,method}, countEffects(kind), clearSubmittedEffects()
 ```

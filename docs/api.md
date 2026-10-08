@@ -2411,10 +2411,32 @@ docs/features/headless.md.
 > `argv[1]` of a `pub fn main(init: std.process.Init)` program, or
 > `default` when absent: the output path of a `zig build shot -- out.png`.
 - `pub fn pathArg(init: anytype, default: []const u8) []const u8`
-> Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). The
-> zlib stream uses stored (uncompressed) blocks: dependency-free and
-> instant, at the cost of ~raw size (1280x800 -> 4 MB). Caller frees.
+> A named, scripted app state for screenshots (`--state <name>`).
+- `struct ShotState`
+  - fields: `name, steps, msaa`
+> The whole `shot_main.zig` for an example: parses
+> `[out.png] [--state <name>] [--list] [--all <dir> --prefix <p>]` from argv, plays that state's
+> script (`o.steps` is ignored; the first of `states` is the default),
+> and writes the PNG. `--list` prints the state names, one per line, on
+> stdout and exits. `--all <dir> --prefix <p>` renders every state to
+> `<dir>/<p>-<state>.actual.png` in one process and prints the names:
+> `tools/vreg` uses it so each example needs a single `zig build` call.
+- `pub fn shotCli( comptime App: type, comptime Host: type, comptime Gpu: type, init: anytype, default_path: []const u8, o: ShotOptions, states: []const ShotState, ) !void`
+> Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). Each
+> scanline picks the PNG filter (none / sub / up / average / paeth) with
+> the smallest sum of absolute residuals, and the filtered stream is
+> deflate-compressed (`std.compress.flate`, default level), so UI
+> screenshots shrink from ~4 MB raw to tens of KB. Deterministic: the
+> same pixels always produce the same bytes. Caller frees.
 - `pub fn encodePng(gpa: std.mem.Allocator, rgba: []const u8, width: u32, height: u32) ![]u8`
+> A decoded image: tightly packed RGBA8 (top-down).
+- `struct Image`
+  - fields: `width, height, rgba`
+  - `pub fn deinit(self: Image, gpa: std.mem.Allocator) void`
+> Decode a PNG: 8-bit RGB or RGBA, non-interlaced, any scanline filter
+> (so both teak's own `encodePng` output and browser screenshots work).
+> RGB gets alpha 255. Caller frees with `Image.deinit`.
+- `pub fn decodePng(gpa: std.mem.Allocator, png: []const u8) !Image`
 > Write RGBA8 pixels to `path` (relative to the cwd) as a PNG.
 - `pub fn writePng(gpa: std.mem.Allocator, path: []const u8, rgba: []const u8, width: u32, height: u32) !void`
 > Read back the Gpu's last offscreen frame (`Gpu.readFrame`) and write it
