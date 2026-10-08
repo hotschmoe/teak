@@ -172,7 +172,7 @@ Emitters (all `catch unreachable` on arena OOM):
 - text: `text(s)`, `heading(s)`, `textMuted(s)`, `textDanger(s)`, `textMono(s)`,
   `textStyled(s, font, color)`, `mixedText(parts: []const MixedPart)`
 - `divider()`, `dividerStyled(DividerStyle)`
-- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`
+- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`
 - `textInput(focus_msg, content, cursor)`, `textInputStyled(...)`, `textInputDisabled(...)`,
   `textInputSelected(focus_msg, content, cursor, ?selection_anchor, TextInputStyle)`
 - `checkbox(msg, checked, label)`, `radio(msg, selected, label)`, `slider(grab_msg, value)`
