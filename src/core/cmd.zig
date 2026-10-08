@@ -8,8 +8,8 @@ const surface = @import("surface.zig");
 pub const Radii = surface.Radii;
 pub const Shadow = surface.Shadow;
 pub const Gradient = surface.Gradient;
-const text_wrap = @import("text_wrap.zig");
 const eql = @import("eql.zig");
+const text_wrap = @import("text_wrap.zig");
 
 pub const FontSpec = text.FontSpec;
 

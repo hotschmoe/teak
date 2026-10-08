@@ -224,6 +224,9 @@ pub const Camera = scene.Camera;
 /// One 3D scene to render this frame.
 pub const SceneDraw = scene.SceneDraw;
 pub const SceneItem = scene.Item;
+pub const SceneSprite = scene.Sprite;
+pub const ScenePlane = scene.Plane;
+pub const SceneData = scene.SceneData;
 pub const SceneItemFlags = scene.ItemFlags;
 pub const SceneView = scene.View;
 

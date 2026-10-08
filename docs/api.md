@@ -298,8 +298,12 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `view_proj, eye, light_dir`
 > One 3D scene to render this frame.
 - `teak.SceneDraw` = `scene.SceneDraw`
-  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px, item_first, item_count, grid, gizmo, cut, material, highlight_color, highlight_mix`
+  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px, item_first, item_count, grid, gizmo, cut, material, highlight_color, highlight_mix, planes, sprite_first, sprite_count`
 - `teak.SceneItem`: `pub const SceneItem = scene.Item`
+- `teak.SceneSprite`: `pub const SceneSprite = scene.Sprite`
+- `teak.ScenePlane`: `pub const ScenePlane = scene.Plane`
+- `teak.SceneData` = `scene.SceneData`
+  - fields: `items, sprites`
 - `teak.SceneItemFlags`: `pub const SceneItemFlags = scene.ItemFlags`
 - `teak.SceneView`: `pub const SceneView = scene.View`
 > A declared GPU resource (image or mesh) keyed by an app-chosen key.
@@ -434,7 +438,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.focusMsgAt`: `pub const focusMsgAt = focus.focusMsgAt`
 > Host-neutral non-text keys and chords.
 - `teak.SpecialKey` = `keys.SpecialKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_tap`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_t, ...`
 > One accessibility-tree node derived from a cmd.
 - `teak.A11yNode` = `a11y.A11yNode`
   - fields: `role, cmd_index, bounds, label, focused, state, disabled`
@@ -1615,7 +1619,11 @@ per-frame `SceneDraw` record the render pass hands to the Gpu.
 > One scene to render this frame. Emitted by the render pass for each
 > `scene3d` Cmd, in painter order; consumed by `Gpu.renderScenes`.
 - `struct SceneDraw`
-  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px, item_first, item_count, grid, gizmo, cut, material, highlight_color, highlight_mix`
+  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px, item_first, item_count, grid, gizmo, cut, material, highlight_color, highlight_mix, planes, sprite_first, sprite_count`
+> The flat per-frame lists `buildFrame` collects for all scenes; what the
+> Gpu's `renderScenes` reads (mutable so `stageDraws` can remap keys).
+- `struct SceneData`
+  - fields: `items, sprites`
 - `pub const Item = view.Item`
 - `pub const ItemFlags = view.ItemFlags`
 - `pub const View = view.View`
@@ -1623,6 +1631,8 @@ per-frame `SceneDraw` record the render pass hands to the Gpu.
 - `pub const Gizmo = view.Gizmo`
 - `pub const Cut = view.Cut`
 - `pub const Material = view.Material`
+- `pub const Plane = view.Plane`
+- `pub const Sprite = view.Sprite`
 - `pub const Orbit = camera.Orbit`
 - `pub const Projection = camera.Projection`
 - `pub const Bounds = camera.Bounds`
@@ -1825,7 +1835,7 @@ Text characters flow through InputState.chars; everything else is a
 variant here. Hosts map their native key codes onto this enum.
 
 - `enum SpecialKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_tap`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_t, ...`
 
 ### `teak.a11y` (`src/input/a11y.zig`)
 
@@ -1856,6 +1866,8 @@ Accessibility tree builder.
 
 - `pub const SceneDraw = scene_types.SceneDraw`
 - `pub const SceneItem = scene_types.Item`
+- `pub const SceneSprite = scene_types.Sprite`
+- `pub const SceneData = scene_types.SceneData`
 > Image draw record. Parallel to TextDraw — the GPU backend consumes
 > these in `uploadImages` and emits 6 textured vertices per draw using
 > the tint as the vertex color (modulated against the texture alpha
@@ -1879,7 +1891,7 @@ Accessibility tree builder.
 > blink) pulls from TransientState without touching Model. Two passes —
 > base layer (cmds outside any push_overlay), then overlay layer — so
 > overlays (HARDLINE §2 escape hatch 5) draw on top.
-- `pub fn buildFrame( verts: *std.ArrayList(Vertex), text_draws: *std.ArrayList(TextDraw), image_draws: *std.ArrayList(ImageDraw), scene_draws: *std.ArrayList(SceneDraw), scene_items: *std.ArrayList(SceneItem), alloc: std.m`
+- `pub fn buildFrame( verts: *std.ArrayList(Vertex), text_draws: *std.ArrayList(TextDraw), image_draws: *std.ArrayList(ImageDraw), scene_draws: *std.ArrayList(SceneDraw), scene_items: *std.ArrayList(SceneItem), scene_sprite`
 > `buildFrame` without scene output: `scene3d` Cmds are skipped. For
 > hand-rolled host loops that predate 3D scenes; `teak.run` uses
 > `buildFrame`.

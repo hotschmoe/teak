@@ -124,6 +124,146 @@ pub const Plan = struct {
     }
 };
 
+// ── Plane and sprite layers ────────────────────────────────────────
+
+/// One plane's placement as the `vs_plane` instance stream reads it: the
+/// plane frame as a 3x4 transform (columns `u`, `v`, `u x v`, origin), the
+/// opacity in `tint.a`, and the depth-bias layer. 80 bytes.
+pub const LayerInst = extern struct {
+    m0: [4]f32,
+    m1: [4]f32,
+    m2: [4]f32,
+    tint: [4]f32,
+    id: u32,
+    flags: u32,
+    layer: i32,
+    _pad: u32 = 0,
+};
+
+/// One sprite as the `vs_sprite` instance stream reads it (five vec4s):
+/// `pos.xyz` + mode, `size.xy` + anchor, uv rect, tint, and `extra`
+/// (layer, 1 for `screen_px`, id, 0). 80 bytes.
+pub const SpriteInst = extern struct {
+    pos_mode: [4]f32,
+    size_anchor: [4]f32,
+    uv: [4]f32,
+    tint: [4]f32,
+    extra: [4]f32,
+};
+
+/// A plane's range in `Layers.plane_verts` and its instance.
+pub const PlaneDraw = struct { first_vertex: u32, vertex_count: u32, inst: u32 };
+
+/// What one blended draw is, in back-to-front order.
+pub const Blended = struct {
+    kind: enum { plane, sprite },
+    /// Index into `plane_draws` or `sprites`.
+    index: u32,
+};
+
+/// Everything the layer passes draw for one scene: tessellated plane
+/// geometry (plane-local, shared with the 2D canvas tessellator), per-plane
+/// and per-sprite records, the opaque planes (depth-written, drawn first)
+/// and the blended draws sorted back to front. Pure; rebuilt per render.
+pub const Layers = struct {
+    plane_verts: std.ArrayList(teak.Vertex) = .empty,
+    plane_draws: std.ArrayList(PlaneDraw) = .empty,
+    plane_insts: std.ArrayList(LayerInst) = .empty,
+    sprites: std.ArrayList(SpriteInst) = .empty,
+    /// Backend image handle per entry of `sprites`.
+    sprite_images: std.ArrayList(u32) = .empty,
+    /// Indices into `plane_draws` of opaque planes.
+    opaque_planes: std.ArrayList(u32) = .empty,
+    blended: std.ArrayList(Blended) = .empty,
+    centers: std.ArrayList(mat.Vec3) = .empty,
+    order: std.ArrayList(u32) = .empty,
+    scratch: std.ArrayList(Blended) = .empty,
+
+    pub fn deinit(self: *Layers, gpa: std.mem.Allocator) void {
+        inline for (.{ "plane_verts", "plane_draws", "plane_insts", "sprites", "sprite_images", "opaque_planes", "blended", "centers", "order", "scratch" }) |f| @field(self, f).deinit(gpa);
+    }
+
+    fn clear(self: *Layers) void {
+        inline for (.{ "plane_verts", "plane_draws", "plane_insts", "sprites", "sprite_images", "opaque_planes", "blended", "centers", "order", "scratch" }) |f| @field(self, f).clearRetainingCapacity();
+    }
+
+    pub fn isEmpty(self: *const Layers) bool {
+        return self.plane_draws.items.len == 0 and self.sprites.items.len == 0;
+    }
+
+    /// Rebuild for `draw`. `sprite_list` is the scene's sprites (image keys
+    /// already remapped to handles); `images.hasImage(handle)` says which are
+    /// resident. Hidden planes, empty planes, back-facing one-sided planes
+    /// and sprites without an image are dropped.
+    pub fn build(self: *Layers, gpa: std.mem.Allocator, draw: SceneDraw, sprite_list: []const teak.SceneSprite, images: anytype) std.mem.Allocator.Error!void {
+        self.clear();
+        const eye = mat.Vec3{ draw.camera.eye[0], draw.camera.eye[1], draw.camera.eye[2] };
+        const tess = teak.render.canvas_tess;
+
+        for (draw.planes) |pl| {
+            if (pl.flags.hidden or !(pl.size[0] > 0 and pl.size[1] > 0)) continue;
+            const n = mat.cross(pl.u, pl.v);
+            if (!pl.double_sided and mat.dot(mat.sub(eye, pl.origin), n) < 0) continue;
+            const first: u32 = @intCast(self.plane_verts.items.len);
+            const rect = teak.Rect{ .x = 0, .y = 0, .w = pl.size[0], .h = pl.size[1] };
+            if (pl.background) |bg| tess.emit(&self.plane_verts, gpa, rect, bg, rect);
+            for (pl.content) |prim| tess.emitCanvasPrimitive(&self.plane_verts, gpa, rect, prim, rect);
+            const count: u32 = @as(u32, @intCast(self.plane_verts.items.len)) - first;
+            if (count == 0) continue;
+            const inst: u32 = @intCast(self.plane_insts.items.len);
+            try self.plane_insts.append(gpa, .{
+                .m0 = .{ pl.u[0], pl.v[0], n[0], pl.origin[0] },
+                .m1 = .{ pl.u[1], pl.v[1], n[1], pl.origin[1] },
+                .m2 = .{ pl.u[2], pl.v[2], n[2], pl.origin[2] },
+                .tint = .{ 1, 1, 1, std.math.clamp(pl.opacity, 0, 1) },
+                .id = pl.id,
+                .flags = @as(u8, @bitCast(pl.flags)),
+                .layer = pl.layer,
+            });
+            const di: u32 = @intCast(self.plane_draws.items.len);
+            try self.plane_draws.append(gpa, .{ .first_vertex = first, .vertex_count = count, .inst = inst });
+            const opaque_plane = pl.opacity >= 1 and pl.background != null and pl.background.?[3] >= 1;
+            if (opaque_plane) {
+                try self.opaque_planes.append(gpa, di);
+            } else {
+                try self.scratch.append(gpa, .{ .kind = .plane, .index = di });
+                const half_u = mat.scale(pl.u, pl.size[0] * 0.5);
+                const half_v = mat.scale(pl.v, pl.size[1] * 0.5);
+                try self.centers.append(gpa, mat.add(pl.origin, mat.add(half_u, half_v)));
+            }
+        }
+
+        for (sprite_list) |sp| {
+            if (sp.flags.hidden or sp.image == 0 or !images.hasImage(sp.image)) continue;
+            const si: u32 = @intCast(self.sprites.items.len);
+            try self.sprites.append(gpa, .{
+                .pos_mode = .{ sp.pos[0], sp.pos[1], sp.pos[2], @floatFromInt(@backingInt(sp.mode)) },
+                .size_anchor = .{ sp.size[0], sp.size[1], sp.anchor[0], sp.anchor[1] },
+                .uv = sp.uv,
+                .tint = sp.tint,
+                .extra = .{ @floatFromInt(sp.layer), if (sp.size_in == .screen_px) 1 else 0, @floatFromInt(sp.id), 0 },
+            });
+            try self.sprite_images.append(gpa, sp.image);
+            try self.scratch.append(gpa, .{ .kind = .sprite, .index = si });
+            try self.centers.append(gpa, sp.pos);
+        }
+
+        try self.order.resize(gpa, self.centers.items.len);
+        teak.scene.sort.byDepth(eye, self.centers.items, self.order.items);
+        for (self.order.items) |o| try self.blended.append(gpa, self.scratch.items[o]);
+    }
+
+    pub fn contentHash(self: *const Layers) u64 {
+        var h = std.hash.Wyhash.init(0x1a7e5);
+        h.update(std.mem.sliceAsBytes(self.plane_verts.items));
+        h.update(std.mem.sliceAsBytes(self.plane_insts.items));
+        h.update(std.mem.sliceAsBytes(self.sprites.items));
+        h.update(std.mem.sliceAsBytes(self.sprite_images.items));
+        for (self.blended.items) |b| h.update(std.mem.asBytes(&b.index));
+        return h.final();
+    }
+};
+
 // ── Section cap ────────────────────────────────────────────────────
 
 /// Corners of a quad lying in the cut plane that covers the world-space
@@ -538,4 +678,73 @@ test "no_cap flag packs into bit 5 and caps stay parallel to instances" {
     items2[1].cap_color = .{ 0, 1, 0, 1 };
     try plan.build(gpa, d, &items2, TestCtx{});
     try std.testing.expect(h1 != plan.contentHash(TestCtx{}));
+}
+
+const LayerCtx = struct {
+    pub fn hasImage(_: LayerCtx, h: u32) bool {
+        return h != 99;
+    }
+};
+
+test "Layers: LayerInst / SpriteInst are 80-byte records" {
+    try std.testing.expectEqual(@as(usize, 80), @sizeOf(LayerInst));
+    try std.testing.expectEqual(@as(usize, 80), @sizeOf(SpriteInst));
+}
+
+test "Layers: planes tessellate, opaque vs blended, culling, depth order" {
+    const gpa = std.testing.allocator;
+    var layers: Layers = .{};
+    defer layers.deinit(gpa);
+    const prims = [_]teak.CanvasPrimitive{
+        .{ .filled_rect = .{ .x = 1, .y = 1, .w = 2, .h = 2 } },
+        .{ .polyline = .{ .points = &.{ .{ .x = 0, .y = 0 }, .{ .x = 4, .y = 3 } }, .thickness = 1 } },
+    };
+    const planes = [_]teak.ScenePlane{
+        // opaque: background + rect + polyline = 3 quads
+        .{ .origin = .{ 0, 0, 0 }, .u = .{ 1, 0, 0 }, .v = .{ 0, 1, 0 }, .size = .{ 4, 3 }, .content = &prims, .background = .{ 1, 1, 1, 1 }, .id = 1 },
+        // translucent (no background): far
+        .{ .origin = .{ 0, 0, -10 }, .u = .{ 1, 0, 0 }, .v = .{ 0, 1, 0 }, .size = .{ 4, 3 }, .content = &prims, .id = 2 },
+        // translucent: near, layer 3
+        .{ .origin = .{ 0, 0, 5 }, .u = .{ 1, 0, 0 }, .v = .{ 0, 1, 0 }, .size = .{ 4, 3 }, .content = &prims, .id = 3, .layer = 3, .opacity = 0.5 },
+        // hidden, empty, and a one-sided sheet seen from behind
+        .{ .origin = .{ 0, 0, 0 }, .u = .{ 1, 0, 0 }, .v = .{ 0, 1, 0 }, .size = .{ 4, 3 }, .content = &prims, .flags = .{ .hidden = true } },
+        .{ .origin = .{ 0, 0, 0 }, .u = .{ 1, 0, 0 }, .v = .{ 0, 1, 0 }, .size = .{ 4, 3 } },
+        .{ .origin = .{ 0, 0, 0 }, .u = .{ 1, 0, 0 }, .v = .{ 0, 1, 0 }, .size = .{ 4, 3 }, .content = &prims, .double_sided = false, .id = 9 },
+    };
+    var d = draw0();
+    d.camera.eye = .{ 0, 0, -20 }; // behind every sheet: the one-sided sheet is back-facing
+    d.planes = &planes;
+    const sprites = [_]teak.SceneSprite{
+        .{ .pos = .{ 0, 0, -5 }, .image = 4, .size = .{ 8, 8 }, .id = 20 },
+        .{ .pos = .{ 0, 0, 0 }, .image = 99, .size = .{ 8, 8 } }, // not resident
+        .{ .pos = .{ 0, 0, 0 }, .image = 0, .size = .{ 8, 8 } }, // no image
+    };
+    try layers.build(gpa, d, &sprites, LayerCtx{});
+
+    try std.testing.expectEqual(@as(usize, 3), layers.plane_draws.items.len);
+    try std.testing.expectEqual(@as(u32, 18), layers.plane_draws.items[0].vertex_count); // 3 quads x 6
+    try std.testing.expectEqual(@as(usize, 1), layers.opaque_planes.items.len);
+    try std.testing.expectEqual(@as(u32, 1), layers.plane_insts.items[0].id);
+    try std.testing.expectEqual(@as(i32, 3), layers.plane_insts.items[2].layer);
+    try std.testing.expectEqual(@as(f32, 0.5), layers.plane_insts.items[2].tint[3]);
+    try std.testing.expectEqual(@as(usize, 1), layers.sprites.items.len);
+    try std.testing.expectEqual(@as(u32, 4), layers.sprite_images.items[0]);
+
+    // blended: far plane (z=-10 centre), sprite (z=-5), near plane (z=5): eye at z=-20,
+    // so back-to-front = farthest from the eye first = the near plane (z=5), then the sprite, then z=-10
+    try std.testing.expectEqual(@as(usize, 3), layers.blended.items.len);
+    try std.testing.expect(layers.blended.items[0].kind == .plane and layers.plane_insts.items[layers.plane_draws.items[layers.blended.items[0].index].inst].id == 3);
+    try std.testing.expect(layers.blended.items[1].kind == .sprite);
+    try std.testing.expect(layers.blended.items[2].kind == .plane);
+    // the plane frame is the transform: u in column 0, v in column 1, translation in .w
+    try std.testing.expectEqual([4]f32{ 1, 0, 0, 0 }, layers.plane_insts.items[0].m0);
+    // from the front the one-sided sheet appears
+    d.camera.eye = .{ 0, 0, 20 };
+    try layers.build(gpa, d, &sprites, LayerCtx{});
+    try std.testing.expectEqual(@as(usize, 4), layers.plane_draws.items.len);
+    const h1 = layers.contentHash();
+    try layers.build(gpa, d, &sprites, LayerCtx{});
+    try std.testing.expectEqual(h1, layers.contentHash());
+    try layers.build(gpa, d, sprites[0..0], LayerCtx{});
+    try std.testing.expect(h1 != layers.contentHash());
 }

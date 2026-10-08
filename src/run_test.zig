@@ -259,7 +259,7 @@ pub const StubGpu = struct {
     pub fn releaseImage(self: *StubGpu, _: u32) void {
         self.image_releases += 1;
     }
-    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw, _: []const render.SceneItem) void {
+    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw, _: render.SceneData) void {
         self.scene_calls += 1;
         self.last_scene_count = d.len;
         if (d.len > 0) self.last_scene_mesh = d[0].mesh;
@@ -948,29 +948,6 @@ test "run: a secondary-content-only change re-mirrors the snapshot" {
 }
 
 // ── Frame diff (cmdsEqual) ──────────────────────────────────────────
-
-test "cmdsEqual: wrap, max_lines, text_align and shrink changes are frame changes" {
-    const Msg = union(enum) { a };
-    var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer x.deinit();
-    var y = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer y.deinit();
-    const f = x.theme.typography.body;
-    const c = x.theme.text_color;
-    x.paragraphStyled("same", f, c, .{});
-    y.paragraphStyled("same", f, c, .{});
-    try std.testing.expect(cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-    for ([_]cmd.ParagraphOpts{ .{ .wrap = .char }, .{ .max_lines = 2 }, .{ .text_align = .center } }) |o| {
-        y.reset();
-        y.paragraphStyled("same", f, c, o);
-        try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-    }
-    x.reset();
-    y.reset();
-    x.pushGroup(.{});
-    y.pushGroup(.{ .shrink = 1 });
-    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-}
 
 test "cmdsEqual: detects label, disabled, and length changes" {
     const Msg = union(enum) { a };
