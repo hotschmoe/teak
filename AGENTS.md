@@ -225,7 +225,6 @@ src/                                          -- the library, consumable as a Zi
     native_headless.zig                       -- Headless native GPU stitch: the wgpu core with no surface provider and the stb_truetype
     native_linux.zig                          -- Linux + wgpu-native GPU backend (the Linux stitch), for the X11 and Wayland hosts
     overlay.zig                               -- Overlay layering shared by the GPU backends (HARDLINE §2 hatch 5: two levels, base z=0 and
-    raster_gdi.zig                            -- GDI glyph rasterizer — the Windows "rasterizer provider" consumed by wgpu_core.Gpu(Surface
     scene_common.zig                          -- Backend-independent half of 3D scene rendering: uniform packing, target sizing, the
     scene_pass.zig                            -- Backend-neutral plan of what a scene slot draws: the packed per-instance records, the runs of
     slot_table.zig                            -- Fixed-capacity slot table behind the GPU backends' app-owned resource caches (images, meshes)
@@ -255,7 +254,7 @@ src/                                          -- the library, consumable as a Zi
     keysym.zig                                -- Keysym -> host-neutral key mapping shared by the Linux hosts
     linux.zig                                 -- The Linux host: one binary, two backends
     native_drops.zig                          -- Turning pasted / dropped bytes into the EffectResults the web host produces, for native hosts
-    native_effects.zig                        -- Declarative-effects service for native hosts (Linux/X11 today): what Host.submit /
+    native_effects.zig                        -- Declarative-effects service for native hosts (Linux/X11 and Windows): what Host.submit /
     wasm.zig                                  -- Wasm host backed by zunk's web.input + web.app modules
     wayland.zig                               -- Wayland host backend: the platform/host.zig contract on top of xdg-shell, the Linux counterpart
     win32.zig                                 -- Win32 host backend

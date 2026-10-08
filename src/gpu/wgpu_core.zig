@@ -637,6 +637,28 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             return @intFromFloat(@round(@as(f32, @floatFromInt(logical)) * self.scale));
         }
 
+        /// Change the device-pixels-per-logical-pixel factor at runtime (the
+        /// window moved to a monitor with another DPI): the surfaces keep
+        /// their logical size and are reconfigured at the new device size,
+        /// and later `uploadText` calls bake glyphs at the new scale.
+        /// Out-of-range factors are ignored.
+        pub fn setScale(self: *Self, new_scale: f32) void {
+            if (!(new_scale >= 0.25 and new_scale <= 16) or new_scale == self.scale) return;
+            const old = self.scale;
+            const logical_w: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(self.width)) / old));
+            const logical_h: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(self.height)) / old));
+            self.scale = new_scale;
+            self.resize(logical_w, logical_h);
+            for (&self.secondary_surfaces) |*slot| {
+                if (!slot.active or slot.surface == null) continue;
+                const lw: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(slot.width)) / old));
+                const lh: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(slot.height)) / old));
+                slot.width = self.devicePx(lw);
+                slot.height = self.devicePx(lh);
+                self.configureSurface(slot.surface, slot.width, slot.height);
+            }
+        }
+
         pub fn resize(self: *Self, logical_w: u32, logical_h: u32) void {
             const width = self.devicePx(logical_w);
             const height = self.devicePx(logical_h);

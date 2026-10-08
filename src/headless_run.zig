@@ -177,9 +177,9 @@ pub fn serve(
 /// `argv[1]` of a `pub fn main(init: std.process.Init)` program, or
 /// `default` when absent: the output path of a `zig build shot -- out.png`.
 pub fn pathArg(init: anytype, default: []const u8) []const u8 {
-    var it = init.minimal.args.iterate();
-    _ = it.next(); // program name
-    return it.next() orelse default;
+    // `toSlice` (not `iterate`) so this also works on Windows.
+    const args = init.minimal.args.toSlice(init.arena.allocator()) catch return default;
+    return if (args.len > 1) args[1] else default;
 }
 
 // ── PNG ────────────────────────────────────────────────────────────

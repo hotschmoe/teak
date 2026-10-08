@@ -3222,6 +3222,9 @@ viewport-agnostic snapshot back.
 > devicePixelRatio backing store internally). Nothing in the
 > framework consumes it yet; see docs/features/host.md "DPI and
 > scaling" for the end-to-end render-at-scale follow-up.
+> This is the one scale API: apps pass it to the Gpu as
+> `InitOptions.scale`, and when it changes at runtime (Win32
+> `WM_DPICHANGED`) the run loop forwards the new value to `Gpu.setScale`.
 > - `setCursor(shape)` — **optional**: show the OS mouse cursor for a
 > `CursorShape`. `teak.run` calls it only when the shape picked from
 > the hovered cmd (or the App's `cursorFor` hook) changes. X11 maps to

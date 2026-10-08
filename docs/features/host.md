@@ -80,14 +80,11 @@ pub const InputState = struct {
 
 Three Hosts implement the contract; all satisfy `validateHost`.
 
-- **Win32** (`win32.zig`) — `WNDPROC`-driven; buffers async messages and drains on `pollInputs`. GDI text measurer. Implements clipboard and file dialogs for real.
+- **Win32** (`win32.zig`) — `WNDPROC`-driven; buffers async messages and drains on `pollInputs`. stb_truetype measurer shared with the Gpu (`registerFont`, letter spacing). Implements clipboard (`CF_UNICODETEXT`) and file dialogs for real, services declarative effects (shared `native_effects.zig` plus native pickers, clipboard and `WM_DROPFILES` drops), and runs per-monitor DPI v2: it reports **logical** pixels and `scaleFactor()`; the entry point passes that to `InitOptions.scale`, and on `WM_DPICHANGED` the run loop forwards the new factor to `Gpu.setScale` so the swap-chain is physical-sized.
 - **Wayland** (`wayland.zig`, `wayland/`) — the native Wayland backend. libwayland-client, libxkbcommon and libwayland-cursor are loaded with `std.DynLib` (no dev packages); the protocol interface tables (`wl_compositor`/`wl_seat`/`wl_data_device`, `xdg-shell`, `xdg-decoration`, `text-input-v3`, `fractional-scale-v1`, `viewporter`) are generated from the protocol XML by `tools/gen_wayland.zig` and committed. Window = `xdg_toplevel` (server-side decorations when `xdg-decoration` is offered, otherwise undecorated — libdecor is not used); keyboard through xkbcommon with client-side repeat; pointer buttons/motion/wheel (`axis_value120` notches = 48 px like the other hosts, touchpad pixels pass through); clipboard + DnD on `wl_data_device` (see [effects.md](effects.md)); IME via `zwp_text_input_v3` (preedit -> `imeState`, commit -> typed text, `setImeSpot` -> `set_cursor_rectangle`); cursors from the libwayland-cursor theme (`setCursor`); HiDPI from `wp_fractional_scale_v1` (+ `wp_viewporter` destination size) or the integer `wl_output` scale (+ `set_buffer_scale`), overridable with `TEAK_SCALE`: sizes and pointer coordinates are logical, the Gpu renders `scaleFactor()` times larger. `setTitle` via `xdg_toplevel.set_title`. No secondary windows, file dialogs or a11y yet. The GPU surface is a `WGPUSurfaceSourceWaylandSurface` (`gpu/surface_linux.zig`).
 - **Linux selection** (`linux.zig`) — one binary, both backends: `Host.init` prefers Wayland when `WAYLAND_DISPLAY` is set (falls back to X11 if the libraries are missing or the connection fails; `TEAK_BACKEND=x11|wayland` forces one and turns the fallback into an error). `NativeHandle` is a tagged union consumed by `gpu/surface_linux.zig`.
 - **X11** (`x11.zig`) — the Linux backend. libX11 is loaded at runtime via `std.DynLib("libX11.so.6")` (no `-lX11`, no X11 dev package needed to build; the module links libc for the dlopen path). Window create/map, synchronous `XNextEvent` pump (mouse, wheel via `Button4`/`5`+`6`/`7`, keys), buttons 1-3 + modifiers from every event's `state`, `keysym`→`NavKey` mapping (Delete, arrows, Tab/Shift-Tab, Enter, Home/End/PgUp/PgDn, Esc, Ctrl chords), text through `Xutf8LookupString` on an XIM input context (committed compositions, Compose / dead keys on the built-in IM) with a plain-keysym fallback when no input method opens, preedit composition via `imeState()` (on-the-spot callbacks; over-the-spot style supported with `Host.setImeSpot(x, y)`, which the runtime does not call yet (deferred to the TextArea pointer/metrics work, which knows the focused caret rect); the built-in `local` IM only offers the root-window style, so no preedit appears without ibus/fcitx/uim), clipboard read/write (`CLIPBOARD` selection, INCR on receive) and XDND v5 file / text drops (see [effects.md](effects.md)), `setTitle` via `XStoreName`, `nowMs`. The text measurer is the shared stb_truetype `teak-text` module — the *same* font the GPU rasterizer renders from, so layout and rendering agree. All state lives on the `Host` struct (no module-scope globals), since X11 delivers events synchronously. X11 also runs under **XWayland** on Wayland desktops; the native Wayland backend above is preferred when available.
-- **X11** (`x11.zig`) — the Linux backend. libX11 is loaded at runtime via `std.DynLib("libX11.so.6")` (no `-lX11`, no X11 dev package needed to build; the module links libc for the dlopen path). Window create/map, synchronous `XNextEvent` pump (mouse, wheel via `Button4`/`5`+`6`/`7`, keys), buttons 1-3 + modifiers from every event's `state`, `keysym`→`NavKey` mapping (Delete, arrows, Tab/Shift-Tab, Enter, Home/End/PgUp/PgDn, Esc, Ctrl chords), text through `Xutf8LookupString` on an XIM input context (committed compositions, Compose / dead keys on the built-in IM) with a plain-keysym fallback when no input method opens, preedit composition via `imeState()` (on-the-spot callbacks; over-the-spot style supported with `setImeSpot(x, y)`, which the runtime does not call yet (deferred to the TextArea pointer/metrics work, which knows the focused caret rect); the built-in `local` IM only offers the root-window style, so no preedit appears without ibus/fcitx/uim), clipboard read/write (`CLIPBOARD` selection, INCR on receive) and XDND v5 file / text drops (see [effects.md](effects.md)), `setTitle` via `XStoreName`, `nowMs`. The text measurer is the shared stb_truetype `teak-text` module — the *same* font the GPU rasterizer renders from, so layout and rendering agree. All state lives on the `Host` struct (no module-scope globals), since X11 delivers events synchronously. X11 runs under **XWayland** on Wayland desktops; there is no native Wayland backend.
-- **X11** (`x11.zig`) — the Linux backend. libX11 is loaded at runtime via `std.DynLib("libX11.so.6")` (no `-lX11`, no X11 dev package needed to build; the module links libc for the dlopen path). Window create/map, synchronous `XNextEvent` pump (mouse, wheel via `Button4`/`5`+`6`/`7`, keys), buttons 1-3 + modifiers from every event's `state`, `keysym`→`NavKey` mapping (Delete, arrows, Tab/Shift-Tab, Enter, Home/End/PgUp/PgDn, Esc, Ctrl chords), text through `Xutf8LookupString` on an XIM input context (committed compositions, Compose / dead keys on the built-in IM) with a plain-keysym fallback when no input method opens, preedit composition via `imeState()` (on-the-spot callbacks; over-the-spot style supported with `setImeSpot(x, y)`, which the runtime does not call yet (deferred to the TextArea pointer/metrics work, which knows the focused caret rect); the built-in `local` IM only offers the root-window style, so no preedit appears without ibus/fcitx/uim), clipboard read/write (`CLIPBOARD` selection, INCR on receive) and XDND v5 file / text drops (see [effects.md](effects.md)), `setTitle` via `XStoreName`, `nowMs`. The text measurer is the shared stb_truetype `teak-text` module — the *same* font the GPU rasterizer renders from, so layout and rendering agree. All state lives on the `Host` struct (no module-scope globals), since X11 delivers events synchronously. X11 also runs under **XWayland** on Wayland desktops; the native Wayland backend above is preferred when available.
 
-- **X11** (`x11.zig`) — the Linux backend. libX11 is loaded at runtime via `std.DynLib("libX11.so.6")` (no `-lX11`, no X11 dev package needed to build; the module links libc for the dlopen path). Window create/map, synchronous `XNextEvent` pump (mouse, wheel via `Button4`/`5`+`6`/`7`, keys), buttons 1-3 + modifiers from every event's `state`, `keysym`→`NavKey` mapping (Delete, arrows, Tab/Shift-Tab, Enter, Home/End/PgUp/PgDn, Esc, Ctrl chords), text through `Xutf8LookupString` on an XIM input context (committed compositions, Compose / dead keys on the built-in IM) with a plain-keysym fallback when no input method opens, preedit composition via `imeState()` (on-the-spot callbacks; over-the-spot style supported with `setImeSpot(x, y)`, which the runtime does not call yet (deferred to the TextArea pointer/metrics work, which knows the focused caret rect); the built-in `local` IM only offers the root-window style, so no preedit appears without ibus/fcitx/uim), clipboard read/write (`CLIPBOARD` selection, INCR on receive) and XDND v5 file / text drops (see [effects.md](effects.md)), `setTitle` via `XStoreName`, `nowMs`. The text measurer is the shared stb_truetype `teak-text` module — the *same* font the GPU rasterizer renders from, so layout and rendering agree. All state lives on the `Host` struct (no module-scope globals), since X11 delivers events synchronously. X11 runs under **XWayland** on Wayland desktops; there is no native Wayland backend.
 - **wasm** (`wasm.zig`) — the web backend over zunk shared memory; `shouldClose` returns `false` (page lifecycle is zunk's problem). Services effects through `zunk.web.fx` (fetch, downloads, file picker, localStorage, clock, query params, clipboard, paste / drop; see [effects.md](effects.md)). `clipboard().write` goes through the effects bridge; `clipboard().read` returns the text of the paste event that came with the Ctrl/Cmd+V key press (the browser only exposes it there) and claims it so it is not also reported as `pasted_text`. Cmd acts as Ctrl for chord keys. `nowMs` is `performance.now()`.
 
 X11 also services declarative effects (HTTP on worker threads, storage files, downloads, `TEAK_OPEN`, query params) through `native_effects.zig`; `Host.setAppName` (called from `RunOptions.app_name`) names the storage directory. See [effects.md](effects.md).
@@ -114,7 +111,7 @@ orchestrator can close the loop; **the native `ui_main` entries pass it to the G
 
 | Host | Input + `width`/`height` units | GPU surface configured at | `scaleFactor()` today | Result at scale ≠ 1 |
 |---|---|---|---|---|
-| **Win32** | Virtualized logical px (process is DPI-*unaware*) | Same virtualized px (DXGI swap-chain = client rect) | `GetDpiForWindow/96` → **1.0** while unaware | **Blurry** — Windows renders at logical res then bitmap-stretches the whole window to physical. Self-consistent coords, upscaled output. |
+| **Win32** | Logical px (per-monitor v2 aware; Host divides physical by the DPI scale) | Physical px = logical × `scaleFactor()` (`InitOptions.scale`, `Gpu.setScale` on DPI change) | `GetDpiForWindow/96` | **Crisp and correctly sized.** Solids are vectors at physical resolution and glyphs are baked at `size_px × scale`; images and 3D scene composites are rasterized at logical resolution and magnified. |
 | **Wayland** | **Logical** px (compositor surface size; pointer coords are surface-local logical) | Physical px (`logical * scale`; viewport destination = logical, or integer `set_buffer_scale`) | `TEAK_SCALE`, else `wp_fractional_scale_v1` preferred scale / 120, else max `wl_output.scale` | **Crisp and correctly sized**, same render path as X11. |
 | **X11** | **Logical** px (the Host divides device px by the scale; the X window is created at `logical * scale`) | Physical px (`logical * scale`; `InitOptions.scale`) | `TEAK_SCALE`, else `GDK_SCALE`, else `Xft.dpi/96` (clamped 0.5-8) | **Crisp and correctly sized** — glyph textures are rasterized at `size_px * scale` and snapped in device pixels; quads/images are drawn in logical units over the physical swap-chain. Fractional scales (1.5) keep text crisp but quad edges may land between device pixels. |
 | **wasm/zunk** | CSS px (zunk v0.5.2+) | zunk owns the canvas; backing store sized at CSS×`devicePixelRatio` internally | **1.0** (teak never sees physical px) | **Crisp and correctly sized** — zunk rasterizes glyphs at DPR into its backing store; teak works purely in CSS px. |
@@ -129,38 +126,20 @@ extent and UVs) assumes 1 layout unit = 1 texture texel = 1 framebuffer
 pixel — i.e. **scale == 1** — which is why the native paths cannot yet
 render at scale without the follow-up below.
 
-### Render-at-scale (landed for X11; Win32 awareness still pending)
+### Render-at-scale (X11, Wayland, Win32)
 
-The design below is implemented for X11: the entry point creates the Gpu with `.scale = host.scaleFactor()`; `wgpu_core` keeps `width`/`height`, the screen-size uniform and all vertices logical while the surface, MSAA target, offscreen frame and glyph textures are `scale` times larger (3D scenes already took a scale). Headless screenshots take `ShotOptions.scale` (PNG is `width*scale`). Win32 still needs step 1 (DPI awareness) before it reports a factor above 1.
+The design below is implemented for X11: the entry point creates the Gpu with `.scale = host.scaleFactor()`; `wgpu_core` keeps `width`/`height`, the screen-size uniform and all vertices logical while the surface, MSAA target, offscreen frame and glyph textures are `scale` times larger (3D scenes already took a scale). Headless screenshots take `ShotOptions.scale` (PNG is `width*scale`).
 
-The coherent end-to-end fix spans the orchestrator (`run.zig`) and the
-render pass (framework core), which are out of scope for the platform/GPU
-layer that owns `scaleFactor`. Design:
-
-1. **Win32 must declare awareness first.** Call
-   `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` in `Host.init`
-   (or ship an application manifest) and handle `WM_DPICHANGED`
-   (re-layout + accept the suggested window rect). Only then does
-   `GetDpiForWindow` report the real factor — landing awareness *without*
-   also scaling content would trade the blur for X11-style undersizing,
-   so the two must ship together. (Proposed diff lives in the audit
-   report, deliberately unlanded because it can't be validated headless.)
-2. **Keep layout logical, upscale the framebuffer.** The orchestrator
-   reads `host.scaleFactor()` and (a) multiplies each `FontSpec.size_px`
-   handed to rasterization by the factor so glyph textures are baked at
-   physical resolution, while (b) keeping layout math and the shader's
-   `screen_size` uniform in logical units so vertex coordinates still map
-   to the full physical swap-chain. Measure and raster **must** apply the
-   factor identically — on Linux they already share one `teak-text`
-   module, so scaling `size_px` in one place keeps them honest; splitting
-   them would reintroduce the measure-vs-render cursor drift the shared
-   module was built to prevent.
-3. **Snapping stays valid** because it operates in framebuffer pixels once
-   the factor is folded into the rasterization extent.
-
-Until that lands, `scaleFactor` is honest, inert plumbing: it exposes the
-factor per host so the orchestrator change is a localized follow-up, not a
-cross-cutting rewrite.
+Win32 wires the Host side: it declares `PER_MONITOR_AWARE_V2` in `Host.init`,
+handles `WM_DPICHANGED` (accepting the suggested rect, which re-lays out via
+`WM_SIZE`), and reports **logical** pixels (mouse coordinates and
+`width`/`height` are the physical client values divided by the DPI scale).
+`scaleFactor()` is the single scale API: the entry point passes it as
+`InitOptions.scale`, and when it changes at runtime `run.zig` forwards the new
+value to `Gpu.setScale`, so solids are crisp, glyphs are baked at
+`size_px * scale`, and the UI is the right size on a 150 % / 200 % monitor.
+Images and 3D scene composites are still rasterized at logical resolution and
+magnified.
 
 ## Invariants
 

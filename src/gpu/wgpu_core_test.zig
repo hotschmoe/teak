@@ -237,6 +237,20 @@ test "images upload, draw and release (slot reuse)" {
     try std.testing.expectEqual(img, again);
 }
 
+test "setScale re-derives the device size from the logical size and ignores bad factors" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    try std.testing.expectEqual(@as(f32, 1.0), h.gpu.scale);
+    h.gpu.setScale(2.0);
+    try std.testing.expectEqual(@as(f32, 2.0), h.gpu.scale);
+    try std.testing.expectEqual(px * 2, h.gpu.width);
+    h.gpu.setScale(0); // rejected
+    h.gpu.setScale(1000); // rejected
+    try std.testing.expectEqual(@as(f32, 2.0), h.gpu.scale);
+    h.gpu.setScale(1.0);
+    try std.testing.expectEqual(px, h.gpu.width);
+}
+
 test "the image cache grows past 64 slots and every image draws in one frame" {
     var h = try Harness.init(.{});
     defer h.deinit();

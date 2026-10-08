@@ -524,6 +524,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         text_metrics: [8]TextMetricsSlot = @splat(.{}),
         /// Last IME spot pushed to the Host (avoid per-frame calls).
         ime_spot: ?[2]i32 = null,
+        /// Last `Host.scaleFactor()` seen (0 = not yet); a change (the window
+        /// moved to a monitor with another DPI) is forwarded to `Gpu.setScale`.
+        host_scale: f32 = 0,
 
         /// Press model: arm on mousedown over a widget, fire the click only
         /// if mouseup lands on the same widget; drag-off cancels.
@@ -646,6 +649,14 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const input = self.host.pollInputs();
             control.afterPoll(self, input);
             if (self.host.shouldClose()) return;
+            // The window's DPI scale changed (Win32 per-monitor DPI): the Gpu
+            // reconfigures its surfaces at the new device size. The initial
+            // scale reaches the Gpu through `InitOptions.scale`.
+            if (comptime @hasDecl(Host, "scaleFactor") and @hasDecl(Gpu, "setScale")) {
+                const sf = self.host.scaleFactor();
+                if (self.host_scale != 0 and sf != self.host_scale) self.gpu.setScale(sf);
+                self.host_scale = sf;
+            }
             if (input.resized) {
                 self.gpu.resize(input.width, input.height);
                 if (@hasDecl(App, "windowMsg")) {
