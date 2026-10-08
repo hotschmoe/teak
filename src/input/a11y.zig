@@ -227,7 +227,7 @@ fn collectLayer(
                 continue;
             },
             .pop_group, .push_virtual_list, .pop_virtual_list => continue,
-            else => {},
+            .text, .rich_text, .image, .divider, .button, .text_input, .checkbox, .radio, .slider, .canvas, .scene3d => {},
         }
 
         if (!visible_to_layer) continue;
@@ -302,7 +302,7 @@ fn collectLayer(
             },
             // Containers handled above; pop_* + virtual_list never
             // emit leaves.
-            else => null,
+            .push_group, .pop_group, .push_scroll, .pop_scroll, .push_overlay, .pop_overlay, .push_virtual_list, .pop_virtual_list => null,
         };
         if (node) |n| try out.append(arena, n);
     }
