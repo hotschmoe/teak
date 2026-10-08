@@ -643,3 +643,43 @@ test "sdf: MSAA does not change fully covered or empty pixels" {
     try std.testing.expectEqual(@as(u8, 0), at(pixels, 2, 2)[1]);
     try std.testing.expectEqual(@as(u8, 255), at(pixels, 8, 28)[1]);
 }
+
+test "sdf: records survive the vertex buffer growing and shrinking between frames (overlay open / close)" {
+    // The SDF records are read back from the vertex buffer through a storage
+    // bind group. When the buffer is reallocated (a dropdown opens: more
+    // vertices) the bind group must follow it, even if the new buffer comes
+    // back with the old one's handle; otherwise rects drawn after the growth
+    // read records from a stale buffer (missing fills, shifted rects, stray dots).
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    const counts = [_]usize{ 2, 7, 30, 64, 1, 64, 12, 64, 3 };
+    for (counts, 0..) |n, frame| {
+        var verts: std.ArrayList(teak.Vertex) = .empty;
+        defer verts.deinit(std.testing.allocator);
+        // a plain quad under everything so the vertex count also moves in odd steps
+        teak.vertex.emitQuad(&verts, std.testing.allocator, .{ .x = 0, .y = 0, .w = 1, .h = 1 }, .{ 0, 0, 0, 1 });
+        for (0..n) |i| {
+            const cx: f32 = @floatFromInt((i % 8) * 8);
+            const cy: f32 = @floatFromInt((i / 8) * 8);
+            const shade: f32 = @as(f32, @floatFromInt(40 + (i * 3) % 200)) / 255.0;
+            sdf.emitRect(&verts, std.testing.allocator, .{
+                .rect = .{ .x = cx + 1, .y = cy + 1, .w = 6, .h = 6 },
+                .radii = teak.Radii.all(1),
+                .fill = .{ shade, 1 - shade, 0.5, 1 },
+            }, full_clip);
+        }
+        h.gpu.uploadVertices(verts.items);
+        const pixels = try h.frame(.{ 0, 0, 0, 1 });
+        defer std.testing.allocator.free(pixels);
+        for (0..n) |i| {
+            const x: u32 = @intCast((i % 8) * 8 + 4);
+            const y: u32 = @intCast((i / 8) * 8 + 4);
+            const want_r: i32 = @intCast(@as(u32, @intFromFloat(@round((@as(f32, @floatFromInt(40 + (i * 3) % 200)) / 255.0) * 255.0))));
+            const got = at(pixels, x, y); // BGRA
+            std.testing.expect(@abs(@as(i32, got[2]) - want_r) <= 2 and got[3] == 255) catch |e| {
+                std.debug.print("frame {d} ({d} rects): rect {d} at ({d},{d}) read {any}, wanted r={d}\n", .{ frame, n, i, x, y, got, want_r });
+                return e;
+            };
+        }
+    }
+}

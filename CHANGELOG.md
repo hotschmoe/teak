@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- **SDF quads lost their records when the vertex buffer grew** (visible with `modern_light`: after a dropdown
+  opened, buttons lost their fill, one drew shifted, stray dots appeared). The solid bind group (vertex buffer as
+  read-only storage) was rebuilt only when the buffer *handle* changed; a reallocation can hand the old handle
+  back, leaving the group on the stale buffer. It now also tracks the buffer size. Regression test:
+  `sdf: records survive the vertex buffer growing and shrinking between frames` (`zig build test-gpu`).
+
 ### Bidi (UAX #9)
 
 - New `teak.bidi` (pure, `src/core/bidi.zig`): the full Unicode 16 bidirectional algorithm
