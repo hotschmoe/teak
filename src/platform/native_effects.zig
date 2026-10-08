@@ -29,6 +29,7 @@
 const std = @import("std");
 const teak = @import("teak");
 const builtin = @import("builtin");
+const x11_data = @import("x11_data.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
@@ -383,7 +384,18 @@ pub const Service = struct {
             return freeArena(arena);
         };
         const name = std.fs.path.basename(path);
-        self.push(arena, .{ .dropped = .{ .kind = .file, .name = name, .mime = mimeFromName(name), .bytes = bytes } });
+        const mime = mimeFromName(name);
+        // PNG / JPEG files are images (size known for PNG), like web and X11.
+        const is_image = std.mem.eql(u8, mime, "image/png") or std.mem.eql(u8, mime, "image/jpeg");
+        const size = if (is_image) x11_data.pngSize(bytes) else null;
+        self.push(arena, .{ .dropped = .{
+            .kind = if (is_image) .image else .file,
+            .name = name,
+            .mime = mime,
+            .bytes = bytes,
+            .width = if (size) |sz| sz.w else 0,
+            .height = if (size) |sz| sz.h else 0,
+        } });
     }
 
     fn clock(self: *Service, id: u32) void {
@@ -1054,4 +1066,24 @@ test "query_param falls back to TEAK_<NAME> and reports absent ones" {
     _ = svc.submit(.{ .query_param = .{ .id = 2, .name = "qp-not-set" } });
     try waitOne(svc, &r);
     try std.testing.expect(r.query_value.value == null);
+}
+
+test "dropFile reports a PNG file as an image with its pixel size" {
+    const svc = try Service.create("test");
+    defer svc.destroy();
+    const dir = ".zig-cache/teak-native-fx-drop";
+    try Io.Dir.cwd().createDirPath(svc.io, dir);
+    var png: [33]u8 = @splat(0);
+    @memcpy(png[0..8], "\x89PNG\r\n\x1a\n");
+    std.mem.writeInt(u32, png[8..12], 13, .big);
+    @memcpy(png[12..16], "IHDR");
+    std.mem.writeInt(u32, png[16..20], 7, .big);
+    std.mem.writeInt(u32, png[20..24], 5, .big);
+    try Io.Dir.cwd().writeFile(svc.io, .{ .sub_path = dir ++ "/pic.png", .data = &png });
+    svc.dropFile(dir ++ "/pic.png");
+    var r: EffectResult = undefined;
+    try waitOne(svc, &r);
+    try std.testing.expectEqual(teak.DropKind.image, r.dropped.kind);
+    try std.testing.expectEqual(@as(u32, 7), r.dropped.width);
+    try std.testing.expectEqual(@as(u32, 5), r.dropped.height);
 }

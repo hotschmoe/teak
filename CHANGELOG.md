@@ -68,6 +68,8 @@
 
 ### Added
 
+- **Win32 leftovers.** The window is an OLE drop target (`IDropTarget`): files, text and images dragged in arrive as `dropped` results (images as PNG <= 1568 px plus an RGBA thumbnail, like web). A Ctrl+V that `handleClipboard` does not claim becomes `pasted_text` or, for a clipboard image (PNG / CF_DIB), a `dropped` image. PNG / JPEG files dropped are `kind = .image` on every native host. The IME mirror (`imeState()`) has a synthetic-message unit test.
+
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
     selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,

@@ -152,6 +152,15 @@ pub fn build(b: *std.Build) void {
         const platform_win32_tests = b.addTest(.{ .root_module = platform_win32_mod });
         test_step.dependOn(&b.addRunArtifact(platform_win32_tests).step);
     }
+    // Win32 clipboard / drop data conversions (pure; tested on every OS).
+    const win32_data_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/win32_data.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "teak", .module = mod }},
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = win32_data_mod })).step);
+
     // Headless host (src/platform/headless.zig): scripted input, fake
     // clock, effect capture. Needs the stb text module for its font.
     const headless_mod = b.createModule(.{
