@@ -68,6 +68,8 @@
 
 ### Added
 
+- **HiDPI scenes.** Native 3D scene targets are rendered at device resolution (logical size x scale) instead of logical-then-magnified; `TEAK_SCALE=2 zig build shot` takes any headless example at 2x. test-gpu pins scene seam position, 1-logical-px line width and 1:1 image texels at scale 2.
+
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
     selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,

@@ -459,3 +459,86 @@ test "atlas text: scale 2 places glyphs in device pixels and scales solids as ve
     try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, at(f, 50, 50)); // blue (BGRA) quad scaled 2x
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 35, 50));
 }
+
+test "HiDPI scale 2: a 3D scene renders at device resolution (hard edge, no magnification blur)" {
+    var h = try Harness.init(.{ .scale = 2, .scene_msaa = false });
+    defer h.deinit();
+    // Two quads meeting at x = 0.12 (an odd fraction of the target), red on
+    // the left, green on the right: only a device-resolution target puts the
+    // seam at device x = 19; a logical target magnified 2x puts it at 20.
+    const n = [3]f32{ 0, 0, 1 };
+    const red = [4]f32{ 1, 0, 0, 1 };
+    const green = [4]f32{ 0, 1, 0, 1 };
+    const v = [8]teak.MeshVertex{
+        .{ .pos = .{ -1, -1, 0.5 }, .normal = n, .color = red },
+        .{ .pos = .{ 0.12, -1, 0.5 }, .normal = n, .color = red },
+        .{ .pos = .{ 0.12, 1, 0.5 }, .normal = n, .color = red },
+        .{ .pos = .{ -1, 1, 0.5 }, .normal = n, .color = red },
+        .{ .pos = .{ 0.12, -1, 0.5 }, .normal = n, .color = green },
+        .{ .pos = .{ 1, -1, 0.5 }, .normal = n, .color = green },
+        .{ .pos = .{ 1, 1, 0.5 }, .normal = n, .color = green },
+        .{ .pos = .{ 0.12, 1, 0.5 }, .normal = n, .color = green },
+    };
+    const idx = [12]u32{ 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+    const mesh = h.gpu.uploadMesh(.{ .vertices = &v, .indices = &idx });
+    // Logical (4,4)-(14,14) is device (8,8)-(28,28); the seam falls at device x = 19.
+    h.gpu.renderScenes(&.{sceneAt(mesh, 4, 4, 10, 10, 0)});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 8, 8)); // red (BGRA)
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 18, 20)); // last red column
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 19, 20)); // first green column
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 27, 27));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 7, 8)); // outside the scene
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 28, 27));
+}
+
+test "HiDPI scale 2: a 1-logical-px line is exactly 2 device px wide with hard edges" {
+    var h = try Harness.init(.{ .scale = 2 });
+    defer h.deinit();
+    var line: [6]teak.Vertex = undefined;
+    solidQuad(&line, 10, 4, 11, 28, .{ 1, 1, 1 }); // logical x 10..11 -> device 20..22
+    h.gpu.uploadVertices(&line);
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    const white = [4]u8{ 255, 255, 255, 255 };
+    const bg = [4]u8{ 0, 0, 0, 255 };
+    try std.testing.expectEqual(bg, at(f, 19, 30));
+    try std.testing.expectEqual(white, at(f, 20, 30));
+    try std.testing.expectEqual(white, at(f, 21, 30));
+    try std.testing.expectEqual(bg, at(f, 22, 30));
+}
+
+test "HiDPI scale 2: an image drawn 1 texel per device pixel keeps every texel sharp" {
+    var h = try Harness.init(.{ .scale = 2 });
+    defer h.deinit();
+    // 4x4 checker of pure red / green texels (RGBA).
+    var rgba: [4 * 4 * 4]u8 = undefined;
+    for (0..16) |i| {
+        const red = ((i % 4) + (i / 4)) % 2 == 0;
+        rgba[i * 4 ..][0..4].* = if (red) .{ 255, 0, 0, 255 } else .{ 0, 255, 0, 255 };
+    }
+    const img = h.gpu.uploadImage(&rgba, 4, 4);
+    try std.testing.expect(img != teak.TEXTURE_HANDLE_NONE);
+    // 2x2 logical px at (4,4) = 4x4 device px at (8,8): exactly 1:1.
+    h.gpu.uploadImages(&.{.{
+        .rect_x = 4,
+        .rect_y = 4,
+        .rect_w = 2,
+        .rect_h = 2,
+        .handle = img,
+        .tint = .{ 1, 1, 1, 1 },
+        .clip_x = 0,
+        .clip_y = 0,
+        .clip_w = 32,
+        .clip_h = 32,
+    }});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    for (0..4) |y| {
+        for (0..4) |x| {
+            const want: [4]u8 = if ((x + y) % 2 == 0) .{ 0, 0, 255, 255 } else .{ 0, 255, 0, 255 }; // BGRA
+            try std.testing.expectEqual(want, at(f, @intCast(8 + x), @intCast(8 + y)));
+        }
+    }
+}

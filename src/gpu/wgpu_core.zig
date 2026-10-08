@@ -1179,8 +1179,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             enc_desc.label = wgpuStr("scene-encoder");
             const encoder = c.wgpuDeviceCreateCommandEncoder(self.device, &enc_desc);
 
-            // Native logical pixels are device pixels.
-            const scale: f32 = 1;
+            // Scene targets are rendered at device resolution (logical size
+            // times the HiDPI scale) and composited 1:1.
+            const scale = self.scale;
             for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
                 mark.visit(i, self.scene_draw_count);
                 const size = self.scene.renderInto(encoder, i, draw, scale) orelse continue;
