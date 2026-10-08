@@ -22,6 +22,8 @@ pub const text = @import("core/text.zig");
 pub const unicode = @import("core/unicode.zig");
 /// UAX #9 bidirectional algorithm: levels, per-line visual runs, visual caret movement, selection spans.
 pub const bidi = @import("core/bidi.zig");
+/// Direction-aware geometry of a wrapped line: runs, caret x, hit-test, selection spans, visual arrows.
+pub const bidi_text = @import("core/bidi_text.zig");
 /// UAX#14-lite line-break opportunities over grapheme clusters.
 pub const linebreak = @import("core/linebreak.zig");
 /// Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.

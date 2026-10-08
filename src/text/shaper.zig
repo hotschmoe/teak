@@ -125,6 +125,64 @@ fn isCombining(cp: u21) bool {
 /// Shape `text` into `out`. Without any font the result is empty (count 0,
 /// width 0, consumed = text.len): there is nothing to draw or measure.
 pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
+    if (font.rtl and text.len <= RTL_BUF) return shapeRtl(text, font, out);
+    return shapeLogical(text, font, out);
+}
+
+/// Longest right-to-left run (bytes) shaped in visual order; longer ones fall
+/// back to logical order (a paragraph is capped far below this by `bidi_text`).
+const RTL_BUF = 2048;
+
+/// A right-to-left run: shape the grapheme-reversed, mirrored text left to
+/// right, then point every glyph's `cluster` back at its source offset. The
+/// built-in shaper has no joining, so this is exact for Hebrew-like scripts;
+/// HarfBuzz handles joining itself (and takes `font.rtl` as its direction).
+fn shapeRtl(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
+    var vis: [RTL_BUF + 8]u8 = undefined;
+    const Map = struct { vis: u32, src: u32 };
+    var map: [RTL_BUF]Map = undefined;
+    var n_map: usize = 0;
+    var vlen: usize = 0;
+    // Walk graphemes from the end so the first visual cluster is the last logical.
+    var end = text.len;
+    while (end > 0) {
+        const start = teak.unicode.prevGrapheme(text, end);
+        const g = text[start..end];
+        map[n_map] = .{ .vis = @intCast(vlen), .src = @intCast(start) };
+        n_map += 1;
+        var p: usize = 0;
+        while (p < g.len) {
+            const d = decode(g, p);
+            const cp = if (p == 0) (teak.bidi.mirrored(d.cp) orelse d.cp) else d.cp;
+            if (cp == d.cp) {
+                @memcpy(vis[vlen..][0..d.len], g[p..][0..d.len]);
+                vlen += d.len;
+            } else {
+                vlen += std.unicode.utf8Encode(cp, vis[vlen..]) catch 0;
+            }
+            p += d.len;
+        }
+        end = start;
+    }
+    var f = font;
+    f.rtl = false;
+    const r = shapeLogical(vis[0..vlen], f, out);
+    for (out[0..r.count]) |*g| {
+        var k = n_map;
+        while (k > 0) {
+            k -= 1;
+            if (map[k].vis <= g.cluster) {
+                g.cluster = map[k].src;
+                break;
+            }
+        }
+    }
+    // An output-full result covers a visual prefix; the source tail cannot be
+    // resumed, so report it consumed (documented limit: `out` holds the run).
+    return .{ .count = r.count, .width = r.width, .consumed = text.len };
+}
+
+fn shapeLogical(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     const resolved = face_mod.resolveFace(font.family, font.weight) orelse
         return .{ .count = 0, .width = 0, .consumed = text.len };
     const primary = resolved.face;

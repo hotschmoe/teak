@@ -30,6 +30,10 @@ pub const FontSpec = struct {
     /// null = the family default: on for `.mono`, off otherwise. Snapped text
     /// also uses one subpixel bin, so every glyph lands on the pixel grid.
     snap_advance: ?bool = null,
+    /// The text is one right-to-left run (an odd bidi level, see `bidi_text`):
+    /// shapers return it in visual order, mirrored where the script requires.
+    /// Set by the renderer per run, not by apps.
+    rtl: bool = false,
 
     /// The resolved `snap_advance` (see the field).
     pub fn snapsAdvance(self: FontSpec) bool {

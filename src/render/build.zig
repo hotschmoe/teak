@@ -6,6 +6,7 @@ const clipRect = layout.clipRect;
 const TransientState = @import("../core/transient.zig").TransientState;
 const text_mod = @import("../core/text.zig");
 const text_wrap = @import("../core/text_wrap.zig");
+const bidi_text = @import("../core/bidi_text.zig");
 const TextDraw = text_mod.TextDraw;
 const TextMeasurer = text_mod.TextMeasurer;
 const FontSpec = text_mod.FontSpec;
@@ -101,6 +102,26 @@ fn emitText(
     }) catch {};
 }
 
+/// Draw a direction-aware line: one `TextDraw` per directional run, placed left
+/// to right as displayed. Right-to-left runs set `font.rtl` so the shaper
+/// returns them in visual order.
+fn emitBidiRuns(
+    text_draws: *std.ArrayList(TextDraw),
+    alloc: std.mem.Allocator,
+    lay: *const bidi_text.Layout,
+    x: f32,
+    y: f32,
+    h: f32,
+    color: [4]f32,
+    clip: Rect,
+) void {
+    for (lay.items()) |r| {
+        var f = lay.font;
+        f.rtl = r.rtl();
+        emitText(text_draws, alloc, lay.text[r.start..r.end], f, color, .{ .x = x + r.x, .y = y, .w = r.w, .h = h }, clip);
+    }
+}
+
 /// One TextDraw per wrapped line of a `text` Cmd with `wrap != .none`, using
 /// the same `text_wrap` line walk layout used for the height, so the line
 /// count drawn equals the height reserved. Lines wholly outside `clip` are
@@ -127,6 +148,18 @@ fn emitWrapped(
             .end => rect.x + rect.w - line.width,
         };
         const piece = txt.content[line.start..line.end];
+        if (!line.ellipsized and bidi_text.mayBeRtl(piece)) {
+            var sc: bidi_text.Scratch = .{};
+            if (bidi_text.layoutLine(txt.content, line.start, line.end, txt.font, measurer, std.math.inf(f32), &sc)) |lay| {
+                // A right-to-left paragraph starts at the right edge.
+                const bx = switch (txt.text_align) {
+                    .start => if (lay.para_rtl) rect.x + rect.w - line.width else rect.x,
+                    else => x,
+                };
+                emitBidiRuns(text_draws, alloc, &lay, bx, y, lh, txt.color, clip);
+                continue;
+            }
+        }
         if (line.ellipsized) {
             // Two draws, no allocation: the kept text, then a static "…"
             // right after it (the run loop's allocator is the long-lived gpa).
@@ -175,13 +208,28 @@ fn emitTextArea(
     const sel_hi: usize = if (ta.selection_anchor) |a| @max(a, ta.cursor) else 0;
     const has_sel = !ta.disabled and sel_hi > sel_lo;
 
+    var scratch: bidi_text.Scratch = .{};
     var it = text_wrap.LineIter.init(ta.content, ta.font, wrap_w, mode, 0, measurer);
     var li: f32 = 0;
     while (it.next()) |line| : (li += 1) {
         const y = oy + li * lh;
         if (y >= clip.y + clip.h) break;
         if (y + lh <= clip.y) continue;
-        if (has_sel and sel_hi > line.start and sel_lo < line.next) {
+        var lay_storage: bidi_text.Layout = undefined;
+        const lay: ?*const bidi_text.Layout = if (bidi_text.mayBeRtl(ta.content) and line.end > line.start) blk: {
+            lay_storage = bidi_text.layoutLine(ta.content, line.start, line.end, ta.font, measurer, wrap_w, &scratch) orelse break :blk null;
+            break :blk &lay_storage;
+        } else null;
+        if (has_sel and sel_hi > line.start and sel_lo < line.next and lay != null) {
+            var spans: [8]bidi_text.Span = undefined;
+            for (lay.?.selection(sel_lo, sel_hi, &spans)) |sp| {
+                emit(verts, alloc, .{ .x = ox + sp.x0, .y = y, .w = sp.x1 - sp.x0, .h = lh }, st.selection_bg, clip);
+            }
+            if (sel_hi > line.hang) {
+                const ex = ox + lay.?.caretX(line.end) + (if (lay.?.para_rtl) -lh * 0.3 else 0);
+                emit(verts, alloc, .{ .x = ex, .y = y, .w = lh * 0.3, .h = lh }, st.selection_bg, clip);
+            }
+        } else if (has_sel and sel_hi > line.start and sel_lo < line.next) {
             const a = @max(sel_lo, @as(usize, line.start));
             const b = @min(sel_hi, @as(usize, line.hang));
             const x0 = if (a > line.start) measurer.measure(ta.content[line.start..a], ta.font).width else 0;
@@ -190,7 +238,9 @@ fn emitTextArea(
             if (sel_hi > line.hang) x1 += lh * 0.3;
             if (x1 > x0) emit(verts, alloc, .{ .x = ox + x0, .y = y, .w = x1 - x0, .h = lh }, st.selection_bg, clip);
         }
-        if (line.end > line.start) {
+        if (lay) |l| {
+            emitBidiRuns(text_draws, alloc, l, ox, y, lh, fg, clip);
+        } else if (line.end > line.start) {
             emitText(text_draws, alloc, ta.content[line.start..line.end], ta.font, fg, .{ .x = ox, .y = y, .w = line.width, .h = lh }, clip);
         }
     }
@@ -342,6 +392,18 @@ fn buildLayer(
             .text => |txt| {
                 if (!visible) continue;
                 if (txt.wrap == .none) {
+                    if (bidi_text.mayBeRtl(txt.content) and std.mem.indexOfScalar(u8, txt.content, '\n') == null) {
+                        var sc: bidi_text.Scratch = .{};
+                        if (bidi_text.layoutLine(txt.content, 0, txt.content.len, txt.font, measurer, std.math.inf(f32), &sc)) |lay| {
+                            const bx = switch (txt.text_align) {
+                                .start => if (lay.para_rtl) rect.x + rect.w - lay.width else rect.x,
+                                .center => rect.x + (rect.w - lay.width) * 0.5,
+                                .end => rect.x + rect.w - lay.width,
+                            };
+                            emitBidiRuns(text_draws, alloc, &lay, bx, rect.y, rect.h, txt.color, cur_clip);
+                            continue;
+                        }
+                    }
                     emitText(text_draws, alloc, txt.content, txt.font, txt.color, rect, cur_clip);
                 } else {
                     emitWrapped(text_draws, alloc, txt, rect, cur_clip, measurer);
@@ -492,9 +554,19 @@ fn buildLayer(
 
                 // Selection highlight before the text so text draws on top.
                 // Disabled inputs never draw selection.
+                var ti_scratch: bidi_text.Scratch = .{};
+                const ti_lay: ?bidi_text.Layout = if (bidi_text.mayBeRtl(ti.content) and std.mem.indexOfScalar(u8, ti.content, '\n') == null)
+                    bidi_text.layoutLine(ti.content, 0, ti.content.len, ti.font, measurer, std.math.inf(f32), &ti_scratch)
+                else
+                    null;
                 if (!ti.disabled) {
                     if (ti.selection_anchor) |anchor| {
-                        if (anchor != ti.cursor and ti.content.len > 0) {
+                        if (anchor != ti.cursor and ti.content.len > 0 and ti_lay != null) {
+                            var spans: [8]bidi_text.Span = undefined;
+                            for (ti_lay.?.selection(@min(anchor, ti.cursor), @max(anchor, ti.cursor), &spans)) |sp| {
+                                emit(verts, alloc, .{ .x = inner.x + pad_x + sp.x0, .y = inner.y + pad_y, .w = sp.x1 - sp.x0, .h = @max(0, inner.h - 2 * pad_y) }, ti.style.selection_bg, cur_clip);
+                            }
+                        } else if (anchor != ti.cursor and ti.content.len > 0) {
                             const lo = @min(anchor, ti.cursor);
                             const hi = @max(anchor, ti.cursor);
                             const lo_w = measurer.prefixWidth(ti.content, ti.font, lo);
@@ -520,7 +592,11 @@ fn buildLayer(
                         .h = m.height,
                     };
                     const text_color = if (ti.disabled) ti.style.disabled_fg else ti.style.fg;
-                    emitText(text_draws, alloc, ti.content, ti.font, text_color, text_rect, cur_clip);
+                    if (ti_lay) |*l| {
+                        emitBidiRuns(text_draws, alloc, l, text_rect.x, text_rect.y, text_rect.h, text_color, cur_clip);
+                    } else {
+                        emitText(text_draws, alloc, ti.content, ti.font, text_color, text_rect, cur_clip);
+                    }
                 }
 
                 // IME composition: when the focused input has an active
@@ -531,7 +607,7 @@ fn buildLayer(
                 // the normal text-input update path.
                 const ime_drawn = focused and transient.ime_active and transient.ime_text.len > 0;
                 if (ime_drawn) {
-                    const prefix_w = measurer.prefixWidth(ti.content, ti.font, ti.cursor);
+                    const prefix_w = if (ti_lay) |l| l.caretX(ti.cursor) else measurer.prefixWidth(ti.content, ti.font, ti.cursor);
                     const m = measurer.measure(transient.ime_text, ti.font);
                     const text_rect = Rect{
                         .x = inner.x + pad_x + prefix_w,
@@ -555,7 +631,7 @@ fn buildLayer(
                 // end of the composition string so the user sees where
                 // the next codepoint will commit.
                 if (focused and ((transient.frame_counter / 30) & 1) == 0) {
-                    const base_prefix = measurer.prefixWidth(ti.content, ti.font, ti.cursor);
+                    const base_prefix = if (ti_lay) |l| l.caretX(ti.cursor) else measurer.prefixWidth(ti.content, ti.font, ti.cursor);
                     const ime_offset = if (ime_drawn)
                         measurer.prefixWidth(transient.ime_text, ti.font, transient.ime_cursor)
                     else
@@ -1960,4 +2036,76 @@ test "text_area: scrolled content culls lines above the viewport" {
     try testing.expectEqual(@as(usize, 2), text_draws.items.len);
     try testing.expectEqualStrings("4", text_draws.items[0].content);
     try testing.expectEqualStrings("5", text_draws.items[1].content);
+}
+
+test "text_area: a right-to-left paragraph draws its runs in visual order, right-aligned" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    // Logical: Hebrew1 " abc " Hebrew2 -- RTL paragraph, so Hebrew2 is leftmost.
+    const content = "\u{5d0}\u{5d1} abc \u{5d3}\u{5d4}";
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.textArea(.{ .focus_msg = .focus, .id = 1, .content = content, .width = 300, .height = 60 });
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws: std.ArrayList(TextDraw) = .empty;
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    var scenes: std.ArrayList(SceneDraw) = .empty;
+    defer scenes.deinit(testing.allocator);
+    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    const d = text_draws.items;
+    try testing.expectEqual(@as(usize, 3), d.len);
+    try testing.expectEqualStrings(" \u{5d3}\u{5d4}", d[0].content);
+    try testing.expect(d[0].font.rtl);
+    try testing.expectEqualStrings("abc", d[1].content);
+    try testing.expect(!d[1].font.rtl);
+    try testing.expectEqualStrings("\u{5d0}\u{5d1} ", d[2].content);
+    try testing.expect(d[2].font.rtl);
+    try testing.expect(d[0].rect_x < d[1].rect_x and d[1].rect_x < d[2].rect_x);
+    // Right-aligned inside the 300 px box (inner right edge = 400 - 2 - 6 ... of the area).
+    const right = d[2].rect_x + d[2].rect_w;
+    try testing.expectApproxEqAbs(rects[1].x + rects[1].w - 8, right, 0.5);
+}
+
+test "text_area: mixed-direction selection becomes per-run highlight rects" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    const sel: [4]f32 = .{ 0.2, 0.4, 0.9, 0.5 };
+    var style = cb.theme.text_input;
+    style.selection_bg = sel;
+    // LTR paragraph; select from inside the Latin run into the Hebrew run.
+    const content = "abcd \u{5d0}\u{5d1}\u{5d2}\u{5d3} efgh";
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.textArea(.{ .focus_msg = .focus, .id = 1, .content = content, .cursor = 5 + 4, .selection_anchor = 2, .style = style, .width = 400, .height = 60 });
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 500, 300, text_mod.monoMeasurer());
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws: std.ArrayList(TextDraw) = .empty;
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    var scenes: std.ArrayList(SceneDraw) = .empty;
+    defer scenes.deinit(testing.allocator);
+    var ts: TransientState = .{};
+    ts.focus_index = 1;
+    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], ts, text_mod.monoMeasurer());
+    var quads: usize = 0;
+    var i: usize = 0;
+    while (i + 6 <= verts.items.len) : (i += 6) {
+        const v = verts.items[i];
+        if (v.r == sel[0] and v.g == sel[1] and v.b == sel[2] and v.a == sel[3]) quads += 1;
+    }
+    // Logically contiguous, visually split: "cd " at the left, then alef+bet at
+    // the RIGHT end of the Hebrew run (gimel, dalet lie between): two rects.
+    try testing.expectEqual(@as(usize, 2), quads);
 }

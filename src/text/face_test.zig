@@ -257,3 +257,18 @@ test "combining mark pixels: the accent is drawn over the e, not beside it" {
     try std.testing.expect(ax0 >= bx0 - 1 and ax1 <= bx1 + 1);
     try std.testing.expect(acc.bearing_y + @as(i32, @intCast(acc.height)) <= base_top + 2);
 }
+
+test "rtl font flag: the run comes out in visual order, clusters point at the source" {
+    const f: teak.FontSpec = .{ .size_px = 20, .family = .mono, .snap_advance = false, .rtl = true };
+    var out: [8]teak.ShapedGlyph = undefined;
+    const r = text.SimpleShaper.shape("abc", f, &out);
+    try std.testing.expectEqual(@as(usize, 3), r.count);
+    // Visual left-to-right = logical c, b, a.
+    try std.testing.expectEqual(@as(u32, 2), out[0].cluster);
+    try std.testing.expectEqual(@as(u32, 1), out[1].cluster);
+    try std.testing.expectEqual(@as(u32, 0), out[2].cluster);
+    // Same width as the logical run.
+    var lf = f;
+    lf.rtl = false;
+    try std.testing.expectApproxEqAbs(text.measure("abc", lf).width, r.width, 0.001);
+}

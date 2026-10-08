@@ -86,6 +86,7 @@
 
 ### Added
 
+- Bidi in rendering and editing (`teak.bidi_text`): lines of mixed direction draw one run at a time in visual order (`text`, wrapped text, `text_input`, `text_area`), RTL paragraphs right-align, caret / pointer / IME spot / selection rects follow the visual layout, Left/Right arrows move in visual order (runtime for `text_area`, `Editor` for fields); `FontSpec.rtl` makes shapers return a run in visual order.
 - `text_area` Cmd + `TextArea(cap)` component + `textMsg` hook (text-engine PR11a/PR11b, closes the multi-line half of #6):
   wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,
   drag incl. outside, double/triple click, wheel), visual Up/Down/Home/End with a sticky column, layout `metrics` events,

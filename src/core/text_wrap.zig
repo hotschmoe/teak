@@ -21,6 +21,7 @@
 //! before it.
 
 const std = @import("std");
+const bidi_text = @import("bidi_text.zig");
 const text_mod = @import("text.zig");
 const unicode = @import("unicode.zig");
 const linebreak = @import("linebreak.zig");
@@ -358,6 +359,14 @@ pub fn caretPos(text: []const u8, index: usize, font: FontSpec, max_w: f32, mode
     }
     const limit: usize = if (cur.ellipsized) cur.end else cur.hang;
     const at = std.math.clamp(idx, cur.start, @max(limit, cur.start));
+    if (!cur.ellipsized and bidi_text.mayBeRtl(text)) {
+        var sc: bidi_text.Scratch = .{};
+        if (bidi_text.layoutLine(text, cur.start, cur.end, font, m, max_w, &sc)) |lay| {
+            const in = @min(at, @as(usize, cur.end));
+            const tail = if (at > in) widthOf(text[in..at], font, m) else 0;
+            return .{ .x = lay.caretX(in) + tail, .y = @as(f32, @floatFromInt(li)) * lineHeight(font, m), .line = li };
+        }
+    }
     return .{
         .x = widthOf(text[cur.start..at], font, m),
         .y = @as(f32, @floatFromInt(li)) * lineHeight(font, m),
@@ -393,6 +402,12 @@ pub fn indexAt(text: []const u8, x: f32, y: f32, font: FontSpec, max_w: f32, mod
     var limit: usize = if (cur.ellipsized) cur.end else cur.hang;
     if (!is_last and !cur.hard_break and !cur.ellipsized and limit == cur.next and limit > cur.start) {
         limit = unicode.prevGrapheme(text, limit);
+    }
+    if (!cur.ellipsized and bidi_text.mayBeRtl(text)) {
+        var sc: bidi_text.Scratch = .{};
+        if (bidi_text.layoutLine(text, cur.start, cur.end, font, m, max_w, &sc)) |lay| {
+            return @min(lay.indexAt(x), @max(limit, cur.start));
+        }
     }
     var best: usize = cur.start;
     var best_d: f32 = @abs(x);
@@ -722,7 +737,12 @@ test "RTL, invalid UTF-8 and mixed text never crash or escape the text" {
             const c = caretPos(s, i, F, w, mode, 0, mono());
             const back = indexAt(s, c.x, c.y, F, w, mode, 0, mono());
             try testing.expect(back <= s.len and unicode.isGraphemeBoundary(s, back));
-            if (mode != .ellipsis) try testing.expectEqual(i, back);
+            if (mode != .ellipsis) {
+                // Bidi lines map positions, not indices (two indices can share a
+                // position; wrap-edge indices belong to either line): only validity
+                // is asserted here, round-trips live in bidi_text's tests.
+                if (!bidi_text.mayBeRtl(s)) try testing.expectEqual(i, back);
+            }
             if (i >= s.len) break;
             i = unicode.nextGrapheme(s, i);
         }
