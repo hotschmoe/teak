@@ -633,6 +633,10 @@ fn effectsScenario() void {
     if (findWidget(snap0, "button", "Clock")) |r| {
         clickCenter(r);
         check(waitSnap("UTC, offset", 6000), "Clock effect answers");
+        if (readSnapshot()) |s| {
+            defer gpa_.free(s);
+            check(std.mem.indexOf(u8, s, "1970-01-01") == null, "the clock is the real wall clock, not the unsupported placeholder");
+        }
     } else check(false, "found the Clock button");
 
     // Storage round trip under %APPDATA%\teak\<app>.
@@ -645,7 +649,12 @@ fn effectsScenario() void {
         defer gpa_.free(s);
         if (findWidget(s, "button", "Storage load")) |r| clickCenter(r);
     }
-    check(waitSnap("teak", 5000) and !waitSnap("(nothing saved)", 500), "storage save then load round-trips");
+    // "saved #1" shows in the save row and, once loaded from disk, again in the load row.
+    sleepMs(800);
+    if (readSnapshot()) |s| {
+        defer gpa_.free(s);
+        check(std.mem.count(u8, s, "saved #1") >= 2, "storage save then load round-trips through %APPDATA%");
+    } else check(false, "snapshot readable after storage load");
 
     // Clipboard write effect -> the real clipboard.
     _ = clipboardSet("before");
