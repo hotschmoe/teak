@@ -49,6 +49,8 @@ pub const ImeState = struct {
     cursor: usize = 0,
 };
 
+pub const CursorShape = @import("../core/cursor.zig").CursorShape;
+
 pub const A11yNode = @import("../input/a11y.zig").A11yNode;
 
 const effects = @import("../core/effects.zig");
@@ -259,6 +261,7 @@ pub fn validateHost(comptime T: type) void {
     // `submit` and `pollEffectResults` come as a pair.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
+        .{ .name = "setCursor", .sig = "fn(*Host, CursorShape) void" },
         .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
         .{ .name = "pollEffectResults", .sig = "fn(*Host, []EffectResult) usize" },
     };

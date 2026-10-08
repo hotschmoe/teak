@@ -46,6 +46,9 @@ pub const chart = @import("core/chart.zig");
 pub const table = @import("core/table.zig");
 /// Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
 pub const pointer = @import("core/pointer.zig");
+pub const cursor = @import("core/cursor.zig");
+pub const CursorShape = cursor.CursorShape;
+pub const HoverKind = cursor.HoverKind;
 /// Declarative effects (HARDLINE hatch 7): data describing I/O the Host performs.
 pub const effects = @import("core/effects.zig");
 /// Data types for `scene3d`: meshes, camera and per-frame scene draws.

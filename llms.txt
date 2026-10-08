@@ -144,7 +144,7 @@ pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 `cmd component component_list transient text sub theme text_field numeric_field
-dropdown debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
+dropdown debug_overlay snapshot chart table cursor layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
 
 ### Commands & CmdBuffer (`teak.cmd` → core/cmd.zig)
@@ -638,6 +638,11 @@ resolveKey(NavKey, Modifiers) ?SpecialKey   // the one Shift/Ctrl policy every h
 input_queue         // module: platform/input_queue.zig
 Clipboard = struct { ctx, read_fn, write_fn; pub fn read() []const u8; pub fn write(t) void }
 ImeState = struct { active: bool = false, text: []const u8 = "", cursor: usize = 0 }
+CursorShape = enum { arrow, pointer, ibeam, crosshair, move, resize_ew, resize_ns, resize_nwse, resize_nesw,
+                     not_allowed, grab, grabbing }   // Host.setCursor (optional); default per hovered cmd:
+                                                     //   button/checkbox/radio/slider pointer, text_input ibeam,
+                                                     //   canvas -> CanvasCmd.cursor (null = arrow)
+HoverKind = enum { none, button, checkbox, radio, slider, text_input, canvas, scene3d }  // arg of cursorFor
 FileDialogResult = ?[]const u8
 FileDialogFilter = struct { name: []const u8 = "All files", pattern: []const u8 = "*.*" }
 FileDialogPoll = union(enum) { pending, ok: []const u8, cancelled }
