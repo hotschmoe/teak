@@ -21,7 +21,8 @@ const zinput = zunk.web.input;
 const zapp = zunk.web.app;
 const zgpu = zunk.web.gpu;
 const fx = zunk.web.fx;
-const web_font = @import("teak-web-font");
+const teak_text = @import("teak-text");
+const font_data = @import("teak-web-fontdata");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -40,16 +41,6 @@ pub const FileDialogPoll = teak.FileDialogPoll;
 
 pub const NativeHandle = struct {};
 
-const MEASURE_CACHE_CAPACITY: usize = 128;
-
-const MeasureCacheEntry = struct {
-    content_hash: u64,
-    content_len: u32,
-    font: FontSpec,
-    metrics: TextMetrics,
-    last_used: u64,
-};
-
 /// zunk key code -> host-neutral key. Letters only matter as Ctrl chords;
 /// `InputQueue.pushNav` drops them when Ctrl is not held.
 const key_mappings = [_]struct { from: zinput.Key, to: NavKey }{
@@ -58,6 +49,7 @@ const key_mappings = [_]struct { from: zinput.Key, to: NavKey }{
     .{ .from = .enter, .to = .enter },
     .{ .from = .tab, .to = .tab },
     .{ .from = .escape, .to = .escape },
+    .{ .from = .f10, .to = .f10 },
     .{ .from = .arrow_left, .to = .left },
     .{ .from = .arrow_right, .to = .right },
     .{ .from = .arrow_up, .to = .up },
@@ -226,9 +218,8 @@ fn serializeA11yTree(nodes: []const A11yNode) struct { records_len: u32, strings
 
 /// JS-side imports (wired by zunk's resolver — see zunk issue #14 for
 /// the file-dialog shim and zunk issue #15 for the a11y DOM mirror).
-/// Stays in a sub-namespace so `@hasDecl` callers can short-circuit
-/// cleanly when a symbol isn't resolved yet (browser builds where
-/// zunk's bridge hasn't shipped).
+/// Never gate a call on a has-decl check of this namespace: the decls are non-`pub`, so
+/// it is always false (audit rule NO_HASDECL_EXTERNS).
 const externs = struct {
     extern "env" fn __zunk_request_file_dialog(
         id: u32,
@@ -252,14 +243,23 @@ const externs = struct {
 /// by `Host.deinit`. Single-host process — single global is sufficient.
 var g_active_host: ?*Host = null;
 
+/// The default face (Plex Mono subset) is the fallback for every family without
+/// a registered face, like the system font on native; then each `.fonts` file
+/// goes into its slot and weight.
+fn registerEmbeddedFonts() void {
+    if (font_data.default_font.len > 0) teak_text.face.setFallbackBytes(font_data.default_font);
+    for (font_data.faces) |f| {
+        const family: teak.FontFamily = @fromBackingInt(@intCast(f.slot));
+        const weight: teak.FontWeight = if (f.weight < 450) .regular else if (f.weight < 600) .medium else .bold;
+        teak_text.registerFace(family, weight, f.bytes) catch {};
+    }
+}
+
 pub const Host = struct {
     width: u32,
     height: u32,
     first_poll: bool = true,
     queue: InputQueue = .{},
-    measure_cache: [MEASURE_CACHE_CAPACITY]MeasureCacheEntry = undefined,
-    measure_cache_len: usize = 0,
-    measure_tick: u64 = 0,
     file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = @splat(.{}),
     /// This frame's effect completions (`zunk.web.fx`), fetched by
     /// `pollInputs` so `Clipboard.read` can see a paste before the keys are
@@ -276,6 +276,7 @@ pub const Host = struct {
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         zinput.init();
         zapp.setTitle(title);
+        registerEmbeddedFonts();
         return .{ .width = width, .height = height };
     }
 
@@ -317,9 +318,11 @@ pub const Host = struct {
         // the reported `mods` keep the real state.
         const reported = q.mods;
         q.mods.ctrl = reported.ctrl or reported.meta;
+        if (zinput.isKeyPressed(.alt)) q.altDown();
         for (key_mappings) |m| {
             if (zinput.isKeyPressed(m.from)) q.pushNav(m.to);
         }
+        if (zinput.isKeyReleased(.alt)) q.altUp();
         q.mods = reported;
         // Zunk delivers whole UTF-8 code points and no control codes or
         // Ctrl/Cmd chords; `pushText` re-validates and drops anything else.
@@ -351,82 +354,23 @@ pub const Host = struct {
         return .{};
     }
 
-    /// Measures via canvas 2D through `zunk.web.gpu.measureText`. Results
-    /// are cached by (content_hash, size, family) because every
-    /// measurement pays a wasm↔JS round-trip. Zunk's `TextMetrics`
-    /// carries only width/height; ascent/descent are synthesized with
-    /// the same 0.75/0.25 split `teak.monoMeasurer` uses.
+    /// Measures with the shared stb_truetype shaper (`teak-text`), on the
+    /// faces embedded in the wasm: the same advances the Gpu rasterizes with, and
+    /// the same numbers as every native backend. Results are cached by the
+    /// module, so repeated labels cost a hash.
     pub fn textMeasurer(self: *Host) TextMeasurer {
-        return .{ .ctx = @ptrCast(self), .measure_fn = zunkMeasure };
+        return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
     }
 
-    fn zunkMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        const self: *Host = @ptrCast(@alignCast(ctx));
-        self.measure_tick += 1;
-        const content_hash = std.hash.Wyhash.hash(0, text_bytes);
-
-        for (self.measure_cache[0..self.measure_cache_len]) |*e| {
-            if (e.content_hash == content_hash and
-                e.content_len == text_bytes.len and
-                std.meta.eql(e.font, font))
-            {
-                e.last_used = self.measure_tick;
-                return e.metrics;
-            }
-        }
-
-        var font_buf: [web_font.css_buf_len]u8 = undefined;
-        const css = web_font.css(&font_buf, font);
-
-        const raw = zgpu.measureText(text_bytes, css, font.letter_spacing);
-        // Canvas `measureText` returns glyph-tight height
-        // (actualBoundingBoxAscent + Descent), which varies per string —
-        // "hello" is shorter than "helloy". Native returns font-scope
-        // `tm.tmHeight` so every label sits on the same baseline.
-        // Stabilize the web side with an em-plus-leading approximation;
-        // rasterize-side em still fits because canvas `textBaseline='top'`
-        // draws em-top at y=0 and 1.2× em leaves room for descenders.
-        const stable_h = @ceil(font.size_px * 1.2);
-        const metrics: TextMetrics = .{
-            .width = @floatFromInt(raw.width),
-            .height = stable_h,
-            .ascent = font.size_px * 0.75,
-            .descent = font.size_px * 0.25,
-        };
-
-        const slot = if (self.measure_cache_len < self.measure_cache.len) blk: {
-            const i = self.measure_cache_len;
-            self.measure_cache_len += 1;
-            break :blk i;
-        } else blk: {
-            var oldest: usize = 0;
-            var oldest_tick: u64 = self.measure_cache[0].last_used;
-            for (self.measure_cache[0..self.measure_cache_len], 0..) |*e, i| {
-                if (e.last_used < oldest_tick) {
-                    oldest = i;
-                    oldest_tick = e.last_used;
-                }
-            }
-            break :blk oldest;
-        };
-
-        self.measure_cache[slot] = .{
-            .content_hash = content_hash,
-            .content_len = @intCast(text_bytes.len),
-            .font = font,
-            .metrics = metrics,
-            .last_used = self.measure_tick,
-        };
-        return metrics;
+    fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
+        return teak_text.measure(text_bytes, font);
     }
 
-    fn fallbackMetrics(font: FontSpec) TextMetrics {
-        return .{
-            .width = 0,
-            .height = font.size_px,
-            .ascent = font.size_px * 0.75,
-            .descent = font.size_px * 0.25,
-        };
+    /// Register a TTF for (`family`, `weight`) at runtime; the bytes are
+    /// borrowed (an `@embedFile` slice). The `.fonts` build option already
+    /// registers its files at `init`.
+    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
+        try teak_text.registerFace(family, weight, ttf);
     }
 
     /// Clipboard vtable. `write` goes through the effects bridge
@@ -477,14 +421,12 @@ pub const Host = struct {
     /// retain into the DOM synchronously before returning.
     pub fn publishA11yTree(_: *Host, nodes: []const A11yNode) void {
         const lens = serializeA11yTree(nodes);
-        if (comptime @hasDecl(externs, "__zunk_publish_a11y_tree")) {
-            externs.__zunk_publish_a11y_tree(
-                &g_a11y_records,
-                lens.records_len,
-                &g_a11y_strings,
-                lens.strings_len,
-            );
-        }
+        externs.__zunk_publish_a11y_tree(
+            &g_a11y_records,
+            lens.records_len,
+            &g_a11y_strings,
+            lens.strings_len,
+        );
     }
 
     // Browser file dialogs go through the showOpenFilePicker API which
@@ -546,10 +488,9 @@ pub const Host = struct {
         self.file_dialog_slots[slot_idx].state = .pending;
         self.file_dialog_slots[slot_idx].path_len = 0;
         const id: u32 = @intCast(slot_idx + 1);
-        // Best-effort dispatch. If zunk hasn't wired the JS shim yet,
-        // the request just stays `.pending` forever (apps treat that
-        // as "no file picker available on this host").
-        if (@hasDecl(externs, "__zunk_request_file_dialog")) {
+        // Unconditional: a has-decl check on the private externs is always false for non-`pub`
+        // decls, which silently dropped every request (audit-enforced).
+        {
             externs.__zunk_request_file_dialog(
                 id,
                 mode,
@@ -834,7 +775,10 @@ test "wasm key table reaches every SpecialKey through the shared policy" {
             if (teak.resolveKey(m.to, mods)) |sk| seen.insert(sk);
         }
     }
-    for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
+    for (std.enums.values(SpecialKey)) |sk| {
+        if (sk == .alt_tap) continue; // synthesized by InputQueue.altUp, not a table key
+        try std.testing.expect(seen.contains(sk));
+    }
 }
 
 test "effectResult maps every completion kind to the contract type" {

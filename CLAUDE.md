@@ -89,7 +89,7 @@ Every arrow is a function call with explicit inputs and outputs. No globals, no 
 |-------|-------------|-----------|
 | **State (TEA)** | `Model` struct holds all app state. `Msg` tagged union enumerates transitions. `update` is a switch. | `Model`, `Msg`, `update()` |
 | **View** | `view()` emits flat `[]Cmd` tagged unions into an arena-allocated `CmdBuffer`. Runs every frame. | `Cmd`, `CmdBuffer`, `view()` |
-| **Layout** | Two O(n) linear passes (measure bottom-up, position top-down) over `[]Cmd` producing `[]Rect`. Stack-based, no tree allocation. | `Rect`, `LayoutEngine` |
+| **Layout** | Two to four O(n) linear passes (measure bottom-up, position top-down; plus resolve-widths / re-measure-heights only when wrapped or shrinkable nodes exist) over `[]Cmd` producing `[]Rect`. Stack-based, no tree allocation. | `Rect`, `LayoutEngine` |
 | **Hit-test** | Walks `[]Cmd` + `[]Rect` backwards (painter's order). Returns the `Msg` embedded in the command. No ID hashing. | `hit_test()` |
 | **Render** | Converts `[]Cmd` + `[]Rect` + `TransientState` into wgpu draw calls (colored quads). | `render_pass()`, `Vertex` |
 | **TransientState** | Hover/press/focus state that bypasses the TEA loop entirely -- short circuits from input to render. | `TransientState` |
@@ -185,6 +185,8 @@ src/                           -- the library, consumable as a Zig module
     scene.zig                  -- MeshData/Camera/SceneDraw data for scene3d (docs/features/scene3d.md)
     resources.zig              -- Resource union for the App `resources()` hook (HARDLINE hatch 8)
     table.zig                  -- fixed-column monospace tables: fitCell + Table.header/row
+    widgets/                   -- toggle, progress, tabs, split, tooltip, toast, dialog, menu (bar + context):
+                               --   primitive-built widgets, zero new Cmd variants (docs/features/widgets.md)
     snapshot.zig               -- []Cmd+[]Rect -> text; golden tests + TEAK_SNAPSHOT
   layout/
     engine.zig                 -- measure + position passes (fixed sizes, align, justify, flex);
@@ -213,7 +215,8 @@ src/                           -- the library, consumable as a Zig module
     surface_xlib.zig           -- Xlib Window surface provider } Linux stitch:
     native_linux.zig           -- Gpu(surface_xlib, StbttRasterizer) + validateGpu
     web.zig                    -- zunk WebGPU backend (wasm)
-    glyph_cache.zig            -- GlyphCache(Backend): shared LRU glyph-texture cache
+    glyph_atlas.zig            -- GlyphAtlas: paged R8 shelf atlas, page-granular eviction, GlyphInstance
+    text_stage.zig             -- TextStage(Raster): shape -> pack -> glyph instances (native + web)
     vendor/stb_truetype.h(.c)  -- vendored public-domain rasterizer (Linux text)
   text/                        -- teak-text module (stb; shared by X11 Host measurer + Gpu rasterizer)
     text.zig                   -- module root; face.zig (Font + face table), shaper.zig (SimpleShaper:
@@ -240,9 +243,11 @@ examples/
       greeter.zig              -- text input w/ selection + clipboard editing
       rich_zig_adapter.zig     -- rich_zig markup -> teak RichTextSpan[]
 
+  gallery/                     -- every widget in three looks (retro / dark / light); vreg goldens; native + web
+
 shaders/
   quad.wgsl              -- shader for colored rectangles
-  textured_quad.wgsl     -- alpha-from-texture (text glyphs)
+  glyph.wgsl             -- instanced glyph quads from the R8 atlas (native + web)
   scene.wgsl             -- 3D scenes: flat-lit triangles + instanced line quads
   image.wgsl             -- texture * tint (RGBA images)
 ```
@@ -257,7 +262,7 @@ The library has no external dependencies; `wgpu-native` is owned by teak's build
 
 ## Implementation Status
 
-The framework is **implemented and shipping**: the full loop (Model → view → layout → render → hit-test → update) runs on native Windows (Win32 + wgpu), native Linux (X11 + wgpu), and web (wasm + WebGPU via zunk), with real text rendering on all three. Six examples (`counter_greeter`, `todo`, `tree`, `chrome`, `viewport` — pan/zoom canvas + scroll list, `effects` — every declarative effect) exercise the loop end-to-end.
+The framework is **implemented and shipping**: the full loop (Model → view → layout → render → hit-test → update) runs on native Windows (Win32 + wgpu), native Linux (X11 + wgpu), and web (wasm + WebGPU via zunk), with real text rendering on all three. Six examples (`counter_greeter`, `todo`, `tree`, `chrome`, `viewport` — pan/zoom canvas + scroll list, `effects` — every declarative effect, `gallery` — every widget in three looks, with menus, tooltips, toasts, dialogs) exercise the loop end-to-end.
 
 Shipped phases, in order: prototype core loop → cleanup/abstraction hardening (`zig build audit`, CI) → text rendering (Host `TextMeasurer` + glyph caches) → functional gaps (overlay, images, selection/clipboard, subscriptions, multi-window, virtual list, a11y, rich text) → ergonomic helpers → consumer DX (`teak.run`, widgets, onboarding docs) → Linux native support → agent DX + consumer gaps (validateBalance, examples on `teak.run`, `teak.snapshot` + `TEAK_SNAPSHOT`, canvas/chart, dropdown scrolling, per-item focus, subscriptions serviced by `run`, `llms.txt` + cookbook). The current working task list is `tasks.md`; the original phase-by-phase prototype guide survives at `docs/archive/init_convo/first_proto.md`.
 
@@ -277,3 +282,6 @@ Shipped phases, in order: prototype core loop → cleanup/abstraction hardening 
 - Explicit allocators everywhere. Arena allocators for per-frame data.
 - Convenience emitters on `CmdBuffer` stay non-error-returning; allocation failure goes through `core/oom.zig`'s `oom()` (`alloc(...) catch oom()`), a loud `@panic` in every optimize mode. Never `catch unreachable` an allocation (UB in release).
 - Text measurement flows through the Host's `TextMeasurer` (real platform metrics at layout time). `teak.monoMeasurer()` is the stateless stub for CLI canaries and tests. `CHAR_WIDTH` is gone — `zig build audit` forbids reintroducing it.
+
+## Versioning
+`build.zig.zon` `.version` is the single source of truth; code reads `teak.version` (from `build_options`). Never write a version literal elsewhere, never bump it in a feature PR. Releases are cut explicitly with `tools/release.sh <semver>`. See [`docs/VERSIONING.md`](docs/VERSIONING.md).

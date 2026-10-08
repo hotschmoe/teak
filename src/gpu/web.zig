@@ -1,6 +1,7 @@
 //! WebGPU backend via zunk. Mirrors `gpu/wgpu_core.zig`'s pipeline shape —
 //! shared wgsl shaders, same Vertex layout, same screen_size uniform,
-//! same solid / text / image pipelines with a matching glyph cache, and
+//! same solid / image pipelines, the shared glyph-atlas text pass
+//! (`text_stage.zig` + `shaders/glyph.wgsl`, stb_truetype in wasm), and
 //! the same frame structure: stage UI draws, `renderScenes` (offscreen 3D
 //! via `web_scene.zig`), then the main pass (optionally 4x MSAA).
 //! Zunk owns the canvas + swap-chain, so there's no surface config and
@@ -17,7 +18,9 @@ const std = @import("std");
 const teak = @import("teak");
 const zunk = @import("zunk");
 const web_font = @import("teak-web-font");
-const glyph_cache = @import("glyph_cache.zig");
+const glyph_atlas = @import("glyph_atlas.zig");
+const text_stage = @import("text_stage.zig");
+const text = @import("teak-text");
 const web_scene = @import("web_scene.zig");
 const scene_common = @import("scene_common.zig");
 const SlotTable = @import("slot_table.zig").SlotTable;
@@ -36,7 +39,7 @@ pub const TextDraw = teak.TextDraw;
 pub const InitOptions = teak.gpu.InitOptions;
 
 const SHADER_SOLID = @import("teak-shaders").quad_wgsl;
-const SHADER_TEXT = @import("teak-shaders").textured_quad_wgsl;
+const SHADER_GLYPH = @import("teak-shaders").glyph_wgsl;
 const SHADER_IMAGE = @import("teak-shaders").image_wgsl;
 
 /// Allocator for the growable image tables.
@@ -44,7 +47,6 @@ const image_gpa = std.heap.wasm_allocator;
 /// Ceiling on live app images (handles are `u32`; this bounds a runaway app).
 const IMAGE_MAX_SLOTS: u32 = 1 << 16;
 const SCENE_VERT_BUF_CAPACITY: usize = scene_common.max_scenes * 6;
-const TEXT_VERT_BUF_CAPACITY: usize = glyph_cache.CAPACITY * 6;
 
 /// A draw of one textured quad (6 vertices at `vert_offset`) with its own
 /// bind group — shared by the text, image and scene-composite lists.
@@ -78,29 +80,77 @@ const Sampled = struct {
 
 const ImageCache = GrowSlotTable(Sampled, IMAGE_MAX_SLOTS);
 
-// ── Text cache ─────────────────────────────────────────────────────
+// ── Text: glyph atlas ──────────────────────────────────────────────
 //
-// Layout, LRU, keying shared with gpu/wgpu_core.zig via
-// `glyph_cache.GlyphCache(Backend)`. Only the resource types differ.
+// Glyph shaping, packing and instance building live in `text_stage.zig`
+// (shared with the native core). This file owns the GPU side: R8 page
+// textures, the instance buffer and one instanced draw per page per layer.
 
-const WebBackend = struct {
-    pub const Texture = zgpu.Texture;
-    pub const View = zgpu.TextureView;
-    pub const BindGroup = zgpu.BindGroup;
+/// One atlas page on the GPU; the CPU copy lives in the `TextStage`.
+const AtlasPage = struct {
+    texture: zgpu.Texture,
+    view: zgpu.TextureView,
+    bind_group: zgpu.BindGroup,
+};
 
-    pub fn destroyEntry(e: anytype) void {
-        zgpu.release(e.bind_group);
-        zgpu.release(e.view);
-        zgpu.destroyTexture(e.texture);
+/// Glyph provider: stb_truetype in wasm for every glyph the app's faces have,
+/// canvas 2D (via zunk) for code points no face covers (CJK, symbols).
+const WebRaster = struct {
+    /// Size over speed on web: shape each run fresh (a few us per label).
+    pub const shaped_run_cache = false;
+
+    inner: text.StbttRasterizer,
+    /// Scratch for one canvas-rasterized cluster (`rasterCluster` reports a
+    /// larger size if it does not fit; such a glyph is skipped).
+    cluster_px: [192 * 192]u8 = undefined,
+
+    pub fn deinit(self: *WebRaster) void {
+        self.inner.deinit();
+    }
+
+    pub fn shape(self: *WebRaster, t: []const u8, font: FontSpec, out: []teak.ShapedGlyph) teak.ShapeResult {
+        return self.inner.shape(t, font, out);
+    }
+
+    pub fn ascent(self: *WebRaster, font: FontSpec, scale: f32) f32 {
+        return self.inner.ascent(font, scale);
+    }
+
+    pub fn epoch(self: *const WebRaster) u64 {
+        return self.inner.epoch();
+    }
+
+    pub fn rasterizeGlyph(self: *WebRaster, face: u16, gid: u16, size_px: f32, bin: u2) ?text.GlyphBitmap {
+        return self.inner.rasterizeGlyph(face, gid, size_px, bin);
+    }
+
+    pub fn rasterizeCluster(self: *WebRaster, utf8: []const u8, font: FontSpec, size_px: f32) ?text.GlyphBitmap {
+        var font_buf: [web_font.css_buf_len]u8 = undefined;
+        const css = web_font.css(&font_buf, font);
+        const bmp = zgpu.rasterCluster(utf8, css, size_px, &self.cluster_px);
+        if (bmp.truncated) return null;
+        const m = bmp.metrics;
+        // zunk: pixel (0,0) is at (pen + bearing_x, baseline - bearing_y); the atlas
+        // convention is y down from the baseline.
+        return .{
+            .pixels = bmp.pixels,
+            .width = m.width,
+            .height = m.height,
+            .bearing_x = m.bearing_x,
+            .bearing_y = -m.bearing_y,
+        };
     }
 };
 
-const TextCache = glyph_cache.GlyphCache(WebBackend);
+const TextStage = text_stage.TextStage(WebRaster);
 
 pub const Gpu = struct {
     // Solid pipeline.
     pipeline: zgpu.RenderPipeline,
-    bind_group: zgpu.BindGroup,
+    /// Built lazily for the current `vert_buf` (it is also bound as storage).
+    bind_group: ?zgpu.BindGroup,
+    bind_group_buf: ?zgpu.Buffer,
+    solid_bgl: zgpu.BindGroupLayout,
     uniform_buf: zgpu.Buffer,
     vert_buf: ?zgpu.Buffer,
     vert_buf_size: u32,
@@ -113,22 +163,22 @@ pub const Gpu = struct {
     samples: u32,
     msaa: ?MsaaTarget,
 
-    // Text pipeline.
-    text_pipeline: zgpu.RenderPipeline,
+    // Text pipeline (instanced glyph quads from the atlas).
+    glyph_pipeline: zgpu.RenderPipeline,
+    glyph_bgl: zgpu.BindGroupLayout,
+    /// {logical size, device scale, text gamma}; see shaders/glyph.wgsl.
+    glyph_uniform_buf: zgpu.Buffer,
+    /// Layout + sampler shared by the image and scene-composite pipelines.
     text_bgl: zgpu.BindGroupLayout,
     sampler: zgpu.Sampler,
-    text_cache: TextCache,
-    text_draws: [glyph_cache.CAPACITY]QuadDraw,
-    text_draw_count: usize,
-    text_verts: [TEXT_VERT_BUF_CAPACITY]Vertex,
-    text_vert_count: u32,
-    text_vert_buf: ?zgpu.Buffer,
-    text_vert_buf_size: u32,
+    text: TextStage,
+    atlas_pages: std.ArrayList(AtlasPage),
+    glyph_buf: ?zgpu.Buffer,
+    glyph_buf_size: u32,
 
     // Image pipeline. Shares `text_bgl` + `sampler` with the text path
     // since both bind {uniform, texture, sampler}. Only the shader differs
     // — `image.wgsl` modulates the texture by the tint (real RGBA), while
-    // `textured_quad.wgsl` modulates the alpha-only glyph by the color.
     image_pipeline: zgpu.RenderPipeline,
     images: ImageCache,
     image_draws: std.ArrayList(QuadDraw),
@@ -156,7 +206,6 @@ pub const Gpu = struct {
     // staged-record indices (`*_ov`) so the main pass draws all base content
     // before the overlay's. null = no split (draw by kind).
     overlay_split: ?OverlaySplit,
-    text_ov: usize,
     image_ov: usize,
     scene_ov: usize,
 
@@ -177,9 +226,12 @@ pub const Gpu = struct {
         const samples: u32 = if (options.msaa) scene_common.msaa_samples else 1;
         const shader = zgpu.createShaderModule(SHADER_SOLID);
 
+        // binding 0: screen size; binding 1: the solid vertex buffer again,
+        // read-only, so SDF quads can fetch their records (render/sdf.zig).
         const bgl = zgpu.createBindGroupLayout(&.{
             zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX, .uniform)
                 .withMinSize(8),
+            zgpu.BindGroupLayoutEntry.initBuffer(1, zgpu.ShaderVisibility.FRAGMENT, .read_only_storage),
         });
         const pl = zgpu.createPipelineLayout(&.{bgl});
 
@@ -194,9 +246,6 @@ pub const Gpu = struct {
         const pipeline = uiPipeline(pl, shader, &layouts, samples);
 
         const uniform_buf = zgpu.createBuffer(8, zgpu.BufferUsage.UNIFORM | zgpu.BufferUsage.COPY_DST);
-        const bind_group = zgpu.createBindGroup(bgl, &.{
-            zgpu.BindGroupEntry.initBufferFull(0, uniform_buf, 8),
-        });
 
         // Text + image pipelines: 3-entry BGL {uniform, texture, sampler},
         // same vertex layout as the solid pipeline; only the fragment
@@ -208,7 +257,26 @@ pub const Gpu = struct {
             zgpu.BindGroupLayoutEntry.initSampler(2, zgpu.ShaderVisibility.FRAGMENT, .filtering),
         });
         const text_pl = zgpu.createPipelineLayout(&.{text_bgl});
-        const text_pipeline = uiPipeline(text_pl, zgpu.createShaderModule(SHADER_TEXT), &layouts, samples);
+
+        // Glyph pipeline: {uniform, R8 atlas page}, one instance per glyph. The
+        // instance is read as raw 32-bit words (unpacked in glyph.wgsl).
+        const glyph_bgl = zgpu.createBindGroupLayout(&.{
+            zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX | zgpu.ShaderVisibility.FRAGMENT, .uniform)
+                .withMinSize(16),
+            zgpu.BindGroupLayoutEntry.initTexture(1, zgpu.ShaderVisibility.FRAGMENT, .float),
+        });
+        const glyph_attrs = [_]zgpu.VertexAttribute{
+            .{ .shader_location = 0, .format = .float32x2, .offset = @offsetOf(glyph_atlas.GlyphInstance, "x") },
+            .{ .shader_location = 1, .format = .uint32x2, .offset = @offsetOf(glyph_atlas.GlyphInstance, "w") },
+            .{ .shader_location = 2, .format = .uint32, .offset = @offsetOf(glyph_atlas.GlyphInstance, "color") },
+            .{ .shader_location = 3, .format = .uint32x2, .offset = @offsetOf(glyph_atlas.GlyphInstance, "clip_xy") },
+            .{ .shader_location = 4, .format = .uint32, .offset = @offsetOf(glyph_atlas.GlyphInstance, "flags") },
+        };
+        const glyph_layouts = [_]zgpu.VertexBufferLayout{
+            zgpu.VertexBufferLayout.fromSlice(@sizeOf(glyph_atlas.GlyphInstance), .instance, &glyph_attrs),
+        };
+        const glyph_pipeline = uiPipeline(zgpu.createPipelineLayout(&.{glyph_bgl}), zgpu.createShaderModule(SHADER_GLYPH), &glyph_layouts, samples);
+        const glyph_uniform_buf = zgpu.createBuffer(16, zgpu.BufferUsage.UNIFORM | zgpu.BufferUsage.COPY_DST);
         const image_pipeline = uiPipeline(text_pl, zgpu.createShaderModule(SHADER_IMAGE), &layouts, samples);
 
         const sampler = zgpu.createSampler(.{
@@ -219,9 +287,18 @@ pub const Gpu = struct {
             .address_w = .clamp_to_edge,
         });
 
+        const web_text = try TextStage.init(
+            std.heap.wasm_allocator,
+            .{ .inner = try text.StbttRasterizer.init(std.heap.wasm_allocator) },
+            options.max_atlas_pages,
+            1,
+        );
+
         var self: Gpu = .{
             .pipeline = pipeline,
-            .bind_group = bind_group,
+            .bind_group = null,
+            .bind_group_buf = null,
+            .solid_bgl = bgl,
             .uniform_buf = uniform_buf,
             .vert_buf = null,
             .vert_buf_size = 0,
@@ -230,16 +307,15 @@ pub const Gpu = struct {
             .height = height,
             .samples = samples,
             .msaa = null,
-            .text_pipeline = text_pipeline,
+            .glyph_pipeline = glyph_pipeline,
+            .glyph_bgl = glyph_bgl,
+            .glyph_uniform_buf = glyph_uniform_buf,
             .text_bgl = text_bgl,
             .sampler = sampler,
-            .text_cache = .{},
-            .text_draws = undefined,
-            .text_draw_count = 0,
-            .text_verts = undefined,
-            .text_vert_count = 0,
-            .text_vert_buf = null,
-            .text_vert_buf_size = 0,
+            .text = web_text,
+            .atlas_pages = .empty,
+            .glyph_buf = null,
+            .glyph_buf_size = 0,
             .image_pipeline = image_pipeline,
             .images = .{},
             .image_draws = .empty,
@@ -257,7 +333,6 @@ pub const Gpu = struct {
             .scene_vert_buf = null,
             .scene_vert_buf_size = 0,
             .overlay_split = null,
-            .text_ov = 0,
             .image_ov = 0,
             .scene_ov = 0,
         };
@@ -293,11 +368,19 @@ pub const Gpu = struct {
         self.images.deinit(image_gpa);
         self.image_draws.deinit(image_gpa);
         self.image_verts.deinit(image_gpa);
-        self.text_cache.clear();
+        for (self.atlas_pages.items) |pg| {
+            zgpu.release(pg.bind_group);
+            zgpu.release(pg.view);
+            zgpu.destroyTexture(pg.texture);
+        }
+        self.atlas_pages.deinit(std.heap.wasm_allocator);
+        self.text.deinit();
+        if (self.glyph_buf) |gb| zgpu.bufferDestroy(gb);
+        zgpu.bufferDestroy(self.glyph_uniform_buf);
         zgpu.destroySampler(self.sampler);
         if (self.image_vert_buf) |ib| zgpu.bufferDestroy(ib);
-        if (self.text_vert_buf) |tb| zgpu.bufferDestroy(tb);
         if (self.vert_buf) |vb| zgpu.bufferDestroy(vb);
+        if (self.bind_group) |bg| zgpu.release(bg);
         zgpu.bufferDestroy(self.uniform_buf);
         self.releaseMsaa();
     }
@@ -311,17 +394,27 @@ pub const Gpu = struct {
     fn writeScreenSize(self: *Gpu) void {
         const screen_size = [2]f32{ @floatFromInt(self.width), @floatFromInt(self.height) };
         zgpu.bufferWriteTyped(f32, self.uniform_buf, 0, &screen_size);
+        self.writeGlyphUniform();
+    }
+
+    fn writeGlyphUniform(self: *Gpu) void {
+        const u = [4]f32{ @floatFromInt(self.width), @floatFromInt(self.height), self.text.scale, 1.0 };
+        zgpu.bufferWriteTyped(f32, self.glyph_uniform_buf, 0, &u);
     }
 
     /// Grow `buf` to hold `verts` and write them. Shared by the solid,
     /// text, image and scene-composite vertex streams.
     fn writeVerts(buf: *?zgpu.Buffer, size: *u32, verts: []const Vertex) void {
+        writeVertsAs(zgpu.BufferUsage.VERTEX, buf, size, verts);
+    }
+
+    fn writeVertsAs(usage: u32, buf: *?zgpu.Buffer, size: *u32, verts: []const Vertex) void {
         const byte_size: u32 = @intCast(verts.len * @sizeOf(Vertex));
         if (byte_size == 0) return;
         if (buf.* == null or byte_size > size.*) {
             if (buf.*) |old| zgpu.bufferDestroy(old);
             size.* = @max(byte_size, 4096);
-            buf.* = zgpu.createBuffer(size.*, zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.COPY_DST);
+            buf.* = zgpu.createBuffer(size.*, usage | zgpu.BufferUsage.COPY_DST);
         }
         zgpu.bufferWriteTyped(Vertex, buf.*.?, 0, verts);
     }
@@ -340,7 +433,8 @@ pub const Gpu = struct {
 
     pub fn uploadVertices(self: *Gpu, verts: []const Vertex) void {
         self.vert_count = @intCast(verts.len);
-        writeVerts(&self.vert_buf, &self.vert_buf_size, verts);
+        // Also bound read-only in the fragment stage: SDF quads read their records from it.
+        writeVertsAs(zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.STORAGE, &self.vert_buf, &self.vert_buf_size, verts);
     }
 
     // ── Main pass ──────────────────────────────────────────────────
@@ -394,12 +488,11 @@ pub const Gpu = struct {
         const solid = overlay.Range.of(self.splitOf("verts", self.vert_count), self.vert_count);
         const imgs = overlay.Range.of(self.image_ov, self.image_draws.items.len);
         const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
-        const txts = overlay.Range.of(self.text_ov, self.text_draw_count);
         inline for (.{ "base", "overlay" }) |layer| {
             self.drawSolids(pass, @field(overlay.Range, layer)(solid));
             drawQuads(pass, self.image_pipeline, self.image_vert_buf, @intCast(self.image_verts.items.len), self.image_draws.items, @field(overlay.Range, layer)(imgs));
             drawQuads(pass, self.image_pipeline, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count], @field(overlay.Range, layer)(scns));
-            drawQuads(pass, self.text_pipeline, self.text_vert_buf, self.text_vert_count, self.text_draws[0..self.text_draw_count], @field(overlay.Range, layer)(txts));
+            self.drawGlyphs(pass, if (comptime std.mem.eql(u8, layer, "base")) 0 else 1);
         }
 
         zgpu.renderPassEnd(pass);
@@ -407,12 +500,24 @@ pub const Gpu = struct {
     }
 
     /// Solid quads `[from, to)` (vertex indices).
+    /// {screen size, solid vertex buffer as read-only storage}, rebuilt
+    /// whenever `vert_buf` is reallocated.
+    fn rebuildSolidBindGroup(self: *Gpu) void {
+        if (self.bind_group) |old| zgpu.release(old);
+        self.bind_group = zgpu.createBindGroup(self.solid_bgl, &.{
+            zgpu.BindGroupEntry.initBufferFull(0, self.uniform_buf, 8),
+            zgpu.BindGroupEntry.initBufferFull(1, self.vert_buf.?, self.vert_buf_size),
+        });
+        self.bind_group_buf = self.vert_buf;
+    }
+
     fn drawSolids(self: *Gpu, pass: zgpu.RenderPassEncoder, range: struct { usize, usize }) void {
         const from, const to = range;
         if (to <= from or self.vert_buf == null) return;
         const draw_bytes: u64 = @as(u64, self.vert_count) * @sizeOf(Vertex);
+        if (self.bind_group_buf == null or self.bind_group_buf.? != self.vert_buf.?) self.rebuildSolidBindGroup();
         zgpu.renderPassSetPipeline(pass, self.pipeline);
-        zgpu.renderPassSetBindGroup(pass, 0, self.bind_group);
+        zgpu.renderPassSetBindGroup(pass, 0, self.bind_group.?);
         zgpu.renderPassSetVertexBuffer(pass, 0, self.vert_buf.?, 0, draw_bytes);
         zgpu.renderPassDraw(pass, @intCast(to - from), 1, @intCast(from), 0);
     }
@@ -455,114 +560,86 @@ pub const Gpu = struct {
         return .{ .texture = texture, .view = view, .bind_group = self.textureBindGroup(view) };
     }
 
-    /// Rasterize `text_bytes` into an rgba8unorm texture `width × height`
-    /// via zunk's canvas 2D shaper, return a `TextureHandle = (cache
-    /// slot + 1)` so 0 stays the sentinel. Cache-aware: repeated calls
-    /// with the same (content, font, color, w, h) reuse the existing
-    /// texture + bind group. LRU-evicts by `last_used_frame` when full.
-    pub fn rasterizeText(
-        self: *Gpu,
-        text_bytes: []const u8,
-        font: FontSpec,
-        color: [4]f32,
-        width: u32,
-        height: u32,
-    ) TextureHandle {
-        if (width == 0 or height == 0) return teak.TEXTURE_HANDLE_NONE;
+    // ── Text: shaped glyphs -> atlas -> instanced quads ────────────
 
-        const key = glyph_cache.textCacheKey(text_bytes, font, color, width, height);
-        const content_hash = std.hash.Wyhash.hash(0, text_bytes);
-
-        const hit = self.text_cache.lookup(key, text_bytes.len, content_hash);
-        if (hit != teak.TEXTURE_HANDLE_NONE) return hit;
-
-        self.text_cache.evictLRU();
-
-        var font_buf: [web_font.css_buf_len]u8 = undefined;
-        const css = web_font.css(&font_buf, font);
-
-        const sampled = self.sampledFrom(zgpu.rasterizeText(text_bytes, css, font.letter_spacing, color, width, height));
-        return self.text_cache.insert(
-            key,
-            @intCast(text_bytes.len),
-            content_hash,
-            sampled.texture,
-            sampled.view,
-            sampled.bind_group,
-        );
+    /// Per-frame text staging (call after `uploadVertices`, before
+    /// `renderFrame`): `text_stage` shapes and packs, this uploads the dirty
+    /// atlas rects and the instances. Atlas exhaustion is reported through
+    /// `text.dropped` (the web build has no logger).
+    pub fn uploadText(self: *Gpu, draws: []const TextDraw) void {
+        // CSS px -> canvas device px; the atlas is rasterized at the device size.
+        const canvas = zgpu.canvasSize();
+        const scale: f32 = if (self.width > 0) @as(f32, @floatFromInt(canvas.w)) / @as(f32, @floatFromInt(self.width)) else 1;
+        if (scale != self.text.scale) {
+            self.text.scale = scale;
+            self.writeGlyphUniform();
+        }
+        self.text.stage(draws, self.splitOf("text", draws.len));
+        self.flushGlyphs();
     }
 
-    /// Per-frame text orchestration. Rasterizes each TextDraw (with
-    /// cache), emits 6 textured vertices per visible draw, records a
-    /// draw entry for `renderFrame`'s text pass. Must be called after
-    /// `uploadVertices` and before `renderFrame`.
-    pub fn uploadText(self: *Gpu, draws: []const TextDraw) void {
-        self.text_cache.tick();
-        self.text_draw_count = 0;
-        self.text_vert_count = 0;
-        var mark: overlay.Marker = .{ .start = self.splitOf("text", draws.len) };
-        defer self.text_ov = mark.finish(self.text_draw_count);
+    fn ensurePages(self: *Gpu) void {
+        while (self.atlas_pages.items.len < self.text.pageCount()) {
+            const texture = zgpu.createTexture(
+                text_stage.atlas_dim,
+                text_stage.atlas_dim,
+                .r8unorm,
+                zgpu.TextureUsage.TEXTURE_BINDING | zgpu.TextureUsage.COPY_DST,
+            );
+            const view = zgpu.createTextureView(texture);
+            const bg = zgpu.createBindGroup(self.glyph_bgl, &.{
+                zgpu.BindGroupEntry.initBufferFull(0, self.glyph_uniform_buf, 16),
+                zgpu.BindGroupEntry.initTextureView(1, view),
+            });
+            self.atlas_pages.append(std.heap.wasm_allocator, .{ .texture = texture, .view = view, .bind_group = bg }) catch return;
+        }
+    }
 
-        for (draws, 0..) |draw, di| {
-            mark.visit(di, self.text_draw_count);
-            // Snap rect + clip to integer pixel boundaries FIRST, then
-            // derive visibility + UVs from the snapped coordinates (see
-            // native.zig for the full rationale — edge-repeat bleed on
-            // glyph rects otherwise).
-            const r_x = @floor(draw.rect_x);
-            const r_y = @floor(draw.rect_y);
-            const r_w = @ceil(draw.rect_x + draw.rect_w) - r_x;
-            const r_h = @ceil(draw.rect_y + draw.rect_h) - r_y;
-
-            const c_x0 = @floor(draw.clip_x);
-            const c_y0 = @floor(draw.clip_y);
-            const c_x1 = @ceil(draw.clip_x + draw.clip_w);
-            const c_y1 = @ceil(draw.clip_y + draw.clip_h);
-
-            const vis_x0 = @max(r_x, c_x0);
-            const vis_y0 = @max(r_y, c_y0);
-            const vis_x1 = @min(r_x + r_w, c_x1);
-            const vis_y1 = @min(r_y + r_h, c_y1);
-            if (vis_x1 <= vis_x0 or vis_y1 <= vis_y0) continue;
-
-            const tex_w: u32 = @intFromFloat(r_w);
-            const tex_h: u32 = @intFromFloat(r_h);
-            if (tex_w == 0 or tex_h == 0) continue;
-
-            const handle = self.rasterizeText(draw.content, draw.font, draw.color, tex_w, tex_h);
-            if (handle == teak.TEXTURE_HANDLE_NONE) continue;
-            const entry = self.text_cache.entryPtr(handle);
-
-            const uv_u0 = (vis_x0 - r_x) / r_w;
-            const uv_v0 = (vis_y0 - r_y) / r_h;
-            const uv_u1 = (vis_x1 - r_x) / r_w;
-            const uv_v1 = (vis_y1 - r_y) / r_h;
-
-            const r = draw.color[0];
-            const g = draw.color[1];
-            const b = draw.color[2];
-            const a = draw.color[3];
-
-            const offset = self.text_vert_count;
-            if (offset + 6 > self.text_verts.len) break;
-
-            const verts = &self.text_verts;
-            verts[offset + 0] = .{ .x = vis_x0, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v0 };
-            verts[offset + 1] = .{ .x = vis_x1, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
-            verts[offset + 2] = .{ .x = vis_x0, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
-            verts[offset + 3] = .{ .x = vis_x1, .y = vis_y0, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v0 };
-            verts[offset + 4] = .{ .x = vis_x1, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u1, .v = uv_v1 };
-            verts[offset + 5] = .{ .x = vis_x0, .y = vis_y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 };
-
-            self.text_vert_count += 6;
-            self.text_draws[self.text_draw_count] = .{
-                .bind_group = entry.bind_group,
-                .vert_offset = offset,
-            };
-            self.text_draw_count += 1;
+    fn flushGlyphs(self: *Gpu) void {
+        self.ensurePages();
+        for (self.atlas_pages.items, 0..) |pg, i| {
+            if (i >= self.text.pageCount()) break;
+            const d = self.text.takeDirty(i) orelse continue;
+            const staging = self.text.pageStaging(i);
+            const start = @as(usize, d.y) * text_stage.atlas_dim + d.x;
+            const len = (@as(usize, d.h) - 1) * text_stage.atlas_dim + d.w;
+            zgpu.writeTextureRegion(pg.texture, d.x, d.y, d.w, d.h, staging[start..][0..len], text_stage.atlas_dim);
         }
 
-        writeVerts(&self.text_vert_buf, &self.text_vert_buf_size, self.text_verts[0..self.text_vert_count]);
+        const total = self.text.finish();
+        if (total == 0) return;
+        const stride = @sizeOf(glyph_atlas.GlyphInstance);
+        const bytes: u32 = total * stride;
+        if (self.glyph_buf == null or bytes > self.glyph_buf_size) {
+            if (self.glyph_buf) |old| zgpu.bufferDestroy(old);
+            // Grow geometrically so a scrolling frame does not reallocate every frame.
+            self.glyph_buf_size = @max(bytes + bytes / 2, 4096);
+            self.glyph_buf = zgpu.createBuffer(self.glyph_buf_size, zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.COPY_DST);
+        }
+        for (0..2) |layer| {
+            for (self.text.insts.items) |*pi| {
+                const list = pi.list[layer].items;
+                if (list.len == 0) continue;
+                zgpu.bufferWriteTyped(glyph_atlas.GlyphInstance, self.glyph_buf.?, pi.first[layer] * stride, list);
+            }
+        }
+    }
+
+    /// One instanced draw per atlas page holding glyphs of `layer`.
+    fn drawGlyphs(self: *Gpu, pass: zgpu.RenderPassEncoder, layer: usize) void {
+        const buf = self.glyph_buf orelse return;
+        var bound = false;
+        for (self.text.insts.items, 0..) |pi, i| {
+            const n = pi.list[layer].items.len;
+            if (n == 0 or i >= self.atlas_pages.items.len) continue;
+            if (!bound) {
+                zgpu.renderPassSetPipeline(pass, self.glyph_pipeline);
+                zgpu.renderPassSetVertexBuffer(pass, 0, buf, 0, self.glyph_buf_size);
+                bound = true;
+            }
+            zgpu.renderPassSetBindGroup(pass, 0, self.atlas_pages.items[i].bind_group);
+            zgpu.renderPassDraw(pass, 6, @intCast(n), 0, pi.first[layer]);
+        }
     }
 
     /// Upload an RGBA8 image. `bytes.len` must equal `width * height * 4`.
@@ -639,7 +716,7 @@ pub const Gpu = struct {
     /// per visible scene for the next `renderFrame`. Call after
     /// `uploadImages`, before `renderFrame`. Scenes whose content did not
     /// change since the last frame are not redrawn.
-    pub fn renderScenes(self: *Gpu, draws: []const teak.SceneDraw) void {
+    pub fn renderScenes(self: *Gpu, draws: []const teak.SceneDraw, items: []const teak.SceneItem) void {
         self.scene_draw_count = 0;
         self.scene_vert_count = 0;
         var mark: overlay.Marker = .{ .start = self.splitOf("scenes", draws.len) };
@@ -656,7 +733,7 @@ pub const Gpu = struct {
 
         for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
             mark.visit(i, self.scene_draw_count);
-            const size = self.scene.renderInto(i, draw, scale) orelse continue;
+            const size = self.scene.renderInto(i, draw, scene_common.itemsOf(draw, items), scale) orelse continue;
             const quad = scene_common.compositeQuad(draw, size, scale) orelse continue;
             const bind_group = self.sceneBindGroup(i) orelse continue;
 
