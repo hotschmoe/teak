@@ -75,6 +75,10 @@
 //!     `ev.hit` is that widget's click Msg, `ev.box` its rect, `ev.now_ms` the
 //!     host clock: enough to drive a tooltip (`teak.Tooltip`) with a
 //!     `Sub.at` delay, all in the Model.
+//!   - `pointerMsg(*const Model, PointerEvent(Msg)) ?Msg` — ONE hook for the
+//!     pointer over widgets: `kind` = hover (target changed) / down / up /
+//!     context (right press); `hit` is the widget's Msg or null for blank
+//!     space, so an app can clear its own focus (`ev.isBlank()`)
 //!   - `contextMsg(*const Model, PointerEvent(Msg)) ?Msg` — the right button
 //!     went down. `ev.hit` is the Msg of the widget under the cursor (null on
 //!     empty space), so one hook opens a context menu for any region
@@ -162,6 +166,7 @@ const focus = @import("input/focus.zig");
 const render = @import("render/build.zig");
 const vertex = @import("render/vertex.zig");
 const resources = @import("resources.zig");
+const control = @import("control.zig");
 
 const Rect = layout.Rect;
 const TransientState = transient.TransientState;
@@ -173,8 +178,16 @@ const max_issued_effects = 32;
 const effect_batch = 16;
 
 pub const RunOptions = struct {
-    /// Scene clear color passed to `Gpu.renderFrame` each frame.
-    clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },
+    /// Keyboard navigation of buttons, checkboxes, radios and sliders (Tab /
+    /// Shift+Tab, focus ring, Space / Enter, arrows in radio groups and on
+    /// sliders). Text fields keep their Model-owned focus. Off = Tab only
+    /// walks text fields (apps with `focusedMsg`), as before.
+    keyboard_nav: bool = true,
+    /// Scene clear color passed to `Gpu.renderFrame` each frame. `null`
+    /// (the default) follows the frame's theme: `theme.palette.bg`, so an
+    /// app that switches theme (`themeFor`) switches its background with it.
+    /// Set it for a fixed backdrop (a paper colour, a 3D scene).
+    clear_color: ?[4]f32 = null,
     /// Text-cursor blink half-period in ms of the Host clock (500 = 500 ms on,
     /// 500 ms off). 0 disables blinking (the caret stays on). While a text
     /// input is focused the loop wakes at each toggle and re-renders only the
@@ -203,6 +216,20 @@ pub const RunOptions = struct {
     /// bridge make the publish a no-op, so the cost is the tree build when
     /// the frame changes.
     a11y: bool = true,
+    /// Agent control channel: the Unix socket path the Host listens on
+    /// (`TEAK_CONTROL` wins). Needs a Host with the control surface. See
+    /// `docs/features/agent-driver.md`.
+    control_path: ?[]const u8 = null,
+    /// Record the per-frame input stream to this file (`TEAK_RECORD` wins).
+    record_path: ?[]const u8 = null,
+    /// Replay a recording made with `record_path` (`TEAK_REPLAY` wins); needs
+    /// a Host with `injectInput` (the headless Host).
+    replay_path: ?[]const u8 = null,
+    /// Show the dev inspector panel from the first frame (`TEAK_INSPECT=1`).
+    inspect: bool = false,
+    /// F12 toggles the inspector (the key is consumed). On in Debug builds;
+    /// elsewhere F12 reaches the app like any key.
+    inspect_hotkey: bool = builtin.mode == .debug,
     /// Event-driven idle. When true, a frame in which nothing happened (no
     /// input event, no Msg dispatched by a sub / effect result / window hook,
     /// secondary window, not the first frame; a caret toggle is a cheap
@@ -431,6 +458,8 @@ pub fn run(
 pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type {
     return struct {
         const Self = @This();
+        /// The App type, for `control.zig`'s optional hooks.
+        pub const AppDecl = App;
         const Msg = App.Msg;
         const CmdBufT = cmd.CmdBuffer(Msg);
         /// The Host's per-frame input snapshot type (`platform/host.zig`'s
@@ -515,6 +544,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         text_metrics: [8]TextMetricsSlot = @splat(.{}),
         /// Last IME spot pushed to the Host (avoid per-frame calls).
         ime_spot: ?[2]i32 = null,
+        /// Last `Host.scaleFactor()` seen (0 = not yet); a change (the window
+        /// moved to a monitor with another DPI) is forwarded to `Gpu.setScale`.
+        host_scale: f32 = 0,
 
         /// Press model: arm on mousedown over a widget, fire the click only
         /// if mouseup lands on the same widget; drag-off cancels.
@@ -524,8 +556,19 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// `press_target` (a lost value only repeats one hover event).
         hover_reported: ?usize = null,
         hover_seen: bool = false,
+        pm_hover_reported: ?usize = null,
+        pm_hover_seen: bool = false,
         /// The `grab_msg` of the slider being dragged (`sliderMsg` hook).
         slider_grab: ?Msg = null,
+        /// Keyboard-navigation focus on a non-text leaf (button, checkbox, radio,
+        /// slider): the loop's own presentation state (HARDLINE hatch 2), keyed by
+        /// the leaf's activation Msg so it survives list mutations. Null while a
+        /// text field (the Model's focus) owns the keyboard.
+        nav: ?NavFocus = null,
+        /// Where the navigation focus was when a modal overlay opened; restored when it closes.
+        nav_return: ?NavFocus = null,
+        /// The navigation focus last reported to `hoverMsg` (keyboard focus shows tooltips).
+        nav_hover: ?usize = null,
 
         /// The previous frame's `nowMs`. `runSubs` is stateless — it decides
         /// fire/skip from (last_sub_ms, now_ms, sub data) — so this single
@@ -546,6 +589,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         suppressed_spec: ?SecondaryWindowSpec = null,
 
         snap: SnapshotSink,
+        /// Agent control channel + record/replay + Msg ring (`control.zig`).
+        ctl: control.State,
         /// Force a first snapshot write even if the opening frame happens to
         /// match the empty previous buffer.
         snap_first: bool = true,
@@ -567,6 +612,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         animating: bool = false,
         /// The first frame always builds (nothing to show yet).
         built_once: bool = false,
+        /// `reportLayout` dispatched a Msg after the frame's build (a canvas
+        /// size, a scroll extent): the shown frame is stale until the next one
+        /// rebuilds, so that frame must not be skipped as idle.
+        layout_dirty: bool = false,
 
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
@@ -586,7 +635,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (comptime @hasDecl(Host, "setAppName")) {
                 if (opts.app_name.len > 0) host.setAppName(opts.app_name);
             }
+            var ctl = control.State.init(gpa);
+            control.start(&ctl, host, opts);
             return .{
+                .ctl = ctl,
                 .gpa = gpa,
                 .host = host,
                 .gpu = gpu,
@@ -608,6 +660,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
             self.snap.deinit();
             self.a11y_cache.deinit(self.gpa);
+            self.ctl.deinit();
             self.secondary.deinit(self.gpa);
             if (has_resources) self.res_table.deinit(self.gpu);
             self.scene_draws.deinit(self.gpa);
@@ -623,8 +676,21 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// One loop iteration. Returns early, before presenting, when the
         /// host reports close during the input poll.
         pub fn frame(self: *Self) !void {
+            control.beforePoll(self);
+            // Runs on EVERY exit (quiet frames included): finishes the control
+            // command in flight and advances the frame number.
+            defer control.afterFrame(self);
             const input = self.host.pollInputs();
+            control.afterPoll(self, input);
             if (self.host.shouldClose()) return;
+            // The window's DPI scale changed (Win32 per-monitor DPI): the Gpu
+            // reconfigures its surfaces at the new device size. The initial
+            // scale reaches the Gpu through `InitOptions.scale`.
+            if (comptime @hasDecl(Host, "scaleFactor") and @hasDecl(Gpu, "setScale")) {
+                const sf = self.host.scaleFactor();
+                if (self.host_scale != 0 and sf != self.host_scale) self.gpu.setScale(sf);
+                self.host_scale = sf;
+            }
             if (input.resized) {
                 self.gpu.resize(input.width, input.height);
                 if (@hasDecl(App, "windowMsg")) {
@@ -653,7 +719,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
             // Event-driven idle: nothing changed since the frame on screen.
             self.quiet = self.opts.idle_skip and self.built_once and
-                self.dispatch_count == dispatched_before and self.inputIdle(input);
+                self.dispatch_count == dispatched_before and !self.layout_dirty and self.inputIdle(input) and !self.ctl.consumeDirty();
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
@@ -665,14 +731,17 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     const last = self.current;
                     self.uploadFrame(self.bufs[last].cmds.items, self.rects[last].items, self.ts);
                     self.prev_ts = self.ts;
-                    self.gpu.renderFrame(self.opts.clear_color);
+                    self.gpu.renderFrame(self.opts.clear_color orelse self.bufs[last].theme.palette.bg);
                 }
                 return;
             }
             self.built_once = true;
+            self.layout_dirty = false;
 
             const cur = try self.buildView(input);
+            const before_layout = self.dispatch_count;
             self.reportLayout(prev, cur);
+            self.layout_dirty = self.dispatch_count != before_layout;
             const cur_cmds = self.bufs[cur].cmds.items;
             const cur_rects = self.rects[cur].items;
             self.updateTransient(input, cur);
@@ -695,13 +764,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const secondary_open = has_secondary and App.secondaryWindow(&self.model) != null;
             // A resource upload/release changes the handles the draws map to
             // even when no Cmd changed, so it forces a re-stage too.
+            const t_render = control.stamp(&self.ctl);
             if (diff.changed() or secondary_open or res_changed) {
                 self.uploadFrame(cur_cmds, cur_rects, self.ts);
             }
             self.prev_ts = self.ts;
             self.publishA11y(cur, diff);
 
-            self.gpu.renderFrame(self.opts.clear_color);
+            self.gpu.renderFrame(self.opts.clear_color orelse self.bufs[self.current].theme.palette.bg);
+            self.ctl.timings.render_ms = control.msBetween(t_render, control.stamp(&self.ctl));
 
             const sec = if (has_secondary) try self.driveSecondary() else SecondaryFrame{};
 
@@ -758,7 +829,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         pub fn idleTimeoutMs(self: *Self) u32 {
             // Effect results arrive from the Host asynchronously; poll them
             // at frame rate while any effect is outstanding.
-            const cap: u32 = if (self.issued.len != 0) 16 else 1000;
+            // A listening control channel is polled at frame rate too, so a
+            // command arriving while the app is quiet waits at most one frame
+            // (the Host cannot wake on the socket by itself).
+            const cap: u32 = if (self.issued.len != 0 or self.ctl.active) 16 else 1000;
             var wait: u32 = cap;
             const now = self.host.nowMs();
             if (self.opts.blink_half_ms != 0 and self.ts.focus_index != null) {
@@ -778,6 +852,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn dispatch(self: *Self, msg: Msg) void {
             self.dispatch_count +%= 1;
             self.last_msg = @tagName(std.meta.activeTag(msg));
+            if (self.ctl.log_msgs) self.ctl.logMsg(Msg, msg);
             App.update(&self.model, msg);
         }
 
@@ -881,6 +956,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         // `hit.msg` is null when a modal overlay consumed the
                         // click but asked for no Msg (HARDLINE §2 hatch 5) —
                         // swallow it, don't fall through.
+                        if (self.opts.keyboard_nav and hit.index < prev_cmds.len) {
+                            const c = prev_cmds[hit.index];
+                            if (focus.isNavigable(c)) self.nav = if (focus.isTextLeaf(c)) null else self.navCapture(prev_cmds, hit.index);
+                        }
                         if (hit.msg) |m| self.dispatch(m);
                     }
                 }
@@ -889,17 +968,54 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (self.press_target != null and hover != self.press_target) self.press_target = null;
         }
 
+        /// `contextMsg` for the Menu key / Shift+F10: the pointer event is anchored at the
+        /// focused widget (the navigation focus, else the Model's text focus, else the
+        /// mouse), `hit` = that widget's Msg.
+        fn sendContextKey(self: *Self, input: Input, prev: u1) void {
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+            const idx: ?usize = self.navResolve(cmds) orelse focusIndex(App, &self.model, cmds);
+            var ev: pointer.PointerEvent(Msg) = .{ .x = input.mouse_x, .y = input.mouse_y, .mods = input.mods, .now_ms = self.host.nowMs() };
+            if (idx) |i| if (i < rects.len) {
+                const r = rects[i];
+                ev.x = r.x;
+                ev.y = r.y + r.h;
+                ev.hit = focus.activationMsg(cmds[i]);
+                ev.box = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
+            };
+            if (App.contextMsg(&self.model, ev)) |m| self.dispatch(m);
+        }
+
         /// `hoverMsg` / `contextMsg`: both resolve the pointer against the
         /// previous frame's layout like a click does.
         fn routePointerHooks(self: *Self, input: Input, prev: u1) void {
             const has_hover = comptime @hasDecl(App, "hoverMsg");
             const has_context = comptime @hasDecl(App, "contextMsg");
-            if (!has_hover and !has_context) return;
+            const has_pm = comptime @hasDecl(App, "pointerMsg");
+            if (!has_hover and !has_context and !has_pm) return;
             const cmds = self.bufs[prev].cmds.items;
             const rects = self.rects[prev].items;
             const hit = if (cmds.len > 0) hit_test.hitTest(cmds, rects, input.mouse_x, input.mouse_y) else null;
             const under: ?usize = if (hit) |h| h.index else null;
 
+            // Keyboard focus is reported to `hoverMsg` like a pointer resting on the
+            // focused widget (so a tooltip shows for it); leaving non-text focus
+            // reports "nothing". The pointer's own reports are unaffected.
+            if (has_hover and self.opts.keyboard_nav) {
+                const ni = self.navResolve(cmds);
+                if (ni != self.nav_hover) {
+                    const was = self.nav_hover;
+                    self.nav_hover = ni;
+                    const NavHit = struct { index: usize, msg: ?Msg };
+                    if (ni) |i| {
+                        const nh: ?NavHit = .{ .index = i, .msg = focus.activationMsg(cmds[i]) };
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, nh, rects, .hover, .none))) |m| self.dispatch(m);
+                    } else if (was != null) {
+                        const none: ?NavHit = null;
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, none, rects, .hover, .none))) |m| self.dispatch(m);
+                    }
+                }
+            }
             if (has_hover) {
                 if (!self.hover_seen or under != self.hover_reported) {
                     const first = !self.hover_seen;
@@ -907,17 +1023,56 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     self.hover_reported = under;
                     // Nothing to report before the first frame laid anything out.
                     if (!(first and under == null)) {
-                        if (App.hoverMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+                        const ev = self.pointerEvent(input, hit, rects, .hover, .none);
+                        if (App.hoverMsg(&self.model, ev)) |m| self.dispatch(m);
                     }
                 }
             }
             if (has_context and input.button_down.right) {
-                if (App.contextMsg(&self.model, self.pointerEvent(input, hit, rects))) |m| self.dispatch(m);
+                const ev = self.pointerEvent(input, hit, rects, .context, .right);
+                if (App.contextMsg(&self.model, ev)) |m| self.dispatch(m);
+            }
+            if (has_pm) self.routePointerMsg(input, hit, rects, under);
+        }
+
+        /// The unified `pointerMsg` hook: hover changes, every press (blank
+        /// space included: `hit == null`), every release, and the right-button
+        /// `context` press. Resolved against the previous frame like a click.
+        fn routePointerMsg(self: *Self, input: Input, hit: anytype, rects: []const Rect, under: ?usize) void {
+            // Hover changes (tracked separately from `hoverMsg`'s bookkeeping so
+            // an app may use either, or both).
+            if (!self.pm_hover_seen or under != self.pm_hover_reported) {
+                const first = !self.pm_hover_seen;
+                self.pm_hover_seen = true;
+                self.pm_hover_reported = under;
+                if (!(first and under == null)) {
+                    if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, .hover, .none))) |m| self.dispatch(m);
+                }
+            }
+            const downs = [_]struct { on: bool, button: pointer.Button, kind: pointer.PointerEvent(Msg).Kind }{
+                .{ .on = input.button_down.left, .button = .left, .kind = .down },
+                .{ .on = input.button_down.middle, .button = .middle, .kind = .down },
+                .{ .on = input.button_down.right, .button = .right, .kind = .context },
+            };
+            for (downs) |d| {
+                if (!d.on) continue;
+                if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, d.kind, d.button))) |m| self.dispatch(m);
+            }
+            const ups = [_]struct { on: bool, button: pointer.Button }{
+                .{ .on = input.button_up.left, .button = .left },
+                .{ .on = input.button_up.middle, .button = .middle },
+                .{ .on = input.button_up.right, .button = .right },
+            };
+            for (ups) |u| {
+                if (!u.on) continue;
+                if (App.pointerMsg(&self.model, self.pointerEvent(input, hit, rects, .up, u.button))) |m| self.dispatch(m);
             }
         }
 
-        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect) pointer.PointerEvent(Msg) {
+        fn pointerEvent(self: *Self, input: Input, hit: anytype, rects: []const Rect, kind: pointer.PointerEvent(Msg).Kind, button: pointer.Button) pointer.PointerEvent(Msg) {
             var ev: pointer.PointerEvent(Msg) = .{
+                .kind = kind,
+                .button = button,
                 .x = input.mouse_x,
                 .y = input.mouse_y,
                 .mods = input.mods,
@@ -966,23 +1121,44 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// cut/copy/paste policy).
         fn routeKeys(self: *Self, input: Input, prev: u1) void {
             const prev_cmds = self.bufs[prev].cmds.items;
-            if (@hasDecl(App, "keyCharMsg")) {
-                for (input.chars) |ch| {
-                    if (App.keyCharMsg(&self.model, ch)) |m| self.dispatch(m);
+            for (input.chars) |ch| {
+                var handled = false;
+                if (@hasDecl(App, "keyCharMsg")) {
+                    if (App.keyCharMsg(&self.model, ch)) |m| {
+                        self.dispatch(m);
+                        handled = true;
+                    }
                 }
+                // Space activates the keyboard-focused button / checkbox / radio.
+                if (!handled and ch == ' ') _ = self.navActivate(prev_cmds);
             }
             for (input.keys) |k| {
+                // Menu key / Shift+F10: a context-menu request at the keyboard-focused
+                // widget (below its left edge), through the same `contextMsg` hook a
+                // right click uses. Without the hook the key reaches `keySpecialMsg`.
+                if (comptime @hasDecl(App, "contextMsg")) {
+                    if (k == .context_menu) {
+                        self.sendContextKey(input, prev);
+                        continue;
+                    }
+                }
+                if (k == .f12 and self.opts.inspect_hotkey) {
+                    control.toggleInspect(&self.ctl);
+                    continue;
+                }
                 // Visual motion in a focused text area is resolved against the
                 // wrapped layout, so it becomes a `move` TextEvent (key consumed).
                 if (has_text_hook) {
                     if (self.sendTextNav(k, input, prev)) continue;
                 }
-                // Built-in Tab / Shift+Tab focus traversal — only for apps
-                // that expose `focusedMsg` (so the loop knows the current
-                // focus and how to move it). Walk the PREVIOUS frame's
-                // focusables, then dispatch the landing widget's focus Msg
-                // so the app advances its focus field.
-                if (@hasDecl(App, "focusedMsg")) {
+                // Built-in Tab / Shift+Tab focus traversal. With
+                // `keyboard_nav` it walks every keyboard-operable leaf; a
+                // text leaf gets its focus Msg dispatched (the app's Model owns
+                // text focus), any other leaf becomes the loop's `nav` focus
+                // and the app is asked to blur its text field (`blurMsg`).
+                if (self.opts.keyboard_nav and (k == .tab or k == .shift_tab)) {
+                    if (self.navTab(prev_cmds, k == .tab)) continue;
+                } else if (@hasDecl(App, "focusedMsg")) {
                     if (k == .tab or k == .shift_tab) {
                         const cur_idx = if (App.focusedMsg(&self.model)) |fm|
                             focus.indexOfFocusMsg(prev_cmds, fm)
@@ -1021,10 +1197,266 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 const clipboard_capable = comptime (@hasDecl(App, "keyNeedsClipboard") and @hasDecl(App, "handleClipboard"));
                 if (clipboard_capable and App.keyNeedsClipboard(k)) {
                     App.handleClipboard(&self.model, k, self.host.clipboard());
-                } else if (@hasDecl(App, "keySpecialMsg")) {
-                    if (App.keySpecialMsg(&self.model, k)) |m| self.dispatch(m);
+                } else {
+                    if (@hasDecl(App, "keySpecialMsg")) {
+                        if (App.keySpecialMsg(&self.model, k)) |m| {
+                            self.dispatch(m);
+                            continue;
+                        }
+                    }
+                    // Nothing in the app took the key: the keyboard-focused
+                    // widget gets it (Enter, arrows).
+                    _ = self.navKey(prev_cmds, prev, k);
                 }
             }
+        }
+
+        // ── Keyboard navigation (non-text leaves) ──────────────────────
+
+        const NavFocus = struct { msg: Msg, ordinal: u32, index: u32 };
+
+        /// Remember leaf `idx` as the navigation focus.
+        fn navCapture(self: *Self, cmds: anytype, idx: usize) NavFocus {
+            _ = self;
+            const msg = focus.activationMsg(cmds[idx]).?;
+            var ord: u32 = 0;
+            for (cmds[0..idx]) |c| {
+                if (!focus.isNavigable(c)) continue;
+                if (focus.activationMsg(c)) |m| if (std.meta.eql(m, msg)) {
+                    ord += 1;
+                };
+            }
+            return .{ .msg = msg, .ordinal = ord, .index = @intCast(idx) };
+        }
+
+        /// The navigation focus in `cmds`: the leaf with the remembered Msg
+        /// (same ordinal among equal Msgs); when it is gone, the leaf now at
+        /// the remembered index, else the last leaf (focus survives list
+        /// mutations); null when there is no navigable leaf at all.
+        fn navResolve(self: *Self, cmds: anytype) ?usize {
+            const n = self.nav orelse return null;
+            var ord: u32 = 0;
+            for (cmds, 0..) |c, i| {
+                if (!focus.isNavigable(c) or focus.isTextLeaf(c)) continue;
+                if (focus.activationMsg(c)) |m| if (std.meta.eql(m, n.msg)) {
+                    if (ord == n.ordinal) {
+                        self.nav.?.index = @intCast(i);
+                        return i;
+                    }
+                    ord += 1;
+                };
+            }
+            // Gone: fall to the nearest navigable leaf at or after the old index.
+            const from: usize = @min(n.index, cmds.len -| 1);
+            var i = from;
+            while (i < cmds.len) : (i += 1) {
+                if (focus.isNavigable(cmds[i]) and !focus.isTextLeaf(cmds[i])) {
+                    self.nav = self.navCapture(cmds, i);
+                    return i;
+                }
+            }
+            i = from;
+            while (i > 0) {
+                i -= 1;
+                if (focus.isNavigable(cmds[i]) and !focus.isTextLeaf(cmds[i])) {
+                    self.nav = self.navCapture(cmds, i);
+                    return i;
+                }
+            }
+            self.nav = null;
+            return null;
+        }
+
+        /// Modal overlays trap and restore keyboard focus: while one is open the
+        /// navigation focus lives inside it (first widget on open), and closing it
+        /// puts the focus back on the widget that opened it.
+        fn navModal(self: *Self, cmds: anytype) void {
+            if (!self.opts.keyboard_nav) return;
+            if (focus.modalScope(cmds)) |sc| {
+                const inside = if (self.navResolve(cmds)) |i| i >= sc.lo and i < sc.hi else false;
+                if (inside) return;
+                if (self.nav_return == null) self.nav_return = self.nav;
+                self.nav = null;
+                var i = sc.lo;
+                while (i < sc.hi) : (i += 1) {
+                    if (!focus.isNavigable(cmds[i])) continue;
+                    // A text field first: the Model's focus owns it; no ring-less nav.
+                    if (!focus.isTextLeaf(cmds[i])) self.nav = self.navCapture(cmds, i);
+                    break;
+                }
+            } else if (self.nav_return) |r| {
+                self.nav = r;
+                self.nav_return = null;
+            }
+        }
+
+        /// Tab / Shift+Tab. Returns false (key left to the app) when the frame
+        /// has nothing navigable.
+        fn navTab(self: *Self, cmds: anytype, forward: bool) bool {
+            const cur: ?usize = self.navResolve(cmds) orelse blk: {
+                if (@hasDecl(App, "focusedMsg")) {
+                    if (App.focusedMsg(&self.model)) |fm| break :blk focus.indexOfFocusMsg(cmds, fm);
+                }
+                break :blk null;
+            };
+            const target = (if (forward) focus.nextNavigable(cmds, cur) else focus.prevNavigable(cmds, cur)) orelse return false;
+            if (focus.isTextLeaf(cmds[target])) {
+                self.nav = null;
+                if (focus.focusMsgAt(cmds, target)) |fm| self.dispatch(fm);
+            } else {
+                self.nav = self.navCapture(cmds, target);
+                if (comptime @hasDecl(App, "blurMsg")) {
+                    if (App.blurMsg(&self.model)) |m| self.dispatch(m);
+                }
+            }
+            return true;
+        }
+
+        /// Space / Enter on the focused button, checkbox or radio: the Msg a
+        /// click would dispatch.
+        fn navActivate(self: *Self, cmds: anytype) bool {
+            const idx = self.navResolve(cmds) orelse return false;
+            switch (cmds[idx]) {
+                .button, .checkbox, .radio, .canvas => {
+                    if (focus.activationMsg(cmds[idx])) |m| self.dispatch(m);
+                    return true;
+                },
+                else => return false,
+            }
+        }
+
+        /// Default key behaviour of the keyboard-focused widget (the app's own
+        /// key hooks ran first and declined): Enter activates, arrows move
+        /// inside a radio group, arrows / Home / End / PageUp / PageDown set a
+        /// slider through `sliderMsg`.
+        fn navKey(self: *Self, cmds: anytype, prev: u1, k: @import("input/keys.zig").SpecialKey) bool {
+            const idx = self.navResolve(cmds) orelse return false;
+            switch (cmds[idx]) {
+                .button => |b| {
+                    if (b.roving != .none) {
+                        const delta: i32 = switch (k) {
+                            .up, .left => -1,
+                            .down, .right => 1,
+                            .page_up => -5,
+                            .page_down => 5,
+                            .home => std.math.minInt(i32),
+                            .end => std.math.maxInt(i32),
+                            else => 0,
+                        };
+                        if (delta != 0) {
+                            if (focus.rovingTarget(cmds, idx, delta)) |to| {
+                                self.nav = self.navCapture(cmds, to);
+                                if (cmds[to].button.roving == .select) self.dispatch(cmds[to].button.msg);
+                            }
+                            return true;
+                        }
+                    }
+                    if (k == .enter) return self.navActivate(cmds);
+                    return self.navScroll(cmds, prev, idx, k);
+                },
+                .checkbox => {
+                    if (k == .enter) return self.navActivate(cmds);
+                    return self.navScroll(cmds, prev, idx, k);
+                },
+                .canvas => |cv| {
+                    // A focusable pointer canvas (split divider...) gets the key as an event.
+                    if (cv.pointer and cv.id != 0 and has_canvas_hook) {
+                        const ev: pointer.CanvasEvent = .{ .id = cv.id, .kind = .key, .key = k };
+                        if (App.canvasMsg(&self.model, ev)) |m| {
+                            self.dispatch(m);
+                            return true;
+                        }
+                    }
+                    if (k == .enter) return self.navActivate(cmds);
+                    return self.navScroll(cmds, prev, idx, k);
+                },
+                .radio => {
+                    if (k == .enter) return self.navActivate(cmds);
+                    const forward = switch (k) {
+                        .right, .down => true,
+                        .left, .up => false,
+                        else => return self.navScroll(cmds, prev, idx, k),
+                    };
+                    const to = focus.groupNeighbor(cmds, idx, forward) orelse return true;
+                    self.nav = self.navCapture(cmds, to);
+                    // Arrow selection: moving into a radio selects it.
+                    if (focus.activationMsg(cmds[to])) |m| self.dispatch(m);
+                    return true;
+                },
+                .slider => |sl| {
+                    if (comptime !@hasDecl(App, "sliderMsg")) return false;
+                    var v = self.sliderValue(sl);
+                    switch (k) {
+                        .left, .down => v -= 0.05,
+                        .right, .up => v += 0.05,
+                        .page_down => v -= 0.2,
+                        .page_up => v += 0.2,
+                        .home => v = 0,
+                        .end => v = 1,
+                        else => return self.navScroll(cmds, prev, idx, k),
+                    }
+                    v = std.math.clamp(v, 0, 1);
+                    if (App.sliderMsg(&self.model, sl.grab_msg, v)) |m| self.dispatch(m);
+                    return true;
+                },
+                else => return false,
+            }
+        }
+
+        /// Keys the focused widget did not use scroll the innermost id-bearing
+        /// scroll region that contains it, through `scrollMsg` (arrows a line,
+        /// PageUp / PageDown a viewport less a line, Home / End to the ends; the
+        /// app clamps like it does for the wheel).
+        fn navScroll(self: *Self, cmds: anytype, prev: u1, idx: usize, k: @import("input/keys.zig").SpecialKey) bool {
+            if (comptime !has_scroll_hook) return false;
+            // Innermost enclosing scroll region with an id.
+            var depth: i32 = 0;
+            var i = idx;
+            var found: ?usize = null;
+            while (i > 0) {
+                i -= 1;
+                switch (cmds[i]) {
+                    .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => depth += 1,
+                    .push_group, .push_overlay, .push_virtual_list => depth -= 1,
+                    .push_scroll => |sc| {
+                        if (depth == 0 and sc.id != 0) {
+                            found = i;
+                            break;
+                        }
+                        depth -= 1;
+                    },
+                    else => {},
+                }
+            }
+            const si = found orelse return false;
+            const sc = cmds[si].push_scroll;
+            const r = self.rects[prev].items[si];
+            const horiz = sc.direction == .horizontal;
+            const line: f32 = 40;
+            const page = @max(line, (if (horiz) r.w else r.h) - line);
+            const along: f32 = switch (k) {
+                .down => if (horiz) 0 else line,
+                .up => if (horiz) 0 else -line,
+                .right => if (horiz) line else 0,
+                .left => if (horiz) -line else 0,
+                .page_down => page,
+                .page_up => -page,
+                .home => -1.0e7,
+                .end => 1.0e7,
+                else => return false,
+            };
+            if (along == 0) return false;
+            const dx: f32 = if (horiz) along else 0;
+            const dy: f32 = if (horiz) 0 else along;
+            if (App.scrollMsg(&self.model, sc.id, dx, dy)) |m| {
+                self.dispatch(m);
+                return true;
+            }
+            return false;
+        }
+
+        fn sliderValue(_: *Self, sl: anytype) f32 {
+            return sl.value;
         }
 
         /// Ctrl+C / Ctrl+X / Ctrl+V through the App's `clipboardText` (what to
@@ -1231,7 +1663,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     ev.dy = input.wheel_dy;
                 },
                 .leave => ev.kind = .leave,
-                .layout => return,
+                .layout, .key => return,
             }
             switch (ev.kind) {
                 .down, .drag, .double_click, .triple_click, .up => {
@@ -1494,11 +1926,16 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn buildView(self: *Self, input: Input) !u1 {
             self.current ^= 1;
             const cur = self.current;
+            const t_view = control.stamp(&self.ctl);
             self.bufs[cur].reset();
             if (@hasDecl(App, "themeFor")) self.bufs[cur].theme = App.themeFor(&self.model);
             App.view(&self.model, &self.bufs[cur]);
+            checkBalance(self.bufs[cur].cmds.items, "view");
+            // Dev inspector: appended after the (pure) view, from the previous
+            // frame's data; a no-op unless it is switched on.
+            control.appendInspectorFor(self, &self.bufs[cur], cur, cur ^ 1, @floatFromInt(input.width), @floatFromInt(input.height));
             const cmds = self.bufs[cur].cmds.items;
-            checkBalance(cmds, "view");
+            const t_layout = control.stamp(&self.ctl);
 
             try self.rects[cur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
@@ -1508,6 +1945,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 @floatFromInt(input.height),
                 self.measurer,
             );
+            const t_done = control.stamp(&self.ctl);
+            self.ctl.timings.view_ms = control.msBetween(t_view, t_layout);
+            self.ctl.timings.layout_ms = control.msBetween(t_layout, t_done);
             return cur;
         }
 
@@ -1517,7 +1957,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const cmds = self.bufs[cur].cmds.items;
             self.ts.hover_index = hit_test.hoverTest(cmds, self.rects[cur].items, input.mouse_x, input.mouse_y);
             self.ts.press_index = self.press_target;
-            self.ts.focus_index = focusIndex(App, &self.model, cmds);
+            self.navModal(cmds);
+            self.ts.nav_index = self.navResolve(cmds);
+            self.ts.focus_index = if (self.ts.nav_index != null) null else focusIndex(App, &self.model, cmds);
+            const th = &self.bufs[cur].theme;
+            self.ts.ring_color = th.palette.accent;
+            self.ts.ring_width = th.tokens.focus_ring_width;
             self.ts.mouse_x = input.mouse_x;
             self.ts.mouse_y = input.mouse_y;
             self.ts.frame_counter +%= 1;
@@ -1643,7 +2088,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // The secondary window has no interactive/transient state of its
             // own — a fresh default is correct.
             self.uploadFrame(cmds, sec.rects[scur].items, .{});
-            self.gpu.renderToWindow(wid, self.opts.clear_color);
+            self.gpu.renderToWindow(wid, self.opts.clear_color orelse sec.bufs[scur].theme.palette.bg);
             return .{
                 .title = if (spec) |s| s.title else "secondary",
                 .content_changed = !cmdsEqual(Msg, cmds, sec.bufs[sprev].cmds.items) or
@@ -1777,6 +2222,8 @@ fn transientSame(a: TransientState, b: TransientState) bool {
     return a.hover_index == b.hover_index and
         a.press_index == b.press_index and
         a.focus_index == b.focus_index and
+        a.nav_index == b.nav_index and
+        std.mem.eql(f32, &a.ring_color, &b.ring_color) and
         a.blink_on == b.blink_on and
         a.ime_active == b.ime_active and
         a.ime_cursor == b.ime_cursor and

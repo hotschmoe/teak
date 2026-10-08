@@ -27,6 +27,7 @@ pub fn main() !void {
 }
 
 test {
+    _ = @import("focus_audit.zig");
     // Pull in the app's tests (layout geometry, update).
     std.testing.refAllDecls(App);
     _ = App;

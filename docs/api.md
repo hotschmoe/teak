@@ -69,6 +69,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.component_list`: module `src/core/component_list.zig`; see below
 > `appendDebugOverlay`: dump the frame's cmds and rects as an overlay.
 - `teak.debug_overlay`: module `src/core/debug_overlay.zig`; see below
+> Dev inspector panel (widget tree, hovered cmd, Msg log, timings) as overlay cmds.
+- `teak.inspector`: module `src/core/inspector.zig`; see below
 > LLM-readable text serialization of a frame (`[]Cmd` + `[]Rect`).
 - `teak.snapshot`: module `src/core/snapshot.zig`; see below
 > Pure line-chart primitive builder for canvases.
@@ -118,6 +120,12 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.runtime`: module `src/run.zig`; see below
 > Scripted-input headless runs for tests and tooling.
 - `teak.headless`: module `src/headless_run.zig`; see below
+> Hot reload for dev builds: the App as a shared library behind a stable loader (docs/features/hot-reload.md).
+- `teak.dev`: module `src/dev.zig`; see below
+> Agent control channel + input record/replay (docs/features/agent-driver.md).
+- `teak.control`: module `src/control.zig`; see below
+> Input record/replay file format.
+- `teak.input_record`: module `src/input_record.zig`; see below
 > The flat command union for a given `Msg`; the unit every pass walks.
 - `teak.Cmd`: `pub const Cmd = cmd.Cmd`
 > Per-frame arena-backed command buffer with the widget emitters.
@@ -145,11 +153,10 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.ImageCmd` = `cmd.ImageCmd`
   - fields: `handle, style`
 > A styled byte range inside a `RichTextCmd`.
-- `teak.RichTextSpan` = `cmd.RichTextSpan`
-  - fields: `start, end, color, font, bold, italic`
+- `teak.RichTextSpan`: `pub const RichTextSpan = cmd.RichTextSpan`
 > Multi-style text: shared content plus spans.
 - `teak.RichTextCmd` = `cmd.RichTextCmd`
-  - fields: `content, spans, default_color, default_font`
+  - fields: `content, spans, default_color, default_font, wrap, max_lines, text_align`
 > One run of a `mixedText` line (own font, color, weight).
 - `teak.MixedPart` = `cmd.MixedPart`
   - fields: `text, font, color, bold, italic`
@@ -217,11 +224,12 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `width, height, flex, bg`
 > One draw op inside a canvas (polyline, rect, lines, triangles, ...).
 - `teak.CanvasPrimitive` = `cmd.CanvasPrimitive`
-  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text`
   - `struct Polyline`
   - `struct FilledRect`
   - `struct HLine`
   - `struct VLine`
+  - `struct Text`
   - `struct Marker`
   > One vertex of a `Triangles` list: canvas-local position + RGBA.
   - `struct TriVertex`
@@ -279,7 +287,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `none, left, middle, right`
 > One pointer event on an interactive canvas or scene.
 - `teak.CanvasEvent` = `pointer.CanvasEvent`
-  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h`
+  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h, key`
 > What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
 - `teak.PointerEvent`: `pub const PointerEvent = pointer.PointerEvent`
 > A window-space rectangle (`PointerEvent.box`).
@@ -287,7 +295,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `x, y, w, h`
 > Kind of a `CanvasEvent` (press, move, release, wheel, ...).
 - `teak.CanvasEventKind` = `pointer.CanvasEventKind`
-  - fields: `down, move, up, wheel, leave, layout`
+  - fields: `down, move, up, wheel, leave, layout, key`
 > Opaque backend mesh handle.
 - `teak.MeshHandle`: `pub const MeshHandle = scene.MeshHandle`
 > The "no mesh" handle; a scene with it draws only the clear colour.
@@ -444,13 +452,17 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.nextFocusable`: `pub const nextFocusable = focus.nextFocusable`
 > Previous focusable cmd index before `current`, wrapping around.
 - `teak.prevFocusable`: `pub const prevFocusable = focus.prevFocusable`
+> `nextFocusable` over every keyboard-operable leaf (buttons, checkboxes, radios, sliders, text fields): the Tab order of `RunOptions.keyboard_nav`.
+- `teak.nextNavigable`: `pub const nextNavigable = focus.nextNavigable`
+> `prevFocusable` over every keyboard-operable leaf.
+- `teak.prevNavigable`: `pub const prevNavigable = focus.prevNavigable`
 > Cmd index of the interactive leaf carrying a given focus Msg.
 - `teak.indexOfFocusMsg`: `pub const indexOfFocusMsg = focus.indexOfFocusMsg`
 > The activation / focus Msg of the leaf at an index, if any.
 - `teak.focusMsgAt`: `pub const focusMsgAt = focus.focusMsgAt`
 > Host-neutral non-text keys and chords.
 - `teak.SpecialKey` = `keys.SpecialKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_t, ...`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f12, f10, , ...`
 > One accessibility-tree node derived from a cmd.
 - `teak.A11yNode` = `a11y.A11yNode`
   - fields: `role, cmd_index, bounds, label, focused, state, disabled, parent, value, sel_start, sel_end, selected, expanded, level, live, modal`
@@ -501,7 +513,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border`
 > Radii, border width, spacing and shadow elevations of a theme.
 - `teak.ThemeTokens` = `theme.Tokens`
-  - fields: `radius_sm, radius_md, radius_lg, border_width, space, elevation`
+  - fields: `radius_sm, radius_md, radius_lg, border_width, focus_ring_width, space, elevation`
   - `enum Size`
   - `pub fn radii(self: Tokens, size: Size) cmd.Radii`
   - `pub fn shadowAt(self: Tokens, level: u2) ?cmd.Shadow`
@@ -574,7 +586,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.stageDraws`: `pub const stageDraws = @import("resources.zig").stageDraws`
 > Hover / press / focus state that short-circuits input to render.
 - `teak.TransientState` = `transient.TransientState`
-  - fields: `hover_index, press_index, focus_index, frame_counter, blink_on, mouse_x, mouse_y, ime_active, ime_text, ime_cursor`
+  - fields: `hover_index, press_index, focus_index, nav_index, ring_color, ring_width, frame_counter, blink_on, mouse_x, mouse_y, ime_active, ime_text, ime_cursor`
 > Comptime-compose components into one Model / Msg / update / view.
 - `teak.Components`: `pub const Components = component.Components`
 > Compile-time check that a type satisfies the component contract.
@@ -603,7 +615,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, resized, width, height`
 > Event accumulator turning native events into an `InputState`.
 - `teak.InputQueue` = `input_queue.InputQueue`
-  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, alt_clean`
+  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, dropped, alt_clean`
   > Drop last frame's text and keys. Call once at the top of a poll,
   > before pumping events: the slices handed out by `finish` alias the
   > queue's buffers and stay valid until this runs.
@@ -617,6 +629,9 @@ Signatures and `///` doc comments of every public declaration reachable from
   > Alt went up: queue `alt_tap` when no other input arrived since `altDown`.
   - `pub fn altUp(self: *InputQueue) void`
   - `pub fn pushKey(self: *InputQueue, k: SpecialKey) void`
+  > Apply one synthetic event (agent control channel) exactly as the
+  > matching OS event would be.
+  - `pub fn inject(self: *InputQueue, ev: host.InjectEvent) void`
   > Resolve a navigation/chord key under the current modifiers and queue it.
   - `pub fn pushNav(self: *InputQueue, k: NavKey) void`
   > Queue one typed code point as UTF-8. Control codes and invalid
@@ -633,7 +648,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - `pub fn finish(self: *InputQueue, resized: bool, width: u32, height: u32) host.InputState`
 > Navigation keys a Host may deliver.
 - `teak.NavKey` = `input_queue.NavKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f10, a, c, x, v, y, z`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, menu, a, c, x, v, y, z`
 > The one Shift/Ctrl policy: map a key plus modifiers to a `SpecialKey`.
 - `teak.resolveKey`: `pub const resolveKey = input_queue.resolveKey`
 > Host-owned clipboard surface.
@@ -664,7 +679,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.Runtime`: `pub const Runtime = runtime.Runtime`
 > Options for `run` (title, clear color, snapshot sink, ...).
 - `teak.RunOptions` = `runtime.RunOptions`
-  - fields: `clear_color, blink_half_ms, snapshot_path, app_name, a11y, idle_skip`
+  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip`
 > A second top-level window the app wants open this frame.
 - `teak.SecondaryWindowSpec` = `runtime.SecondaryWindowSpec`
   - fields: `title, width, height`
@@ -673,7 +688,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `sans, serif, mono`
 > A font request: family, size and weight.
 - `teak.FontSpec` = `text.FontSpec`
-  - fields: `size_px, family, weight, letter_spacing, snap_advance`
+  - fields: `size_px, family, weight, letter_spacing, snap_advance, scalable`
   > The resolved `snap_advance` (see the field).
   - `pub fn snapsAdvance(self: FontSpec) bool`
 > Regular or bold.
@@ -783,10 +798,11 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `handle, style`
 - `struct VirtualListStyle`
   - fields: `direction, total_count, item_extent, visible_start, visible_end, padding, gap, total_extent, start_offset, align_cross, id`
-- `struct RichTextSpan`
-  - fields: `start, end, color, font, bold, italic`
+> A styled byte range of a `rich_text` (defined in `text.zig` so `text_wrap`
+> can measure runs without importing the Cmd types).
+- `pub const RichTextSpan = text.RichTextSpan`
 - `struct RichTextCmd`
-  - fields: `content, spans, default_color, default_font`
+  - fields: `content, spans, default_color, default_font, wrap, max_lines, text_align`
 - `struct MixedPart`
   - fields: `text, font, color, bold, italic`
 > A point in canvas-local logical pixels.
@@ -794,11 +810,12 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `x, y`
 > One 2D draw op inside a canvas. All coordinates are canvas-local.
 - `union CanvasPrimitive`
-  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text`
   - `struct Polyline`
   - `struct FilledRect`
   - `struct HLine`
   - `struct VLine`
+  - `struct Text`
   - `struct Marker`
   > One vertex of a `Triangles` list: canvas-local position + RGBA.
   - `struct TriVertex`
@@ -827,6 +844,12 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `struct SceneStyle`
   - fields: `width, height, flex`
 - `pub fn SceneCmd(comptime Msg: type) type`
+> Keyboard grouping of list-row buttons (see docs/features/focus.md).
+- `enum Roving`
+  - fields: `none, focus, select`
+> Keyboard-navigation options of a button (`CmdBuffer.buttonNav`).
+- `struct ButtonNav`
+  - fields: `tab_stop, roving`
 - `pub fn ButtonCmd(comptime Msg: type) type`
 - `pub fn TextInputCmd(comptime Msg: type) type`
 > Multi-line editable text (`text_area`). Layout sizes it like a canvas
@@ -906,7 +929,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 > Holds the pieces of visual state that would be pathological to funnel
 > through the TEA loop (e.g. per-pixel hover updates at 60+ Hz).
 - `struct TransientState`
-  - fields: `hover_index, press_index, focus_index, frame_counter, blink_on, mouse_x, mouse_y, ime_active, ime_text, ime_cursor`
+  - fields: `hover_index, press_index, focus_index, nav_index, ring_color, ring_width, frame_counter, blink_on, mouse_x, mouse_y, ime_active, ime_text, ime_cursor`
 
 ### `teak.text` (`src/core/text.zig`)
 
@@ -921,10 +944,12 @@ Text measurement and rasterization types.
 > (web: CSS `font-weight` + canvas `letterSpacing`; native: face selection).
 > Both take part in the glyph-cache key, so changing them re-rasterizes.
 - `struct FontSpec`
-  - fields: `size_px, family, weight, letter_spacing, snap_advance`
+  - fields: `size_px, family, weight, letter_spacing, snap_advance, scalable`
   > The resolved `snap_advance` (see the field).
   - `pub fn snapsAdvance(self: FontSpec) bool`
 - `pub const DEFAULT_FONT: FontSpec = .{}`
+- `struct RichTextSpan`
+  - fields: `start, end, color, font, bold, italic`
 - `struct TextMetrics`
   - fields: `width, height, ascent, descent`
 - `struct TextMeasurer`
@@ -1131,6 +1156,18 @@ Pure text wrapping, height-for-width measurement and caret/point mapping.
 - `pub const ELLIPSIS = "\u{2026}"`
 - `struct Line`
   - fields: `start, end, hang, next, width, hard_break, ellipsized`
+> A measurer over `rich_text` runs: measuring a slice of `content` sums the
+> pieces in their own span fonts (uncovered bytes use `default_font`); any
+> other string (the ellipsis, the line-height probe) is measured in
+> `default_font`, with the height of the tallest run. It lets every function
+> here wrap mixed-font text unchanged: they only ever measure slices of the
+> content, and the slice's offset (pointer arithmetic) says which span it is.
+> Valid while the value lives and `content` / `spans` stay in place.
+- `struct RichMeasure`
+  - fields: `content, spans, default_font, base, max_height`
+  - `pub fn init(content: []const u8, spans: []const text_mod.RichTextSpan, default_font: FontSpec, base: TextMeasurer) RichMeasure`
+  > The measurer for wrapping calls (pass `default_font` as their `font`).
+  - `pub fn measurer(self: *const RichMeasure) TextMeasurer`
 > Line height for `font` as the measurer reports it.
 - `pub fn lineHeight(font: FontSpec, m: TextMeasurer) f32`
 > Next line of `text[start..]` for a maximum width (`start` must be a line
@@ -1286,7 +1323,7 @@ convenience emitters.
 > read these, and apps can read them too (`theme.tokens.space[2]`) to keep
 > custom layouts on the same scale.
 - `struct Tokens`
-  - fields: `radius_sm, radius_md, radius_lg, border_width, space, elevation`
+  - fields: `radius_sm, radius_md, radius_lg, border_width, focus_ring_width, space, elevation`
   - `enum Size`
   - `pub fn radii(self: Tokens, size: Size) cmd.Radii`
   - `pub fn shadowAt(self: Tokens, level: u2) ?cmd.Shadow`
@@ -1306,6 +1343,8 @@ convenience emitters.
   > `fromPalette` with shape tokens: the derived button / input / card
   > styles get the radii, borders and elevations from `t`.
   - `pub fn fromPaletteTokens(p: Palette, t: Tokens) Theme`
+> WCAG contrast ratio of two colours (1 .. 21).
+- `pub fn contrast(a: [4]f32, b: [4]f32) f32`
 - `pub const dark_palette: Palette = .{ .bg = .{ 0.08, 0.08, 0.10, 1.0 }, .bg_panel = .{ 0.15, 0.15, 0.18, 1.0 }, .bg_sunken = .{ 0.12, 0.12, 0.14, 1.0 }, .bg_raised = .{ 0.25, 0.25, 0.28, 1.0 }, .bg_hover = .{ 0.35, 0.35, `
 - `pub const light_palette: Palette = .{ .bg = .{ 0.96, 0.96, 0.97, 1.0 }, .bg_panel = .{ 0.97, 0.97, 0.98, 1.0 }, .bg_sunken = .{ 1.00, 1.00, 1.00, 1.0 }, .bg_raised = .{ 0.88, 0.88, 0.92, 1.0 }, .bg_hover = .{ 0.82, 0.82,`
 - `pub const modern_light_palette: Palette = .{ .bg = .{ 0.957, 0.961, 0.973, 1.0 }, .bg_panel = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_sunken = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_raised = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_hover = .{ 0.945, 0.9`
@@ -1469,6 +1508,32 @@ overlay-layer panel for visual inspection. Closes ergonomic gap 6
 > last to keep it on top.
 - `pub fn appendDebugOverlay( cb: anytype, cmds: anytype, rects: []const Rect, opts: DebugOverlayOpts, ) void`
 
+### `teak.inspector` (`src/core/inspector.zig`)
+
+Dev inspector panel: the widget tree, the hovered widget's rect + style
+dump, the last Msgs and frame timings, drawn as an overlay over the app.
+`teak.run` appends it after the app's `view` when the inspector is on
+(`TEAK_INSPECT=1`, the F12 hotkey, or the control channel's `inspect`
+command). Extends `debug_overlay.zig`'s idea (cmd + rect dump) into a
+panel an agent or a human can use to see why a layout looks the way it does.
+
+> How long the loop's passes took last frame, in milliseconds (measured by
+> `run.zig`; the inspector only displays them).
+- `struct Timings`
+  - fields: `view_ms, layout_ms, render_ms`
+- `struct Opts`
+  - fields: `width, font, fg, dim, accent, bg, max_tree_lines, max_style_lines, max_cols`
+> Everything the inspector shows, as data.
+- `struct Data`
+  - fields: `window_w, window_h, frame, hover_index, focus_index, msgs, timings`
+> Append the inspector overlay to `cb`. `cmds` / `rects` are the frame the
+> user is looking at WITHOUT any inspector cmds (pass the app-only prefix);
+> they may belong to another buffer than `cb`.
+- `pub fn appendInspector(cb: anytype, cmds: anytype, rects: []const Rect, data: Data, opts: Opts) void`
+> Compact one-line rendering of a Msg (or any value): `.tag(payload)` for
+> unions, quoted text for byte slices, `.{ .f = v }` for structs.
+- `pub fn fmtValue(w: *std.Io.Writer, v: anytype) std.Io.Writer.Error!void`
+
 ### `teak.snapshot` (`src/core/snapshot.zig`)
 
 teak.snapshot — LLM-readable serialization of a rendered frame.
@@ -1565,12 +1630,12 @@ and the App.
 - `enum Button`
   - fields: `none, left, middle, right`
 - `enum CanvasEventKind`
-  - fields: `down, move, up, wheel, leave, layout`
+  - fields: `down, move, up, wheel, leave, layout, key`
 > One pointer event on an interactive canvas / scene. Coordinates are
 > canvas-LOCAL logical pixels (origin = the canvas rect's top-left), the
 > same space as `CanvasPrimitive` coordinates.
 - `struct CanvasEvent`
-  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h`
+  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h, key`
 > A window-space rectangle (`PointerEvent.box`).
 - `struct Box`
   - fields: `x, y, w, h`
@@ -1884,16 +1949,51 @@ Focus traversal helpers: walk `[]Cmd` to find the next/previous
 focusable widget. Framework-level primitive; the app decides how to
 translate a resulting cmd index into its own `Model.focused` field.
 
+> The cmd range of the topmost modal overlay (its `push_overlay` .. `pop_overlay`),
+> or null when none is open. Keyboard focus is trapped inside it.
+- `pub fn modalScope(cmds: anytype) ?struct { lo: usize, hi: usize }`
 > Find the next focusable cmd index strictly after `current`. If
 > `current` is null (or outside the traversal scope), start at the scope's
 > beginning. Wraps at the end of the scope - the whole buffer, or the
 > topmost modal overlay when one is open (see `focusScope`). Returns null
 > only if the scope has no focusable widgets at all.
 - `pub fn nextFocusable(cmds: anytype, current: ?usize) ?usize`
+> `nextFocusable` over every keyboard-operable leaf (`isNavigable`): enabled
+> buttons, checkboxes, radios, sliders, text inputs and text areas. This is
+> the Tab order of the run loop's keyboard navigation.
+- `pub fn nextNavigable(cmds: anytype, current: ?usize) ?usize`
+> `prevFocusable` over every keyboard-operable leaf.
+- `pub fn prevNavigable(cmds: anytype, current: ?usize) ?usize`
 > Find the previous focusable cmd index strictly before `current`. If
 > `current` is null (or outside the traversal scope), start from the
 > scope's last index. Wraps at the start of the scope.
 - `pub fn prevFocusable(cmds: anytype, current: ?usize) ?usize`
+> `isNavigable` minus buttons that opted out of Tab (`ButtonCmd.tab_stop = false`).
+- `pub fn isTabStop(c: anytype) bool`
+> A cmd the keyboard can operate: everything `isFocusable` accepts plus
+> enabled buttons, checkboxes, radios and sliders.
+- `pub fn isNavigable(c: anytype) bool`
+> Buttons of the roving group `idx` belongs to (contiguous `roving != .none` buttons
+> sharing one container): the neighbour `delta` steps away (negative = back), clamped to the
+> group (no wrap); `delta` of `minInt`/`maxInt` jumps to the first / last. Null when `idx` is
+> not a roving button or the group has one member.
+- `pub fn rovingTarget(cmds: anytype, idx: usize, delta: i32) ?usize`
+> The next (`forward`) or previous radio of the radio group `idx` belongs to,
+> wrapping inside the group; null when `idx` is not a radio or is alone. A
+> group is the run of radios that share one container (same nesting depth,
+> no other interactive leaf or container boundary in between).
+- `pub fn groupNeighbor(cmds: anytype, idx: usize, forward: bool) ?usize`
+> True for leaves that own text focus (the app keeps their focus Msg in its
+> Model and typing goes to them); false for the other navigable leaves,
+> whose keyboard focus is the run loop's own.
+- `pub fn isTextLeaf(c: anytype) bool`
+> The activation/focus Msg an interactive leaf carries, or null for a
+> non-interactive cmd. This is the same leaf set hit-test keys off
+> (`button`, `text_input`, `checkbox`, `radio`, `slider`) — kept in
+> sync so "the Msg this cmd would dispatch" means the same thing to
+> both passes. For a `text_input` that Msg is its `focus_msg`; for a
+> `slider` it's `grab_msg`; for the rest it's `msg`.
+- `pub fn activationMsg(c: anytype) ?@TypeOf(c).MsgT`
 > The activation/focus Msg of the focusable leaf at `index`, or null if
 > that cmd is not an interactive leaf. The inverse of `indexOfFocusMsg`:
 > Tab traversal lands on an index via `nextFocusable`/`prevFocusable`,
@@ -1921,7 +2021,7 @@ Text characters flow through InputState.chars; everything else is a
 variant here. Hosts map their native key codes onto this enum.
 
 - `enum SpecialKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_t, ...`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f12, f10, , ...`
 
 ### `teak.a11y` (`src/input/a11y.zig`)
 
@@ -2094,6 +2194,12 @@ viewport-agnostic snapshot back.
 > as "request unknown / already consumed").
 - `union FileDialogPoll`
   - fields: `pending, ok, cancelled`
+> One synthetic input event, injected by the agent control channel
+> (`src/control.zig`) through the Host's optional `injectInput`. It lands in
+> the same queue real OS events do, so injected input takes exactly the path
+> real input takes (HARDLINE: no second mutation path).
+- `union InjectEvent`
+  - fields: `move, down, up, wheel, chars, key, mods`
 > Per-frame input snapshot returned by `Host.pollInputs`.
 > `mouse_x` / `mouse_y` are the current cursor position (state, not an
 > event), in logical pixels relative to the window's client area.
@@ -2186,6 +2292,9 @@ viewport-agnostic snapshot back.
 > devicePixelRatio backing store internally). Nothing in the
 > framework consumes it yet; see docs/features/host.md "DPI and
 > scaling" for the end-to-end render-at-scale follow-up.
+> This is the one scale API: apps pass it to the Gpu as
+> `InitOptions.scale`, and when it changes at runtime (Win32
+> `WM_DPICHANGED`) the run loop forwards the new value to `Gpu.setScale`.
 > - `setCursor(shape)` — **optional**: show the OS mouse cursor for a
 > `CursorShape`. `teak.run` calls it only when the shape picked from
 > the hovered cmd (or the App's `cursorFor` hook) changes. X11 maps to
@@ -2211,19 +2320,30 @@ viewport-agnostic snapshot back.
 
 Shared per-window input accumulator for event-driven Hosts (Win32, X11).
 
+> Synthetic events waiting for the next poll (agent control channel).
+> Event-driven Hosts apply them to their `InputQueue` right after
+> `beginFrame` and the OS event pump, so injected input is
+> indistinguishable from real input and never wiped by `beginFrame`.
+- `struct InjectBuffer`
+  - fields: `entries, len`
+  > Queue `ev` for the next `apply`. Text longer than one frame's
+  > capacity is truncated at a code-point boundary; a full buffer drops.
+  - `pub fn push(self: *InjectBuffer, ev: host.InjectEvent) void`
+  > Apply everything queued, in order, and empty the buffer.
+  - `pub fn apply(self: *InjectBuffer, q: *InputQueue) void`
 > Host-neutral navigation / chord keys. Each backend maps its native key
 > codes onto this (a small switch) and `resolveKey` applies the
 > Shift/Ctrl policy once, so the `SpecialKey` variants (shift_left,
 > ctrl_a, ...) are derived in one place instead of per host.
 - `enum NavKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f10, a, c, x, v, y, z`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, menu, a, c, x, v, y, z`
 > The `SpecialKey` for `k` under `mods`, or null when the combination is
 > not a special key (a plain letter, or Ctrl/Alt/Meta-less letter chord).
 > Shift extends motion keys and reverses Tab; Ctrl+letter is a chord; Ctrl
 > with Left/Right/Home/End/Backspace/Delete selects the word/document variants.
 - `pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey`
 - `struct InputQueue`
-  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, alt_clean`
+  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, dropped, alt_clean`
   > Drop last frame's text and keys. Call once at the top of a poll,
   > before pumping events: the slices handed out by `finish` alias the
   > queue's buffers and stay valid until this runs.
@@ -2237,6 +2357,9 @@ Shared per-window input accumulator for event-driven Hosts (Win32, X11).
   > Alt went up: queue `alt_tap` when no other input arrived since `altDown`.
   - `pub fn altUp(self: *InputQueue) void`
   - `pub fn pushKey(self: *InputQueue, k: SpecialKey) void`
+  > Apply one synthetic event (agent control channel) exactly as the
+  > matching OS event would be.
+  - `pub fn inject(self: *InputQueue, ev: host.InjectEvent) void`
   > Resolve a navigation/chord key under the current modifiers and queue it.
   - `pub fn pushNav(self: *InputQueue, k: NavKey) void`
   > Queue one typed code point as UTF-8. Control codes and invalid
@@ -2274,7 +2397,7 @@ compiles wasm32-freestanding-clean.
 Canonical application loop — the `teak.run` wrapper.
 
 - `struct RunOptions`
-  - fields: `clear_color, blink_half_ms, snapshot_path, app_name, a11y, idle_skip`
+  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip`
 > Declares a second top-level window the app wants open this frame.
 > Data-only (HARDLINE §3): `secondaryWindow(*const Model)` returns this
 > or `null`; `run` diffs it against the live window to open / close /
@@ -2339,15 +2462,162 @@ docs/features/headless.md.
 > script, capture the last frame to `path` as a PNG. `Host` is
 > `teak-platform-headless`'s `Host`, `Gpu` is `teak-gpu-headless`'s `Gpu`.
 - `pub fn shot( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, path: []const u8, o: ShotOptions, ) !void`
+> `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
+> headless run, so any example's `zig build shot` can be taken at 2x without
+> code changes. Unset or invalid: `default`.
+- `pub fn envScale(default: f32) f32`
+- `struct ServeOptions`
+  - fields: `width, height, msaa, frame_sleep_ms, run`
+> Run `App` headlessly until the Host closes (the control channel's `quit`
+> command, or never): the "launch me for an agent" entry point. Pair it with
+> `TEAK_CONTROL=<socket>` and `tools/teak-drive`. See
+> docs/features/agent-driver.md.
+- `pub fn serve( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, o: ServeOptions, ) !void`
 > `argv[1]` of a `pub fn main(init: std.process.Init)` program, or
 > `default` when absent: the output path of a `zig build shot -- out.png`.
 - `pub fn pathArg(init: anytype, default: []const u8) []const u8`
-> Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). The
-> zlib stream uses stored (uncompressed) blocks: dependency-free and
-> instant, at the cost of ~raw size (1280x800 -> 4 MB). Caller frees.
+> A named, scripted app state for screenshots (`--state <name>`).
+- `struct ShotState`
+  - fields: `name, steps, msaa`
+> The whole `shot_main.zig` for an example: parses
+> `[out.png] [--state <name>] [--list] [--all <dir> --prefix <p>]` from argv, plays that state's
+> script (`o.steps` is ignored; the first of `states` is the default),
+> and writes the PNG. `--list` prints the state names, one per line, on
+> stdout and exits. `--all <dir> --prefix <p>` renders every state to
+> `<dir>/<p>-<state>.actual.png` in one process and prints the names:
+> `tools/vreg` uses it so each example needs a single `zig build` call.
+- `pub fn shotCli( comptime App: type, comptime Host: type, comptime Gpu: type, init: anytype, default_path: []const u8, o: ShotOptions, states: []const ShotState, ) !void`
+> Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). Each
+> scanline picks the PNG filter (none / sub / up / average / paeth) with
+> the smallest sum of absolute residuals, and the filtered stream is
+> deflate-compressed (`std.compress.flate`, default level), so UI
+> screenshots shrink from ~4 MB raw to tens of KB. Deterministic: the
+> same pixels always produce the same bytes. Caller frees.
 - `pub fn encodePng(gpa: std.mem.Allocator, rgba: []const u8, width: u32, height: u32) ![]u8`
+> A decoded image: tightly packed RGBA8 (top-down).
+- `struct Image`
+  - fields: `width, height, rgba`
+  - `pub fn deinit(self: Image, gpa: std.mem.Allocator) void`
+> Decode a PNG: 8-bit RGB or RGBA, non-interlaced, any scanline filter
+> (so both teak's own `encodePng` output and browser screenshots work).
+> RGB gets alpha 255. Caller frees with `Image.deinit`.
+- `pub fn decodePng(gpa: std.mem.Allocator, png: []const u8) !Image`
 > Write RGBA8 pixels to `path` (relative to the cwd) as a PNG.
 - `pub fn writePng(gpa: std.mem.Allocator, path: []const u8, rgba: []const u8, width: u32, height: u32) !void`
 > Read back the Gpu's last offscreen frame (`Gpu.readFrame`) and write it
 > to `path` as a PNG.
 - `pub fn writeFramePng(gpu: anytype, gpa: std.mem.Allocator, path: []const u8) !void`
+
+### `teak.dev` (`src/dev.zig`)
+
+Hot reload for dev builds (native, Linux): the App compiled as a shared
+library behind a stable loader executable. See docs/features/hot-reload.md.
+
+> Bump when the exported C ABI below changes.
+- `pub const abi_version: u32 = 1`
+> A 64-bit hash of a type's SHAPE: its name, size, and (recursively) the
+> names, types and offsets of its fields. Pointers hash their own type name
+> only (no recursion through them), so self-referential types terminate.
+- `pub fn typeFingerprint(comptime T: type) u64`
+> Everything the window system and GPU need, created once by the FIRST
+> library and handed to every later one.
+- `pub fn Env(comptime Host: type, comptime Gpu: type) type`
+> Build the exported surface for one App. `Init` supplies construction:
+> ```zig
+> const Init = struct {
+> pub fn host(gpa: std.mem.Allocator) !Host { return Host.init(gpa, 720, 600); }
+> pub fn gpu(host: *Host) !Gpu { return Gpu.initOffscreen(720, 600, .{}); }
+> };
+> comptime { teak.dev.Plugin(App, Host, Gpu, Init).exportAll(); }
+> ```
+- `pub fn Plugin(comptime App: type, comptime Host: type, comptime Gpu: type, comptime Init: type) type`
+- `enum ReloadResult`
+  - fields: `unchanged, kept_model, reset_model, rejected`
+- `struct Loader`
+  - fields: `io, gpa, path, tmp_dir, generation, environ, image, env, rt, last_mtime, loaded, note, note_len`
+  - `pub fn init(gpa: std.mem.Allocator, io: std.Io, path: []const u8, tmp_dir: []const u8, environ: ?[*:null]const ?[*:0]const u8) !Loader`
+  - `pub fn deinit(self: *Loader) void`
+  - `pub fn lastNote(self: *const Loader) []const u8`
+  > Check the file and swap when it changed. Call between frames.
+  - `pub fn pollReload(self: *Loader) ReloadResult`
+  > Load the file at `path` now and swap.
+  - `pub fn reload(self: *Loader) ReloadResult`
+  > One frame of the current build. False: the Host closed or the frame failed.
+  - `pub fn frame(self: *Loader) bool`
+  > After a quiet frame: block in the Host for at most `cap_ms`.
+  - `pub fn idle(self: *Loader, cap_ms: u32) void`
+  - `pub fn closed(self: *Loader) bool`
+> The loader executable's whole job: `pub fn main(init)` calls this with the
+> library path (default `zig-out/lib/libapp.so`).
+- `pub fn runLoader(init: std.process.Init, default_path: []const u8) !void`
+
+### `teak.control` (`src/control.zig`)
+
+Agent control channel + input record/replay, driven from `Runtime.frame`.
+See docs/features/agent-driver.md.
+
+> Compact one-line rendering of a Msg (see `inspector.fmtValue`).
+- `pub const fmtValue = inspector.fmtValue`
+> Msgs kept for the `msglog` command and the inspector.
+- `pub const ring_n = 32`
+> Loop-owned bookkeeping for the control channel and record/replay. Holds no
+> application state.
+- `struct State`
+  - fields: `gpa, active, log_msgs, frame_no, width, height, busy, acts, act_i, pool, note, line_buf, ring, ring_len, ring_total, rec_path, rec_buf, rec_lines_unflushed, tracker, replay_data, replay_pos, inspect, dirty, app_len, timings`
+  - `pub fn init(gpa: std.mem.Allocator) State`
+  - `pub fn deinit(self: *State) void`
+  > Replay file fully consumed (or none loaded).
+  > True once after something visual changed outside the input path.
+  - `pub fn consumeDirty(self: *State) bool`
+  - `pub fn replayDone(self: *const State) bool`
+  > Write the recording so far to its file.
+  - `pub fn flushRecording(self: *State) void`
+  > The most recent Msgs, oldest first (`n` newest at most).
+  - `pub fn msgAt(self: *const State, age: usize) ?[]const u8`
+  - `pub fn msgCount(self: *const State) usize`
+  > Record the Msg `msg` (formatted as text) in the ring.
+  - `pub fn logMsg(self: *State, comptime Msg: type, msg: Msg) void`
+> Resolve options + environment (env wins) and start whatever is asked for.
+> Failures degrade to "feature off" with a log line, never a crash.
+- `pub fn start(st: *State, host: anytype, opts: anytype) void`
+> Monotonic nanoseconds, or 0 when the inspector is off or the target has
+> no clock (so the normal path never reads one).
+- `pub fn stamp(st: *const State) u64`
+- `pub fn msBetween(a: u64, b: u64) f32`
+- `pub fn toggleInspect(st: *State) void`
+> Append the inspector overlay for the frame being built into `cb`, from the
+> previous frame `prev` (cmds, rects), then remember where the app's own
+> cmds end in `cb` so the next frame skips the overlay.
+- `pub fn appendInspectorFor(rt: anytype, cb: anytype, cur: u1, prev: u1, window_w: f32, window_h: f32) void`
+> Before the Host is polled: replayed input, then the control channel.
+- `pub fn beforePoll(rt: anytype) void`
+> After the Host is polled: capture the frame's input into the recording.
+- `pub fn afterPoll(rt: anytype, input: anytype) void`
+> After the frame is built and presented: finish the command in flight.
+- `pub fn afterFrame(rt: anytype) void`
+
+### `teak.input_record` (`src/input_record.zig`)
+
+Input record / replay file format (`TEAK_RECORD` / `TEAK_REPLAY`).
+
+- `pub const max_chars = 64`
+- `pub const max_keys = 32`
+> One frame's recorded input, as written to / parsed from a line.
+- `struct FrameRec`
+  - fields: `frame, move, down, up, mods, wheel, chars, chars_len, keys, keys_len`
+  - `pub fn charsSlice(self: *const FrameRec) []const u8`
+  - `pub fn keysSlice(self: *const FrameRec) []const keys.SpecialKey`
+  > True when the frame carries nothing worth a line.
+  - `pub fn isEmpty(self: *const FrameRec) bool`
+> Append one line (with newline) for `r`.
+- `pub fn writeLine(w: *std.Io.Writer, r: *const FrameRec) std.Io.Writer.Error!void`
+- `pub const ParseError = error{BadRecordLine}`
+> Parse one line. Returns null for a blank line or a comment.
+- `pub fn parseLine(line: []const u8) ParseError!?FrameRec`
+> Turns a stream of per-frame input into `FrameRec`s, tracking what changed
+> since the last frame (pointer position, modifiers).
+- `struct Tracker`
+  - fields: `last_x, last_y, last_mods`
+  > `input` is any struct with the `InputState` input fields. Returns null
+  > when the frame had no input worth recording.
+  - `pub fn observe(self: *Tracker, frame: u32, input: anytype) ?FrameRec`

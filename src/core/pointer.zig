@@ -57,6 +57,10 @@ pub const CanvasEventKind = enum {
     /// Model (the view cannot read layout results), e.g. to anchor overlay
     /// text over a 3D viewport.
     layout,
+    /// A key pressed while the canvas has the keyboard focus (a focusable
+    /// canvas, `canvasInteractiveFocusable`) and the app's own key hooks
+    /// declined it. `CanvasEvent.key` names the key. Return a Msg to consume it.
+    key,
 };
 
 /// One pointer event on an interactive canvas / scene. Coordinates are
@@ -79,6 +83,8 @@ pub const CanvasEvent = struct {
     /// Canvas rect size in logical px.
     w: f32 = 0,
     h: f32 = 0,
+    /// For `key`: which key.
+    key: ?@import("../input/keys.zig").SpecialKey = null,
 };
 
 /// A window-space rectangle (`PointerEvent.box`).
@@ -99,6 +105,28 @@ pub const Box = struct {
 /// clock, so the app can derive deadlines for `Sub.at`.
 pub fn PointerEvent(comptime Msg: type) type {
     return struct {
+        pub const Kind = enum {
+            /// The interactive widget under the pointer changed (`hit` is the
+            /// new one, null = empty space). Also what `hoverMsg` receives.
+            hover,
+            /// A button went down. `hit` is the widget under the pointer or
+            /// null for **blank space** (the way an app clears its own focus).
+            down,
+            /// A button was released (`hit` as for `down`).
+            up,
+            /// The right button went down (what `contextMsg` receives).
+            context,
+        };
+
+        /// True when the pointer is over no interactive widget (a click here
+        /// should clear the app's focus / selection / open menus).
+        pub fn isBlank(self: @This()) bool {
+            return self.hit == null;
+        }
+
+        kind: Kind = .hover,
+        /// Which button changed (`down` / `up` / `context`); `.none` for hover.
+        button: Button = .none,
         x: f32,
         y: f32,
         hit: ?Msg = null,

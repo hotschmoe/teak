@@ -69,9 +69,8 @@ pub fn view(m: *const Model, cb: anytype) void {
     ui.endCard(cb);
 
     ui.card(cb, "Text area", 0, 0);
-    cb.textMuted("Multi-line editing is designed");
-    cb.textMuted("(TextAreaCmd, docs/features/text-engine.md)");
-    cb.textMuted("and not shipped yet.");
+    model.Area.viewWith(&m.area, cb, .{ .focus = Msg{ .area = .focus } }, .{ .id = model.area_id, .height = 76, .padding = 4 });
+    cb.textMuted("Wraps, scrolls, selects; click or Tab to edit.");
     ui.endCard(cb);
     cb.popGroup();
 

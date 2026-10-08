@@ -30,6 +30,7 @@ change yields.
 | Fire a Msg on a timer | [11. Timer / subscription](#11-timer--subscription) |
 | Add a brand-new widget to the framework | [12. Add a new widget to the framework](#12-add-a-new-widget-to-the-framework) |
 | Call an HTTP API, open / save a file, remember a setting | [13. Effects: HTTP, files, storage](#13-effects-http-files-storage) |
+| Drive my app from an LLM agent (click, type, screenshot, replay) | [15. Drive your app from an LLM agent](#15-drive-your-app-from-an-llm-agent) |
 
 The mechanical spine underneath every app recipe: **1.** field on `Model`
 · **2.** variant on `Msg` · **3.** arm in `update` · **4.** `cb.*` calls in
@@ -921,6 +922,55 @@ sets `material.open = false` (see chrome's `.focus_name`).
 
 **Common mistake:** treating the `selectMsg` index as the filtered ordinal —
 it is the index into *your* options slice, so `m.material.selected` is always
+a valid index into it. `list_x/list_y` are window coordinates (the previous
+frame's rect of the input, as for `Dropdown`).
+
+---
+
+## 15. Drive your app from an LLM agent
+
+**Goal:** let a coding agent launch your app, read the GUI, operate it through
+real input, look at a screenshot, and replay what it did.
+
+**Setup (headless, works in CI):** a 10-line `src/drive_main.zig` plus a `drive`
+build step (copy `examples/todo`'s):
+
+```zig
+// src/drive_main.zig
+const teak = @import("teak");
+const Host = @import("teak-platform-headless").Host;
+const Gpu = @import("teak-gpu-headless").Gpu;
+const App = @import("app.zig");
+pub fn main() !void {
+    var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_impl.deinit();
+    try teak.headless.serve(App, Host, Gpu, gpa_impl.allocator(), .{ .width = 720, .height = 600 });
+}
+```
+
+(`build.zig`: `teak.linkHeadless(b, drive_exe, .{})` + an install step.) A
+windowed app needs nothing: `teak.run` honors `TEAK_CONTROL` on X11.
+
+**Use it:**
+
+```sh
+zig build drive                 # in the teak repo: zig-out/bin/teak-drive
+claude mcp add teak -- $PWD/zig-out/bin/teak-drive mcp   # or any MCP client
+```
+
+The agent then calls `launch_app {example:"todo"}`, `snapshot` / `tree` to read
+the UI, `click {role:"button", label:"Add"}`, `type {text:"milk"}`,
+`key {name:"enter"}`, `screenshot {path:..., include_image:true}`, `msglog`,
+`state`. From a shell: `teak-drive --socket $S click --role text_input`.
+Optional `pub fn debugState(*const Model, *std.Io.Writer) void` on the App
+feeds the `state` tool. Record a session with `TEAK_RECORD=run.rec` and replay
+it headless with `TEAK_REPLAY=run.rec`; `TEAK_INSPECT=1` (or F12 in Debug)
+overlays the widget tree, hovered style, last Msgs and frame timings.
+
+**Guarantees:** injected input takes the exact path real input takes (no second
+mutation path, HARDLINE intact); a selector that matches nothing is a clean
+error. Depth: [agent-driver.md](features/agent-driver.md).
+
 a valid index into it. The list anchors itself under the input
 (`auto_anchor`); `list_x/list_y` are window coordinates used only with
 `auto_anchor = false`.
@@ -1129,3 +1179,32 @@ pub fn view(m: *const Model, cb: anytype) void {
 **Common mistakes:** forgetting `.pointer = true` / an `id` (no events arrive); rebuilding the *mesh resource* on every selection
 change (use item flags); using `Item.mesh` with a key that is not in `resources()` (it draws nothing); expecting `screen_px` sprite
 sizes in non-camera-facing modes; a plane whose `u`/`v` are not unit-length changes its world size (it is a scale).
+
+## 20. Add a golden screenshot test
+
+**Intent**: pin how a screen looks (layout + text + clicks that must land) so a regression fails CI.
+
+1. Give the example a `shot` step (copy `examples/todo/build.zig`'s block; it needs `teak.linkHeadless`) and a
+   `src/shot_main.zig`:
+
+```zig
+pub fn main(init: std.process.Init) !void {
+    try teak.headless.shotCli(App, Host, Gpu, init, "myapp.png", .{ .width = 720, .height = 600 }, &.{
+        .{ .name = "initial", .steps = &.{.{ .frames = 2 }} },
+        .{ .name = "filled", .steps = &.{
+            .{ .frames = 2 },
+            .{ .click = .{ 80, 66 } },   // focus the input
+            .{ .chars = "hello" },
+            .{ .key = .enter },
+            .{ .frames = 2 },
+        } },
+    });
+}
+```
+
+2. `zig build vreg -- --examples myapp --update`, then LOOK at `test/golden/myapp-*.png`.
+3. Commit the PNGs. From now on `zig build vreg` (and the CI `vreg` job) fails when pixels move.
+   Click coordinates come from the screenshot itself: shoot the initial state and read positions off it.
+   Put a frame between actions that depend on each other (a `click` already runs three frames).
+
+Details, tolerances and the `--update` workflow: [docs/features/visual-regression.md](features/visual-regression.md).

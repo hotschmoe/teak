@@ -4,3 +4,5 @@ zig-pkg/
 dist/
 tools/node_modules
 .x11_test/
+tools/qa/out/
+tools/qa/zig-pkg/

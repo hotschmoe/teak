@@ -29,6 +29,23 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
 
+    // tools/teak-drive: the agent-driver CLI + MCP server
+    // (docs/features/agent-driver.md). `zig build drive` installs it.
+    const drive_mod = b.createModule(.{
+        .root_source_file = b.path("tools/teak_drive.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "control_socket", .module = b.createModule(.{
+            .root_source_file = b.path("src/platform/control_socket.zig"),
+            .target = target,
+            .optimize = optimize,
+        }) }},
+    });
+    const drive_exe = b.addExecutable(.{ .name = "teak-drive", .root_module = drive_mod });
+    b.step("drive", "Build zig-out/bin/teak-drive (agent driver CLI + MCP server)")
+        .dependOn(&b.addInstallArtifact(drive_exe, .{}).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = drive_mod })).step);
+
     // Integration tests: full-pipeline round trip + wasm-canary.
     const integ_mod = b.createModule(.{
         .root_source_file = b.path("test/integration_test.zig"),
@@ -149,6 +166,33 @@ pub fn build(b: *std.Build) void {
         });
     }
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = stbtt_face_mod })).step);
+
+    // Win32 platform smoke tests (src/platform/win32.zig). Only
+    // wired when the host target is Windows because the file imports
+    // user32/oleaut32/kernel32/uiautomationcore. Covers the UIA
+    // per-node fragment provider wiring among other host helpers.
+    if (target.result.os.tag == .windows) {
+        const platform_win32_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/win32.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "teak", .module = mod },
+                .{ .name = "teak-text", .module = stbtt_mod },
+            },
+        });
+        const platform_win32_tests = b.addTest(.{ .root_module = platform_win32_mod });
+        test_step.dependOn(&b.addRunArtifact(platform_win32_tests).step);
+    }
+    // Win32 clipboard / drop data conversions (pure; tested on every OS).
+    const win32_data_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/win32_data.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "teak", .module = mod }},
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = win32_data_mod })).step);
 
     // Headless host (src/platform/headless.zig): scripted input, fake
     // clock, effect capture. Needs the stb text module for its font.
@@ -285,8 +329,9 @@ pub fn build(b: *std.Build) void {
     }
 
     // Native effects service (HTTP worker threads, storage files, ...): runs
-    // against a local libc-socket server. Linux only, like its host.
-    if (target.result.os.tag == .linux) {
+    // against a local libc-socket server (POSIX; the HTTP round-trip tests
+    // skip on Windows, the rest run there).
+    if (target.result.os.tag == .linux or target.result.os.tag == .windows) {
         const native_fx_mod = b.createModule(.{
             .root_source_file = b.path("src/platform/native_effects.zig"),
             .target = target,
@@ -398,6 +443,32 @@ pub fn build(b: *std.Build) void {
     const audit_step = b.step("audit", "Run HARDLINE drift audit (greppable rules from HARDLINE §5)");
     audit_step.dependOn(&audit_run.step);
     audit_step.dependOn(wasm_step);
+
+    // Visual-regression runner (tools/vreg.zig): renders every example's
+    // `zig build shot` states and compares them with test/golden/. Runs on
+    // the build host; needs a Vulkan device (native) or Chromium (--web).
+    // See docs/features/visual-regression.md.
+    const vreg_teak = b.createModule(.{
+        .root_source_file = b.path("src/teak.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    const vreg_mod = b.createModule(.{
+        .root_source_file = b.path("tools/vreg.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+        .imports = &.{.{ .name = "teak", .module = vreg_teak }},
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = vreg_mod })).step);
+    const vreg_exe = b.addExecutable(.{ .name = "vreg", .root_module = vreg_mod });
+    const vreg_run = b.addRunArtifact(vreg_exe);
+    vreg_run.setCwd(b.path("."));
+    vreg_run.has_side_effects = true;
+    vreg_run.stdio = .inherit;
+    vreg_run.addArgs(&.{ "--zig", b.graph.zig_exe });
+    vreg_run.addPassthruArgs();
+    b.step("vreg", "Visual regression: render example shots and compare with test/golden/ (-- --update, --web, ...)")
+        .dependOn(&vreg_run.step);
 }
 
 fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {
@@ -512,6 +583,9 @@ fn linkWindows(
         .optimize = optimize,
     });
 
+    // One stb_truetype module feeds both the Host's measurer and the Gpu's
+    // rasterizer (same as Linux), so layout and render agree and
+    // `registerFont` / letter spacing work. Links libc (mingw on -gnu).
     const text_mod = stbTextModule(b, teak_dep, teak_mod, target, optimize, harfbuzz);
 
     const platform_mod = b.createModule(.{
@@ -529,6 +603,7 @@ fn linkWindows(
         .root_source_file = teak_dep.path("src/gpu/native.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .imports = &.{
             .{ .name = "teak", .module = teak_mod },
             .{ .name = "teak-shaders", .module = shaders_mod },
@@ -740,7 +815,8 @@ pub fn linkHeadless(
     const root = exe.root_module;
     const target = root.resolved_target.?;
     const optimize = root.optimize.?;
-    if (target.result.os.tag != .linux) @panic("teak.linkHeadless: Linux only for now (Windows has no stb-text headless stitch yet)");
+    const os = target.result.os.tag;
+    if (os != .linux and os != .windows) @panic("teak.linkHeadless: Linux or Windows only");
 
     const teak_dep = b.dependencyFromBuildZig(BuildZig, .{
         .target = target,
@@ -748,9 +824,9 @@ pub fn linkHeadless(
     });
     const teak_mod = teak_dep.module("teak");
     const wgpu_dep_name: []const u8 = switch (target.result.cpu.arch) {
-        .aarch64 => "wgpu-native-linux-aarch64",
-        .x86_64 => "wgpu-native-linux-x86_64",
-        else => @panic("teak.linkHeadless: unsupported Linux arch (aarch64 or x86_64 only)"),
+        .aarch64 => if (os == .windows) "wgpu-native-windows-aarch64" else "wgpu-native-linux-aarch64",
+        .x86_64 => if (os == .windows) "wgpu-native-windows-x86_64" else "wgpu-native-linux-x86_64",
+        else => @panic("teak.linkHeadless: unsupported arch (aarch64 or x86_64 only)"),
     };
     const wgpu_dep = teak_dep.builder.lazyDependency(wgpu_dep_name, .{}) orelse return;
 
@@ -784,15 +860,22 @@ pub fn linkHeadless(
     });
     gpu_mod.addImport("wgpu-c", translateC(b, teak_dep.path("src/gpu/vendor/wgpu_c.h"), wgpu_dep.path("include/webgpu"), target, optimize));
     gpu_mod.addLibraryPath(wgpu_dep.path("lib"));
-    gpu_mod.linkSystemLibrary("wgpu_native", .{});
+    gpu_mod.linkSystemLibrary(if (os == .windows) "wgpu_native.dll" else "wgpu_native", .{});
 
     root.link_libc = true;
     root.addImport("teak", teak_mod);
     root.addImport("teak-platform-headless", platform_mod);
     root.addImport("teak-gpu-headless", gpu_mod);
-    root.addRPathSpecial("$ORIGIN");
-    const install_so = b.addInstallBinFile(wgpu_dep.path("lib/libwgpu_native.so"), "libwgpu_native.so");
-    exe.step.dependOn(&install_so.step);
+    // The runtime library sits next to the exe (rpath $ORIGIN on Linux, the
+    // DLL search path on Windows).
+    if (os == .windows) {
+        const install_dll = b.addInstallBinFile(wgpu_dep.path("lib/wgpu_native.dll"), "wgpu_native.dll");
+        exe.step.dependOn(&install_dll.step);
+    } else {
+        root.addRPathSpecial("$ORIGIN");
+        const install_so = b.addInstallBinFile(wgpu_dep.path("lib/libwgpu_native.so"), "libwgpu_native.so");
+        exe.step.dependOn(&install_so.step);
+    }
 }
 
 pub const WebWgpuOptions = struct {
@@ -871,6 +954,9 @@ fn webFontDataModule(
 }
 
 fn addFontArgs(run: *std.Build.Step.Run, fonts: []const WebFont) void {
+    // The faces are embedded in the wasm and shaped by stb, so the page fonts are only the canvas
+    // fallback's: preload them but do not hold startup for them.
+    if (fonts.len > 0) run.addArg("--font-nowait");
     for (fonts) |f| {
         run.addArg("--font");
         run.addArg(f.family);
