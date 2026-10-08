@@ -53,6 +53,13 @@
 //!   - `scrollMsg(*const Model, id, dx, dy) ?Msg`     — wheel over the
 //!     innermost hovered scroll region with `ScrollStyle.id != 0` (a pointer
 //!     canvas inside it wins when it is the innermost).
+//!   - `virtualRowsMsg(*const Model, id, first_row, heights: []const f32) ?Msg` —
+//!     measured main-axis extents of the rows a `VirtualListStyle.id != 0`
+//!     list emitted (direct children, from `visible_start`), whenever they
+//!     change: how a variable-height list learns real heights from layout.
+//!   - `modsMsg(*const Model, mods: Modifiers) ?Msg`  — the modifier keys
+//!     (Shift/Ctrl/Alt/Meta) whenever they change, dispatched before the
+//!     frame's pointer and key routing, so a click Msg can read them from the Model.
 //!   - `scrollLayoutMsg(*const Model, id, vw, vh, cw, ch) ?Msg` — viewport and
 //!     content size of every `ScrollStyle.id != 0` region, on its first layout
 //!     and whenever either changes, so the app can clamp offsets and draw
@@ -135,6 +142,7 @@ const text_event = @import("core/text_event.zig");
 const text_wrap = @import("core/text_wrap.zig");
 const layout = @import("layout/engine.zig");
 const scroll_extent = @import("layout/scroll_extent.zig");
+const virtual_rows = @import("layout/virtual_rows.zig");
 const hit_test = @import("input/hit_test.zig");
 const focus = @import("input/focus.zig");
 const render = @import("render/build.zig");
@@ -419,6 +427,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         const has_pointer_hook = has_canvas_hook or has_text_hook;
         const has_scroll_hook = @hasDecl(App, "scrollMsg");
         const has_scroll_layout_hook = @hasDecl(App, "scrollLayoutMsg");
+        const has_rows_hook = @hasDecl(App, "virtualRowsMsg");
+        const has_mods_hook = @hasDecl(App, "modsMsg");
         const has_resources = @hasDecl(App, "resources");
         const has_secondary = @hasDecl(App, "secondaryWindow") and @hasDecl(App, "secondaryView") and
             @hasDecl(Gpu, "openSecondarySurface");
@@ -495,6 +505,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// timestamp is all the bookkeeping the loop holds. `null` until the
         /// first frame binds it: no sub fires on the opening tick.
         last_sub_ms: ?u64 = null,
+        /// Modifier state last reported through `modsMsg`.
+        last_mods: pointer.Modifiers = .{},
 
         /// Effect ids handed to the host and still listed by the app.
         issued: effects_mod.IssuedTable(max_issued_effects) = .{},
@@ -586,6 +598,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (@hasDecl(App, "windowMsg")) {
                     if (App.windowMsg(&self.model, @floatFromInt(input.width), @floatFromInt(input.height))) |m| self.dispatch(m);
                 }
+            }
+
+            if (has_mods_hook and !std.meta.eql(input.mods, self.last_mods)) {
+                self.last_mods = input.mods;
+                if (App.modsMsg(&self.model, input.mods)) |m| self.dispatch(m);
             }
 
             // Input is routed against the PREVIOUS frame's layout — the one
@@ -1195,7 +1212,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// on first layout and whenever the value differs from the previous
         /// frame's. The resulting Msg takes effect in the NEXT frame's view.
         fn reportLayout(self: *Self, prev: u1, cur: u1) void {
-            if (!has_pointer_hook and !has_scroll_layout_hook) return;
+            if (!has_pointer_hook and !has_scroll_layout_hook and !has_rows_hook) return;
             const cmds = self.bufs[cur].cmds.items;
             const rects = self.rects[cur].items;
             const prev_cmds = self.bufs[prev].cmds.items;
@@ -1216,6 +1233,20 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         false;
                     if (!unchanged) {
                         if (App.scrollLayoutMsg(&self.model, sc.id, now.viewport_w, now.viewport_h, now.content_w, now.content_h)) |m| self.dispatch(m);
+                    }
+                },
+                .push_virtual_list => |vl| if (has_rows_hook and vl.id != 0) {
+                    var now: [max_reported_rows]f32 = undefined;
+                    const n = virtual_rows.rowExtents(cmds, rects, i, &now);
+                    var unchanged = false;
+                    if (findVirtualList(prev_cmds, vl.id)) |old| {
+                        var was: [max_reported_rows]f32 = undefined;
+                        const pn = virtual_rows.rowExtents(prev_cmds, prev_rects, old, &was);
+                        unchanged = prev_cmds[old].push_virtual_list.visible_start == vl.visible_start and
+                            std.mem.eql(f32, now[0..n], was[0..pn]);
+                    }
+                    if (!unchanged) {
+                        if (App.virtualRowsMsg(&self.model, vl.id, vl.visible_start, now[0..n])) |m| self.dispatch(m);
                     }
                 },
                 else => {},
@@ -1519,6 +1550,18 @@ fn findPointerCanvas(cmds: anytype, id: u32) ?usize {
     for (cmds, 0..) |_, i| {
         if (hit_test.pointerSurface(cmds, i)) |t| if (t.id == id) return i;
     }
+    return null;
+}
+
+/// Most rows one `virtualRowsMsg` carries.
+const max_reported_rows = 256;
+
+/// Cmd index of the `push_virtual_list` with `id`, if the buffer has one.
+fn findVirtualList(cmds: anytype, id: u32) ?usize {
+    for (cmds, 0..) |c, i| switch (c) {
+        .push_virtual_list => |vl| if (vl.id == id) return i,
+        else => {},
+    };
     return null;
 }
 

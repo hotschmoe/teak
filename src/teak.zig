@@ -42,6 +42,19 @@ pub const text_field = @import("core/text_field.zig");
 pub const numeric_field = @import("core/numeric_field.zig");
 /// `Dropdown`: a closed button plus an open overlay list.
 pub const dropdown = @import("core/dropdown.zig");
+/// `Scroller`: scroll position with smooth wheel and kinetic fling, as Model data.
+pub const Scroller = @import("core/scroller.zig").Scroller;
+/// `DataTable(cfg)`: virtualized, sortable, resizable, selectable table for 100k+ rows.
+pub const data_table = @import("core/data_table.zig");
+pub const DataTable = data_table.DataTable;
+/// Column definition of a `DataTable`.
+pub const DataTableColumn = data_table.Column;
+/// `VarList(cap)`: virtualized list with per-row heights measured by layout, scroll-anchored.
+pub const var_list = @import("core/var_list.zig");
+pub const VarList = var_list.VarList;
+/// `TreeList(cap)`: virtualized tree over a preorder node set; expand/collapse + keyboard.
+pub const tree_list = @import("core/tree_list.zig");
+pub const TreeList = tree_list.TreeList;
 /// `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
 pub const combobox = @import("core/combobox.zig");
 /// Widgets built from existing Cmd primitives: toggle, progress, tabs, split pane,
