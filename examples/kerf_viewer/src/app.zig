@@ -20,6 +20,8 @@ const teak = @import("teak");
 const kerf = @import("kerf_mesh.zig");
 
 const scene = teak.scene;
+/// Ctrl+K / Ctrl+Shift+P command palette over `commands` below.
+const Palette = teak.CommandPalette(24);
 const Orbit = scene.Orbit;
 
 // ── Palette (kerf/spec/DESIGN.md section 1) and theme ──────────────
@@ -168,6 +170,9 @@ pub const Model = struct {
     status_buf: [96]u8 = undefined,
     status_len: usize = 0,
     list_scroll: f32 = 0,
+    /// Window size (logical px), centers the palette.
+    win: [2]f32 = .{ 1280, 800 },
+    palette: Palette.Model = .{},
     list_viewport: f32 = 0,
     list_content: f32 = 0,
     next_id: u32 = 2,
@@ -315,6 +320,10 @@ pub const Msg = union(enum) {
     http_done: struct { status: u16, body: []const u8, err: []const u8 },
     list_scroll_by: f32,
     list_extent: [2]f32,
+    window: [2]f32,
+    palette: Palette.Msg,
+    /// Run palette option `i` (see `commands`).
+    palette_run: usize,
     noop,
 };
 
@@ -366,8 +375,41 @@ pub fn update(m: *Model, msg: Msg) void {
             m.list_content = e[1];
             m.list_scroll = clampScroll(m, m.list_scroll);
         },
+        .window => |w| m.win = w,
+        .palette => |pm| Palette.update(&m.palette, pm),
+        .palette_run => |i| {
+            Palette.update(&m.palette, .close);
+            var list: teak.CommandList(Msg) = .{};
+            commands(m, &list);
+            if (list.paletteCommand(i)) |c| update(m, c.msg);
+        },
         .noop => {},
     }
+}
+
+/// The command table: shortcuts (matched by `teak.run` before widget keys),
+/// and the palette's option list. Pure function of the Model.
+pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
+    const C = teak.Chord;
+    list.add(.{ .id = "palette", .label = "Command Palette", .shortcut = C.ctrlShift(.p), .alt_shortcut = C.ctrl(.k), .hidden = true, .msg = .{ .palette = .focus } });
+    list.add(.{ .id = "file.open", .label = "Open Mesh...", .shortcut = C.ctrl(.o), .enabled = m.req_len == 0, .msg = .open_file });
+    list.add(.{ .id = "view.front", .label = "View: Front", .shortcut = C.altKey(.d1), .msg = .{ .preset = .front } });
+    list.add(.{ .id = "view.iso", .label = "View: Isometric", .shortcut = C.altKey(.d2), .msg = .{ .preset = .iso } });
+    list.add(.{ .id = "view.top", .label = "View: Top", .shortcut = C.altKey(.d3), .msg = .{ .preset = .top } });
+    list.add(.{ .id = "view.right", .label = "View: Right", .shortcut = C.altKey(.d4), .msg = .{ .preset = .right } });
+    list.add(.{ .id = "view.fit", .label = "Fit to Window", .shortcut = C.ctrl(.d0), .msg = .fit });
+    list.add(.{ .id = "view.ortho", .label = "Toggle Orthographic", .shortcut = C.altKey(.o), .msg = .toggle_ortho });
+    list.add(.{ .id = "view.edges", .label = "Toggle Edges", .shortcut = C.altKey(.e), .msg = .toggle_edges });
+    list.add(.{ .id = "part.next", .label = "Select Next Part", .shortcut = C.plain(.f3), .msg = .{ .select_step = 1 } });
+    list.add(.{ .id = "part.prev", .label = "Select Previous Part", .shortcut = C.plain(.f2), .msg = .{ .select_step = -1 } });
+    list.add(.{ .id = "part.none", .label = "Clear Selection", .msg = .{ .select = 0 } });
+    inline for (fixtures, 0..) |f, i| {
+        list.add(.{ .id = "fixture." ++ f.name, .label = "Load Fixture: " ++ f.name, .msg = .{ .load_fixture = @intCast(i) } });
+    }
+}
+
+fn paletteSelect(i: usize) Msg {
+    return .{ .palette_run = i };
 }
 
 fn clampScroll(m: *const Model, y: f32) f32 {
@@ -413,7 +455,12 @@ pub fn scrollLayoutMsg(_: *const Model, id: u32, _: f32, vh: f32, _: f32, ch: f3
     return if (id == list_id) Msg{ .list_extent = .{ vh, ch } } else null;
 }
 
-pub fn keyCharMsg(_: *const Model, c: u8) ?Msg {
+pub fn windowMsg(_: *const Model, w: f32, h: f32) ?Msg {
+    return .{ .window = .{ w, h } };
+}
+
+pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    if (m.palette.open) return .{ .palette = Palette.charMsg(c) };
     return switch (c) {
         '1' => Msg{ .preset = .front },
         '2' => Msg{ .preset = .iso },
@@ -426,7 +473,16 @@ pub fn keyCharMsg(_: *const Model, c: u8) ?Msg {
     };
 }
 
-pub fn keySpecialMsg(_: *const Model, key: teak.SpecialKey) ?Msg {
+pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
+    if (m.palette.open) {
+        var list: teak.CommandList(Msg) = .{};
+        commands(m, &list);
+        const pm = Palette.keyMsg(&m.palette, key, &list, .{}) orelse return null;
+        return switch (pm) {
+            .select => |i| Msg{ .palette_run = i },
+            else => Msg{ .palette = pm },
+        };
+    }
     return switch (key) {
         .up => Msg{ .select_step = -1 },
         .down => Msg{ .select_step = 1 },
@@ -482,6 +538,13 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
     statusBar(m, cb);
     cb.popGroup();
+    var list: teak.CommandList(Msg) = .{};
+    commands(m, &list);
+    Palette.viewPalette(&m.palette, cb, &list, .{
+        .focus = Msg{ .palette = .focus },
+        .close = Msg{ .palette = .close },
+        .selectMsg = paletteSelect,
+    }, .{ .window_w = m.win[0], .window_h = m.win[1] });
 }
 
 fn header(m: *const Model, cb: anytype) void {
@@ -502,6 +565,7 @@ fn header(m: *const Model, cb: anytype) void {
         cb.buttonStyled(.{ .load_fixture = @intCast(i) }, std.ascii.allocUpperString(a, f.name) catch f.name, header_button);
     }
     cb.buttonStyled(.open_file, "OPEN...", header_button);
+    cb.buttonStyled(.{ .palette = .focus }, "CTRL+K", header_button);
     cb.popGroup();
     // 2px rule under the header (DESIGN section 1).
     cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 2, .bg = ink });
