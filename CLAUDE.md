@@ -89,7 +89,7 @@ Every arrow is a function call with explicit inputs and outputs. No globals, no 
 |-------|-------------|-----------|
 | **State (TEA)** | `Model` struct holds all app state. `Msg` tagged union enumerates transitions. `update` is a switch. | `Model`, `Msg`, `update()` |
 | **View** | `view()` emits flat `[]Cmd` tagged unions into an arena-allocated `CmdBuffer`. Runs every frame. | `Cmd`, `CmdBuffer`, `view()` |
-| **Layout** | Two O(n) linear passes (measure bottom-up, position top-down) over `[]Cmd` producing `[]Rect`. Stack-based, no tree allocation. | `Rect`, `LayoutEngine` |
+| **Layout** | Two to four O(n) linear passes (measure bottom-up, position top-down; plus resolve-widths / re-measure-heights only when wrapped or shrinkable nodes exist) over `[]Cmd` producing `[]Rect`. Stack-based, no tree allocation. | `Rect`, `LayoutEngine` |
 | **Hit-test** | Walks `[]Cmd` + `[]Rect` backwards (painter's order). Returns the `Msg` embedded in the command. No ID hashing. | `hit_test()` |
 | **Render** | Converts `[]Cmd` + `[]Rect` + `TransientState` into wgpu draw calls (colored quads). | `render_pass()`, `Vertex` |
 | **TransientState** | Hover/press/focus state that bypasses the TEA loop entirely -- short circuits from input to render. | `TransientState` |
@@ -278,3 +278,6 @@ Shipped phases, in order: prototype core loop → cleanup/abstraction hardening 
 - Explicit allocators everywhere. Arena allocators for per-frame data.
 - Convenience emitters on `CmdBuffer` stay non-error-returning; allocation failure goes through `core/oom.zig`'s `oom()` (`alloc(...) catch oom()`), a loud `@panic` in every optimize mode. Never `catch unreachable` an allocation (UB in release).
 - Text measurement flows through the Host's `TextMeasurer` (real platform metrics at layout time). `teak.monoMeasurer()` is the stateless stub for CLI canaries and tests. `CHAR_WIDTH` is gone — `zig build audit` forbids reintroducing it.
+
+## Versioning
+`build.zig.zon` `.version` is the single source of truth; code reads `teak.version` (from `build_options`). Never write a version literal elsewhere, never bump it in a feature PR. Releases are cut explicitly with `tools/release.sh <semver>`. See [`docs/VERSIONING.md`](docs/VERSIONING.md).

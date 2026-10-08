@@ -349,13 +349,18 @@ pub fn Combobox(comptime cap: usize) type {
                 cb.pushGroup(.{ .direction = .vertical, .bg = cb.theme.panel_bg, .padding = 0, .gap = 0 });
             }
             if (n == 0) {
-                cb.buttonDisabled(msgs.close, NO_MATCHES);
+                var row = cb.theme.button;
+                row.min_width = opts.list_width;
+                row.height = ITEM_HEIGHT;
+                cb.buttonStyledDisabled(msgs.close, NO_MATCHES, row);
             } else {
                 var ordinal: usize = 0;
                 for (options, 0..) |opt, i| {
                     if (!matches(q, opt, opts.match)) continue;
                     var row = cb.theme.button;
                     row.min_width = opts.list_width;
+                    // The scroll math counts ITEM_HEIGHT rows whatever the theme's button height is.
+                    row.height = ITEM_HEIGHT;
                     if (ordinal == model.highlighted) {
                         row.bg = cb.theme.button.hover_bg;
                         row.fg = cb.theme.button.hover_fg orelse cb.theme.button.fg;
