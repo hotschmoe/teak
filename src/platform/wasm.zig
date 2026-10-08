@@ -49,6 +49,7 @@ const key_mappings = [_]struct { from: zinput.Key, to: NavKey }{
     .{ .from = .enter, .to = .enter },
     .{ .from = .tab, .to = .tab },
     .{ .from = .escape, .to = .escape },
+    .{ .from = .f10, .to = .f10 },
     .{ .from = .arrow_left, .to = .left },
     .{ .from = .arrow_right, .to = .right },
     .{ .from = .arrow_up, .to = .up },
@@ -317,9 +318,11 @@ pub const Host = struct {
         // the reported `mods` keep the real state.
         const reported = q.mods;
         q.mods.ctrl = reported.ctrl or reported.meta;
+        if (zinput.isKeyPressed(.alt)) q.altDown();
         for (key_mappings) |m| {
             if (zinput.isKeyPressed(m.from)) q.pushNav(m.to);
         }
+        if (zinput.isKeyReleased(.alt)) q.altUp();
         q.mods = reported;
         // Zunk delivers whole UTF-8 code points and no control codes or
         // Ctrl/Cmd chords; `pushText` re-validates and drops anything else.
@@ -772,7 +775,10 @@ test "wasm key table reaches every SpecialKey through the shared policy" {
             if (teak.resolveKey(m.to, mods)) |sk| seen.insert(sk);
         }
     }
-    for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
+    for (std.enums.values(SpecialKey)) |sk| {
+        if (sk == .alt_tap) continue; // synthesized by InputQueue.altUp, not a table key
+        try std.testing.expect(seen.contains(sk));
+    }
 }
 
 test "effectResult maps every completion kind to the contract type" {

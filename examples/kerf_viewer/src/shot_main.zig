@@ -19,6 +19,15 @@ pub fn main(init: std.process.Init) !void {
             .{ .click = .{ 250, 520 } }, // click the model: CPU pick selects the part
             .{ .drag = .{ .{ 600, 650 }, .{ 640, 620 } } }, // orbit a little (empty space: no pick)
             .{ .frames = 2 },
+            // NOTES: click, type a wrapped note, drag-select across both lines.
+            .{ .click = .{ 1100, 715 } },
+            .{ .chars = "Check gusset fit; the bolt pattern needs a" },
+            .{ .frames = 1 },
+            .{ .chars = " second look before release." },
+            .{ .frames = 2 },
+            .{ .drag = .{ .{ 990, 697 }, .{ 1180, 727 } } },
+            .{ .move = .{ 600, 400 } },
+            .{ .frames = 2 },
         },
     });
     std.debug.print("wrote {s}\n", .{path});
