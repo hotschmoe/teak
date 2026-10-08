@@ -22,6 +22,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.text`: module `src/core/text.zig`; see below
 > UAX#29 graphemes, word boundaries, lossy UTF-8 decoding and Unicode property lookups.
 - `teak.unicode`: module `src/core/unicode.zig`; see below
+> UAX #9 bidirectional algorithm: levels, per-line visual runs, visual caret movement, selection spans.
+- `teak.bidi`: module `src/core/bidi.zig`; see below
 > UAX#14-lite line-break opportunities over grapheme clusters.
 - `teak.linebreak`: module `src/core/linebreak.zig`; see below
 > Pure wrapping, min/max-content measuring and caret/index mapping over a `TextMeasurer`.
@@ -296,7 +298,10 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `view_proj, eye, light_dir`
 > One 3D scene to render this frame.
 - `teak.SceneDraw` = `scene.SceneDraw`
-  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px`
+  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px, item_first, item_count, grid, gizmo, cut, material, highlight_color, highlight_mix`
+- `teak.SceneItem`: `pub const SceneItem = scene.Item`
+- `teak.SceneItemFlags`: `pub const SceneItemFlags = scene.ItemFlags`
+- `teak.SceneView`: `pub const SceneView = scene.View`
 > A declared GPU resource (image or mesh) keyed by an app-chosen key.
 - `teak.Resource` = `resources.Resource`
   - fields: `mesh, image`
@@ -646,7 +651,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - `pub fn prefixWidth(self: TextMeasurer, text: []const u8, font: FontSpec, byte_prefix: usize) f32`
 > One positioned glyph produced by a `Shaper`.
 - `teak.ShapedGlyph` = `text.ShapedGlyph`
-  - fields: `glyph, face, cluster, x, advance`
+  - fields: `glyph, face, cluster, x, advance, y`
 > A shaped run: glyphs plus total advance.
 - `teak.ShapeResult` = `text.ShapeResult`
   - fields: `count, width, consumed`
@@ -873,7 +878,7 @@ Text measurement and rasterization types.
   - `pub fn prefixWidth(self: TextMeasurer, text: []const u8, font: FontSpec, byte_prefix: usize) f32`
 > One positioned glyph produced by a `Shaper`. Plain data, logical order.
 - `struct ShapedGlyph`
-  - fields: `glyph, face, cluster, x, advance`
+  - fields: `glyph, face, cluster, x, advance, y`
 - `struct ShapeResult`
   - fields: `count, width, consumed`
 > Interface value (like `TextMeasurer`) through which core reaches a shaper.
@@ -966,6 +971,75 @@ property lookups (line-break class, East Asian wide) used by `linebreak.zig`.
 > selection). `i >= text.len` selects the run before the end. Empty text gives
 > an empty span.
 - `pub fn wordRangeAt(text: []const u8, i: usize) Span`
+
+### `teak.bidi` (`src/core/bidi.zig`)
+
+UAX #9 Unicode Bidirectional Algorithm (Unicode 16): pure, std only.
+
+> Bidi_Class. Order matches `tools/gen_unicode.zig`.
+- `enum Class`
+  - fields: `l, r, al, en, es, et, an, cs, nsm, bn, b, s, ws, on, lre, lro, rle, rlo, pdf, lri, rli, fsi, pdi`
+> Paragraph direction request.
+- `enum Direction`
+  - fields: `auto, ltr, rtl`
+> Maximum explicit embedding depth (BD2).
+- `pub const MAX_DEPTH = 125`
+- `pub fn classOf(cp: u21) Class`
+> The paired bracket of `cp` (its mirror image in rtl runs), if `cp` is one.
+- `pub fn mirrored(cp: u21) ?u21`
+> True for classes X9 removes from the text.
+- `pub fn isRemovedClass(c: Class) bool`
+> Result of resolving one paragraph. All slices are per code point except
+> `offsets` (code points + 1 byte offsets, the last is `text.len`).
+- `struct Analysis`
+  - fields: `para_level, levels, classes, offsets`
+  - `pub fn deinit(self: Analysis, gpa: std.mem.Allocator) void`
+  - `pub fn len(self: Analysis) usize`
+  - `pub fn isRemoved(self: Analysis, i: usize) bool`
+  > Index of the code point that starts at or after byte offset `byte`.
+  - `pub fn cpIndexAt(self: Analysis, byte: usize) usize`
+  > True when the whole paragraph is one left-to-right run at level 0
+  > (the renderer can skip all bidi work).
+  - `pub fn isPlainLtr(self: Analysis) bool`
+> Resolve the embedding levels of one paragraph of UTF-8 `text`.
+- `pub fn analyze(gpa: std.mem.Allocator, text: []const u8, dir: Direction) !Analysis`
+> L1 for the line `[start, end)` (byte offsets, e.g. `text_wrap.Line.start` and
+> `.hang`): separators and trailing whitespace / isolate controls get the
+> paragraph level. `out` must hold one level per code point of the line;
+> returns the filled prefix.
+- `pub fn lineLevels(an: Analysis, start: usize, end: usize, out: []u8) []u8`
+> L2: `order[v]` = index (into `levels`) of the unit shown at visual slot `v`.
+> `order.len` must equal `levels.len`. Units are code points or clusters.
+- `pub fn visualOrder(levels: []const u8, order: []u32) void`
+> One directional run of a line, in visual order. `start`/`end` are byte
+> offsets into the paragraph text; odd `level` runs are drawn right to left.
+- `struct Run`
+  - fields: `start, end, level`
+> L1 + L2 for the line `[start, end)`: runs left to right as displayed.
+> Caller owns the returned slice.
+- `pub fn lineRuns(gpa: std.mem.Allocator, an: Analysis, start: usize, end: usize) ![]Run`
+> Direction of an arrow key.
+- `enum Arrow`
+  - fields: `left, right`
+> A logical caret plus which side of the boundary it is drawn on. At a
+> boundary between runs of different direction one logical `index` has two
+> visual positions: `trailing` selects the trailing edge of the cluster before
+> `index`, otherwise the leading edge of the cluster at `index`.
+- `struct Caret`
+  - fields: `index, trailing`
+> Left / right arrow in visual order over the line `[start, end)`. Returns
+> the new caret, or null when it is already at that visual edge of the line
+> (the caller moves to the neighbouring line). Word jumps are logical: use
+> `unicode.nextWordBoundary` / `prevWordBoundary` unchanged.
+- `pub fn caretMove(gpa: std.mem.Allocator, text: []const u8, an: Analysis, start: usize, end: usize, caret: Caret, arrow: Arrow) !?Caret`
+> A horizontal span `[x0, x1)` in line-local pixels.
+- `struct Span`
+  - fields: `x0, x1`
+> Highlight spans for the logical selection `[sel_start, sel_end)` on the line
+> `[start, end)`. `advances[k]` is the width of the k-th grapheme cluster in
+> logical order. One span per visually contiguous selected stretch (so a
+> selection across an rtl/ltr boundary may yield several). Caller owns the slice.
+- `pub fn selectionSpans(gpa: std.mem.Allocator, text: []const u8, an: Analysis, start: usize, end: usize, advances: []const f32, sel_start: usize, sel_end: usize) ![]Span`
 
 ### `teak.linebreak` (`src/core/linebreak.zig`)
 
@@ -1539,7 +1613,14 @@ per-frame `SceneDraw` record the render pass hands to the Gpu.
 > One scene to render this frame. Emitted by the render pass for each
 > `scene3d` Cmd, in painter order; consumed by `Gpu.renderScenes`.
 - `struct SceneDraw`
-  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px`
+  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px, item_first, item_count, grid, gizmo, cut, material, highlight_color, highlight_mix`
+- `pub const Item = view.Item`
+- `pub const ItemFlags = view.ItemFlags`
+- `pub const View = view.View`
+- `pub const Grid = view.Grid`
+- `pub const Gizmo = view.Gizmo`
+- `pub const Cut = view.Cut`
+- `pub const Material = view.Material`
 - `pub const Orbit = camera.Orbit`
 - `pub const Projection = camera.Projection`
 - `pub const Bounds = camera.Bounds`
@@ -1772,6 +1853,7 @@ Accessibility tree builder.
 ### `teak.render` (`src/render/build.zig`)
 
 - `pub const SceneDraw = scene_types.SceneDraw`
+- `pub const SceneItem = scene_types.Item`
 > Image draw record. Parallel to TextDraw — the GPU backend consumes
 > these in `uploadImages` and emits 6 textured vertices per draw using
 > the tint as the vertex color (modulated against the texture alpha
@@ -1795,7 +1877,7 @@ Accessibility tree builder.
 > blink) pulls from TransientState without touching Model. Two passes —
 > base layer (cmds outside any push_overlay), then overlay layer — so
 > overlays (HARDLINE §2 escape hatch 5) draw on top.
-- `pub fn buildFrame( verts: *std.ArrayList(Vertex), text_draws: *std.ArrayList(TextDraw), image_draws: *std.ArrayList(ImageDraw), scene_draws: *std.ArrayList(SceneDraw), alloc: std.mem.Allocator, cmds: anytype, rects: []co`
+- `pub fn buildFrame( verts: *std.ArrayList(Vertex), text_draws: *std.ArrayList(TextDraw), image_draws: *std.ArrayList(ImageDraw), scene_draws: *std.ArrayList(SceneDraw), scene_items: *std.ArrayList(SceneItem), alloc: std.m`
 > `buildFrame` without scene output: `scene3d` Cmds are skipped. For
 > hand-rolled host loops that predate 3D scenes; `teak.run` uses
 > `buildFrame`.
@@ -2105,8 +2187,12 @@ docs/features/headless.md.
 > Run `steps` against a Runtime + Host (anything with `frame()` and the
 > scripting `push*` API of `platform/headless.zig`).
 - `pub fn play(rt: anytype, host: anytype, steps: []const Step) !void`
+> A face to register on the Host before the first frame (`Host.registerFont`).
+> `bytes` must outlive the shot.
+- `struct ShotFont`
+  - fields: `family, weight, bytes`
 - `struct ShotOptions`
-  - fields: `width, height, msaa, scale, steps, settle, run`
+  - fields: `fonts, width, height, msaa, scale, steps, settle, run`
 > Run `App` headlessly: build the Host and offscreen Gpu, play the
 > script, capture the last frame to `path` as a PNG. `Host` is
 > `teak-platform-headless`'s `Host`, `Gpu` is `teak-gpu-headless`'s `Gpu`.
