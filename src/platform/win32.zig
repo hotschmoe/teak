@@ -284,6 +284,32 @@ const IID_IRawElementProviderFragmentRoot: GUID = .{
     .Data4 = .{ 0x86, 0xCB, 0xDE, 0x3C, 0x75, 0x59, 0x9B, 0x58 },
 };
 
+const IID_IInvokeProvider: GUID = .{
+    .Data1 = 0x54FCB24B,
+    .Data2 = 0xE18E,
+    .Data3 = 0x47A2,
+    .Data4 = .{ 0xB4, 0xD3, 0xEC, 0xCB, 0xE7, 0x57, 0x59, 0x9E },
+};
+const IID_IToggleProvider: GUID = .{
+    .Data1 = 0x56D00BD0,
+    .Data2 = 0xC4F4,
+    .Data3 = 0x433C,
+    .Data4 = .{ 0xA8, 0x36, 0x1A, 0x52, 0xA5, 0x7E, 0x08, 0x92 },
+};
+const IID_IValueProvider: GUID = .{
+    .Data1 = 0xC7935180,
+    .Data2 = 0x6FB3,
+    .Data3 = 0x4201,
+    .Data4 = .{ 0xB1, 0x74, 0x7D, 0xF7, 0x3A, 0xDB, 0xF6, 0x4A },
+};
+const UIA_InvokePatternId: c_long = 10000;
+const UIA_ValuePatternId: c_long = 10002;
+const UIA_TogglePatternId: c_long = 10015;
+const UIA_E_ELEMENTNOTENABLED: HRESULT = @bitCast(@as(u32, 0x80040200));
+const UIA_E_ELEMENTNOTAVAILABLE: HRESULT = @bitCast(@as(u32, 0x80040201));
+const ToggleState_Off: c_int = 0;
+const ToggleState_On: c_int = 1;
+
 // Provider option bits (only ServerSideProvider matters for us).
 const ProviderOptions_ServerSideProvider: c_int = 0x01;
 
@@ -445,6 +471,34 @@ const IRawElementProviderSimple_Vtbl = extern struct {
     get_HostRawElementProvider: *const fn (*SimpleThis, *?*anyopaque) callconv(WINAPI) HRESULT,
 };
 
+const InvokeThis = *const IInvokeProvider_Vtbl;
+const ToggleThis = *const IToggleProvider_Vtbl;
+const ValueThis = *const IValueProvider_Vtbl;
+
+const IInvokeProvider_Vtbl = extern struct {
+    QueryInterface: *const fn (*InvokeThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+    AddRef: *const fn (*InvokeThis) callconv(WINAPI) ULONG,
+    Release: *const fn (*InvokeThis) callconv(WINAPI) ULONG,
+    Invoke: *const fn (*InvokeThis) callconv(WINAPI) HRESULT,
+};
+
+const IToggleProvider_Vtbl = extern struct {
+    QueryInterface: *const fn (*ToggleThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+    AddRef: *const fn (*ToggleThis) callconv(WINAPI) ULONG,
+    Release: *const fn (*ToggleThis) callconv(WINAPI) ULONG,
+    Toggle: *const fn (*ToggleThis) callconv(WINAPI) HRESULT,
+    get_ToggleState: *const fn (*ToggleThis, *c_int) callconv(WINAPI) HRESULT,
+};
+
+const IValueProvider_Vtbl = extern struct {
+    QueryInterface: *const fn (*ValueThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+    AddRef: *const fn (*ValueThis) callconv(WINAPI) ULONG,
+    Release: *const fn (*ValueThis) callconv(WINAPI) ULONG,
+    SetValue: *const fn (*ValueThis, ?[*:0]const u16) callconv(WINAPI) HRESULT,
+    get_Value: *const fn (*ValueThis, *BSTR) callconv(WINAPI) HRESULT,
+    get_IsReadOnly: *const fn (*ValueThis, *BOOL) callconv(WINAPI) HRESULT,
+};
+
 const IRawElementProviderFragment_Vtbl = extern struct {
     // IUnknown
     QueryInterface: *const fn (*FragmentThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
@@ -492,6 +546,10 @@ const RootProvider = extern struct {
 const NodeProvider = extern struct {
     vtbl_simple: *const IRawElementProviderSimple_Vtbl,
     vtbl_fragment: *const IRawElementProviderFragment_Vtbl,
+    /// Control patterns (handed out by GetPatternProvider per role).
+    vtbl_invoke: *const IInvokeProvider_Vtbl,
+    vtbl_toggle: *const IToggleProvider_Vtbl,
+    vtbl_value: *const IValueProvider_Vtbl,
     /// Slot index inside `g_node_providers` — equal to the position
     /// in `g_published_nodes_buf` so siblings can be resolved by
     /// ±1 arithmetic.
@@ -738,8 +796,134 @@ fn npGetProviderOptions(_: *SimpleThis, opts: *c_int) callconv(WINAPI) HRESULT {
     return S_OK;
 }
 
-fn npGetPatternProvider(_: *SimpleThis, _: c_long, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+/// Which control patterns a role supports.
+fn supportsInvoke(role: A11yRole) bool {
+    return switch (role) {
+        .button, .tab, .menuitem, .link, .option, .treeitem, .radio => true,
+        else => false,
+    };
+}
+fn supportsToggle(role: A11yRole) bool {
+    return role == .checkbox;
+}
+fn supportsValue(role: A11yRole) bool {
+    return role == .text_input;
+}
+
+fn npGetPatternProvider(this: *SimpleThis, pattern_id: c_long, out: *?*anyopaque) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_simple", this);
     out.* = null;
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    if (self.index >= g_published_count) return S_OK;
+    const role = g_published_nodes_buf[self.index].role;
+    switch (pattern_id) {
+        UIA_InvokePatternId => if (supportsInvoke(role)) {
+            out.* = @ptrCast(&self.vtbl_invoke);
+        },
+        UIA_TogglePatternId => if (supportsToggle(role)) {
+            out.* = @ptrCast(&self.vtbl_toggle);
+        },
+        UIA_ValuePatternId => if (supportsValue(role)) {
+            out.* = @ptrCast(&self.vtbl_value);
+        },
+        else => {},
+    }
+    return S_OK;
+}
+
+// ── Control patterns: requests go onto `g_action_queue`, drained by
+// `Host.pollA11yActions` on the run-loop thread, so they reach `update` as
+// ordinary input. The pattern methods run on UIA's worker thread.
+
+/// Queue `kind` for the published node `index` (lock held by the caller).
+fn queueAction(index: u32, kind: teak.A11yActionKind, payload: []const u8) HRESULT {
+    if (index >= g_published_count) return UIA_E_ELEMENTNOTAVAILABLE;
+    const node = g_published_nodes_buf[index];
+    if (node.disabled) return UIA_E_ELEMENTNOTENABLED;
+    return if (g_action_queue.push(kind, node.cmd_index, payload)) S_OK else E_FAIL;
+}
+
+fn patQueryInterface(vt: anytype, iid: *const GUID, ppv: *?*anyopaque, comptime slot: []const u8) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr(slot, vt);
+    return nodeQueryInterface(self, iid, ppv);
+}
+
+fn ipQueryInterface(this: *InvokeThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    return patQueryInterface(this, iid, ppv, "vtbl_invoke");
+}
+fn ipAddRef(_: *InvokeThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn ipRelease(_: *InvokeThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn ipInvoke(this: *InvokeThis) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_invoke", this);
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    return queueAction(self.index, .activate, "");
+}
+
+fn tpQueryInterface(this: *ToggleThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    return patQueryInterface(this, iid, ppv, "vtbl_toggle");
+}
+fn tpAddRef(_: *ToggleThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn tpRelease(_: *ToggleThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn tpToggle(this: *ToggleThis) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_toggle", this);
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    return queueAction(self.index, .activate, "");
+}
+fn tpGetState(this: *ToggleThis, out: *c_int) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_toggle", this);
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    if (self.index >= g_published_count) return UIA_E_ELEMENTNOTAVAILABLE;
+    out.* = if (g_published_nodes_buf[self.index].state > 0.5) ToggleState_On else ToggleState_Off;
+    return S_OK;
+}
+
+fn vpQueryInterface(this: *ValueThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    return patQueryInterface(this, iid, ppv, "vtbl_value");
+}
+fn vpAddRef(_: *ValueThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn vpRelease(_: *ValueThis) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn vpSetValue(this: *ValueThis, val: ?[*:0]const u16) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_value", this);
+    const w = val orelse return E_INVALIDARG;
+    var utf8: [1024]u8 = undefined;
+    const n = std.unicode.utf16LeToUtf8(&utf8, std.mem.span(w)) catch return E_INVALIDARG;
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    return queueAction(self.index, .set_value, utf8[0..n]);
+}
+fn vpGetValue(this: *ValueThis, out: *BSTR) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_value", this);
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    if (self.index >= g_published_count) return UIA_E_ELEMENTNOTAVAILABLE;
+    var utf16_buf: [512]u16 = undefined;
+    const len = std.unicode.utf8ToUtf16Le(&utf16_buf, g_published_nodes_buf[self.index].value) catch 0;
+    const clamped: usize = @min(len, utf16_buf.len - 1);
+    utf16_buf[clamped] = 0;
+    out.* = SysAllocString(@ptrCast(&utf16_buf));
+    return S_OK;
+}
+fn vpGetIsReadOnly(this: *ValueThis, out: *BOOL) callconv(WINAPI) HRESULT {
+    const self: *NodeProvider = @fieldParentPtr("vtbl_value", this);
+    EnterCriticalSection(&g_a11y_lock);
+    defer LeaveCriticalSection(&g_a11y_lock);
+    out.* = if (self.index < g_published_count and g_published_nodes_buf[self.index].disabled) 1 else 0;
     return S_OK;
 }
 
@@ -887,6 +1071,18 @@ fn nodeQueryInterface(self: *NodeProvider, iid: *const GUID, ppv: *?*anyopaque) 
     }
     if (guidEql(iid, &IID_IRawElementProviderFragment)) {
         ppv.* = @ptrCast(&self.vtbl_fragment);
+        return S_OK;
+    }
+    if (guidEql(iid, &IID_IInvokeProvider)) {
+        ppv.* = @ptrCast(&self.vtbl_invoke);
+        return S_OK;
+    }
+    if (guidEql(iid, &IID_IToggleProvider)) {
+        ppv.* = @ptrCast(&self.vtbl_toggle);
+        return S_OK;
+    }
+    if (guidEql(iid, &IID_IValueProvider)) {
+        ppv.* = @ptrCast(&self.vtbl_value);
         return S_OK;
     }
     ppv.* = null;
@@ -1061,6 +1257,30 @@ var g_node_provider_vtbl_simple: IRawElementProviderSimple_Vtbl = .{
     .get_HostRawElementProvider = npGetHostRawElementProvider,
 };
 
+var g_invoke_vtbl: IInvokeProvider_Vtbl = .{
+    .QueryInterface = ipQueryInterface,
+    .AddRef = ipAddRef,
+    .Release = ipRelease,
+    .Invoke = ipInvoke,
+};
+
+var g_toggle_vtbl: IToggleProvider_Vtbl = .{
+    .QueryInterface = tpQueryInterface,
+    .AddRef = tpAddRef,
+    .Release = tpRelease,
+    .Toggle = tpToggle,
+    .get_ToggleState = tpGetState,
+};
+
+var g_value_vtbl: IValueProvider_Vtbl = .{
+    .QueryInterface = vpQueryInterface,
+    .AddRef = vpAddRef,
+    .Release = vpRelease,
+    .SetValue = vpSetValue,
+    .get_Value = vpGetValue,
+    .get_IsReadOnly = vpGetIsReadOnly,
+};
+
 var g_node_provider_vtbl_fragment: IRawElementProviderFragment_Vtbl = .{
     .QueryInterface = npfQueryInterface,
     .AddRef = npfAddRef,
@@ -1109,6 +1329,12 @@ var g_published_count: usize = 0;
 var g_label_heap: [MAX_A11Y_LABEL_BYTES]u8 = undefined;
 var g_label_heap_used: usize = 0;
 
+/// AT requests queued by the UIA pattern methods (worker thread, under
+/// `g_a11y_lock`) and drained by `Host.pollA11yActions`.
+var g_action_queue: teak.A11yActionQueue = .{};
+/// Run-loop-owned copy of delivered action texts (valid until the next poll).
+var g_action_text: [teak.A11yActionQueue.TEXT_CAP]u8 = undefined;
+
 var g_node_providers: [MAX_A11Y_NODES]NodeProvider = undefined;
 var g_node_providers_initialized: bool = false;
 
@@ -1121,6 +1347,9 @@ fn initNodeProviderPool() void {
         g_node_providers[i] = .{
             .vtbl_simple = &g_node_provider_vtbl_simple,
             .vtbl_fragment = &g_node_provider_vtbl_fragment,
+            .vtbl_invoke = &g_invoke_vtbl,
+            .vtbl_toggle = &g_toggle_vtbl,
+            .vtbl_value = &g_value_vtbl,
             .index = i,
         };
     }
@@ -1834,9 +2063,6 @@ pub const Host = struct {
         g_label_heap_used = 0;
         for (nodes[0..cap], 0..) |src, i| {
             var n = src;
-            // An editable control's text is its UIA Name until a ValuePattern
-            // lands (labels are what the provider reads today).
-            if (n.label.len == 0 and n.value.len > 0) n.label = n.value;
             // Copy the label into the heap and rewrite its slice to
             // point at the stable copy. On heap exhaustion the label
             // is dropped (slice cleared) so we never alias arena
@@ -1849,6 +2075,16 @@ pub const Host = struct {
                 g_label_heap_used += take;
             } else {
                 n.label = &.{};
+            }
+            // Same for the value (ValuePattern.get_Value reads it on UIA's thread).
+            const vremaining = MAX_A11Y_LABEL_BYTES - g_label_heap_used;
+            const vtake = @min(n.value.len, vremaining);
+            if (vtake > 0) {
+                @memcpy(g_label_heap[g_label_heap_used..][0..vtake], n.value[0..vtake]);
+                n.value = g_label_heap[g_label_heap_used..][0..vtake];
+                g_label_heap_used += vtake;
+            } else {
+                n.value = &.{};
             }
             g_published_nodes_buf[i] = n;
         }
@@ -1878,6 +2114,15 @@ pub const Host = struct {
                 0,
             );
         }
+    }
+
+    /// Requests UIA clients made through the Invoke / Toggle / Value patterns
+    /// since the last poll; `text` stays valid until the next call.
+    pub fn pollA11yActions(_: *Host, out: []teak.A11yAction) usize {
+        if (!g_a11y_lock_initialized) return 0;
+        EnterCriticalSection(&g_a11y_lock);
+        defer LeaveCriticalSection(&g_a11y_lock);
+        return g_action_queue.drain(out, &g_action_text);
     }
 
     /// Blocks until the user picks a file or cancels. Returns a UTF-8
@@ -2278,4 +2523,58 @@ fn gdiWeight(w: teak.FontWeight) c_int {
         .medium => FW_MEDIUM,
         .bold => FW_BOLD,
     };
+}
+
+test "uia patterns: Invoke / Toggle / SetValue queue actions that pollA11yActions delivers" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    if (!g_a11y_lock_initialized) {
+        InitializeCriticalSection(&g_a11y_lock);
+        g_a11y_lock_initialized = true;
+    }
+    initNodeProviderPool();
+    const nodes = [_]A11yNode{
+        .{ .role = .button, .cmd_index = 3, .bounds = .{}, .label = "Save" },
+        .{ .role = .checkbox, .cmd_index = 5, .bounds = .{}, .label = "agree", .state = 1 },
+        .{ .role = .text_input, .cmd_index = 8, .bounds = .{}, .label = "name", .value = "bob" },
+        .{ .role = .button, .cmd_index = 9, .bounds = .{}, .label = "Off", .disabled = true },
+        .{ .role = .text, .cmd_index = 10, .bounds = .{}, .label = "plain" },
+    };
+    var host: Host = undefined;
+    host.publishA11yTree(&nodes);
+
+    // GetPatternProvider is role-gated.
+    var p: ?*anyopaque = null;
+    const s0: *SimpleThis = @ptrCast(&g_node_providers[0].vtbl_simple);
+    try std.testing.expectEqual(S_OK, g_node_provider_vtbl_simple.GetPatternProvider(s0, UIA_InvokePatternId, &p));
+    try std.testing.expect(p != null);
+    const inv: *InvokeThis = @ptrCast(@alignCast(p.?));
+    try std.testing.expectEqual(S_OK, g_invoke_vtbl.Invoke(inv));
+    p = null;
+    _ = g_node_provider_vtbl_simple.GetPatternProvider(s0, UIA_TogglePatternId, &p);
+    try std.testing.expect(p == null);
+
+    const tog: *ToggleThis = @ptrCast(&g_node_providers[1].vtbl_toggle);
+    var st: c_int = -1;
+    try std.testing.expectEqual(S_OK, g_toggle_vtbl.get_ToggleState(tog, &st));
+    try std.testing.expectEqual(ToggleState_On, st);
+    try std.testing.expectEqual(S_OK, g_toggle_vtbl.Toggle(tog));
+
+    const val: *ValueThis = @ptrCast(&g_node_providers[2].vtbl_value);
+    const w = std.unicode.utf8ToUtf16LeStringLiteral("alice");
+    try std.testing.expectEqual(S_OK, g_value_vtbl.SetValue(val, w));
+
+    // Disabled elements refuse; non-patterned roles do not hand out patterns.
+    const dis: *InvokeThis = @ptrCast(&g_node_providers[3].vtbl_invoke);
+    try std.testing.expectEqual(UIA_E_ELEMENTNOTENABLED, g_invoke_vtbl.Invoke(dis));
+
+    var out: [8]teak.A11yAction = undefined;
+    const n = host.pollA11yActions(&out);
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqual(teak.A11yActionKind.activate, out[0].kind);
+    try std.testing.expectEqual(@as(u32, 3), out[0].cmd_index);
+    try std.testing.expectEqual(@as(u32, 5), out[1].cmd_index);
+    try std.testing.expectEqual(teak.A11yActionKind.set_value, out[2].kind);
+    try std.testing.expectEqual(@as(u32, 8), out[2].cmd_index);
+    try std.testing.expectEqualStrings("alice", out[2].text);
+    try std.testing.expectEqual(@as(usize, 0), host.pollA11yActions(&out));
 }

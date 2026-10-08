@@ -862,3 +862,79 @@ test "TreeCache: same / store deep-copies strings and detects every kind of chan
     try testing.expect(!cache.same(nodes[0..1])); // length
     try testing.expect(cache.same(&nodes));
 }
+
+/// Fixed-capacity queue of assistive-technology requests that arrive on
+/// another thread (UIA worker). The producer calls `push` under its own lock;
+/// the run-loop thread calls `drain` (under the same lock), which moves the
+/// requests into caller-owned storage so their `text` stays valid after the
+/// queue is reused. Pure data: the Win32 provider owns the lock.
+pub const ActionQueue = struct {
+    pub const CAP = 32;
+    pub const TEXT_CAP = 2048;
+
+    const Entry = struct { kind: ActionKind, cmd_index: u32, text_off: u16, text_len: u16 };
+
+    entries: [CAP]Entry = undefined,
+    len: usize = 0,
+    text: [TEXT_CAP]u8 = undefined,
+    text_used: usize = 0,
+
+    /// Queue a request. False when full or the text does not fit (dropped).
+    pub fn push(self: *ActionQueue, kind: ActionKind, cmd_index: u32, text: []const u8) bool {
+        if (self.len == CAP or self.text_used + text.len > TEXT_CAP) return false;
+        @memcpy(self.text[self.text_used..][0..text.len], text);
+        self.entries[self.len] = .{
+            .kind = kind,
+            .cmd_index = cmd_index,
+            .text_off = @intCast(self.text_used),
+            .text_len = @intCast(text.len),
+        };
+        self.len += 1;
+        self.text_used += text.len;
+        return true;
+    }
+
+    /// Move up to `out.len` requests into `out` (texts copied into `text_buf`,
+    /// which must hold `TEXT_CAP` bytes); the rest stay queued. Returns the count.
+    pub fn drain(self: *ActionQueue, out: []Action, text_buf: []u8) usize {
+        var n: usize = 0;
+        var used: usize = 0;
+        while (n < self.len and n < out.len) : (n += 1) {
+            const e = self.entries[n];
+            const src = self.text[e.text_off..][0..e.text_len];
+            if (used + src.len > text_buf.len) break;
+            @memcpy(text_buf[used..][0..src.len], src);
+            out[n] = .{ .kind = e.kind, .cmd_index = e.cmd_index, .text = text_buf[used..][0..src.len] };
+            used += src.len;
+        }
+        // Compact what was not delivered (text offsets stay valid: texts are
+        // only reclaimed once the queue empties).
+        const rest = self.len - n;
+        std.mem.copyForwards(Entry, self.entries[0..rest], self.entries[n..self.len]);
+        self.len = rest;
+        if (rest == 0) self.text_used = 0;
+        return n;
+    }
+};
+
+test "ActionQueue: push, drain copies text, order kept, overflow dropped" {
+    var q: ActionQueue = .{};
+    try std.testing.expect(q.push(.activate, 4, ""));
+    try std.testing.expect(q.push(.set_value, 7, "hello"));
+    var out: [4]Action = undefined;
+    var buf: [ActionQueue.TEXT_CAP]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 2), q.drain(&out, &buf));
+    try std.testing.expectEqual(ActionKind.activate, out[0].kind);
+    try std.testing.expectEqual(@as(u32, 7), out[1].cmd_index);
+    try std.testing.expectEqualStrings("hello", out[1].text);
+    // Reusing the queue does not disturb delivered text.
+    try std.testing.expect(q.push(.set_value, 1, "zzzzz"));
+    try std.testing.expectEqualStrings("hello", out[1].text);
+    try std.testing.expectEqual(@as(usize, 1), q.drain(out[0..1], &buf));
+    var i: usize = 0;
+    while (i < ActionQueue.CAP) : (i += 1) try std.testing.expect(q.push(.focus, 0, ""));
+    try std.testing.expect(!q.push(.focus, 0, ""));
+    // A short `out` leaves the remainder queued.
+    try std.testing.expectEqual(@as(usize, 2), q.drain(out[0..2], &buf));
+    try std.testing.expectEqual(@as(usize, ActionQueue.CAP - 2), q.len);
+}
