@@ -8,6 +8,8 @@
 const std = @import("std");
 const text = @import("teak-text");
 const native_effects = @import("native_effects.zig");
+const win32_data = @import("win32_data.zig");
+const x11_data = @import("x11_data.zig");
 const teak = @import("teak");
 
 pub const InputState = teak.InputState;
@@ -250,7 +252,6 @@ var g_drop_lens: [MAX_PENDING_DROPS]usize = @splat(0);
 var g_drop_count: usize = 0;
 
 fn queueDroppedFiles(hdrop: HANDLE) void {
-    defer DragFinish(hdrop);
     const n = DragQueryFileW(hdrop, 0xFFFFFFFF, null, 0);
     var i: UINT = 0;
     while (i < n and g_drop_count < MAX_PENDING_DROPS) : (i += 1) {
@@ -261,6 +262,313 @@ fn queueDroppedFiles(hdrop: HANDLE) void {
         g_drop_lens[g_drop_count] = written;
         g_drop_count += 1;
     }
+}
+
+// ── OLE drag-and-drop (IDropTarget) and image paste ────────────────
+//
+// `RegisterDragDrop` replaces `WM_DROPFILES` for the window and delivers
+// whatever the source offers through an `IDataObject`: files (CF_HDROP,
+// queued like WM_DROPFILES), images (registered "PNG", else CF_DIB) and
+// text (CF_UNICODETEXT). Images become the same `Drop{kind = .image}` the web
+// host produces (PNG <= 1568 px + RGBA thumbnail), text `Drop{kind = .text}`.
+// The DIB / PNG / thumbnail conversions are pure and live in `win32_data.zig`.
+
+const POINTL = extern struct { x: c_long, y: c_long };
+
+const FORMATETC = extern struct {
+    cfFormat: u16,
+    ptd: ?*anyopaque,
+    dwAspect: DWORD,
+    lindex: c_long,
+    tymed: DWORD,
+};
+
+const STGMEDIUM = extern struct {
+    tymed: DWORD,
+    hGlobal: ?HANDLE,
+    pUnkForRelease: ?*anyopaque,
+};
+
+const DVASPECT_CONTENT: DWORD = 1;
+const TYMED_HGLOBAL: DWORD = 1;
+const DROPEFFECT_NONE: DWORD = 0;
+const DROPEFFECT_COPY: DWORD = 1;
+const CF_DIB: UINT = 8;
+const CF_HDROP: UINT = 15;
+const CF_DIBV5: UINT = 17;
+
+const IID_IDropTarget: GUID = .{
+    .Data1 = 0x00000122,
+    .Data2 = 0x0000,
+    .Data3 = 0x0000,
+    .Data4 = .{ 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 },
+};
+
+const IDataObject = extern struct {
+    vtbl: *const extern struct {
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const anyopaque,
+        GetData: *const fn (*IDataObject, *const FORMATETC, *STGMEDIUM) callconv(WINAPI) HRESULT,
+        GetDataHere: *const anyopaque,
+        QueryGetData: *const fn (*IDataObject, *const FORMATETC) callconv(WINAPI) HRESULT,
+    },
+};
+
+const DropTarget = extern struct {
+    vtbl: *const extern struct {
+        QueryInterface: *const fn (*DropTarget, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
+        AddRef: *const fn (*DropTarget) callconv(WINAPI) ULONG,
+        Release: *const fn (*DropTarget) callconv(WINAPI) ULONG,
+        DragEnter: *const fn (*DropTarget, *IDataObject, DWORD, POINTL, *DWORD) callconv(WINAPI) HRESULT,
+        DragOver: *const fn (*DropTarget, DWORD, POINTL, *DWORD) callconv(WINAPI) HRESULT,
+        DragLeave: *const fn (*DropTarget) callconv(WINAPI) HRESULT,
+        Drop: *const fn (*DropTarget, *IDataObject, DWORD, POINTL, *DWORD) callconv(WINAPI) HRESULT,
+    },
+};
+
+extern "ole32" fn OleInitialize(?*anyopaque) callconv(WINAPI) HRESULT;
+extern "ole32" fn OleUninitialize() callconv(WINAPI) void;
+extern "ole32" fn RegisterDragDrop(HANDLE, *DropTarget) callconv(WINAPI) HRESULT;
+extern "ole32" fn RevokeDragDrop(HANDLE) callconv(WINAPI) HRESULT;
+extern "ole32" fn ReleaseStgMedium(*STGMEDIUM) callconv(WINAPI) void;
+extern "user32" fn IsClipboardFormatAvailable(UINT) callconv(WINAPI) BOOL;
+extern "user32" fn RegisterClipboardFormatW(LPCWSTR) callconv(WINAPI) UINT;
+
+const drop_gpa = std.heap.page_allocator;
+
+/// The Host's effects service, set by `Host.init` so the (module-level) OLE
+/// callbacks can queue results. Null outside a live Host.
+var g_effects: ?*native_effects.Service = null;
+var g_png_format: UINT = 0;
+var g_ole_inited = false;
+var g_ole_drop = false;
+/// Whether the data object of the current drag offers something we take.
+var g_drag_accepts = false;
+/// Ctrl+V seen and not yet claimed by `Clipboard.read` (see `pollEffectResults`).
+var g_paste_requested = false;
+
+fn pngFormat() UINT {
+    if (g_png_format == 0) g_png_format = RegisterClipboardFormatW(std.unicode.utf8ToUtf16LeStringLiteral("PNG"));
+    return g_png_format;
+}
+
+/// Bytes of a global-memory block (valid until `GlobalUnlock`).
+fn lockedBytes(h: HANDLE) ?struct { bytes: []const u8 } {
+    const ptr = GlobalLock(h) orelse return null;
+    const len = GlobalSize(h);
+    const p: [*]const u8 = @ptrCast(ptr);
+    return .{ .bytes = p[0..len] };
+}
+
+fn pushText(utf8: []const u8, pasted: bool) void {
+    const svc = g_effects orelse return;
+    if (utf8.len == 0) return;
+    const arena = native_effects.Service.newArena() orelse return;
+    const copy = arena.allocator().dupe(u8, utf8) catch return native_effects.Service.freeArena(arena);
+    if (pasted) {
+        svc.push(arena, .{ .pasted_text = .{ .text = copy } });
+    } else {
+        svc.push(arena, .{ .dropped = .{ .kind = .text, .mime = "text/plain", .bytes = copy } });
+    }
+}
+
+/// An image that arrived as PNG bytes (the registered "PNG" format): handed
+/// over verbatim, like the X11 host does.
+fn pushPng(png: []const u8) void {
+    const svc = g_effects orelse return;
+    const size = x11_data.pngSize(png) orelse return;
+    const arena = native_effects.Service.newArena() orelse return;
+    const copy = arena.allocator().dupe(u8, png) catch return native_effects.Service.freeArena(arena);
+    svc.push(arena, .{ .dropped = .{ .kind = .image, .mime = "image/png", .bytes = copy, .width = size.w, .height = size.h } });
+}
+
+/// An image that arrived as a packed DIB: decoded, re-encoded as PNG
+/// (<= 1568 px) with an RGBA thumbnail, exactly the web host's `Drop`.
+fn pushDib(dib: []const u8) void {
+    const svc = g_effects orelse return;
+    const arena = native_effects.Service.newArena() orelse return;
+    const a = arena.allocator();
+    const img = win32_data.dibToRgba(a, dib) catch return native_effects.Service.freeArena(arena);
+    const parts = win32_data.imageParts(a, img) catch return native_effects.Service.freeArena(arena);
+    svc.push(arena, .{ .dropped = .{
+        .kind = .image,
+        .mime = "image/png",
+        .bytes = parts.png,
+        .width = parts.w,
+        .height = parts.h,
+        .thumb_rgba = parts.thumb,
+        .thumb_w = parts.thumb_w,
+        .thumb_h = parts.thumb_h,
+    } });
+}
+
+fn pushUtf16Text(wide: []const u8, pasted: bool) void {
+    const units: [*]align(1) const u16 = @ptrCast(wide.ptr);
+    var n: usize = 0;
+    while (n < wide.len / 2 and units[n] != 0) : (n += 1) {}
+    var buf: [65536]u8 = undefined;
+    var tmp: [32768]u16 = undefined;
+    const take = @min(n, tmp.len);
+    for (0..take) |i| tmp[i] = units[i];
+    const len = std.unicode.utf16LeToUtf8(&buf, tmp[0..take]) catch return;
+    pushText(buf[0..len], pasted);
+}
+
+/// Deliver the image on the clipboard (PNG, else DIB) as a `dropped` image.
+/// Returns whether one was found. The clipboard must be open.
+fn pasteClipboardImage() bool {
+    if (IsClipboardFormatAvailable(pngFormat()) != 0) {
+        if (GetClipboardData(pngFormat())) |h| {
+            if (lockedBytes(h)) |b| {
+                defer _ = GlobalUnlock(h);
+                pushPng(b.bytes);
+                return true;
+            }
+        }
+    }
+    for ([_]UINT{ CF_DIBV5, CF_DIB }) |fmt| {
+        if (IsClipboardFormatAvailable(fmt) == 0) continue;
+        const h = GetClipboardData(fmt) orelse continue;
+        const b = lockedBytes(h) orelse continue;
+        defer _ = GlobalUnlock(h);
+        pushDib(b.bytes);
+        return true;
+    }
+    return false;
+}
+
+/// Ctrl+V that no `Clipboard.read` claimed: text arrives as `pasted_text`,
+/// an image as `dropped` (the same results the web host reports).
+fn pasteUnclaimed() void {
+    if (OpenClipboard(null) == 0) return;
+    defer _ = CloseClipboard();
+    if (IsClipboardFormatAvailable(CF_UNICODETEXT) != 0) {
+        const h = GetClipboardData(CF_UNICODETEXT) orelse return;
+        const b = lockedBytes(h) orelse return;
+        defer _ = GlobalUnlock(h);
+        pushUtf16Text(b.bytes, true);
+        return;
+    }
+    _ = pasteClipboardImage();
+}
+
+fn fmtEtc(cf: UINT) FORMATETC {
+    return .{ .cfFormat = @intCast(cf), .ptd = null, .dwAspect = DVASPECT_CONTENT, .lindex = -1, .tymed = TYMED_HGLOBAL };
+}
+
+fn dataOffers(obj: *IDataObject, cf: UINT) bool {
+    const f = fmtEtc(cf);
+    return obj.vtbl.QueryGetData(obj, &f) == S_OK;
+}
+
+fn dropAcceptable(obj: *IDataObject) bool {
+    for ([_]UINT{ CF_HDROP, pngFormat(), CF_DIBV5, CF_DIB, CF_UNICODETEXT }) |cf| {
+        if (dataOffers(obj, cf)) return true;
+    }
+    return false;
+}
+
+fn dtQueryInterface(this: *DropTarget, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    if (guidEql(iid, &IID_IUnknown) or guidEql(iid, &IID_IDropTarget)) {
+        ppv.* = @ptrCast(this);
+        return S_OK;
+    }
+    ppv.* = null;
+    return E_NOINTERFACE;
+}
+fn dtAddRef(_: *DropTarget) callconv(WINAPI) ULONG {
+    return 1; // static singleton
+}
+fn dtRelease(_: *DropTarget) callconv(WINAPI) ULONG {
+    return 1;
+}
+fn dtDragEnter(_: *DropTarget, obj: *IDataObject, _: DWORD, _: POINTL, effect: *DWORD) callconv(WINAPI) HRESULT {
+    g_drag_accepts = dropAcceptable(obj);
+    effect.* = if (g_drag_accepts) DROPEFFECT_COPY else DROPEFFECT_NONE;
+    return S_OK;
+}
+fn dtDragOver(_: *DropTarget, _: DWORD, _: POINTL, effect: *DWORD) callconv(WINAPI) HRESULT {
+    effect.* = if (g_drag_accepts) DROPEFFECT_COPY else DROPEFFECT_NONE;
+    return S_OK;
+}
+fn dtDragLeave(_: *DropTarget) callconv(WINAPI) HRESULT {
+    g_drag_accepts = false;
+    return S_OK;
+}
+fn dtDrop(_: *DropTarget, obj: *IDataObject, _: DWORD, _: POINTL, effect: *DWORD) callconv(WINAPI) HRESULT {
+    g_drag_accepts = false;
+    effect.* = DROPEFFECT_NONE;
+    var f = fmtEtc(CF_HDROP);
+    var m: STGMEDIUM = undefined;
+    if (obj.vtbl.GetData(obj, &f, &m) == S_OK) {
+        defer ReleaseStgMedium(&m);
+        if (m.hGlobal) |h| queueDroppedFiles(h);
+        effect.* = DROPEFFECT_COPY;
+        return S_OK;
+    }
+    f = fmtEtc(pngFormat());
+    if (obj.vtbl.GetData(obj, &f, &m) == S_OK) {
+        defer ReleaseStgMedium(&m);
+        if (m.hGlobal) |h| if (lockedBytes(h)) |b| {
+            defer _ = GlobalUnlock(h);
+            pushPng(b.bytes);
+            effect.* = DROPEFFECT_COPY;
+        };
+        if (effect.* == DROPEFFECT_COPY) return S_OK;
+    }
+    for ([_]UINT{ CF_DIBV5, CF_DIB }) |cf| {
+        f = fmtEtc(cf);
+        if (obj.vtbl.GetData(obj, &f, &m) != S_OK) continue;
+        defer ReleaseStgMedium(&m);
+        if (m.hGlobal) |h| if (lockedBytes(h)) |b| {
+            defer _ = GlobalUnlock(h);
+            pushDib(b.bytes);
+            effect.* = DROPEFFECT_COPY;
+        };
+        if (effect.* == DROPEFFECT_COPY) return S_OK;
+    }
+    f = fmtEtc(CF_UNICODETEXT);
+    if (obj.vtbl.GetData(obj, &f, &m) == S_OK) {
+        defer ReleaseStgMedium(&m);
+        if (m.hGlobal) |h| if (lockedBytes(h)) |b| {
+            defer _ = GlobalUnlock(h);
+            pushUtf16Text(b.bytes, false);
+            effect.* = DROPEFFECT_COPY;
+        };
+    }
+    return S_OK;
+}
+
+const drop_vtbl: @typeInfo(@FieldType(DropTarget, "vtbl")).pointer.child = .{
+    .QueryInterface = dtQueryInterface,
+    .AddRef = dtAddRef,
+    .Release = dtRelease,
+    .DragEnter = dtDragEnter,
+    .DragOver = dtDragOver,
+    .DragLeave = dtDragLeave,
+    .Drop = dtDrop,
+};
+var g_drop_target: DropTarget = .{ .vtbl = &drop_vtbl };
+
+/// Register the window for OLE drops; falls back to `WM_DROPFILES` (files
+/// only) if OLE is unavailable.
+fn registerDropTarget(hwnd: HANDLE) void {
+    const hr = OleInitialize(null);
+    // S_OK, or S_FALSE (already initialized on this thread).
+    g_ole_inited = hr == S_OK or hr == 1;
+    if (g_ole_inited and RegisterDragDrop(hwnd, &g_drop_target) == S_OK) {
+        g_ole_drop = true;
+        return;
+    }
+    DragAcceptFiles(hwnd, 1);
+}
+
+fn unregisterDropTarget(hwnd: HANDLE) void {
+    if (g_ole_drop) _ = RevokeDragDrop(hwnd);
+    g_ole_drop = false;
+    if (g_ole_inited) OleUninitialize();
+    g_ole_inited = false;
 }
 
 /// Async file-dialog slot table — see Host.file_dialog_slots. Four
@@ -1250,7 +1558,9 @@ fn secondaryWndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WI
             return 0;
         },
         WM_DROPFILES => {
-            queueDroppedFiles(@ptrFromInt(wp));
+            const hdrop: HANDLE = @ptrFromInt(wp);
+            queueDroppedFiles(hdrop);
+            DragFinish(hdrop);
             return 0;
         },
         WM_SIZE => {
@@ -1357,7 +1667,10 @@ fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: L
         WM_CHAR => q.pushUtf16Unit(@truncate(wp)),
         WM_KEYDOWN => {
             q.mods = currentMods();
-            if (navFromVk(wp)) |nk| q.pushNav(nk);
+            if (navFromVk(wp)) |nk| {
+                q.pushNav(nk);
+                if (nk == .v and q.mods.ctrl) g_paste_requested = true;
+            }
         },
         // Alt-modified keys and F10 arrive as "system" keys. Alt alone and F10
         // are ours (menu-bar activation) and are swallowed so Windows does not
@@ -1398,6 +1711,35 @@ fn utf16OffsetToUtf8(utf8: []const u8, utf16_off: usize) usize {
         byte_i += len;
     }
     return byte_i;
+}
+
+// IME mirror transitions, split out of `wndProc` so synthetic messages can
+// test them without an input method context.
+
+fn imeStart() void {
+    g_ime_active = true;
+    imeClearText();
+}
+
+fn imeEnd() void {
+    g_ime_active = false;
+    imeClearText();
+}
+
+fn imeClearText() void {
+    g_ime_text_len = 0;
+    g_ime_cursor = 0;
+}
+
+/// Store the in-progress composition (UTF-16 as the IME reports it) and the
+/// caret, which arrives as a UTF-16 unit offset and is stored as a UTF-8 byte
+/// offset into the mirror. A negative / absent caret parks it at the end.
+fn imeSetComposition(utf16: []const u16, cursor_units: c_long) void {
+    g_ime_text_len = std.unicode.utf16LeToUtf8(g_ime_text[0..], utf16) catch 0;
+    g_ime_cursor = if (cursor_units >= 0 and g_ime_text_len > 0)
+        utf16OffsetToUtf8(g_ime_text[0..g_ime_text_len], @intCast(cursor_units))
+    else
+        g_ime_text_len;
 }
 
 fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
@@ -1444,9 +1786,7 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             return DefWindowProcW(hwnd, msg, wp, lp);
         },
         WM_IME_STARTCOMPOSITION => {
-            g_ime_active = true;
-            g_ime_text_len = 0;
-            g_ime_cursor = 0;
+            imeStart();
             // Returning 0 suppresses the default IME window so the
             // composition is only rendered inline by teak. The caret
             // still receives WM_CHAR on commit via the IME's normal
@@ -1475,40 +1815,20 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
                         @ptrCast(&utf16_buf),
                         @intCast(utf16_buf.len * @sizeOf(u16)),
                     );
-                    if (byte_len > 0) {
-                        const u16_units: usize = @intCast(@divTrunc(byte_len, @as(c_long, @sizeOf(u16))));
-                        const clamped: usize = @min(u16_units, utf16_buf.len);
-                        const written = std.unicode.utf16LeToUtf8(g_ime_text[0..], utf16_buf[0..clamped]) catch 0;
-                        g_ime_text_len = written;
-                    } else {
-                        g_ime_text_len = 0;
-                    }
-                    // Caret position is a UTF-16 code-unit offset; convert
-                    // to a UTF-8 byte offset against our newly-decoded
-                    // mirror so the renderer can place the caret correctly.
+                    const units: usize = if (byte_len > 0) @min(@as(usize, @intCast(@divTrunc(byte_len, @as(c_long, @sizeOf(u16))))), utf16_buf.len) else 0;
                     const cur_units = ImmGetCompositionStringW(himc, GCS_CURSORPOS, null, 0);
-                    if (cur_units >= 0 and g_ime_text_len > 0) {
-                        g_ime_cursor = utf16OffsetToUtf8(
-                            g_ime_text[0..g_ime_text_len],
-                            @intCast(cur_units),
-                        );
-                    } else {
-                        g_ime_cursor = g_ime_text_len;
-                    }
+                    imeSetComposition(utf16_buf[0..units], cur_units);
                 }
             } else if ((flags & GCS_COMPSTR) == 0 and (flags & GCS_RESULTSTR) != 0) {
                 // Commit-only message: drop the pre-commit mirror but
                 // stay active until WM_IME_ENDCOMPOSITION arrives.
-                g_ime_text_len = 0;
-                g_ime_cursor = 0;
+                imeClearText();
             }
             // Pass through so the IME's commit -> WM_CHAR path still fires.
             return DefWindowProcW(hwnd, msg, wp, lp);
         },
         WM_IME_ENDCOMPOSITION => {
-            g_ime_active = false;
-            g_ime_text_len = 0;
-            g_ime_cursor = 0;
+            imeEnd();
             return 0;
         },
         WM_GETOBJECT => {
@@ -1632,10 +1952,11 @@ pub const Host = struct {
             null,
         ) orelse return error.CreateWindowFailed;
         _ = ShowWindow(hwnd, SW_SHOW);
-        DragAcceptFiles(hwnd, 1);
+        registerDropTarget(hwnd);
         g_scale = dpiScale(GetDpiForWindow(hwnd));
         const effects = try native_effects.Service.create(title);
         errdefer effects.destroy();
+        g_effects = effects;
 
         // Capture the HWND so UIA's get_HostRawElementProvider can hand
         // it to UiaHostProviderFromHwnd for any property we don't
@@ -1670,6 +1991,8 @@ pub const Host = struct {
             g_a11y_lock_initialized = false;
         }
 
+        unregisterDropTarget(self.hwnd);
+        g_effects = null;
         self.effects.destroy();
         text.releaseFaces();
         // Win32 cleans up the window on process exit; explicit teardown
@@ -1752,6 +2075,12 @@ pub const Host = struct {
         var i: usize = 0;
         while (i < g_drop_count) : (i += 1) self.effects.dropFile(g_drops[i][0..g_drop_lens[i]]);
         g_drop_count = 0;
+        // A Ctrl+V the app's `handleClipboard` did not claim through
+        // `Clipboard.read` is a page-style paste: text or an image.
+        if (g_paste_requested) {
+            g_paste_requested = false;
+            pasteUnclaimed();
+        }
         return self.effects.poll(buf, self.nowMs());
     }
 
@@ -2120,6 +2449,7 @@ pub const Host = struct {
 
     fn clipRead(ctx: *anyopaque) []const u8 {
         const self: *Host = @ptrCast(@alignCast(ctx));
+        g_paste_requested = false; // claimed: no `pasted_text` for this press
         if (OpenClipboard(null) == 0) return self.clipboard_buf[0..0];
         defer _ = CloseClipboard();
 
@@ -2271,4 +2601,35 @@ test "DPI helpers: dpiScale and toLogical convert physical client pixels" {
 test "dropped paths queue is bounded and starts empty" {
     try std.testing.expectEqual(@as(usize, 0), g_drop_count);
     try std.testing.expect(MAX_PENDING_DROPS > 0);
+}
+
+test "IME: start / composition / commit / end drive imeState like the other hosts" {
+    const host: *const Host = undefined; // imeState reads module state only
+    try std.testing.expect(!host.imeState().active);
+
+    // WM_IME_STARTCOMPOSITION through the real window procedure.
+    const fake_hwnd: HANDLE = @ptrFromInt(0x1000);
+    try std.testing.expectEqual(@as(LRESULT, 0), wndProc(fake_hwnd, WM_IME_STARTCOMPOSITION, 0, 0));
+    try std.testing.expect(host.imeState().active);
+    try std.testing.expectEqual(@as(usize, 0), host.imeState().text.len);
+
+    // Composition "nihon" + one multi-byte char; caret after the 2nd UTF-16 unit.
+    const comp = std.unicode.utf8ToUtf16LeStringLiteral("\u{65e5}\u{672c}go");
+    imeSetComposition(comp, 2);
+    var st = host.imeState();
+    try std.testing.expect(st.active);
+    try std.testing.expectEqualStrings("\u{65e5}\u{672c}go", st.text);
+    try std.testing.expectEqual(@as(usize, 6), st.cursor); // 2 units -> 6 UTF-8 bytes
+
+    // No caret reported: parked at the end.
+    imeSetComposition(comp, -1);
+    try std.testing.expectEqual(host.imeState().text.len, host.imeState().cursor);
+
+    // Commit-only clears the mirror but stays active; end deactivates.
+    imeClearText();
+    st = host.imeState();
+    try std.testing.expect(st.active);
+    try std.testing.expectEqual(@as(usize, 0), st.text.len);
+    try std.testing.expectEqual(@as(LRESULT, 0), wndProc(fake_hwnd, WM_IME_ENDCOMPOSITION, 0, 0));
+    try std.testing.expect(!host.imeState().active);
 }

@@ -155,6 +155,7 @@ new variants). Worked example: [`docs/cookbook.md`](docs/cookbook.md) recipe 12.
 ```
 src/                                          -- the library, consumable as a Zig module
   control.zig                                 -- Agent control channel + input record/replay, driven from Runtime.frame
+  dev.zig                                     -- Hot reload for dev builds (native, Linux): the App compiled as a shared library behind a stable
   headless_run.zig                            -- Tool API for headless runs: script input, run frames, grab pixels, write a PNG
   input_record.zig                            -- Input record / replay file format (TEAK_RECORD / TEAK_REPLAY)
   resources.zig                               -- run-loop resource table (key -> Gpu handle), stageDraws
@@ -258,6 +259,7 @@ src/                                          -- the library, consumable as a Zi
     wasm.zig                                  -- Wasm host backed by zunk's web.input + web.app modules
     wayland.zig                               -- Wayland host backend: the platform/host.zig contract on top of xdg-shell, the Linux counterpart
     win32.zig                                 -- Win32 host backend
+    win32_data.zig                            -- Pure data conversions for the Win32 host's clipboard / drag-and-drop (no Win32 calls, so they
     x11.zig                                   -- X11 host backend
     x11_data.zig                              -- Pure, display-free helpers for the X11 host's clipboard / drag-and-drop / input-method support
     wayland/
@@ -310,6 +312,7 @@ tools/
   gen_tree.py                                 -- regenerates the Module Structure tree in CLAUDE.md / AGENTS.md from the files on disk
   gen_unicode.zig                             -- Generator for `src/core/unicode_tables.zig`
   gen_wayland.zig                             -- Generator for `src/platform/wayland/protocols.zig`
+  hot_reload_check.sh                         -- End-to-end hot-reload check on examples/todo (headless backend, Linux)
   release.sh                                  -- Cut a release: bump the ONE version (build.zig.zon .version), commit, tag v<version>, push
   teak_drive.zig                              -- teak-drive: drive a running teak app from a shell or from an LLM agent
   web-frame-bench.mjs                         -- rAF cost of a web example under scrolling: serve a zunk `dist/`, load it in headless Chromium

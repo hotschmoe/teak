@@ -112,6 +112,8 @@ pub const gpu = @import("gpu/context.zig");
 pub const runtime = @import("run.zig");
 /// Scripted-input headless runs for tests and tooling.
 pub const headless = @import("headless_run.zig");
+/// Hot reload for dev builds: the App as a shared library behind a stable loader (docs/features/hot-reload.md).
+pub const dev = @import("dev.zig");
 /// Agent control channel + input record/replay (docs/features/agent-driver.md).
 pub const control = @import("control.zig");
 /// Input record/replay file format.
