@@ -882,7 +882,7 @@ fn controlTypeForRole(role: A11yRole) c_long {
         .text => UIA_TextControlTypeId,
         .rich_text => UIA_TextControlTypeId,
         .button => UIA_ButtonControlTypeId,
-        .text_input => UIA_EditControlTypeId,
+        .text_input, .text_area => UIA_EditControlTypeId,
         .checkbox => UIA_CheckBoxControlTypeId,
         .radio => UIA_RadioButtonControlTypeId,
         .slider => UIA_SliderControlTypeId,
@@ -898,7 +898,7 @@ fn controlTypeForRole(role: A11yRole) c_long {
 
 fn isFocusableRole(role: A11yRole) bool {
     return switch (role) {
-        .button, .text_input, .checkbox, .radio, .slider => true,
+        .button, .text_input, .text_area, .checkbox, .radio, .slider => true,
         else => false,
     };
 }

@@ -37,6 +37,28 @@ pub fn clipRect(a: Rect, b: Rect) Rect {
     return .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
 }
 
+/// The content box of a `text_area` inside its layout rect: inset by the
+/// border and padding. Render, pointer resolution and the metrics event all
+/// use this one function so they agree on where text starts and how wide it
+/// wraps.
+pub fn textAreaInner(rect: Rect, ta: anytype) Rect {
+    const inset = ta.style.border_width + ta.padding;
+    return .{
+        .x = rect.x + inset,
+        .y = rect.y + inset,
+        .w = @max(0, rect.w - 2 * inset),
+        .h = @max(0, rect.h - 2 * inset),
+    };
+}
+
+/// Width a `text_area` wraps at: its inner width, or unbounded for `.none`.
+pub fn textAreaWrapWidth(inner: Rect, ta: anytype) f32 {
+    return switch (ta.wrap) {
+        .word, .char => inner.w,
+        .none, .ellipsis => std.math.inf(f32),
+    };
+}
+
 /// Scroll-clip stack shared by hit-test and render. Fixed depth mirrors
 /// LayoutEngine's FixedStack — exceeding it is a bug, not an allocation
 /// trigger. `top()` returns a huge sentinel rect when empty so callers
@@ -361,6 +383,13 @@ pub const LayoutEngine = struct {
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, rowFlex(&stack, ti.style.flex));
                 },
+                .text_area => |ta| {
+                    // Canvas-like box: explicit size; flex grows the main axis,
+                    // a stretching parent fills the cross axis in pass 2/position.
+                    const w = if (ta.width > 0) ta.width else ta.min_width;
+                    rects[i] = .{ .w = w, .h = ta.height };
+                    addLeafToTop(&stack, w, ta.height, ta.flex);
+                },
                 .checkbox => |cb| {
                     const label_w = measurer.measure(cb.label, cb.font).width;
                     const w = cb.style.size + (if (cb.label.len > 0) cb.style.label_gap + label_w else 0);
@@ -491,6 +520,7 @@ pub const LayoutEngine = struct {
             .canvas => |cv| .{ .flex = cv.style.flex },
             .scene3d => |sc| .{ .flex = sc.style.flex },
             .text_input => |ti| .{ .flex = ti.style.flex, .fills_cross = true },
+            .text_area => |ta| .{ .flex = ta.flex, .fixed_w = ta.width > 0, .fills_cross = true },
             .slider => |sl| .{ .flex = sl.style.flex, .fills_cross = true },
             .divider => .{ .fills_cross = true },
             .checkbox, .radio, .rich_text => .{},
@@ -702,7 +732,7 @@ pub const LayoutEngine = struct {
                     }
                     foldChild(&stack, rects[i].w, rects[i].h);
                 },
-                .button, .text_input, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas, .rich_text => foldChild(&stack, rects[i].w, rects[i].h),
+                .button, .text_input, .text_area, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas, .rich_text => foldChild(&stack, rects[i].w, rects[i].h),
             }
         }
     }
@@ -810,6 +840,7 @@ pub const LayoutEngine = struct {
                 .button => |b| placeChild(rects, &stack, i, .{ .flex = b.style.flex }),
                 .image => |img| placeChild(rects, &stack, i, .{ .flex = img.style.flex }),
                 .canvas => |cv| placeChild(rects, &stack, i, .{ .flex = cv.style.flex }),
+                .text_area => |ta| placeChild(rects, &stack, i, .{ .flex = ta.flex, .fixed_w = ta.width > 0, .fixed_h = true, .fills_cross = true }),
                 .scene3d => |sc| placeChild(rects, &stack, i, .{ .flex = sc.style.flex }),
                 .text_input => |ti| placeChild(rects, &stack, i, .{ .flex = ti.style.flex, .row_only = true, .fills_cross = true }),
                 .slider => |sl| placeChild(rects, &stack, i, .{ .flex = sl.style.flex, .row_only = true, .fills_cross = true }),
