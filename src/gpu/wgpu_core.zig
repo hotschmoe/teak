@@ -1150,6 +1150,21 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             };
         }
 
+        /// Read-only view of the image table for the scene renderer's sprites.
+        const ImageLookup = struct {
+            cache: *ImageCache,
+            pub fn hasImage(self: ImageLookup, handle: u32) bool {
+                return self.cache.get(handle) != null;
+            }
+            pub fn viewOf(self: ImageLookup, handle: u32) ?c.WGPUTextureView {
+                return (self.cache.get(handle) orelse return null).view;
+            }
+        };
+
+        fn imageLookup(self: *Self) ImageLookup {
+            return .{ .cache = &self.images };
+        }
+
         /// Free an image uploaded with `uploadImage`. The handle (and any
         /// `ImageDraw` still carrying it) is dead afterwards; the slot is
         /// reused by the next upload.
@@ -1201,7 +1216,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// composite quad per visible scene for the next `renderFrame`.
         /// Call after `uploadImages`, before `renderFrame`. Scenes whose
         /// content did not change since the last frame are not redrawn.
-        pub fn renderScenes(self: *Self, draws: []const teak.SceneDraw, items: []const teak.SceneItem) void {
+        pub fn renderScenes(self: *Self, draws: []const teak.SceneDraw, data: teak.SceneData) void {
             self.scene_draw_count = 0;
             self.scene_vert_count = 0;
             var mark: overlay.Marker = .{ .start = self.splitOf("scenes", draws.len) };
@@ -1216,7 +1231,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const scale: f32 = 1;
             for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
                 mark.visit(i, self.scene_draw_count);
-                const size = self.scene.renderInto(encoder, i, draw, scene_common.itemsOf(draw, items), scale) orelse continue;
+                const size = self.scene.renderInto(encoder, i, draw, scene_common.itemsOf(draw, data.items), scene_common.spritesOf(draw, data.sprites), self.imageLookup(), scale) orelse continue;
                 const quad = scene_common.compositeQuad(draw, size, scale) orelse continue;
                 const bind_group = self.sceneBindGroup(i) orelse continue;
 

@@ -24,7 +24,7 @@ pub const max_target_dim: u32 = 8192;
 /// the depth test against the faces they outline.
 pub const line_depth_bias: f32 = 1e-4;
 
-/// Uniform block of `shaders/scene.wgsl` (`struct Globals`). 176 bytes.
+/// Uniform block of `shaders/scene.wgsl` (`struct Globals`). 208 bytes.
 pub const Globals = extern struct {
     view_proj: [16]f32,
     eye: [4]f32,
@@ -37,8 +37,12 @@ pub const Globals = extern struct {
     clip: [4]f32,
     /// rgb = highlight colour, w = blend amount for `highlight` items.
     highlight: [4]f32,
-    /// x = 1 for flat material (0 Lambert), z = 1 when the cut is enabled.
+    /// x = 1 for flat material (0 Lambert), z = 1 when the cut is enabled,
+    /// w = device pixels per logical pixel.
     misc: [4]f32,
+    /// World-space camera right / up (billboards).
+    cam_right: [4]f32,
+    cam_up: [4]f32,
 };
 
 /// `scale` = device pixels per logical pixel (1 on native; devicePixelRatio
@@ -46,6 +50,7 @@ pub const Globals = extern struct {
 pub fn globals(draw: SceneDraw, size: TargetSize, scale: f32) Globals {
     const e = draw.camera.eye;
     const l = draw.camera.light_dir;
+    const axes = teak.scene.camera.viewAxes(draw.camera);
     return .{
         .view_proj = draw.camera.view_proj,
         .eye = .{ e[0], e[1], e[2], 0 },
@@ -63,12 +68,21 @@ pub fn globals(draw: SceneDraw, size: TargetSize, scale: f32) Globals {
             if (draw.material == .flat) 1 else 0,
             0,
             if (draw.cut != null) 1 else 0,
-            0,
+            scale,
         },
+        .cam_right = .{ axes.right[0], axes.right[1], axes.right[2], 0 },
+        .cam_up = .{ axes.up[0], axes.up[1], axes.up[2], 0 },
     };
 }
 
 pub const TargetSize = struct { w: u32, h: u32 };
+
+/// The sprites of `draw` within the flat sprite list.
+pub fn spritesOf(draw: SceneDraw, sprites: []const teak.SceneSprite) []const teak.SceneSprite {
+    if (draw.sprite_count == 0 or draw.sprite_first >= sprites.len) return &.{};
+    const end = @min(sprites.len, @as(usize, draw.sprite_first) + draw.sprite_count);
+    return sprites[draw.sprite_first..end];
+}
 
 /// The slice of the flat item list that belongs to `draw` (empty for a
 /// legacy single-mesh scene, and clamped if the ranges are inconsistent).
@@ -155,8 +169,8 @@ fn testDraw() SceneDraw {
     };
 }
 
-test "Globals is 176 bytes (matches the WGSL uniform block)" {
-    try std.testing.expectEqual(@as(usize, 176), @sizeOf(Globals));
+test "Globals is 208 bytes (matches the WGSL uniform block)" {
+    try std.testing.expectEqual(@as(usize, 208), @sizeOf(Globals));
 }
 
 test "targetSize scales and rounds up, rejects empty and clamps huge" {

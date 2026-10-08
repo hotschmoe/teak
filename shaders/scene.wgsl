@@ -1,5 +1,5 @@
 // 3D scene shader: flat-shaded lit triangles and camera-facing line quads.
-// Uniform layout must match `Globals` in src/gpu/scene_common.zig (176 B).
+// Uniform layout must match `Globals` in src/gpu/scene_common.zig (208 B).
 // Per-item placement comes from the instance stream (`scene_pass.Packed`, 80 B).
 
 struct Globals {
@@ -10,7 +10,9 @@ struct Globals {
     viewport: vec4f,    // xy = target size px, z = line width px, w = line depth bias
     clip: vec4f,        // section plane n.xyz, d: fragments with dot(n, p) + d > 0 are cut away
     highlight: vec4f,   // rgb = highlight colour, w = blend amount
-    misc: vec4f,        // x = 1 flat material, z = 1 cut enabled
+    misc: vec4f,        // x = 1 flat material, z = 1 cut enabled, w = device px per logical px
+    cam_right: vec4f,   // world-space camera axes (billboards)
+    cam_up: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -73,6 +75,97 @@ fn fs_mesh(in: MeshOut) -> @location(0) vec4f {
     if (dot(travel, travel) < 1e-8) { travel = -to_eye; }
     let diffuse = max(dot(n, -normalize(travel)), 0.0);
     return vec4f(rgb * (AMBIENT + (1.0 - AMBIENT) * diffuse), 1.0);
+}
+
+// ── Plane layers ───────────────────────────────────────────────────
+// Plane-local 2D triangles (the canvas tessellator's output) placed by the
+// plane frame in the instance stream; `layer` biases depth so coplanar
+// sheets stack deterministically.
+
+struct PlaneOut {
+    @builtin(position) pos: vec4f,
+    @location(0) color: vec4f,
+    @location(1) world: vec3f,
+};
+
+@vertex
+fn vs_plane(
+    @location(0) xy: vec2f,
+    @location(1) color: vec4f,
+    @location(4) m0: vec4f,
+    @location(5) m1: vec4f,
+    @location(6) m2: vec4f,
+    @location(7) tint: vec4f,
+    @location(8) id_flags: vec2u,
+    @location(9) layer: i32,
+) -> PlaneOut {
+    let world = place(m0, m1, m2, vec3f(xy, 0.0));
+    var clip = g.view_proj * vec4f(world, 1.0);
+    clip.z = clip.z - f32(layer) * 2e-5 * clip.w;
+    return PlaneOut(clip, vec4f(color.rgb, color.a * tint.a), world);
+}
+
+@fragment
+fn fs_plane(in: PlaneOut) -> @location(0) vec4f {
+    if (cut_away(in.world) || in.color.a < 0.02) { discard; }
+    return in.color;
+}
+
+// ── Sprites ────────────────────────────────────────────────────────
+// One instance per sprite, six vertices per quad. `screen_px` camera-facing
+// sprites keep a constant pixel size; the others are world-space quads on
+// the camera axes (billboard), the camera's right projected on XZ (axis
+// locked) or the world XY plane (fixed).
+
+@group(1) @binding(0) var sprite_tex: texture_2d<f32>;
+@group(1) @binding(1) var sprite_samp: sampler;
+
+struct SpriteOut {
+    @builtin(position) pos: vec4f,
+    @location(0) uv: vec2f,
+    @location(1) color: vec4f,
+    @location(2) world: vec3f,
+};
+
+@vertex
+fn vs_sprite(
+    @builtin(vertex_index) vi: u32,
+    @location(0) pos_mode: vec4f,
+    @location(1) size_anchor: vec4f,
+    @location(2) uvr: vec4f,
+    @location(3) tint: vec4f,
+    @location(4) extra: vec4f,
+) -> SpriteOut {
+    var corner = array<vec2f, 6>(
+        vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0),
+        vec2f(1.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0),
+    );
+    let c = corner[vi];
+    let local = c - size_anchor.zw;          // in units of the size, y up
+    let mode = i32(pos_mode.w + 0.5);
+    var world = pos_mode.xyz;
+    var clip = g.view_proj * vec4f(world, 1.0);
+    if (extra.y > 0.5 && mode == 0) {
+        let px = local * size_anchor.xy * g.misc.w;
+        clip.x = clip.x + px.x * 2.0 / g.viewport.x * clip.w;
+        clip.y = clip.y + px.y * 2.0 / g.viewport.y * clip.w;
+    } else {
+        var right = g.cam_right.xyz;
+        var up = g.cam_up.xyz;
+        if (mode == 1) { right = normalize(vec3f(right.x, 0.0, right.z)); up = vec3f(0.0, 1.0, 0.0); }
+        if (mode == 2) { right = vec3f(1.0, 0.0, 0.0); up = vec3f(0.0, 1.0, 0.0); }
+        world = pos_mode.xyz + right * (local.x * size_anchor.x) + up * (local.y * size_anchor.y);
+        clip = g.view_proj * vec4f(world, 1.0);
+    }
+    clip.z = clip.z - extra.x * 2e-5 * clip.w;
+    return SpriteOut(clip, mix(uvr.xy, uvr.zw, vec2f(c.x, 1.0 - c.y)), tint, world);
+}
+
+@fragment
+fn fs_sprite(in: SpriteOut) -> @location(0) vec4f {
+    let t = textureSample(sprite_tex, sprite_samp, in.uv) * in.color;
+    if (cut_away(in.world) || t.a < 0.01) { discard; }
+    return t;
 }
 
 // ── Section caps ───────────────────────────────────────────────────

@@ -26,6 +26,20 @@ for (m.parts, 0..) |p, i| {
 }
 ```
 
+## Clickable rows
+
+`Table.row` emits plain `text` cmds, which are not interactive: **a `teak.Table`
+row cannot be clicked**. Two ways to get selectable rows:
+
+* Wrap the cells in a clickable widget yourself: emit the row as a
+  `cb.buttonStyled(.{ .select = i }, label, flat_style)` with the
+  monospace line you build by padding each cell with `fitCell` and concatenating
+  (arena-allocated), keeping the look with a flat `ButtonStyle` (transparent `bg`, `hover_bg` = your highlight).
+* For anything beyond a handful of rows, header sorting, column grips, row
+  selection and scrolling, use `teak.DataTable` / `teak.VarList` /
+  `teak.TreeList` ([tables-at-scale.md](tables-at-scale.md)): their `msgs.row(display)`
+  Msg fires when a row is clicked.
+
 ## API
 
 | Item | Meaning |

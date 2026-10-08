@@ -77,6 +77,15 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.table`: module `src/core/table.zig`; see below
 > Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
 - `teak.pointer`: module `src/core/pointer.zig`; see below
+> Mouse-cursor shapes and the hovered-cmd picker (`Host.setCursor`, App `cursorFor`).
+- `teak.cursor`: module `src/core/cursor.zig`; see below
+- `teak.CursorShape` = `cursor.CursorShape`
+  - fields: `arrow, pointer, ibeam, crosshair, move, resize_ew, resize_ns, resize_nwse, resize_nesw, not_allowed, grab, grabbing`
+  > The CSS `cursor` keyword for this shape (web host; also the XCursor
+  > theme name for most shapes).
+  - `pub fn cssName(self: CursorShape) [:0]const u8`
+- `teak.HoverKind` = `cursor.HoverKind`
+  - fields: `none, button, checkbox, radio, slider, text_input, canvas, scene3d`
 > Declarative effects (HARDLINE hatch 7): data describing I/O the Host performs.
 - `teak.effects`: module `src/core/effects.zig`; see below
 > Data types for `scene3d`: meshes, camera and per-frame scene draws.
@@ -123,6 +132,9 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, id`
 > Placement and look of a `push_overlay` (second z-layer).
 - `teak.OverlayStyle`: `pub const OverlayStyle = cmd.OverlayStyle`
+> Which side of its anchor widget an `OverlayStyle.anchor_msg` overlay opens on.
+- `teak.AnchorSide` = `cmd.AnchorSide`
+  - fields: `below_start, below_end, above_start, above_end, right_start, left_start`
 > Geometry of a `push_virtual_list` (only visible rows are emitted).
 - `teak.VirtualListStyle` = `cmd.VirtualListStyle`
   - fields: `direction, total_count, item_extent, visible_start, visible_end, padding, gap, total_extent, start_offset, align_cross, id`
@@ -298,8 +310,12 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `view_proj, eye, light_dir`
 > One 3D scene to render this frame.
 - `teak.SceneDraw` = `scene.SceneDraw`
-  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px, item_first, item_count, grid, gizmo, cut, material, highlight_color, highlight_mix`
+  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px, item_first, item_count, grid, gizmo, cut, material, highlight_color, highlight_mix, planes, sprite_first, sprite_count`
 - `teak.SceneItem`: `pub const SceneItem = scene.Item`
+- `teak.SceneSprite`: `pub const SceneSprite = scene.Sprite`
+- `teak.ScenePlane`: `pub const ScenePlane = scene.Plane`
+- `teak.SceneData` = `scene.SceneData`
+  - fields: `items, sprites`
 - `teak.SceneItemFlags`: `pub const SceneItemFlags = scene.ItemFlags`
 - `teak.SceneView`: `pub const SceneView = scene.View`
 > A declared GPU resource (image or mesh) keyed by an app-chosen key.
@@ -434,7 +450,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.focusMsgAt`: `pub const focusMsgAt = focus.focusMsgAt`
 > Host-neutral non-text keys and chords.
 - `teak.SpecialKey` = `keys.SpecialKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_tap`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_t, ...`
 > One accessibility-tree node derived from a cmd.
 - `teak.A11yNode` = `a11y.A11yNode`
   - fields: `role, cmd_index, bounds, label, focused, state, disabled`
@@ -492,12 +508,12 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.Dropdown`: `pub const Dropdown = dropdown.Dropdown`
 > Anchor and sizing for the open dropdown list.
 - `teak.DropdownViewOpts` = `dropdown.DropdownViewOpts`
-  - fields: `list_x, list_y, list_width, list_max_height, max_visible`
+  - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, list_max_height, max_visible`
 > Searchable select component (see `combobox`).
 - `teak.Combobox`: `pub const Combobox = combobox.Combobox`
 > Anchor and sizing options for the open combobox list.
 - `teak.ComboboxViewOpts` = `combobox.ViewOpts`
-  - fields: `list_x, list_y, list_width, max_visible, match, input_style`
+  - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, max_visible, match, input_style`
 > Build the app Msg for a typed character into a named field.
 - `teak.textFieldChar`: `pub const textFieldChar = text_field.textFieldChar`
 > Build the app Msg for a `SpecialKey` into a named field.
@@ -506,6 +522,10 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.textFieldReplaceSelection`: `pub const textFieldReplaceSelection = text_field.textFieldReplaceSelection`
 > True if a key needs host-level clipboard access.
 - `teak.keyNeedsClipboard`: `pub const keyNeedsClipboard = text_field.keyNeedsClipboard`
+> The Msg for a clipboard chord on a field, for the App's `clipboardMsg` hook.
+- `teak.textFieldClipboardMsg`: `pub const textFieldClipboardMsg = text_field.textFieldClipboardMsg`
+> What Ctrl+C / Ctrl+X copy from a field Model, for the App's `clipboardText` hook.
+- `teak.textFieldCopyText`: `pub const textFieldCopyText = text_field.textFieldCopyText`
 > The GPU vertex layout shared by every quad (position, color, uv).
 - `teak.Vertex` = `vertex.Vertex`
   - fields: `x, y, r, g, b, a, u, v`
@@ -719,6 +739,15 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `struct ScrollStyle`
   - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, id`
 - `pub fn OverlayStyle(comptime Msg: type) type`
+> Where an `OverlayStyle.anchor_msg` overlay sits relative to its widget.
+> `*_start` aligns the overlay's left (or top) edge with the widget's,
+> `*_end` aligns the right edge. No flipping at the window edge.
+- `enum AnchorSide`
+  - fields: `below_start, below_end, above_start, above_end, right_start, left_start`
+> The click / focus Msg a leaf carries (what `OverlayStyle.anchor_msg`
+> matches), or null for containers and decorative leaves. Exhaustive, so a
+> new Cmd variant must decide whether it can anchor an overlay.
+- `pub fn leafMsg(c: anytype) ?@TypeOf(c).MsgT`
 - `struct ImageStyle`
   - fields: `width, height, flex, tint`
 - `struct ImageCmd`
@@ -1272,6 +1301,15 @@ Canonical text-input component + key-dispatch helpers.
 > Build the AppMsg for a paste into the named field. The host calls
 > this after `clipboard.read()` returns the bytes to insert.
 - `pub fn textFieldReplaceSelection( comptime AppMsg: type, comptime field_name: []const u8, bytes: []const u8, ) AppMsg`
+> The Msg for a clipboard chord on the named field, for an App's
+> `clipboardMsg` hook: Ctrl+V -> `replace_selection(paste)`, Ctrl+X ->
+> `replace_selection("")` (deletes the selection; the copy itself is the
+> App's `clipboardText`), anything else (Ctrl+C included) -> null.
+- `pub fn textFieldClipboardMsg( comptime AppMsg: type, comptime field_name: []const u8, key: SpecialKey, paste: []const u8, ) ?AppMsg`
+> What Ctrl+C / Ctrl+X copy from a field `Model` (a `TextField(cap).Model`):
+> its selection, or null when nothing is selected. For the App's
+> `clipboardText` hook; the slice borrows from the Model.
+- `pub fn textFieldCopyText(model: anytype, key: SpecialKey) ?[]const u8`
 
 ### `teak.numeric_field` (`src/core/numeric_field.zig`)
 
@@ -1292,15 +1330,17 @@ Numeric input component: TextField + float parsing + range validation.
 - `pub const ITEM_HEIGHT: f32 = 36`
 > Anchor + sizing for the open list overlay.
 - `struct DropdownViewOpts`
-  - fields: `list_x, list_y, list_width, list_max_height, max_visible`
+  - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, list_max_height, max_visible`
 > Placeholder shown when there is no valid selection (empty options or a
 > `selected` index that is out of range).
 - `pub const PLACEHOLDER = "Select\u{2026}"`
 > A dropdown/select holding `selected` as an index into the app-owned
-> options slice. `cap` documents the intended maximum option count for
-> the call site; it is not enforced on the slice (the app owns the
-> options) but keeps the type self-describing alongside its siblings
-> (e.g. `Dropdown(64)` for a long species list).
+> options slice.
+> **`cap` is documentation only**: it is exposed as `Dropdown(cap).capacity`
+> and has no effect on layout, storage or `update` (the Model holds indices,
+> not options, so its size does not depend on `cap`). Pass the intended
+> maximum option count (e.g. `Dropdown(64)` for a long species list) so call
+> sites stay self-describing; any positive number works.
 - `pub fn Dropdown(comptime cap: usize) type`
 
 ### `teak.data_table` (`src/core/data_table.zig`)
@@ -1350,7 +1390,7 @@ option list shown in the same modal-overlay list `Dropdown` uses.
 - `enum Match`
   - fields: `substring, prefix`
 - `struct ViewOpts`
-  - fields: `list_x, list_y, list_width, max_visible, match, input_style`
+  - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, max_visible, match, input_style`
 > Simple case fold: ASCII, Latin-1 Supplement, Latin Extended-A (paired
 > forms), Greek and Cyrillic capitals map to their lowercase.
 - `pub fn foldCase(cp: u21) u21`
@@ -1515,6 +1555,29 @@ and the App.
 > clock, so the app can derive deadlines for `Sub.at`.
 - `pub fn PointerEvent(comptime Msg: type) type`
 
+### `teak.cursor` (`src/core/cursor.zig`)
+
+Mouse-cursor shapes and the rule that picks one from the hovered cmd.
+Pure data + one switch: the Host maps a `CursorShape` onto its OS cursor
+(`Host.setCursor`), and `teak.run` calls it only when the shape changes.
+
+- `enum CursorShape`
+  - fields: `arrow, pointer, ibeam, crosshair, move, resize_ew, resize_ns, resize_nwse, resize_nesw, not_allowed, grab, grabbing`
+  > The CSS `cursor` keyword for this shape (web host; also the XCursor
+  > theme name for most shapes).
+  - `pub fn cssName(self: CursorShape) [:0]const u8`
+> What the pointer is over, as the App's optional `cursorFor(model, kind)`
+> hook sees it. `none` is empty space (or a non-interactive cmd).
+- `enum HoverKind`
+  - fields: `none, button, checkbox, radio, slider, text_input, canvas, scene3d`
+> The framework's default shape for a hovered cmd (`null` for non-interactive
+> cmds). `cmd` is a `Cmd(Msg)` value; kept `anytype` so it serves every Msg.
+> Disabled widgets never hit-test, so they read as `.none` and get the arrow.
+- `pub fn kindOf(cmd: anytype) HoverKind`
+> Default cursor for a hovered cmd. An interactive canvas may name its own
+> (`CanvasCmd.cursor`); otherwise it keeps the arrow.
+- `pub fn defaultFor(cmd: anytype) CursorShape`
+
 ### `teak.effects` (`src/core/effects.zig`)
 
 Declarative effects (HARDLINE §2 escape hatch 7 — the sibling of
@@ -1613,7 +1676,11 @@ per-frame `SceneDraw` record the render pass hands to the Gpu.
 > One scene to render this frame. Emitted by the render pass for each
 > `scene3d` Cmd, in painter order; consumed by `Gpu.renderScenes`.
 - `struct SceneDraw`
-  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px, item_first, item_count, grid, gizmo, cut, material, highlight_color, highlight_mix`
+  - fields: `mesh, rect_x, rect_y, rect_w, rect_h, clip_x, clip_y, clip_w, clip_h, camera, clear, edge_color, edge_px, item_first, item_count, grid, gizmo, cut, material, highlight_color, highlight_mix, planes, sprite_first, sprite_count`
+> The flat per-frame lists `buildFrame` collects for all scenes; what the
+> Gpu's `renderScenes` reads (mutable so `stageDraws` can remap keys).
+- `struct SceneData`
+  - fields: `items, sprites`
 - `pub const Item = view.Item`
 - `pub const ItemFlags = view.ItemFlags`
 - `pub const View = view.View`
@@ -1621,6 +1688,8 @@ per-frame `SceneDraw` record the render pass hands to the Gpu.
 - `pub const Gizmo = view.Gizmo`
 - `pub const Cut = view.Cut`
 - `pub const Material = view.Material`
+- `pub const Plane = view.Plane`
+- `pub const Sprite = view.Sprite`
 - `pub const Orbit = camera.Orbit`
 - `pub const Projection = camera.Projection`
 - `pub const Bounds = camera.Bounds`
@@ -1823,7 +1892,7 @@ Text characters flow through InputState.chars; everything else is a
 variant here. Hosts map their native key codes onto this enum.
 
 - `enum SpecialKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_tap`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f10, alt_t, ...`
 
 ### `teak.a11y` (`src/input/a11y.zig`)
 
@@ -1854,6 +1923,8 @@ Accessibility tree builder.
 
 - `pub const SceneDraw = scene_types.SceneDraw`
 - `pub const SceneItem = scene_types.Item`
+- `pub const SceneSprite = scene_types.Sprite`
+- `pub const SceneData = scene_types.SceneData`
 > Image draw record. Parallel to TextDraw — the GPU backend consumes
 > these in `uploadImages` and emits 6 textured vertices per draw using
 > the tint as the vertex color (modulated against the texture alpha
@@ -1877,7 +1948,7 @@ Accessibility tree builder.
 > blink) pulls from TransientState without touching Model. Two passes —
 > base layer (cmds outside any push_overlay), then overlay layer — so
 > overlays (HARDLINE §2 escape hatch 5) draw on top.
-- `pub fn buildFrame( verts: *std.ArrayList(Vertex), text_draws: *std.ArrayList(TextDraw), image_draws: *std.ArrayList(ImageDraw), scene_draws: *std.ArrayList(SceneDraw), scene_items: *std.ArrayList(SceneItem), alloc: std.m`
+- `pub fn buildFrame( verts: *std.ArrayList(Vertex), text_draws: *std.ArrayList(TextDraw), image_draws: *std.ArrayList(ImageDraw), scene_draws: *std.ArrayList(SceneDraw), scene_items: *std.ArrayList(SceneItem), scene_sprite`
 > `buildFrame` without scene output: `scene3d` Cmds are skipped. For
 > hand-rolled host loops that predate 3D scenes; `teak.run` uses
 > `buildFrame`.
@@ -1931,6 +2002,7 @@ viewport-agnostic snapshot back.
 > Hosts that don't support IME (yet) return `.{ .active = false }`.
 - `struct ImeState`
   - fields: `active, text, cursor`
+- `pub const CursorShape = @import("../core/cursor.zig").CursorShape`
 - `pub const A11yNode = @import("../input/a11y.zig").A11yNode`
 - `pub const Effect = effects.Effect`
 - `pub const EffectResult = effects.EffectResult`
@@ -2049,6 +2121,11 @@ viewport-agnostic snapshot back.
 > devicePixelRatio backing store internally). Nothing in the
 > framework consumes it yet; see docs/features/host.md "DPI and
 > scaling" for the end-to-end render-at-scale follow-up.
+> - `setCursor(shape)` — **optional**: show the OS mouse cursor for a
+> `CursorShape`. `teak.run` calls it only when the shape picked from
+> the hovered cmd (or the App's `cursorFor` hook) changes. X11 maps to
+> XCursor theme names (font cursors as fallback), Win32 to `IDC_*` via
+> `WM_SETCURSOR`, web to CSS `cursor` through zunk.
 > - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
 > surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
 > a pair** (a Host with neither answers every effect as unsupported;
