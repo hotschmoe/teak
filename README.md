@@ -30,7 +30,7 @@ Every arrow is an explicit function call with typed inputs and outputs. No globa
 
 ## Build commands
 
-Requires **Zig 0.16.0+**.
+Requires **Zig 0.17.0+**.
 
 ```sh
 # From repo root — library

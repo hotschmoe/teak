@@ -1,4 +1,4 @@
-//! The single `@cImport` of the wgpu-native headers plus the small,
+//! The single translate-c import (`wgpu-c`, see `src/gpu/vendor/wgpu_c.h`) of the wgpu-native headers plus the small,
 //! backend-neutral helpers every native GPU file shares (device bring-up,
 //! shader / buffer / pipeline creation). Surface providers re-import `c`
 //! through `wgpu_core.zig`, so `WGPUSurface` and friends have one type
@@ -6,11 +6,7 @@
 
 const std = @import("std");
 
-pub const c = @cImport({
-    @cDefine("WGPU_SHARED_LIBRARY", "1");
-    @cInclude("webgpu.h");
-    @cInclude("wgpu.h");
-});
+pub const c = @import("wgpu-c");
 
 pub fn wgpuStr(s: []const u8) c.WGPUStringView {
     return .{ .data = s.ptr, .length = s.len };

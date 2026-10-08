@@ -29,9 +29,7 @@ const teak = @import("teak");
 
 const FontSpec = teak.FontSpec;
 
-const c = @cImport({
-    @cInclude("stb_truetype.h");
-});
+const c = @import("stb-c");
 
 /// Font search order. `TEAK_FONT` (absolute path) overrides everything;
 /// otherwise the first readable candidate wins. DejaVuSansMono leads
@@ -149,7 +147,7 @@ var registry: Registry = .{};
 /// Register `ttf` as the face for (`family`, `weight`), replacing an earlier
 /// one. The bytes are borrowed: keep them alive (an `@embedFile` slice is).
 pub fn registerFace(family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) error{FontInitFailed}!void {
-    registry.faces[@intFromEnum(family)][@intFromEnum(weight)] = Font.fromBytes(ttf) catch return error.FontInitFailed;
+    registry.faces[@backingInt(family)][@backingInt(weight)] = Font.fromBytes(ttf) catch return error.FontInitFailed;
 }
 
 /// Forget every registered face and the loaded fallback.
@@ -162,8 +160,8 @@ pub fn releaseFaces() void {
 /// `weight` (lighter on a tie), else the system fallback, else any
 /// registered face. Null only when no font exists at all.
 pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
-    const row = &registry.faces[@intFromEnum(family)];
-    const want: i32 = @intFromEnum(weight);
+    const row = &registry.faces[@backingInt(family)];
+    const want: i32 = @backingInt(weight);
     var best: ?usize = null;
     var best_dist: i32 = std.math.maxInt(i32);
     for (row, 0..) |face, i| {
@@ -342,7 +340,7 @@ fn readFontFile(allocator: std.mem.Allocator) ![]u8 {
 }
 
 /// Read an absolute path via libc stdio. The module already links libc
-/// (stb needs it), and Zig 0.16's `std.fs`/`std.Io` file API now requires
+/// (stb needs it), and Zig's `std.fs`/`std.Io` file API now requires
 /// threading an `Io` handle from `main` — impractical for a font load
 /// deep inside backend init — so libc `fopen`/`fread` is the pragmatic,
 /// churn-proof choice. Reads in chunks; no `fseek`/`fstat` dependency.

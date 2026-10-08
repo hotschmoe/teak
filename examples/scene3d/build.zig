@@ -5,8 +5,8 @@ pub fn build(b: *std.Build) void {
     const target = blk: {
         var t = b.standardTargetOptions(.{});
         if (t.result.cpu.arch == .aarch64) {
-            t.query.cpu_features_add.addFeature(@intFromEnum(std.Target.aarch64.Feature.i8mm));
-            t.result.cpu.features.addFeature(@intFromEnum(std.Target.aarch64.Feature.i8mm));
+            t.query.cpu_features_add.addFeature(@backingInt(std.Target.aarch64.Feature.i8mm));
+            t.result.cpu.features.addFeature(@backingInt(std.Target.aarch64.Feature.i8mm));
         }
         break :blk t;
     };
@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
 
     // --- Tests ---
 
@@ -61,7 +61,7 @@ pub fn build(b: *std.Build) void {
         const install_ui = b.addInstallArtifact(ui_exe, .{});
         const ui_run = b.addRunArtifact(ui_exe);
         ui_run.step.dependOn(&install_ui.step);
-        if (b.args) |args| ui_run.addArgs(args);
+        ui_run.addPassthruArgs();
 
         const ui_step = b.step("ui", "Run Teak scene3d UI (wgpu native: Win32 / X11)");
         ui_step.dependOn(&ui_run.step);
@@ -82,7 +82,7 @@ pub fn build(b: *std.Build) void {
         });
         teak.linkHeadless(b, shot_exe, .{});
         const shot_run = b.addRunArtifact(shot_exe);
-        if (b.args) |args| shot_run.addArgs(args);
+        shot_run.addPassthruArgs();
         const shot_step = b.step("shot", "Render a headless PNG screenshot: zig build shot -- out.png");
         shot_step.dependOn(&shot_run.step);
     }

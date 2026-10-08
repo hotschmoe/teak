@@ -176,7 +176,7 @@ pub fn formatBalanceError(err: BalanceError, buf: []u8) []const u8;
 `view()` builds the buffer; run the validator between `view()` and `doLayout()`, in **debug builds and tests**, before the layout passes consume the buffer:
 
 ```zig
-if (@import("builtin").mode == .Debug) {
+if (@import("builtin").mode == .debug) {
     if (teak.validateBalance(cb.cmds.items)) |err| {
         var buf: [128]u8 = undefined;
         std.debug.panic("teak: unbalanced cmd buffer — {s}", .{teak.formatBalanceError(err, &buf)});

@@ -308,7 +308,7 @@ pub const Service = struct {
             .keep_alive = false,
         });
         if (out.written().len > max_body_bytes) return error.ResponseTooLarge;
-        return .{ .status = @intFromEnum(res.status), .body = out.written() };
+        return .{ .status = @backingInt(res.status), .body = out.written() };
     }
 
     // ── Storage, download, open, clock, query ───────────────────────

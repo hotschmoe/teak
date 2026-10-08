@@ -5,8 +5,8 @@ pub fn build(b: *std.Build) void {
     const target = blk: {
         var t = b.standardTargetOptions(.{});
         if (t.result.cpu.arch == .aarch64) {
-            t.query.cpu_features_add.addFeature(@intFromEnum(std.Target.aarch64.Feature.i8mm));
-            t.result.cpu.features.addFeature(@intFromEnum(std.Target.aarch64.Feature.i8mm));
+            t.query.cpu_features_add.addFeature(@backingInt(std.Target.aarch64.Feature.i8mm));
+            t.result.cpu.features.addFeature(@backingInt(std.Target.aarch64.Feature.i8mm));
         }
         break :blk t;
     };
@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
 
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
     const test_step = b.step("test", "Run viewport tests");
@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
         const install_ui = b.addInstallArtifact(ui_exe, .{});
         const ui_run = b.addRunArtifact(ui_exe);
         ui_run.step.dependOn(&install_ui.step);
-        if (b.args) |args| ui_run.addArgs(args);
+        ui_run.addPassthruArgs();
 
         const ui_step = b.step("ui", "Run Teak viewport UI (wgpu native: Win32 / X11)");
         ui_step.dependOn(&ui_run.step);
