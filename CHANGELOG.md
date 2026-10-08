@@ -169,6 +169,13 @@
 
 ### Added
 
+- Accessibility wiring (M3): `Runtime` builds the a11y tree and publishes it to the Host only when it changed
+  (`RunOptions.a11y`, default on); `A11yHint` semantics (tablist, tab, tree, table, menu, status/live, progressbar, ...) on
+  groups, scrolls and buttons; `A11yNode` gains parent / value / selection / state; optional `Host.pollA11yActions` turns AT
+  activate / focus / set-value requests into ordinary input; web wire format v2 (nested ARIA DOM mirror in zunk, focus sync
+  both ways, live regions); Win32 UIA control types for the new roles; `tools/a11yprobe.mjs`; docs/features/a11y.md.
+- Fixed: the wasm host never called `__zunk_publish_a11y_tree` (a `@hasDecl` on non-`pub` externs was always false);
+  examples/todo labels were dangling stack slices on wasm (`|item|` capture by value).
 - Keyboard gaps: lists are one Tab stop with roving arrows (`ButtonNav`, `cb.buttonNav`; `DataTable` / `TreeList` rows; gallery tree), `Dropdown.keyMsg` (arrows / Enter / Esc in the open list), Menu key / Shift+F10 (`SpecialKey.context_menu`) opens the context menu at the focused widget through `contextMsg`.
 - Keyboard gaps closed: a focusable split divider (`Split.dividerFocusable`, arrows / Home / End via new `CanvasEventKind.key` events), keyboard scrolling of the region around the focused widget (arrows, PageUp / PageDown, Home / End through `scrollMsg`), keyboard focus reported to `hoverMsg` (tooltips show for the focused widget), Escape dismisses toasts (`Toast.keyMsg`). `cb.canvasInteractiveFocusable`.
 - **HiDPI scenes.** Native 3D scene targets are rendered at device resolution (logical size x scale) instead of logical-then-magnified; `TEAK_SCALE=2 zig build shot` takes any headless example at 2x. test-gpu pins scene seam position, 1-logical-px line width and 1:1 image texels at scale 2.

@@ -330,6 +330,16 @@ pub const SpecialKey = keys.SpecialKey;
 pub const A11yNode = a11y.A11yNode;
 /// Semantic role of an `A11yNode`.
 pub const A11yRole = a11y.Role;
+/// An assistive-technology request (activate / focus / set value) delivered by `Host.pollA11yActions`.
+pub const A11yAction = a11y.Action;
+/// The kind of an `A11yAction`.
+pub const A11yActionKind = a11y.ActionKind;
+/// Accessibility semantics attached to a group, scroll or button.
+pub const A11yHint = cmd.A11yHint;
+/// The semantic of an `A11yHint` (tablist, tree, table, status, ...).
+pub const A11ySemantic = cmd.A11ySemantic;
+/// Live-region politeness of an `A11yHint`.
+pub const A11yLive = cmd.A11yLive;
 /// Build the flat accessibility tree for a frame.
 pub const buildA11yTree = a11y.buildTree;
 

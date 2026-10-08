@@ -305,6 +305,7 @@ shaders/
   scene_grid.wgsl                             -- Infinite ground grid for 3D scenes: a fullscreen triangle whose fragment
 
 tools/
+  a11yprobe.mjs                               -- Web accessibility probe: serve a zunk `dist/`, load it in headless Chromium
   audit.zig                                   -- HARDLINE drift audit. Walks `src/` and flags the greppable rules
   gate.sh                                     -- Local merge gate for teak (+ the sibling zunk checkout)
   gen_api.zig                                 -- Generated API reference: walks `src/teak.zig` with `std.zig.Ast`, follows

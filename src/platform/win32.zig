@@ -705,6 +705,23 @@ const UIA_SliderControlTypeId: c_long = 50015;
 const UIA_SeparatorControlTypeId: c_long = 50038;
 const UIA_ImageControlTypeId: c_long = 50006;
 const UIA_PaneControlTypeId: c_long = 50033;
+const UIA_ComboBoxControlTypeId: c_long = 50003;
+const UIA_HyperlinkControlTypeId: c_long = 50005;
+const UIA_ListItemControlTypeId: c_long = 50007;
+const UIA_ListControlTypeId: c_long = 50008;
+const UIA_MenuControlTypeId: c_long = 50009;
+const UIA_MenuBarControlTypeId: c_long = 50010;
+const UIA_MenuItemControlTypeId: c_long = 50011;
+const UIA_ProgressBarControlTypeId: c_long = 50012;
+const UIA_StatusBarControlTypeId: c_long = 50017;
+const UIA_TabControlTypeId: c_long = 50018;
+const UIA_TabItemControlTypeId: c_long = 50019;
+const UIA_ToolBarControlTypeId: c_long = 50021;
+const UIA_TreeControlTypeId: c_long = 50023;
+const UIA_TreeItemControlTypeId: c_long = 50024;
+const UIA_DataItemControlTypeId: c_long = 50029;
+const UIA_HeaderItemControlTypeId: c_long = 50035;
+const UIA_TableControlTypeId: c_long = 50036;
 
 // Event ids
 const UIA_StructureChangedEventId: c_long = 20002;
@@ -1288,12 +1305,31 @@ fn controlTypeForRole(role: A11yRole) c_long {
         // `.image` above (its primitives aren't individually exposed).
         .canvas => UIA_ImageControlTypeId,
         .overlay => UIA_PaneControlTypeId,
+        .list, .listbox => UIA_ListControlTypeId,
+        .listitem, .option => UIA_ListItemControlTypeId,
+        .combobox => UIA_ComboBoxControlTypeId,
+        .tablist => UIA_TabControlTypeId,
+        .tab => UIA_TabItemControlTypeId,
+        .tree => UIA_TreeControlTypeId,
+        .treeitem => UIA_TreeItemControlTypeId,
+        .table => UIA_TableControlTypeId,
+        .row, .cell => UIA_DataItemControlTypeId,
+        .columnheader => UIA_HeaderItemControlTypeId,
+        .menu => UIA_MenuControlTypeId,
+        .menubar => UIA_MenuBarControlTypeId,
+        .menuitem => UIA_MenuItemControlTypeId,
+        .toolbar => UIA_ToolBarControlTypeId,
+        .dialog => UIA_PaneControlTypeId,
+        .status, .alert => UIA_StatusBarControlTypeId,
+        .progressbar => UIA_ProgressBarControlTypeId,
+        .heading => UIA_TextControlTypeId,
+        .link => UIA_HyperlinkControlTypeId,
     };
 }
 
 fn isFocusableRole(role: A11yRole) bool {
     return switch (role) {
-        .button, .text_input, .text_area, .checkbox, .radio, .slider => true,
+        .button, .text_input, .text_area, .checkbox, .radio, .slider, .tab, .menuitem, .option, .treeitem, .link, .combobox => true,
         else => false,
     };
 }
@@ -2147,6 +2183,9 @@ pub const Host = struct {
         g_label_heap_used = 0;
         for (nodes[0..cap], 0..) |src, i| {
             var n = src;
+            // An editable control's text is its UIA Name until a ValuePattern
+            // lands (labels are what the provider reads today).
+            if (n.label.len == 0 and n.value.len > 0) n.label = n.value;
             // Copy the label into the heap and rewrite its slice to
             // point at the stable copy. On heap exhaustion the label
             // is dropped (slice cleared) so we never alias arena

@@ -132,12 +132,12 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.CmdBuffer`: `pub const CmdBuffer = cmd.CmdBuffer`
 > Layout and look of a `push_group` container.
 - `teak.GroupStyle` = `cmd.GroupStyle`
-  - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, bg, border, border_width, radius, gradient, soft_shadow`
+  - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, a11y, bg, border, border_width, radius, gradient, soft_shadow`
   - `pub fn padX(self: GroupStyle) f32`
   - `pub fn padY(self: GroupStyle) f32`
 > Layout and scroll offsets of a `push_scroll` region.
 - `teak.ScrollStyle` = `cmd.ScrollStyle`
-  - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, id`
+  - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, a11y, id`
 > Placement and look of a `push_overlay` (second z-layer).
 - `teak.OverlayStyle`: `pub const OverlayStyle = cmd.OverlayStyle`
 > Which side of its anchor widget an `OverlayStyle.anchor_msg` overlay opens on.
@@ -465,10 +465,25 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, shift_left, shift_right, shift_up, shift_down, shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v, ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left, ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end, ctrl_backspace, ctrl_delete, f12, f10, , ...`
 > One accessibility-tree node derived from a cmd.
 - `teak.A11yNode` = `a11y.A11yNode`
-  - fields: `role, cmd_index, bounds, label, focused, state, disabled`
+  - fields: `role, cmd_index, bounds, label, focused, state, disabled, parent, value, sel_start, sel_end, selected, expanded, level, live, modal`
 > Semantic role of an `A11yNode`.
 - `teak.A11yRole` = `a11y.Role`
-  - fields: `group, scroll, text, rich_text, button, text_input, text_area, checkbox, radio, slider, divider, image, canvas, overlay`
+  - fields: `group, scroll, text, rich_text, button, text_input, text_area, checkbox, radio, slider, divider, image, canvas, overlay, list, listitem, listbox, option, combobox, tablist, tab, tree, treeitem, table, row, columnheader, cell, menu, menubar, menuitem, toolbar, dialog, status, alert, progressbar, heading, link`
+> An assistive-technology request (activate / focus / set value) delivered by `Host.pollA11yActions`.
+- `teak.A11yAction` = `a11y.Action`
+  - fields: `kind, cmd_index, text`
+> The kind of an `A11yAction`.
+- `teak.A11yActionKind` = `a11y.ActionKind`
+  - fields: `activate, focus, set_value, increment, decrement`
+> Accessibility semantics attached to a group, scroll or button.
+- `teak.A11yHint` = `cmd.A11yHint`
+  - fields: `semantic, label, value, level, selected, expanded, live`
+> The semantic of an `A11yHint` (tablist, tree, table, status, ...).
+- `teak.A11ySemantic` = `cmd.A11ySemantic`
+  - fields: `none, list, listitem, listbox, option, combobox, tablist, tab, tree, treeitem, table, row, columnheader, cell, menu, menubar, menuitem, toolbar, dialog, status, alert, progressbar, heading, link`
+> Live-region politeness of an `A11yHint`.
+- `teak.A11yLive` = `cmd.A11yLive`
+  - fields: `off, polite, assertive`
 > Build the flat accessibility tree for a frame.
 - `teak.buildA11yTree`: `pub const buildA11yTree = a11y.buildTree`
 > A declarative subscription (timer) producing a Msg.
@@ -656,7 +671,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.Runtime`: `pub const Runtime = runtime.Runtime`
 > Options for `run` (title, clear color, snapshot sink, ...).
 - `teak.RunOptions` = `runtime.RunOptions`
-  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip`
+  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip`
 > A second top-level window the app wants open this frame.
 - `teak.SecondaryWindowSpec` = `runtime.SecondaryWindowSpec`
   - fields: `title, width, height`
@@ -716,6 +731,12 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `pub const Wrap = text_wrap.Wrap`
 - `enum Direction`
   - fields: `vertical, horizontal`
+- `enum A11ySemantic`
+  - fields: `none, list, listitem, listbox, option, combobox, tablist, tab, tree, treeitem, table, row, columnheader, cell, menu, menubar, menuitem, toolbar, dialog, status, alert, progressbar, heading, link`
+- `enum A11yLive`
+  - fields: `off, polite, assertive`
+- `struct A11yHint`
+  - fields: `semantic, label, value, level, selected, expanded, live`
 > Cross-axis placement of a container's children (the axis perpendicular
 > to `direction`).
 - `enum Align`
@@ -734,7 +755,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `enum InputVariant`
   - fields: `boxed, underline`
 - `struct GroupStyle`
-  - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, bg, border, border_width, radius, gradient, soft_shadow`
+  - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, a11y, bg, border, border_width, radius, gradient, soft_shadow`
   - `pub fn padX(self: GroupStyle) f32`
   - `pub fn padY(self: GroupStyle) f32`
 - `struct TextCmd`
@@ -752,7 +773,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `struct DividerStyle`
   - fields: `thickness, color`
 - `struct ScrollStyle`
-  - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, id`
+  - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, a11y, id`
 - `pub fn OverlayStyle(comptime Msg: type) type`
 > Where an `OverlayStyle.anchor_msg` overlay sits relative to its widget.
 > `*_start` aligns the overlay's left (or top) edge with the widget's,
@@ -2001,9 +2022,21 @@ Accessibility tree builder.
 > Semantic role of a UI element. Mirrors the subset of WAI-ARIA roles
 > that map cleanly onto Teak's Cmd variants. New widget = new role.
 - `enum Role`
-  - fields: `group, scroll, text, rich_text, button, text_input, text_area, checkbox, radio, slider, divider, image, canvas, overlay`
+  - fields: `group, scroll, text, rich_text, button, text_input, text_area, checkbox, radio, slider, divider, image, canvas, overlay, list, listitem, listbox, option, combobox, tablist, tab, tree, treeitem, table, row, columnheader, cell, menu, menubar, menuitem, toolbar, dialog, status, alert, progressbar, heading, link`
+> What assistive technology can ask of the UI. Each becomes ordinary input in
+> the run loop (a click at the node, its focus Msg, typed keys), never a
+> second mutation path: the app's `update` still sees plain Msgs.
+- `enum ActionKind`
+  - fields: `activate, focus, set_value, increment, decrement`
+> One request from assistive technology. `cmd_index` names a node of the tree
+> last published (`A11yNode.cmd_index`); `text` is valid until the Host's
+> next `pollA11yActions`.
+- `struct Action`
+  - fields: `kind, cmd_index, text`
+> `A11yNode.parent` of a root node.
+- `pub const NO_PARENT: u32 = std.math.maxInt(u32)`
 - `struct A11yNode`
-  - fields: `role, cmd_index, bounds, label, focused, state, disabled`
+  - fields: `role, cmd_index, bounds, label, focused, state, disabled, parent, value, sel_start, sel_end, selected, expanded, level, live, modal`
 > Build a flat list of A11yNodes for the given frame. Allocates the
 > output slice from `arena`; caller's per-frame arena reset frees it
 > in bulk along with everything else.
@@ -2018,6 +2051,16 @@ Accessibility tree builder.
 > modal overlay is open. Non-modal overlays (tooltips, debug
 > overlays) do NOT suppress the base layer — same rule hit_test uses.
 - `pub fn buildTree( arena: std.mem.Allocator, cmds: anytype, rects: []const Rect, focus_index: ?usize, ) ![]A11yNode`
+> An owned copy of the last tree handed to the platform, so the run loop can
+> publish only when something changed. (The per-frame tree lives in a frame
+> arena that is recycled two frames later, so it cannot be kept by reference.)
+- `struct TreeCache`
+  - fields: `nodes, bytes, valid`
+  - `pub fn deinit(self: *TreeCache, gpa: std.mem.Allocator) void`
+  > True when `tree` is identical (fields and string contents) to the cache.
+  - `pub fn same(self: *const TreeCache, tree: []const A11yNode) bool`
+  > Replace the cache with a deep copy of `tree`.
+  - `pub fn store(self: *TreeCache, gpa: std.mem.Allocator, tree: []const A11yNode) std.mem.Allocator.Error!void`
 
 ### `teak.render` (`src/render/build.zig`)
 
@@ -2104,6 +2147,8 @@ viewport-agnostic snapshot back.
   - fields: `active, text, cursor`
 - `pub const CursorShape = @import("../core/cursor.zig").CursorShape`
 - `pub const A11yNode = @import("../input/a11y.zig").A11yNode`
+- `pub const A11yActionKind = @import("../input/a11y.zig").ActionKind`
+- `pub const A11yAction = @import("../input/a11y.zig").Action`
 - `pub const Effect = effects.Effect`
 - `pub const EffectResult = effects.EffectResult`
 - `pub const EffectSubmit = effects.EffectSubmit`
@@ -2332,7 +2377,7 @@ compiles wasm32-freestanding-clean.
 Canonical application loop — the `teak.run` wrapper.
 
 - `struct RunOptions`
-  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip`
+  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip`
 > Declares a second top-level window the app wants open this frame.
 > Data-only (HARDLINE §3): `secondaryWindow(*const Model)` returns this
 > or `null`; `run` diffs it against the live window to open / close /

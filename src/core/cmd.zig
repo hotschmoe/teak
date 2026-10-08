@@ -24,6 +24,59 @@ const TextureHandle = text.TextureHandle;
 
 pub const Direction = enum { vertical, horizontal };
 
+// ── Accessibility semantics ────────────────────────────────────────
+//
+// Cmds already imply a role for their own kind (button, text_input, slider,
+// ...). Higher-level patterns built from groups and buttons (tabs, lists,
+// trees, tables, menus, dialogs, live status) carry an `A11yHint` so the
+// a11y tree (`input/a11y.zig`) and the platform mirrors (Win32 UIA, web DOM)
+// can expose them. Pure data; the default (`semantic = .none`) changes nothing.
+
+pub const A11ySemantic = enum {
+    none,
+    list,
+    listitem,
+    listbox,
+    option,
+    combobox,
+    tablist,
+    tab,
+    tree,
+    treeitem,
+    table,
+    row,
+    columnheader,
+    cell,
+    menu,
+    menubar,
+    menuitem,
+    toolbar,
+    dialog,
+    status,
+    alert,
+    progressbar,
+    heading,
+    link,
+};
+
+pub const A11yLive = enum { off, polite, assertive };
+
+pub const A11yHint = struct {
+    semantic: A11ySemantic = .none,
+    /// Accessible name (groups); buttons already have their label.
+    label: []const u8 = "",
+    /// `progressbar`: completion in [0, 1].
+    value: f32 = 0,
+    /// `heading` level / `treeitem` depth (1-based; 0 = unspecified).
+    level: u8 = 0,
+    /// `tab` / `option` / `treeitem` / `row` / `menuitem`: selected (or current) item.
+    selected: bool = false,
+    /// Expandable items (`treeitem`, `combobox`, `menuitem`): null = not expandable.
+    expanded: ?bool = null,
+    /// A live region: AT announces content changes inside (toasts, status lines).
+    live: A11yLive = .off,
+};
+
 /// Cross-axis placement of a container's children (the axis perpendicular
 /// to `direction`).
 pub const Align = enum {
@@ -90,6 +143,9 @@ pub const GroupStyle = struct {
     align_cross: Align = .start,
     /// How this group distributes leftover main-axis space (no flex kids).
     justify: Justify = .start,
+    /// Accessibility semantics (tablist, list, tree, table, dialog, live
+    /// status, ...); see `A11yHint`. Default: a plain group.
+    a11y: A11yHint = .{},
     /// Optional solid background fill. When non-null, the render pass
     /// emits a single quad at the group's full (padded) rect BEFORE
     /// drawing the group's children — children paint on top. Default
@@ -280,6 +336,8 @@ pub const ScrollStyle = struct {
     /// Msgs that update the Model fields feeding this value back in.
     scroll_x: f32 = 0,
     scroll_y: f32 = 0,
+    /// Accessibility semantics of the region (`.list`, `.listbox`, `.tree`, ...).
+    a11y: A11yHint = .{},
     /// Non-zero opts this region into wheel routing and layout reports:
     /// `teak.run` hands wheel events over its innermost hovered `id != 0`
     /// scroll region to the App's `scrollMsg(model, id, dx, dy)`, and
@@ -788,6 +846,9 @@ pub fn ButtonCmd(comptime Msg: type) type {
         /// (hit-test/hover skip it). Layout is unaffected — same rect either
         /// way, so a disabled button stays where it is without shifting.
         disabled: bool = false,
+        /// Semantics beyond "button": `.tab`, `.menuitem`, `.option`,
+        /// `.treeitem`, `.link`, `.combobox` (+ `selected` / `expanded`).
+        a11y: A11yHint = .{},
         /// Byte index into `label` of one ASCII character to underline (a
         /// menu mnemonic: the "F" of "File"). Null = no underline.
         underline: ?u16 = null,
@@ -817,6 +878,8 @@ pub fn TextInputCmd(comptime Msg: type) type {
         /// (no focus, selection, or cursor; hit-test/hover skip it). Layout
         /// is unaffected — same rect either way.
         disabled: bool = false,
+        /// Accessible name (an input has no visible label of its own).
+        a11y_label: []const u8 = "",
     };
 }
 
@@ -1341,6 +1404,28 @@ pub fn CmdBuffer(comptime Msg: type) type {
             })) catch oom();
         }
 
+        /// A button with accessibility semantics (a tab, menu item, option, tree item).
+        pub fn buttonA11y(self: *Self, msg: Msg, label: []const u8, hint: A11yHint) void {
+            self.cmds.append(self.backing, self.box(.button, .{
+                .msg = msg,
+                .label = label,
+                .style = self.theme.button,
+                .font = self.theme.typography.body,
+                .a11y = hint,
+            })) catch oom();
+        }
+
+        /// `buttonA11y` with an explicit style.
+        pub fn buttonStyledA11y(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle, hint: A11yHint) void {
+            self.cmds.append(self.backing, self.box(.button, .{
+                .msg = msg,
+                .label = label,
+                .style = style,
+                .font = self.theme.typography.body,
+                .a11y = hint,
+            })) catch oom();
+        }
+
         pub fn buttonStyled(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle) void {
             self.cmds.append(self.backing, self.box(.button, .{
                 .msg = msg,
@@ -1413,6 +1498,19 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cursor = cursor,
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
+            })) catch oom();
+        }
+
+        /// A text input with an accessible name ("New item", "Search"): what a
+        /// screen reader announces for the field.
+        pub fn textInputA11y(self: *Self, focus_msg: Msg, content: []const u8, cursor: usize, label: []const u8) void {
+            self.cmds.append(self.backing, self.box(.text_input, .{
+                .focus_msg = focus_msg,
+                .content = content,
+                .cursor = cursor,
+                .style = self.theme.text_input,
+                .font = self.theme.typography.body,
+                .a11y_label = label,
             })) catch oom();
         }
 
