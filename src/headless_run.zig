@@ -39,6 +39,8 @@ pub const Step = union(enum) {
     chars: []const u8,
     key: keys.SpecialKey,
     mods: pointer.Modifiers,
+    /// Queue a keyboard shortcut (`InputState.chords`): `.{ .chord = Chord.ctrl(.k) }`.
+    chord: keys.Chord,
     /// Move to the point, press and release the left button, with a frame
     /// between each part (hover is established, the press arms, the release
     /// fires the click — the runtime routes against the previous frame).
@@ -60,6 +62,7 @@ pub fn play(rt: anytype, host: anytype, steps: []const Step) !void {
         .chars => |t| host.pushChars(t),
         .key => |k| host.pushKey(k),
         .mods => |m| host.setModifiers(m),
+        .chord => |c| host.pushChord(c),
         .click => |p| {
             host.pushMouseMove(p[0], p[1]);
             try rt.frame();
@@ -583,6 +586,9 @@ test "play drives frames and queues input for a recording host" {
         fn setModifiers(self: *@This(), _: pointer.Modifiers) void {
             self.note('s');
         }
+        fn pushChord(self: *@This(), _: keys.Chord) void {
+            self.note('h');
+        }
     };
     var rt: Rt = .{};
     var host: Host = .{};
@@ -592,9 +598,10 @@ test "play drives frames and queues input for a recording host" {
         .{ .chars = "x" },
         .{ .key = .enter },
         .{ .wheel = .{ 0, 3 } },
+        .{ .chord = keys.Chord.ctrl(.k) },
         .{ .frames = 1 },
     });
-    try std.testing.expectEqualStrings("mduckw", host.log[0..host.n]);
+    try std.testing.expectEqualStrings("mduckwh", host.log[0..host.n]);
     try std.testing.expectEqual(@as(u32, 2 + 3 + 1), rt.frames);
 
     var rt2: Rt = .{};
