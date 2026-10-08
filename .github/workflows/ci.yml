@@ -164,6 +164,33 @@ jobs:
           name: web-${{ matrix.example }}
           path: teak/web-${{ matrix.example }}.png
 
+  a11y-probe:
+    name: A11y probe (todo via the DOM mirror, headless Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: teak/tools/package-lock.json
+      - name: Build web dist
+        working-directory: teak/examples/todo
+        run: zig build web
+      - name: Install puppeteer-core
+        working-directory: teak/tools
+        run: npm ci --no-audit --no-fund
+      - name: Read the browser accessibility tree and drive the app through it
+        working-directory: teak
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node tools/a11yprobe.mjs todo examples/todo/dist
+
   windows:
     name: Windows ${{ matrix.arch }} (native)
     runs-on: ${{ matrix.os }}
