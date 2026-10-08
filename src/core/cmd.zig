@@ -2,6 +2,7 @@ const std = @import("std");
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
 const scene = @import("scene.zig");
+const eql = @import("eql.zig");
 
 pub const FontSpec = text.FontSpec;
 const DEFAULT_FONT = text.DEFAULT_FONT;
@@ -608,7 +609,7 @@ pub fn SceneCmd(comptime Msg: type) type {
         /// Multiplied into each line vertex's colour; line width in px.
         edge_color: [4]f32 = .{ 1, 1, 1, 1 },
         edge_px: f32 = 1.5,
-        /// Content revision. The frame diff compares the whole struct, but
+        /// Content revision. The frame diff (`core/eql.zig`) compares the whole struct, but
         /// the mesh's *contents* live behind `mesh` — bump `key` when the
         /// geometry behind an unchanged handle/key changes (typically the
         /// resource `rev`), or the frame is skipped as unchanged.
@@ -622,15 +623,6 @@ pub fn SceneCmd(comptime Msg: type) type {
         msg: ?Msg = null,
         /// Accessible name for the a11y tree.
         label: []const u8 = "",
-
-        /// Content equality for the frame diff.
-        pub fn eql(a: @This(), b: @This()) bool {
-            return std.meta.eql(a.style, b.style) and a.mesh == b.mesh and
-                std.meta.eql(a.camera, b.camera) and std.meta.eql(a.clear, b.clear) and
-                std.meta.eql(a.edge_color, b.edge_color) and a.edge_px == b.edge_px and
-                a.key == b.key and a.id == b.id and a.pointer == b.pointer and
-                std.meta.eql(a.msg, b.msg) and std.mem.eql(u8, a.label, b.label);
-        }
     };
 }
 
@@ -2019,7 +2011,7 @@ test "CmdBuffer.scene3d emits a scene3d cmd with defaults" {
     try testing.expectEqual(@as(?Msg, Msg.poke), b.msg);
 }
 
-test "SceneCmd.eql compares content (label by value) and the revision key" {
+test "SceneCmd: deepEql compares content (label by value) and the revision key" {
     const testing = std.testing;
     const Msg = union(enum) { poke };
     const S = SceneCmd(Msg);
@@ -2027,15 +2019,15 @@ test "SceneCmd.eql compares content (label by value) and the revision key" {
     var label_b = [_]u8{ 'a', 'b' };
     const x: S = .{ .label = &label_a, .key = 1 };
     var y: S = .{ .label = &label_b, .key = 1 };
-    try testing.expect(x.eql(y)); // different addresses, same content
+    try testing.expect(eql.deepEql(S, x, y)); // different addresses, same content
     y.key = 2;
-    try testing.expect(!x.eql(y)); // geometry behind the handle changed
+    try testing.expect(!eql.deepEql(S, x, y)); // geometry behind the handle changed
     y.key = 1;
     y.camera.eye[1] = 4;
-    try testing.expect(!x.eql(y));
+    try testing.expect(!eql.deepEql(S, x, y));
     y.camera.eye[1] = 0;
     y.msg = .poke;
-    try testing.expect(!x.eql(y));
+    try testing.expect(!eql.deepEql(S, x, y));
 }
 
 test "CanvasPrimitive.eql: batches compare by key (or by bytes when key is 0)" {
