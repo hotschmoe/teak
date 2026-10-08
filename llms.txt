@@ -315,7 +315,7 @@ focusMsgAt(cmds, index: usize) ?Msg           // the Msg the leaf at index would
 ```zig
 SpecialKey = enum { backspace, delete, left, right, up, down, home, end, page_up, page_down,
                     enter, tab, escape, shift_left, shift_right, shift_up, shift_down,
-                    shift_home, shift_end, shift_tab, ctrl_a, ctrl_c, ctrl_x, ctrl_v,
+                    shift_home, shift_end, shift_tab, shift_enter, ctrl_a, ctrl_c, ctrl_x, ctrl_v,
                     ctrl_z, ctrl_y, ctrl_shift_z, ctrl_left, ctrl_right, ctrl_shift_left,
                     ctrl_shift_right, ctrl_home, ctrl_end, ctrl_shift_home, ctrl_shift_end,
                     ctrl_backspace, ctrl_delete }

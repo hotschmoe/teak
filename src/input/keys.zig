@@ -36,6 +36,9 @@ pub const SpecialKey = enum {
     // hasn't been taught to emit it yet simply never delivers it; forward
     // Tab still works.
     shift_tab,
+    // Shift+Enter: a newline where plain Enter submits (chat boxes). `teak.run`
+    // treats only plain `enter` as submit; this one reaches `keySpecialMsg`.
+    shift_enter,
 
     // Ctrl chords for the text-input prose path. Apps that don't care
     // can ignore them — the Host still delivers them when the user
