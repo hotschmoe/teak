@@ -27,6 +27,8 @@ const chat = @import("chat.zig");
 const scene = teak.scene;
 /// Ctrl+K / Ctrl+Shift+P command palette over `commands` below.
 const Palette = teak.CommandPalette(24);
+/// Menu bar built from the command table each frame (action = command index).
+const MB = teak.widgets.menu.MenuBar(u16);
 const Notes = teak.TextArea(2048);
 const Chat = teak.TextArea(512);
 const notes_id: u32 = 11;
@@ -269,6 +271,7 @@ pub const Model = struct {
     list_scroll: f32 = 0,
     /// Window size (logical px), centers the palette.
     win: [2]f32 = .{ 1280, 800 },
+    menubar: MB.Model = .{},
     palette: Palette.Model = .{},
     list_viewport: f32 = 0,
     list_content: f32 = 0,
@@ -640,6 +643,9 @@ pub const Msg = union(enum) {
     list_extent: [2]f32,
     window: [2]f32,
     palette: Palette.Msg,
+    menubar: MB.Msg,
+    /// A menu row chosen: run command `i` of the table.
+    menu_run: u16,
     /// Run palette option `i` (see `commands`).
     palette_run: usize,
     notes: Notes.Msg,
@@ -721,6 +727,13 @@ fn step(m: *Model, msg: Msg) void {
             m.list_scroll = clampScroll(m, m.list_scroll);
         },
         .window => |w| m.win = w,
+        .menubar => |s| MB.update(&m.menubar, s),
+        .menu_run => |i| {
+            MB.update(&m.menubar, .close);
+            var list: teak.CommandList(Msg) = .{};
+            commands(m, &list);
+            if (i < list.len) update(m, list.items[i].msg);
+        },
         .palette => |pm| Palette.update(&m.palette, pm),
         .palette_run => |i| {
             Palette.update(&m.palette, .close);
@@ -947,7 +960,28 @@ pub fn focusedMsg(m: *const Model) ?Msg {
     };
 }
 
+fn wrapMenu(s: MB.Msg) Msg {
+    return .{ .menubar = s };
+}
+fn wrapMenuRun(i: u16) Msg {
+    return .{ .menu_run = i };
+}
+const menu_msgs = .{ .menu = wrapMenu, .run = wrapMenuRun };
+
+/// The menu tree: rows named by command id, so labels, shortcut text and
+/// enabled state are the command table's.
+fn menuTree(cb: anytype, list: *const teak.CommandList(Msg)) []const MB.Item {
+    const a = cb.arena.allocator();
+    const cm = teak.commands.menuItems;
+    const tree = a.alloc(MB.Item, 3) catch return &.{};
+    tree[0] = .{ .label = "&File", .children = cm(MB.Item, a, list, .pc, &.{ "file.open", "-", "palette" }) };
+    tree[1] = .{ .label = "&View", .children = cm(MB.Item, a, list, .pc, &.{ "view.front", "view.iso", "view.top", "view.right", "-", "view.fit", "view.ortho", "view.edges" }) };
+    tree[2] = .{ .label = "&Parts", .children = cm(MB.Item, a, list, .pc, &.{ "part.next", "part.prev", "part.none" }) };
+    return tree;
+}
+
 pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    if (MB.isActive(&m.menubar)) return menuKey(m, .{ .char = c });
     if (m.palette.open) return .{ .palette = Palette.charMsg(c) };
     switch (m.focus) {
         .notes => return .{ .notes = Notes.charMsg(c) },
@@ -977,7 +1011,33 @@ pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
     };
 }
 
+const MenuIn = union(enum) { char: u8, key: teak.SpecialKey };
+
+/// Route a key / char to the bar. The tree needs an arena, so build it in a
+/// scratch buffer here (keys are rare; the tree is a few dozen rows).
+fn menuKey(m: *const Model, in: MenuIn) ?Msg {
+    var fba_buf: [16 * 1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&fba_buf);
+    const a = fba.allocator();
+    var list: teak.CommandList(Msg) = .{};
+    commands(m, &list);
+    const cm = teak.commands.menuItems;
+    const tree = [_]MB.Item{
+        .{ .label = "&File", .children = cm(MB.Item, a, &list, .pc, &.{ "file.open", "-", "palette" }) },
+        .{ .label = "&View", .children = cm(MB.Item, a, &list, .pc, &.{ "view.front", "view.iso", "view.top", "view.right", "-", "view.fit", "view.ortho", "view.edges" }) },
+        .{ .label = "&Parts", .children = cm(MB.Item, a, &list, .pc, &.{ "part.next", "part.prev", "part.none" }) },
+    };
+    return switch (in) {
+        .char => |c| MB.charMsg(&m.menubar, c, &tree, menu_msgs),
+        .key => |k| MB.keyMsg(&m.menubar, k, &tree, menu_msgs),
+    };
+}
+
 pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
+    if (!m.palette.open) {
+        if (menuKey(m, .{ .key = key })) |r| return r;
+        if (MB.isActive(&m.menubar)) return null;
+    }
     if (m.palette.open) {
         var list: teak.CommandList(Msg) = .{};
         commands(m, &list);
@@ -1058,6 +1118,12 @@ pub fn camera(m: *const Model) teak.Camera {
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 0, .gap = 0, .bg = paper, .align_cross = .stretch });
+    {
+        var mlist: teak.CommandList(Msg) = .{};
+        commands(m, &mlist);
+        const tree = menuTree(cb, &mlist);
+        MB.viewWith(&m.menubar, cb, tree, menu_msgs, .{ .window_w = m.win[0], .window_h = m.win[1], .bar_height = 26, .top_width = 64, .cols = 36, .panel_w = 300 });
+    }
     header(m, cb);
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .flex = 1, .align_cross = .stretch });
     console(m, cb);
@@ -2232,30 +2298,34 @@ test "view: snapshot golden, 3D tab" {
 
 const golden_section =
     \\group (0,0,1280,800) vertical bg
-    \\  group (0,0,1280,40) horizontal bg
-    \\    text (12,10,56,20) "KERF"
-    \\    group (80,13,24,14) horizontal
-    \\      group (80,13,6,14) vertical bg
-    \\      group (89,13,6,14) vertical bg
-    \\      group (98,13,6,14) vertical bg
-    \\    text (116,10,180,20) "DETAIL WORKSTATION"
-    \\    text (308,10,180,20) "DOC: FLUSH-PSL-2X6"
-    \\    group (500,20,214,0) vertical
-    \\    button (726,7,174,26) "PALMER-SD1-LIKE"
-    \\    button (912,7,154,26) "FLUSH-PSL-2X6"
-    \\    button (1078,7,94,26) "OPEN..."
-    \\    button (1184,7,84,26) "CTRL+K"
-    \\  group (0,40,1280,2) vertical bg
-    \\  group (0,42,1280,734) horizontal
-    \\    group (0,42,360,734) vertical bg border
-    \\      text (12,54,336,20) "OPERATOR CONSOLE"
-    \\      group (12,82,336,536) vertical bg border
-    \\        scroll (13,83,334,534) vertical id=13
-    \\          group (21,91,318,105) vertical bg border
-    \\            text (29,99,302,20) "KERF/CLAUDE  #01"
-    \\            rich_text (29,122,302,20) "DEMO MODE: no network, no key. I am"
-    \\            rich_text (29,145,302,20) "a script. Try section, iso, 3d, cut,"
-    \\            rich_text (29,168,302,20) "or the name of a part."
+    \\  group (0,0,1280,26) horizontal bg
+    \\    button (0,0,64,26) "File" underline=0
+    \\    button (64,0,64,26) "View" underline=0
+    \\    button (128,0,74,26) "Parts" underline=0
+    \\  group (0,26,1280,40) horizontal bg
+    \\    text (12,36,56,20) "KERF"
+    \\    group (80,39,24,14) horizontal
+    \\      group (80,39,6,14) vertical bg
+    \\      group (89,39,6,14) vertical bg
+    \\      group (98,39,6,14) vertical bg
+    \\    text (116,36,180,20) "DETAIL WORKSTATION"
+    \\    text (308,36,180,20) "DOC: FLUSH-PSL-2X6"
+    \\    group (500,46,214,0) vertical
+    \\    button (726,33,174,26) "PALMER-SD1-LIKE"
+    \\    button (912,33,154,26) "FLUSH-PSL-2X6"
+    \\    button (1078,33,94,26) "OPEN..."
+    \\    button (1184,33,84,26) "CTRL+K"
+    \\  group (0,66,1280,2) vertical bg
+    \\  group (0,68,1280,708) horizontal
+    \\    group (0,68,360,708) vertical bg border
+    \\      text (12,80,336,20) "OPERATOR CONSOLE"
+    \\      group (12,108,336,510) vertical bg border
+    \\        scroll (13,109,334,508) vertical id=13
+    \\          group (21,117,318,105) vertical bg border
+    \\            text (29,125,302,20) "KERF/CLAUDE  #01"
+    \\            rich_text (29,148,302,20) "DEMO MODE: no network, no key. I am"
+    \\            rich_text (29,171,302,20) "a script. Try section, iso, 3d, cut,"
+    \\            rich_text (29,194,302,20) "or the name of a part."
     \\      text (12,626,336,20) "SHIFT+ENTER FOR A NEW LINE"
     \\      text_area (12,654,336,76) id=12 "" cursor=0
     \\      group (12,738,336,26) horizontal
@@ -2263,48 +2333,48 @@ const golden_section =
     \\        group (141,751,53,0) vertical
     \\        button (202,738,74,26) "CLEAR"
     \\        button (284,738,64,26) "SEND"
-    \\    group (360,42,600,734) vertical bg
-    \\      group (372,54,576,27) horizontal
-    \\        group (372,54,106,27) vertical
-    \\          button (372,54,106,24) "[SECTION]"
-    \\          group (372,78,106,3) vertical bg
-    \\        group (482,54,66,27) vertical
-    \\          button (482,54,66,24) "[ISO]"
-    \\          group (482,78,66,3) vertical bg
-    \\        group (552,54,56,27) vertical
-    \\          button (552,54,56,24) "[3D]"
-    \\          group (552,78,56,3) vertical bg
-    \\        group (612,81,56,0) vertical
-    \\        group (672,57,276,24) horizontal
-    \\          button (672,57,46,24) "[-]"
-    \\          button (722,57,46,24) "[+]"
-    \\          button (772,57,66,24) "[FIT]"
-    \\          button (842,57,106,24) "[GRID ON]"
-    \\      group (372,89,576,24) horizontal
-    \\        text (372,91,55,20) "SHEET"
-    \\        button (431,89,46,24) "[A]"
-    \\        group (481,101,353,0) vertical
-    \\        text (838,91,110,20) "3/4\"=1'-0\""
-    \\      group (372,121,576,643) vertical bg border
-    \\        canvas (373,122,574,641) prims=1 id=10 pointer "section drawing"
-    \\    group (960,42,320,734) vertical bg border
-    \\      group (972,54,296,20) horizontal
-    \\        text (972,54,99,20) "INSPECTOR"
-    \\        text (1188,54,80,20) "10 PARTS"
-    \\      group (972,84,296,307) vertical border
-    \\        group (973,85,294,26) horizontal bg
-    \\          text (979,88,300,20) "NO  PART                  TRIS"
-    \\        scroll (973,111,294,279) vertical id=8
-    \\          button (973,111,294,22) "01  bottom_plate            12"
-    \\          button (973,133,294,22) "02  beam                    12"
-    \\          button (973,155,294,22) "03  jack_studs              12"
-    \\          button (973,177,294,22) "04  jack_studs#1            12"
-    \\          button (973,199,294,22) "05  lower_plate             12"
-    \\          button (973,221,294,22) "06  upper_plate             12"
-    \\          button (973,243,294,22) "07  king_stud               12"
-    \\          button (973,265,294,22) "08  studs                   12"
-    \\          button (973,287,294,22) "09  studs#1                 12"
-    \\          button (973,309,294,22) "10  strap                   12"
+    \\    group (360,68,600,708) vertical bg
+    \\      group (372,80,576,27) horizontal
+    \\        group (372,80,106,27) vertical
+    \\          button (372,80,106,24) "[SECTION]"
+    \\          group (372,104,106,3) vertical bg
+    \\        group (482,80,66,27) vertical
+    \\          button (482,80,66,24) "[ISO]"
+    \\          group (482,104,66,3) vertical bg
+    \\        group (552,80,56,27) vertical
+    \\          button (552,80,56,24) "[3D]"
+    \\          group (552,104,56,3) vertical bg
+    \\        group (612,107,56,0) vertical
+    \\        group (672,83,276,24) horizontal
+    \\          button (672,83,46,24) "[-]"
+    \\          button (722,83,46,24) "[+]"
+    \\          button (772,83,66,24) "[FIT]"
+    \\          button (842,83,106,24) "[GRID ON]"
+    \\      group (372,115,576,24) horizontal
+    \\        text (372,117,55,20) "SHEET"
+    \\        button (431,115,46,24) "[A]"
+    \\        group (481,127,353,0) vertical
+    \\        text (838,117,110,20) "3/4\"=1'-0\""
+    \\      group (372,147,576,617) vertical bg border
+    \\        canvas (373,148,574,615) prims=1 id=10 pointer "section drawing"
+    \\    group (960,68,320,708) vertical bg border
+    \\      group (972,80,296,20) horizontal
+    \\        text (972,80,99,20) "INSPECTOR"
+    \\        text (1188,80,80,20) "10 PARTS"
+    \\      group (972,110,296,281) vertical border
+    \\        group (973,111,294,26) horizontal bg
+    \\          text (979,114,300,20) "NO  PART                  TRIS"
+    \\        scroll (973,137,294,253) vertical id=8
+    \\          button (973,137,294,22) "01  bottom_plate            12"
+    \\          button (973,159,294,22) "02  beam                    12"
+    \\          button (973,181,294,22) "03  jack_studs              12"
+    \\          button (973,203,294,22) "04  jack_studs#1            12"
+    \\          button (973,225,294,22) "05  lower_plate             12"
+    \\          button (973,247,294,22) "06  upper_plate             12"
+    \\          button (973,269,294,22) "07  king_stud               12"
+    \\          button (973,291,294,22) "08  studs                   12"
+    \\          button (973,313,294,22) "09  studs#1                 12"
+    \\          button (973,335,294,22) "10  strap                   12"
     \\      group (972,401,296,229) vertical bg border
     \\        text (982,411,276,20) "DETAIL"
     \\        divider (982,437,276,1)
@@ -2347,30 +2417,34 @@ const golden_section =
 ;
 const golden_iso =
     \\group (0,0,1280,800) vertical bg
-    \\  group (0,0,1280,40) horizontal bg
-    \\    text (12,10,56,20) "KERF"
-    \\    group (80,13,24,14) horizontal
-    \\      group (80,13,6,14) vertical bg
-    \\      group (89,13,6,14) vertical bg
-    \\      group (98,13,6,14) vertical bg
-    \\    text (116,10,180,20) "DETAIL WORKSTATION"
-    \\    text (308,10,180,20) "DOC: FLUSH-PSL-2X6"
-    \\    group (500,20,214,0) vertical
-    \\    button (726,7,174,26) "PALMER-SD1-LIKE"
-    \\    button (912,7,154,26) "FLUSH-PSL-2X6"
-    \\    button (1078,7,94,26) "OPEN..."
-    \\    button (1184,7,84,26) "CTRL+K"
-    \\  group (0,40,1280,2) vertical bg
-    \\  group (0,42,1280,734) horizontal
-    \\    group (0,42,360,734) vertical bg border
-    \\      text (12,54,336,20) "OPERATOR CONSOLE"
-    \\      group (12,82,336,536) vertical bg border
-    \\        scroll (13,83,334,534) vertical id=13
-    \\          group (21,91,318,105) vertical bg border
-    \\            text (29,99,302,20) "KERF/CLAUDE  #01"
-    \\            rich_text (29,122,302,20) "DEMO MODE: no network, no key. I am"
-    \\            rich_text (29,145,302,20) "a script. Try section, iso, 3d, cut,"
-    \\            rich_text (29,168,302,20) "or the name of a part."
+    \\  group (0,0,1280,26) horizontal bg
+    \\    button (0,0,64,26) "File" underline=0
+    \\    button (64,0,64,26) "View" underline=0
+    \\    button (128,0,74,26) "Parts" underline=0
+    \\  group (0,26,1280,40) horizontal bg
+    \\    text (12,36,56,20) "KERF"
+    \\    group (80,39,24,14) horizontal
+    \\      group (80,39,6,14) vertical bg
+    \\      group (89,39,6,14) vertical bg
+    \\      group (98,39,6,14) vertical bg
+    \\    text (116,36,180,20) "DETAIL WORKSTATION"
+    \\    text (308,36,180,20) "DOC: FLUSH-PSL-2X6"
+    \\    group (500,46,214,0) vertical
+    \\    button (726,33,174,26) "PALMER-SD1-LIKE"
+    \\    button (912,33,154,26) "FLUSH-PSL-2X6"
+    \\    button (1078,33,94,26) "OPEN..."
+    \\    button (1184,33,84,26) "CTRL+K"
+    \\  group (0,66,1280,2) vertical bg
+    \\  group (0,68,1280,708) horizontal
+    \\    group (0,68,360,708) vertical bg border
+    \\      text (12,80,336,20) "OPERATOR CONSOLE"
+    \\      group (12,108,336,510) vertical bg border
+    \\        scroll (13,109,334,508) vertical id=13
+    \\          group (21,117,318,105) vertical bg border
+    \\            text (29,125,302,20) "KERF/CLAUDE  #01"
+    \\            rich_text (29,148,302,20) "DEMO MODE: no network, no key. I am"
+    \\            rich_text (29,171,302,20) "a script. Try section, iso, 3d, cut,"
+    \\            rich_text (29,194,302,20) "or the name of a part."
     \\      text (12,626,336,20) "SHIFT+ENTER FOR A NEW LINE"
     \\      text_area (12,654,336,76) id=12 "" cursor=0
     \\      group (12,738,336,26) horizontal
@@ -2378,43 +2452,43 @@ const golden_iso =
     \\        group (141,751,53,0) vertical
     \\        button (202,738,74,26) "CLEAR"
     \\        button (284,738,64,26) "SEND"
-    \\    group (360,42,600,734) vertical bg
-    \\      group (372,54,576,27) horizontal
-    \\        group (372,54,106,27) vertical
-    \\          button (372,54,106,24) "[SECTION]"
-    \\          group (372,78,106,3) vertical bg
-    \\        group (482,54,66,27) vertical
-    \\          button (482,54,66,24) "[ISO]"
-    \\          group (482,78,66,3) vertical bg
-    \\        group (552,54,56,27) vertical
-    \\          button (552,54,56,24) "[3D]"
-    \\          group (552,78,56,3) vertical bg
-    \\        group (612,81,56,0) vertical
-    \\        group (672,57,276,24) horizontal
-    \\          button (672,57,46,24) "[-]"
-    \\          button (722,57,46,24) "[+]"
-    \\          button (772,57,66,24) "[FIT]"
-    \\          button (842,57,106,24) "[GRID ON]"
-    \\      group (372,89,576,675) vertical bg border
-    \\        canvas (373,90,574,673) prims=1 id=10 pointer "iso drawing"
-    \\    group (960,42,320,734) vertical bg border
-    \\      group (972,54,296,20) horizontal
-    \\        text (972,54,99,20) "INSPECTOR"
-    \\        text (1188,54,80,20) "10 PARTS"
-    \\      group (972,84,296,307) vertical border
-    \\        group (973,85,294,26) horizontal bg
-    \\          text (979,88,300,20) "NO  PART                  TRIS"
-    \\        scroll (973,111,294,279) vertical id=8
-    \\          button (973,111,294,22) "01  bottom_plate            12"
-    \\          button (973,133,294,22) "02  beam                    12"
-    \\          button (973,155,294,22) "03  jack_studs              12"
-    \\          button (973,177,294,22) "04  jack_studs#1            12"
-    \\          button (973,199,294,22) "05  lower_plate             12"
-    \\          button (973,221,294,22) "06  upper_plate             12"
-    \\          button (973,243,294,22) "07  king_stud               12"
-    \\          button (973,265,294,22) "08  studs                   12"
-    \\          button (973,287,294,22) "09  studs#1                 12"
-    \\          button (973,309,294,22) "10  strap                   12"
+    \\    group (360,68,600,708) vertical bg
+    \\      group (372,80,576,27) horizontal
+    \\        group (372,80,106,27) vertical
+    \\          button (372,80,106,24) "[SECTION]"
+    \\          group (372,104,106,3) vertical bg
+    \\        group (482,80,66,27) vertical
+    \\          button (482,80,66,24) "[ISO]"
+    \\          group (482,104,66,3) vertical bg
+    \\        group (552,80,56,27) vertical
+    \\          button (552,80,56,24) "[3D]"
+    \\          group (552,104,56,3) vertical bg
+    \\        group (612,107,56,0) vertical
+    \\        group (672,83,276,24) horizontal
+    \\          button (672,83,46,24) "[-]"
+    \\          button (722,83,46,24) "[+]"
+    \\          button (772,83,66,24) "[FIT]"
+    \\          button (842,83,106,24) "[GRID ON]"
+    \\      group (372,115,576,649) vertical bg border
+    \\        canvas (373,116,574,647) prims=1 id=10 pointer "iso drawing"
+    \\    group (960,68,320,708) vertical bg border
+    \\      group (972,80,296,20) horizontal
+    \\        text (972,80,99,20) "INSPECTOR"
+    \\        text (1188,80,80,20) "10 PARTS"
+    \\      group (972,110,296,281) vertical border
+    \\        group (973,111,294,26) horizontal bg
+    \\          text (979,114,300,20) "NO  PART                  TRIS"
+    \\        scroll (973,137,294,253) vertical id=8
+    \\          button (973,137,294,22) "01  bottom_plate            12"
+    \\          button (973,159,294,22) "02  beam                    12"
+    \\          button (973,181,294,22) "03  jack_studs              12"
+    \\          button (973,203,294,22) "04  jack_studs#1            12"
+    \\          button (973,225,294,22) "05  lower_plate             12"
+    \\          button (973,247,294,22) "06  upper_plate             12"
+    \\          button (973,269,294,22) "07  king_stud               12"
+    \\          button (973,291,294,22) "08  studs                   12"
+    \\          button (973,313,294,22) "09  studs#1                 12"
+    \\          button (973,335,294,22) "10  strap                   12"
     \\      group (972,401,296,229) vertical bg border
     \\        text (982,411,276,20) "DETAIL"
     \\        divider (982,437,276,1)
@@ -2457,30 +2531,34 @@ const golden_iso =
 ;
 const golden_3d =
     \\group (0,0,1280,800) vertical bg
-    \\  group (0,0,1280,40) horizontal bg
-    \\    text (12,10,56,20) "KERF"
-    \\    group (80,13,24,14) horizontal
-    \\      group (80,13,6,14) vertical bg
-    \\      group (89,13,6,14) vertical bg
-    \\      group (98,13,6,14) vertical bg
-    \\    text (116,10,180,20) "DETAIL WORKSTATION"
-    \\    text (308,10,180,20) "DOC: FLUSH-PSL-2X6"
-    \\    group (500,20,214,0) vertical
-    \\    button (726,7,174,26) "PALMER-SD1-LIKE"
-    \\    button (912,7,154,26) "FLUSH-PSL-2X6"
-    \\    button (1078,7,94,26) "OPEN..."
-    \\    button (1184,7,84,26) "CTRL+K"
-    \\  group (0,40,1280,2) vertical bg
-    \\  group (0,42,1280,734) horizontal
-    \\    group (0,42,360,734) vertical bg border
-    \\      text (12,54,336,20) "OPERATOR CONSOLE"
-    \\      group (12,82,336,536) vertical bg border
-    \\        scroll (13,83,334,534) vertical id=13
-    \\          group (21,91,318,105) vertical bg border
-    \\            text (29,99,302,20) "KERF/CLAUDE  #01"
-    \\            rich_text (29,122,302,20) "DEMO MODE: no network, no key. I am"
-    \\            rich_text (29,145,302,20) "a script. Try section, iso, 3d, cut,"
-    \\            rich_text (29,168,302,20) "or the name of a part."
+    \\  group (0,0,1280,26) horizontal bg
+    \\    button (0,0,64,26) "File" underline=0
+    \\    button (64,0,64,26) "View" underline=0
+    \\    button (128,0,74,26) "Parts" underline=0
+    \\  group (0,26,1280,40) horizontal bg
+    \\    text (12,36,56,20) "KERF"
+    \\    group (80,39,24,14) horizontal
+    \\      group (80,39,6,14) vertical bg
+    \\      group (89,39,6,14) vertical bg
+    \\      group (98,39,6,14) vertical bg
+    \\    text (116,36,180,20) "DETAIL WORKSTATION"
+    \\    text (308,36,180,20) "DOC: FLUSH-PSL-2X6"
+    \\    group (500,46,214,0) vertical
+    \\    button (726,33,174,26) "PALMER-SD1-LIKE"
+    \\    button (912,33,154,26) "FLUSH-PSL-2X6"
+    \\    button (1078,33,94,26) "OPEN..."
+    \\    button (1184,33,84,26) "CTRL+K"
+    \\  group (0,66,1280,2) vertical bg
+    \\  group (0,68,1280,708) horizontal
+    \\    group (0,68,360,708) vertical bg border
+    \\      text (12,80,336,20) "OPERATOR CONSOLE"
+    \\      group (12,108,336,510) vertical bg border
+    \\        scroll (13,109,334,508) vertical id=13
+    \\          group (21,117,318,105) vertical bg border
+    \\            text (29,125,302,20) "KERF/CLAUDE  #01"
+    \\            rich_text (29,148,302,20) "DEMO MODE: no network, no key. I am"
+    \\            rich_text (29,171,302,20) "a script. Try section, iso, 3d, cut,"
+    \\            rich_text (29,194,302,20) "or the name of a part."
     \\      text (12,626,336,20) "SHIFT+ENTER FOR A NEW LINE"
     \\      text_area (12,654,336,76) id=12 "" cursor=0
     \\      group (12,738,336,26) horizontal
@@ -2488,63 +2566,63 @@ const golden_3d =
     \\        group (141,751,53,0) vertical
     \\        button (202,738,74,26) "CLEAR"
     \\        button (284,738,64,26) "SEND"
-    \\    group (360,42,618,734) vertical bg
-    \\      group (372,54,594,27) horizontal
-    \\        group (372,54,106,27) vertical
-    \\          button (372,54,106,24) "[SECTION]"
-    \\          group (372,78,106,3) vertical bg
-    \\        group (482,54,66,27) vertical
-    \\          button (482,54,66,24) "[ISO]"
-    \\          group (482,78,66,3) vertical bg
-    \\        group (552,54,56,27) vertical
-    \\          button (552,54,56,24) "[3D]"
-    \\          group (552,78,56,3) vertical bg
-    \\        group (612,81,174,0) vertical
-    \\        group (790,57,176,24) horizontal
-    \\          button (790,57,66,24) "[FIT]"
-    \\          button (860,57,106,24) "[GRID ON]"
-    \\      group (372,89,594,24) horizontal
-    \\        button (372,89,86,24) "[FRONT]"
-    \\        button (462,89,66,24) "[ISO]"
-    \\        button (532,89,66,24) "[TOP]"
-    \\        button (602,89,86,24) "[RIGHT]"
-    \\        group (692,101,64,0) vertical
-    \\        button (760,89,86,24) "[PERSP]"
-    \\        button (850,89,116,24) "[EDGES ON]"
-    \\      group (372,121,594,24) horizontal
-    \\        button (372,121,106,24) "[CUT OFF]"
-    \\        button (482,121,46,24) "[X]"
-    \\        button (532,121,46,24) "[Y]"
-    \\        button (582,121,46,24) "[Z]"
-    \\        button (632,121,76,24) "[FLIP]"
-    \\        canvas (712,121,140,24) prims=3 id=9 pointer "cut offset"
-    \\        text (856,123,110,20) "Y 4'-0 5/8\""
-    \\      group (372,153,594,611) vertical bg border
-    \\        scene3d (373,154,592,609) mesh=0 key=2 id=7 items=10 grid gizmo pointer "3D model viewport"
+    \\    group (360,68,618,708) vertical bg
+    \\      group (372,80,594,27) horizontal
+    \\        group (372,80,106,27) vertical
+    \\          button (372,80,106,24) "[SECTION]"
+    \\          group (372,104,106,3) vertical bg
+    \\        group (482,80,66,27) vertical
+    \\          button (482,80,66,24) "[ISO]"
+    \\          group (482,104,66,3) vertical bg
+    \\        group (552,80,56,27) vertical
+    \\          button (552,80,56,24) "[3D]"
+    \\          group (552,104,56,3) vertical bg
+    \\        group (612,107,174,0) vertical
+    \\        group (790,83,176,24) horizontal
+    \\          button (790,83,66,24) "[FIT]"
+    \\          button (860,83,106,24) "[GRID ON]"
+    \\      group (372,115,594,24) horizontal
+    \\        button (372,115,86,24) "[FRONT]"
+    \\        button (462,115,66,24) "[ISO]"
+    \\        button (532,115,66,24) "[TOP]"
+    \\        button (602,115,86,24) "[RIGHT]"
+    \\        group (692,127,64,0) vertical
+    \\        button (760,115,86,24) "[PERSP]"
+    \\        button (850,115,116,24) "[EDGES ON]"
+    \\      group (372,147,594,24) horizontal
+    \\        button (372,147,106,24) "[CUT OFF]"
+    \\        button (482,147,46,24) "[X]"
+    \\        button (532,147,46,24) "[Y]"
+    \\        button (582,147,46,24) "[Z]"
+    \\        button (632,147,76,24) "[FLIP]"
+    \\        canvas (712,147,140,24) prims=3 id=9 pointer "cut offset"
+    \\        text (856,149,110,20) "Y 4'-0 5/8\""
+    \\      group (372,179,594,585) vertical bg border
+    \\        scene3d (373,180,592,583) mesh=0 key=2 id=7 items=10 grid gizmo pointer "3D model viewport"
     \\      overlay (95,417,11,20) layer=1
     \\        text (95,417,11,20) "X"
     \\      overlay (56,388,11,20) layer=1
     \\        text (56,388,11,20) "Y"
     \\      overlay (86,451,11,20) layer=1
     \\        text (86,451,11,20) "Z"
-    \\    group (978,42,320,734) vertical bg border
-    \\      group (990,54,296,20) horizontal
-    \\        text (990,54,99,20) "INSPECTOR"
-    \\        text (1206,54,80,20) "10 PARTS"
-    \\      group (990,84,296,307) vertical border
-    \\        group (991,85,294,26) horizontal bg
-    \\          text (997,88,300,20) "NO  PART                  TRIS"
-    \\        scroll (991,111,294,279) vertical id=8
-    \\          button (991,111,294,22) "01  bottom_plate            12"
-    \\          button (991,133,294,22) "02  beam                    12"
-    \\          button (991,155,294,22) "03  jack_studs              12"
-    \\          button (991,177,294,22) "04  jack_studs#1            12"
-    \\          button (991,199,294,22) "05  lower_plate             12"
-    \\          button (991,221,294,22) "06  upper_plate             12"
-    \\          button (991,243,294,22) "07  king_stud               12"
-    \\          button (991,265,294,22) "08  studs                   12"
-    \\          button (991,287,294,22) "09  studs#1                 12"
-    \\          button (991,309,294,22) "10  strap                   12"
+    \\    group (978,68,320,708) vertical bg border
+    \\      group (990,80,296,20) horizontal
+    \\        text (990,80,99,20) "INSPECTOR"
+    \\        text (1206,80,80,20) "10 PARTS"
+    \\      group (990,110,296,281) vertical border
+    \\        group (991,111,294,26) horizontal bg
+    \\          text (997,114,300,20) "NO  PART                  TRIS"
+    \\        scroll (991,137,294,253) vertical id=8
+    \\          button (991,137,294,22) "01  bottom_plate            12"
+    \\          button (991,159,294,22) "02  beam                    12"
+    \\          button (991,181,294,22) "03  jack_studs              12"
+    \\          button (991,203,294,22) "04  jack_studs#1            12"
+    \\          button (991,225,294,22) "05  lower_plate             12"
+    \\          button (991,247,294,22) "06  upper_plate             12"
+    \\          button (991,269,294,22) "07  king_stud               12"
+    \\          button (991,291,294,22) "08  studs                   12"
+    \\          button (991,313,294,22) "09  studs#1                 12"
+    \\          button (991,335,294,22) "10  strap                   12"
     \\      group (990,401,296,229) vertical bg border
     \\        text (1000,411,276,20) "DETAIL"
     \\        divider (1000,437,276,1)
@@ -2600,4 +2678,26 @@ test "commands: the palette runs a view command and shortcuts resolve" {
     const enter = keySpecialMsg(&m, .enter).?; // "View: Top" is the only fuzzy match for "vtop"? at least first
     update(&m, enter);
     try testing.expect(!m.palette.open);
+}
+
+test "menubar: rows come from the command table (shortcut text, enabled) and a row runs its command" {
+    var m = smallModel();
+    defer m.loaded.?.deinit();
+    var list: teak.CommandList(Msg) = .{};
+    commands(&m, &list);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const rows = teak.commands.menuItems(MB.Item, arena.allocator(), &list, .pc, &.{ "view.fit", "-", "view.ortho" });
+    try testing.expectEqual(@as(usize, 3), rows.len);
+    try testing.expectEqualStrings("Fit to Window", rows[0].label);
+    try testing.expectEqualStrings("Ctrl+0", rows[0].shortcut);
+    try testing.expectEqualStrings("Alt+O", rows[2].shortcut);
+    // F10 opens the bar; Enter on the first menu's first row runs "Open Mesh..." (command 1).
+    try testing.expect(keySpecialMsg(&m, .f10).? == .menubar);
+    update(&m, keySpecialMsg(&m, .f10).?);
+    try testing.expect(MB.isActive(&m.menubar));
+    const before = std.meta.activeTag(m.cam.projection);
+    update(&m, .{ .menu_run = 7 }); // "Toggle Orthographic" per the table order
+    try testing.expect(std.meta.activeTag(m.cam.projection) != before);
+    try testing.expect(!m.menubar.st.active); // a chosen row closes the bar
 }

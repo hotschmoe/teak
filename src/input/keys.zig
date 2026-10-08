@@ -272,6 +272,18 @@ pub const Chord = struct {
         try w.writeAll(self.key.label());
     }
 
+    /// `format` as a comptime string, for const menu trees:
+    /// `.shortcut = teak.Chord.ctrl(.s).text(.pc)`.
+    pub fn text(comptime self: Chord, comptime platform: Platform) []const u8 {
+        comptime {
+            var buf: [32]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            self.format(&w, platform) catch unreachable;
+            const out = buf[0..w.end].*;
+            return &out;
+        }
+    }
+
     /// Parse `ctrl+shift+p` / `cmd+k` / `alt+enter` / `f12` (case-insensitive;
     /// `ctrl`, `cmd`, `mod` and `meta` all mean the primary modifier).
     pub fn parse(s: []const u8) ?Chord {
@@ -361,4 +373,10 @@ test "Chord format, parse and special" {
     try std.testing.expectEqual(SpecialKey.ctrl_c, Chord.ctrl(.c).special().?);
     try std.testing.expectEqual(SpecialKey.ctrl_shift_z, Chord.ctrlShift(.z).special().?);
     try std.testing.expect(Chord.ctrl(.s).special() == null);
+}
+
+test "Chord.text is the comptime form of format" {
+    try std.testing.expectEqualStrings("Ctrl+Shift+P", comptime Chord.ctrlShift(.p).text(.pc));
+    try std.testing.expectEqualStrings("Cmd+K", comptime Chord.ctrl(.k).text(.mac));
+    try std.testing.expectEqualStrings("F5", comptime Chord.plain(.f5).text(.pc));
 }

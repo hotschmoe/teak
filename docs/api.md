@@ -490,6 +490,9 @@ Signatures and `///` doc comments of every public declaration reachable from
   - `pub fn eql(a: Chord, b: Chord) bool`
   > `Ctrl+Shift+P` (pc) or `Cmd+Shift+P` (mac); Alt is `Alt` / `Opt`.
   - `pub fn format(self: Chord, w: *std.Io.Writer, platform: Platform) std.Io.Writer.Error!void`
+  > `format` as a comptime string, for const menu trees:
+  > `.shortcut = teak.Chord.ctrl(.s).text(.pc)`.
+  - `pub fn text(comptime self: Chord, comptime platform: Platform) []const u8`
   > Parse `ctrl+shift+p` / `cmd+k` / `alt+enter` / `f12` (case-insensitive;
   > `ctrl`, `cmd`, `mod` and `meta` all mean the primary modifier).
   - `pub fn parse(s: []const u8) ?Chord`
@@ -1580,6 +1583,18 @@ Command registry, keyboard shortcuts and the command palette.
 - `pub fn Command(comptime Msg: type) type`
 > A fixed-capacity command table, filled by the App's `commands` hook.
 - `pub fn CommandList(comptime Msg: type) type`
+> Build menu rows from the command table, so the shortcut a menu shows is
+> the one that works. `ids` names the commands in order; `"-"` is a
+> separator. Each row's label is the command label, its shortcut text is
+> `Chord.format` of the primary shortcut, `enabled` follows the command, and
+> its action is the command's index in `list` (use `MenuBar(u16)` and run
+> `list.items[index].msg` when it fires). Unknown ids are skipped. Slices
+> live in `arena` (build it in `view`: `cb.arena.allocator()`).
+> ```zig
+> const MB = teak.widgets.menu.MenuBar(u16);
+> const file = commands.menuItems(MB.Item, arena, &list, .pc, &.{ "file.open", "-", "app.quit" });
+> ```
+- `pub fn menuItems( comptime Item: type, arena: std.mem.Allocator, list: anytype, platform: Platform, ids: []const []const u8, ) []const Item`
 - `struct PaletteViewOpts`
   - fields: `window_w, window_h, width, max_visible, platform, column`
 > The command palette: a modal overlay with a query field and the command
@@ -2192,6 +2207,9 @@ variant here. Hosts map their native key codes onto this enum.
   - `pub fn eql(a: Chord, b: Chord) bool`
   > `Ctrl+Shift+P` (pc) or `Cmd+Shift+P` (mac); Alt is `Alt` / `Opt`.
   - `pub fn format(self: Chord, w: *std.Io.Writer, platform: Platform) std.Io.Writer.Error!void`
+  > `format` as a comptime string, for const menu trees:
+  > `.shortcut = teak.Chord.ctrl(.s).text(.pc)`.
+  - `pub fn text(comptime self: Chord, comptime platform: Platform) []const u8`
   > Parse `ctrl+shift+p` / `cmd+k` / `alt+enter` / `f12` (case-insensitive;
   > `ctrl`, `cmd`, `mod` and `meta` all mean the primary modifier).
   - `pub fn parse(s: []const u8) ?Chord`

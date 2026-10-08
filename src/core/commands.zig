@@ -140,6 +140,49 @@ pub fn CommandList(comptime Msg: type) type {
     };
 }
 
+// ── Menus ──────────────────────────────────────────────────────────
+
+/// Build menu rows from the command table, so the shortcut a menu shows is
+/// the one that works. `ids` names the commands in order; `"-"` is a
+/// separator. Each row's label is the command label, its shortcut text is
+/// `Chord.format` of the primary shortcut, `enabled` follows the command, and
+/// its action is the command's index in `list` (use `MenuBar(u16)` and run
+/// `list.items[index].msg` when it fires). Unknown ids are skipped. Slices
+/// live in `arena` (build it in `view`: `cb.arena.allocator()`).
+///
+/// ```zig
+/// const MB = teak.widgets.menu.MenuBar(u16);
+/// const file = commands.menuItems(MB.Item, arena, &list, .pc, &.{ "file.open", "-", "app.quit" });
+/// ```
+pub fn menuItems(
+    comptime Item: type,
+    arena: std.mem.Allocator,
+    list: anytype,
+    platform: Platform,
+    ids: []const []const u8,
+) []const Item {
+    var out: std.ArrayList(Item) = .empty;
+    for (ids) |id| {
+        if (std.mem.eql(u8, id, "-")) {
+            out.append(arena, Item.sep) catch break;
+            continue;
+        }
+        for (list.slice(), 0..) |c, i| {
+            if (!std.mem.eql(u8, c.id, id)) continue;
+            var aw: std.Io.Writer.Allocating = .init(arena);
+            if (c.primaryShortcut()) |sc| sc.format(&aw.writer, platform) catch {};
+            out.append(arena, .{
+                .label = c.label,
+                .action = @intCast(i),
+                .shortcut = aw.written(),
+                .enabled = c.enabled,
+            }) catch break;
+            break;
+        }
+    }
+    return out.items;
+}
+
 // ── Command palette ────────────────────────────────────────────────
 
 pub const PaletteViewOpts = struct {
@@ -398,4 +441,21 @@ test "viewPalette: closed draws nothing; open draws dim layer, panel, query and 
     try testing.expect(std.mem.indexOf(u8, snap, "Ctrl+S") != null);
     try testing.expect(std.mem.indexOf(u8, snap, "Command Palette") == null); // hidden
     try testing.expect(std.mem.indexOf(u8, snap, "Ctrl+Q") != null);
+}
+
+test "menuItems: labels, shortcut text, enabled and the command index come from the table" {
+    const MI = @import("widgets/menu.zig").MenuItem(u16);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const l = sampleList(false);
+    const items = menuItems(MI, arena.allocator(), &l, .pc, &.{ "file.save", "-", "file.open", "nope", "app.quit" });
+    try testing.expectEqual(@as(usize, 4), items.len);
+    try testing.expectEqualStrings("Save", items[0].label);
+    try testing.expectEqualStrings("Ctrl+S", items[0].shortcut);
+    try testing.expect(!items[0].enabled); // sampleList(false): Save disabled
+    try testing.expect(items[1].separator);
+    try testing.expectEqual(@as(?u16, 1), items[2].action);
+    const mac = menuItems(MI, arena.allocator(), &l, .mac, &.{"app.quit"});
+    try testing.expectEqualStrings("Cmd+Q", mac[0].shortcut);
+    try testing.expectEqual(TMsg.quit, l.items[items[3].action.?].msg);
 }

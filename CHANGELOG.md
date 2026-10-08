@@ -169,6 +169,9 @@
 
 ### Added
 
+- **Menus from the command table**: `teak.commands.menuItems` (runtime rows: label, shortcut text, enabled, command index) and comptime `Chord.text`;
+  kerf_viewer gets a File / View / Parts menu bar built from its commands, gallery's menu shortcuts are now real bindings (Ctrl+T, F5, Ctrl+C/V/A) sharing one chord table.
+
 - Bidi in rendering and editing (`teak.bidi_text`): lines of mixed direction draw one run at a time in visual order (`text`, wrapped text, `text_input`, `text_area`), RTL paragraphs right-align, caret / pointer / IME spot / selection rects follow the visual layout, Left/Right arrows move in visual order (runtime for `text_area`, `Editor` for fields); `FontSpec.rtl` makes shapers return a run in visual order.
 - **Native file dialogs** (X11, Wayland via the shared service): `open_file` shows a zenity / kdialog (or `$TEAK_PICKER`) dialog on a worker
   thread; `download{ pick = true }` is a Save As dialog; `OpenFile.title`, `Download.pick` / `title`; `TEAK_OPEN` still bypasses.

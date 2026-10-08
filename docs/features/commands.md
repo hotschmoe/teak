@@ -27,6 +27,13 @@ Hosts report `InputState.chords`: a Ctrl- or Alt-modified key, or an F-key, in a
 
 `Command.menuLabel(arena, platform, column)` gives "Save    Ctrl+S" for a single-string menu row; `Command.primaryShortcut()` and `Chord.format` give the text for a menu item's own shortcut column (e.g. a menubar item's `.shortcut`). Build the menu from the same table and the shortcut shown is the shortcut that works.
 
+### Menu bar
+
+Two ways, both with one source of truth for the shortcut:
+
+* **Runtime tree** (kerf_viewer): `teak.commands.menuItems(MB.Item, arena, &list, .pc, &.{ "file.open", "-", "view.fit" })` builds rows from the table (label, `Chord.format` text, `enabled`, action = command index). Use `MenuBar(u16)`; on `run(i)` close the menu and `update(m, list.items[i].msg)`.
+* **Const tree** (gallery): share `const kb = struct { const copy = Chord.ctrl(.c); ... }` between `commands` (`.shortcut = kb.copy`) and the menu items (`.shortcut = kb.copy.text(.pc)`, a comptime string). Commands whose `msg` is the menu's own `run(action)` make the chord and the click do the same thing.
+
 ## Command palette
 
 `teak.CommandPalette(cap)`: a modal overlay with a query field and the enabled, non-hidden commands fuzzy-filtered (in-order subsequence, case-insensitive, spaces ignored), each row "label ... shortcut". Built on `Combobox` (same Model / Msg / update; `.focus` opens it, `.select(i)` carries the palette option index), zero new Cmd variants. Wiring, as in `examples/kerf_viewer`:
