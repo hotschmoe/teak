@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
     // Pure GPU-side helpers (slot table, scene uniform packing / target
     // sizing / change signature). Not reachable from src/teak.zig for the
     // same reason as the other gpu helpers; each is a root file with its own tests.
-    for ([_][]const u8{ "src/gpu/slot_table.zig", "src/gpu/scene_common.zig", "src/gpu/overlay.zig", "src/gpu/glyph_atlas.zig", "src/gpu/text_stage.zig" }) |path| {
+    for ([_][]const u8{ "src/gpu/slot_table.zig", "src/gpu/scene_common.zig", "src/gpu/scene_pass.zig", "src/gpu/overlay.zig", "src/gpu/glyph_atlas.zig", "src/gpu/text_stage.zig" }) |path| {
         const m = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,
@@ -139,7 +139,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(b.fmt("examples/fonts/assets/{s}", .{file})),
         });
     }
-    for ([_][]const u8{ "IBMPlexMonoSub-Regular", "QuicksandSub-Regular", "QuicksandSub-NoLig", "IBMPlexMonoMarks" }) |name| {
+    for ([_][]const u8{ "IBMPlexMonoSub-Regular", "QuicksandSub-Regular", "QuicksandSub-NoLig", "IBMPlexMonoMarks", "IBMPlexMonoAccents" }) |name| {
         stbtt_face_mod.addAnonymousImport(b.fmt("test-font-{s}", .{name}), .{
             .root_source_file = b.path(b.fmt("tests/fonts/{s}.ttf", .{name})),
         });
@@ -277,6 +277,56 @@ pub fn build(b: *std.Build) void {
 
     const wasm_step = b.step("test-wasm", "Compile framework core for wasm32-freestanding (posix-dep canary)");
     wasm_step.dependOn(&wasm_canary.step);
+
+    // `zig build bench`: CPU pipeline benchmark (tools/bench/main.zig), always
+    // ReleaseFast. Text case measures through the stb `teak-text` module.
+    {
+        const bench_teak = b.createModule(.{
+            .root_source_file = b.path("src/teak.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        });
+        const bench_text = b.createModule(.{
+            .root_source_file = b.path("src/text/text.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{.{ .name = "teak", .module = bench_teak }},
+        });
+        bench_text.addImport("stb-c", translateC(b, b.path("src/gpu/vendor/stb_truetype.h"), null, target, .ReleaseFast));
+        bench_text.addIncludePath(b.path("src/gpu/vendor"));
+        bench_text.addCSourceFile(.{ .file = b.path("src/gpu/vendor/stb_truetype_impl.c"), .flags = &.{"-std=c99"} });
+        const bench_exe = b.addExecutable(.{
+            .name = "teak-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/bench/main.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .strip = false, // keep symbols so `perf report` works on the binary
+                .imports = &.{
+                    .{ .name = "teak", .module = bench_teak },
+                    .{ .name = "teak-text", .module = bench_text },
+                },
+            }),
+        });
+        const bench_run = b.addRunArtifact(bench_exe);
+        bench_run.has_side_effects = true;
+        b.step("bench", "CPU pipeline benchmark (view/layout/hit/render/cmdsEqual + text)").dependOn(&bench_run.step);
+
+        // Prototype for docs/features/cmd-size.md (slim out-of-line Cmd on a copy).
+        const cs_exe = b.addExecutable(.{
+            .name = "teak-bench-cmdsize",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/bench/cmd_size.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{.{ .name = "teak", .module = bench_teak }},
+            }),
+        });
+        const cs_run = b.addRunArtifact(cs_exe);
+        cs_run.has_side_effects = true;
+        b.step("bench-cmdsize", "Prototype: slim (out-of-line payload) Cmd vs the real 240-byte Cmd").dependOn(&cs_run.step);
+    }
 
     // HARDLINE drift audit — greppable half of docs/HARDLINE.md §5.
     // Depends on the wasm canary so one command gates both.

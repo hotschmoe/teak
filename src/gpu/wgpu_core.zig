@@ -131,7 +131,15 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         device: c.WGPUDevice,
         queue: c.WGPUQueue,
         pipeline: c.WGPURenderPipeline,
+        /// Built lazily for the current `vert_buf` (it is also bound as storage).
         bind_group: c.WGPUBindGroup,
+        bind_group_buf: c.WGPUBuffer,
+        /// `vert_buf_size` the bind group was built for. A reallocation always
+        /// changes it, which the handle alone cannot show: a released buffer's
+        /// handle can come back for the new one, leaving a bind group on the
+        /// stale buffer (SDF records read as garbage).
+        bind_group_size: u64,
+        solid_bgl: c.WGPUBindGroupLayout,
         uniform_buf: c.WGPUBuffer,
         vert_buf: c.WGPUBuffer,
         vert_buf_size: u64,
@@ -317,17 +325,22 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const shader = try wgpu_c.createShader(device, "quad-shader", SHADER_CODE);
             defer c.wgpuShaderModuleRelease(shader);
 
-            var bgl_entry = std.mem.zeroes(c.WGPUBindGroupLayoutEntry);
-            bgl_entry.binding = 0;
-            bgl_entry.visibility = c.WGPUShaderStage_Vertex;
-            bgl_entry.buffer.type = c.WGPUBufferBindingType_Uniform;
-            bgl_entry.buffer.minBindingSize = 8;
+            // binding 0: screen size; binding 1: the solid vertex buffer again,
+            // read-only, so SDF quads can fetch their records (render/sdf.zig).
+            var bgl_entries = [_]c.WGPUBindGroupLayoutEntry{ std.mem.zeroes(c.WGPUBindGroupLayoutEntry), std.mem.zeroes(c.WGPUBindGroupLayoutEntry) };
+            bgl_entries[0].binding = 0;
+            bgl_entries[0].visibility = c.WGPUShaderStage_Vertex;
+            bgl_entries[0].buffer.type = c.WGPUBufferBindingType_Uniform;
+            bgl_entries[0].buffer.minBindingSize = 8;
+            bgl_entries[1].binding = 1;
+            bgl_entries[1].visibility = c.WGPUShaderStage_Fragment;
+            bgl_entries[1].buffer.type = c.WGPUBufferBindingType_ReadOnlyStorage;
             var bgl_desc = std.mem.zeroes(c.WGPUBindGroupLayoutDescriptor);
             bgl_desc.label = wgpuStr("uniform-bgl");
-            bgl_desc.entryCount = 1;
-            bgl_desc.entries = &bgl_entry;
+            bgl_desc.entryCount = bgl_entries.len;
+            bgl_desc.entries = &bgl_entries;
             const bind_group_layout = c.wgpuDeviceCreateBindGroupLayout(device, &bgl_desc) orelse return error.BglCreateFailed;
-            defer c.wgpuBindGroupLayoutRelease(bind_group_layout);
+            errdefer c.wgpuBindGroupLayoutRelease(bind_group_layout);
 
             var pl_desc = std.mem.zeroes(c.WGPUPipelineLayoutDescriptor);
             pl_desc.label = wgpuStr("pipeline-layout");
@@ -347,17 +360,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             // Uniform buffer (8 bytes: vec2f screen_size).
             const uniform_buf = wgpu_c.createBuffer(device, "uniform-buf", c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst, 8) orelse return error.UniformBufFailed;
-
-            var bg_entry = std.mem.zeroes(c.WGPUBindGroupEntry);
-            bg_entry.binding = 0;
-            bg_entry.buffer = uniform_buf;
-            bg_entry.size = 8;
-            var bg_desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
-            bg_desc.label = wgpuStr("bind-group");
-            bg_desc.layout = bind_group_layout;
-            bg_desc.entryCount = 1;
-            bg_desc.entries = &bg_entry;
-            const bind_group = c.wgpuDeviceCreateBindGroup(device, &bg_desc) orelse return error.BindGroupFailed;
 
             // Text + image pipelines: BGL with uniform + texture + sampler.
             // Same vertex layout / blend state as the solid pipeline; only
@@ -487,7 +489,10 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .device = device,
                 .queue = ctx.queue,
                 .pipeline = pipeline,
-                .bind_group = bind_group,
+                .bind_group = null,
+                .bind_group_buf = null,
+                .bind_group_size = 0,
+                .solid_bgl = bind_group_layout,
                 .uniform_buf = uniform_buf,
                 .vert_buf = null,
                 .vert_buf_size = 0,
@@ -574,7 +579,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             self.releaseMsaa();
             if (self.offscreen) |t| c.wgpuTextureRelease(t);
             if (self.vert_buf) |vb| c.wgpuBufferRelease(vb);
-            c.wgpuBindGroupRelease(self.bind_group);
+            if (self.bind_group) |bg| c.wgpuBindGroupRelease(bg);
+            c.wgpuBindGroupLayoutRelease(self.solid_bgl);
             c.wgpuBufferRelease(self.uniform_buf);
             c.wgpuRenderPipelineRelease(self.pipeline);
             c.wgpuQueueRelease(self.queue);
@@ -644,9 +650,13 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// Grow `buf` to hold `verts` and write them. Shared by the solid,
         /// text, image and scene-composite vertex streams.
         fn writeVerts(self: *Self, label: []const u8, buf: *c.WGPUBuffer, size: *u64, verts: []const Vertex) void {
+            self.writeVertsAs(label, c.WGPUBufferUsage_Vertex, buf, size, verts);
+        }
+
+        fn writeVertsAs(self: *Self, label: []const u8, usage: c.WGPUBufferUsage, buf: *c.WGPUBuffer, size: *u64, verts: []const Vertex) void {
             const byte_size: u64 = @intCast(verts.len * @sizeOf(Vertex));
             if (byte_size == 0) return;
-            wgpu_c.ensureBuffer(self.device, label, c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, buf, size, byte_size);
+            wgpu_c.ensureBuffer(self.device, label, usage | c.WGPUBufferUsage_CopyDst, buf, size, byte_size);
             c.wgpuQueueWriteBuffer(self.queue, buf.*, 0, verts.ptr, byte_size);
         }
 
@@ -664,7 +674,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
         pub fn uploadVertices(self: *Self, verts: []const Vertex) void {
             self.vert_count = @intCast(verts.len);
-            self.writeVerts("vertex-buf", &self.vert_buf, &self.vert_buf_size, verts);
+            // Also bound read-only in the fragment stage: SDF quads read their records from it.
+            self.writeVertsAs("vertex-buf", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_Storage, &self.vert_buf, &self.vert_buf_size, verts);
         }
 
         // ── Main pass ──────────────────────────────────────────────
@@ -828,11 +839,33 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             c.wgpuCommandBufferRelease(command_buffer);
         }
 
+        /// {screen size, solid vertex buffer as read-only storage}, rebuilt
+        /// whenever `vert_buf` is reallocated.
+        fn rebuildSolidBindGroup(self: *Self) void {
+            if (self.bind_group) |old| c.wgpuBindGroupRelease(old);
+            var entries = [_]c.WGPUBindGroupEntry{ std.mem.zeroes(c.WGPUBindGroupEntry), std.mem.zeroes(c.WGPUBindGroupEntry) };
+            entries[0].binding = 0;
+            entries[0].buffer = self.uniform_buf;
+            entries[0].size = 8;
+            entries[1].binding = 1;
+            entries[1].buffer = self.vert_buf;
+            entries[1].size = self.vert_buf_size;
+            var desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
+            desc.label = wgpuStr("solid-bind-group");
+            desc.layout = self.solid_bgl;
+            desc.entryCount = entries.len;
+            desc.entries = &entries;
+            self.bind_group = c.wgpuDeviceCreateBindGroup(self.device, &desc);
+            self.bind_group_buf = self.vert_buf;
+            self.bind_group_size = self.vert_buf_size;
+        }
+
         /// Solid quads `[from, to)` (vertex indices).
         fn drawSolids(self: *Self, pass: c.WGPURenderPassEncoder, range: struct { usize, usize }) void {
             const from, const to = range;
             if (to <= from or self.vert_buf == null) return;
             const draw_byte_size: u64 = @as(u64, self.vert_count) * @sizeOf(Vertex);
+            if (self.bind_group_buf != self.vert_buf or self.bind_group_size != self.vert_buf_size) self.rebuildSolidBindGroup();
             c.wgpuRenderPassEncoderSetPipeline(pass, self.pipeline);
             c.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.bind_group, 0, null);
             c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.vert_buf, 0, draw_byte_size);
@@ -1168,7 +1201,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// composite quad per visible scene for the next `renderFrame`.
         /// Call after `uploadImages`, before `renderFrame`. Scenes whose
         /// content did not change since the last frame are not redrawn.
-        pub fn renderScenes(self: *Self, draws: []const teak.SceneDraw) void {
+        pub fn renderScenes(self: *Self, draws: []const teak.SceneDraw, items: []const teak.SceneItem) void {
             self.scene_draw_count = 0;
             self.scene_vert_count = 0;
             var mark: overlay.Marker = .{ .start = self.splitOf("scenes", draws.len) };
@@ -1184,7 +1217,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const scale = self.scale;
             for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
                 mark.visit(i, self.scene_draw_count);
-                const size = self.scene.renderInto(encoder, i, draw, scale) orelse continue;
+                const size = self.scene.renderInto(encoder, i, draw, scene_common.itemsOf(draw, items), scale) orelse continue;
                 const quad = scene_common.compositeQuad(draw, size, scale) orelse continue;
                 const bind_group = self.sceneBindGroup(i) orelse continue;
 
