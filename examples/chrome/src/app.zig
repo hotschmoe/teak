@@ -584,7 +584,7 @@ fn rightColumn(cb: anytype, l: *const Look) void {
     // A shrinking row: the tag keeps its width, the paragraph beside it gives
     // way (and re-wraps) as the column narrows.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .align_cross = .start });
-    cb.buttonStyled(.noop, "REV C", key_button);
+    cb.buttonStyled(.noop, "REV C", l.key);
     cb.paragraphStyled("SUPERSEDES REV B; RE-INSPECT ALL FIRST-ARTICLE PARTS.", plex, ink, .{});
     cb.popGroup();
     cb.popGroup();
