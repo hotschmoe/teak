@@ -77,6 +77,15 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.table`: module `src/core/table.zig`; see below
 > Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
 - `teak.pointer`: module `src/core/pointer.zig`; see below
+> Mouse-cursor shapes and the hovered-cmd picker (`Host.setCursor`, App `cursorFor`).
+- `teak.cursor`: module `src/core/cursor.zig`; see below
+- `teak.CursorShape` = `cursor.CursorShape`
+  - fields: `arrow, pointer, ibeam, crosshair, move, resize_ew, resize_ns, resize_nwse, resize_nesw, not_allowed, grab, grabbing`
+  > The CSS `cursor` keyword for this shape (web host; also the XCursor
+  > theme name for most shapes).
+  - `pub fn cssName(self: CursorShape) [:0]const u8`
+- `teak.HoverKind` = `cursor.HoverKind`
+  - fields: `none, button, checkbox, radio, slider, text_input, canvas, scene3d`
 > Declarative effects (HARDLINE hatch 7): data describing I/O the Host performs.
 - `teak.effects`: module `src/core/effects.zig`; see below
 > Data types for `scene3d`: meshes, camera and per-frame scene draws.
@@ -123,6 +132,9 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, id`
 > Placement and look of a `push_overlay` (second z-layer).
 - `teak.OverlayStyle`: `pub const OverlayStyle = cmd.OverlayStyle`
+> Which side of its anchor widget an `OverlayStyle.anchor_msg` overlay opens on.
+- `teak.AnchorSide` = `cmd.AnchorSide`
+  - fields: `below_start, below_end, above_start, above_end, right_start, left_start`
 > Geometry of a `push_virtual_list` (only visible rows are emitted).
 - `teak.VirtualListStyle` = `cmd.VirtualListStyle`
   - fields: `direction, total_count, item_extent, visible_start, visible_end, padding, gap, total_extent, start_offset, align_cross, id`
@@ -496,12 +508,12 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.Dropdown`: `pub const Dropdown = dropdown.Dropdown`
 > Anchor and sizing for the open dropdown list.
 - `teak.DropdownViewOpts` = `dropdown.DropdownViewOpts`
-  - fields: `list_x, list_y, list_width, list_max_height, max_visible`
+  - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, list_max_height, max_visible`
 > Searchable select component (see `combobox`).
 - `teak.Combobox`: `pub const Combobox = combobox.Combobox`
 > Anchor and sizing options for the open combobox list.
 - `teak.ComboboxViewOpts` = `combobox.ViewOpts`
-  - fields: `list_x, list_y, list_width, max_visible, match, input_style`
+  - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, max_visible, match, input_style`
 > Build the app Msg for a typed character into a named field.
 - `teak.textFieldChar`: `pub const textFieldChar = text_field.textFieldChar`
 > Build the app Msg for a `SpecialKey` into a named field.
@@ -723,6 +735,15 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `struct ScrollStyle`
   - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, id`
 - `pub fn OverlayStyle(comptime Msg: type) type`
+> Where an `OverlayStyle.anchor_msg` overlay sits relative to its widget.
+> `*_start` aligns the overlay's left (or top) edge with the widget's,
+> `*_end` aligns the right edge. No flipping at the window edge.
+- `enum AnchorSide`
+  - fields: `below_start, below_end, above_start, above_end, right_start, left_start`
+> The click / focus Msg a leaf carries (what `OverlayStyle.anchor_msg`
+> matches), or null for containers and decorative leaves. Exhaustive, so a
+> new Cmd variant must decide whether it can anchor an overlay.
+- `pub fn leafMsg(c: anytype) ?@TypeOf(c).MsgT`
 - `struct ImageStyle`
   - fields: `width, height, flex, tint`
 - `struct ImageCmd`
@@ -1296,7 +1317,7 @@ Numeric input component: TextField + float parsing + range validation.
 - `pub const ITEM_HEIGHT: f32 = 36`
 > Anchor + sizing for the open list overlay.
 - `struct DropdownViewOpts`
-  - fields: `list_x, list_y, list_width, list_max_height, max_visible`
+  - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, list_max_height, max_visible`
 > Placeholder shown when there is no valid selection (empty options or a
 > `selected` index that is out of range).
 - `pub const PLACEHOLDER = "Select\u{2026}"`
@@ -1356,7 +1377,7 @@ option list shown in the same modal-overlay list `Dropdown` uses.
 - `enum Match`
   - fields: `substring, prefix`
 - `struct ViewOpts`
-  - fields: `list_x, list_y, list_width, max_visible, match, input_style`
+  - fields: `auto_anchor, anchor_side, list_x, list_y, list_width, max_visible, match, input_style`
 > Simple case fold: ASCII, Latin-1 Supplement, Latin Extended-A (paired
 > forms), Greek and Cyrillic capitals map to their lowercase.
 - `pub fn foldCase(cp: u21) u21`
@@ -1520,6 +1541,29 @@ and the App.
 > anchor); all zero when `hit` is null. `now_ms` is the host's monotonic
 > clock, so the app can derive deadlines for `Sub.at`.
 - `pub fn PointerEvent(comptime Msg: type) type`
+
+### `teak.cursor` (`src/core/cursor.zig`)
+
+Mouse-cursor shapes and the rule that picks one from the hovered cmd.
+Pure data + one switch: the Host maps a `CursorShape` onto its OS cursor
+(`Host.setCursor`), and `teak.run` calls it only when the shape changes.
+
+- `enum CursorShape`
+  - fields: `arrow, pointer, ibeam, crosshair, move, resize_ew, resize_ns, resize_nwse, resize_nesw, not_allowed, grab, grabbing`
+  > The CSS `cursor` keyword for this shape (web host; also the XCursor
+  > theme name for most shapes).
+  - `pub fn cssName(self: CursorShape) [:0]const u8`
+> What the pointer is over, as the App's optional `cursorFor(model, kind)`
+> hook sees it. `none` is empty space (or a non-interactive cmd).
+- `enum HoverKind`
+  - fields: `none, button, checkbox, radio, slider, text_input, canvas, scene3d`
+> The framework's default shape for a hovered cmd (`null` for non-interactive
+> cmds). `cmd` is a `Cmd(Msg)` value; kept `anytype` so it serves every Msg.
+> Disabled widgets never hit-test, so they read as `.none` and get the arrow.
+- `pub fn kindOf(cmd: anytype) HoverKind`
+> Default cursor for a hovered cmd. An interactive canvas may name its own
+> (`CanvasCmd.cursor`); otherwise it keeps the arrow.
+- `pub fn defaultFor(cmd: anytype) CursorShape`
 
 ### `teak.effects` (`src/core/effects.zig`)
 
@@ -1945,6 +1989,7 @@ viewport-agnostic snapshot back.
 > Hosts that don't support IME (yet) return `.{ .active = false }`.
 - `struct ImeState`
   - fields: `active, text, cursor`
+- `pub const CursorShape = @import("../core/cursor.zig").CursorShape`
 - `pub const A11yNode = @import("../input/a11y.zig").A11yNode`
 - `pub const Effect = effects.Effect`
 - `pub const EffectResult = effects.EffectResult`
@@ -2063,6 +2108,11 @@ viewport-agnostic snapshot back.
 > devicePixelRatio backing store internally). Nothing in the
 > framework consumes it yet; see docs/features/host.md "DPI and
 > scaling" for the end-to-end render-at-scale follow-up.
+> - `setCursor(shape)` — **optional**: show the OS mouse cursor for a
+> `CursorShape`. `teak.run` calls it only when the shape picked from
+> the hovered cmd (or the App's `cursorFor` hook) changes. X11 maps to
+> XCursor theme names (font cursors as fallback), Win32 to `IDC_*` via
+> `WM_SETCURSOR`, web to CSS `cursor` through zunk.
 > - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
 > surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
 > a pair** (a Host with neither answers every effect as unsupported;
