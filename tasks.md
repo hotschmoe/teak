@@ -399,6 +399,13 @@ After the seven-phase cleanup landed, these follow-ups went in:
   `VertexBufferLayout` constructors in `src/gpu/web.zig` moved to
   struct-literal / `fromSlice` form. No ABI change.
 
+- **`handleClipboard` mutates the Model outside `update`** (HARDLINE §1
+  deviation, found by the 2026-10 drift audit). Replace with
+  `clipboardMsg(*const Model, SpecialKey, paste_text: []const u8) ?Msg` (the
+  loop reads the clipboard for a paste chord and passes the text) and let copy /
+  cut go through the existing `write_clipboard` effect; keep the old pair as a
+  deprecated adapter for one release.
+
 ---
 
 ## Phase history
