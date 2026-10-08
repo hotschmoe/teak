@@ -464,6 +464,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         text_draws: std.ArrayList(text.TextDraw) = .empty,
         image_draws: std.ArrayList(render.ImageDraw) = .empty,
         scene_draws: std.ArrayList(render.SceneDraw) = .empty,
+        scene_items: std.ArrayList(render.SceneItem) = .empty,
 
         /// Declarative GPU resources (HARDLINE §2 hatch 8): which
         /// (kind, key, rev) is resident and under which Gpu handle. Loop
@@ -581,6 +582,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.secondary.deinit(self.gpa);
             if (has_resources) self.res_table.deinit(self.gpu);
             self.scene_draws.deinit(self.gpa);
+            self.scene_items.deinit(self.gpa);
             self.image_draws.deinit(self.gpa);
             self.text_draws.deinit(self.gpa);
             self.verts.deinit(self.gpa);
@@ -1212,7 +1214,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         }
 
         /// Tell the app about layout results it cannot read from `view`:
-        /// a pointer canvas's size (`CanvasEvent.layout`) and an id-bearing
+        /// a pointer canvas's rect (`CanvasEvent.layout`: size + window origin) and an id-bearing
         /// scroll region's viewport + content size (`scrollLayoutMsg`), each
         /// on first layout and whenever the value differs from the previous
         /// frame's. The resulting Msg takes effect in the NEXT frame's view.
@@ -1225,8 +1227,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             for (cmds, 0..) |c, i| switch (c) {
                 .canvas, .scene3d => if (has_canvas_hook) if (hit_test.pointerSurface(cmds, i)) |t| {
                     const old = findPointerCanvas(prev_cmds, t.id);
-                    if (old == null or prev_rects[old.?].w != rects[i].w or prev_rects[old.?].h != rects[i].h) {
-                        self.dispatchCanvas(.{ .id = t.id, .kind = .layout, .w = rects[i].w, .h = rects[i].h });
+                    const same = old != null and std.meta.eql(prev_rects[old.?], rects[i]);
+                    if (!same) {
+                        self.dispatchCanvas(.{ .id = t.id, .kind = .layout, .x = rects[i].x, .y = rects[i].y, .w = rects[i].w, .h = rects[i].h });
                     }
                 },
                 .text_area => if (has_text_hook) self.reportTextMetrics(cmds, rects, i),
@@ -1403,13 +1406,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         }
 
         fn uploadFrame(self: *Self, cmds: []const cmd.Cmd(Msg), rects: []const Rect, ts: TransientState) void {
-            const split = render.buildFrame(&self.verts, &self.text_draws, &self.image_draws, &self.scene_draws, self.gpa, cmds, rects, ts, self.measurer);
+            const split = render.buildFrame(&self.verts, &self.text_draws, &self.image_draws, &self.scene_draws, &self.scene_items, self.gpa, cmds, rects, ts, self.measurer);
             // Tell a layering-aware Gpu where the overlay layer starts, so an
             // opaque overlay hides the base layer's text and images.
             if (comptime @hasDecl(Gpu, "setOverlayStart")) self.gpu.setOverlayStart(split);
             self.gpu.uploadVertices(self.verts.items);
             self.gpu.uploadText(self.text_draws.items);
-            resources.stageDraws(self.gpu, if (has_resources) &self.res_table else null, self.image_draws.items, self.scene_draws.items);
+            resources.stageDraws(self.gpu, if (has_resources) &self.res_table else null, self.image_draws.items, self.scene_draws.items, self.scene_items.items);
         }
 
         /// What the secondary window did this frame, for the snapshot gate.

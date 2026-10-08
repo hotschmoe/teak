@@ -259,7 +259,7 @@ pub const StubGpu = struct {
     pub fn releaseImage(self: *StubGpu, _: u32) void {
         self.image_releases += 1;
     }
-    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw) void {
+    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw, _: []const render.SceneItem) void {
         self.scene_calls += 1;
         self.last_scene_count = d.len;
         if (d.len > 0) self.last_scene_mesh = d[0].mesh;
@@ -1946,7 +1946,7 @@ const mutation = struct {
         switch (@typeInfo(T)) {
             .void => return {},
             .bool => return false,
-            .int => return if (comptime std.mem.eql(u8, name, "key")) 0 else @truncate(3 + pick),
+            .int => return if (comptime std.mem.eql(u8, name, "key")) 0 else std.math.cast(T, (3 + pick) % 4) orelse 0,
             .float => return 1.5,
             .@"enum" => |i| return @fromBackingInt(@intCast(i.field_values[0])),
             .optional => |i| return try sample(i.child, a, pick, name),
@@ -2028,7 +2028,14 @@ const mutation = struct {
             },
             .@"struct" => |i| {
                 inline for (i.field_names, i.field_types) |n, F| {
-                    if (mutate(F, &@field(v.*, n), k)) return true;
+                    if (i.layout == .@"packed") {
+                        // fields of a packed struct have no addressable storage: edit a copy
+                        var f = @field(v.*, n);
+                        if (mutate(F, &f, k)) {
+                            @field(v.*, n) = f;
+                            return true;
+                        }
+                    } else if (mutate(F, &@field(v.*, n), k)) return true;
                 }
                 return false;
             },

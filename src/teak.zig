@@ -221,6 +221,9 @@ pub const MeshData = scene.MeshData;
 pub const Camera = scene.Camera;
 /// One 3D scene to render this frame.
 pub const SceneDraw = scene.SceneDraw;
+pub const SceneItem = scene.Item;
+pub const SceneItemFlags = scene.ItemFlags;
+pub const SceneView = scene.View;
 
 /// A declared GPU resource (image or mesh) keyed by an app-chosen key.
 pub const Resource = resources.Resource;

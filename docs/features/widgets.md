@@ -280,7 +280,10 @@ right-aligns near the window's lower-right so it stays on screen.
 **toast.** `Toast(cap, text_cap)`. `Toast.push(&m.toasts, kind, text, ttl)`
 from any `update` arm; `ttl` counts `TICK_MS` ticks (0 = sticky). List
 `Sub.every(TICK_MS)` only while `Toast.active`. A full stack drops its oldest.
-No slide / fade yet (it needs the animation layer); cards appear and vanish.
+Cards slide in from the right and fade (and out again on expiry or dismiss): a `teak.anim.Tween` per entry,
+advanced by `Toast.Msg.frame` (the app's `animationMsg`) while `Toast.animating`; an app that never forwards frames
+still works (toasts appear shown and are dropped a couple of ticks after they expire). Each card is its own overlay at a
+fixed slot (`ViewOpts.height`), newest at the bottom.
 
 **dialog.** `Dialog.view(cb, opts, .{ .confirm = ..., .cancel = ... })` while
 the app's flag is set; `begin` / `end` wrap custom body content. Enter / Escape
@@ -294,7 +297,7 @@ enabled / checked, separator, children). Choosing a leaf dispatches
 `msgs.run(action)`; the app's `update` for that Msg also closes the menu
 (`MenuBar.update(&m.bar, .close)`). Keyboard: F10 or a bare Alt tap
 (`SpecialKey.f10` / `.alt_tap`) activates the bar, arrows / Enter / Escape
-navigate, a letter is a mnemonic while the bar is active. Because `view` cannot
+navigate, a letter is a mnemonic while the bar is active. Mnemonic letters are underlined (`ButtonCmd.underline`). Because `view` cannot
 read layout, geometry is computed from fixed sizes (`top_width`, `row_h`,
 `panel_w`, `SEP_H`); rows pad their text to `cols` columns so shortcuts align
 in a monospaced font. Panels clamp to the window. A transparent full-window

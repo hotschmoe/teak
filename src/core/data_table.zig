@@ -28,8 +28,12 @@
 //!     //        canvasMsg -> Table.gripMsg, modsMsg -> .mods, keySpecialMsg -> Table.keyMsg,
 //!     //        animationMsg -> .frame, subscribe -> animation_frame while Table.animating
 //!
-//! Cell text is cut with an ellipsis to the column's width in *characters*
-//! (`ViewOpts.char_w`), so use a monospace font; the cut respects UTF-8.
+//! Cell text that does not fit its column is cut with an ellipsis at the pixel
+//! (`ButtonStyle.ellipsis`, any font); header cells are cut the same way.
+//!
+//! Type-to-search: printable keys (`charMsg`) select the first row whose cell in the
+//! sort column (column 0 when unsorted) starts with what was typed, case-insensitively;
+//! any navigation, click, sort or Escape starts a new search.
 
 const std = @import("std");
 const cmd = @import("cmd.zig");
@@ -87,6 +91,9 @@ pub fn DataTable(comptime cfg: Config) type {
             /// The table has keyboard focus (set by a click in it, cleared by `blur`).
             focused: bool = false,
             mods: pointer.Modifiers = .{},
+            /// Type-to-search buffer (ASCII).
+            search: [24]u8 = undefined,
+            search_len: u8 = 0,
             sc: scroller.Scroller = .{},
             view_w: f32 = 0,
             view_h: f32 = 0,
@@ -179,6 +186,8 @@ pub fn DataTable(comptime cfg: Config) type {
             mods: pointer.Modifiers,
             /// Frame time in ms while `animating` (from `animationMsg`).
             frame: u32,
+            /// A typed character (type-to-search); see `charMsg`.
+            char: u8,
             /// Click outside / Escape-like: drop keyboard focus.
             blur,
         };
@@ -200,13 +209,53 @@ pub fn DataTable(comptime cfg: Config) type {
                 },
                 .mods => |mm| m.mods = mm,
                 .frame => |dt| m.sc.step(dt),
-                .blur => m.focused = false,
+                .char => |ch| typeAhead(m, ch, src),
+                .blur => {
+                    m.focused = false;
+                    m.search_len = 0;
+                },
+            }
+        }
+
+        /// The text typed so far for type-to-search.
+        pub fn searchText(m: *const Model) []const u8 {
+            return m.search[0..m.search_len];
+        }
+
+        fn typeAhead(m: *Model, ch: u8, src: anytype) void {
+            if (m.n_rows == 0 or ch < 0x20 or ch == 0x7f) return;
+            if (m.search_len >= m.search.len) return;
+            m.search[m.search_len] = ch;
+            m.search_len += 1;
+            const col: u8 = m.sort_col orelse 0;
+            const n = m.n_rows;
+            // A new search starts after the cursor; extending a prefix may stay on the current row.
+            const here: u32 = m.cursorDisplay() orelse 0;
+            const begin: u32 = if (m.search_len == 1 and m.has_cursor) (here + 1) % n else here;
+            var buf: [256]u8 = undefined;
+            var k: u32 = 0;
+            while (k < n) : (k += 1) {
+                const disp = (begin + k) % n;
+                const row = m.order[disp];
+                var fba = std.heap.FixedBufferAllocator.init(&buf);
+                const cell = src.cell(fba.allocator(), col, row);
+                if (startsWithFold(cell, m.search[0..m.search_len])) {
+                    m.clearSelection();
+                    m.setBit(row, true);
+                    m.cursor = row;
+                    m.anchor = row;
+                    m.has_cursor = true;
+                    m.focused = true;
+                    reveal(m, disp);
+                    return;
+                }
             }
         }
 
         const min_grip_width: f32 = 24;
 
         fn sortBy(m: *Model, col: u8, src: anytype) void {
+            m.search_len = 0;
             if (m.sort_col != null and m.sort_col.? == col) {
                 if (!m.sort_desc) {
                     m.sort_desc = true;
@@ -239,6 +288,7 @@ pub fn DataTable(comptime cfg: Config) type {
 
         fn clickRow(m: *Model, disp: u32) void {
             if (disp >= m.n_rows) return;
+            m.search_len = 0;
             m.focused = true;
             const row = m.order[disp];
             if (m.mods.shift and m.has_cursor) {
@@ -271,6 +321,7 @@ pub fn DataTable(comptime cfg: Config) type {
         }
 
         fn keyCommand(m: *Model, k: Key) void {
+            m.search_len = 0;
             if (m.n_rows == 0) return;
             if (k == .select_all) {
                 @memset(&m.sel, 0);
@@ -334,6 +385,12 @@ pub fn DataTable(comptime cfg: Config) type {
             };
         }
 
+        /// Map a typed character to a search message (printable ASCII only). The app calls it from
+        /// `keyCharMsg` when `model.table.focused`.
+        pub fn charMsg(c: u8) ?Msg {
+            return if (c >= 0x20 and c < 0x7f) .{ .char = c } else null;
+        }
+
         /// Map a header-grip canvas event to `.grip` (the canvas id is `grip_base + col`).
         pub fn gripMsg(ev: pointer.CanvasEvent, grip_base: u32) ?Msg {
             if (ev.id < grip_base or ev.id >= grip_base + max_cols) return null;
@@ -351,8 +408,6 @@ pub fn DataTable(comptime cfg: Config) type {
             row_h: f32 = 22,
             header_h: f32 = 26,
             font: text_mod.FontSpec = .{ .size_px = 13, .family = .mono },
-            /// Advance of one character of `font` (monospace), for ellipsis fitting.
-            char_w: f32 = 8,
             /// Horizontal cell padding.
             pad_x: f32 = 8,
             /// Body viewport height; 0 = flex (fill the parent).
@@ -402,7 +457,6 @@ pub fn DataTable(comptime cfg: Config) type {
                 if (m.sort_col != null and m.sort_col.? == i) {
                     title = std.fmt.allocPrint(arena, "{s} {s}", .{ col.title, if (m.sort_desc) "\u{25BC}" else "\u{25B2}" }) catch col.title;
                 }
-                title = ellipsize(arena, title, charsFor(w - grip_w, opts));
                 var hs = cb.theme.button;
                 hs.bg = pal.bg_raised;
                 hs.hover_bg = pal.bg_hover;
@@ -411,6 +465,7 @@ pub fn DataTable(comptime cfg: Config) type {
                 hs.min_width = @max(0, w - grip_w);
                 hs.height = opts.header_h;
                 hs.label_align = labelAlign(col.cell_align);
+                hs.ellipsis = true;
                 if (col.sortable) {
                     cb.buttonStyled(msgs.sort(@intCast(i)), title, hs);
                 } else {
@@ -462,7 +517,8 @@ pub fn DataTable(comptime cfg: Config) type {
                     bs.min_width = w;
                     bs.height = opts.row_h;
                     bs.label_align = labelAlign(col.cell_align);
-                    const label = ellipsize(arena, src.cell(arena, @intCast(i), row), charsFor(w, opts));
+                    bs.ellipsis = true; // cut at the pixel with U+2026 by the renderer
+                    const label = src.cell(arena, @intCast(i), row);
                     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .width = w, .height = opts.row_h });
                     cb.buttonStyled(msgs.row(disp), label, bs);
                     cb.popGroup();
@@ -482,6 +538,12 @@ pub fn DataTable(comptime cfg: Config) type {
     };
 }
 
+fn startsWithFold(s: []const u8, prefix: []const u8) bool {
+    if (s.len < prefix.len) return false;
+    for (prefix, s[0..prefix.len]) |p, c| if (std.ascii.toLower(p) != std.ascii.toLower(c)) return false;
+    return true;
+}
+
 fn labelAlign(a: Align) cmd.TextAlign {
     return switch (a) {
         .left => .start,
@@ -492,23 +554,6 @@ fn labelAlign(a: Align) cmd.TextAlign {
 
 fn mix(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     return .{ a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1 };
-}
-
-/// Characters that fit in a cell of `w` px (at least 1).
-fn charsFor(w: f32, opts: anytype) usize {
-    const inner = w - 2 * opts.pad_x;
-    return if (inner < opts.char_w) 1 else @intFromFloat(@floor(inner / opts.char_w));
-}
-
-/// `s` cut to `max_chars` UTF-8 code points, ending in an ellipsis when it was cut.
-pub fn ellipsize(arena: std.mem.Allocator, s: []const u8, max_chars: usize) []const u8 {
-    if (table.columns(s) <= max_chars) return s;
-    if (max_chars == 0) return "";
-    const keep = table.prefixBytes(s, max_chars - 1);
-    const out = arena.alloc(u8, keep + table.ELLIPSIS.len) catch return s[0..keep];
-    @memcpy(out[0..keep], s[0..keep]);
-    @memcpy(out[keep..], table.ELLIPSIS);
-    return out;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -608,6 +653,27 @@ test "keyboard: arrows, paging, home/end, shift-extend, select all, reveal" {
     try testing.expectEqual(@as(u32, 0), m.sel_count);
 }
 
+test "type-to-search: prefix of the sort column (column 0 unsorted), case-insensitive, wraps, resets on navigation" {
+    var m: T.Model = undefined;
+    fresh(&m);
+    // Unsorted: column 0 is the name: e d c b a.
+    T.update(&m, .{ .char = 'C' }, src_rows);
+    try testing.expectEqual(@as(?u32, 2), m.cursorDisplay()); // "c"
+    try testing.expectEqualStrings("C", T.searchText(&m));
+    T.update(&m, .{ .char = 'x' }, src_rows); // "Cx": no match, buffer kept, cursor stays
+    try testing.expectEqual(@as(?u32, 2), m.cursorDisplay());
+    T.update(&m, .{ .key = .down }, src_rows); // navigation starts a new search
+    try testing.expectEqual(@as(usize, 0), T.searchText(&m).len);
+    T.update(&m, .{ .char = 'e' }, src_rows); // from after the cursor, wrapping to the top
+    try testing.expectEqual(@as(?u32, 0), m.cursorDisplay());
+    try testing.expect(m.isSelected(0) and m.sel_count == 1);
+    // Sorted by Value: the search column is the sort column, matched as text ("10" twice, then 20...).
+    T.update(&m, .{ .sort = 1 }, src_rows);
+    T.update(&m, .{ .char = '2' }, src_rows);
+    try testing.expectEqual(@as(u32, 2), m.cursor); // value 20 is data row 2
+    try testing.expect(T.charMsg('a') != null and T.charMsg(0x08) == null);
+}
+
 test "grip resizes within limits; keyMsg and gripMsg map inputs" {
     var m: T.Model = .{};
     m.setRows(1);
@@ -636,15 +702,6 @@ test "window: emits only the viewport plus overscan, whatever the row count" {
     try testing.expect(w.end > 100);
 }
 
-test "ellipsize cuts on a code-point boundary" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try testing.expectEqualStrings("short", ellipsize(a, "short", 8));
-    try testing.expectEqualStrings("abcd\u{2026}", ellipsize(a, "abcdefghij", 5));
-    try testing.expectEqualStrings("\u{3042}\u{3044}\u{2026}", ellipsize(a, "\u{3042}\u{3044}\u{3046}\u{3048}\u{304A}", 3));
-}
-
 test "view: header + only the visible rows, balanced, with sort arrow and selection colour" {
     const AppMsg = union(enum) { sort: u8, row: u32 };
     const msgs = struct {
@@ -663,6 +720,11 @@ test "view: header + only the visible rows, balanced, with sort arrow and select
     defer cb.deinit();
     const cols = [_]Column{ .{ .title = "Name", .width = 100 }, .{ .title = "Value", .width = 80, .cell_align = .right } };
     T.view(&m, &cb, &cols, src_rows, msgs, .{ .id = 7, .grip_base = 900 });
+    // Cells and headers are cut by the renderer at the pixel, not pre-truncated here.
+    for (cb.cmds.items) |c| switch (c) {
+        .button => |b| try testing.expect(b.style.ellipsis),
+        else => {},
+    };
     try testing.expect(cmd.validateBalance(cb.cmds.items) == null);
     var labels: usize = 0;
     var arrow = false;

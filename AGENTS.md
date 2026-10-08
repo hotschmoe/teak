@@ -231,6 +231,8 @@ examples/
       greeter.zig              -- text input w/ selection + clipboard editing
       rich_zig_adapter.zig     -- rich_zig markup -> teak RichTextSpan[]
 
+  gallery/                     -- every widget in three looks (retro / dark / light); vreg goldens; native + web
+
 shaders/
   quad.wgsl              -- shader for colored rectangles
   glyph.wgsl             -- instanced glyph quads from the R8 atlas (native + web)
