@@ -731,6 +731,6 @@ if (teak.hasNativeBackend(target.result.os.tag)) {
 Per-OS notes: **Windows** = Win32 window + GDI text; **Linux** = X11 (libX11
 `dlopen`ed at runtime — no dev package; needs libX11.so.6 + a Vulkan driver +
 a monospace TTF, `TEAK_FONT` to override); Wayland via XWayland. **Web** =
-wasm + WebGPU. On Windows-ARM64 hosts, cross-compile with
-`-Dtarget=aarch64-windows-gnu` (Zig 0.16 aarch64-windows compiler is broken
-upstream; the x86_64 zig.exe runs under Prism).
+wasm + WebGPU. Windows-ARM64 hosts use the native
+aarch64-windows Zig 0.17 toolchain with no extra flags (cross-compile with
+`-Dtarget=aarch64-windows-gnu` from other hosts).

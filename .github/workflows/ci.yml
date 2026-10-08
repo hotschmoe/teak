@@ -4,46 +4,213 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZIG_VERSION: 0.17.0
+  # teak depends on zunk by path (../zunk), so every job checks both out as
+  # siblings. Bump ZUNK_REF to a branch while a zunk change is unmerged.
+  ZUNK_REF: master
+
+# mlugg/setup-zig caches the zig global cache (and wgpu-native prebuilts) per
+# job + OS + arch, so every job below gets zig-cache reuse for free.
 
 jobs:
   library:
-    name: Library tests + HARDLINE audit
+    name: Library (test, ReleaseSafe, audit, fmt)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: teak
     steps:
-      # teak depends on zunk by path (../zunk), so check both out as siblings.
       - uses: actions/checkout@v4
-        with:
-          path: teak
+        with: { path: teak }
       - uses: actions/checkout@v4
-        with:
-          repository: hotschmoe/zunk
-          path: zunk
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0
-
-      # One command gates tests, wasm canary, and the greppable half of
-      # HARDLINE §5. The audit step depends on test-wasm internally.
-      - name: Library tests
-        run: zig build test
-
-      - name: HARDLINE audit (depends on test-wasm)
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - name: zig fmt --check
+        run: git ls-files -z "*.zig" "*.zon" | xargs -0 zig fmt --check
+      - name: Library tests (Debug)
+        run: zig build test --summary all
+      - name: Library tests (ReleaseSafe)
+        run: zig build test -Doptimize=ReleaseSafe --summary all
+      # Depends on test-wasm internally; gates the greppable half of HARDLINE section 5.
+      - name: HARDLINE audit
         run: zig build audit
+      - name: zunk tests
+        working-directory: zunk
+        run: zig build test --summary all
 
-      - name: Example tests (counter_greeter)
-        run: zig build test
-        working-directory: teak/examples/counter_greeter
+  examples:
+    name: Example ${{ matrix.example }} (test, build, web)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [chrome, counter_greeter, effects, fonts, scene3d, todo, tree, viewport]
+    defaults:
+      run:
+        working-directory: teak/examples/${{ matrix.example }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - run: zig build test --summary all
+      - name: Build (CLI + native X11 UI exe)
+        run: zig build --summary all
+      - name: Build web (wasm + zunk dist)
+        run: zig build web
+      - name: wasm size
+        run: ls -l dist/*.wasm
 
-      - name: Example tests (todo)
-        run: zig build test
-        working-directory: teak/examples/todo
+  linux-gpu:
+    name: Native GPU on software Vulkan (lavapipe)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: teak
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - name: Install lavapipe
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools
+          ICD=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
+          echo "VK_ICD_FILENAMES=$ICD" >> "$GITHUB_ENV"
+          VK_ICD_FILENAMES=$ICD vulkaninfo --summary | grep -iE "deviceName|driverName" || true
+      - name: test-gpu
+        run: zig build test-gpu --summary all
+      - name: Headless screenshots
+        run: |
+          mkdir -p ../shots
+          for ex in chrome scene3d; do
+            (cd examples/$ex && zig build shot -- "$GITHUB_WORKSPACE/shots/$ex.png")
+          done
+          ls -l ../shots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-shots
+          path: shots/*.png
+          if-no-files-found: error
 
-      - name: Example tests (tree)
-        run: zig build test
-        working-directory: teak/examples/tree
+  web-smoke:
+    name: Web smoke (${{ matrix.example }}, headless Chromium + SwiftShader WebGPU)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [chrome, scene3d]
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: teak/tools/package-lock.json
+      - name: Build web dist
+        working-directory: teak/examples/${{ matrix.example }}
+        run: zig build web
+      - name: Install puppeteer-core
+        working-directory: teak/tools
+        run: npm ci --no-audit --no-fund
+      - name: Load in Chromium and check the canvas
+        working-directory: teak
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node tools/webshot.mjs examples/${{ matrix.example }}/dist web-${{ matrix.example }}.png --wait-ms 5000
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-${{ matrix.example }}
+          path: teak/web-${{ matrix.example }}.png
+
+  windows:
+    name: Windows ${{ matrix.arch }} (native)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, arch: x86_64, cross: "aarch64-windows-gnu" }
+          - { os: windows-11-arm, arch: aarch64, cross: "x86_64-windows-gnu" }
+    defaults:
+      run:
+        working-directory: teak
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - name: Toolchain is native
+        run: |
+          zig version
+          $env:PROCESSOR_ARCHITECTURE
+          zig env | Select-String "target"
+      - name: Library tests (Debug)
+        run: zig build test --summary all
+      - name: Library tests (ReleaseSafe)
+        run: zig build test -Doptimize=ReleaseSafe --summary all
+      - name: Examples (test + build incl. Win32 UI exe)
+        run: |
+          foreach ($d in Get-ChildItem examples -Directory) {
+            Write-Host "::group::$($d.Name)"
+            Push-Location $d.FullName
+            zig build test --summary all
+            if ($LASTEXITCODE -ne 0) { throw "$($d.Name): test failed" }
+            zig build --summary all
+            if ($LASTEXITCODE -ne 0) { throw "$($d.Name): build failed" }
+            Pop-Location
+            Write-Host "::endgroup::"
+          }
+      - name: Run an optimized example natively (chrome, ReleaseFast)
+        working-directory: teak/examples/chrome
+        run: |
+          zig build run -Doptimize=ReleaseFast
+          zig build test -Doptimize=ReleaseFast --summary all
+      - name: Cross-target sanity (chrome)
+        working-directory: teak/examples/chrome
+        run: |
+          zig build -Dtarget=${{ matrix.cross }} --summary all
+          zig build -Dtarget=x86_64-linux-gnu --summary all
+
+  macos:
+    name: macOS (library + web; no native backend yet)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: teak
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - name: Library tests
+        run: zig build test --summary all
+      - name: Example tests + web (chrome)
+        working-directory: teak/examples/chrome
+        run: |
+          zig build test --summary all
+          zig build web
