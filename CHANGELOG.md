@@ -77,6 +77,9 @@
 
 ### Added
 
+- Toasts slide in from the right and fade (and slide out on expiry / dismiss) with `teak.anim` tweens; the app
+  forwards `animationMsg` frames as `Toast.Msg.frame` and lists `Sub.animation_frame` while `Toast.animating`.
+
 - **Widgets wave 1** (`teak.widgets`, `src/core/widgets/`; zero new Cmd variants): toggle switch,
   progress bar (determinate + indeterminate), tabs (keyboard), split pane (draggable, min sizes, ratio
   in the Model), tooltip (hover delay via `Sub.at`), toast stack (tick countdown), modal dialog helper,
