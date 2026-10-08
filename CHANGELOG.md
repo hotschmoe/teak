@@ -166,6 +166,8 @@
 ### Added
 
 - Keyboard gaps closed: a focusable split divider (`Split.dividerFocusable`, arrows / Home / End via new `CanvasEventKind.key` events), keyboard scrolling of the region around the focused widget (arrows, PageUp / PageDown, Home / End through `scrollMsg`), keyboard focus reported to `hoverMsg` (tooltips show for the focused widget), Escape dismisses toasts (`Toast.keyMsg`). `cb.canvasInteractiveFocusable`.
+- **HiDPI scenes.** Native 3D scene targets are rendered at device resolution (logical size x scale) instead of logical-then-magnified; `TEAK_SCALE=2 zig build shot` takes any headless example at 2x. test-gpu pins scene seam position, 1-logical-px line width and 1:1 image texels at scale 2.
+
 - Keyboard navigation everywhere (`RunOptions.keyboard_nav`, default on): Tab / Shift+Tab over buttons, checkboxes, radios, sliders, clickable canvases (toggle switch) and text fields; a focus ring (`Palette.accent`, `Tokens.focus_ring_width`) in every look; Space / Enter activate; arrows move and select inside radio groups and set sliders (`sliderMsg`); modal overlays move focus inside and restore it to the opener on close; focus is keyed by the widget's Msg so it survives list mutations; optional `blurMsg` hook; `nextNavigable` / `prevNavigable`. Focus audit matrix in docs/features/focus.md; gallery asserts every enabled widget is Tab-reachable.
 - **Colour emoji (web).** Glyphs no face has and that are emoji / pictographs go through a second, RGBA atlas
   (`TextStage.catlas`, 1024x1024 pages, glyph key `mode = 2`; instance `flags` mode 2 draws the texels as they are, instance alpha

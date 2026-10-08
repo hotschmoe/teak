@@ -940,6 +940,9 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
         },
         .chat => {
             if (key == .escape) return Msg.blur;
+            // A focused text area gets Enter as a key (the runtime does not call
+            // `submitMsg` then): Enter sends, Shift+Enter (`Chat.keyMsg`) is a newline.
+            if (key == .enter) return Msg.send;
             return if (Chat.keyMsg(key)) |n| Msg{ .chat = n } else null;
         },
         .none => {},
@@ -949,16 +952,6 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
         .down => Msg{ .select_step = 1 },
         .escape => Msg{ .select = 0 },
         else => null,
-    };
-}
-
-/// Enter sends from the chat box; in the notes it is a newline (so is
-/// Shift+Enter, via `keySpecialMsg`).
-pub fn submitMsg(m: *const Model) ?Msg {
-    return switch (m.focus) {
-        .chat => Msg.send,
-        .notes => Msg{ .notes = .newline },
-        .none => null,
     };
 }
 
@@ -1974,8 +1967,8 @@ test "chat: Enter sends, Shift+Enter is a newline; the reply is paced by ticks a
     for ("select the beam") |c| update(&m, keyCharMsg(&m, c).?);
     update(&m, keySpecialMsg(&m, .shift_enter).?);
     try testing.expectEqualStrings("select the beam\n", m.chat.content());
-    try testing.expect(submitMsg(&m).? == .send);
-    update(&m, submitMsg(&m).?);
+    try testing.expect(keySpecialMsg(&m, .enter).? == .send);
+    update(&m, keySpecialMsg(&m, .enter).?);
     try testing.expectEqual(n0 + 1, m.log.n);
     try testing.expectEqualStrings("select the beam", m.log.at(n0).body()); // trimmed
     try testing.expectEqualStrings("", m.chat.content());
@@ -2055,13 +2048,12 @@ test "notes: focused text area takes typed letters instead of the viewer shortcu
     try testing.expect(keyCharMsg(&m, 'o').? == .notes);
     for ("fit the plate") |c| update(&m, keyCharMsg(&m, c).?);
     try testing.expectEqualStrings("fit the plate", m.notes.content());
-    update(&m, submitMsg(&m).?); // Enter in the notes is a newline
+    update(&m, keySpecialMsg(&m, .enter).?); // Enter in the notes is a newline
     try testing.expectEqualStrings("fit the plate\n", m.notes.content());
     // Escape leaves the editor; the next Escape deselects.
     update(&m, keySpecialMsg(&m, .escape).?);
     try testing.expectEqual(Focus.none, m.focus);
     try testing.expect(keySpecialMsg(&m, .escape).? == .select);
-    try testing.expect(submitMsg(&m) == null);
 }
 
 test "keyboard: tab hotkeys and 2D zoom" {

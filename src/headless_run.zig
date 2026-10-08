@@ -126,7 +126,7 @@ pub fn shot(
     var host = try Host.init(gpa, o.width, o.height);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = o.scale });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = envScale(o.scale) });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
@@ -134,6 +134,15 @@ pub fn shot(
     try play(&rt, &host, o.steps);
     for (0..o.settle) |_| try rt.frame();
     try writeFramePng(&gpu, gpa, path);
+}
+
+/// `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
+/// headless run, so any example's `zig build shot` can be taken at 2x without
+/// code changes. Unset or invalid: `default`.
+pub fn envScale(default: f32) f32 {
+    const v = std.c.getenv("TEAK_SCALE") orelse return default;
+    const parsed = std.fmt.parseFloat(f32, std.mem.span(v)) catch return default;
+    return if (parsed >= 0.25 and parsed <= 16) parsed else default;
 }
 
 pub const ServeOptions = struct {
