@@ -6,7 +6,10 @@
 //! px (HiDPI); `--stress N` renders the text stress app with N runs instead
 //! (glyph-atlas check) and prints the warm frame CPU time;
 //! `--max-pages P` caps the glyph atlas (exhaustion check); `--plain` skips the
-//! input script (the first-load state, for comparing with the web build).
+//! input script (the first-load state, for comparing with the web build);
+//! `--anim N` closes the help popover, lets it settle, re-opens it and
+//! captures N frames (16 ms each) into the slide-in animation: N=1 is
+//! mid-slide, N=40 is settled.
 
 const std = @import("std");
 const teak = @import("teak");
@@ -15,7 +18,7 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 const Stress = @import("textstress.zig");
 
-const Opts = struct { path: []const u8, scale: f32 = 1, stress: usize = 0, max_pages: u8 = 8, plain: bool = false };
+const Opts = struct { path: []const u8, scale: f32 = 1, stress: usize = 0, max_pages: u8 = 8, plain: bool = false, anim: ?u32 = null, modern: bool = false };
 
 fn parseArgs(init: std.process.Init) Opts {
     var o: Opts = .{ .path = "chrome.png" };
@@ -26,10 +29,15 @@ fn parseArgs(init: std.process.Init) Opts {
             o.scale = std.fmt.parseFloat(f32, it.next() orelse "1") catch 1;
         } else if (std.mem.eql(u8, a, "--stress")) {
             o.stress = std.fmt.parseInt(usize, it.next() orelse "640", 10) catch 640;
+        } else if (std.mem.eql(u8, a, "--state")) {
+            // `--state modern` shoots the modern look (the retro one is the default)
+            o.modern = std.mem.eql(u8, it.next() orelse "", "modern");
         } else if (std.mem.eql(u8, a, "--plain")) {
             o.plain = true; // no input script: the state a browser loads first
         } else if (std.mem.eql(u8, a, "--max-pages")) {
             o.max_pages = std.fmt.parseInt(u8, it.next() orelse "8", 10) catch 8;
+        } else if (std.mem.eql(u8, a, "--anim")) {
+            o.anim = std.fmt.parseInt(u32, it.next() orelse "8", 10) catch 8;
         } else o.path = a;
     }
     return o;
@@ -38,6 +46,40 @@ fn parseArgs(init: std.process.Init) Opts {
 pub fn main(init: std.process.Init) !void {
     const o = parseArgs(init);
     if (o.stress > 0) return stress(init, o);
+    if (o.anim) |n| {
+        try teak.headless.shot(App, Host, Gpu, init.gpa, o.path, .{
+            .width = 1280,
+            .height = 800,
+            .scale = o.scale,
+            .run = .{ .clear_color = App.paper },
+            .steps = &.{
+                .{ .frames = 2 },
+                .{ .click = .{ 1240, 20 } }, // HELP: close the popover
+                .{ .frames = 40 }, // let the slide-out settle
+                .{ .click = .{ 1240, 20 } }, // HELP: re-open (starts the slide-in)
+                .{ .frames = n },
+            },
+        });
+        std.debug.print("wrote {s} ({d} frames into the slide-in)\n", .{ o.path, n });
+        return;
+    }
+    if (o.modern) {
+        try teak.headless.shot(App, Host, Gpu, init.gpa, o.path, .{
+            .width = 1280,
+            .height = 800,
+            .scale = o.scale,
+            .run = .{ .clear_color = App.modern_theme.palette.bg },
+            .steps = &.{
+                .{ .frames = 2 },
+                .{ .chars = "m" }, // flip to the modern look
+                .{ .frames = 40 }, // let the help popover settle
+                .{ .move = .{ 640, 500 } },
+                .{ .frames = 1 },
+            },
+        });
+        std.debug.print("wrote {s} (modern)\n", .{o.path});
+        return;
+    }
     try teak.headless.shot(App, Host, Gpu, init.gpa, o.path, .{
         .width = 1280,
         .height = 800,
@@ -72,7 +114,7 @@ fn stress(init: std.process.Init, o: Opts) !void {
     defer host.deinit();
     var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false, .scale = o.scale, .max_atlas_pages = o.max_pages });
     defer gpu.deinit();
-    var rt = try teak.Runtime(Stress, Host, Gpu).init(gpa, &host, &gpu, .{});
+    var rt = try teak.Runtime(Stress, Host, Gpu).init(gpa, &host, &gpu, .{ .idle_skip = false });
     defer rt.deinit();
     rt.model.cols = cols;
     rt.model.rows = rows;
@@ -86,7 +128,7 @@ fn stress(init: std.process.Init, o: Opts) !void {
     rt.model.labels = labels;
     for (0..3) |_| try rt.frame(); // cold: shaping + rasterizing + atlas uploads
 
-    const frames = 30;
+    const frames = 200;
     const t0 = std.Io.Clock.awake.now(init.io);
     for (0..frames) |_| {
         rt.model.tick +%= 1; // changes the label so the frame is not skipped as identical

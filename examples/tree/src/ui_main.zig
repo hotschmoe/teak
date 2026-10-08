@@ -17,7 +17,7 @@ pub fn main() !void {
     var host = try platform.Host.init("Teak — Tree", 720, 600);
     defer host.deinit();
 
-    var gpu = try gpu_native.Gpu.init(host.nativeHandle(), 720, 600);
+    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 720, 600, .{ .scale = host.scaleFactor() });
     defer gpu.deinit();
 
     try teak.run(App, gpa, &host, &gpu, .{});
