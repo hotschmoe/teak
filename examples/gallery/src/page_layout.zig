@@ -74,7 +74,7 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.heading("Left pane");
     cb.text("A fixed-size group.");
     cb.textMuted(ui.fmt(cb, "{d:.0} px", .{W.split.paneA(&m.split, split_opts)}));
-    W.split.divider(&m.split, cb, split_opts);
+    W.split.dividerFocusable(&m.split, cb, split_opts, Msg{ .split = .focus });
     cb.heading("Right pane");
     cb.text("Minimum size 120 px each.");
     cb.textMuted(ui.fmt(cb, "{d:.0} px", .{W.split.paneB(&m.split, split_opts)}));

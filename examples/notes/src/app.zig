@@ -26,7 +26,7 @@ const sample_head =
     \\Longer paragraphs wrap at word boundaries; a very long unbroken token like supercalifragilisticexpialidocious_supercalifragilisticexpialidocious breaks at grapheme boundaries instead of overflowing. Combining marks stay with their letter:
 ;
 
-const sample = sample_head ++ " cafe\u{0301}, and so do emoji sequences.";
+const sample = sample_head ++ " cafe\u{0301}, and so do emoji sequences like \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} and \u{1F600} \u{2764}\u{FE0F}. Mixed scripts fall back per code point: Latin, \u{65E5}\u{672C}\u{8A9E}\u{306E}\u{30C6}\u{30AD}\u{30B9}\u{30C8}, \u{4E2D}\u{6587}, \u{0395}\u{03BB}\u{03BB}\u{03B7}\u{03BD}\u{03B9}\u{03BA}\u{03AC}, \u{041F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}.";
 
 const Focus = enum { none, notes, chat };
 
@@ -109,7 +109,15 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.heading("CHAT");
     cb.pushGroup(.{ .padding = 10, .gap = 8, .flex = 1, .bg = cb.theme.palette.bg_sunken, .align_cross = .stretch });
     if (m.log_n == 0) cb.textMuted("No messages yet.");
-    for (0..m.log_n) |i| cb.paragraph(m.logItem(i));
+    // Each message is a wrapped rich paragraph: a bold, coloured sender then the
+    // text, breaking across the span boundary like any other text.
+    const a = cb.arena.allocator();
+    const bold = cb.theme.typography.heading;
+    for (0..m.log_n) |i| {
+        const line = std.fmt.allocPrint(a, "you: {s}", .{m.logItem(i)}) catch continue;
+        const spans = a.dupe(teak.RichTextSpan, &.{.{ .start = 0, .end = 4, .font = bold, .color = cb.theme.palette.accent }}) catch continue;
+        cb.richParagraph(line, spans, .{});
+    }
     cb.popGroup();
     Chat.viewWith(&m.chat, cb, .{ .focus = Msg{ .chat = .focus } }, .{ .id = CHAT_ID, .height = 84 });
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .justify = .end });
@@ -179,28 +187,32 @@ pub fn focusedMsg(m: *const Model) ?Msg {
     };
 }
 
-pub fn keyNeedsClipboard(key: teak.SpecialKey) bool {
-    return teak.keyNeedsClipboard(key);
-}
-
-pub fn handleClipboard(m: *Model, key: teak.SpecialKey, clip: teak.Clipboard) void {
-    const sel = switch (m.focus) {
+fn focusedSelection(m: *const Model) []const u8 {
+    return switch (m.focus) {
         .notes => m.notes.selectionText(),
         .chat => m.chat.selectionText(),
-        .none => return,
+        .none => "",
     };
-    switch (key) {
-        .ctrl_c => if (sel.len > 0) clip.write(sel),
-        .ctrl_x => if (sel.len > 0) {
-            clip.write(sel);
-            update(m, if (m.focus == .notes) .{ .notes = .{ .key = .backspace } } else .{ .chat = .{ .key = .backspace } });
-        },
-        .ctrl_v => {
-            const bytes = clip.read();
-            if (bytes.len > 0) update(m, if (m.focus == .notes) .{ .notes = Notes.pasteMsg(bytes) } else .{ .chat = Chat.pasteMsg(bytes) });
-        },
-        else => {},
-    }
+}
+
+/// What Ctrl+C / Ctrl+X copy: the focused field's selection (a pure query;
+/// `teak.run` writes the Host clipboard).
+pub fn clipboardText(m: *const Model, key: teak.SpecialKey) ?[]const u8 {
+    if (key != .ctrl_c and key != .ctrl_x) return null;
+    const sel = focusedSelection(m);
+    return if (sel.len > 0) sel else null;
+}
+
+/// The Msg for a clipboard chord on the focused field: Ctrl+X deletes the
+/// selection (after `clipboardText` copied it), Ctrl+V pastes.
+pub fn clipboardMsg(m: *const Model, key: teak.SpecialKey, paste: []const u8) ?Msg {
+    if (m.focus == .none) return null;
+    const notes = m.focus == .notes;
+    return switch (key) {
+        .ctrl_x => if (focusedSelection(m).len == 0) null else if (notes) Msg{ .notes = .{ .key = .backspace } } else Msg{ .chat = .{ .key = .backspace } },
+        .ctrl_v => if (notes) Msg{ .notes = Notes.pasteMsg(paste) } else Msg{ .chat = Chat.pasteMsg(paste) },
+        else => null,
+    };
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -229,4 +241,18 @@ test "notes: Enter inserts a newline; view is balanced" {
     defer cb.deinit();
     view(&m, &cb);
     try std.testing.expect(teak.validateBalance(cb.cmds.items) == null);
+}
+
+test "clipboard hooks: copy reads the focused selection, cut deletes it, paste inserts" {
+    var m: Model = .{};
+    update(&m, .{ .notes = .focus });
+    for ("hello") |c| update(&m, keyCharMsg(&m, c).?);
+    try std.testing.expect(clipboardText(&m, .ctrl_c) == null); // nothing selected
+    update(&m, .{ .notes = .{ .key = .ctrl_a } });
+    try std.testing.expectEqualStrings(m.notes.content(), clipboardText(&m, .ctrl_c).?);
+    try std.testing.expect(std.mem.startsWith(u8, clipboardText(&m, .ctrl_c).?, "hello"));
+    update(&m, clipboardMsg(&m, .ctrl_x, "").?);
+    try std.testing.expectEqualStrings("", m.notes.content());
+    update(&m, clipboardMsg(&m, .ctrl_v, "pasted").?);
+    try std.testing.expectEqualStrings("pasted", m.notes.content());
 }

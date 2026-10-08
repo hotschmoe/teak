@@ -83,6 +83,11 @@ pub fn TextStage(comptime Raster: type) type {
         /// CPU copy of each atlas page (`atlas_dim^2` bytes).
         pages: std.ArrayList([]u8) = .empty,
         insts: std.ArrayList(PageInstances) = .empty,
+        // Colour glyphs (emoji): a second atlas of RGBA pages. Its keys use `mode = 2`;
+        // the shader reads the texel's own colour instead of tinting coverage.
+        catlas: glyph_atlas.GlyphAtlas,
+        cpages: std.ArrayList([]u8) = .empty,
+        cinsts: std.ArrayList(PageInstances) = .empty,
         /// Device pixels per logical pixel.
         scale: f32,
         /// Glyphs dropped in the latest `stage` (every atlas page was in use).
@@ -114,9 +119,12 @@ pub fn TextStage(comptime Raster: type) type {
         pub fn init(gpa: std.mem.Allocator, raster: Raster, max_pages: u8, scale: f32) !Self {
             var atlas = try glyph_atlas.GlyphAtlas.init(gpa, @max(max_pages, 1));
             errdefer atlas.deinit();
+            // Colour pages are 4 MiB each: a couple is plenty for emoji.
+            var catlas = try glyph_atlas.GlyphAtlas.init(gpa, 2);
+            errdefer catlas.deinit();
             const runs = try gpa.alloc(Run, 256);
             for (runs) |*r| r.used = false;
-            return .{ .gpa = gpa, .raster = raster, .atlas = atlas, .scale = scale, .runs = runs };
+            return .{ .gpa = gpa, .raster = raster, .atlas = atlas, .catlas = catlas, .scale = scale, .runs = runs };
         }
 
         pub fn deinit(self: *Self) void {
@@ -129,6 +137,11 @@ pub fn TextStage(comptime Raster: type) type {
             self.memo.deinit(self.gpa);
             self.memo_prev.deinit(self.gpa);
             self.atlas.deinit();
+            for (self.cpages.items) |p| self.gpa.free(p);
+            self.cpages.deinit(self.gpa);
+            for (self.cinsts.items) |*pi| for (&pi.list) |*l| l.deinit(self.gpa);
+            self.cinsts.deinit(self.gpa);
+            self.catlas.deinit();
             self.gpa.free(self.runs);
             self.run_glyphs.deinit(self.gpa);
             self.run_entries.deinit(self.gpa);
@@ -149,6 +162,19 @@ pub fn TextStage(comptime Raster: type) type {
             return self.atlas.takeDirty(@intCast(page));
         }
 
+        /// RGBA colour pages (4 bytes per texel, same `atlas_dim` edge).
+        pub fn colorPageCount(self: *const Self) usize {
+            return self.cpages.items.len;
+        }
+
+        pub fn colorStaging(self: *const Self, page: usize) []const u8 {
+            return self.cpages.items[page];
+        }
+
+        pub fn takeColorDirty(self: *Self, page: usize) ?glyph_atlas.Rect {
+            return self.catlas.takeDirty(@intCast(page));
+        }
+
         /// True once per ~60 frames while glyphs are being dropped: the caller logs.
         pub fn shouldReportDrops(self: *Self) bool {
             if (self.dropped == 0) return false;
@@ -162,6 +188,10 @@ pub fn TextStage(comptime Raster: type) type {
             var total: u32 = 0;
             for (0..2) |layer| {
                 for (self.insts.items) |*pi| {
+                    pi.first[layer] = total;
+                    total += @intCast(pi.list[layer].items.len);
+                }
+                for (self.cinsts.items) |*pi| {
                     pi.first[layer] = total;
                     total += @intCast(pi.list[layer].items.len);
                 }
@@ -181,6 +211,8 @@ pub fn TextStage(comptime Raster: type) type {
                 self.memo.clearRetainingCapacity();
             }
             for (self.insts.items) |*pi| for (&pi.list) |*l| l.clearRetainingCapacity();
+            self.catlas.beginFrame();
+            for (self.cinsts.items) |*pi| for (&pi.list) |*l| l.clearRetainingCapacity();
             if (@hasDecl(Raster, "epoch")) {
                 const e = self.raster.epoch();
                 if (e != self.epoch) {
@@ -305,13 +337,14 @@ pub fn TextStage(comptime Raster: type) type {
             const bits: u64 = @as(u64, @as(u32, @bitCast(font.size_px))) |
                 (@as(u64, @as(u32, @bitCast(font.letter_spacing))) << 32);
             const tags: u64 = @as(u64, @backingInt(font.family)) | (@as(u64, @backingInt(font.weight)) << 8) |
-                (@as(u64, if (font.snap_advance) |v| @intFromBool(v) + 1 else 0) << 16);
+                (@as(u64, if (font.snap_advance) |v| @intFromBool(v) + 1 else 0) << 16) |
+                (@as(u64, @intFromBool(font.scalable)) << 24);
             return std.hash.Wyhash.hash(bits ^ std.math.rotl(u64, tags, 40), text);
         }
 
         fn sameFont(a: teak.FontSpec, b: teak.FontSpec) bool {
             return a.size_px == b.size_px and a.family == b.family and a.weight == b.weight and
-                a.letter_spacing == b.letter_spacing and a.snap_advance == b.snap_advance;
+                a.letter_spacing == b.letter_spacing and a.snap_advance == b.snap_advance and a.scalable == b.scalable;
         }
 
         /// Glyphs of `text` in `font` with run-relative logical x positions
@@ -419,6 +452,9 @@ pub fn TextStage(comptime Raster: type) type {
             color: u32,
             clip: DeviceClip,
         ) void {
+            if (font.scalable and g.glyph != 0 and @hasDecl(Raster, "rasterizeSdf")) {
+                return self.emitSdf(layer, font, g, pen_x, baseline, color, clip);
+            }
             const fx = @floor(pen_x);
             const bin: u2 = if (snap) 0 else @intCast(@min(3, @as(u32, @intFromFloat((pen_x - fx) * 4))));
             var key: glyph_atlas.GlyphKey = .{ .face = g.face, .glyph = g.glyph, .size_q = size_q, .bin = bin };
@@ -433,9 +469,12 @@ pub fn TextStage(comptime Raster: type) type {
                 }
             }
             var cluster_cp: u21 = 0;
-            if (@hasDecl(Raster, "rasterizeCluster") and g.glyph == 0 and g.cluster < text.len) {
+            if ((@hasDecl(Raster, "rasterizeCluster") or @hasDecl(Raster, "rasterizeColor")) and g.glyph == 0 and g.cluster < text.len) {
                 const d = decodeAt(text, g.cluster);
-                if (d != 0xFFFD and d != ' ') {
+                if (@hasDecl(Raster, "rasterizeColor") and isColorCodepoint(d)) {
+                    return self.emitColor(layer, font, d, fx, baseline, size_q, color, clip);
+                }
+                if (@hasDecl(Raster, "rasterizeCluster") and d != 0xFFFD and d != ' ') {
                     cluster_cp = d;
                     const id = self.clusterId(d) orelse return;
                     key = .{ .face = cluster_face, .glyph = id, .size_q = size_q, .bin = 0 };
@@ -444,6 +483,123 @@ pub fn TextStage(comptime Raster: type) type {
             const e = self.atlas.lookup(key) orelse self.pack(key, font, cluster_cp) orelse return;
             if (cached) |c| c.* = e;
             self.appendInstance(layer, e, fx, baseline, color, clip);
+        }
+
+        /// A colour glyph (emoji): the platform rasterizes the cluster to RGBA once per size; the
+        /// shader draws the texels as they are (instance mode 2).
+        fn emitColor(
+            self: *Self,
+            layer: usize,
+            font: teak.FontSpec,
+            cp: u21,
+            fx: f32,
+            baseline: f32,
+            size_q: u16,
+            color: u32,
+            clip: DeviceClip,
+        ) void {
+            const id = self.clusterId(cp) orelse return;
+            const key: glyph_atlas.GlyphKey = .{ .face = cluster_face, .glyph = id, .size_q = size_q, .bin = 0, .mode = 2 };
+            const e = self.catlas.lookup(key) orelse self.packColorGlyph(key, font, cp) orelse return;
+            if (e.rect.w == 0 or e.rect.h == 0) return;
+            const gx = fx + @as(f32, @floatFromInt(e.bearing_x));
+            const gy = baseline + @as(f32, @floatFromInt(e.bearing_y));
+            const gw: f32 = @floatFromInt(e.rect.w);
+            const gh: f32 = @floatFromInt(e.rect.h);
+            if (gx + gw <= clip.x0 or gy + gh <= clip.y0 or gx >= clip.x1 or gy >= clip.y1) return;
+            const inside = gx >= clip.x0 and gy >= clip.y0 and gx + gw <= clip.x1 and gy + gh <= clip.y1;
+            while (self.cinsts.items.len <= e.page) {
+                self.cinsts.append(self.gpa, .{}) catch return;
+            }
+            self.cinsts.items[e.page].list[layer].append(self.gpa, .{
+                .x = gx,
+                .y = gy,
+                .w = e.rect.w,
+                .h = e.rect.h,
+                .u = e.rect.x,
+                .v = e.rect.y,
+                .color = color, // alpha tints the emoji (fades); rgb is ignored
+                .clip_xy = if (inside) .{ 0, 0 } else clip.xy,
+                .clip_wh = if (inside) .{ 0, 0 } else clip.wh,
+                .flags = 2, // mode 2: RGBA texels
+            }) catch return;
+        }
+
+        fn packColorGlyph(self: *Self, key: glyph_atlas.GlyphKey, font: teak.FontSpec, cp: u21) ?glyph_atlas.Entry {
+            const size_px = @as(f32, @floatFromInt(key.size_q)) / 4.0;
+            var utf8: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(cp, &utf8) catch 0;
+            const bmp = self.raster.rasterizeColor(utf8[0..n], font, size_px) orelse {
+                _ = self.catlas.insert(key, 0, 0, 0, 0) catch {};
+                return null;
+            };
+            const too_big = bmp.width > atlas_dim - 2 or bmp.height > atlas_dim - 2;
+            const w: u16 = if (too_big) 0 else @intCast(bmp.width);
+            const h: u16 = if (too_big) 0 else @intCast(bmp.height);
+            const bx: i16 = @intCast(std.math.clamp(bmp.bearing_x, -32768, 32767));
+            const by: i16 = @intCast(std.math.clamp(bmp.bearing_y, -32768, 32767));
+            const e = self.catlas.insert(key, w, h, bx, by) catch |err| {
+                if (err == error.AllPagesPinned) self.dropped += 1;
+                return null;
+            };
+            if (w == 0 or h == 0) return e;
+            while (self.cpages.items.len <= e.page) {
+                const buf = self.gpa.alloc(u8, atlas_dim * atlas_dim * 4) catch return null;
+                @memset(buf, 0);
+                self.cpages.append(self.gpa, buf) catch {
+                    self.gpa.free(buf);
+                    return null;
+                };
+            }
+            const staging = self.cpages.items[e.page];
+            const x: usize = e.rect.x;
+            const y: usize = e.rect.y;
+            for (y - 1..y + h + 1) |row| @memset(staging[(row * atlas_dim + x - 1) * 4 ..][0 .. (w + 2) * 4], 0);
+            for (0..h) |row| @memcpy(staging[((y + row) * atlas_dim + x) * 4 ..][0 .. w * 4], bmp.pixels[row * w * 4 ..][0 .. w * 4]);
+            return e;
+        }
+
+        /// A scalable glyph: one distance-field entry (`mode = 1`, fixed source size)
+        /// drawn at `font.size_px * scale / sdf_em` times its stored size, at an exact
+        /// (unsnapped) position so zooming and panning stay smooth.
+        fn emitSdf(
+            self: *Self,
+            layer: usize,
+            font: teak.FontSpec,
+            g: teak.ShapedGlyph,
+            pen_x: f32,
+            baseline: f32,
+            color: u32,
+            clip: DeviceClip,
+        ) void {
+            const key: glyph_atlas.GlyphKey = .{ .face = g.face, .glyph = g.glyph, .size_q = quantizeSize(Raster.sdf_em), .bin = 0, .mode = 1 };
+            const e = self.atlas.lookup(key) orelse self.pack(key, font, 0) orelse return;
+            if (e.rect.w == 0 or e.rect.h == 0) return;
+            const k_q: u32 = @intFromFloat(std.math.clamp(@round(font.size_px * self.scale / Raster.sdf_em * 256), 0, 65535));
+            if (k_q == 0) return;
+            const k = @as(f32, @floatFromInt(k_q)) / 256;
+            const gx = pen_x + @as(f32, @floatFromInt(e.bearing_x)) * k;
+            const gy = baseline + @as(f32, @floatFromInt(e.bearing_y)) * k;
+            const gw = @as(f32, @floatFromInt(e.rect.w)) * k;
+            const gh = @as(f32, @floatFromInt(e.rect.h)) * k;
+            if (gx + gw <= clip.x0 or gy + gh <= clip.y0 or gx >= clip.x1 or gy >= clip.y1) return;
+            const inside = gx >= clip.x0 and gy >= clip.y0 and gx + gw <= clip.x1 and gy + gh <= clip.y1;
+            while (self.insts.items.len <= e.page) {
+                self.insts.append(self.gpa, .{}) catch return;
+            }
+            self.insts.items[e.page].list[layer].append(self.gpa, .{
+                .x = gx,
+                .y = gy,
+                .w = e.rect.w,
+                .h = e.rect.h,
+                .u = e.rect.x,
+                .v = e.rect.y,
+                .color = color,
+                .clip_xy = if (inside) .{ 0, 0 } else clip.xy,
+                .clip_wh = if (inside) .{ 0, 0 } else clip.wh,
+                // bits 0-1: mode 1 (SDF); bits 16-31: quad scale in 1/256 units.
+                .flags = 1 | (k_q << 16),
+            }) catch return;
         }
 
         fn appendInstance(self: *Self, layer: usize, e: glyph_atlas.Entry, fx: f32, baseline: f32, color: u32, clip: DeviceClip) void {
@@ -503,6 +659,7 @@ pub fn TextStage(comptime Raster: type) type {
         fn pack(self: *Self, key: glyph_atlas.GlyphKey, font: teak.FontSpec, cluster_cp: u21) ?glyph_atlas.Entry {
             const size_px = @as(f32, @floatFromInt(key.size_q)) / 4.0;
             const bmp = blk: {
+                if (@hasDecl(Raster, "rasterizeSdf") and key.mode == 1) break :blk self.raster.rasterizeSdf(key.face, key.glyph);
                 if (@hasDecl(Raster, "rasterizeCluster") and key.face == cluster_face) {
                     var utf8: [4]u8 = undefined;
                     const n = std.unicode.utf8Encode(cluster_cp, &utf8) catch 0;
@@ -551,6 +708,12 @@ fn decodeAt(text: []const u8, i: usize) u21 {
     const n = std.unicode.utf8ByteSequenceLength(text[i]) catch return 0xFFFD;
     if (i + n > text.len) return 0xFFFD;
     return std.unicode.utf8Decode(text[i .. i + n]) catch 0xFFFD;
+}
+
+/// Code points drawn in colour when the platform can (emoji and pictographs).
+pub fn isColorCodepoint(cp: u21) bool {
+    return (cp >= 0x1F300 and cp <= 0x1FAFF) or (cp >= 0x1F000 and cp <= 0x1F2FF) or
+        cp == 0x2B50 or cp == 0x2B55 or cp == 0x2705 or cp == 0x274C or cp == 0x2764;
 }
 
 /// Glyph size in quarter pixels (the atlas key unit); 0 for non-drawable sizes.

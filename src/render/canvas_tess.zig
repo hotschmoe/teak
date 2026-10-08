@@ -70,6 +70,7 @@ pub fn emitCanvasPrimitive(
                 .h = mk.size,
             }, mk.color, clip);
         },
+        .text => {}, // drawn by the caller (needs the text list and the measurer)
         .triangles => |tr| emitTriangles(verts, alloc, canvas, tr.verts, clip),
         .lines => |ln| {
             verts.ensureUnusedCapacity(alloc, ln.segs.len * 6) catch return;

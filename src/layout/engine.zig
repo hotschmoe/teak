@@ -497,6 +497,14 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, w, h, cv.style.flex);
                 },
                 .rich_text => |rt| {
+                    if (rt.wrap != .none) {
+                        needs_wrap = true;
+                        const rm = text_wrap.RichMeasure.init(rt.content, rt.spans, rt.default_font, measurer);
+                        const mw = text_wrap.measureWrapped(rt.content, rt.default_font, std.math.inf(f32), rt.wrap, rt.max_lines, rm.measurer());
+                        rects[i] = .{ .w = mw.w, .h = mw.h };
+                        addLeafToTop(&stack, mw.w, mw.h, 0);
+                        continue;
+                    }
                     // Measure each span with its own font; fall back to
                     // default_font for any byte not covered by a span.
                     var max_h: f32 = 0;
@@ -573,7 +581,8 @@ pub const LayoutEngine = struct {
             .text_area => |ta| .{ .flex = ta.flex, .fixed_w = ta.width > 0, .fills_cross = true },
             .slider => |sl| .{ .flex = sl.style.flex, .fills_cross = true },
             .divider => .{ .fills_cross = true },
-            .checkbox, .radio, .rich_text => .{},
+            .rich_text => |rt| if (rt.wrap != .none) .{ .shrink = 1, .wrapped = true, .fills_cross = rt.text_align != .start } else .{},
+            .checkbox, .radio => .{},
             .push_overlay, .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => .{},
         };
     }
@@ -686,6 +695,11 @@ pub const LayoutEngine = struct {
                 if (t.wrap == .none) return w;
                 return @min(w, text_wrap.minContentFor(t.content, t.font, t.wrap, measurer));
             },
+            .rich_text => |rt| {
+                if (rt.wrap == .none) return w;
+                const rm = text_wrap.RichMeasure.init(rt.content, rt.spans, rt.default_font, measurer);
+                return @min(w, text_wrap.minContentFor(rt.content, rt.default_font, rt.wrap, rm.measurer()));
+            },
             .push_group, .push_scroll => {
                 const kid = kidOf(cmds[k]);
                 const spec = widthSpecOf(cmds[k]).?;
@@ -782,7 +796,14 @@ pub const LayoutEngine = struct {
                     }
                     foldChild(&stack, rects[i].w, rects[i].h);
                 },
-                .button, .text_input, .text_area, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas, .rich_text => foldChild(&stack, rects[i].w, rects[i].h),
+                .rich_text => |rt| {
+                    if (rt.wrap != .none) {
+                        const rm = text_wrap.RichMeasure.init(rt.content, rt.spans, rt.default_font, measurer);
+                        rects[i].h = text_wrap.measureWrapped(rt.content, rt.default_font, rects[i].w, rt.wrap, rt.max_lines, rm.measurer()).h;
+                    }
+                    foldChild(&stack, rects[i].w, rects[i].h);
+                },
+                .button, .text_input, .text_area, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas => foldChild(&stack, rects[i].w, rects[i].h),
             }
         }
     }
