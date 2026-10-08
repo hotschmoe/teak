@@ -141,12 +141,13 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     };
 }
 
-/// Enter sends from the chat box and inserts a newline in the notes.
+/// Enter sends from the chat box. In the notes (a `text_area`) the loop does
+/// not call this: Enter reaches `keySpecialMsg` as a key and `Notes.keyMsg`
+/// turns it into a newline.
 pub fn submitMsg(m: *const Model) ?Msg {
     return switch (m.focus) {
         .chat => .send,
-        .notes => .{ .notes = .newline },
-        .none => null,
+        .notes, .none => null,
     };
 }
 
@@ -201,7 +202,7 @@ test "notes: Enter inserts a newline; view is balanced" {
     update(&m, .{ .notes = .focus });
     update(&m, .{ .notes = .{ .key = .ctrl_end } });
     const before = m.notes.content().len;
-    update(&m, submitMsg(&m).?);
+    update(&m, keySpecialMsg(&m, .enter).?); // Enter in a text_area is a key, not a submit
     try std.testing.expectEqual(before + 1, m.notes.content().len);
 
     var cb = teak.CmdBuffer(Msg).init(std.testing.allocator);

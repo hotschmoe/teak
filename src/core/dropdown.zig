@@ -80,10 +80,13 @@ pub const DropdownViewOpts = struct {
 pub const PLACEHOLDER = "Select\u{2026}";
 
 /// A dropdown/select holding `selected` as an index into the app-owned
-/// options slice. `cap` documents the intended maximum option count for
-/// the call site; it is not enforced on the slice (the app owns the
-/// options) but keeps the type self-describing alongside its siblings
-/// (e.g. `Dropdown(64)` for a long species list).
+/// options slice.
+///
+/// **`cap` is documentation only**: it is exposed as `Dropdown(cap).capacity`
+/// and has no effect on layout, storage or `update` (the Model holds indices,
+/// not options, so its size does not depend on `cap`). Pass the intended
+/// maximum option count (e.g. `Dropdown(64)` for a long species list) so call
+/// sites stay self-describing; any positive number works.
 pub fn Dropdown(comptime cap: usize) type {
     return struct {
         /// Documented intended option capacity. Not a hard limit on the
@@ -138,7 +141,11 @@ pub fn Dropdown(comptime cap: usize) type {
             /// Close without changing the selection — fired by the modal
             /// backdrop (click-outside).
             close,
-            /// Choose option `i` — fired by an open-list item button.
+            /// Choose option `i` — fired by an open-list item button. Also
+            /// valid while CLOSED (set the selection from code, e.g. loading
+            /// a record); it always closes the list and parks the keyboard
+            /// highlight on `i`. The index is not range-checked: an `i >=
+            /// options.len` shows `PLACEHOLDER`.
             select: usize,
             /// Wheel the open list. Build with `scrollByMsg` so `.max` is
             /// filled from the option count.
@@ -392,6 +399,15 @@ pub fn Dropdown(comptime cap: usize) type {
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
+
+test "select works while closed: sets the selection from code and stays closed" {
+    const D = Dropdown(4);
+    var m: D.Model = .{};
+    D.update(&m, .{ .select = 2 });
+    try std.testing.expectEqual(@as(usize, 2), m.selected);
+    try std.testing.expectEqual(@as(usize, 2), m.highlighted);
+    try std.testing.expect(!m.open);
+}
 
 test "validateComponent: Dropdown satisfies the component contract" {
     component.validateComponent(Dropdown(8));

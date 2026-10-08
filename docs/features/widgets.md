@@ -128,6 +128,23 @@ hand-call pattern `counter_greeter` uses for `greeter.view`.
 > must hand-write the app `view` and call `Picker.viewWith(...)` yourself
 > (see [cookbook recipe 5](../cookbook.md#5-dropdown-with-a-scrolling-list)).
 
+**`cap` is documentation only.** `Dropdown(cap).capacity` exposes it, but nothing
+sizes storage or limits options by it (the Model holds an index, the app owns the
+option slice). Any positive number works; use it to say how long the list may get.
+
+**Setting the selection from code:** `update(&m.picker, .{ .select = i })` works
+while the list is closed (it records `selected = i`, parks the highlight there and
+leaves the list closed), so loading a record or applying a preset needs no
+`toggle` first.
+
+**Positioning the open list.** `list_x` / `list_y` are **window-absolute** pixels
+for the overlay's top-left; the dropdown does not look at where its closed button
+was laid out (a pure `view` cannot read layout). Compute them from your own
+layout (your paddings and fixed widths: the closed button is at the cursor where
+you call `viewWith`), or keep the app's `scrollLayoutMsg` / `canvasMsg` `layout`
+event for the surrounding region in the Model and derive the anchor from it. A
+first-class "anchor from the previous frame's button rect" event is not built yet.
+
 `msgs` carries the composed AppMsgs: `.toggle`, `.close`, and
 `selectMsg` — a **comptime `fn(usize) AppMsg`** the app supplies to build
 the per-index select message. `DropdownViewOpts` positions the open list

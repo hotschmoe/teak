@@ -138,6 +138,21 @@ pub fn NumericField(comptime config: NumericConfig) type {
             return model.tf.content();
         }
 
+        /// Replace the whole text from code (call it from your `update`, e.g.
+        /// when loading a record or applying a preset). The caret goes to the
+        /// end; the text is NOT validated until read (`value` / `isValid`).
+        pub fn setText(model: *Model, text: []const u8) void {
+            model.tf.set(text);
+        }
+
+        /// Set the field to `v` formatted with `config.precision` decimals
+        /// (trailing text beyond `capacity` is dropped, leaving it invalid).
+        pub fn setValue(model: *Model, v: f64) void {
+            var buf: [config.capacity]u8 = undefined;
+            const text = std.fmt.bufPrint(&buf, "{d:.[1]}", .{ v, config.precision }) catch buf[0..0];
+            model.tf.set(text);
+        }
+
         /// Format the parsed value to `config.precision` decimals into the
         /// caller's buffer. Returns null if the field is invalid or the
         /// buffer is too small.
@@ -164,6 +179,20 @@ test "NumericField: typing digits yields the parsed value" {
     NF.update(&m, .{ .char = '2' });
     try std.testing.expectEqual(@as(?f64, 42.0), NF.value(&m));
     try std.testing.expect(NF.isValid(&m));
+}
+
+test "NumericField: setValue / setText replace the text from code" {
+    const NF = NumericField(.{ .precision = 1, .min = 0, .max = 100 });
+    var m: NF.Model = .{};
+    for ("999") |c| NF.update(&m, .{ .char = c });
+    try std.testing.expect(!NF.isValid(&m)); // out of range
+    NF.setValue(&m, 12.34);
+    try std.testing.expectEqualStrings("12.3", NF.content(&m));
+    try std.testing.expectEqual(@as(?f64, 12.3), NF.value(&m));
+    NF.setText(&m, "7");
+    try std.testing.expectEqual(@as(?f64, 7), NF.value(&m));
+    NF.update(&m, .{ .char = '5' }); // typing continues at the end
+    try std.testing.expectEqual(@as(?f64, 75), NF.value(&m));
 }
 
 test "NumericField: parses a decimal" {
