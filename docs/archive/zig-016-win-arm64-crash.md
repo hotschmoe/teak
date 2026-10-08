@@ -1,6 +1,6 @@
 # Zig 0.16.0 Windows ARM64 Compiler Crash
 
-**Status:** Blocker. `zig build` cannot complete on `aarch64-windows` with Zig 0.16.0 on this machine.
+**Status:** RESOLVED in Zig 0.17.0 (native aarch64-windows `zig.exe` works; verified on a GitHub `windows-11-arm` runner: https://github.com/hotschmoe/teak/actions/runs/37712840052; the 0.16.0 control job still crashes). Historical record below. Was: Blocker. `zig build` cannot complete on `aarch64-windows` with Zig 0.16.0 on this machine.
 
 **Machine:** Snapdragon X Elite (Oryon CPU), Windows 11, `aarch64-windows` native host.
 
