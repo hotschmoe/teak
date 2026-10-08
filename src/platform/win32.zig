@@ -471,6 +471,7 @@ fn dropAcceptable(obj: *IDataObject) bool {
 }
 
 fn dtQueryInterface(this: *DropTarget, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    std.debug.print("[teak] target QI {x}\n", .{iid.Data1});
     if (guidEql(iid, &IID_IUnknown) or guidEql(iid, &IID_IDropTarget)) {
         ppv.* = @ptrCast(this);
         return S_OK;
@@ -560,7 +561,9 @@ fn registerDropTarget(hwnd: HANDLE) void {
     const hr = OleInitialize(null);
     // S_OK, or S_FALSE (already initialized on this thread).
     g_ole_inited = hr == S_OK or hr == 1;
-    if (g_ole_inited and RegisterDragDrop(hwnd, &g_drop_target) == S_OK) {
+    const reg_hr = if (g_ole_inited) RegisterDragDrop(hwnd, &g_drop_target) else -1;
+    std.debug.print("[teak] OleInitialize=0x{x} RegisterDragDrop=0x{x}\n", .{ @as(u32, @bitCast(@as(i32, @intCast(hr)))), @as(u32, @bitCast(@as(i32, @intCast(reg_hr)))) });
+    if (g_ole_inited and reg_hr == S_OK) {
         g_ole_drop = true;
         return;
     }
