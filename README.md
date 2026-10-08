@@ -77,6 +77,13 @@ Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no
   `teak.run` mirrors each changed frame to that file as `tag (x,y,w,h)
   payload` text, so an agent driving the app reads the **GUI as data**
   instead of pixels. See [`docs/features/snapshot.md`](docs/features/snapshot.md).
+- **Agent driver** — `TEAK_CONTROL=<socket>` lets an agent read (snapshot,
+  a11y tree, Msg log, screenshot) and operate (click by role+label, type, key)
+  a running app through the real input path; `tools/teak-drive` is the CLI
+  and an MCP server (`teak-drive mcp`); `TEAK_RECORD` / `TEAK_REPLAY` replay a
+  session deterministically; `TEAK_INSPECT=1` overlays a widget-tree /
+  hover / Msg / timing inspector. See
+  [`docs/features/agent-driver.md`](docs/features/agent-driver.md).
 - [`docs/cookbook.md`](docs/cookbook.md) — intent-oriented recipes
   ("add X to my app"), each verified against `src/`.
 
@@ -86,6 +93,7 @@ Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no
 src/
 ├── teak.zig              public library root, re-exports
 ├── run.zig               teak.run / Runtime — canonical host loop (tests: run_test.zig)
+├── control.zig           agent control channel + TEAK_RECORD/REPLAY, driven from run.zig
 ├── core/
 │   ├── cmd.zig           Cmd union, CmdBuffer, arena mgmt (incl. disabled, canvas, validateBalance)
 │   ├── component.zig     Components(), validateComponent, buildMsgs
@@ -97,6 +105,7 @@ src/
 │   ├── sub.zig           Sub(Msg) declarative timers + runSubs
 │   ├── chart.zig         lineChartPrimitives — canvas chart helper
 │   ├── snapshot.zig      []Cmd+[]Rect → text; golden tests + TEAK_SNAPSHOT
+│   ├── inspector.zig     dev inspector panel (tree, hover, Msgs, timings) as overlay cmds
 │   └── transient.zig     hover/press/focus presentation state
 ├── layout/
 │   ├── engine.zig        measure + position passes

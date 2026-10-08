@@ -20,6 +20,47 @@ const Button = pointer.Button;
 const Modifiers = pointer.Modifiers;
 const SpecialKey = keys.SpecialKey;
 
+/// Synthetic events waiting for the next poll (agent control channel).
+/// Event-driven Hosts apply them to their `InputQueue` right after
+/// `beginFrame` and the OS event pump, so injected input is
+/// indistinguishable from real input and never wiped by `beginFrame`.
+pub const InjectBuffer = struct {
+    pub const CAP = 128;
+    const Entry = union(enum) {
+        ev: host.InjectEvent,
+        chars: struct { buf: [InputQueue.CHARS_CAP]u8, len: u8 },
+    };
+
+    entries: [CAP]Entry = undefined,
+    len: usize = 0,
+
+    /// Queue `ev` for the next `apply`. Text longer than one frame's
+    /// capacity is truncated at a code-point boundary; a full buffer drops.
+    pub fn push(self: *InjectBuffer, ev: host.InjectEvent) void {
+        if (self.len == CAP) return;
+        switch (ev) {
+            .chars => |t| {
+                var n = @min(t.len, InputQueue.CHARS_CAP);
+                while (n > 0 and n < t.len and (t[n] & 0xC0) == 0x80) n -= 1;
+                var e: Entry = .{ .chars = .{ .buf = undefined, .len = @intCast(n) } };
+                @memcpy(e.chars.buf[0..n], t[0..n]);
+                self.entries[self.len] = e;
+            },
+            else => self.entries[self.len] = .{ .ev = ev },
+        }
+        self.len += 1;
+    }
+
+    /// Apply everything queued, in order, and empty the buffer.
+    pub fn apply(self: *InjectBuffer, q: *InputQueue) void {
+        for (self.entries[0..self.len]) |*e| switch (e.*) {
+            .ev => |ev| q.inject(ev),
+            .chars => |*c| q.pushText(c.buf[0..c.len]),
+        };
+        self.len = 0;
+    }
+};
+
 /// Host-neutral navigation / chord keys. Each backend maps its native key
 /// codes onto this (a small switch) and `resolveKey` applies the
 /// Shift/Ctrl policy once, so the `SpecialKey` variants (shift_left,
@@ -38,6 +79,7 @@ pub const NavKey = enum {
     enter,
     tab,
     escape,
+    f12,
     // Letters that form editing chords. Plain letters are text, not keys:
     // they resolve to `null` unless Ctrl is held.
     a,
@@ -69,6 +111,7 @@ pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey {
         .enter => .enter,
         .tab => if (shift) .shift_tab else .tab,
         .escape => .escape,
+        .f12 => .f12,
         .a => if (mods.ctrl) .ctrl_a else null,
         .c => if (mods.ctrl) .ctrl_c else null,
         .x => if (mods.ctrl) .ctrl_x else null,
@@ -134,6 +177,20 @@ pub const InputQueue = struct {
         if (self.keys_len < KEYS_CAP) {
             self.keys[self.keys_len] = k;
             self.keys_len += 1;
+        }
+    }
+
+    /// Apply one synthetic event (agent control channel) exactly as the
+    /// matching OS event would be.
+    pub fn inject(self: *InputQueue, ev: host.InjectEvent) void {
+        switch (ev) {
+            .move => |p| self.pointerMoved(p[0], p[1]),
+            .down => |b| self.buttonDown(b),
+            .up => |b| self.buttonUp(b),
+            .wheel => |w| self.wheel(w[0], w[1]),
+            .chars => |t| self.pushText(t),
+            .key => |k| self.pushKey(k),
+            .mods => |m| self.mods = m,
         }
     }
 

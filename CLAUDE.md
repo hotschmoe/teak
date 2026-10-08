@@ -161,6 +161,9 @@ src/                           -- the library, consumable as a Zig module
                                --    pollEffectResults (HARDLINE hatch 7);
                                --    mirrors changed frames to the TEAK_SNAPSHOT sink).
                                --   Imports only the pure passes; outside framework core.
+  control.zig                  -- agent control channel (TEAK_CONTROL) + TEAK_RECORD/REPLAY; driven
+                               --   from run.zig; injects via Host.injectInput (no second mutation path)
+  input_record.zig             -- record/replay file format
   core/
     cmd.zig                    -- Cmd union, CmdBuffer, arena management
                                --   (incl. overlay, image, virtual_list, rich_text, canvas
@@ -186,6 +189,7 @@ src/                           -- the library, consumable as a Zig module
     resources.zig              -- Resource union for the App `resources()` hook (HARDLINE hatch 8)
     table.zig                  -- fixed-column monospace tables: fitCell + Table.header/row
     snapshot.zig               -- []Cmd+[]Rect -> text; golden tests + TEAK_SNAPSHOT
+    inspector.zig              -- dev inspector panel (tree, hovered cmd, Msgs, timings) as overlay cmds
   layout/
     engine.zig                 -- measure + position passes (fixed sizes, align, justify, flex);
                                --   sizing tests in sizing_test.zig
@@ -227,6 +231,7 @@ src/                           -- the library, consumable as a Zig module
                                --   keysym->SpecialKey; no -lX11 (dlopened at runtime)
     wasm.zig                   -- zunk Host (web)
     headless.zig               -- scripted-input Host for display-less runs (teak.linkHeadless)
+    control_socket.zig         -- Unix-socket line transport for the control channel (headless + X11 hosts)
 
 examples/
   counter_greeter/             -- the proto-2 demo; consumes teak as a module
@@ -252,6 +257,8 @@ The library has no external dependencies; `wgpu-native` is owned by teak's build
 **Functional gaps overview**: [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md) covers the 8 features added in the `functional_gaps_yolo` branch — overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs, virtual list, a11y tree, rich text via rich_zig.
 
 **Ergonomic helpers**: [`docs/features/ergonomic-helpers.md`](docs/features/ergonomic-helpers.md) covers the 7 ergonomic helpers also added on `functional_gaps_yolo` — Theme system, mixed-font text builder, sliderDrag, TextField + key dispatch helpers, pushFormRow / popFormRow, ComponentList, and appendDebugOverlay.
+
+**Agent driver**: [`docs/features/agent-driver.md`](docs/features/agent-driver.md) — `TEAK_CONTROL` socket, `tools/teak-drive` (CLI + MCP server, `zig build drive`), `TEAK_RECORD`/`TEAK_REPLAY`, dev inspector (`TEAK_INSPECT=1` / F12). Cookbook recipe 15.
 
 **Consumer DX**: [`docs/consuming-teak.md`](docs/consuming-teak.md) is the consumer onboarding guide (build.zig.zon → working app via `teak.run`). [`docs/features/run.md`](docs/features/run.md) documents the `teak.run` loop + optional App hooks; [`docs/features/widgets.md`](docs/features/widgets.md) covers disabled state, NumericField, Dropdown, and `Host.setTitle`.
 
