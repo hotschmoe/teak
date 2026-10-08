@@ -379,6 +379,8 @@ pub fn Dropdown(comptime cap: usize) type {
                 // a clickable target (see `ButtonStyle.min_width`).
                 var style = cb.theme.button;
                 style.min_width = row_width;
+                // Scroll math counts ITEM_HEIGHT rows whatever the theme's button height is.
+                style.height = ITEM_HEIGHT;
                 if (i == model.highlighted) {
                     style.bg = cb.theme.button.hover_bg;
                     style.fg = cb.theme.button.hover_fg orelse cb.theme.button.fg;
@@ -452,6 +454,25 @@ test "viewWith (closed): one button labelled with the selection, no overlay" {
     try testing.expect(cb.cmds.items[0] == .button);
     try testing.expectEqualStrings("Gamma", cb.cmds.items[0].button.label);
     try testing.expectEqual(TestApp.Msg.toggle, cb.cmds.items[0].button.msg);
+}
+
+test "viewWith (open): rows keep ITEM_HEIGHT under a compact theme button" {
+    const testing = std.testing;
+    const D = Dropdown(8);
+    var cb = cmd.CmdBuffer(TestApp.Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.theme.button.height = 22; // a compact theme must not change the list geometry
+    var model: D.Model = .{ .open = true };
+    D.viewWith(&model, &cb, &test_options, TestApp.msgs, .{});
+    var rows: usize = 0;
+    for (cb.cmds.items[1..]) |c| switch (c) {
+        .button => |b| {
+            try testing.expectEqual(ITEM_HEIGHT, b.style.height);
+            rows += 1;
+        },
+        else => {},
+    };
+    try testing.expectEqual(@as(usize, 4), rows);
 }
 
 test "viewWith (open): button + overlay list with per-option select msgs" {

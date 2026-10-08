@@ -19,6 +19,8 @@ const teak = @import("teak");
 const kerf = @import("kerf_mesh.zig");
 
 const scene = teak.scene;
+const Notes = teak.TextArea(2048);
+const notes_id: u32 = 11;
 const Orbit = scene.Orbit;
 
 // ── Palette (kerf/spec/DESIGN.md section 1) and theme ──────────────
@@ -164,6 +166,9 @@ pub const Model = struct {
     drag_px: f32 = 0,
     status_buf: [96]u8 = undefined,
     status_len: usize = 0,
+    /// The NOTES card: a multi-line `TextArea`, focused after a click on it.
+    notes: Notes.Model = .{},
+    notes_focused: bool = false,
     list_scroll: f32 = 0,
     list_viewport: f32 = 0,
     list_content: f32 = 0,
@@ -299,6 +304,7 @@ pub const Msg = union(enum) {
     http_done: struct { status: u16, body: []const u8, err: []const u8 },
     list_scroll_by: f32,
     list_extent: [2]f32,
+    notes: Notes.Msg,
     noop,
 };
 
@@ -307,6 +313,10 @@ pub const Msg = union(enum) {
 pub fn update(m: *Model, msg: Msg) void {
     switch (msg) {
         .view_event => |ev| viewEvent(m, ev),
+        .notes => |n| {
+            if (n == .focus) m.notes_focused = true;
+            Notes.update(&m.notes, n);
+        },
         .select => |id| m.selectPart(id),
         .select_step => |d| {
             const n = m.partCount();
@@ -394,7 +404,17 @@ pub fn scrollLayoutMsg(_: *const Model, id: u32, _: f32, vh: f32, _: f32, ch: f3
     return if (id == list_id) Msg{ .list_extent = .{ vh, ch } } else null;
 }
 
-pub fn keyCharMsg(_: *const Model, c: u8) ?Msg {
+/// Pointer, wheel, resolved motion and metrics for the notes area.
+pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
+    return if (ev.id == notes_id) Msg{ .notes = Notes.eventMsg(ev) } else null;
+}
+
+pub fn focusedMsg(m: *const Model) ?Msg {
+    return if (m.notes_focused) Msg{ .notes = .focus } else null;
+}
+
+pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    if (m.notes_focused) return .{ .notes = Notes.charMsg(c) };
     return switch (c) {
         '1' => Msg{ .preset = .front },
         '2' => Msg{ .preset = .iso },
@@ -407,7 +427,13 @@ pub fn keyCharMsg(_: *const Model, c: u8) ?Msg {
     };
 }
 
-pub fn keySpecialMsg(_: *const Model, key: teak.SpecialKey) ?Msg {
+pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
+    if (m.notes_focused) {
+        // Escape leaves the editor; everything else edits (Up/Down/Home/End
+        // arrive as `textMsg` move events).
+        if (key == .escape) return Msg{ .select = 0 };
+        return if (Notes.keyMsg(key)) |n| Msg{ .notes = n } else null;
+    }
     return switch (key) {
         .up => Msg{ .select_step = -1 },
         .down => Msg{ .select_step = 1 },
@@ -569,7 +595,7 @@ fn rightColumn(m: *const Model, cb: anytype) void {
     cb.popGroup();
 
     detailCard(m, cb);
-    notesCard(cb);
+    notesCard(m, cb);
     cb.popGroup();
 }
 
@@ -610,14 +636,21 @@ fn detailCard(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-/// Placeholder for the multi-line notes editor (a `TextArea` lands with the
-/// text lane); the card and its slot are final, only the body swaps.
-fn notesCard(cb: anytype) void {
-    cb.pushGroup(.{ .padding = 10, .gap = 6, .height = 104, .bg = manila, .border = ink, .align_cross = .stretch });
+/// The NOTES card: a `TextArea` on the manila card (3 wrapped lines visible,
+/// scrolls beyond that; click to edit).
+fn notesCard(m: *const Model, cb: anytype) void {
+    cb.pushGroup(.{ .padding = 10, .gap = 6, .height = 124, .bg = manila, .border = ink, .align_cross = .stretch });
     cb.heading("NOTES");
     cb.divider();
-    cb.textMuted("TEXT AREA PLACEHOLDER");
-    cb.textMuted("(multi-line editor pending)");
+    var st = cb.theme.text_input;
+    st.bg = paper;
+    st.fg = ink;
+    st.border = ink;
+    st.focus_border = blue;
+    st.cursor = ink;
+    st.border_width = 1;
+    st.selection_bg = .{ 0.114, 0.306, 0.620, 0.30 };
+    Notes.viewWith(&m.notes, cb, .{ .focus = Msg{ .notes = .focus } }, .{ .id = notes_id, .height = 64, .padding = 4, .style = st, .font = plex });
     cb.popGroup();
 }
 
@@ -907,10 +940,10 @@ const golden =
     \\      group (952,54,316,20) horizontal
     \\        text (952,54,55,20) "PARTS"
     \\        text (1248,54,20,20) "10"
-    \\      group (952,84,316,327) vertical border
+    \\      group (952,84,316,307) vertical border
     \\        group (953,85,314,26) horizontal bg
     \\          text (959,88,300,20) "NO  PART                  TRIS"
-    \\        scroll (953,111,314,299) vertical id=8
+    \\        scroll (953,111,314,279) vertical id=8
     \\          button (953,111,314,22) "01  bottom_plate            12"
     \\          button (953,133,314,22) "02  beam                    12"
     \\          button (953,155,314,22) "03  jack_studs              12"
@@ -921,35 +954,34 @@ const golden =
     \\          button (953,265,314,22) "08  studs                   12"
     \\          button (953,287,314,22) "09  studs#1                 12"
     \\          button (953,309,314,22) "10  strap                   12"
-    \\      group (952,421,316,229) vertical bg border
-    \\        text (962,431,296,20) "DETAIL"
-    \\        divider (962,457,296,1)
-    \\        group (962,464,296,20) horizontal
-    \\          text (962,464,40,20) "PART"
-    \\          text (1188,464,70,20) "02 beam"
-    \\        group (962,490,296,20) horizontal
-    \\          text (962,490,80,20) "MATERIAL"
-    \\          text (1108,490,150,20) "wood_engineered"
-    \\        group (962,516,296,20) horizontal
-    \\          text (962,516,90,20) "TRIANGLES"
-    \\          text (1238,516,20,20) "12"
-    \\        group (962,542,296,20) horizontal
-    \\          text (962,542,50,20) "SHELL"
-    \\          text (1198,542,60,20) "CLOSED"
-    \\        group (962,568,296,20) horizontal
-    \\          text (962,568,80,20) "WIDTH  X"
-    \\          text (1208,568,50,20) "4'-0\""
-    \\        group (962,594,296,20) horizontal
-    \\          text (962,594,80,20) "HEIGHT Y"
-    \\          text (1188,594,70,20) "11 7/8\""
-    \\        group (962,620,296,20) horizontal
-    \\          text (962,620,80,20) "DEPTH  Z"
-    \\          text (1198,620,60,20) "5 1/4\""
-    \\      group (952,660,316,104) vertical bg border
-    \\        text (962,670,296,20) "NOTES"
-    \\        divider (962,696,296,1)
-    \\        text (962,703,296,20) "TEXT AREA PLACEHOLDER"
-    \\        text (962,729,296,20) "(multi-line editor pending)"
+    \\      group (952,401,316,229) vertical bg border
+    \\        text (962,411,296,20) "DETAIL"
+    \\        divider (962,437,296,1)
+    \\        group (962,444,296,20) horizontal
+    \\          text (962,444,40,20) "PART"
+    \\          text (1188,444,70,20) "02 beam"
+    \\        group (962,470,296,20) horizontal
+    \\          text (962,470,80,20) "MATERIAL"
+    \\          text (1108,470,150,20) "wood_engineered"
+    \\        group (962,496,296,20) horizontal
+    \\          text (962,496,90,20) "TRIANGLES"
+    \\          text (1238,496,20,20) "12"
+    \\        group (962,522,296,20) horizontal
+    \\          text (962,522,50,20) "SHELL"
+    \\          text (1198,522,60,20) "CLOSED"
+    \\        group (962,548,296,20) horizontal
+    \\          text (962,548,80,20) "WIDTH  X"
+    \\          text (1208,548,50,20) "4'-0\""
+    \\        group (962,574,296,20) horizontal
+    \\          text (962,574,80,20) "HEIGHT Y"
+    \\          text (1188,574,70,20) "11 7/8\""
+    \\        group (962,600,296,20) horizontal
+    \\          text (962,600,80,20) "DEPTH  Z"
+    \\          text (1198,600,60,20) "5 1/4\""
+    \\      group (952,640,316,124) vertical bg border
+    \\        text (962,650,296,20) "NOTES"
+    \\        divider (962,676,296,1)
+    \\        text_area (962,683,296,64) id=11 "" cursor=0
     \\  group (0,776,1280,24) horizontal bg
     \\    text (12,778,55,20) "READY"
     \\    text (81,778,10,20) "|"
@@ -960,3 +992,17 @@ const golden =
     \\    text (858,778,410,20) "PERSP  YAW -36  PITCH 29  DIST 14'-4 1/4\""
     \\
 ;
+
+test "notes: focused text area takes typed letters instead of the viewer shortcuts" {
+    var m = Model.init();
+    // Shortcut when not editing.
+    try std.testing.expect(keyCharMsg(&m, 'o').? == .toggle_ortho);
+    update(&m, .{ .notes = .focus });
+    try std.testing.expect(keyCharMsg(&m, 'o').? == .notes);
+    for ("fit the plate") |c| update(&m, keyCharMsg(&m, c).?);
+    try std.testing.expectEqualStrings("fit the plate", m.notes.content());
+    update(&m, keySpecialMsg(&m, .enter).?);
+    try std.testing.expectEqualStrings("fit the plate\n", m.notes.content());
+    // Escape leaves the viewer-level behaviour (deselect), Up/Down are the runtime's move events.
+    try std.testing.expect(keySpecialMsg(&m, .escape).? == .select);
+}

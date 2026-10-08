@@ -18,14 +18,14 @@ pub const LayoutEngine = struct {
 pub const Rect = struct { x, y, w, h: f32, ... };
 ```
 
-`doLayout` runs both passes. `rects.len == cmds.len` must hold; each `rects[i]` holds the layout result for `cmds[i]`. Use `measurePass` / `positionPass` individually only when writing tests or experimenting with alternative engines.
+`doLayout` runs the passes (`doLayoutStats` also reports whether the wrap passes ran). `rects.len == cmds.len` must hold; each `rects[i]` holds the layout result for `cmds[i]`. Use `measurePass` / `positionPass` individually only when writing tests or experimenting with alternative engines.
 
 ### Algorithm
 
-Two O(n) linear passes over `[]Cmd`:
+Two O(n) linear passes over `[]Cmd` (two more when the frame has wrapped text or shrinkable nodes, see [Wrapped text and shrink](#wrapped-text-and-shrink)):
 
 1. **Measure** (bottom-up, via explicit `FixedStack<GroupContext, 32>`). Each command writes its intrinsic outer size to `rects[i]`. Containers (`push_group` / `push_scroll` / `push_overlay` / `push_virtual_list`) also record `fixed_main`, `flex_total`, `child_count` so the position pass doesn't rescan children. A group's or scroll's `width` / `height` replaces the measured size; `min_width` / `min_height` floor it.
-2. **Position** (top-down). Root `push_group` gets stretched to `(window_w, window_h)`. A container is sized while it is placed in its parent (flex growth, stretch), so its final rect is known before its own children are placed.
+2. **Position** (top-down; pass 4 when wrapping is present). Root `push_group` gets stretched to `(window_w, window_h)`. A container is sized while it is placed in its parent (flex growth, stretch), so its final rect is known before its own children are placed.
 
 No tree allocation. The `FixedStack` is the only stack-based storage, capped at depth 32.
 
@@ -82,7 +82,19 @@ cb.popGroup();
 ### Rect fields
 
 - `x, y, w, h` — final layout (valid after both passes).
-- `fixed_main`, `flex_total`, `child_count` — measure-pass-only; meaningful for `push_group` entries, ignored elsewhere.
+- `fixed_main`, `flex_total`, `child_count` — container accumulators the position pass reads (refreshed by pass 3 when wrapping is present); meaningful for container entries, ignored elsewhere.
+- `end` — index of the matching `pop_*` (containers); lets the width passes hop over subtrees.
+
+### Wrapped text and shrink
+
+`text` gains `wrap` (`none` default, `word`, `char`, `ellipsis`), `max_lines` and `text_align`; groups and scrolls gain `shrink` (weight, default 0). Emitters: `cb.paragraph(s)`, `cb.paragraphStyled(s, font, color, opts)`, `cb.textEllipsis(s)`. A height depends on a width, so the engine adds two passes, run only when pass 1 saw a wrapped text or a `shrink > 0` container (`doLayoutStats(...).wrap_passes`):
+
+1. **Measure** (bottom-up) sizes wrapped text at its *max-content* width (one line per hard break).
+2. **Resolve widths** (top-down, forward over containers, hopping subtrees via `Rect.end`): for each container, flex growth, flex-shrink, and cross-axis stretch of its direct children, in the same terms the position pass would use. Horizontal overflow is shared among shrinkable children in proportion to `shrink * width`, each floored at its *min-content* (wrapped text: its widest unbreakable segment, `ellipsis`: the "…" glyph, a shrinkable container: what its children need at their minimums); what a clamped child cannot give moves to the others. Wrapped text shrinks implicitly (weight 1). A wrapped text in a vertical parent takes the parent's inner width when the parent stretches (or the text has a non-start `text_align`), else its natural width capped by the room it has. A horizontal scroll never shrinks its content; a vertical scroll's content wraps at the viewport width.
+3. **Re-measure heights** (bottom-up): wrapped text height = its line count (`text_wrap`, capped by `max_lines`) times the line height; containers recompute height and `fixed_main`.
+4. **Position** is unchanged; because pass 2 already distributed the width, it finds nothing left to grow or shrink.
+
+Long unbreakable tokens break at grapheme boundaries (nothing overflows). Render draws one `TextDraw` per line from the same `text_wrap.LineIter` walk, so reserved height equals drawn lines (tested over 1000 random strings and widths). Defaults (`wrap = .none`, `shrink = 0`) leave every existing layout untouched.
 
 ### Text measurement
 
@@ -100,8 +112,8 @@ Text is measured through the Host's `TextMeasurer` (real glyph metrics). `teak.m
 
 - **No constraint solver / CSS Grid.** Groups are horizontal or vertical flex only. A constraint-based pass would swap `positionPass` — the interface supports that, but no such pass exists today. See [`docs/archive/init_convo/ui-framework-refinement.md`](../archive/init_convo/ui-framework-refinement.md) §3 for the design sketch.
 - **No intrinsic aspect ratios.** A child can't say "keep me 16:9".
-- **No max constraints, no flex-shrink.** Groups have `min_width` / `min_height` but no maximum, and a flex group never shrinks below its content.
-- **No text wrapping.** `text` cmds are single-line. Wrapping requires a shaper.
+- **No max constraints.** Groups have `min_width` / `min_height` but no maximum. Shrinking is opt-in (`shrink > 0`); groups never shrink by default.
+- **Wrapping is `text` only.** `rich_text` stays single-line; no bidi / hyphenation (see text-engine.md section 6.6).
 - **No baseline alignment.** Cross-axis alignment is start / center / end / stretch.
 - **No RTL / bidi.** Horizontal groups advance left-to-right.
 
