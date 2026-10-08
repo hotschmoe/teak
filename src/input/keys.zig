@@ -63,6 +63,10 @@ pub const SpecialKey = enum {
     ctrl_backspace,
     ctrl_delete,
 
+    /// F12. `teak.run` consumes it to toggle the dev inspector panel when
+    /// `RunOptions.inspect_hotkey` is on (Debug builds by default); otherwise
+    /// it reaches the app like any other key.
+    f12,
     // Menu-bar activation (see `teak.MenuBar`). F10 is the portable one; a
     // bare Alt tap (Alt pressed and released with no other key or button in
     // between) activates the bar on hosts that can see Alt on its own. Both

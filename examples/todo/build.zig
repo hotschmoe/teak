@@ -67,6 +67,35 @@ pub fn build(b: *std.Build) void {
         ui_step.dependOn(&ui_run.step);
     }
 
+    // --- Headless agent driver (Linux): the same App, offscreen, controlled
+    // over TEAK_CONTROL by `teak-drive` (docs/features/agent-driver.md). ---
+
+    if (target.result.os.tag == .linux) {
+        const drive_step = b.step("drive", "Build the agent-driver binaries (zig-out/bin/todo-drive headless, todo-ui windowed)");
+        if (teak.hasNativeBackend(target.result.os.tag)) {
+            const ui_drive = b.addExecutable(.{
+                .name = "todo-ui",
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("src/ui_main.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                }),
+            });
+            teak.linkNativeWgpu(b, ui_drive, .{});
+            drive_step.dependOn(&b.addInstallArtifact(ui_drive, .{}).step);
+        }
+        const drive_exe = b.addExecutable(.{
+            .name = "todo-drive",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/drive_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        teak.linkHeadless(b, drive_exe, .{});
+        drive_step.dependOn(&b.addInstallArtifact(drive_exe, .{}).step);
+    }
+
     // --- Web (wasm + zunk) ---
 
     const wasm_target = b.resolveTargetQuery(.{
