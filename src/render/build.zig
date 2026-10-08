@@ -447,6 +447,18 @@ fn buildLayer(
                 if (btn.label.len > 0) {
                     const m = measurer.measure(btn.label, btn.font);
                     const avail = @max(0, rect.w - 2 * btn.style.h_padding);
+                    if (btn.style.ellipsis and m.width > avail) {
+                        // Cut at the pixel with U+2026, like `wrap = .ellipsis` text (two draws, no allocation).
+                        var it = text_wrap.LineIter.init(btn.label, btn.font, avail, .ellipsis, 1, measurer);
+                        const line = it.next() orelse continue;
+                        const ew = measurer.measure(text_wrap.ELLIPSIS, btn.font).width;
+                        const kept_w = @max(0, line.width - ew);
+                        const y = rect.y + @max(0, (rect.h - m.height) * 0.5) + label_dy;
+                        const x = rect.x + btn.style.h_padding;
+                        emitText(text_draws, alloc, btn.label[line.start..line.end], btn.font, fg, .{ .x = x, .y = y, .w = kept_w, .h = m.height }, cur_clip);
+                        emitText(text_draws, alloc, text_wrap.ELLIPSIS, btn.font, fg, .{ .x = x + kept_w, .y = y, .w = ew, .h = m.height }, cur_clip);
+                        continue;
+                    }
                     const label_w = @min(m.width, avail);
                     const label_dx: f32 = switch (btn.style.label_align) {
                         .start => 0,
@@ -1960,4 +1972,33 @@ test "text_area: scrolled content culls lines above the viewport" {
     try testing.expectEqual(@as(usize, 2), text_draws.items.len);
     try testing.expectEqualStrings("4", text_draws.items[0].content);
     try testing.expectEqualStrings("5", text_draws.items[1].content);
+}
+
+test "a button with `ellipsis` keeps its width and cuts its label at the pixel" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    var st = cb.theme.button;
+    st.min_width = 100; // mono measurer: 10 px per byte; 8 px padding each side -> 84 px for text
+    st.h_padding = 8;
+    st.ellipsis = true;
+    cb.buttonStyled(.a, "a long label here", st);
+    cb.buttonStyled(.a, "short", st);
+    cb.popGroup();
+    var rects: [8]Rect = undefined;
+    var draws: std.ArrayList(TextDraw) = .empty;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 200, text_mod.monoMeasurer());
+    try testing.expectEqual(@as(f32, 100), rects[1].w); // fixed, though the label is 170 px wide
+    try testing.expectEqual(@as(f32, 100), rects[2].w);
+    var verts: std.ArrayList(Vertex) = .empty;
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    buildVertices(&verts, &draws, &image_draws, arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    try testing.expectEqualStrings("a lon", draws.items[0].content); // 5 x 10 + "\u{2026}" (3 bytes = 30 under the mono measurer) = 80 <= 84
+    try testing.expectEqualStrings("\u{2026}", draws.items[1].content);
+    try testing.expect(draws.items[1].rect_x + draws.items[1].rect_w <= rects[1].x + rects[1].w - st.h_padding + 0.01);
+    try testing.expectEqualStrings("short", draws.items[2].content); // fits: drawn plain
 }
