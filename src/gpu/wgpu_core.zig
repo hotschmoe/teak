@@ -747,8 +747,18 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             if (surface_texture.status != c.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal and
                 surface_texture.status != c.WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal)
             {
+                // A stale swap-chain (resize race, lost device surface):
+                // reconfigure so the next frame can draw.
+                if (surface_texture.status == c.WGPUSurfaceGetCurrentTextureStatus_Outdated or
+                    surface_texture.status == c.WGPUSurfaceGetCurrentTextureStatus_Lost)
+                    self.configureSurface(surface_handle, target_w, target_h);
+                if (surface_texture.texture != null) c.wgpuTextureRelease(surface_texture.texture);
                 return;
             }
+            // The frame texture is returned with ownership. Holding it past
+            // the present keeps a swap-chain buffer referenced, which makes
+            // the next `wgpuSurfaceConfigure` (a window resize) fail on DX12.
+            defer c.wgpuTextureRelease(surface_texture.texture);
 
             const texture_view = c.wgpuTextureCreateView(surface_texture.texture, null);
             defer c.wgpuTextureViewRelease(texture_view);
