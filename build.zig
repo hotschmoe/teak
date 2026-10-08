@@ -174,6 +174,37 @@ pub fn build(b: *std.Build) void {
     const x11_tests = b.addTest(.{ .root_module = x11_mod });
     test_step.dependOn(&b.addRunArtifact(x11_tests).step);
 
+    // Wayland host (src/platform/wayland.zig + wayland/): pure decoding
+    // tests run everywhere; live tests are `zig build test-wayland`.
+    const wl_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/wayland.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "teak", .module = mod },
+            .{ .name = "teak-text", .module = stbtt_mod },
+        },
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = wl_mod })).step);
+
+    if (target.result.os.tag == .linux) {
+        const wl_live_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/wayland_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "teak", .module = mod },
+                .{ .name = "teak-text", .module = stbtt_mod },
+            },
+        });
+        const test_wl_step = b.step("test-wayland", "Run Wayland host tests against a live compositor (skip without WAYLAND_DISPLAY)");
+        const run_wl = b.addRunArtifact(b.addTest(.{ .root_module = wl_live_mod }));
+        run_wl.has_side_effects = true; // depends on $WAYLAND_DISPLAY: never cache
+        test_wl_step.dependOn(&run_wl.step);
+    }
+
     // Display-backed X11 host tests (src/platform/x11_test.zig): clipboard
     // via xclip, XDND via a second in-process source, key/IME fallback via
     // xdotool. Opt-in (`zig build test-x11`, run under Xvfb or any X
