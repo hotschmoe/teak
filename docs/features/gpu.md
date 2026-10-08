@@ -14,13 +14,13 @@ type` — the full wgpu lifecycle (instance, adapter, device, the quad /
 text / image pipelines, the glyph cache) parameterized over two seams:
 
 - **`Surface`** — a *surface provider* exposing `Handle` + `createSurface(WGPUInstance, anytype) !WGPUSurface`. `surface_win32.zig` wraps an HWND pair; `surface_xlib.zig` wraps an X11 `Display*` + `Window` XID. `createSurface` takes the handle as `anytype`, so the Host's structurally-identical `NativeHandle` coerces without the platform layer importing the gpu layer.
-- **`Rasterizer`** — a *rasterizer provider* exposing `init(Allocator)` / `deinit` / `rasterize(bytes, FontSpec, [4]f32, w, h) ?Bitmap`, returning a **BGRA8, top-down** `Bitmap` (`[b, g, r, coverage]` per pixel) ready for a `BGRA8Unorm` texture upload. `raster_gdi.GdiRasterizer` uses Win32/GDI; `raster.StbttRasterizer` uses vendored stb_truetype.
+- **`Rasterizer`** — a *rasterizer provider* exposing `init(Allocator)` / `deinit` / `rasterize(bytes, FontSpec, [4]f32, w, h) ?Bitmap`, returning a **BGRA8, top-down** `Bitmap` (`[b, g, r, coverage]` per pixel) ready for a `BGRA8Unorm` texture upload. `raster.StbttRasterizer` (vendored stb_truetype) is used on every native OS.
 
 The OS stitch files bind the concrete pair and `validateGpu` it:
 
 ```zig
 // native.zig (Windows)
-pub const Gpu = wgpu_core.Gpu(surface_win32, raster_gdi.GdiRasterizer);
+pub const Gpu = wgpu_core.Gpu(surface_win32, text.StbttRasterizer);
 // native_linux.zig (Linux)
 pub const Gpu = wgpu_core.Gpu(surface_xlib, text.StbttRasterizer);
 ```
@@ -39,11 +39,12 @@ comptime platform gating inside the gpu layer (the same idiom as
 type identity across the seam — without that, each file's `@cImport` would
 mint a distinct `WGPUSurface` and the seam wouldn't typecheck.
 
-**Text differs per OS, layout doesn't.** On Windows the GDI rasterizer
-backs rendering and the Win32 Host's GDI measurer backs layout. On Linux
-the `teak-text` module (`src/text/`) provides **both** the GPU
-rasterizer *and* the X11 Host's `TextMeasurer` from the **same** loaded
-font, so measure-vs-render metrics can't drift. v1 loads one monospace
+**Text differs per OS, layout doesn't.** Both native OSes use the
+`teak-text` module (`src/text/`): it provides **both** the GPU
+rasterizer *and* the Host's `TextMeasurer` (X11 and Win32) from the **same**
+loaded font, so measure-vs-render metrics can't drift. Windows probes
+`%WINDIR%\Fonts` (Consolas, Courier New, Lucida Console, ...); the GDI
+rasterizer is gone. v1 loads one monospace
 face (DejaVuSansMono by default; override with `TEAK_FONT`) and ignores
 `FontSpec.family`.
 
@@ -77,6 +78,7 @@ A Gpu type must expose these declarations:
 | `init` | backend-specific (e.g. `fn(NativeHandle, u32, u32) !Gpu`) | Create device + surface + pipelines. **Not** validated — the `NativeHandle` shape differs per backend. |
 | `deinit` | `fn(*Gpu) void` | Release GPU resources. |
 | `resize` | `fn(*Gpu, u32, u32) void` | Reconfigure the surface. Called when `InputState.resized` is true. |
+| `setScale` *(optional; wgpu_core)* | `fn(*Gpu, f32) void` | Change device pixels per logical pixel at runtime (the window moved to a monitor with another DPI). The run loop calls it when `Host.scaleFactor()` changes; the initial value is `InitOptions.scale`. |
 | `uploadVertices` | `fn(*Gpu, []const Vertex) void` | Copy the current frame's colored-quad vertex buffer to the GPU. Called each frame after `buildVertices`. |
 | `renderFrame` | `fn(*Gpu, ClearColor) void` | Encode + submit + present one frame using the last uploaded vertices, text draws, and image draws. |
 | `rasterizeText` | `fn(*Gpu, []const u8, FontSpec, [4]f32, u32, u32) TextureHandle` | **Web only; no longer required** (native backends draw text from the glyph atlas in `uploadText`). Rasterize a string into a cached texture and return an opaque handle. |

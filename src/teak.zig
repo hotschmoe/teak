@@ -66,6 +66,8 @@ pub const widgets = @import("core/widgets.zig");
 pub const component_list = @import("core/component_list.zig");
 /// `appendDebugOverlay`: dump the frame's cmds and rects as an overlay.
 pub const debug_overlay = @import("core/debug_overlay.zig");
+/// Dev inspector panel (widget tree, hovered cmd, Msg log, timings) as overlay cmds.
+pub const inspector = @import("core/inspector.zig");
 /// LLM-readable text serialization of a frame (`[]Cmd` + `[]Rect`).
 pub const snapshot = @import("core/snapshot.zig");
 /// Pure line-chart primitive builder for canvases.
@@ -110,6 +112,12 @@ pub const gpu = @import("gpu/context.zig");
 pub const runtime = @import("run.zig");
 /// Scripted-input headless runs for tests and tooling.
 pub const headless = @import("headless_run.zig");
+/// Hot reload for dev builds: the App as a shared library behind a stable loader (docs/features/hot-reload.md).
+pub const dev = @import("dev.zig");
+/// Agent control channel + input record/replay (docs/features/agent-driver.md).
+pub const control = @import("control.zig");
+/// Input record/replay file format.
+pub const input_record = @import("input_record.zig");
 
 /// The flat command union for a given `Msg`; the unit every pass walks.
 pub const Cmd = cmd.Cmd;
@@ -308,6 +316,10 @@ pub const SliderDrag = hit_test.SliderDrag;
 pub const nextFocusable = focus.nextFocusable;
 /// Previous focusable cmd index before `current`, wrapping around.
 pub const prevFocusable = focus.prevFocusable;
+/// `nextFocusable` over every keyboard-operable leaf (buttons, checkboxes, radios, sliders, text fields): the Tab order of `RunOptions.keyboard_nav`.
+pub const nextNavigable = focus.nextNavigable;
+/// `prevFocusable` over every keyboard-operable leaf.
+pub const prevNavigable = focus.prevNavigable;
 /// Cmd index of the interactive leaf carrying a given focus Msg.
 pub const indexOfFocusMsg = focus.indexOfFocusMsg;
 /// The activation / focus Msg of the leaf at an index, if any.

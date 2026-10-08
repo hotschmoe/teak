@@ -277,8 +277,8 @@ const tree_msgs = struct {
 };
 
 fn tabButton(cb: anytype, m: *const Model, tab: Tab, label: []const u8) void {
-    var s = cb.theme.button;
-    if (m.tab == tab) s.bg = cb.theme.palette.accent;
+    // The active tab is the primary button: its label colour is picked for contrast on the accent.
+    var s = if (m.tab == tab) cb.theme.button_primary else cb.theme.button;
     s.min_width = 90;
     s.height = 30;
     cb.buttonStyled(.{ .tab = tab }, label, s);
@@ -288,7 +288,7 @@ pub fn view(m: *const Model, cb: anytype) void {
     const pal = cb.theme.palette;
     cb.pushGroup(.{ .direction = .vertical, .padding = 12, .gap = 8, .align_cross = .stretch });
 
-    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8 });
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .align_cross = .center });
     tabButton(cb, m, .table, "Table");
     tabButton(cb, m, .list, "List");
     tabButton(cb, m, .tree, "Tree");

@@ -291,6 +291,30 @@ jobs:
         run: |
           zig build -Dtarget=${{ matrix.cross }} --summary all
           zig build -Dtarget=x86_64-linux-gnu --summary all
+      # Headless wgpu on the runner's software adapter (DX12 WARP): proves
+      # the Windows wgpu-native + stb text path renders real pixels. The
+      # PNGs are uploaded for a human to look at. `zig build shot` runs the
+      # exe from the zig cache, where Windows cannot find wgpu_native.dll;
+      # the build installs the DLL to zig-out\bin, so put that on PATH.
+      - name: Headless screenshots (WARP software adapter)
+        env:
+          TEAK_GPU_FALLBACK: "1"
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\shots" | Out-Null
+          foreach ($ex in "chrome", "scene3d") {
+            Push-Location "examples/$ex"
+            $env:PATH = "$PWD\zig-out\bin;$env:PATH"
+            zig build shot -- "$env:GITHUB_WORKSPACE\shots\win-$ex-${{ matrix.arch }}.png"
+            if ($LASTEXITCODE -ne 0) { throw "${ex}: headless shot failed" }
+            Pop-Location
+          }
+          Get-ChildItem "$env:GITHUB_WORKSPACE\shots"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-shots-${{ matrix.arch }}
+          path: shots/*.png
+          if-no-files-found: warn
 
   macos:
     name: macOS (library + web; no native backend yet)

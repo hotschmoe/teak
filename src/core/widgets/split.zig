@@ -50,6 +50,8 @@ pub const Opts = struct {
     /// Padding / gap inside each pane's group.
     pane_padding: f32 = 8,
     pane_gap: f32 = 8,
+    /// Keyboard step of the arrow keys on a focused divider, px.
+    key_step: f32 = 16,
 };
 
 pub const Model = struct {
@@ -65,6 +67,9 @@ pub const Msg = union(enum) {
     /// pane space (outer size minus the divider), `min_a` / `min_b` the limits.
     drag: Drag,
     release,
+    /// The divider got keyboard focus or a Space / Enter (a no-op for `update`;
+    /// it is the focusable divider's identity, see `dividerFocusable`).
+    focus,
     /// Set the ratio directly (restoring a saved layout, or a "reset" button).
     set: f32,
 
@@ -75,6 +80,7 @@ pub fn update(model: *Model, msg: Msg) void {
     switch (msg) {
         .grab => model.dragging = true,
         .release => model.dragging = false,
+        .focus => {},
         .set => |r| model.ratio = std.math.clamp(if (std.math.isNan(r)) 0.5 else r, 0, 1),
         .drag => |d| {
             if (d.avail <= 0) return;
@@ -128,6 +134,22 @@ pub fn canvasMsg(model: *const Model, ev: pointer.CanvasEvent, o: Opts) ?Msg {
             .min_b = o.min_b,
         } } else null,
         .up => if (ev.button == .left) .release else null,
+        // Keyboard on a focused divider: arrows nudge it by `key_step`, Home /
+        // End collapse the first pane to its minimum / maximum (clamped by `update`).
+        .key => blk: {
+            const k = ev.key orelse break :blk null;
+            const horiz = o.orientation == .horizontal;
+            const delta: f32 = switch (k) {
+                .left => if (horiz) -o.key_step else return null,
+                .right => if (horiz) o.key_step else return null,
+                .up => if (!horiz) -o.key_step else return null,
+                .down => if (!horiz) o.key_step else return null,
+                .home => -1.0e7,
+                .end => 1.0e7,
+                else => return null,
+            };
+            break :blk .{ .drag = .{ .delta = delta, .avail = space(o), .min_a = o.min_a, .min_b = o.min_b } };
+        },
         .leave, .wheel, .layout => null,
     };
 }
@@ -162,6 +184,18 @@ pub fn begin(model: *const Model, cb: anytype, o: Opts) void {
 
 /// Close the first pane, draw the divider, open the second pane.
 pub fn divider(model: *const Model, cb: anytype, o: Opts) void {
+    dividerImpl(model, cb, o, false, {});
+}
+
+/// `divider` that is also a keyboard stop: Tab reaches it (focus ring), arrows
+/// resize, Home / End collapse (through the app's `canvasMsg`, which already
+/// maps pointer events with `Split.canvasMsg`). `focus_msg` is any Msg the app
+/// routes to `Split.update(.., .focus)` (clicks and Space / Enter dispatch it).
+pub fn dividerFocusable(model: *const Model, cb: anytype, o: Opts, focus_msg: anytype) void {
+    dividerImpl(model, cb, o, true, focus_msg);
+}
+
+fn dividerImpl(model: *const Model, cb: anytype, o: Opts, comptime focusable: bool, focus_msg: anytype) void {
     const pal = cb.theme.palette;
     const horiz = o.orientation == .horizontal;
     cb.popGroup();
@@ -177,7 +211,11 @@ pub fn divider(model: *const Model, cb: anytype, o: Opts) void {
         .{ .filled_rect = .{ .x = w / 2 - 0.5, .y = h / 2 - 12, .w = 1, .h = 24, .color = grip } }
     else
         .{ .filled_rect = .{ .x = w / 2 - 12, .y = h / 2 - 0.5, .w = 24, .h = 1, .color = grip } };
-    cb.canvasInteractive(.{ .width = w, .height = h }, prims, o.id, "divider");
+    if (focusable) {
+        cb.canvasInteractiveFocusable(.{ .width = w, .height = h }, prims, o.id, "divider", focus_msg);
+    } else {
+        cb.canvasInteractive(.{ .width = w, .height = h }, prims, o.id, "divider");
+    }
 
     cb.pushGroup(.{
         .direction = .vertical,

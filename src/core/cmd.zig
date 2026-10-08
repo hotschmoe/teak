@@ -532,21 +532,9 @@ pub const VirtualListStyle = struct {
 // lives in the per-frame arena — typically built by walking a rich_zig
 // `Text` value into `RichTextSpan`s.
 
-pub const RichTextSpan = struct {
-    /// Byte start in the rich_text's content (UTF-8). Spans must be
-    /// non-overlapping and sorted by start.
-    start: u32,
-    /// Byte end (exclusive).
-    end: u32,
-    color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
-    font: FontSpec = DEFAULT_FONT,
-    /// Set on the rendered TextDraw so the text pass can pick a
-    /// bold/italic font face. The Host's text measurer is expected to
-    /// consult these — for now they're advisory (current GDI host
-    /// always picks Regular).
-    bold: bool = false,
-    italic: bool = false,
-};
+/// A styled byte range of a `rich_text` (defined in `text.zig` so `text_wrap`
+/// can measure runs without importing the Cmd types).
+pub const RichTextSpan = text.RichTextSpan;
 
 pub const RichTextCmd = struct {
     /// Full UTF-8 string. Spans index into this. Anything not covered
@@ -555,6 +543,12 @@ pub const RichTextCmd = struct {
     spans: []const RichTextSpan = &.{},
     default_color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
     default_font: FontSpec = DEFAULT_FONT,
+    /// Line breaking, as `TextCmd.wrap`: lines break across spans (mixed
+    /// fonts / colours per line) at UAX #14 opportunities. `.none` keeps the
+    /// single-line behaviour.
+    wrap: Wrap = .none,
+    max_lines: u16 = 0,
+    text_align: TextAlign = .start,
 };
 
 // ── Mixed-font text builder ────────────────────────────────────────
@@ -612,6 +606,10 @@ pub const CanvasPrimitive = union(enum) {
     triangles: Triangles,
     /// A big batch of independent segments sharing one color / thickness.
     lines: Lines,
+    /// A text label at a canvas-local position (top-left of the text box).
+    /// Drawn above the canvas' solid primitives, clipped to the canvas. Set
+    /// `font.scalable` for labels that zoom with the canvas.
+    text: Text,
 
     pub const Polyline = struct {
         points: []const CanvasPoint,
@@ -634,6 +632,13 @@ pub const CanvasPrimitive = union(enum) {
         x: f32,
         color: [4]f32 = .{ 0.3, 0.3, 0.35, 1.0 },
         thickness: f32 = 1,
+    };
+    pub const Text = struct {
+        x: f32,
+        y: f32,
+        content: []const u8,
+        font: FontSpec = DEFAULT_FONT,
+        color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
     };
     pub const Marker = struct {
         x: f32,
@@ -701,6 +706,11 @@ pub const CanvasPrimitive = union(enum) {
             .hline => |x| std.meta.eql(x, b.hline),
             .vline => |x| std.meta.eql(x, b.vline),
             .marker => |x| std.meta.eql(x, b.marker),
+            .text => |t| blk: {
+                const o = b.text;
+                break :blk t.x == o.x and t.y == o.y and std.meta.eql(t.font, o.font) and
+                    std.meta.eql(t.color, o.color) and std.mem.eql(u8, t.content, o.content);
+            },
         };
     }
 
@@ -808,6 +818,24 @@ pub fn SceneCmd(comptime Msg: type) type {
 // Components emit commands using the composed Msg; this keeps routing
 // explicit rather than hiding it behind a per-component wrapper.
 
+/// Keyboard grouping of list-row buttons (see docs/features/focus.md).
+pub const Roving = enum {
+    /// Not part of a group.
+    none,
+    /// Arrow keys move the keyboard focus between the group's buttons; Enter / Space activate.
+    focus,
+    /// As `focus`, and moving onto a button also dispatches its Msg (selection follows focus).
+    select,
+};
+
+/// Keyboard-navigation options of a button (`CmdBuffer.buttonNav`).
+pub const ButtonNav = struct {
+    /// false: Tab / Shift+Tab skip it (clicks, Space, Enter and arrows still work). A list marks
+    /// every row but the active one, so the whole list is ONE Tab stop.
+    tab_stop: bool = true,
+    roving: Roving = .none,
+};
+
 pub fn ButtonCmd(comptime Msg: type) type {
     return struct {
         msg: Msg,
@@ -824,6 +852,9 @@ pub fn ButtonCmd(comptime Msg: type) type {
         /// Byte index into `label` of one ASCII character to underline (a
         /// menu mnemonic: the "F" of "File"). Null = no underline.
         underline: ?u16 = null,
+        /// See `ButtonNav`.
+        tab_stop: bool = true,
+        roving: Roving = .none,
     };
 }
 
@@ -1404,6 +1435,19 @@ pub fn CmdBuffer(comptime Msg: type) type {
             })) catch oom();
         }
 
+        /// `buttonStyled` with keyboard-navigation options: list rows pass
+        /// `.{ .tab_stop = false, .roving = .focus }` (all but the active row).
+        pub fn buttonNav(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle, nav: ButtonNav) void {
+            self.cmds.append(self.backing, self.box(.button, .{
+                .msg = msg,
+                .label = label,
+                .style = style,
+                .font = self.theme.typography.body,
+                .tab_stop = nav.tab_stop,
+                .roving = nav.roving,
+            })) catch oom();
+        }
+
         /// Emit a greyed-out, non-interactive button. Same as `button`
         /// but sets `.disabled = true` — the rect is identical, so the
         /// button keeps its place instead of shifting the layout when it
@@ -1640,6 +1684,27 @@ pub fn CmdBuffer(comptime Msg: type) type {
             })) catch oom();
         }
 
+        /// `canvasInteractive` that is also a keyboard-navigable leaf: Tab lands on
+        /// it (focus ring), Space / Enter dispatch `focus_msg` (a no-op Msg is fine)
+        /// and the keys the app's hooks decline reach `canvasMsg` as `.key` events.
+        pub fn canvasInteractiveFocusable(
+            self: *Self,
+            style: CanvasStyle,
+            primitives: []const CanvasPrimitive,
+            id: u32,
+            label: []const u8,
+            focus_msg: Msg,
+        ) void {
+            self.cmds.append(self.backing, self.box(.canvas, .{
+                .style = style,
+                .primitives = primitives,
+                .label = label,
+                .pointer = true,
+                .id = id,
+                .msg = focus_msg,
+            })) catch oom();
+        }
+
         pub fn textInputSelected(
             self: *Self,
             focus_msg: Msg,
@@ -1685,6 +1750,20 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .rich_text = .{
                 .content = content,
                 .spans = spans,
+            } }) catch oom();
+        }
+
+        /// Wrapped `rich_text` (mixed fonts / colours per line, breaking across
+        /// spans). Uses the theme's body font and text colour as the defaults.
+        pub fn richParagraph(self: *Self, content: []const u8, spans: []const RichTextSpan, opts: ParagraphOpts) void {
+            self.cmds.append(self.backing, .{ .rich_text = .{
+                .content = content,
+                .spans = spans,
+                .default_font = self.theme.typography.body,
+                .default_color = self.theme.text_color,
+                .wrap = opts.wrap,
+                .max_lines = opts.max_lines,
+                .text_align = opts.text_align,
             } }) catch oom();
         }
 

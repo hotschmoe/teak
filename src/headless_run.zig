@@ -126,7 +126,7 @@ pub fn shot(
     var host = try Host.init(gpa, o.width, o.height);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = o.scale });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = envScale(o.scale) });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
@@ -136,12 +136,59 @@ pub fn shot(
     try writeFramePng(&gpu, gpa, path);
 }
 
+/// `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
+/// headless run, so any example's `zig build shot` can be taken at 2x without
+/// code changes. Unset or invalid: `default`.
+pub fn envScale(default: f32) f32 {
+    const v = std.c.getenv("TEAK_SCALE") orelse return default;
+    const parsed = std.fmt.parseFloat(f32, std.mem.span(v)) catch return default;
+    return if (parsed >= 0.25 and parsed <= 16) parsed else default;
+}
+
+pub const ServeOptions = struct {
+    width: u32 = 1280,
+    height: u32 = 800,
+    msaa: bool = true,
+    /// Real milliseconds slept between frames, so an idle headless app does
+    /// not spin a core. The Host clock stays fake (16 ms per frame).
+    frame_sleep_ms: u32 = 4,
+    /// `control_path` / `record_path` / `replay_path` / `inspect` here are
+    /// overridden by `TEAK_CONTROL` / `TEAK_RECORD` / `TEAK_REPLAY` /
+    /// `TEAK_INSPECT`.
+    run: run_mod.RunOptions = .{},
+};
+
+/// Run `App` headlessly until the Host closes (the control channel's `quit`
+/// command, or never): the "launch me for an agent" entry point. Pair it with
+/// `TEAK_CONTROL=<socket>` and `tools/teak-drive`. See
+/// docs/features/agent-driver.md.
+pub fn serve(
+    comptime App: type,
+    comptime Host: type,
+    comptime Gpu: type,
+    gpa: std.mem.Allocator,
+    o: ServeOptions,
+) !void {
+    var host = try Host.init(gpa, o.width, o.height);
+    defer host.deinit();
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa });
+    defer gpu.deinit();
+    var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
+    defer rt.deinit();
+    while (!host.shouldClose()) {
+        try rt.frame();
+        if (o.frame_sleep_ms > 0) {
+            std.Io.sleep(std.Options.debug_io, .fromMilliseconds(o.frame_sleep_ms), .awake) catch {};
+        }
+    }
+}
+
 /// `argv[1]` of a `pub fn main(init: std.process.Init)` program, or
 /// `default` when absent: the output path of a `zig build shot -- out.png`.
 pub fn pathArg(init: anytype, default: []const u8) []const u8 {
-    var it = init.minimal.args.iterate();
-    _ = it.next(); // program name
-    return it.next() orelse default;
+    // `toSlice` (not `iterate`) so this also works on Windows.
+    const args = init.minimal.args.toSlice(init.arena.allocator()) catch return default;
+    return if (args.len > 1) args[1] else default;
 }
 
 // ── PNG ────────────────────────────────────────────────────────────

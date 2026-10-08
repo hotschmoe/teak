@@ -21,6 +21,7 @@ const builtin = @import("builtin");
 const teak = @import("teak");
 
 pub const c = @import("stb-c");
+const fallback = @import("fallback.zig");
 
 /// Font search order. `TEAK_FONT` (absolute path) overrides everything;
 /// otherwise the first readable candidate wins. DejaVuSansMono leads
@@ -208,6 +209,7 @@ pub fn registerFace(family: teak.FontFamily, weight: teak.FontWeight, ttf: []con
 
 /// Forget every registered face and the loaded fallback.
 pub fn releaseFaces() void {
+    fallback.release();
     if (registry.fallback) |*f| f.deinit();
     registry = .{};
     epoch += 1;
@@ -227,7 +229,7 @@ pub fn faceById(id: u16) ?*const Font {
         if (registry.fallback) |*f| return f;
         return null;
     }
-    if (id > fallback_face_id) return null;
+    if (id > fallback_face_id) return fallback.faceByExtraId(id);
     const fam = id / weight_count;
     const w = id % weight_count;
     if (registry.faces[fam][w]) |*f| return f;
@@ -285,6 +287,19 @@ pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
     return null;
 }
 
+/// Windows system fonts tried in order, relative to `<WINDIR>\Fonts`:
+/// Consolas (monospace, Vista+), then Courier New, Lucida Console, and the
+/// proportional UI faces as a last resort.
+const WINDOWS_FONT_FILES = [_][]const u8{ "consola.ttf", "cour.ttf", "lucon.ttf", "segoeui.ttf", "arial.ttf" };
+
+/// The `i`th Windows font candidate under `windir` (e.g. `C:\Windows`) written
+/// into `buf`; null past the end of the list or when `buf` is too small.
+/// Pure so the probe order is testable on any OS.
+pub fn windowsFontCandidate(buf: []u8, windir: []const u8, i: usize) ?[]const u8 {
+    if (i >= WINDOWS_FONT_FILES.len) return null;
+    return std.fmt.bufPrint(buf, "{s}\\Fonts\\{s}", .{ std.mem.trimEnd(u8, windir, "\\/"), WINDOWS_FONT_FILES[i] }) catch null;
+}
+
 const readFontFile = if (has_files) readFontFileLibc else readFontFileNone;
 
 fn readFontFileNone(_: std.mem.Allocator) ![]u8 {
@@ -298,6 +313,15 @@ fn readFontFileLibc(allocator: std.mem.Allocator) ![]u8 {
         if (env_path.len > 0) {
             if (readAbsolute(allocator, env_path)) |bytes| return bytes else |_| {}
         }
+    }
+    if (builtin.os.tag == .windows) {
+        const windir = if (std.c.getenv("WINDIR")) |w| std.mem.span(w) else "C:\\Windows";
+        var buf: [1024]u8 = undefined;
+        var i: usize = 0;
+        while (windowsFontCandidate(&buf, windir, i)) |path| : (i += 1) {
+            if (readAbsolute(allocator, path)) |bytes| return bytes else |_| {}
+        }
+        return error.FontNotFound;
     }
     for (FONT_CANDIDATES) |path| {
         if (readAbsolute(allocator, path)) |bytes| return bytes else |_| {}
@@ -331,4 +355,13 @@ pub fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     }
     if (list.items.len == 0) return error.EmptyFont;
     return try list.toOwnedSlice(allocator);
+}
+
+test "windowsFontCandidate probes monospace faces first under the given Windows dir" {
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("D:\\Win\\Fonts\\consola.ttf", windowsFontCandidate(&buf, "D:\\Win", 0).?);
+    try std.testing.expectEqualStrings("D:\\Win\\Fonts\\cour.ttf", windowsFontCandidate(&buf, "D:\\Win\\", 1).?);
+    try std.testing.expect(windowsFontCandidate(&buf, "D:\\Win", WINDOWS_FONT_FILES.len) == null);
+    var tiny: [4]u8 = undefined;
+    try std.testing.expect(windowsFontCandidate(&tiny, "D:\\Win", 0) == null);
 }
