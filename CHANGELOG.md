@@ -119,6 +119,9 @@
 
 ### Added
 
+- **Generated API reference**: `tools/gen_api.zig` (`zig build api`) walks `src/teak.zig` with `std.zig.Ast`, follows its `@import`s and writes
+  every public signature + `///` doc to `docs/api.md` and `llms-full.txt` (= hand-curated `llms.txt` + the generated part). `zig build audit` fails
+  when either is stale, and when a `docs/migration-*.md` is not linked from `llms.txt`.
 - Toasts slide in from the right and fade (and slide out on expiry / dismiss) with `teak.anim` tweens; the app
   forwards `animationMsg` frames as `Toast.Msg.frame` and lists `Sub.animation_frame` while `Toast.animating`.
 
