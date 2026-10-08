@@ -469,8 +469,27 @@ fn hdropBlock() ?HANDLE {
     return mem;
 }
 
-fn doQI(this: *DataObject, _: *const anyopaque, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
-    ppv.* = @ptrCast(this); // IUnknown / IDataObject only; fine for this driver
+const GUID = extern struct { d1: u32, d2: u16, d3: u16, d4: [8]u8 };
+fn guid(d1: u32) GUID {
+    return .{ .d1 = d1, .d2 = 0, .d3 = 0, .d4 = .{ 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+}
+fn isIid(iid: *const anyopaque, ids: []const u32) bool {
+    const g: *const GUID = @ptrCast(@alignCast(iid));
+    for (ids) |id| {
+        const want = guid(id);
+        if (g.d1 == want.d1 and g.d2 == 0 and g.d3 == 0 and std.mem.eql(u8, &g.d4, &want.d4)) return true;
+    }
+    return false;
+}
+// COM probes for IMarshal and friends while marshalling a drag source across
+// processes: answering "yes" to those corrupts the drag, so only the real
+// interfaces (IUnknown 0, IDataObject 0x10e, IDropSource 0x121) are offered.
+fn doQI(this: *DataObject, iid: *const anyopaque, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    if (!isIid(iid, &.{ 0x0, 0x10e })) {
+        ppv.* = null;
+        return E_NOINTERFACE;
+    }
+    ppv.* = @ptrCast(this);
     return 0;
 }
 fn doAddRef(_: *DataObject) callconv(WINAPI) c_ulong {
@@ -523,7 +542,11 @@ const data_vtbl: @typeInfo(@FieldType(DataObject, "vtbl")).pointer.child = .{
 };
 var data_object: DataObject = .{ .vtbl = &data_vtbl };
 
-fn dsQI(this: *DropSource, _: *const anyopaque, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+fn dsQI(this: *DropSource, iid: *const anyopaque, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
+    if (!isIid(iid, &.{ 0x0, 0x121 })) {
+        ppv.* = null;
+        return E_NOINTERFACE;
+    }
     ppv.* = @ptrCast(this);
     return 0;
 }
@@ -741,7 +764,7 @@ pub fn main(init: std.process.Init) !void {
     out_dir = args[2];
     try std.Io.Dir.cwd().createDirPath(io_, out_dir);
     _ = SetProcessDpiAwarenessContext(-4);
-    _ = OleInitialize(null);
+    log("OleInitialize hr=0x{x}", .{@as(u32, @bitCast(@as(i32, @intCast(OleInitialize(null)))))});
 
     var snap_buf: [600]u8 = undefined;
     snap_path = try std.fmt.bufPrint(&snap_buf, "{s}\\snapshot.txt", .{out_dir});
