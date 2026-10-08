@@ -15,6 +15,7 @@ const page_data = @import("page_data.zig");
 const page_overlays = @import("page_overlays.zig");
 const page_layout = @import("page_layout.zig");
 const page_scene = @import("page_scene.zig");
+const page_pickers = @import("page_pickers.zig");
 
 pub const Model = model_mod.Model;
 pub const Msg = model_mod.Msg;
@@ -114,6 +115,7 @@ pub fn view(m: *const Model, cb: anytype) void {
         .data => page_data.view(m, cb),
         .overlays => page_overlays.view(m, cb),
         .layout => page_layout.view(m, cb),
+        .pickers => page_pickers.view(m, cb),
         .scene => page_scene.view(m, cb),
     }
     cb.popGroup();
@@ -227,6 +229,12 @@ pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
         .name => teak.textFieldChar(Msg, "name", c),
         .search => teak.textFieldChar(Msg, "search", c),
         .qty => teak.textFieldChar(Msg, "qty", c),
+        .color_hex => .{ .color = W.color_picker.charMsg(.hex, c) },
+        .color_r => .{ .color = W.color_picker.charMsg(.r, c) },
+        .color_g => .{ .color = W.color_picker.charMsg(.g, c) },
+        .color_b => .{ .color = W.color_picker.charMsg(.b, c) },
+        .spin => .{ .spin = .{ .char = c } },
+        .spin2 => .{ .spin2 = .{ .char = c } },
         .combo => .{ .combo = model_mod.Combo.charMsg(c) },
     };
 }
@@ -242,6 +250,12 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
         .name => teak.textFieldSpecial(Msg, "name", key),
         .search => teak.textFieldSpecial(Msg, "search", key),
         .qty => teak.textFieldSpecial(Msg, "qty", key),
+        .color_hex => if (W.color_picker.keyMsg(.hex, key)) |c| Msg{ .color = c } else null,
+        .color_r => if (W.color_picker.keyMsg(.r, key)) |c| Msg{ .color = c } else null,
+        .color_g => if (W.color_picker.keyMsg(.g, key)) |c| Msg{ .color = c } else null,
+        .color_b => if (W.color_picker.keyMsg(.b, key)) |c| Msg{ .color = c } else null,
+        .spin => if (model_mod.Spin.keyStep(key)) |st| Msg{ .spin_step = st } else teak.textFieldSpecial(Msg, "spin", key),
+        .spin2 => if (model_mod.Spin2.keyStep(key)) |st| Msg{ .spin2_step = st } else teak.textFieldSpecial(Msg, "spin2", key),
         .combo => if (model_mod.Combo.keyMsg(&m.combo, key, &page_inputs.woods, page_inputs.combo_key_opts)) |c| Msg{ .combo = c } else null,
     };
 }
@@ -285,10 +299,21 @@ pub fn contextMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
 
 pub fn canvasMsg(m: *const Model, ev: teak.CanvasEvent) ?Msg {
     if (W.split.canvasMsg(&m.split, ev, page_layout.split_opts)) |s| return .{ .split = s };
+    if (W.color_picker.canvasMsg(&m.color, ev, page_pickers.color_opts)) |s| return .{ .color = s };
     return null;
 }
 
 pub const resources = page_scene.resources;
+
+pub fn wheelMsg(m: *const Model, dy: f32) ?Msg {
+    if (m.page != .pickers) return null;
+    const f = m.focus orelse return null;
+    return switch (f) {
+        .spin => if (model_mod.Spin.wheelStep(dy, false)) |st| Msg{ .spin_step = st } else null,
+        .spin2 => if (model_mod.Spin2.wheelStep(dy, false)) |st| Msg{ .spin2_step = st } else null,
+        else => null,
+    };
+}
 
 pub fn windowTitle(m: *const Model) ?[]const u8 {
     _ = m;

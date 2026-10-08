@@ -24,6 +24,7 @@ pub const Action = enum {
     page_data,
     page_overlays,
     page_layout,
+    page_pickers,
     page_scene,
     copy,
     paste,
@@ -42,6 +43,9 @@ pub const Progress = W.progress;
 pub const NameField = teak.TextField(32);
 pub const QtyField = teak.NumericField(.{ .capacity = 8, .min = 0, .max = 999, .precision = 0, .invalid_message = "enter 0 - 999" });
 pub const Drop = teak.Dropdown(8);
+pub const Color = W.color_picker;
+pub const Spin = W.spinner.Spinner(.{ .min = 0, .max = 100, .step = 1, .big_step = 10 });
+pub const Spin2 = W.spinner.Spinner(.{ .min = 0, .max = 1, .step = 0.05, .big_step = 0.25, .precision = 2 });
 pub const Combo = teak.Combobox(24);
 
 pub const Page = enum {
@@ -50,6 +54,7 @@ pub const Page = enum {
     data,
     overlays,
     layout,
+    pickers,
     scene,
 
     pub fn title(self: Page) []const u8 {
@@ -59,12 +64,13 @@ pub const Page = enum {
             .data => "Data",
             .overlays => "Overlays",
             .layout => "Layout",
+            .pickers => "Pickers",
             .scene => "3D & images",
         };
     }
 };
 
-pub const Field = enum { name, search, qty, combo };
+pub const Field = enum { name, search, qty, combo, color_hex, color_r, color_g, color_b, spin, spin2 };
 pub const SliderId = enum { volume, mix };
 pub const Dialog = enum { none, about, shortcuts, confirm_reset };
 
@@ -116,6 +122,12 @@ pub const Msg = union(enum) {
     note_extent: [2]f32,
     chart_run,
     chart_tick,
+    // pickers
+    color: Color.Msg,
+    spin: Spin.Msg,
+    spin_step: Spin.Step,
+    spin2: Spin2.Msg,
+    spin2_step: Spin2.Step,
     // layout
     tabs: Tabs.Msg,
     split: Split.Msg,
@@ -176,6 +188,11 @@ pub const Model = struct {
     chart_t: u32 = 0,
     series: [series_len]f32 = initialSeries(),
 
+    // pickers
+    color: Color.Model = Color.init(.{ .r = 200, .g = 70, .b = 50 }),
+    spin: Spin.Model = spinInit(Spin, 42),
+    spin2: Spin2.Model = spinInit(Spin2, 0.5),
+
     // layout
     tabs: Tabs.Model = .{},
     split: Split.Model = .{ .ratio = 0.42 },
@@ -193,6 +210,12 @@ pub const Model = struct {
     subs: [5]teak.Sub(Msg) = undefined,
     subs_len: usize = 0,
 };
+
+fn spinInit(comptime S: type, v: f64) S.Model {
+    var m: S.Model = .{};
+    S.setValue(&m, v);
+    return m;
+}
 
 fn initialSeries() [series_len]f32 {
     var s: [series_len]f32 = undefined;
@@ -307,6 +330,22 @@ pub fn update(m: *Model, msg: Msg) void {
             m.series[series_len - 1] = sample(m.chart_t + series_len);
         },
 
+        .color => |s| {
+            Color.update(&m.color, s);
+            switch (s) {
+                .edit => |e| m.focus = switch (e.field) {
+                    .hex => .color_hex,
+                    .r => .color_r,
+                    .g => .color_g,
+                    .b => .color_b,
+                },
+                else => {},
+            }
+        },
+        .spin => |s| Spin.update(&m.spin, s),
+        .spin_step => |s| Spin.step(&m.spin, s),
+        .spin2 => |s| Spin2.update(&m.spin2, s),
+        .spin2_step => |s| Spin2.step(&m.spin2, s),
         .tabs => |s| Tabs.update(&m.tabs, s),
         .split => |s| Split.update(&m.split, s),
         .progress => |s| Progress.update(&m.progress, s),
@@ -354,6 +393,7 @@ pub fn perform(m: *Model, a: Action) void {
         .page_data => m.page = .data,
         .page_overlays => m.page = .overlays,
         .page_layout => m.page = .layout,
+        .page_pickers => m.page = .pickers,
         .page_scene => m.page = .scene,
         .copy => Toasts.push(&m.toasts, .info, "Copied", Toasts.default_ttl),
         .paste => Toasts.push(&m.toasts, .info, "Pasted", Toasts.default_ttl),
