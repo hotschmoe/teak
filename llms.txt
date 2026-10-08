@@ -214,6 +214,7 @@ ScrollStyle = struct { direction = .vertical, padding, gap, flex, width, height,
                        id: u32 = 0 }                        // width/height 0 = measured; flex scroll has zero basis;
                                                             //   id != 0 => scrollMsg / scrollLayoutMsg routing
 OverlayStyle(Msg) = struct { x, y, width, height, padding = 8, gap = 4,
+                             anchor_msg: ?Msg = null, anchor_side: AnchorSide = .below_start, anchor_gap: f32 = 0, /* place against the earlier widget whose click/focus Msg == anchor_msg */
                        direction = .vertical, align_cross: Align = .start, backdrop: [4]f32 = {0,0,0,0},
                        anchor_x_frac, anchor_y_frac: f32 = 0, modal: bool = false,
                        border: ?[4]f32 = null, border_width: f32 = 1,
@@ -418,7 +419,8 @@ NumericConfig = struct { capacity: usize = 16, min: ?f64 = null, max: ?f64 = nul
 Dropdown(comptime cap: usize) type          // closed button + open overlay list; Msg = toggle,
                                             //   close, select:usize, scroll_by, highlight.
                                             //   Real view is viewWith(model, cb, options, msgs, opts)
-DropdownViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200,
+DropdownViewOpts = struct { auto_anchor: bool = true, anchor_side: AnchorSide = .below_start,
+                            list_x, list_y: f32 = 0 /*only if !auto_anchor*/, list_width: f32 = 200,
                             list_max_height: f32 = 320, max_visible: usize = 0 }
 ```
 
@@ -682,7 +684,8 @@ Combobox(comptime cap: usize) type      // cap = query bytes; Model/Msg/update/v
   viewWith(model, cb, options: []const []const u8, msgs /*.focus .close .selectMsg(i)*/, opts: ComboboxViewOpts)
   charMsg(u8) Msg;  keyMsg(model, SpecialKey, options, opts) ?Msg;  enterMsg / highlightMsg / scrollByMsg(...)
   shownText(model, options) []const u8
-ComboboxViewOpts = struct { list_x, list_y: f32 = 0, list_width: f32 = 200, max_visible: usize = 8,
+ComboboxViewOpts = struct { auto_anchor: bool = true, anchor_side: AnchorSide = .below_start,
+                            list_x, list_y: f32 = 0 /*only if !auto_anchor*/, list_width: f32 = 200, max_visible: usize = 8,
                             match: Match(.substring|.prefix) = .substring, input_style: ?TextInputStyle = null }
 // pure: combobox.matches(query, option, mode) bool, countMatches, nthMatch, ordinalOf, foldCase
 ```

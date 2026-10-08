@@ -115,6 +115,8 @@ pub const GroupStyle = cmd.GroupStyle;
 pub const ScrollStyle = cmd.ScrollStyle;
 /// Placement and look of a `push_overlay` (second z-layer).
 pub const OverlayStyle = cmd.OverlayStyle;
+/// Which side of its anchor widget an `OverlayStyle.anchor_msg` overlay opens on.
+pub const AnchorSide = cmd.AnchorSide;
 /// Geometry of a `push_virtual_list` (only visible rows are emitted).
 pub const VirtualListStyle = cmd.VirtualListStyle;
 /// Intrinsic size and flex of an `image` leaf.

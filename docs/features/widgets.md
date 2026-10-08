@@ -130,9 +130,13 @@ hand-call pattern `counter_greeter` uses for `greeter.view`.
 
 `msgs` carries the composed AppMsgs: `.toggle`, `.close`, and
 `selectMsg` — a **comptime `fn(usize) AppMsg`** the app supplies to build
-the per-index select message. `DropdownViewOpts` positions the open list
-(`list_x`, `list_y`, `list_width`, `list_max_height`) and caps its visible
-height (`max_visible`, see below).
+the per-index select message. `DropdownViewOpts` sizes the open list
+(`list_width`, `list_max_height`) and caps its visible height (`max_visible`,
+see below). **Positioning is automatic** (`auto_anchor`, default true): the list
+is an overlay anchored to the closed button by its `toggle` Msg
+(`OverlayStyle.anchor_msg`), opening below its left edge (`anchor_side` picks
+another side). No coordinates to compute; `list_x` / `list_y` apply only with
+`auto_anchor = false`. See [overlay anchoring](layout.md#overlay-anchoring).
 
 Behavior: **closed** = a button showing the selected option's label
 (placeholder when the slice is empty / index out of range); **open** =
@@ -203,7 +207,7 @@ TextField model, open, selected: ?usize, highlighted, scroll_offset }`,
 scroll_by }`. The option labels are app-owned and passed to `viewWith(model,
 cb, options, msgs, opts)`; `msgs` carries `.focus`, `.close` and a comptime
 `selectMsg(i)` that receives the **original** option index. `ViewOpts`:
-`list_x/list_y/list_width`, `max_visible` (default 8; the list scrolls past
+`list_width`, `auto_anchor` (default true: the list opens under the input; `list_x/list_y` only when false), `anchor_side`, `max_visible` (default 8; the list scrolls past
 it), `match` (`.substring` | `.prefix`), `input_style`.
 
 The view is a `text_input` (query while open, the selected label while

@@ -51,10 +51,15 @@ pub const ITEM_HEIGHT: f32 = 36;
 
 /// Anchor + sizing for the open list overlay.
 pub const DropdownViewOpts = struct {
-    /// Window-absolute top-left where the open list should appear. The app
-    /// typically passes the previous frame's rect of the closed button
-    /// (its bottom-left), matching the overlay positioning pattern used
-    /// elsewhere in the framework.
+    /// Open the list against the closed button automatically (below its
+    /// left edge): the overlay is anchored to the `msgs.toggle` button
+    /// (`OverlayStyle.anchor_msg`), resolved by layout in the same frame.
+    /// `list_x` / `list_y` are then ignored. Set false to place the list
+    /// yourself at window-absolute `list_x` / `list_y`.
+    auto_anchor: bool = true,
+    /// Which side of the button the list opens on when `auto_anchor`.
+    anchor_side: cmd.AnchorSide = .below_start,
+    /// Window-absolute top-left of the open list when `auto_anchor` is false.
     list_x: f32 = 0,
     list_y: f32 = 0,
     list_width: f32 = 200,
@@ -309,6 +314,8 @@ pub fn Dropdown(comptime cap: usize) type {
                 cb.pushOverlay(.{
                     .x = opts.list_x,
                     .y = opts.list_y,
+                    .anchor_msg = if (opts.auto_anchor) msgs.toggle else null,
+                    .anchor_side = opts.anchor_side,
                     .width = opts.list_width,
                     .height = viewport_h,
                     .modal = true,
@@ -339,6 +346,8 @@ pub fn Dropdown(comptime cap: usize) type {
                 cb.pushOverlay(.{
                     .x = opts.list_x,
                     .y = opts.list_y,
+                    .anchor_msg = if (opts.auto_anchor) msgs.toggle else null,
+                    .anchor_side = opts.anchor_side,
                     .width = opts.list_width,
                     .height = opts.list_max_height,
                     .modal = true,

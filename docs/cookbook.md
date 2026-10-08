@@ -327,7 +327,8 @@ of drawing a mile-long menu.
    pub fn view(m: *const App.Model, cb: anytype) void {
        cb.pushGroup(.{ .direction = .vertical, .padding = 16, .gap = 8 });
        Picker.viewWith(&m.picker, cb, &options, picker_msgs, .{
-           .list_x = 16, .list_y = 52,   // anchor: usually last frame's closed-button rect
+                                         // (the list anchors itself under the closed button;
+                                         //  `.auto_anchor = false` + list_x/list_y to place it by hand)
            .list_width = 200,
            .max_visible = 8,             // > 8 options → the open list scrolls
        });
@@ -884,7 +885,7 @@ the MATERIAL field in `examples/chrome`.
 
 ```zig
 const Material = teak.Combobox(24);            // 24 = query capacity (bytes)
-const opts: teak.ComboboxViewOpts = .{ .list_x = 12, .list_y = 390, .list_width = 336, .max_visible = 6 };
+const opts: teak.ComboboxViewOpts = .{ .list_width = 336, .max_visible = 6 }; // anchors under the input
 // Model:  material: Material.Model = .{ .selected = 0 },
 // Msg:    material: Material.Msg,
 // update: .material => |mm| Material.update(&m.material, mm),
@@ -920,8 +921,9 @@ sets `material.open = false` (see chrome's `.focus_name`).
 
 **Common mistake:** treating the `selectMsg` index as the filtered ordinal —
 it is the index into *your* options slice, so `m.material.selected` is always
-a valid index into it. `list_x/list_y` are window coordinates (the previous
-frame's rect of the input, as for `Dropdown`).
+a valid index into it. The list anchors itself under the input
+(`auto_anchor`); `list_x/list_y` are window coordinates used only with
+`auto_anchor = false`.
 
 ---
 

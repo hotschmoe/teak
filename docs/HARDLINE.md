@@ -145,9 +145,11 @@ menus can render outside their declaring parent.
   base text (docs/features/gpu.md, "Overlay layering").
   Each pass walks the buffer twice in the same forward order; within
   a level, painter's order = doc order (unchanged from §1).
-- Overlay position comes from explicit `x`, `y` on `OverlayStyle(Msg)`.
-  The app computes them (typically from the previous frame's anchor
-  rect or mouse coords). No anchor-by-cmd-index coupling.
+- Overlay position comes from explicit `x`, `y` on `OverlayStyle(Msg)`
+  (mouse coords, a fixed spot), or from `anchor_msg`: a widget named by its
+  click / focus **Msg value**, resolved by the layout pass from the same
+  frame's rects (like `focusedMsg`, never by cmd index). No anchor-by-cmd-index
+  coupling, no retained anchor state, no layout feedback into `view`.
 - Overlays do not contribute to their parent's measured size — they
   hop the layout but stay in the buffer.
 - `OverlayStyle(Msg)` is Msg-generic so `backdrop_msg: ?Msg` can carry

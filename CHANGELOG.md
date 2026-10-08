@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Overlay anchoring
+
+- `OverlayStyle.anchor_msg` / `anchor_side` / `anchor_gap`: an overlay can be
+  placed against a widget by its click / focus Msg (`cmd.leafMsg`), resolved by
+  the layout pass from the same frame's rects. `Dropdown` and `Combobox` use it
+  by default (`auto_anchor = true`): apps no longer compute `list_x` / `list_y`
+  (they apply only with `auto_anchor = false`). Behaviour change: callers that
+  passed coordinates now get the auto position; set `.auto_anchor = false` to keep
+  the old placement. New `teak.AnchorSide`.
+
 ### Idle hosts and blink-aware idle
 
 - `Host.waitEvents(timeout_ms)` on X11 (poll on the connection fd), Win32

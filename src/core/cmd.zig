@@ -357,6 +357,40 @@ pub fn OverlayStyle(comptime Msg: type) type {
         /// data only (HARDLINE §3 bans fn-pointer callbacks). Independent
         /// of `modal`, but only meaningful together.
         backdrop_msg: ?Msg = null,
+        /// Anchor the overlay to a widget instead of (x, y): the overlay is
+        /// placed against the rect of the nearest EARLIER leaf in the buffer
+        /// whose click / focus Msg equals this value (`leafMsg`, compared
+        /// by value like `focusedMsg`; the nearest preceding match wins).
+        /// Resolved by the layout pass from the same frame's final rects, so
+        /// there is no frame of latency, no layout event and no app state.
+        /// No match (or null): `x` / `y` / `anchor_*_frac` apply as before.
+        anchor_msg: ?Msg = null,
+        /// Which side of the anchor widget the overlay opens on.
+        anchor_side: AnchorSide = .below_start,
+        /// Pixels between the anchor's edge and the overlay.
+        anchor_gap: f32 = 0,
+    };
+}
+
+/// Where an `OverlayStyle.anchor_msg` overlay sits relative to its widget.
+/// `*_start` aligns the overlay's left (or top) edge with the widget's,
+/// `*_end` aligns the right edge. No flipping at the window edge.
+pub const AnchorSide = enum { below_start, below_end, above_start, above_end, right_start, left_start };
+
+/// The click / focus Msg a leaf carries (what `OverlayStyle.anchor_msg`
+/// matches), or null for containers and decorative leaves. Exhaustive, so a
+/// new Cmd variant must decide whether it can anchor an overlay.
+pub fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
+    return switch (c) {
+        .button => |b| b.msg,
+        .text_input => |t| t.focus_msg,
+        .text_area => |t| t.focus_msg,
+        .checkbox => |x| x.msg,
+        .radio => |r| r.msg,
+        .slider => |s| s.grab_msg,
+        .canvas => |cv| cv.msg,
+        .scene3d => |sc| sc.msg,
+        .push_group, .pop_group, .push_scroll, .pop_scroll, .push_overlay, .pop_overlay, .push_virtual_list, .pop_virtual_list, .text, .rich_text, .image, .divider => null,
     };
 }
 
