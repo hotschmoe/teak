@@ -2384,6 +2384,10 @@ docs/features/headless.md.
 > script, capture the last frame to `path` as a PNG. `Host` is
 > `teak-platform-headless`'s `Host`, `Gpu` is `teak-gpu-headless`'s `Gpu`.
 - `pub fn shot( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, path: []const u8, o: ShotOptions, ) !void`
+> `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
+> headless run, so any example's `zig build shot` can be taken at 2x without
+> code changes. Unset or invalid: `default`.
+- `pub fn envScale(default: f32) f32`
 - `struct ServeOptions`
   - fields: `width, height, msaa, frame_sleep_ms, run`
 > Run `App` headlessly until the Host closes (the control channel's `quit`
