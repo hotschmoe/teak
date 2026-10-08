@@ -23,6 +23,7 @@
 
 const std = @import("std");
 const keys = @import("../input/keys.zig");
+const editor_mod = @import("editor.zig");
 
 const SpecialKey = keys.SpecialKey;
 
@@ -44,11 +45,14 @@ pub fn TextField(comptime capacity: usize) type {
         pub const Msg = union(enum) {
             /// Mouse click on the input — the app sets focus from this.
             focus,
-            /// Single character typed.
+            /// One byte of typed UTF-8 (multi-byte characters are assembled
+            /// across consecutive `char` Msgs and inserted atomically).
             char: u8,
-            /// Backspace pressed. Deletes the selection if any, else one
-            /// byte before the cursor.
+            /// Backspace. Deletes the selection if any, else one grapheme
+            /// before the cursor.
             backspace,
+            /// Delete key: the selection, else one grapheme after the cursor.
+            delete,
             /// Left arrow (collapses selection if any).
             cursor_left,
             /// Right arrow.
@@ -57,6 +61,22 @@ pub fn TextField(comptime capacity: usize) type {
             select_left,
             /// Shift+right.
             select_right,
+            /// Home / End (single line: start / end of the text).
+            home,
+            end,
+            select_home,
+            select_end,
+            /// Ctrl+Left / Ctrl+Right word jumps and their Shift variants.
+            word_left,
+            word_right,
+            select_word_left,
+            select_word_right,
+            /// Ctrl+Backspace / Ctrl+Delete.
+            delete_word_left,
+            delete_word_right,
+            /// Ctrl+Z / Ctrl+Y.
+            undo,
+            redo,
             /// Ctrl+A. Selects everything, cursor at the end.
             select_all,
             /// Escape. Clears selection without moving the cursor.
@@ -67,119 +87,40 @@ pub fn TextField(comptime capacity: usize) type {
             replace_selection: []const u8,
         };
 
-        pub const Model = struct {
-            buffer: [capacity]u8 = @splat(0),
-            len: usize = 0,
-            cursor: usize = 0,
-            /// null = no selection. When set and != cursor, the range
-            /// [min(anchor, cursor), max(anchor, cursor)) is selected.
-            selection_anchor: ?usize = null,
+        /// The text, cursor, selection and undo history live in an `Editor`
+        /// (`core/editor.zig`); its fields (`len`, `cursor`,
+        /// `selection_anchor`) and `content()` / `selectionText()` /
+        /// `hasSelection()` are the Model's public surface.
+        pub const Model = editor_mod.Editor(capacity, undo_bytes);
 
-            /// Slice of the current content (no null terminator).
-            pub fn content(self: *const @This()) []const u8 {
-                return self.buffer[0..self.len];
-            }
-
-            /// Slice of the currently selected bytes, or "" if no selection.
-            pub fn selectionText(self: *const @This()) []const u8 {
-                const anchor = self.selection_anchor orelse return "";
-                const lo = @min(anchor, self.cursor);
-                const hi = @max(anchor, self.cursor);
-                if (hi == lo) return "";
-                return self.buffer[lo..hi];
-            }
-
-            pub fn hasSelection(self: *const @This()) bool {
-                const anchor = self.selection_anchor orelse return false;
-                return anchor != self.cursor;
-            }
-        };
+        const undo_bytes = @min(@max(capacity * 4, 64), 1024);
 
         pub fn update(model: *Model, msg: Msg) void {
             switch (msg) {
                 .focus => {},
-                .char => |c| {
-                    deleteSelection(model);
-                    if (model.len >= capacity) return;
-                    std.mem.copyBackwards(
-                        u8,
-                        model.buffer[model.cursor + 1 .. model.len + 1],
-                        model.buffer[model.cursor..model.len],
-                    );
-                    model.buffer[model.cursor] = c;
-                    model.len += 1;
-                    model.cursor += 1;
-                },
-                .backspace => {
-                    if (model.selection_anchor != null) {
-                        deleteSelection(model);
-                        return;
-                    }
-                    if (model.cursor == 0) return;
-                    std.mem.copyForwards(
-                        u8,
-                        model.buffer[model.cursor - 1 .. model.len - 1],
-                        model.buffer[model.cursor..model.len],
-                    );
-                    model.len -= 1;
-                    model.cursor -= 1;
-                },
-                .cursor_left => {
-                    model.selection_anchor = null;
-                    if (model.cursor > 0) model.cursor -= 1;
-                },
-                .cursor_right => {
-                    model.selection_anchor = null;
-                    if (model.cursor < model.len) model.cursor += 1;
-                },
-                .select_left => {
-                    if (model.selection_anchor == null) model.selection_anchor = model.cursor;
-                    if (model.cursor > 0) model.cursor -= 1;
-                },
-                .select_right => {
-                    if (model.selection_anchor == null) model.selection_anchor = model.cursor;
-                    if (model.cursor < model.len) model.cursor += 1;
-                },
-                .select_all => {
-                    model.selection_anchor = 0;
-                    model.cursor = model.len;
-                },
-                .select_none => {
-                    model.selection_anchor = null;
-                },
-                .replace_selection => |bytes| {
-                    deleteSelection(model);
-                    const room = capacity - model.len;
-                    const insert = bytes[0..@min(bytes.len, room)];
-                    if (insert.len == 0) return;
-                    std.mem.copyBackwards(
-                        u8,
-                        model.buffer[model.cursor + insert.len .. model.len + insert.len],
-                        model.buffer[model.cursor..model.len],
-                    );
-                    @memcpy(model.buffer[model.cursor .. model.cursor + insert.len], insert);
-                    model.len += insert.len;
-                    model.cursor += insert.len;
-                },
+                .char => |c| model.typeByte(c),
+                .backspace => model.backspace(),
+                .delete => model.delete(),
+                .cursor_left => model.move(.left, false),
+                .cursor_right => model.move(.right, false),
+                .select_left => model.move(.left, true),
+                .select_right => model.move(.right, true),
+                .home => model.move(.home, false),
+                .end => model.move(.end, false),
+                .select_home => model.move(.home, true),
+                .select_end => model.move(.end, true),
+                .word_left => model.move(.word_left, false),
+                .word_right => model.move(.word_right, false),
+                .select_word_left => model.move(.word_left, true),
+                .select_word_right => model.move(.word_right, true),
+                .delete_word_left => model.deleteWordLeft(),
+                .delete_word_right => model.deleteWordRight(),
+                .undo => _ = model.undoEdit(),
+                .redo => _ = model.redoEdit(),
+                .select_all => model.selectAll(),
+                .select_none => model.deselect(),
+                .replace_selection => |bytes| model.insert(bytes),
             }
-        }
-
-        fn deleteSelection(model: *Model) void {
-            const anchor = model.selection_anchor orelse return;
-            const lo = @min(anchor, model.cursor);
-            const hi = @max(anchor, model.cursor);
-            if (hi == lo) {
-                model.selection_anchor = null;
-                return;
-            }
-            std.mem.copyForwards(
-                u8,
-                model.buffer[lo .. model.len - (hi - lo)],
-                model.buffer[hi..model.len],
-            );
-            model.len -= (hi - lo);
-            model.cursor = lo;
-            model.selection_anchor = null;
         }
 
         /// Emit the input cmd. `msgs.focus` is the composed AppMsg that
@@ -226,16 +167,37 @@ pub fn textFieldSpecial(
     key: SpecialKey,
 ) ?AppMsg {
     const FieldMsg = @FieldType(AppMsg, field_name);
-    return switch (key) {
-        .backspace => @unionInit(AppMsg, field_name, @unionInit(FieldMsg, "backspace", {})),
-        .left => @unionInit(AppMsg, field_name, @unionInit(FieldMsg, "cursor_left", {})),
-        .right => @unionInit(AppMsg, field_name, @unionInit(FieldMsg, "cursor_right", {})),
-        .shift_left => @unionInit(AppMsg, field_name, @unionInit(FieldMsg, "select_left", {})),
-        .shift_right => @unionInit(AppMsg, field_name, @unionInit(FieldMsg, "select_right", {})),
-        .ctrl_a => @unionInit(AppMsg, field_name, @unionInit(FieldMsg, "select_all", {})),
-        .escape => @unionInit(AppMsg, field_name, @unionInit(FieldMsg, "select_none", {})),
+    const name: ?[]const u8 = switch (key) {
+        .backspace => "backspace",
+        .delete => "delete",
+        .left => "cursor_left",
+        .right => "cursor_right",
+        .shift_left => "select_left",
+        .shift_right => "select_right",
+        .home, .ctrl_home => "home",
+        .end, .ctrl_end => "end",
+        .shift_home, .ctrl_shift_home => "select_home",
+        .shift_end, .ctrl_shift_end => "select_end",
+        .ctrl_left => "word_left",
+        .ctrl_right => "word_right",
+        .ctrl_shift_left => "select_word_left",
+        .ctrl_shift_right => "select_word_right",
+        .ctrl_backspace => "delete_word_left",
+        .ctrl_delete => "delete_word_right",
+        .ctrl_z => "undo",
+        .ctrl_y, .ctrl_shift_z => "redo",
+        .ctrl_a => "select_all",
+        .escape => "select_none",
         else => null,
     };
+    const n = name orelse return null;
+    // Keys map to payload-free variants; resolve the name at comptime per call site.
+    const info = @typeInfo(FieldMsg).@"union";
+    inline for (info.field_names, info.field_types) |fname, ftype| {
+        if (ftype == void and std.mem.eql(u8, fname, n))
+            return @unionInit(AppMsg, field_name, @unionInit(FieldMsg, fname, {}));
+    }
+    return null;
 }
 
 /// True if the key requires host-level clipboard interaction (the host
@@ -405,4 +367,57 @@ test "TextField.view emits text_input with the cb's theme" {
     try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
     try testing.expectEqual(.text_input, std.meta.activeTag(cb.cmds.items[0]));
     try testing.expectEqual(@as(usize, 0), cb.cmds.items[0].text_input.cursor);
+}
+
+test "TextField: UTF-8 typed byte-wise, backspace removes a whole grapheme" {
+    const TF = TextField(32);
+    var m: TF.Model = .{};
+    for ("ae\u{0301}\u{20AC}") |c| TF.update(&m, .{ .char = c });
+    try std.testing.expectEqualStrings("ae\u{0301}\u{20AC}", m.content());
+    TF.update(&m, .backspace); // euro sign
+    TF.update(&m, .backspace); // e + combining acute
+    try std.testing.expectEqualStrings("a", m.content());
+}
+
+test "TextField: Home/End/Delete and word jumps" {
+    const TF = TextField(32);
+    var m: TF.Model = .{};
+    for ("one two three") |c| TF.update(&m, .{ .char = c });
+    TF.update(&m, .home);
+    try std.testing.expectEqual(@as(usize, 0), m.cursor);
+    TF.update(&m, .delete);
+    try std.testing.expectEqualStrings("ne two three", m.content());
+    TF.update(&m, .word_right);
+    try std.testing.expectEqual(@as(usize, 3), m.cursor);
+    TF.update(&m, .delete_word_right);
+    try std.testing.expectEqualStrings("ne three", m.content());
+    TF.update(&m, .end);
+    TF.update(&m, .select_word_left);
+    try std.testing.expectEqualStrings("three", m.selectionText());
+    TF.update(&m, .delete_word_left);
+    try std.testing.expectEqualStrings("ne ", m.content());
+    TF.update(&m, .undo);
+    try std.testing.expectEqualStrings("ne three", m.content());
+    TF.update(&m, .redo);
+    try std.testing.expectEqualStrings("ne ", m.content());
+}
+
+test "TextField: multi-byte character that does not fit is dropped whole" {
+    const TF = TextField(4);
+    var m: TF.Model = .{};
+    for ("abc\u{00e9}") |c| TF.update(&m, .{ .char = c });
+    try std.testing.expectEqualStrings("abc", m.content());
+}
+
+test "textFieldSpecial maps the editing chords" {
+    const Search = TextField(32);
+    const App = component_mod.Components(.{ .search = Search }, null);
+    try std.testing.expectEqual(Search.Msg.delete, textFieldSpecial(App.Msg, "search", .delete).?.search);
+    try std.testing.expectEqual(Search.Msg.home, textFieldSpecial(App.Msg, "search", .home).?.search);
+    try std.testing.expectEqual(Search.Msg.select_end, textFieldSpecial(App.Msg, "search", .shift_end).?.search);
+    try std.testing.expectEqual(Search.Msg.word_left, textFieldSpecial(App.Msg, "search", .ctrl_left).?.search);
+    try std.testing.expectEqual(Search.Msg.delete_word_left, textFieldSpecial(App.Msg, "search", .ctrl_backspace).?.search);
+    try std.testing.expectEqual(Search.Msg.undo, textFieldSpecial(App.Msg, "search", .ctrl_z).?.search);
+    try std.testing.expectEqual(Search.Msg.redo, textFieldSpecial(App.Msg, "search", .ctrl_shift_z).?.search);
+    try std.testing.expect(textFieldSpecial(App.Msg, "search", .up) == null);
 }

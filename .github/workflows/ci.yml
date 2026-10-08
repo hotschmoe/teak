@@ -107,6 +107,27 @@ jobs:
           path: shots/*.png
           if-no-files-found: error
 
+  x11-host:
+    name: X11 host (clipboard, XDND, input method) under Xvfb
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: teak
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - name: Install Xvfb, xclip, xdotool, libX11
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xclip xdotool libx11-6
+      - name: test-x11
+        run: xvfb-run -a zig build test-x11 --summary all
+
   web-smoke:
     name: Web smoke (${{ matrix.example }}, headless Chromium + SwiftShader WebGPU)
     runs-on: ubuntu-latest
