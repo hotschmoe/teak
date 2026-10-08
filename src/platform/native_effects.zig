@@ -919,7 +919,11 @@ test "http: the timeout answers at the deadline and the late reply is dropped" {
 }
 
 test "storage: set, get, overwrite, delete" {
-    const svc = try Service.create("teak-test-storage");
+    // Several test binaries import this file and run in parallel: a per-process
+    // app name keeps their storage directories apart.
+    var name_buf: [64]u8 = undefined;
+    const app = try std.fmt.bufPrint(&name_buf, "teak-test-storage-{d}", .{std.c.getpid()});
+    const svc = try Service.create(app);
     defer svc.destroy();
     const cfg = envValue("XDG_CONFIG_HOME") orelse envValue("HOME") orelse return;
     _ = cfg;
