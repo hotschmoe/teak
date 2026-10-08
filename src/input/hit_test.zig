@@ -52,6 +52,7 @@ fn interactiveLeaf(c: anytype) ?Leaf(@TypeOf(c).MsgT) {
         // Disabled buttons/inputs are non-interactive.
         .button => |b| if (b.disabled) null else .{ .msg = b.msg },
         .text_input => |t| if (t.disabled) null else .{ .msg = t.focus_msg },
+        .text_area => |t| if (t.disabled) null else .{ .msg = t.focus_msg },
         .checkbox => |cb| .{ .msg = cb.msg },
         .radio => |r| .{ .msg = r.msg },
         .slider => |s| .{ .msg = s.grab_msg },
@@ -199,6 +200,7 @@ pub fn pointerSurface(cmds: anytype, index: usize) ?PointerTarget {
     return switch (cmds[index]) {
         .canvas => |cv| if (cv.pointer) .{ .index = index, .id = cv.id } else null,
         .scene3d => |sc| if (sc.pointer) .{ .index = index, .id = sc.id } else null,
+        .text_area => |ta| if (ta.disabled) null else .{ .index = index, .id = ta.id },
         else => null,
     };
 }
@@ -266,7 +268,7 @@ fn wheelTargetLayer(cmds: anytype, rects: []const Rect, x: f32, y: f32, layer: L
                 overlay_depth -= 1;
                 clip.pop();
             },
-            .canvas, .scene3d => if (visible and inside) {
+            .canvas, .scene3d, .text_area => if (visible and inside) {
                 if (pointerSurface(cmds, i)) |t| best = .{ .canvas = t };
             },
             else => {},
@@ -1055,4 +1057,30 @@ test "hitTest: scene3d is interactive only with a click msg or pointer" {
     try testing.expectEqual(@as(?Msg, null), ph.?.msg);
     try testing.expectEqual(@as(?usize, null), hoverTest(cb.cmds.items, rs, rs[1].x + 5, rs[1].y + 5));
     try testing.expectEqual(@as(?usize, 2), hoverTest(cb.cmds.items, rs, rs[2].x + 5, rs[2].y + 5));
+}
+
+test "text_area: a click returns its focus msg and the area is a pointer target; wheel targets it" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus, other };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.textArea(.{ .focus_msg = .focus, .id = 9, .content = "x", .width = 200, .height = 100 });
+    cb.button(.other, "B");
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    const rs = testLayout(&rects, &cb, 400, 400);
+    try testing.expectEqual(@as(?Msg, Msg.focus), hitTest(cb.cmds.items, rs, 50, 50).?.msg);
+    try testing.expectEqual(@as(u32, 9), pointerTarget(cb.cmds.items, rs, 50, 50).?.id);
+    try testing.expectEqual(@as(u32, 9), wheelTarget(cb.cmds.items, rs, 50, 50).?.canvas.id);
+    // The button below is not a pointer target; a disabled area is not either.
+    try testing.expect(pointerTarget(cb.cmds.items, rs, 10, 110) == null);
+    var off = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer off.deinit();
+    off.pushGroup(.{ .padding = 0, .gap = 0 });
+    off.textArea(.{ .focus_msg = .focus, .id = 9, .content = "x", .width = 200, .height = 100, .disabled = true });
+    off.popGroup();
+    var rects2: [4]Rect = undefined;
+    const rs2 = testLayout(&rects2, &off, 400, 400);
+    try testing.expect(pointerTarget(off.cmds.items, rs2, 50, 50) == null);
 }

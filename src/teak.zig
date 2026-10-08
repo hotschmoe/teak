@@ -14,6 +14,8 @@ pub const unicode = @import("core/unicode.zig");
 pub const linebreak = @import("core/linebreak.zig");
 pub const text_wrap = @import("core/text_wrap.zig");
 pub const editor = @import("core/editor.zig");
+pub const text_event = @import("core/text_event.zig");
+pub const text_area = @import("core/text_area.zig");
 pub const sub = @import("core/sub.zig");
 pub const theme = @import("core/theme.zig");
 pub const text_field = @import("core/text_field.zig");
@@ -79,6 +81,8 @@ pub const CanvasPoint = cmd.CanvasPoint;
 pub const Direction = cmd.Direction;
 pub const Align = cmd.Align;
 pub const TextAlign = cmd.TextAlign;
+pub const Wrap = cmd.Wrap;
+pub const ParagraphOpts = cmd.ParagraphOpts;
 pub const InputVariant = cmd.InputVariant;
 pub const Justify = cmd.Justify;
 
@@ -152,6 +156,9 @@ pub const dark_palette = theme.dark_palette;
 pub const light_palette = theme.light_palette;
 
 pub const TextField = text_field.TextField;
+pub const TextArea = text_area.TextArea;
+pub const TextEvent = text_event.TextEvent;
+pub const TextEventKind = text_event.TextEventKind;
 pub const NumericField = numeric_field.NumericField;
 pub const NumericConfig = numeric_field.NumericConfig;
 pub const Dropdown = dropdown.Dropdown;
