@@ -724,10 +724,10 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             // — otherwise rendering a secondary leaves its dims in the
             // uniform, scaling the next primary frame to the secondary's
             // viewport. Single 8-byte queue write per frame per window.
-            // The primary window's uniform is logical (vertices are logical)
-            // while its target is physical; secondaries are scale 1.
-            const sc: f32 = if (window_id == 0) self.scale else 1;
-            const screen_size = [2]f32{ @as(f32, @floatFromInt(target_w)) / sc, @as(f32, @floatFromInt(target_h)) / sc };
+            // `target_w`/`target_h` are logical for the primary window (its
+            // vertices are logical) and the surface's own size for secondaries
+            // (scale 1); the encode below uses device pixels for the primary.
+            const screen_size = [2]f32{ @floatFromInt(target_w), @floatFromInt(target_h) };
             c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &screen_size, @sizeOf([2]f32));
 
             var surface_texture: c.WGPUSurfaceTexture = undefined;
