@@ -177,3 +177,12 @@ cross-cutting rewrite.
 - **Stub acceptance** (covered): `validateHost` accepts a minimal conformant struct.
 - **Gap tests** (missing): one compile-fail test per missing decl — HARDLINE §5 asks for 100 % validator coverage.
 - **Backend parity** (missing): an integration test that drives both `win32.zig` and `wasm.zig` Host stubs through a scripted input sequence and asserts the resulting `InputState` slices are equivalent. Would catch backend drift — e.g. the control-char filter regression described in [pitfalls.md](../pitfalls.md#3-zunk-pushes-control-chars-into-typed_chars-wasm-only).
+
+## Optional Host extras the run loop probes
+
+Beyond `validateHost`'s required list, `teak.run` uses these when present
+(each compiles out otherwise): `setAppName(name)` (names the per-app storage
+directory; called once at init from `RunOptions.app_name`), `submit(effect)` and
+`pollEffectResults` (declarative effects, hatch 7), and
+`waitEvents(timeout_ms)` (event-driven idle: block until input or the timeout;
+see [run.md](run.md#event-driven-idle)).

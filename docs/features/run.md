@@ -66,12 +66,46 @@ pub fn run(comptime App: type, gpa: Allocator, host: anytype, gpu: anytype, opts
 `view(*const Model, *CmdBuffer(Msg))`. `Model.init()` is used for the
 initial state if present, else `.{}`.
 
-Optional App decls, each detected with `@hasDecl` — present only what you
-need (full table in [consuming-teak.md §5](../consuming-teak.md)):
-`keyCharMsg`, `keySpecialMsg`, `clipboardText` + `clipboardMsg`,
-`wheelMsg`, `windowMsg` (window size on the first frame and each resize), `canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `focusedMsg`, `submitMsg`, `themeFor`, `windowTitle`,
-`secondaryWindow` + `secondaryView` (+ optional `secondaryClosedMsg`),
-`subscribe`.
+Optional App decls are detected with `@hasDecl` — present only what you need.
+See [App hooks](#app-hooks-the-one-table) for every one.
+
+## App hooks (the one table)
+
+Every optional decl `teak.run` / `Runtime` probes on the App. **Rules for all of
+them** (HARDLINE §1-§3): a hook is a plain function of `*const Model` (never
+`*Model`) plus data the loop supplies; it returns data (a `Msg`, a spec, a
+theme) and never calls back; the only state change is the returned `Msg`
+going through `update`. `zig build audit` fails if the loop probes a hook this
+table does not name.
+
+| Hook | Signature | Called | May return / do |
+|---|---|---|---|
+| `keyCharMsg` | `(*const Model, u8) ?Msg` | each typed character, in order | a Msg (null = ignore) |
+| `keySpecialMsg` | `(*const Model, SpecialKey) ?Msg` | each non-text key / chord | a Msg |
+| `clipboardText` | `(*const Model, SpecialKey) ?[]const u8` | Ctrl+C / Ctrl+X, before `clipboardMsg` | the text to copy (a pure query; the loop writes the Host clipboard) |
+| `clipboardMsg` | `(*const Model, SpecialKey, paste: []const u8) ?Msg` | Ctrl+C / Ctrl+X / Ctrl+V; `paste` is the clipboard text for Ctrl+V (an empty paste is not delivered) | a Msg (Ctrl+X: the cut, after the copy) |
+| `keyNeedsClipboard` + `handleClipboard` | `(SpecialKey) bool` / `(*Model, SpecialKey, Clipboard) void` | **deprecated**; only when neither new hook exists | mutates the Model outside `update` (HARDLINE §1); removed next release, see [migration-clipboard.md](../migration-clipboard.md) |
+| `submitMsg` | `(*const Model) ?Msg` | Enter key (before `keySpecialMsg`) | a Msg |
+| `focusedMsg` | `(*const Model) ?Msg` | every frame | the focus Msg of the focused widget; enables Tab traversal + the focus ring + caret |
+| `wheelMsg` | `(*const Model, f32) ?Msg` | vertical wheel not claimed by a scroll region / pointer canvas | a Msg |
+| `scrollMsg` | `(*const Model, id, dx, dy) ?Msg` | wheel over the innermost `ScrollStyle.id != 0` region | a Msg |
+| `scrollLayoutMsg` | `(*const Model, id, vw, vh, cw, ch) ?Msg` | a scroll region's first layout and each size change | a Msg (the view cannot read layout) |
+| `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pointer input over interactive canvases / scenes; `layout` events | a Msg |
+| `windowMsg` | `(*const Model, w: f32, h: f32) ?Msg` | first frame and every resize | a Msg |
+| `windowTitle` | `(*const Model) ?[]const u8` | every frame; `Host.setTitle` only on change | the title |
+| `themeFor` | `(*const Model) Theme` | every frame, before `view` | the theme the emitters use |
+| `subscribe` | `(*const Model) []const Sub(Msg)` | every frame | timers (`every`, `at`) and `animation_frame` |
+| `animationMsg` | `(*const Model, dt_ms: u32) ?Msg` | every frame while a `Sub.animation_frame` is listed | a Msg (see [animation.md](animation.md)) |
+| `effects` | `(*const Model) []const Effect` | every frame | effects to hand the Host once each (HARDLINE hatch 7) |
+| `effectMsg` | `(*const Model, EffectResult) ?Msg` | each effect result and each unsolicited drop / paste | a Msg |
+| `resources` | `(*const Model) []const Resource` | every frame | GPU meshes / images by (key, rev) (hatch 8) |
+| `secondaryWindow` | `(*const Model) ?SecondaryWindowSpec` | every frame | open / close the second window |
+| `secondaryView` | `(*const Model, *CmdBuffer(Msg)) void` | each frame the second window is open | its view (pure, same rules as `view`) |
+| `secondaryClosedMsg` | `(*const Model) ?Msg` | the user closed the second window from the OS | a Msg |
+
+Hooks in open PRs (`textMsg`, `hoverMsg`, `contextMsg`, `modsMsg`,
+`sliderMsg`, `virtualRowsMsg`, `cursorFor`, `commands`, `debugState`) follow the
+same rules and join this table when they land.
 
 ### Interactive canvases and scroll regions
 

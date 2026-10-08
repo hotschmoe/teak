@@ -98,6 +98,14 @@ const LLMS_TXT_RULE = Rule{
     .forbid_any = &.{},
 };
 
+// Doc-drift rules (HARDLINE §5, "docs match the code"): each is a named
+// check with a list of (source, needle-extractor, doc) triples.
+const DOC_DRIFT_RULE = Rule{
+    .name = "docs name every escape hatch, App hook, Host/Gpu surface and example",
+    .reason = "llms.txt hatch list, docs/features/{run,host,gpu}.md and README must not fall behind the code (HARDLINE §5).",
+    .forbid_any = &.{},
+};
+
 const TEAK_ROOT_FILE = "src/teak.zig";
 const LLMS_TXT_FILE = "llms.txt";
 
@@ -126,6 +134,10 @@ pub fn main(init: std.process.Init) !void {
     const llms_hits = try auditLlmsTxt(gpa, io);
     defer freeHits(gpa, llms_hits);
     total_violations += reportLlmsTxt(llms_hits);
+
+    const doc_hits = try auditDocDrift(gpa, io);
+    defer freeHits(gpa, doc_hits);
+    total_violations += reportRule(DOC_DRIFT_RULE, doc_hits);
 
     if (total_violations > 0) {
         std.debug.print("\nHARDLINE audit FAILED with {d} violation(s).\n", .{total_violations});
@@ -475,6 +487,147 @@ fn reExportName(line: []const u8) ?[]const u8 {
     while (end < rest.len and isIdentChar(rest[end])) : (end += 1) {}
     if (end == 0) return null;
     return rest[0..end];
+}
+
+fn addHit(gpa: std.mem.Allocator, hits: *std.ArrayList(Hit), path: []const u8, pattern: []const u8, text: []const u8) !void {
+    try hits.append(gpa, .{
+        .path = try gpa.dupe(u8, path),
+        .line = 0,
+        .pattern = pattern,
+        .text = try gpa.dupe(u8, text),
+    });
+}
+
+/// Every quoted name that follows `prefix` in `src` (e.g. `@hasDecl(App, "`
+/// yields the hook names `run.zig` looks for). Deduplicated, order kept.
+fn namesAfter(gpa: std.mem.Allocator, src: []const u8, prefix: []const u8, out: *std.ArrayList([]const u8)) !void {
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, src, from, prefix)) |at| {
+        const start = at + prefix.len;
+        from = start;
+        const end = std.mem.indexOfScalarPos(u8, src, start, '"') orelse break;
+        const name = src[start..end];
+        if (name.len == 0 or name.len > 48) continue;
+        var seen = false;
+        for (out.items) |n| {
+            if (std.mem.eql(u8, n, name)) seen = true;
+        }
+        if (!seen) try out.append(gpa, name);
+    }
+}
+
+fn readOpt(gpa: std.mem.Allocator, io: Io, path: []const u8) !?[]u8 {
+    return Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+}
+
+/// Require each of `names` to appear in backticks in `doc`.
+fn requireNamed(gpa: std.mem.Allocator, hits: *std.ArrayList(Hit), what: []const u8, doc_path: []const u8, doc: []const u8, names: []const []const u8) !void {
+    var buf: [64]u8 = undefined;
+    for (names) |n| {
+        const needle = std.fmt.bufPrint(&buf, "`{s}", .{n}) catch continue;
+        if (std.mem.indexOf(u8, doc, needle) == null) {
+            var msg: [160]u8 = undefined;
+            const t = std.fmt.bufPrint(&msg, "{s} `{s}` is not documented in {s}", .{ what, n, doc_path }) catch n;
+            try addHit(gpa, hits, doc_path, "undocumented", t);
+        }
+    }
+}
+
+fn auditDocDrift(gpa: std.mem.Allocator, io: Io) ![]Hit {
+    var hits: std.ArrayList(Hit) = .empty;
+    errdefer {
+        for (hits.items) |h| {
+            gpa.free(h.path);
+            gpa.free(h.text);
+        }
+        hits.deinit(gpa);
+    }
+    const cwd = Dir.cwd();
+
+    // 1. Escape hatches: llms.txt's §2 list must carry every hatch HARDLINE defines.
+    if (try readOpt(gpa, io, "docs/HARDLINE.md")) |hardline| {
+        defer gpa.free(hardline);
+        var n_hatches: usize = 0;
+        var it = std.mem.splitScalar(u8, hardline, '\n');
+        while (it.next()) |line| {
+            if (std.mem.startsWith(u8, line, "### Escape hatch ")) n_hatches += 1;
+        }
+        if (try readOpt(gpa, io, LLMS_TXT_FILE)) |llms| {
+            defer gpa.free(llms);
+            const sec_start = std.mem.indexOf(u8, llms, "### §2 Deliberate escape hatches") orelse 0;
+            const sec_end = std.mem.indexOfPos(u8, llms, sec_start + 1, "\n## ") orelse llms.len;
+            const sec = llms[sec_start..sec_end];
+            var k: usize = 1;
+            while (k <= n_hatches) : (k += 1) {
+                var needle: [16]u8 = undefined;
+                const nd = std.fmt.bufPrint(&needle, "\n{d}. ", .{k}) catch continue;
+                if (std.mem.indexOf(u8, sec, nd) == null) {
+                    var msg: [96]u8 = undefined;
+                    const t = std.fmt.bufPrint(&msg, "HARDLINE defines {d} hatches; llms.txt §2 is missing #{d}", .{ n_hatches, k }) catch "hatch";
+                    try addHit(gpa, &hits, LLMS_TXT_FILE, "hatch list", t);
+                }
+            }
+        }
+    }
+
+    // 2. Examples: every examples/<dir> is listed in README.md.
+    if (try readOpt(gpa, io, "README.md")) |readme| {
+        defer gpa.free(readme);
+        if (cwd.openDir(io, "examples", .{ .iterate = true })) |dir_const| {
+            var dir = dir_const;
+            defer dir.close(io);
+            var di = dir.iterate();
+            while (try di.next(io)) |e| {
+                if (e.kind != .directory) continue;
+                var buf: [96]u8 = undefined;
+                const needle = std.fmt.bufPrint(&buf, "examples/{s}/", .{e.name}) catch continue;
+                if (std.mem.indexOf(u8, readme, needle) == null) {
+                    var msg: [128]u8 = undefined;
+                    const t = std.fmt.bufPrint(&msg, "examples/{s} is not listed in README.md", .{e.name}) catch e.name;
+                    try addHit(gpa, &hits, "README.md", "example list", t);
+                }
+            }
+        } else |_| {}
+    }
+
+    // 3. Optional surfaces the run loop probes: documented where readers look.
+    const run_src = (try readOpt(gpa, io, "src/run.zig")) orelse return hits.toOwnedSlice(gpa);
+    defer gpa.free(run_src);
+
+    var hooks: std.ArrayList([]const u8) = .empty;
+    defer hooks.deinit(gpa);
+    try namesAfter(gpa, run_src, "@hasDecl(App, \"", &hooks);
+    if (try readOpt(gpa, io, "docs/features/run.md")) |doc| {
+        defer gpa.free(doc);
+        try requireNamed(gpa, &hits, "App hook", "docs/features/run.md", doc, hooks.items);
+    }
+
+    var host_names: std.ArrayList([]const u8) = .empty;
+    defer host_names.deinit(gpa);
+    try namesAfter(gpa, run_src, "@hasDecl(Host, \"", &host_names);
+    const host_src = try readOpt(gpa, io, "src/platform/host.zig");
+    defer if (host_src) |b| gpa.free(b);
+    if (host_src) |b| try namesAfter(gpa, b, ".name = \"", &host_names);
+    if (try readOpt(gpa, io, "docs/features/host.md")) |doc| {
+        defer gpa.free(doc);
+        try requireNamed(gpa, &hits, "Host surface", "docs/features/host.md", doc, host_names.items);
+    }
+
+    var gpu_names: std.ArrayList([]const u8) = .empty;
+    defer gpu_names.deinit(gpa);
+    try namesAfter(gpa, run_src, "@hasDecl(Gpu, \"", &gpu_names);
+    const gpu_src = try readOpt(gpa, io, "src/gpu/context.zig");
+    defer if (gpu_src) |b| gpa.free(b);
+    if (gpu_src) |b| try namesAfter(gpa, b, ".name = \"", &gpu_names);
+    if (try readOpt(gpa, io, "docs/features/gpu.md")) |doc| {
+        defer gpa.free(doc);
+        try requireNamed(gpa, &hits, "Gpu surface", "docs/features/gpu.md", doc, gpu_names.items);
+    }
+
+    return hits.toOwnedSlice(gpa);
 }
 
 fn auditLlmsTxt(gpa: std.mem.Allocator, io: Io) ![]Hit {

@@ -85,7 +85,10 @@ someone else's paradigm. When a change bumps HARDLINE, the change yields.
 4. Host layer — window/GPU/input mutable state, only in `platform/*`+`gpu/*`,
    behind `validateHost`/`validateGpu`; `teak.run` orchestrates it.
 5. Overlay z-layer (`push_overlay`/`pop_overlay`) — exactly two z-levels.
-6. Subscriptions (`Sub`) — declarative, data-only timers.
+6. Subscriptions (`Sub`) — declarative, data-only timers (+ `animation_frame`).
+7. Declarative effects (`effects` / `effectMsg`) — data the Host performs
+   (HTTP, files, storage, clock, clipboard); results return as Msgs.
+8. Resources (`resources`) — declarative GPU meshes/images by (key, rev).
 
 ## The App contract (`teak.run`)
 
