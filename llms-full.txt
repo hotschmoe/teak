@@ -29,6 +29,7 @@
 - Migration notes, one per Zig version bump (newest last): [docs/migration-0.17.md](docs/migration-0.17.md) — build.zig
   changes (`b.args`, lowercase optimize modes), toolchain, what did not change in teak's API. A new `docs/migration-<ver>.md`
   must be linked here (audit-enforced).
+- Other migrations: [docs/migration-clipboard.md](docs/migration-clipboard.md) — `handleClipboard` to `clipboardText` / `clipboardMsg`.
 
 ## The core loop
 
