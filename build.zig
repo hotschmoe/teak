@@ -286,6 +286,20 @@ pub fn build(b: *std.Build) void {
         const bench_run = b.addRunArtifact(bench_exe);
         bench_run.has_side_effects = true;
         b.step("bench", "CPU pipeline benchmark (view/layout/hit/render/cmdsEqual + text)").dependOn(&bench_run.step);
+
+        // Prototype for docs/features/cmd-size.md (slim out-of-line Cmd on a copy).
+        const cs_exe = b.addExecutable(.{
+            .name = "teak-bench-cmdsize",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/bench/cmd_size.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{.{ .name = "teak", .module = bench_teak }},
+            }),
+        });
+        const cs_run = b.addRunArtifact(cs_exe);
+        cs_run.has_side_effects = true;
+        b.step("bench-cmdsize", "Prototype: slim (out-of-line payload) Cmd vs the real 240-byte Cmd").dependOn(&cs_run.step);
     }
 
     // HARDLINE drift audit — greppable half of docs/HARDLINE.md §5.
