@@ -33,6 +33,7 @@ const wgpu_c = @import("wgpu_c.zig");
 const wgpu_scene = @import("wgpu_scene.zig");
 const scene_common = @import("scene_common.zig");
 const SlotTable = @import("slot_table.zig").SlotTable;
+const GrowSlotTable = @import("slot_table.zig").GrowSlotTable;
 const overlay = @import("overlay.zig");
 
 const Vertex = teak.Vertex;
@@ -49,8 +50,10 @@ pub const FontFamily = teak.FontFamily;
 pub const TextDraw = teak.TextDraw;
 pub const InitOptions = teak.gpu.InitOptions;
 
-const IMAGE_CACHE_CAPACITY: usize = 64;
-const IMAGE_VERT_BUF_CAPACITY: usize = IMAGE_CACHE_CAPACITY * 6;
+/// Allocator for the growable image tables.
+const image_gpa = std.heap.page_allocator;
+/// Ceiling on live app images (handles are `u32`; this bounds a runaway app).
+const IMAGE_MAX_SLOTS: u32 = 1 << 16;
 const SCENE_VERT_BUF_CAPACITY: usize = scene_common.max_scenes * 6;
 
 /// Atlas page edge in texels (R8, one byte per texel).
@@ -92,13 +95,13 @@ const Sampled = struct {
     }
 };
 
-// ── Image cache (app-driven, no LRU) ───────────────────────────────
+// ── Image cache (app-driven, growable, no eviction) ───────────────────────────────
 //
 // Unlike the glyph cache, the app explicitly creates image textures via
 // `uploadImage` and frees them with `releaseImage`. The returned handle
 // is a slot index (+1 so 0 is the sentinel).
 
-const ImageCache = SlotTable(Sampled, IMAGE_CACHE_CAPACITY);
+const ImageCache = GrowSlotTable(Sampled, IMAGE_MAX_SLOTS);
 
 const SHADER_CODE = @import("teak-shaders").quad_wgsl;
 const SHADER_GLYPH = @import("teak-shaders").glyph_wgsl;
@@ -219,10 +222,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         // ── Image pass (shares text_bgl + sampler) ─────────────────
         image_pipeline: c.WGPURenderPipeline,
         images: ImageCache,
-        image_draws: [IMAGE_CACHE_CAPACITY]QuadDraw,
-        image_draw_count: usize,
-        image_verts: [IMAGE_VERT_BUF_CAPACITY]Vertex,
-        image_vert_count: u32,
+        image_draws: std.ArrayList(QuadDraw),
+        image_verts: std.ArrayList(Vertex),
         image_vert_buf: c.WGPUBuffer,
         image_vert_buf_size: u64,
 
@@ -570,10 +571,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .raster = raster,
                 .image_pipeline = image_pipeline,
                 .images = .{},
-                .image_draws = undefined,
-                .image_draw_count = 0,
-                .image_verts = undefined,
-                .image_vert_count = 0,
+                .image_draws = .empty,
+                .image_verts = .empty,
                 .image_vert_buf = null,
                 .image_vert_buf_size = 0,
                 .scene = scene,
@@ -609,6 +608,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             var images = self.images.iterator();
             while (images.next()) |e| e.release();
+            self.images.deinit(image_gpa);
+            self.image_draws.deinit(image_gpa);
+            self.image_verts.deinit(image_gpa);
             if (self.image_vert_buf) |ib| c.wgpuBufferRelease(ib);
             c.wgpuRenderPipelineRelease(self.image_pipeline);
 
@@ -868,11 +870,11 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             // overlay's solids after the base's TEXT is what lets an opaque
             // popup hide the text beneath it.
             const solid = overlay.Range.of(self.splitOf("verts", self.vert_count), self.vert_count);
-            const imgs = overlay.Range.of(self.image_ov, self.image_draw_count);
+            const imgs = overlay.Range.of(self.image_ov, self.image_draws.items.len);
             const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
             inline for (.{ "base", "overlay" }) |layer| {
                 self.drawSolids(pass, @field(overlay.Range, layer)(solid));
-                drawQuads(pass, self.image_pipeline, self.image_vert_buf, self.image_vert_count, self.image_draws[0..self.image_draw_count], @field(overlay.Range, layer)(imgs));
+                drawQuads(pass, self.image_pipeline, self.image_vert_buf, @intCast(self.image_verts.items.len), self.image_draws.items, @field(overlay.Range, layer)(imgs));
                 drawQuads(pass, self.image_pipeline, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count], @field(overlay.Range, layer)(scns));
                 self.drawGlyphs(pass, if (comptime std.mem.eql(u8, layer, "base")) 0 else 1);
             }
@@ -1285,15 +1287,16 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
         /// Upload an RGBA8 image. `bytes.len` must equal `width * height * 4`.
         /// Returns an opaque handle the app stashes in `ImageCmd.handle`.
-        /// Returns `TEXTURE_HANDLE_NONE` on bad dims, full cache, or
-        /// device failure.
+        /// Returns `TEXTURE_HANDLE_NONE` on bad dims, device failure, or
+        /// (loudly) at the 65536-image ceiling. The cache grows on demand.
         pub fn uploadImage(self: *Self, bytes: []const u8, width: u32, height: u32) TextureHandle {
             if (width == 0 or height == 0) return teak.TEXTURE_HANDLE_NONE;
             const need = @as(usize, width) * @as(usize, height) * 4;
             if (bytes.len < need) return teak.TEXTURE_HANDLE_NONE;
             const sampled = self.createSampled("image", c.WGPUTextureFormat_RGBA8Unorm, bytes[0..need], width, height) orelse
                 return teak.TEXTURE_HANDLE_NONE;
-            return self.images.insert(sampled) orelse {
+            return self.images.insert(image_gpa, sampled) orelse {
+                std.debug.print("teak: image cache full ({d} live images); upload dropped\n", .{IMAGE_MAX_SLOTS});
                 sampled.release();
                 return teak.TEXTURE_HANDLE_NONE;
             };
@@ -1303,20 +1306,20 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// `ImageDraw` still carrying it) is dead afterwards; the slot is
         /// reused by the next upload.
         pub fn releaseImage(self: *Self, handle: TextureHandle) void {
-            if (self.images.remove(handle)) |e| e.release();
+            if (self.images.remove(image_gpa, handle)) |e| e.release();
         }
 
         /// Per-frame draw orchestration for images. Walks ImageDraws, emits
         /// 6 textured vertices per visible draw, records a draw entry per
         /// image. Call after `uploadText` and before `renderFrame`.
         pub fn uploadImages(self: *Self, draws: []const ImageDraw) void {
-            self.image_draw_count = 0;
-            self.image_vert_count = 0;
+            self.image_draws.clearRetainingCapacity();
+            self.image_verts.clearRetainingCapacity();
             var mark: overlay.Marker = .{ .start = self.splitOf("images", draws.len) };
-            defer self.image_ov = mark.finish(self.image_draw_count);
+            defer self.image_ov = mark.finish(self.image_draws.items.len);
 
             for (draws, 0..) |draw, di| {
-                mark.visit(di, self.image_draw_count);
+                mark.visit(di, self.image_draws.items.len);
                 const entry = self.images.get(draw.handle) orelse continue;
                 const quad = teak.vertex.clippedTexturedQuad(
                     .{ .x = draw.rect_x, .y = draw.rect_y, .w = draw.rect_w, .h = draw.rect_h },
@@ -1324,15 +1327,13 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                     draw.tint,
                 ) orelse continue;
 
-                const offset = self.image_vert_count;
-                if (offset + 6 > self.image_verts.len) break;
-                @memcpy(self.image_verts[offset..][0..6], &quad);
-                self.image_vert_count += 6;
-                self.image_draws[self.image_draw_count] = .{ .bind_group = entry.bind_group, .vert_offset = offset };
-                self.image_draw_count += 1;
+                const offset: u32 = @intCast(self.image_verts.items.len);
+                self.image_draws.ensureUnusedCapacity(image_gpa, 1) catch break;
+                self.image_verts.appendSlice(image_gpa, &quad) catch break;
+                self.image_draws.appendAssumeCapacity(.{ .bind_group = entry.bind_group, .vert_offset = offset });
             }
 
-            self.writeVerts("image-vert-buf", &self.image_vert_buf, &self.image_vert_buf_size, self.image_verts[0..self.image_vert_count]);
+            self.writeVerts("image-vert-buf", &self.image_vert_buf, &self.image_vert_buf_size, self.image_verts.items);
         }
 
         // ── 3D scenes ──────────────────────────────────────────────

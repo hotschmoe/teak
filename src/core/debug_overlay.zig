@@ -10,6 +10,7 @@
 //! toggle via a Msg from F12 or similar.
 
 const std = @import("std");
+const oom = @import("oom.zig").oom;
 const layout = @import("../layout/engine.zig");
 const cmd_mod = @import("cmd.zig");
 const text_mod = @import("text.zig");
@@ -74,8 +75,8 @@ pub fn appendDebugOverlay(
             arena_alloc,
             "{d:>3} {s:<18} ({d:>4.0},{d:>4.0},{d:>4.0},{d:>4.0})",
             .{ i, @tagName(tag), r.x, r.y, r.w, r.h },
-        ) catch unreachable;
-        lines.append(arena_alloc, line) catch unreachable;
+        ) catch oom();
+        lines.append(arena_alloc, line) catch oom();
     }
 
     cb.pushOverlay(.{

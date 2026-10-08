@@ -99,6 +99,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const cmd = @import("core/cmd.zig");
+const eql = @import("core/eql.zig");
 const snapshot = @import("core/snapshot.zig");
 const sub_mod = @import("core/sub.zig");
 const effects_mod = @import("core/effects.zig");
@@ -994,7 +995,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (@hasDecl(App, "themeFor")) self.bufs[cur].theme = App.themeFor(&self.model);
             App.view(&self.model, &self.bufs[cur]);
             const cmds = self.bufs[cur].cmds.items;
-            debugCheckBalance(cmds, "view");
+            checkBalance(cmds, "view");
 
             try self.rects[cur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
@@ -1106,7 +1107,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             App.secondaryView(&self.model, &sec.bufs[scur]);
 
             const cmds = sec.bufs[scur].cmds.items;
-            debugCheckBalance(cmds, "secondaryView");
+            checkBalance(cmds, "secondaryView");
             try sec.rects[scur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
                 sec.rects[scur].items,
@@ -1231,14 +1232,12 @@ fn transientSame(a: TransientState, b: TransientState) bool {
         std.mem.eql(u8, a.ime_text, b.ime_text);
 }
 
-/// Debug-only cmd-buffer balance check. A missed pop_group (or friends)
-/// is otherwise a silent layout bug; in Debug builds this panics naming
-/// the offending cmd index before the layout passes consume the buffer.
-/// Compiled out entirely in release modes. run.zig sits outside the
-/// framework-core dirs, so the builtin.mode gate is allowed here
-/// (HARDLINE §3 scopes the conditional-compilation ban to core).
-fn debugCheckBalance(cmds: anytype, view_name: []const u8) void {
-    if (@import("builtin").mode != .debug) return;
+/// Per-frame cmd-buffer balance check, in EVERY optimize mode. An unbalanced
+/// or too-deeply-nested buffer (`cmd.MAX_BALANCE_DEPTH`) is otherwise a
+/// silent wrong-rects bug or an out-of-bounds stack write in release; this
+/// panics naming the view and the offending cmd index before any pass runs.
+/// O(n), allocation-free (a few microseconds at thousands of cmds).
+fn checkBalance(cmds: anytype, view_name: []const u8) void {
     if (cmd.validateBalance(cmds)) |bal_err| {
         var buf: [128]u8 = undefined;
         std.debug.panic("teak: unbalanced cmd buffer from {s}() — {s}", .{
@@ -1258,98 +1257,17 @@ fn focusIndex(comptime App: type, model: *const App.Model, cmds: anytype) ?usize
 
 // ── Frame diff ──────────────────────────────────────────────────────
 //
-// Shared with what every example's ui_main hand-rolled. Compares the
-// observable content of two cmd buffers: tags, styles, and — for
-// variants carrying slices — string/span content (not pointer identity,
-// since the arena hands out fresh addresses each frame).
+// Compares the observable content of two cmd buffers (slices by content,
+// not pointer identity — the arena hands out fresh addresses each frame).
 
-/// True if two cmd buffers would render identically.
+/// True if two cmd buffers would render identically. Derived by comptime
+/// reflection over `Cmd(Msg)` (`core/eql.zig`): every field of every
+/// variant participates, so a new widget or a new style field can never be
+/// forgotten here.
 pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd(Msg)) bool {
     if (a.len != b.len) return false;
     for (a, b) |ca, cb| {
-        if (std.meta.activeTag(ca) != std.meta.activeTag(cb)) return false;
-        switch (ca) {
-            .push_group => |g| if (!std.meta.eql(g, cb.push_group)) return false,
-            .pop_group => {},
-            .push_scroll => |s| if (!std.meta.eql(s, cb.push_scroll)) return false,
-            .pop_scroll => {},
-            .push_overlay => |o| if (!std.meta.eql(o, cb.push_overlay)) return false,
-            .pop_overlay => {},
-            .push_virtual_list => |v| if (!std.meta.eql(v, cb.push_virtual_list)) return false,
-            .pop_virtual_list => {},
-            .text => |t| {
-                const o = cb.text;
-                if (!std.mem.eql(u8, t.content, o.content)) return false;
-                if (!std.meta.eql(t.font, o.font) or !std.meta.eql(t.color, o.color)) return false;
-            },
-            .button => |x| {
-                // Compare the FULL payload: label (slice) by content, then
-                // msg / style / font / disabled. Omitting style or font makes
-                // a theme flip or a per-widget restyle (e.g. a danger-colored
-                // button) skip the vertex rebuild AND the snapshot write —
-                // stale pixels.
-                const o = cb.button;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-                if (x.disabled != o.disabled) return false;
-            },
-            .text_input => |x| {
-                const o = cb.text_input;
-                if (x.cursor != o.cursor or x.selection_anchor != o.selection_anchor) return false;
-                if (x.disabled != o.disabled) return false;
-                if (!std.mem.eql(u8, x.content, o.content)) return false;
-                if (!std.meta.eql(x.focus_msg, o.focus_msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-            },
-            .checkbox => |x| {
-                const o = cb.checkbox;
-                if (x.checked != o.checked) return false;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-            },
-            .radio => |x| {
-                const o = cb.radio;
-                if (x.selected != o.selected) return false;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-            },
-            .slider => |x| {
-                const o = cb.slider;
-                if (x.value != o.value) return false;
-                if (!std.meta.eql(x.grab_msg, o.grab_msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-            },
-            .divider => |d| if (!std.meta.eql(d, cb.divider)) return false,
-            .image => |im| if (!std.meta.eql(im, cb.image)) return false,
-            .rich_text => |rt| {
-                const o = cb.rich_text;
-                if (!std.mem.eql(u8, rt.content, o.content)) return false;
-                if (!std.meta.eql(rt.default_color, o.default_color)) return false;
-                if (!std.meta.eql(rt.default_font, o.default_font)) return false;
-                if (rt.spans.len != o.spans.len) return false;
-                for (rt.spans, o.spans) |sa, sb| if (!std.meta.eql(sa, sb)) return false;
-            },
-            .scene3d => |x| if (!x.eql(cb.scene3d)) return false,
-            .canvas => |x| {
-                const o = cb.canvas;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (x.id != o.id or x.pointer != o.pointer) return false;
-                if (x.primitives.len != o.primitives.len) return false;
-                // Compare by content, not slice identity — the arena hands
-                // out fresh addresses each frame (`eql` walks nested slices;
-                // big triangle/line batches compare by their `key`).
-                for (x.primitives, o.primitives) |pa, pb| if (!pa.eql(pb)) return false;
-            },
-        }
+        if (!eql.deepEql(cmd.Cmd(Msg), ca, cb)) return false;
     }
     return true;
 }
@@ -1364,6 +1282,8 @@ pub fn rectsEqual(a: []const Rect, b: []const Rect) bool {
 }
 
 test {
+    _ = @import("core/eql.zig");
+    _ = @import("core/oom.zig");
     _ = @import("run_test.zig");
     _ = @import("run_effects_test.zig");
 }

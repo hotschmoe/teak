@@ -62,7 +62,7 @@ pub fn scrollExtent(cmds: anytype, rects: []const Rect, index: usize) Extent {
                     if (depth == d) skip_at = null;
                 }
             },
-            else => if (skip_at == null) {
+            .text, .rich_text, .image, .divider, .button, .text_input, .checkbox, .radio, .slider, .canvas, .scene3d => if (skip_at == null) {
                 right = @max(right, rects[i].x + rects[i].w);
                 bottom = @max(bottom, rects[i].y + rects[i].h);
             },
