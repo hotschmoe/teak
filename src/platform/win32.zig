@@ -71,6 +71,11 @@ const CS_HREDRAW: UINT = 0x0002;
 const CS_VREDRAW: UINT = 0x0001;
 const WM_DESTROY: UINT = 0x0002;
 const WM_SIZE: UINT = 0x0005;
+const WM_PAINT: UINT = 0x000F;
+/// `MsgWaitForMultipleObjectsEx`: wake on any queued input / message, and
+/// also when one was already queued before the call.
+const QS_ALLINPUT: DWORD = 0x04FF;
+const MWMO_INPUTAVAILABLE: DWORD = 0x0004;
 const WM_CHAR: UINT = 0x0102;
 const WM_KEYDOWN: UINT = 0x0100;
 const WM_SYSKEYDOWN: UINT = 0x0104;
@@ -109,6 +114,7 @@ const VK_DELETE: WPARAM = 0x2E;
 extern "user32" fn RegisterClassExW(*const WNDCLASSEXW) callconv(WINAPI) u16;
 extern "user32" fn CreateWindowExW(DWORD, LPCWSTR, LPCWSTR, DWORD, c_int, c_int, c_int, c_int, ?HANDLE, ?HANDLE, ?HANDLE, ?*anyopaque) callconv(WINAPI) ?HANDLE;
 extern "user32" fn ShowWindow(HANDLE, c_int) callconv(WINAPI) BOOL;
+extern "user32" fn MsgWaitForMultipleObjectsEx(DWORD, ?*const HANDLE, DWORD, DWORD, DWORD) callconv(WINAPI) DWORD;
 extern "user32" fn PeekMessageW(*MSG, ?HANDLE, UINT, UINT, UINT) callconv(WINAPI) BOOL;
 extern "user32" fn TranslateMessage(*const MSG) callconv(WINAPI) BOOL;
 extern "user32" fn DispatchMessageW(*const MSG) callconv(WINAPI) LRESULT;
@@ -1420,6 +1426,12 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             }
             return 0;
         },
+        // An uncovered / invalidated area: the idle loop skips frames, so
+        // force the next one. DefWindowProc validates the region.
+        WM_PAINT => {
+            g_resized = true;
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        },
         WM_IME_STARTCOMPOSITION => {
             g_ime_active = true;
             g_ime_text_len = 0;
@@ -2027,6 +2039,12 @@ pub const Host = struct {
     /// Monotonic milliseconds since some arbitrary epoch. Uses Zig's
     /// the `std.Io` awake clock, which is fine for sub-driven cadence
     /// — subs compare deltas, not absolute values.
+    /// Event-driven idle: block until a message is queued for this thread
+    /// (input, paint, resize, IME) or `timeout_ms` passes.
+    pub fn waitEvents(_: *Host, timeout_ms: u32) void {
+        _ = MsgWaitForMultipleObjectsEx(0, null, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+
     pub fn nowMs(_: *const Host) u64 {
         // Monotonic milliseconds (clocks live behind `std.Io`).
         const now = std.Io.Clock.awake.now(std.Options.debug_io);
