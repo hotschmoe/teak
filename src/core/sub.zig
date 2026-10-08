@@ -94,7 +94,7 @@ pub fn runSubs(
 
 test "runSubs: .every fires once per crossed interval" {
     const Msg = union(enum) { tick };
-    const subs = [_]Sub(Msg){ .{ .every = .{ .interval_ms = 100, .msg = .tick } } };
+    const subs = [_]Sub(Msg){.{ .every = .{ .interval_ms = 100, .msg = .tick } }};
 
     var fire_count: u32 = 0;
     // The dispatcher carries its context (the counter pointer) as a field —
@@ -122,7 +122,7 @@ test "runSubs: .every fires once per crossed interval" {
 
 test "runSubs: .at fires exactly once when deadline is crossed" {
     const Msg = union(enum) { done };
-    const subs = [_]Sub(Msg){ .{ .at = .{ .deadline_ms = 500, .msg = .done } } };
+    const subs = [_]Sub(Msg){.{ .at = .{ .deadline_ms = 500, .msg = .done } }};
 
     var fire_count: u32 = 0;
     const Counter = struct {
@@ -150,7 +150,7 @@ test "runSubs: .at fires exactly once when deadline is crossed" {
 
 test "runSubs: zero interval is a no-op (avoid div-by-zero)" {
     const Msg = union(enum) { tick };
-    const subs = [_]Sub(Msg){ .{ .every = .{ .interval_ms = 0, .msg = .tick } } };
+    const subs = [_]Sub(Msg){.{ .every = .{ .interval_ms = 0, .msg = .tick } }};
 
     var fire_count: u32 = 0;
     const Counter = struct {

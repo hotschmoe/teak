@@ -13,7 +13,7 @@ pub const Model = struct {
     /// Recent count values, oldest first. `history[0..history_len]` is the
     /// live window; once full it slides (drop-oldest). Plain Model state,
     /// mutated only in `update` — the chart in `app.statsView` reads it.
-    history: [HISTORY_CAP]f32 = [_]f32{0} ** HISTORY_CAP,
+    history: [HISTORY_CAP]f32 = @splat(0),
     history_len: usize = 0,
 };
 

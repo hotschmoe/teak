@@ -18,7 +18,7 @@
   TO UPDATE: when you add/rename a `pub const` in src/teak.zig, add the new
   name here — put it in the "Public API reference" section with its real
   signature and a one-clause purpose. Re-run `zig build audit` until green.
-  Requires Zig 0.16.0+.
+  Requires Zig 0.17.0+.
 -->
 
 ## The core loop
@@ -697,7 +697,7 @@ More worked examples and idioms: **docs/cookbook.md**.
 
 ## Build & consume
 
-Requires **Zig 0.16.0+**. Teak is a pure library (no external deps); wgpu-native
+Requires **Zig 0.17.0+**. Teak is a pure library (no external deps); wgpu-native
 prebuilts are lazy deps fetched only on native/web UI builds.
 
 `build.zig.zon`:

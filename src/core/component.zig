@@ -27,9 +27,10 @@ pub fn validateComponent(comptime T: type) void {
     // field's default, so every field of a component Model must itself
     // carry a default. Enforce it here with a message that names the
     // offending field instead of failing cryptically inside GenerateModel.
-    inline for (@typeInfo(T.Model).@"struct".fields) |f| {
-        if (f.default_value_ptr == null)
-            @compileError("Component '" ++ name ++ "'.Model field '" ++ f.name ++
+    const model_info = @typeInfo(T.Model).@"struct";
+    inline for (model_info.field_names, model_info.field_attrs) |field_name, attrs| {
+        if (attrs.default_value_ptr == null)
+            @compileError("Component '" ++ name ++ "'.Model field '" ++ field_name ++
                 "' has no default value; Model must be default-initialisable " ++
                 "(every field defaulted) so composition can build `.{}`");
     }
@@ -54,12 +55,12 @@ pub fn validateComponent(comptime T: type) void {
             "with signature `fn(*Model, Msg) void`");
     const update_fn = update_info.@"fn";
     const expected_update = "Component '" ++ name ++ "'.update must be `fn(*Model, Msg) void`";
-    if (update_fn.params.len != 2)
-        @compileError(expected_update ++ " — it takes " ++ paramCountStr(update_fn.params.len) ++
+    if (update_fn.param_types.len != 2)
+        @compileError(expected_update ++ " — it takes " ++ paramCountStr(update_fn.param_types.len) ++
             ", expected 2 (*Model, Msg)");
-    if (update_fn.params[0].type == null or update_fn.params[0].type.? != *T.Model)
+    if (update_fn.param_types[0] != *T.Model)
         @compileError(expected_update ++ " — first parameter must be *Model");
-    if (update_fn.params[1].type == null or update_fn.params[1].type.? != T.Msg)
+    if (update_fn.param_types[1] != T.Msg)
         @compileError(expected_update ++ " — second parameter must be Msg");
     if (update_fn.return_type == null or update_fn.return_type.? != void)
         @compileError(expected_update ++ " — it must return void");
@@ -78,10 +79,10 @@ pub fn validateComponent(comptime T: type) void {
     const view_fn = view_info.@"fn";
     const expected_view = "Component '" ++ name ++
         "'.view must be `fn(*const Model, cb: anytype, msgs: anytype) void`";
-    if (view_fn.params.len != 3)
-        @compileError(expected_view ++ " — it takes " ++ paramCountStr(view_fn.params.len) ++
+    if (view_fn.param_types.len != 3)
+        @compileError(expected_view ++ " — it takes " ++ paramCountStr(view_fn.param_types.len) ++
             ", expected 3 (*const Model, cb, msgs)");
-    if (view_fn.params[0].type == null or view_fn.params[0].type.? != *const T.Model)
+    if (view_fn.param_types[0] != *const T.Model)
         @compileError(expected_view ++ " — first parameter must be *const Model");
     if (view_fn.return_type) |rt| {
         if (rt != void)
@@ -106,15 +107,15 @@ pub fn MsgsStructFor(comptime Comp: type, comptime AppMsg: type) type {
     const msg_info = @typeInfo(Comp.Msg).@"union";
     comptime var names: []const []const u8 = &.{};
     comptime var types: []const type = &.{};
-    inline for (msg_info.fields) |f| {
-        if (f.type == void) {
-            names = names ++ &[_][]const u8{f.name};
+    inline for (msg_info.field_names, msg_info.field_types) |field_name, field_type| {
+        if (field_type == void) {
+            names = names ++ &[_][]const u8{field_name};
             types = types ++ &[_]type{AppMsg};
         }
     }
     const n = names.len;
     const types_arr: [n]type = types[0..n].*;
-    const attrs: [n]std.builtin.Type.StructField.Attributes = @splat(.{});
+    const attrs: [n]std.builtin.Type.Struct.FieldAttributes = @splat(.{});
     return @Struct(.auto, null, names, &types_arr, &attrs);
 }
 
@@ -130,37 +131,37 @@ pub fn buildMsgs(
 ) MsgsStructFor(Comp, AppMsg) {
     var msgs: MsgsStructFor(Comp, AppMsg) = undefined;
     const msg_info = @typeInfo(Comp.Msg).@"union";
-    inline for (msg_info.fields) |f| {
-        if (f.type == void) {
-            const local: Comp.Msg = @unionInit(Comp.Msg, f.name, {});
-            @field(msgs, f.name) = @unionInit(AppMsg, variant_name, local);
+    inline for (msg_info.field_names, msg_info.field_types) |field_name, field_type| {
+        if (field_type == void) {
+            const local: Comp.Msg = @unionInit(Comp.Msg, field_name, {});
+            @field(msgs, field_name) = @unionInit(AppMsg, variant_name, local);
         }
     }
     return msgs;
 }
 
+/// Field names of the `.{ .name = Component, ... }` tuple handed to `Components`.
+fn componentNames(comptime components: anytype) []const [:0]const u8 {
+    return @typeInfo(@TypeOf(components)).@"struct".field_names;
+}
+
 fn GenerateModel(comptime components: anytype, comptime AppLevel: ?type) type {
-    const Attrs = std.builtin.Type.StructField.Attributes;
+    const Attrs = std.builtin.Type.Struct.FieldAttributes;
     comptime var names: []const []const u8 = &.{};
     comptime var types: []const type = &.{};
     comptime var attrs_list: []const Attrs = &.{};
-    inline for (std.meta.fields(@TypeOf(components))) |field| {
-        const T = @field(components, field.name);
-        names = names ++ &[_][]const u8{field.name};
+    inline for (componentNames(components)) |comp_name| {
+        const T = @field(components, comp_name);
+        names = names ++ &[_][]const u8{comp_name};
         types = types ++ &[_]type{T.Model};
         const default: T.Model = .{};
         attrs_list = attrs_list ++ &[_]Attrs{.{ .default_value_ptr = @ptrCast(&default) }};
     }
     if (AppLevel) |AL| {
-        inline for (std.meta.fields(AL)) |field| {
-            names = names ++ &[_][]const u8{field.name};
-            types = types ++ &[_]type{field.type};
-            attrs_list = attrs_list ++ &[_]Attrs{.{
-                .@"comptime" = field.is_comptime,
-                .@"align" = field.alignment,
-                .default_value_ptr = field.default_value_ptr,
-            }};
-        }
+        const al_info = @typeInfo(AL).@"struct";
+        names = names ++ al_info.field_names;
+        types = types ++ al_info.field_types;
+        attrs_list = attrs_list ++ al_info.field_attrs;
     }
     const n = names.len;
     const types_arr: [n]type = types[0..n].*;
@@ -169,16 +170,16 @@ fn GenerateModel(comptime components: anytype, comptime AppLevel: ?type) type {
 }
 
 fn GenerateMsg(comptime components: anytype, comptime AppLevel: ?type) type {
-    const UAttrs = std.builtin.Type.UnionField.Attributes;
+    const UAttrs = std.builtin.Type.Union.FieldAttributes;
     comptime var names: []const []const u8 = &.{};
     comptime var types: []const type = &.{};
     comptime var attrs_list: []const UAttrs = &.{};
     comptime var values: []const u16 = &.{};
     comptime var idx: u16 = 0;
 
-    inline for (std.meta.fields(@TypeOf(components))) |field| {
-        const T = @field(components, field.name);
-        names = names ++ &[_][]const u8{field.name};
+    inline for (componentNames(components)) |comp_name| {
+        const T = @field(components, comp_name);
+        names = names ++ &[_][]const u8{comp_name};
         types = types ++ &[_]type{T.Msg};
         attrs_list = attrs_list ++ &[_]UAttrs{.{}};
         values = values ++ &[_]u16{idx};
@@ -187,11 +188,11 @@ fn GenerateMsg(comptime components: anytype, comptime AppLevel: ?type) type {
 
     if (AppLevel) |AL| {
         if (@hasDecl(AL, "Msg")) {
-            const AL_Msg_info = @typeInfo(AL.Msg).@"union";
-            inline for (AL_Msg_info.fields) |uf| {
-                names = names ++ &[_][]const u8{uf.name};
-                types = types ++ &[_]type{uf.type};
-                attrs_list = attrs_list ++ &[_]UAttrs{.{ .@"align" = uf.alignment }};
+            const al_msg = @typeInfo(AL.Msg).@"union";
+            names = names ++ al_msg.field_names;
+            types = types ++ al_msg.field_types;
+            attrs_list = attrs_list ++ al_msg.field_attrs;
+            for (al_msg.field_names) |_| {
                 values = values ++ &[_]u16{idx};
                 idx += 1;
             }
@@ -208,13 +209,13 @@ fn GenerateMsg(comptime components: anytype, comptime AppLevel: ?type) type {
 }
 
 pub fn Components(comptime components: anytype, comptime AppLevel: ?type) type {
-    inline for (std.meta.fields(@TypeOf(components))) |field| {
-        validateComponent(@field(components, field.name));
+    inline for (componentNames(components)) |comp_name| {
+        validateComponent(@field(components, comp_name));
     }
 
     const Model_ = GenerateModel(components, AppLevel);
     const Msg_ = GenerateMsg(components, AppLevel);
-    const comp_fields = std.meta.fields(@TypeOf(components));
+    const comp_names = componentNames(components);
 
     return struct {
         pub const Model = Model_;
@@ -227,10 +228,10 @@ pub fn Components(comptime components: anytype, comptime AppLevel: ?type) type {
             switch (msg) {
                 inline else => |payload, tag| {
                     const tag_name = @tagName(tag);
-                    inline for (comp_fields) |field| {
-                        if (comptime std.mem.eql(u8, tag_name, field.name)) {
-                            const Comp = @field(components, field.name);
-                            Comp.update(&@field(model, field.name), payload);
+                    inline for (comp_names) |comp_name| {
+                        if (comptime std.mem.eql(u8, tag_name, comp_name)) {
+                            const Comp = @field(components, comp_name);
+                            Comp.update(&@field(model, comp_name), payload);
                             return;
                         }
                     }
@@ -250,10 +251,10 @@ pub fn Components(comptime components: anytype, comptime AppLevel: ?type) type {
         /// Msg values verbatim (cb.button(msgs.increment, "+")) and the
         /// stored command carries the already-composed AppMsg.
         pub fn view(model: *const Model, cb: anytype) void {
-            inline for (comp_fields) |field| {
-                const Comp = @field(components, field.name);
-                const msgs = buildMsgs(Comp, field.name, Msg);
-                Comp.view(&@field(model.*, field.name), cb, msgs);
+            inline for (comp_names) |comp_name| {
+                const Comp = @field(components, comp_name);
+                const msgs = buildMsgs(Comp, comp_name, Msg);
+                Comp.view(&@field(model.*, comp_name), cb, msgs);
             }
         }
     };
@@ -285,7 +286,7 @@ const TestCounter = struct {
 
 const TestGreeter = struct {
     pub const Model = struct {
-        name: [32]u8 = [_]u8{0} ** 32,
+        name: [32]u8 = @splat(0),
         name_len: u8 = 0,
     };
     pub const Msg = union(enum) { focus, append: u8, clear };

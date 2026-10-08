@@ -186,8 +186,8 @@ test "images upload, draw and release (slot reuse)" {
     var h = try Harness.init(.{});
     defer h.deinit();
 
-    const red_px = [_]u8{ 255, 0, 0, 255 } ** 4; // 2x2 RGBA
-    const img = h.gpu.uploadImage(&red_px, 2, 2);
+    const red_px: [4][4]u8 = @splat(.{ 255, 0, 0, 255 }); // 2x2 RGBA
+    const img = h.gpu.uploadImage(std.mem.asBytes(&red_px), 2, 2);
     try std.testing.expect(img != teak.TEXTURE_HANDLE_NONE);
 
     h.gpu.uploadImages(&.{.{
@@ -207,7 +207,7 @@ test "images upload, draw and release (slot reuse)" {
     try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(pixels, 12, 12)); // red, BGRA order
 
     h.gpu.releaseImage(img);
-    const again = h.gpu.uploadImage(&red_px, 2, 2);
+    const again = h.gpu.uploadImage(std.mem.asBytes(&red_px), 2, 2);
     try std.testing.expectEqual(img, again);
 }
 
@@ -245,8 +245,8 @@ test "overlay layering: an opaque overlay hides base text and images, overlay te
     var quad: [6]teak.Vertex = undefined;
     solidQuad(&quad, 0, 0, 40, 40, .{ 1, 0, 0 });
     const texts = [_]teak.TextDraw{ textAt(8, 8, 16, 8, "base"), textAt(8, 24, 16, 8, "over") };
-    const green_px = [_]u8{ 0, 255, 0, 255 } ** 4;
-    const img = h.gpu.uploadImage(&green_px, 2, 2);
+    const green_px: [4][4]u8 = @splat(.{ 0, 255, 0, 255 });
+    const img = h.gpu.uploadImage(std.mem.asBytes(&green_px), 2, 2);
     const images = [_]teak.ImageDraw{.{
         .rect_x = 24,
         .rect_y = 8,

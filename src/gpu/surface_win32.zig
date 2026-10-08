@@ -7,8 +7,8 @@
 //! lives in `surface_xlib.zig`.
 //!
 //! `c` is re-imported from `wgpu_core.zig` so every provider shares the
-//! single `@cImport` translation unit — without that, each file's
-//! `@cImport` would mint a *distinct* `WGPUSurface` type and the seam
+//! single translate-c module — without that, each file's
+//! own translation would mint a *distinct* `WGPUSurface` type and the seam
 //! would not typecheck.
 
 const std = @import("std");

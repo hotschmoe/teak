@@ -13,7 +13,7 @@ pub const Model = struct {};
 
 pub fn update(_: *Model, _: Msg) void {}
 
-const ruler = "0123456789" ** 6;
+const ruler = "0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789";
 
 fn mono(size: f32, weight: teak.FontWeight, spacing: f32) teak.FontSpec {
     return .{ .size_px = size, .family = .mono, .weight = weight, .letter_spacing = spacing };
