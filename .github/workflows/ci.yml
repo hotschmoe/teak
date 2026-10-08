@@ -175,7 +175,8 @@ jobs:
           TEAK_BACKEND: wayland
         run: |
           zig build
-          timeout 20 ./zig-out/bin/chrome-ui; rc=$?
+          rc=0
+          timeout 20 ./zig-out/bin/chrome-ui || rc=$?
           test $rc -eq 124
 
   web-smoke:
