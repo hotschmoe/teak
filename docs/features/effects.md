@@ -64,7 +64,7 @@ Unsolicited results (no id, never filtered):
 | Result | Meaning |
 |---|---|
 | `.dropped: Drop` | a file or image dropped on / pasted into the window. `Drop{ kind (file/image/text), name, mime, bytes, width, height, thumb_rgba, thumb_w, thumb_h }`. Web images are already decoded, limited to a 1568 px long side and re-encoded (PNG, or JPEG when the source was a JPEG that needed no downscale); `thumb_rgba` is a tightly packed RGBA8 preview with a 64 px long side, ready for `uploadImage`. |
-| `.pasted_text: { text }` | text pasted with Ctrl/Cmd+V that no `handleClipboard` claimed |
+| `.pasted_text: { text }` | text pasted with Ctrl/Cmd+V that no `clipboardMsg` hook claimed |
 
 `Effect.id()`, `Effect.wantsResult()`, `teak.effects.resultId`,
 `teak.effects.unsupportedResult` are small pure helpers.
@@ -126,12 +126,14 @@ pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize; // fills 
 | `clock` | `Date.now()` + `-getTimezoneOffset()` |
 | `write_clipboard` | `navigator.clipboard.writeText`, with an `execCommand('copy')` fallback. Ctrl/Cmd+C and Ctrl/Cmd+X also write through it (`Clipboard.write`) |
 | `query_param` | `URLSearchParams` of `location.search` |
-| paste / drop | `paste` and `drop` events on the page; images decoded with `createImageBitmap`, downscaled, re-encoded, thumbnailed (see `Drop`). Dropped `.json` / `.txt` and other files arrive as `Drop{kind = .file}`; pasted text as `.pasted_text`. Ctrl/Cmd+V is no longer swallowed by the page, and `Clipboard.read` returns the text of the paste that accompanied the key press, so a `keyNeedsClipboard` / `handleClipboard` text field pastes through the existing path; only unclaimed pastes surface as `.pasted_text` |
+| paste / drop | `paste` and `drop` events on the page; images decoded with `createImageBitmap`, downscaled, re-encoded, thumbnailed (see `Drop`). Dropped `.json` / `.txt` and other files arrive as `Drop{kind = .file}`; pasted text as `.pasted_text`. Ctrl/Cmd+V is no longer swallowed by the page, and `Clipboard.read` returns the text of the paste that accompanied the key press, so a `clipboardMsg` text field pastes through the existing path; only unclaimed pastes surface as `.pasted_text` |
 
 The lifecycle and the JS/wasm buffer protocol are written down once, in
 zunk's `docs/ARCHITECTURE.md` ("Host services: `web.fx`").
 
-### Native (Linux/X11 in `src/platform/native_effects.zig`; Win32 answers `unsupported`)
+### Native (Linux X11 + Wayland in `src/platform/native_effects.zig`; Win32 answers `unsupported`)
+
+The Wayland host (`wayland.zig`) implements `write_clipboard`, paste (`pasted_text` / PNG `dropped`) and file/text drops on `wl_data_device` with the same result shapes as X11 below (pipes instead of selections; no INCR needed); `Clipboard.read` is a bounded 250 ms pipe read.
 
 | Effect | Implementation |
 |---|---|
@@ -142,7 +144,7 @@ zunk's `docs/ARCHITECTURE.md` ("Host services: `web.fx`").
 | `clock` | OS wall clock and UTC offset. |
 | `query_param` | argv `--name=value` (read from `/proc/self/cmdline`), else env `TEAK_<NAME_UPPER>` (`api-base` -> `TEAK_API_BASE`), else absent. |
 | `write_clipboard` | the window takes the `CLIPBOARD` selection and serves the text to other clients on request (`UTF8_STRING`, `STRING`, `TEXT`, `text/plain[;charset=utf-8]`, `TARGETS`). Ctrl+C/X through `Clipboard.write` does the same. Limits: the content is copied once and lives as long as the process (no clipboard-manager hand-off, so it vanishes when the app exits); texts above the server's maximum request size (~16 MiB on X.org) are refused to requestors (no INCR on the sending side). |
-| paste (`pasted_text` / `dropped`) | Ctrl+V that no `handleClipboard` claims starts an asynchronous `XConvertSelection(CLIPBOARD, TARGETS)` round trip; text (`UTF8_STRING`, else `STRING`) arrives as `.pasted_text` a frame or two later, otherwise `image/png` as `.dropped{kind=.image, mime="image/png"}` with `width`/`height` read from the PNG header. Unlike web, the PNG is the owner's bytes verbatim: no downscale, no re-encode, and `thumb_rgba` is empty (native has no image decoder). Large selections arrive over INCR (up to 64 MiB). A 5 s transfer timeout answers nothing. |
+| paste (`pasted_text` / `dropped`) | Ctrl+V that no `clipboardMsg` hook claims starts an asynchronous `XConvertSelection(CLIPBOARD, TARGETS)` round trip; text (`UTF8_STRING`, else `STRING`) arrives as `.pasted_text` a frame or two later, otherwise `image/png` as `.dropped{kind=.image, mime="image/png"}` with `width`/`height` read from the PNG header. Unlike web, the PNG is the owner's bytes verbatim: no downscale, no re-encode, and `thumb_rgba` is empty (native has no image decoder). Large selections arrive over INCR (up to 64 MiB). A 5 s transfer timeout answers nothing. |
 | file / text drop (`dropped`) | XDND v5 (`XdndAware` on the window; Enter / Position / Drop / Leave, `XdndStatus` + `XdndFinished` replies). `text/uri-list` is fetched, `file://` URIs (empty or `localhost` authority, percent-decoded) are read **synchronously inside the poll** (up to 32 MiB per file, 64 files per drop; unreadable files, directories and remote hosts are skipped) and each becomes `.dropped{kind=.file, name, mime, bytes}` (`kind=.image` for `.png` / `.jpg`; `width`/`height` for PNG only). A drag offering only `UTF8_STRING` arrives as `kind=.text`. Matches the web `Drop` shape; the path is not exposed, only the base name. |
 
 ## HARDLINE bounds (§2 hatch 7)
