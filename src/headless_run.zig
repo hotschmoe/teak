@@ -91,6 +91,9 @@ pub const ShotOptions = struct {
     height: u32 = 800,
     /// 4x MSAA of the UI pass (as a windowed app would run it).
     msaa: bool = true,
+    /// Device pixels per logical pixel: the PNG is `width * scale` by
+    /// `height * scale` and text is rasterized at that size (HiDPI).
+    scale: f32 = 1,
     /// Input script; see `Step`.
     steps: []const Step = &.{},
     /// Extra frames after the script so animations / one-frame input
@@ -112,7 +115,7 @@ pub fn shot(
 ) !void {
     var host = try Host.init(gpa, o.width, o.height);
     defer host.deinit();
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = o.scale });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();

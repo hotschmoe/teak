@@ -27,6 +27,8 @@ pub const c = @import("stb-c");
 /// because a monospace face matches the framework's measurement
 /// heritage and keeps columns aligned.
 const FONT_CANDIDATES = [_][]const u8{
+    "C:\\Windows\\Fonts\\consola.ttf",
+    "C:\\Windows\\Fonts\\cour.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
     "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
     "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
@@ -44,6 +46,10 @@ pub const Font = struct {
     info: c.stbtt_fontinfo,
     /// Set when `data` was allocated by `loadSystem`.
     allocator: ?std.mem.Allocator = null,
+    /// Glyph id and advance (font units) of every ASCII code point, filled at
+    /// load: the shaper's hot path never touches the cmap/hmtx tables for it.
+    ascii_gid: [128]u16 = @splat(0),
+    ascii_adv: [128]u16 = @splat(0),
 
     /// Wrap `ttf` without copying it. The bytes must stay alive and unchanged.
     pub fn fromBytes(ttf: []const u8) !Font {
@@ -52,7 +58,13 @@ pub const Font = struct {
         if (offset < 0 or c.stbtt_InitFont(&info, ttf.ptr, offset) == 0) {
             return error.FontInitFailed;
         }
-        return .{ .data = ttf, .info = info };
+        var font: Font = .{ .data = ttf, .info = info };
+        for (0..128) |cp| {
+            const g = font.glyphIndexSlow(@intCast(cp));
+            font.ascii_gid[cp] = g;
+            font.ascii_adv[cp] = @intCast(@max(0, font.advanceUnits(g)));
+        }
+        return font;
     }
 
     /// Load the system fallback face (`TEAK_FONT`, else the candidate list).
@@ -95,6 +107,11 @@ pub const Font = struct {
 
     /// Glyph id for `cp` (0 = the face has no glyph).
     pub fn glyphIndex(self: *const Font, cp: u21) u16 {
+        if (cp < 128) return self.ascii_gid[cp];
+        return self.glyphIndexSlow(cp);
+    }
+
+    fn glyphIndexSlow(self: *const Font, cp: u21) u16 {
         const g = c.stbtt_FindGlyphIndex(&self.info, @intCast(cp));
         return if (g < 0 or g > std.math.maxInt(u16)) 0 else @intCast(g);
     }

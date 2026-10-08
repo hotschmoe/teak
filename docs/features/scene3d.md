@@ -71,7 +71,7 @@ The loop uploads on a new `key`, re-uploads when `rev` changes, releases vanishe
 | Render | `SceneDraw` per visible scene (base layer, then overlay layer); nothing is added to the solid-vertex stream. `buildVertices` (the scene-less entry point) skips scenes. |
 | Snapshot | `scene3d (x,y,w,h) mesh=N key=K [id=I] [pointer] ["label"]` |
 | A11y | `Role.image` node with `label`. |
-| Frame diff | `SceneCmd.eql`: every field (incl. `id`, `pointer`), label by content. |
+| Frame diff | derived `deepEql` (`core/eql.zig`): every field (incl. `id`, `pointer`), label by content. |
 
 ## Invariants
 

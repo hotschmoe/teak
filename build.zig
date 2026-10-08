@@ -99,6 +99,23 @@ pub fn build(b: *std.Build) void {
         .file = b.path("src/gpu/vendor/stb_truetype_impl.c"),
         .flags = &.{"-std=c99"},
     });
+    // Win32 platform smoke tests (src/platform/win32.zig). Only
+    // wired when the host target is Windows because the file imports
+    // user32/oleaut32/kernel32/uiautomationcore. Covers the UIA
+    // per-node fragment provider wiring among other host helpers.
+    if (target.result.os.tag == .windows) {
+        const platform_win32_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/win32.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "teak", .module = mod },
+                .{ .name = "teak-text", .module = stbtt_mod },
+            },
+        });
+        const platform_win32_tests = b.addTest(.{ .root_module = platform_win32_mod });
+        test_step.dependOn(&b.addRunArtifact(platform_win32_tests).step);
+    }
     const stbtt_tests = b.addTest(.{ .root_module = stbtt_mod });
     test_step.dependOn(&b.addRunArtifact(stbtt_tests).step);
 
@@ -177,6 +194,27 @@ pub fn build(b: *std.Build) void {
     });
     const x11_tests = b.addTest(.{ .root_module = x11_mod });
     test_step.dependOn(&b.addRunArtifact(x11_tests).step);
+
+    // Display-backed X11 host tests (src/platform/x11_test.zig): clipboard
+    // via xclip, XDND via a second in-process source, key/IME fallback via
+    // xdotool. Opt-in (`zig build test-x11`, run under Xvfb or any X
+    // session); each test skips when DISPLAY is unset or a tool is missing.
+    if (target.result.os.tag == .linux) {
+        const x11_live_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/x11_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "teak", .module = mod },
+                .{ .name = "teak-text", .module = stbtt_mod },
+            },
+        });
+        const test_x11_step = b.step("test-x11", "Run X11 host tests against a live display (skip without DISPLAY)");
+        const run_x11 = b.addRunArtifact(b.addTest(.{ .root_module = x11_live_mod }));
+        run_x11.has_side_effects = true; // depends on $DISPLAY: never cache
+        test_x11_step.dependOn(&run_x11.step);
+    }
 
     // Headless native GPU tests (wgpu-native scene renderer: render offscreen,
     // read pixels back). Needs the wgpu-native prebuilt (fetched lazily) and a
@@ -632,6 +670,11 @@ pub const WebWgpuOptions = struct {
     output_dir: []const u8 = "dist",
     /// Fonts copied to `<output_dir>/fonts/` and loaded before the first frame.
     fonts: []const WebFont = &.{},
+    /// Strip DWARF and the name section from the .wasm in any non-Debug
+    /// build (the browser cannot use it without an extension, and it was
+    /// ~90% of the shipped file: chrome 1.27 MB -> ~0.12 MB). Set false to
+    /// keep symbols for wasm debugging / `wasm-objdump`.
+    strip: bool = true,
 };
 
 /// The `teak-fonts` options module: the family registered for each slot ("" =
@@ -692,6 +735,7 @@ pub fn linkWebWgpu(
     exe.rdynamic = true;
     exe.entry = .disabled;
     exe.export_memory = true;
+    if (opts.strip and optimize != .debug) root.strip = true;
 
     const teak_dep = b.dependencyFromBuildZig(BuildZig, .{
         .target = target,
