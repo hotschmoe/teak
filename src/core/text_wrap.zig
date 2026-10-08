@@ -58,6 +58,65 @@ pub const Line = struct {
     ellipsized: bool = false,
 };
 
+/// A measurer over `rich_text` runs: measuring a slice of `content` sums the
+/// pieces in their own span fonts (uncovered bytes use `default_font`); any
+/// other string (the ellipsis, the line-height probe) is measured in
+/// `default_font`, with the height of the tallest run. It lets every function
+/// here wrap mixed-font text unchanged: they only ever measure slices of the
+/// content, and the slice's offset (pointer arithmetic) says which span it is.
+/// Valid while the value lives and `content` / `spans` stay in place.
+pub const RichMeasure = struct {
+    content: []const u8,
+    spans: []const text_mod.RichTextSpan,
+    default_font: FontSpec,
+    base: TextMeasurer,
+    max_height: f32,
+
+    pub fn init(content: []const u8, spans: []const text_mod.RichTextSpan, default_font: FontSpec, base: TextMeasurer) RichMeasure {
+        var h = base.measure(" ", default_font).height;
+        for (spans) |sp| h = @max(h, base.measure(" ", sp.font).height);
+        return .{ .content = content, .spans = spans, .default_font = default_font, .base = base, .max_height = h };
+    }
+
+    /// The measurer for wrapping calls (pass `default_font` as their `font`).
+    pub fn measurer(self: *const RichMeasure) TextMeasurer {
+        return .{ .ctx = @ptrCast(@constCast(self)), .measure_fn = &measureFn };
+    }
+
+    fn measureFn(ctx: *anyopaque, t: []const u8, _: FontSpec) text_mod.TextMetrics {
+        const self: *const RichMeasure = @ptrCast(@alignCast(ctx));
+        const base_addr = @intFromPtr(self.content.ptr);
+        const t_addr = @intFromPtr(t.ptr);
+        var out: text_mod.TextMetrics = .{ .width = 0, .height = self.max_height, .ascent = 0, .descent = 0 };
+        const first = self.base.measure(" ", self.default_font);
+        out.ascent = first.ascent;
+        out.descent = first.descent;
+        if (t.len == 0) return out;
+        if (t_addr < base_addr or t_addr + t.len > base_addr + self.content.len) {
+            out.width = self.base.measure(t, self.default_font).width;
+            return out;
+        }
+        const lo: usize = t_addr - base_addr;
+        const hi = lo + t.len;
+        var cursor = lo;
+        for (self.spans) |sp| {
+            const s: usize = @min(sp.start, self.content.len);
+            const e: usize = @min(sp.end, self.content.len);
+            if (e <= cursor or s >= hi) continue;
+            if (s > cursor) {
+                out.width += self.base.measure(self.content[cursor..s], self.default_font).width;
+                cursor = s;
+            }
+            const stop = @min(e, hi);
+            out.width += self.base.measure(self.content[cursor..stop], sp.font).width;
+            cursor = stop;
+            if (cursor >= hi) break;
+        }
+        if (cursor < hi) out.width += self.base.measure(self.content[cursor..hi], self.default_font).width;
+        return out;
+    }
+};
+
 /// Line height for `font` as the measurer reports it.
 pub fn lineHeight(font: FontSpec, m: TextMeasurer) f32 {
     return m.measure(" ", font).height;

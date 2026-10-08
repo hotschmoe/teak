@@ -19,7 +19,7 @@ pub fn main() !void {
     try host.registerFont(.mono, .medium, @embedFile("plex-Medium"));
     try host.registerFont(.mono, .bold, @embedFile("plex-Bold"));
 
-    var gpu = try gpu_native.Gpu.init(host.nativeHandle(), 1000, 520);
+    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 1000, 520, .{ .scale = host.scaleFactor() });
     defer gpu.deinit();
 
     try teak.run(App, gpa, &host, &gpu, .{ .clear_color = .{ 0.08, 0.08, 0.1, 1.0 } });

@@ -1,8 +1,12 @@
 # Cmd size: moving large payloads out-of-line
 
-Status: **design note + prototype only.** `src/core/cmd.zig` is unchanged.
-Reproduce with `zig build bench-cmdsize` (prototype on a *copy* of the type,
-`tools/bench/cmd_size.zig`) and `zig build bench` (whole pipeline).
+Status: **implemented.** Large payloads (`push_group`, `push_overlay`, `button`,
+`text_input`, `text_area`, `checkbox`, `radio`, `slider`, `canvas`, `scene3d`) are
+held as `*const T` into the per-frame arena; `Cmd` shrank from 480 B to 72 B. The
+emitters build them through `CmdBuffer.box(.tag, payload)` (arena-only, no
+per-widget free); `Cmd.eql` follows those pointers so the frame diff compares
+content, never addresses. Measure with `zig build bench`. The numbers below are
+from the design prototype (`bench-cmdsize`, since removed).
 
 ## Why look at it
 

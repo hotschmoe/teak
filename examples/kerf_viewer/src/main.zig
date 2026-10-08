@@ -15,7 +15,7 @@ pub fn main(init: std.process.Init) !void {
     defer args.deinit();
     _ = args.next();
     while (args.next()) |arg| {
-        if (std.mem.startsWith(u8, arg, "--mesh=")) App.update(&model, .{ .mesh_param = arg["--mesh=".len..] });
+        if (std.mem.startsWith(u8, arg, "--mesh=")) App.update(&model, .{ .param = .{ .id = App.param_id_base, .value = arg["--mesh=".len..] } });
     }
 
     var cb = teak.CmdBuffer(App.Msg).init(gpa);
@@ -36,4 +36,7 @@ pub fn main(init: std.process.Init) !void {
 test {
     std.testing.refAllDecls(App);
     _ = @import("kerf_mesh.zig");
+    _ = @import("doc2d.zig");
+    _ = @import("chat.zig");
+    _ = @import("draw/mod.zig");
 }

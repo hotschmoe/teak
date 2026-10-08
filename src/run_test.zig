@@ -67,6 +67,8 @@ pub const ScriptHost = struct {
     height: u32 = 300,
     clock_ms: u64 = 0,
     set_title_calls: u32 = 0,
+    cursor_calls: u32 = 0,
+    cursor: host_iface.CursorShape = .arrow,
     ime_buf: [8]u8 = undefined,
     ime_len: usize = 0,
     ime_on: bool = false,
@@ -90,6 +92,11 @@ pub const ScriptHost = struct {
     fx_queue: [32]host_iface.EffectResult = undefined,
     fx_queue_n: usize = 0,
 
+    /// Clipboard: what a paste reads, and the last text a copy wrote.
+    clip_in: []const u8 = "",
+    clip_out: [64]u8 = undefined,
+    clip_out_len: usize = 0,
+    clip_writes: u32 = 0,
     /// `waitEvents` calls from `run` after quiet frames, and the last timeout.
     wait_calls: u32 = 0,
     last_wait_ms: u32 = 0,
@@ -162,13 +169,21 @@ pub const ScriptHost = struct {
     pub fn textMeasurer(_: *ScriptHost) text.TextMeasurer {
         return text.monoMeasurer();
     }
-    pub fn clipboard(_: *ScriptHost) host_iface.Clipboard {
-        return .{ .ctx = undefined, .read_fn = readEmpty, .write_fn = writeDiscard };
+    pub fn clipboard(self: *ScriptHost) host_iface.Clipboard {
+        return .{ .ctx = @ptrCast(self), .read_fn = clipRead, .write_fn = clipWrite };
     }
-    fn readEmpty(_: *anyopaque) []const u8 {
-        return "";
+    fn clipRead(ctx: *anyopaque) []const u8 {
+        const self: *ScriptHost = @ptrCast(@alignCast(ctx));
+        return self.clip_in;
     }
-    fn writeDiscard(_: *anyopaque, _: []const u8) void {}
+    /// Records the last text written (what the loop copied), for assertions.
+    fn clipWrite(ctx: *anyopaque, bytes: []const u8) void {
+        const self: *ScriptHost = @ptrCast(@alignCast(ctx));
+        const n = @min(bytes.len, self.clip_out.len);
+        @memcpy(self.clip_out[0..n], bytes[0..n]);
+        self.clip_out_len = n;
+        self.clip_writes += 1;
+    }
     pub fn imeState(self: *const ScriptHost) host_iface.ImeState {
         return .{ .active = self.ime_on, .text = self.ime_buf[0..self.ime_len], .cursor = self.ime_len };
     }
@@ -204,6 +219,10 @@ pub const ScriptHost = struct {
         return in;
     }
     pub fn closeSecondaryWindow(_: *ScriptHost, _: u32) void {}
+    pub fn setCursor(self: *ScriptHost, shape: host_iface.CursorShape) void {
+        self.cursor_calls += 1;
+        self.cursor = shape;
+    }
     pub fn setTitle(self: *ScriptHost, _: []const u8) void {
         self.set_title_calls += 1;
     }
@@ -259,7 +278,7 @@ pub const StubGpu = struct {
     pub fn releaseImage(self: *StubGpu, _: u32) void {
         self.image_releases += 1;
     }
-    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw, _: []const render.SceneItem) void {
+    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw, _: render.SceneData) void {
         self.scene_calls += 1;
         self.last_scene_count = d.len;
         if (d.len > 0) self.last_scene_mesh = d[0].mesh;
@@ -949,29 +968,6 @@ test "run: a secondary-content-only change re-mirrors the snapshot" {
 
 // ── Frame diff (cmdsEqual) ──────────────────────────────────────────
 
-test "cmdsEqual: wrap, max_lines, text_align and shrink changes are frame changes" {
-    const Msg = union(enum) { a };
-    var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer x.deinit();
-    var y = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer y.deinit();
-    const f = x.theme.typography.body;
-    const c = x.theme.text_color;
-    x.paragraphStyled("same", f, c, .{});
-    y.paragraphStyled("same", f, c, .{});
-    try std.testing.expect(cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-    for ([_]cmd.ParagraphOpts{ .{ .wrap = .char }, .{ .max_lines = 2 }, .{ .text_align = .center } }) |o| {
-        y.reset();
-        y.paragraphStyled("same", f, c, o);
-        try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-    }
-    x.reset();
-    y.reset();
-    x.pushGroup(.{});
-    y.pushGroup(.{ .shrink = 1 });
-    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-}
-
 test "cmdsEqual: detects label, disabled, and length changes" {
     const Msg = union(enum) { a };
     var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
@@ -1610,25 +1606,25 @@ test "cmdsEqual: scene3d fields and keyed canvas batches" {
         .{ .x = 0, .y = 1, .r = 1, .g = 1, .b = 1, .a = 1 },
     };
     const copy = tri; // same content, other address
-    const a = [_]C{
-        .{ .scene3d = .{ .mesh = 1, .key = 4, .id = 2, .pointer = true } },
-        .{ .canvas = .{ .primitives = &.{.{ .triangles = .{ .verts = &tri, .key = 9 } }} } },
-    };
-    var b = [_]C{
-        .{ .scene3d = .{ .mesh = 1, .key = 4, .id = 2, .pointer = true } },
-        .{ .canvas = .{ .primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 9 } }} } },
-    };
+    const Sc = @typeInfo(@FieldType(C, "scene3d")).pointer.child;
+    const Cv = @typeInfo(@FieldType(C, "canvas")).pointer.child;
+    const sa: Sc = .{ .mesh = 1, .key = 4, .id = 2, .pointer = true };
+    const ca: Cv = .{ .primitives = &.{.{ .triangles = .{ .verts = &tri, .key = 9 } }} };
+    const a = [_]C{ .{ .scene3d = &sa }, .{ .canvas = &ca } };
+    var sb = sa;
+    var cbv: Cv = .{ .primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 9 } }} };
+    var b = [_]C{ .{ .scene3d = &sb }, .{ .canvas = &cbv } };
     try std.testing.expect(cmdsEqual(Msg, &a, &b));
-    b[0].scene3d.key = 5;
+    sb.key = 5;
     try std.testing.expect(!cmdsEqual(Msg, &a, &b));
-    b[0].scene3d.key = 4;
-    b[0].scene3d.id = 3;
+    sb.key = 4;
+    sb.id = 3;
     try std.testing.expect(!cmdsEqual(Msg, &a, &b));
-    b[0].scene3d.id = 2;
-    b[0].scene3d.pointer = false;
+    sb.id = 2;
+    sb.pointer = false;
     try std.testing.expect(!cmdsEqual(Msg, &a, &b));
-    b[0].scene3d.pointer = true;
-    b[1].canvas.primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 10 } }};
+    sb.pointer = true;
+    cbv.primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 10 } }};
     try std.testing.expect(!cmdsEqual(Msg, &a, &b));
 }
 
@@ -1687,6 +1683,46 @@ test "run: windowMsg reports the window size on the first frame" {
     try std.testing.expectEqual(@as(f32, 400), t.rt.model.w);
     try std.testing.expectEqual(@as(f32, 300), t.rt.model.h);
     try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls); // only the first frame resized
+}
+
+// ── Cursor shapes + display scale ───────────────────────────────────
+
+const CursorApp = struct {
+    pub const Model = struct { override: bool = false };
+    pub const Msg = union(enum) { click, edit };
+    pub fn update(_: *Model, _: Msg) void {}
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.button(.click, "X");
+        cb.buttonDisabled(.click, "off");
+        cb.popGroup();
+    }
+    pub fn cursorFor(m: *const Model, kind: @import("core/cursor.zig").HoverKind) ?host_iface.CursorShape {
+        return if (m.override and kind == .none) .crosshair else null;
+    }
+};
+
+test "run: the cursor follows the hovered widget and setCursor fires only on change" {
+    const t = try play(CursorApp, &.{
+        .{}, // arrow (nothing hovered; matches the initial shape: no call)
+        .{ .x = 5, .y = 5 }, // over the button -> pointer
+        .{ .x = 6, .y = 6 }, // still the button: no new call
+        .{ .x = 380, .y = 280 }, // empty space -> arrow
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.host.cursor_calls);
+    try std.testing.expectEqual(host_iface.CursorShape.arrow, t.host.cursor);
+}
+
+test "run: cursorFor can override the default and sees the hovered kind" {
+    const p = try begin(CursorApp, .{ .script = &.{ .{}, .{}, .{ .x = 5, .y = 5 } } }, .{});
+    defer p.destroy();
+    p.rt.model.override = true;
+    try p.rt.frame(); // empty space + override -> crosshair
+    try std.testing.expectEqual(host_iface.CursorShape.crosshair, p.host.cursor);
+    try p.rt.frame();
+    try p.rt.frame(); // over the button: kind = button, hook declines -> pointer
+    try std.testing.expectEqual(host_iface.CursorShape.pointer, p.host.cursor);
 }
 
 // ── text_area: pointer, motion, scroll, metrics (text-engine PR11b) ────
@@ -1939,6 +1975,13 @@ test "text_area: a draw frame renders the area (quads + per-line text)" {
 const mutation = struct {
     const Alloc = std.mem.Allocator;
 
+    fn wrap(comptime PF: type, a: Alloc, v: anytype) !PF {
+        if (@typeInfo(PF) != .pointer) return v;
+        const p = try a.create(@TypeOf(v));
+        p.* = v;
+        return p;
+    }
+
     /// Deterministic non-trivial value of `T`. Every union picks field
     /// `pick % n`. A field named `key` stays 0 so canvas batches compare
     /// by content (a non-zero key deliberately short-circuits the diff).
@@ -2061,13 +2104,17 @@ test "cmdsEqual: every field of every Cmd variant is observed by the diff" {
     const arena = arena_state.allocator();
 
     var checked: usize = 0;
-    inline for (@typeInfo(C).@"union".field_names, @typeInfo(C).@"union".field_types) |vname, P| {
+    inline for (@typeInfo(C).@"union".field_names, @typeInfo(C).@"union".field_types) |vname, PF| {
+        // Out-of-line payloads (`*const T` into the frame arena) are sampled and
+        // mutated as `T`, then boxed at a fresh address: the diff must follow the pointer.
+        const boxed = @typeInfo(PF) == .pointer;
+        const P = if (boxed) @typeInfo(PF).pointer.child else PF;
         var pick: usize = 0;
         while (pick < 9) : (pick += 1) {
             const pa = try mutation.sample(P, arena, pick, vname);
             const pb = try mutation.sample(P, arena, pick, vname);
-            const ca = [_]C{@unionInit(C, vname, pa)};
-            const cb = [_]C{@unionInit(C, vname, pb)};
+            const ca = [_]C{@unionInit(C, vname, try mutation.wrap(PF, arena, pa))};
+            const cb = [_]C{@unionInit(C, vname, try mutation.wrap(PF, arena, pb))};
             // Equal content at distinct addresses must compare equal.
             try std.testing.expect(cmdsEqual(Msg, &ca, &cb));
 
@@ -2076,7 +2123,7 @@ test "cmdsEqual: every field of every Cmd variant is observed by the diff" {
                 var mutated = try mutation.sample(P, arena, pick, vname);
                 var k = idx;
                 if (!mutation.mutate(P, &mutated, &k)) break;
-                const cm = [_]C{@unionInit(C, vname, mutated)};
+                const cm = [_]C{@unionInit(C, vname, try mutation.wrap(PF, arena, mutated))};
                 std.testing.expect(!cmdsEqual(Msg, &ca, &cm)) catch |e| {
                     std.debug.print("variant {s} pick {d}: leaf #{d} change not detected\n", .{ vname, pick, idx });
                     return e;
@@ -2091,11 +2138,15 @@ test "cmdsEqual: every field of every Cmd variant is observed by the diff" {
 test "cmdsEqual: Msg slices compare by content; variant swaps are detected" {
     const Msg = union(enum) { a, b: []const u8 };
     const C = cmd.Cmd(Msg);
-    const x = [_]C{.{ .button = .{ .msg = .{ .b = "k1" }, .label = "L" } }};
+    const Btn = @typeInfo(@FieldType(C, "button")).pointer.child;
+    const bx: Btn = .{ .msg = .{ .b = "k1" }, .label = "L" };
+    const x = [_]C{.{ .button = &bx }};
     var buf = "k1".*;
-    const same = [_]C{.{ .button = .{ .msg = .{ .b = &buf }, .label = "L" } }};
-    const diff = [_]C{.{ .button = .{ .msg = .{ .b = "k2" }, .label = "L" } }};
-    const other_tag = [_]C{.{ .checkbox = .{ .msg = .a, .checked = false, .label = "L" } }};
+    const bs: Btn = .{ .msg = .{ .b = &buf }, .label = "L" };
+    const same = [_]C{.{ .button = &bs }};
+    const bd: Btn = .{ .msg = .{ .b = "k2" }, .label = "L" };
+    const diff = [_]C{.{ .button = &bd }};
+    const other_tag = [_]C{.{ .checkbox = &.{ .msg = .a, .checked = false, .label = "L" } }};
     try std.testing.expect(cmdsEqual(Msg, &x, &same));
     try std.testing.expect(!cmdsEqual(Msg, &x, &diff));
     try std.testing.expect(!cmdsEqual(Msg, &x, &other_tag));
@@ -2497,4 +2548,199 @@ test "keyboard nav: a modal traps Tab, takes focus on open, and returns it to th
     try std.testing.expectEqual(@as(u32, 2), t.rt.model.oks);
     try std.testing.expectEqual(@as(u32, 0), t.rt.model.behind);
     try std.testing.expect(t.rt.model.open); // reopened by Enter on the restored focus
+}
+
+// ── Clipboard hooks ─────────────────────────────────────────────────
+
+const ClipApp = struct {
+    pub const Model = struct { text: [32]u8 = undefined, len: usize = 0, sel_len: usize = 0, pastes: u32 = 0 };
+    pub const Msg = union(enum) { paste: []const u8, cut, copied, noop };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .paste => |t| {
+                @memcpy(m.text[m.len..][0..t.len], t);
+                m.len += t.len;
+                m.pastes += 1;
+            },
+            .cut => m.len = 0,
+            .copied, .noop => {},
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{});
+        cb.text("clip");
+        cb.popGroup();
+    }
+    pub fn clipboardText(m: *const Model, key: keys.SpecialKey) ?[]const u8 {
+        if (key != .ctrl_c and key != .ctrl_x) return null;
+        return if (m.len > 0) m.text[0..m.len] else null;
+    }
+    pub fn clipboardMsg(_: *const Model, key: keys.SpecialKey, text_in: []const u8) ?Msg {
+        return switch (key) {
+            .ctrl_v => .{ .paste = text_in },
+            .ctrl_x => .cut,
+            .ctrl_c => .copied,
+            else => null,
+        };
+    }
+};
+
+test "clipboardMsg: Ctrl+V delivers the clipboard text as a Msg through update" {
+    const t = try playWith(ClipApp, .{ .script = &.{ .{}, .{ .keys = &.{.ctrl_v} }, .{ .keys = &.{.ctrl_v} } }, .clip_in = "ab" }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.rt.model.pastes);
+    try std.testing.expectEqualStrings("abab", t.rt.model.text[0..t.rt.model.len]);
+}
+
+test "clipboardText + clipboardMsg: Ctrl+C copies without mutating, Ctrl+X copies then cuts" {
+    const t = try playWith(ClipApp, .{
+        .script = &.{
+            .{},
+            .{ .keys = &.{.ctrl_v} }, // model now holds "xyz"
+            .{ .keys = &.{.ctrl_c} },
+            .{ .keys = &.{.ctrl_x} },
+        },
+        .clip_in = "xyz",
+    }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.host.clip_writes); // copy and cut each wrote
+    try std.testing.expectEqualStrings("xyz", t.host.clip_out[0..t.host.clip_out_len]);
+    try std.testing.expectEqual(@as(usize, 0), t.rt.model.len); // the cut ran AFTER the text was read
+}
+
+test "clipboardMsg: an empty paste is not delivered (image pastes stay unclaimed)" {
+    const t = try playWith(ClipApp, .{ .script = &.{ .{}, .{ .keys = &.{.ctrl_v} } }, .clip_in = "" }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 0), t.rt.model.pastes);
+}
+
+test "handleClipboard (deprecated adapter) still works for apps that have not migrated" {
+    const Old = struct {
+        pub const Model = struct { pasted: u32 = 0 };
+        pub const Msg = union(enum) { noop };
+        pub fn update(_: *Model, _: Msg) void {}
+        pub fn view(_: *const Model, cb: anytype) void {
+            cb.pushGroup(.{});
+            cb.text("old");
+            cb.popGroup();
+        }
+        pub fn keyNeedsClipboard(k: keys.SpecialKey) bool {
+            return k == .ctrl_v;
+        }
+        pub fn handleClipboard(m: *Model, _: keys.SpecialKey, clip: host_iface.Clipboard) void {
+            if (clip.read().len > 0) m.pasted += 1;
+        }
+    };
+    const t = try playWith(Old, .{ .script = &.{ .{}, .{ .keys = &.{.ctrl_v} } }, .clip_in = "q" }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.pasted);
+}
+
+// ── Enter in a focused text_area is a key, not a submit ─────────────
+
+const EnterApp = struct {
+    pub const Model = struct { area_focused: bool = true, submits: u32 = 0, newlines: u32 = 0 };
+    pub const Msg = union(enum) { focus_area, focus_in, submit, newline };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .submit => m.submits += 1,
+            .newline => m.newlines += 1,
+            else => {},
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{});
+        if (m.area_focused) {
+            cb.textArea(.{ .focus_msg = .focus_area, .id = 1, .content = "", .cursor = 0, .height = 60 });
+        } else {
+            cb.textInput(.focus_in, "", 0);
+        }
+        cb.popGroup();
+    }
+    pub fn focusedMsg(m: *const Model) ?Msg {
+        return if (m.area_focused) .focus_area else .focus_in;
+    }
+    pub fn submitMsg(_: *const Model) ?Msg {
+        return .submit;
+    }
+    pub fn keySpecialMsg(_: *const Model, k: keys.SpecialKey) ?Msg {
+        return if (k == .enter) .newline else null;
+    }
+};
+
+test "Enter: a focused text_area gets it as a key (keySpecialMsg), a text_input still submits" {
+    const t = try play(EnterApp, &.{ .{}, .{ .keys = &.{.enter} } });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.newlines);
+    try std.testing.expectEqual(@as(u32, 0), t.rt.model.submits);
+
+    var host: ScriptHost = .{ .script = &.{ .{}, .{ .keys = &.{.enter} } } };
+    var gpu: StubGpu = .{};
+    var rt = try Runtime(EnterApp, ScriptHost, StubGpu).init(std.testing.allocator, &host, &gpu, .{});
+    defer rt.deinit();
+    rt.model.area_focused = false;
+    while (!host.shouldClose()) try rt.frame();
+    try std.testing.expectEqual(@as(u32, 1), rt.model.submits);
+    try std.testing.expectEqual(@as(u32, 0), rt.model.newlines);
+}
+
+// ── pointerMsg: one hook, blank-space clicks included ───────────────
+
+const PmApp = struct {
+    pub const Model = struct { focused: bool = true, blank_downs: u32 = 0, widget_downs: u32 = 0, ups: u32 = 0, contexts: u32 = 0, hovers: u32 = 0, last_button: pointer.Button = .none };
+    pub const Msg = union(enum) { a, b, blur, saw: struct { kind: pointer.PointerEvent(Msg).Kind, blank: bool, button: pointer.Button } };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .blur => m.focused = false,
+            .saw => |s| {
+                m.last_button = s.button;
+                switch (s.kind) {
+                    .down => if (s.blank) {
+                        m.blank_downs += 1;
+                    } else {
+                        m.widget_downs += 1;
+                    },
+                    .up => m.ups += 1,
+                    .context => m.contexts += 1,
+                    .hover => m.hovers += 1,
+                }
+            },
+            .a, .b => {},
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .direction = .vertical });
+        cb.button(.a, "A");
+        cb.popGroup();
+    }
+    pub fn pointerMsg(m: *const Model, ev: pointer.PointerEvent(Msg)) ?Msg {
+        // The documented recipe: a press on blank space clears focus.
+        if (ev.kind == .down and ev.isBlank() and m.focused) return .blur;
+        return .{ .saw = .{ .kind = ev.kind, .blank = ev.isBlank(), .button = ev.button } };
+    }
+};
+
+test "pointerMsg: blank-space press (kind=down, hit=null) lets the app clear focus; widget presses carry their Msg" {
+    const t = try play(PmApp, &.{
+        .{}, // lays out
+        .{ .x = 300, .y = 200, .held = left, .down = left }, // press on blank space
+        .{ .x = 300, .y = 200, .up = left },
+        .{ .x = 5, .y = 5, .held = left, .down = left }, // press on button A
+        .{ .x = 5, .y = 5, .up = left },
+    });
+    defer t.destroy();
+    try std.testing.expect(!t.rt.model.focused); // the blank press delivered .blur
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.widget_downs);
+    try std.testing.expectEqual(@as(u32, 2), t.rt.model.ups);
+    try std.testing.expect(t.rt.model.hovers >= 1); // entering A
+}
+
+test "pointerMsg: the right button arrives as kind=context with button=right" {
+    const t = try play(PmApp, &.{
+        .{},
+        .{ .x = 5, .y = 5, .held = right, .down = right },
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.contexts);
+    try std.testing.expectEqual(pointer.Button.right, t.rt.model.last_button);
 }

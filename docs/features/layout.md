@@ -55,6 +55,8 @@ Every node has an **outer size** (padding and border included). Per axis:
 
 **Overlays.** Absolute `x` / `y` (shifted by the anchor fractions); `width` / `height` force the size; children lay out like a group's (`direction`, `gap`, `padding`, `align_cross`, flex). An overlay never contributes to its parent's size.
 
+<a id="overlay-anchoring"></a>**Overlay anchoring.** Instead of window coordinates an overlay can name a widget: `anchor_msg: ?Msg` (+ `anchor_side`: `below_start` default, `below_end`, `above_start`, `above_end`, `right_start`, `left_start`; `anchor_gap` px). The position pass places the overlay against the rect of the nearest **earlier** leaf in the buffer whose click / focus Msg (`cmd.leafMsg`: button `msg`, text input / text area `focus_msg`, checkbox, radio, slider, canvas, scene) equals the anchor by value, so emit the overlay after its widget (exactly what `Dropdown` / `Combobox` do). It uses the same frame's final rects: no layout event, no frame of latency, no Model field. No match falls back to `x` / `y`. There is no flipping at the window edge. Context menus open at the pointer: keep the `contextMsg` event position in the Model and pass it as `x` / `y`.
+
 **Padding.** `padding` is uniform; `GroupStyle.pad_x` / `pad_y` override one axis.
 
 ### The app-shell recipe

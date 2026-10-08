@@ -15,7 +15,7 @@ pub fn main() !void {
     var host = try platform.Host.init("Kerf chrome", 1440, 900);
     defer host.deinit();
 
-    var gpu = try gpu_native.Gpu.init(host.nativeHandle(), 1440, 900);
+    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 1440, 900, .{ .scale = host.scaleFactor() });
     defer gpu.deinit();
 
     try teak.run(App, gpa, &host, &gpu, .{ .clear_color = App.paper });
