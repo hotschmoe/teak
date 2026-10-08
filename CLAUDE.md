@@ -34,7 +34,7 @@ the change yields, not the doc. If you believe the doc is wrong, invoke
 
 ## Build Commands
 
-Requires **Zig 0.16.0+**.
+Requires **Zig 0.17.0+**.
 
 The repo is split into a **library** (root `build.zig`) and **examples** (each with their own `build.zig`). Library tests run from root; example steps run from the example's directory.
 

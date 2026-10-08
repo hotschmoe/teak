@@ -2,7 +2,7 @@
     .name = .teak,
     .version = "0.0.0",
     .fingerprint = 0x2d83032a9a6b7feb, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // wgpu-native prebuilts — per-OS × per-arch, fetched lazily only
         // when a consumer calls `teak.linkNativeWgpu` for that target.

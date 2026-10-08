@@ -243,7 +243,7 @@ pub fn update(m: *Model, msg: Msg) void {
             const md = ymd.calculateMonthDay();
             const ds = day.getDaySeconds();
             m.clock.set("{d}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC, offset {d} min (unix ms {d})", .{
-                ymd.year,             @intFromEnum(md.month),  md.day_index + 1,
+                ymd.year,             @backingInt(md.month),   md.day_index + 1,
                 ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
                 c.utc_offset_min,     c.unix_ms,
             });
@@ -383,8 +383,8 @@ test "a button lists one http request and the answer clears it and shows the sta
 
 test "a dropped image keeps its thumbnail only when it is complete" {
     var m = Model.init();
-    const px = [_]u8{ 255, 0, 0, 255 } ** 6;
-    update(&m, .{ .dropped = .{ .kind = .image, .name = "a.png", .mime = "image/png", .bytes = "xx", .width = 30, .height = 20, .thumb_rgba = &px, .thumb_w = 3, .thumb_h = 2 } });
+    const px: [6][4]u8 = @splat(.{ 255, 0, 0, 255 });
+    update(&m, .{ .dropped = .{ .kind = .image, .name = "a.png", .mime = "image/png", .bytes = "xx", .width = 30, .height = 20, .thumb_rgba = std.mem.asBytes(&px), .thumb_w = 3, .thumb_h = 2 } });
     try std.testing.expectEqual(@as(u32, 3), m.thumb_w);
     try std.testing.expectEqual(@as(u8, 255), m.thumb[0]);
 }

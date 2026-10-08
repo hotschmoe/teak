@@ -107,6 +107,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "teak", .module = mod }},
     });
+    stbtt_mod.addImport("stb-c", translateC(b, b.path("src/gpu/vendor/stb_truetype.h"), null, target, optimize));
     stbtt_mod.addIncludePath(b.path("src/gpu/vendor"));
     stbtt_mod.addCSourceFile(.{
         .file = b.path("src/gpu/vendor/stb_truetype_impl.c"),
@@ -196,7 +197,7 @@ pub fn build(b: *std.Build) void {
                         .{ .name = "teak-shaders", .module = shaders_mod },
                     },
                 });
-                gpu_test_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
+                gpu_test_mod.addImport("wgpu-c", translateC(b, b.path("src/gpu/vendor/wgpu_c.h"), wgpu_dep.path("include/webgpu"), target, optimize));
                 gpu_test_mod.addLibraryPath(wgpu_dep.path("lib"));
                 gpu_test_mod.addRPath(wgpu_dep.path("lib"));
                 gpu_test_mod.linkSystemLibrary("wgpu_native", .{});
@@ -271,8 +272,8 @@ fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {
     // Zig's native CPU detection on Windows ARM64 misses i8mm (FEAT_I8MM).
     // The Snapdragon X Elite (Oryon) supports it -- enable for native aarch64 builds.
     if (t.result.cpu.arch == .aarch64) {
-        t.query.cpu_features_add.addFeature(@intFromEnum(std.Target.aarch64.Feature.i8mm));
-        t.result.cpu.features.addFeature(@intFromEnum(std.Target.aarch64.Feature.i8mm));
+        t.query.cpu_features_add.addFeature(@backingInt(std.Target.aarch64.Feature.i8mm));
+        t.result.cpu.features.addFeature(@backingInt(std.Target.aarch64.Feature.i8mm));
     }
     return t;
 }
@@ -391,7 +392,7 @@ fn linkWindows(
             .{ .name = "teak-shaders", .module = shaders_mod },
         },
     });
-    gpu_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
+    gpu_mod.addImport("wgpu-c", translateC(b, teak_dep.path("src/gpu/vendor/wgpu_c.h"), wgpu_dep.path("include/webgpu"), target, optimize));
     gpu_mod.addLibraryPath(wgpu_dep.path("lib"));
     gpu_mod.linkSystemLibrary("wgpu_native.dll", .{});
 
@@ -456,7 +457,7 @@ fn linkLinux(
             .{ .name = "teak-text", .module = text_mod },
         },
     });
-    gpu_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
+    gpu_mod.addImport("wgpu-c", translateC(b, teak_dep.path("src/gpu/vendor/wgpu_c.h"), wgpu_dep.path("include/webgpu"), target, optimize));
     gpu_mod.addLibraryPath(wgpu_dep.path("lib"));
     gpu_mod.linkSystemLibrary("wgpu_native", .{}); // libwgpu_native.so
 
@@ -510,6 +511,7 @@ fn stbTextModule(
             .{ .name = "teak", .module = teak_mod },
         },
     });
+    text_mod.addImport("stb-c", translateC(b, teak_dep.path("src/gpu/vendor/stb_truetype.h"), null, target, optimize));
     text_mod.addIncludePath(teak_dep.path("src/gpu/vendor"));
     text_mod.addCSourceFile(.{
         .file = teak_dep.path("src/gpu/vendor/stb_truetype_impl.c"),
@@ -531,7 +533,7 @@ pub const HeadlessOptions = struct {};
 ///         .root_source_file = b.path("src/shot_main.zig"), .target = target, .optimize = optimize }) });
 ///     teak.linkHeadless(b, shot, .{});
 ///     const run = b.addRunArtifact(shot);
-///     if (b.args) |args| run.addArgs(args);
+///     run.addPassthruArgs();
 ///     b.step("shot", "Render a headless screenshot").dependOn(&run.step);
 ///
 /// See docs/features/headless.md.
@@ -585,7 +587,7 @@ pub fn linkHeadless(
             .{ .name = "teak-text", .module = text_mod },
         },
     });
-    gpu_mod.addIncludePath(wgpu_dep.path("include/webgpu"));
+    gpu_mod.addImport("wgpu-c", translateC(b, teak_dep.path("src/gpu/vendor/wgpu_c.h"), wgpu_dep.path("include/webgpu"), target, optimize));
     gpu_mod.addLibraryPath(wgpu_dep.path("lib"));
     gpu_mod.linkSystemLibrary("wgpu_native", .{});
 
@@ -610,12 +612,13 @@ pub const WebWgpuOptions = struct {
 /// the name; all files of a slot should share one family.
 fn webFontsModule(b: *std.Build, fonts: []const WebFont) *std.Build.Module {
     const opts = b.addOptions();
-    inline for (@typeInfo(WebFontSlot).@"enum".fields) |f| {
+    const slots = @typeInfo(WebFontSlot).@"enum";
+    inline for (slots.field_names, slots.field_values) |name, value| {
         var family: []const u8 = "";
         for (fonts) |font| {
-            if (@intFromEnum(font.slot) == f.value) family = font.family;
+            if (@backingInt(font.slot) == value) family = font.family;
         }
-        opts.addOption([]const u8, f.name, family);
+        opts.addOption([]const u8, name, family);
     }
     return opts.createModule();
 }
@@ -742,4 +745,20 @@ pub fn linkWebWgpu(
 
     const web_run = b.step("web-run", "Build and serve wasm on localhost");
     web_run.dependOn(&serve_cmd.step);
+}
+
+/// Translate a C header into a Zig module (`@cImport` is gone in 0.17).
+/// `include_dir`, when given, is where the header's own `#include`s resolve.
+/// Each call yields a distinct set of C types, so call it once per module
+/// that must share them (every native GPU file reaches `c` through one).
+fn translateC(
+    b: *std.Build,
+    header: std.Build.LazyPath,
+    include_dir: ?std.Build.LazyPath,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const tc = b.addTranslateC(.{ .root_source_file = header, .target = target, .optimize = optimize });
+    if (include_dir) |dir| tc.addIncludePath(dir);
+    return tc.createModule();
 }

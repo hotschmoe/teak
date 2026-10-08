@@ -56,7 +56,7 @@ const BITMAPINFOHEADER = extern struct {
 
 const BITMAPINFO = extern struct {
     bmiHeader: BITMAPINFOHEADER,
-    bmiColors: [4]u8 = [_]u8{0} ** 4, // placeholder for the palette tail
+    bmiColors: [4]u8 = @splat(0), // placeholder for the palette tail
 };
 
 const FW_NORMAL: c_int = 400;

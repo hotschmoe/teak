@@ -413,7 +413,7 @@ Depth: [canvas.md](features/canvas.md).
 
    ```zig
    pub const HISTORY_CAP = 32;
-   // Model:  history: [HISTORY_CAP]f32 = [_]f32{0} ** HISTORY_CAP,  history_len: usize = 0,
+   // Model:  history: [HISTORY_CAP]f32 = @splat(0),  history_len: usize = 0,
 
    fn record(m: *Model, v: f32) void {
        if (m.history_len < HISTORY_CAP) {
