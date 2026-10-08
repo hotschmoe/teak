@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const teak = @import("teak");
+const measure_cache = @import("measure_cache.zig");
 
 pub const c = @import("stb-c");
 
@@ -141,12 +142,14 @@ var registry: Registry = .{};
 /// one. The bytes are borrowed: keep them alive (an `@embedFile` slice is).
 pub fn registerFace(family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) error{FontInitFailed}!void {
     registry.faces[@backingInt(family)][@backingInt(weight)] = Font.fromBytes(ttf) catch return error.FontInitFailed;
+    measure_cache.clear(); // what (family, weight) resolves to just changed
 }
 
 /// Forget every registered face and the loaded fallback.
 pub fn releaseFaces() void {
     if (registry.fallback) |*f| f.deinit();
     registry = .{};
+    measure_cache.clear();
 }
 
 /// Face-table index of (`family`, `weight`); also the `ShapedGlyph.face` value.

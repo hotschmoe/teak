@@ -21,5 +21,6 @@ test {
     _ = @import("face.zig");
     _ = @import("shaper.zig");
     _ = @import("measure.zig");
+    _ = @import("measure_cache.zig");
     _ = @import("raster.zig");
 }
