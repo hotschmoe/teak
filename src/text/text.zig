@@ -17,6 +17,11 @@ pub const width = measure_mod.width;
 pub const GlyphBitmap = raster.GlyphBitmap;
 pub const StbttRasterizer = raster.StbttRasterizer;
 
+comptime {
+    // wasm32-freestanding has no libc: stb gets malloc/libm from this shim.
+    if (@import("builtin").os.tag == .freestanding) _ = @import("stb_wasm_shim.zig");
+}
+
 test {
     _ = @import("face.zig");
     _ = @import("shaper.zig");

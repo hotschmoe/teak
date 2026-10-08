@@ -176,6 +176,16 @@ pub fn GlyphAtlasWith(comptime hashFn: fn (GlyphKey) u64) type {
             return self.slots.len - 1;
         }
 
+        /// Whether `e` (an entry returned earlier) still describes live texels.
+        pub fn stillValid(self: *const Self, e: *const Entry) bool {
+            return self.isValid(e);
+        }
+
+        /// Pin `e`'s page for the current frame, as a `lookup` hit does.
+        pub fn touch(self: *Self, e: *const Entry) void {
+            if (e.rect.w != 0 and e.rect.h != 0) self.pages.items[e.page].last_used_frame = self.frame;
+        }
+
         /// Find a live entry. A hit pins its page for the current frame.
         pub fn lookup(self: *Self, key: GlyphKey) ?Entry {
             var i: usize = @intCast(hashFn(key) & self.mask());
@@ -525,11 +535,10 @@ test "shelf packer fills a page to at least 80% with a realistic mix" {
         _ = a.insert(K(@truncate(n), @truncate(n >> 16), 0), g.w, g.h, 0, 0) catch break;
     }
     const fill = a.pageFill(0);
-    std.debug.print("\natlas fill at first overflow: {d:.1}% after {d} glyphs\n", .{ fill * 100, n });
     try testing.expect(fill >= 0.80);
 }
 
-test "bench: 100k warm lookups" {
+test "100k warm lookups all hit" {
     var a = try GlyphAtlas.init(testing.allocator, 8);
     defer a.deinit();
     var g: u16 = 0;
@@ -540,14 +549,11 @@ test "bench: 100k warm lookups" {
             if (b == 3) break;
         }
     }
-    const t0 = std.Io.Clock.awake.now(testing.io);
     var hits: usize = 0;
     var i: usize = 0;
     while (i < 100_000) : (i += 1) {
         const k = K(@intCast(i % 95), 56, @truncate(i >> 3));
         if (a.lookup(k) != null) hits += 1;
     }
-    const ns: u64 = @intCast(t0.durationTo(std.Io.Clock.awake.now(testing.io)).nanoseconds);
-    std.debug.print("\n100k warm lookups: {d} ns total, {d:.1} ns/lookup (hits {d})\n", .{ ns, @as(f64, @floatFromInt(ns)) / 100_000.0, hits });
     try testing.expectEqual(@as(usize, 100_000), hits);
 }

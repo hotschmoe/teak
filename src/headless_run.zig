@@ -150,6 +150,8 @@ pub fn pathArg(init: anytype, default: []const u8) []const u8 {
 pub const ShotState = struct {
     name: []const u8,
     steps: []const Step,
+    /// Overrides `ShotOptions.msaa` for this state (null = keep it).
+    msaa: ?bool = null,
 };
 
 /// The whole `shot_main.zig` for an example: parses
@@ -186,6 +188,8 @@ pub fn shotCli(
             opts_base.scale = std.fmt.parseFloat(f32, it.next() orelse return error.MissingScale) catch return error.BadScale;
         } else if (std.mem.eql(u8, a, "--prefix")) {
             prefix = it.next() orelse return error.MissingPrefix;
+        } else if (std.mem.eql(u8, a, "--plain")) {
+            want = "plain"; // alias of `--state plain`
         } else if (std.mem.eql(u8, a, "--state")) {
             want = it.next() orelse return error.MissingStateName;
         } else path = a;
@@ -201,6 +205,7 @@ pub fn shotCli(
         for (states) |st| {
             var opts = opts_base;
             opts.steps = st.steps;
+            if (st.msaa) |ms| opts.msaa = ms;
             const out = try std.fmt.allocPrint(init.gpa, "{s}/{s}-{s}.actual.png", .{ dir, prefix, st.name });
             defer init.gpa.free(out);
             try shot(App, Host, Gpu, init.gpa, out, opts);
@@ -212,6 +217,7 @@ pub fn shotCli(
     for (states) |st| if (std.mem.eql(u8, st.name, want)) {
         var opts = opts_base;
         opts.steps = st.steps;
+        if (st.msaa) |ms| opts.msaa = ms;
         try shot(App, Host, Gpu, init.gpa, path, opts);
         std.debug.print("wrote {s} (state {s})\n", .{ path, st.name });
         return;

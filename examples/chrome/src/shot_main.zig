@@ -6,7 +6,8 @@
 //! Options (after the path): `--scale S` renders at S device px per logical
 //! px (HiDPI); `--stress N` renders the text stress app with N runs instead
 //! (glyph-atlas check) and prints the warm frame CPU time;
-//! `--max-pages P` caps the glyph atlas (exhaustion check).
+//! `--max-pages P` caps the glyph atlas (exhaustion check); `--plain` is the
+//! `plain` state (the first-load state without MSAA, for comparing with the web build).
 
 const std = @import("std");
 const teak = @import("teak");
@@ -28,7 +29,7 @@ fn parseArgs(init: std.process.Init) Opts {
             o.stress = std.fmt.parseInt(usize, it.next() orelse "640", 10) catch 640;
         } else if (std.mem.eql(u8, a, "--max-pages")) {
             o.max_pages = std.fmt.parseInt(u8, it.next() orelse "8", 10) catch 8;
-        } else o.path = a;
+        } else if (!std.mem.startsWith(u8, a, "--")) o.path = a;
     }
     return o;
 }
@@ -36,7 +37,7 @@ fn parseArgs(init: std.process.Init) Opts {
 pub fn main(init: std.process.Init) !void {
     const o = parseArgs(init);
     if (o.stress > 0) return stress(init, o);
-    // `shotCli` re-parses argv (`--state`, `--list`, `--all`, `--scale`).
+    // `shotCli` re-parses argv (`--state`, `--list`, `--all`, `--scale`, `--plain`).
     try teak.headless.shotCli(App, Host, Gpu, init, "chrome.png", .{
         .width = 1280,
         .height = 800,
@@ -57,6 +58,8 @@ pub fn main(init: std.process.Init) !void {
             },
         },
         .{ .name = "initial", .steps = &.{.{ .frames = 2 }} },
+        // The first-load state without MSAA: matches the web build pixel for pixel.
+        .{ .name = "plain", .steps = &.{.{ .frames = 2 }}, .msaa = false },
     });
 }
 
@@ -79,6 +82,13 @@ fn stress(init: std.process.Init, o: Opts) !void {
     rt.model.cols = cols;
     rt.model.rows = rows;
     rt.model.size_px = size_px;
+    // Format the labels once so the frame time is the framework's, not `allocPrint`'s.
+    const labels = try gpa.alloc([]const u8, rows * cols);
+    defer gpa.free(labels);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    for (labels, 0..) |*l, i| l.* = try std.fmt.allocPrint(arena.allocator(), "r{d}c{d}", .{ i / cols, i % cols });
+    rt.model.labels = labels;
     for (0..3) |_| try rt.frame(); // cold: shaping + rasterizing + atlas uploads
 
     const frames = 30;
@@ -89,8 +99,8 @@ fn stress(init: std.process.Init, o: Opts) !void {
     }
     const ns: u64 = @intCast(t0.durationTo(std.Io.Clock.awake.now(init.io)).nanoseconds);
     std.debug.print("stress: {d} runs, {d}x{d} px, atlas pages {d}, dropped {d}; warm frame CPU {d:.3} ms\n", .{
-        o.stress,              w,                 h,
-        gpu.atlas.pageCount(), gpu.atlas_dropped, @as(f64, @floatFromInt(ns)) / frames / 1e6,
+        o.stress,                   w,                h,
+        gpu.text.atlas.pageCount(), gpu.text.dropped, @as(f64, @floatFromInt(ns)) / frames / 1e6,
     });
     try teak.headless.writeFramePng(&gpu, gpa, o.path);
     std.debug.print("wrote {s}\n", .{o.path});

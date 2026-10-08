@@ -40,6 +40,11 @@ pub const StbttRasterizer = struct {
         self.cover.deinit(self.allocator);
     }
 
+    /// Changes whenever the face table does; the text stage drops cached runs.
+    pub fn epoch(_: *const StbttRasterizer) u64 {
+        return face_mod.epoch;
+    }
+
     pub fn shape(_: *StbttRasterizer, text: []const u8, font: teak.FontSpec, out: []teak.ShapedGlyph) teak.ShapeResult {
         return shaper.shape(text, font, out);
     }
