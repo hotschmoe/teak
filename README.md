@@ -51,7 +51,7 @@ Seven examples so far: **counter_greeter** (composed app via `Components`, one c
 
 **Headless screenshots** (no display): `zig build shot -- out.png` in `examples/chrome` and `examples/scene3d` runs the real App on the native wgpu backend with scripted input and writes a PNG (`teak.linkHeadless`, `teak.headless`; see [`docs/features/headless.md`](docs/features/headless.md)). It needs a Vulkan device and a TTF.
 
-Windows ARM64 hosts: pass `-Dtarget=aarch64-windows-gnu` to `zig build ui` until Zig ships a fix for [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865). See [`docs/archive/zig-016-win-arm64-crash.md`](docs/archive/zig-016-win-arm64-crash.md).
+Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no flags (the 0.16 crash, [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865), is fixed); history in [`docs/archive/zig-016-win-arm64-crash.md`](docs/archive/zig-016-win-arm64-crash.md).
 
 ## Where to read next
 
@@ -116,6 +116,7 @@ examples/todo/             dynamic-list demo; N rows, Msg-with-index, scroll
 examples/tree/             recursive tree with expand/collapse over flat Model
 examples/chrome/           engineering-workstation chrome: cards, tables, bracket tabs, custom Theme
 examples/viewport/         pan/zoom interactive canvas + scroll list with scrollbar
+examples/kerf_viewer/      Kerf mesh.json 3D viewer: Orbit camera, CPU pick, parts panel (scene3d path)
 examples/effects/          declarative effects: HTTP, files, storage, clock, clipboard, paste/drop
 examples/fonts/            IBM Plex Mono at three weights + tracking (web .fonts, native registerFont)
 tools/audit.zig            HARDLINE drift audit (zig build audit)

@@ -1,5 +1,5 @@
 // Single translation unit that instantiates stb_truetype's implementation.
-// The Zig side (`text_stbtt.zig`) @cIncludes the header for declarations
+// The Zig side (`src/text/`) @cIncludes the header for declarations
 // only; this file provides the definitions, linked once into the exe.
 //
 // stb_truetype's default STBTT_malloc/STBTT_free route to libc malloc/free

@@ -17,18 +17,31 @@ const NoSurface = struct {
     }
 };
 
-/// "Rasterizes" every string as a fully covered box (BGRA, coverage 255),
-/// so text draws show as solid rectangles in the draw color.
+/// Glyph provider with box glyphs: every byte shapes to one glyph (advance 8)
+/// that rasterizes as a fully covered 6x8 box sitting on the rect's top edge
+/// (ascent 8), so text draws show as solid boxes in the draw color.
 const BoxRaster = struct {
-    pixels: [64 * 64 * 4]u8 = @splat(255),
+    const GlyphBitmap = struct { pixels: []const u8, width: u32, height: u32, bearing_x: i32, bearing_y: i32 };
+    pixels: [6 * 8]u8 = @splat(255),
 
     pub fn init(_: std.mem.Allocator) !BoxRaster {
         return .{};
     }
     pub fn deinit(_: *BoxRaster) void {}
-    pub fn rasterize(self: *BoxRaster, _: []const u8, _: teak.FontSpec, _: [4]f32, w: u32, h: u32) ?wgpu_core.Bitmap {
-        if (w > 64 or h > 64) return null;
-        return .{ .pixels = self.pixels[0 .. w * h * 4], .width = w, .height = h };
+    pub fn shape(_: *BoxRaster, text: []const u8, _: teak.FontSpec, out: []teak.ShapedGlyph) teak.ShapeResult {
+        const n = @min(text.len, out.len);
+        for (text[0..n], 0..) |ch, i| {
+            out[i] = .{ .glyph = ch, .face = 0, .cluster = @intCast(i), .x = @floatFromInt(i * 8), .advance = 8 };
+        }
+        return .{ .count = n, .width = @floatFromInt(n * 8), .consumed = n };
+    }
+    pub fn ascent(_: *BoxRaster, _: teak.FontSpec, _: f32) f32 {
+        return 8; // device px: the box glyph is a fixed size at any scale
+    }
+    pub fn rasterizeGlyph(self: *BoxRaster, _: u16, gid: u16, size_px: f32, _: u2) ?GlyphBitmap {
+        _ = size_px;
+        if (gid == ' ') return .{ .pixels = &.{}, .width = 0, .height = 0, .bearing_x = 0, .bearing_y = 0 };
+        return .{ .pixels = &self.pixels, .width = 6, .height = 8, .bearing_x = 0, .bearing_y = -8 };
     }
 };
 
@@ -285,7 +298,7 @@ test "overlay layering: an opaque overlay hides base text and images, overlay te
     // overlay text B (8,24) is part of the overlay layer; image under it.
     var quad: [6]teak.Vertex = undefined;
     solidQuad(&quad, 0, 0, 40, 40, .{ 1, 0, 0 });
-    const texts = [_]teak.TextDraw{ textAt(8, 8, 16, 8, "base"), textAt(8, 24, 16, 8, "over") };
+    const texts = [_]teak.TextDraw{ textAt(8, 8, 16, 8, "ba"), textAt(8, 24, 16, 8, "ov") };
     const green_px: [4][4]u8 = @splat(.{ 0, 255, 0, 255 });
     const img = h.gpu.uploadImage(std.mem.asBytes(&green_px), 2, 2);
     const images = [_]teak.ImageDraw{.{
@@ -332,7 +345,7 @@ test "overlay layering: base content below the split still draws in painter orde
     var quads: [12]teak.Vertex = undefined;
     solidQuad(quads[0..6], 0, 0, 20, 20, .{ 0, 0, 1 });
     solidQuad(quads[6..12], 10, 10, 30, 30, .{ 1, 0, 0 });
-    const texts = [_]teak.TextDraw{textAt(2, 2, 16, 8, "base")};
+    const texts = [_]teak.TextDraw{textAt(2, 2, 16, 8, "ba")};
     h.gpu.setOverlayStart(.{ .verts = 6, .text = 1, .images = 0, .scenes = 0 });
     h.gpu.uploadVertices(&quads);
     h.gpu.uploadText(&texts);
@@ -376,4 +389,73 @@ test "readFrame on a windowed (non-offscreen) Gpu is an error" {
     var h = try Harness.init(.{});
     defer h.deinit();
     try std.testing.expectError(error.NotOffscreen, h.gpu.readFrame(std.testing.allocator));
+}
+
+fn colored(d: teak.TextDraw, rgba: [4]f32) teak.TextDraw {
+    var out = d;
+    out.color = rgba;
+    return out;
+}
+
+test "atlas text: glyph boxes land at the pen, take the draw colour, and are scissored by the clip" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    var red = colored(textAt(4, 4, 24, 8, "ab"), .{ 1, 0, 0, 1 });
+    red.clip_w = 15; // clip x 0..15 cuts the second glyph (12..18) after 3 px
+    const green = colored(textAt(4, 30, 16, 8, "c"), .{ 0, 1, 0, 1 });
+    h.gpu.uploadText(&.{ red, green });
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 5, 5)); // first glyph, red (BGRA)
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 3, 5)); // left of the pen
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 10, 5)); // gap between boxes (6 wide, advance 8)
+    try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(f, 13, 5)); // second glyph inside the clip
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 16, 5)); // second glyph beyond the clip
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 6, 33)); // per-glyph colour
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.atlas_dropped);
+    // Repeating the same glyphs hits the atlas: no new page, no regrowth.
+    try std.testing.expectEqual(@as(usize, 1), h.gpu.atlas.pageCount());
+}
+
+test "atlas text: exhausting max_atlas_pages drops glyphs, keeps rendering, and recovers next frame" {
+    var h = try Harness.init(.{ .max_atlas_pages = 1 });
+    defer h.deinit();
+    // 100 sizes x 128 glyphs = 12800 distinct 6x8 cells (8x10 padded) > one 1 MiB page.
+    var content: [128]u8 = undefined;
+    for (&content, 0..) |*ch, i| ch.* = @intCast(i + 33);
+    var draws: [100]teak.TextDraw = undefined;
+    for (&draws, 0..) |*d, i| {
+        d.* = textAt(0, 0, 64, 8, &content);
+        d.font.size_px = 10 + @as(f32, @floatFromInt(i)) * 0.25;
+    }
+    h.gpu.uploadText(&draws);
+    try std.testing.expect(h.gpu.atlas_dropped > 0);
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 2, 2)); // still drew what fit
+    // A calm frame afterwards recycles the page (gen bump) and renders again.
+    h.gpu.uploadText(&.{textAt(4, 4, 16, 8, "a")});
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.atlas_dropped);
+    const g = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(g);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(g, 5, 5));
+}
+
+test "atlas text: scale 2 places glyphs in device pixels and scales solids as vectors" {
+    var h = try Harness.init(.{ .scale = 2 });
+    defer h.deinit();
+    var quad: [6]teak.Vertex = undefined;
+    solidQuad(&quad, 20, 20, 30, 30, .{ 0, 0, 1 }); // logical -> device 40..60
+    h.gpu.uploadVertices(&quad);
+    // Logical (4,4) is device (8,8); the 6x8 box covers device 8..14 x 8..16.
+    var d = textAt(4, 4, 16, 8, "a");
+    d.clip_w = 32;
+    d.clip_h = 32;
+    h.gpu.uploadText(&.{d});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 9, 9));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 5, 9));
+    try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, at(f, 50, 50)); // blue (BGRA) quad scaled 2x
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 35, 50));
 }

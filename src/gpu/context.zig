@@ -32,6 +32,15 @@ pub const InitOptions = struct {
     msaa: bool = false,
     /// 4x multisampling of offscreen 3D scene targets (see `renderScenes`).
     scene_msaa: bool = true,
+    /// Device pixels per logical pixel. The UI is laid out in logical px and
+    /// `init`/`resize` take the logical size, so the surface is
+    /// `logical * scale` device px (a Host that already reports device px
+    /// keeps the default 1). Text is rasterized at the physical size (true
+    /// HiDPI), solids scale as vectors.
+    scale: f32 = 1,
+    /// Glyph-atlas page cap (1024x1024 R8 each, 1 MiB). Running out logs loudly
+    /// and drops glyphs for that frame instead of growing without bound.
+    max_atlas_pages: u8 = 8,
 };
 
 /// Comptime contract. A Gpu must expose these declarations. `init`
@@ -66,7 +75,6 @@ pub fn validateGpu(comptime T: type) void {
         .{ .name = "resize", .sig = "fn(*Gpu, u32, u32) void" },
         .{ .name = "uploadVertices", .sig = "fn(*Gpu, []const Vertex) void" },
         .{ .name = "renderFrame", .sig = "fn(*Gpu, ClearColor) void" },
-        .{ .name = "rasterizeText", .sig = "fn(*Gpu, []const u8, FontSpec, [4]f32, u32, u32) TextureHandle" },
         .{ .name = "uploadText", .sig = "fn(*Gpu, []const TextDraw) void" },
         .{ .name = "uploadImage", .sig = "fn(*Gpu, []const u8, u32, u32) TextureHandle" },
         .{ .name = "releaseImage", .sig = "fn(*Gpu, TextureHandle) void" },
