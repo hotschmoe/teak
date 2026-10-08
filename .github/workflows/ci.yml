@@ -143,6 +143,82 @@ jobs:
           name: web-${{ matrix.example }}
           path: teak/web-${{ matrix.example }}.png
 
+  # Visual regression (tools/vreg.zig): every example's scripted states vs
+  # test/golden/. Goldens are produced on a Mali box; lavapipe differs
+  # slightly in AA, which the tolerance in tools/vreg.zig absorbs.
+  vreg:
+    name: Visual regression (native, lavapipe)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: teak
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - name: Install lavapipe
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools
+          echo "VK_ICD_FILENAMES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)" >> "$GITHUB_ENV"
+      - name: Compare shots with goldens
+        run: zig build vreg
+      - name: Raw difference vs goldens (zero tolerance; informational)
+        if: always()
+        continue-on-error: true
+        run: zig build vreg -- --tol 0 --budget 4294967295 --out zig-out/vreg-raw
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vreg-native
+          path: |
+            teak/zig-out/vreg/*.png
+            teak/zig-out/vreg-raw/*.png
+          if-no-files-found: ignore
+
+  vreg-web:
+    name: Visual regression (web, headless Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: teak/tools/package-lock.json
+      - name: Install puppeteer-core
+        working-directory: teak/tools
+        run: npm ci --no-audit --no-fund
+      - name: Compare web builds with goldens
+        working-directory: teak
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: zig build vreg -- --web
+      - name: Raw difference vs goldens (zero tolerance; informational)
+        if: always()
+        continue-on-error: true
+        working-directory: teak
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: zig build vreg -- --web --tol 0 --budget 4294967295 --out zig-out/vreg-raw
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vreg-web
+          path: |
+            teak/zig-out/vreg/*.png
+            teak/zig-out/vreg-raw/*.png
+          if-no-files-found: ignore
+
   windows:
     name: Windows ${{ matrix.arch }} (native)
     runs-on: ${{ matrix.os }}
