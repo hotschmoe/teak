@@ -1721,3 +1721,31 @@ test "idle: a fired sub, a moved mouse and a click each wake the pipeline; idle_
     try std.testing.expectEqual(@as(u32, 4), never.renders);
     try std.testing.expectEqual(@as(u32, 0), never.waits);
 }
+
+const LayoutIdleApp = struct {
+    pub const Model = struct { w: f32 = 0 };
+    pub const Msg = union(enum) { size: f32 };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .size => |w| m.w = w,
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.canvasInteractive(.{ .width = 40 + m.w * 0, .height = 20 }, &.{}, 3, "c");
+        cb.popGroup();
+    }
+    pub fn canvasMsg(_: *const Model, ev: pointer.CanvasEvent) ?Msg {
+        return if (ev.kind == .layout) Msg{ .size = ev.w } else null;
+    }
+};
+
+test "idle: a canvas layout Msg dispatched after the build wakes the next frame" {
+    // Frame 1 builds and reports the canvas size, which updates the Model after the
+    // build; frame 2 has no input and no dispatch of its own but must still rebuild
+    // (or the shown frame would keep the stale Model until the next event).
+    var host: ScriptHost = .{ .script = &.{ .{}, .{}, .{}, .{} } };
+    var gpu: PlainGpu = .{};
+    try run_mod.run(LayoutIdleApp, std.testing.allocator, &host, &gpu, .{});
+    try std.testing.expectEqual(@as(u32, 2), gpu.renders); // frame 1 and the follow-up; then idle
+}

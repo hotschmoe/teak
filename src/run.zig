@@ -482,6 +482,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         last_buttons: pointer.Buttons = .{},
         /// The first frame always builds (nothing to show yet).
         built_once: bool = false,
+        /// `reportLayout` dispatched a Msg after the frame's build (a canvas
+        /// size, a scroll extent): the shown frame is stale until the next one
+        /// rebuilds, so that frame must not be skipped as idle.
+        layout_dirty: bool = false,
 
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
@@ -556,15 +560,18 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
             // Event-driven idle: nothing changed since the frame on screen.
             self.quiet = self.opts.idle_skip and self.built_once and
-                self.dispatch_count == dispatched_before and self.inputIdle(input);
+                self.dispatch_count == dispatched_before and !self.layout_dirty and self.inputIdle(input);
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
             if (self.quiet) return;
             self.built_once = true;
+            self.layout_dirty = false;
 
             const cur = try self.buildView(input);
+            const before_layout = self.dispatch_count;
             self.reportLayout(prev, cur);
+            self.layout_dirty = self.dispatch_count != before_layout;
             const cur_cmds = self.bufs[cur].cmds.items;
             const cur_rects = self.rects[cur].items;
             self.updateTransient(input, cur);

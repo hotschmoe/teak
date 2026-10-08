@@ -66,6 +66,13 @@
   (`TEAK_FONT`, then `C:\Windows\Fonts\consola.ttf`) and measures through `teak-text` too;
   `Host.registerFont` now works on Windows.
 
+### Fixed
+
+- `idle_skip`: a Msg dispatched by `reportLayout` (a canvas `layout` event, `scrollLayoutMsg`) after the frame's
+  build left the shown frame stale: the next frame had nothing of its own to do and was skipped as idle, so e.g.
+  the viewport example kept showing `canvas 0 x 0` and no grid until the first input. `Runtime.layout_dirty` now
+  forces that follow-up frame.
+
 ### Added
 
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:

@@ -50,11 +50,6 @@ until the goldens move:
 4. Commit the PNGs with the change. Goldens are produced on the maintainer box; if CI (lavapipe) fails by a
    hair after an update, regenerate from the CI artifact instead of loosening the tolerance.
 
-## Known issues recorded in goldens
-
-- Web buttons place the label ~3 px higher than native (`textBaseline = 'top'` vs the ascent baseline; the web glyph-atlas path replaces this code, so it is left alone);
-  visible in `test/golden/web/{todo,tree,counter_greeter,effects}.png`. Fix, then `--update --web`.
-
 ## Cookbook
 
 See [cookbook recipe 15](../cookbook.md): add a golden screenshot test for your own example.
