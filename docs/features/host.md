@@ -102,14 +102,14 @@ happen at the *physical* framebuffer resolution to stay crisp.
 
 Today the three backends sit in three different places on that spectrum.
 `scaleFactor()` reports each backend's true factor so a future
-orchestrator can close the loop; **`teak.run` now feeds it to the Gpu (`Gpu.setScale`, optional) before each resize; X11 is the first host with a value above 1.**
+orchestrator can close the loop; **the native `ui_main` entries pass it to the Gpu as `InitOptions.scale` (`Gpu.initWithOptions(handle, w, h, .{ .scale = host.scaleFactor() })`); X11 is the first host with a value above 1.**
 
 ### Per-host truth table
 
 | Host | Input + `width`/`height` units | GPU surface configured at | `scaleFactor()` today | Result at scale ≠ 1 |
 |---|---|---|---|---|
 | **Win32** | Virtualized logical px (process is DPI-*unaware*) | Same virtualized px (DXGI swap-chain = client rect) | `GetDpiForWindow/96` → **1.0** while unaware | **Blurry** — Windows renders at logical res then bitmap-stretches the whole window to physical. Self-consistent coords, upscaled output. |
-| **X11** | **Logical** px (the Host divides device px by the scale; the X window is created at `logical * scale`) | Physical px (`logical * scale`; `Gpu.setScale`) | `TEAK_SCALE`, else `GDK_SCALE`, else `Xft.dpi/96` (clamped 0.5-8) | **Crisp and correctly sized** — glyph textures are rasterized at `size_px * scale` and snapped in device pixels; quads/images are drawn in logical units over the physical swap-chain. Fractional scales (1.5) keep text crisp but quad edges may land between device pixels. |
+| **X11** | **Logical** px (the Host divides device px by the scale; the X window is created at `logical * scale`) | Physical px (`logical * scale`; `InitOptions.scale`) | `TEAK_SCALE`, else `GDK_SCALE`, else `Xft.dpi/96` (clamped 0.5-8) | **Crisp and correctly sized** — glyph textures are rasterized at `size_px * scale` and snapped in device pixels; quads/images are drawn in logical units over the physical swap-chain. Fractional scales (1.5) keep text crisp but quad edges may land between device pixels. |
 | **wasm/zunk** | CSS px (zunk v0.5.2+) | zunk owns the canvas; backing store sized at CSS×`devicePixelRatio` internally | **1.0** (teak never sees physical px) | **Crisp and correctly sized** — zunk rasterizes glyphs at DPR into its backing store; teak works purely in CSS px. |
 
 The web path is the only one crisp *and* correctly sized today, and it is
@@ -124,7 +124,7 @@ render at scale without the follow-up below.
 
 ### Render-at-scale (landed for X11; Win32 awareness still pending)
 
-The design below is implemented for X11: `run.zig` calls `gpu.setScale(host.scaleFactor())` before `resize`; `wgpu_core` keeps `width`/`height`, the screen-size uniform and all vertices logical while the surface, MSAA target, offscreen frame and glyph textures are `scale` times larger (3D scenes already took a scale). Headless screenshots honor `TEAK_SCALE` (`teak.headless.shot`, PNG is `width*scale`). Win32 still needs step 1 (DPI awareness) before it reports a factor above 1.
+The design below is implemented for X11: the entry point creates the Gpu with `.scale = host.scaleFactor()`; `wgpu_core` keeps `width`/`height`, the screen-size uniform and all vertices logical while the surface, MSAA target, offscreen frame and glyph textures are `scale` times larger (3D scenes already took a scale). Headless screenshots take `ShotOptions.scale` (PNG is `width*scale`). Win32 still needs step 1 (DPI awareness) before it reports a factor above 1.
 
 The coherent end-to-end fix spans the orchestrator (`run.zig`) and the
 render pass (framework core), which are out of scope for the platform/GPU

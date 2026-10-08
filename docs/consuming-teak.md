@@ -90,6 +90,13 @@ exported `frame` — the same loop `teak.run` runs natively (see
 [features/run.md](features/run.md#runtime--the-loop-body-one-frame-at-a-time)
 and any example's `src/web_main.zig`, ~30 lines).
 
+> **Web logging.** The default `std.log` sink does not compile for
+> `wasm32-freestanding` (it pulls in `std.Io.Threaded`), and teak itself logs
+> (e.g. when the resource table is full). Every web entry point must declare
+> `pub const std_options: std.Options = .{ .logFn = platform.logFn };`
+> (`platform` = `teak-platform-wasm`; it forwards to `zunk.web.logFn`, which
+> writes to the browser console).
+
 > **Cross-platform note.** Native UI runs on **Win32** (Windows) and
 > **X11** (Linux); the **wasm + WebGPU** path covers the browser.
 > `linkNativeWgpu` `@panic`s for any other target OS, so gate the UI exe

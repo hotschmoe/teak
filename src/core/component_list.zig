@@ -613,3 +613,151 @@ test "ComponentList.update: insert_at shifts tail up and assigns a fresh key" {
     Cards.update(&m, .{ .insert_at = .{ .idx = 0, .model = .{ .count = 7 } } }); // full → drop
     try std.testing.expectEqual(@as(usize, 4), m.len);
 }
+
+// ── Worked example: rows that each own two TextFields (issue #1) ────
+//
+// The question: "focus on a specific sub-field of a specific row, with keys
+// routed to it". The answer is the stable-key pattern: a row component with a
+// payloadless focus variant per field (`focus_p`, `focus_a`); ComponentList
+// wires each into `rows.child{key, focus_x}`; the app remembers
+// `(key, field)` in its Model, and builds `focusedMsg` + key Msgs from the
+// key via `focusedMsgForKey` / `childMsg`. The key survives insert / remove /
+// reorder, so focus stays on the same logical field.
+
+const text_field_mod = @import("text_field.zig");
+
+const LoadRow = struct {
+    const TF = text_field_mod.TextField(16);
+    pub const Model = struct { p: TF.Model = .{}, a: TF.Model = .{} };
+    pub const Msg = union(enum) {
+        /// Clicks on the two inputs (payloadless: ComponentList wires these).
+        focus_p,
+        focus_a,
+        /// Edits routed to one field.
+        p: TF.Msg,
+        a: TF.Msg,
+    };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .focus_p, .focus_a => {},
+            .p => |x| TF.update(&m.p, x),
+            .a => |x| TF.update(&m.a, x),
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype, msgs: anytype) void {
+        cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 4 });
+        cb.textInputSelected(msgs.focus_p, m.p.content(), m.p.cursor, m.p.selection_anchor, cb.theme.text_input);
+        cb.textInputSelected(msgs.focus_a, m.a.content(), m.a.cursor, m.a.selection_anchor, cb.theme.text_input);
+        cb.popGroup();
+    }
+};
+
+const LoadRows = ComponentList(LoadRow, 8);
+const LoadComp = component_mod.Components(.{ .rows = LoadRows }, null);
+
+/// The app: composed model + "which row's which field has focus".
+const LoadApp = struct {
+    pub const Which = enum { p, a };
+    pub const Model = struct {
+        comp: LoadComp.Model = .{},
+        focus: ?struct { key: u64, field: Which } = null,
+    };
+    pub const Msg = LoadComp.Msg;
+
+    /// Learn focus from the row's focus click, then delegate.
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .rows => |rm| switch (rm) {
+                .child => |c| switch (c.child_msg) {
+                    .focus_p => m.focus = .{ .key = c.key, .field = .p },
+                    .focus_a => m.focus = .{ .key = c.key, .field = .a },
+                    else => {},
+                },
+                else => {},
+            },
+        }
+        LoadComp.update(&m.comp, msg);
+    }
+
+    fn childAppMsg(key: u64, child: LoadRow.Msg) Msg {
+        return .{ .rows = LoadRows.childMsg(key, child) };
+    }
+
+    /// `teak.run` hooks.
+    pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+        const f = m.focus orelse return null;
+        return childAppMsg(f.key, switch (f.field) {
+            .p => .{ .p = .{ .char = c } },
+            .a => .{ .a = .{ .char = c } },
+        });
+    }
+
+    pub fn focusedMsg(m: *const Model) ?Msg {
+        const f = m.focus orelse return null;
+        return LoadRows.focusedMsgForKey(f.key, switch (f.field) {
+            .p => .focus_p,
+            .a => .focus_a,
+        }, Msg);
+    }
+
+    fn rowOf(m: *const Model, key: u64) ?*const LoadRow.Model {
+        const i = LoadRows.indexOfKey(&m.comp.rows, key) orelse return null;
+        return &m.comp.rows.items[i];
+    }
+};
+
+fn inputIndices(cmds: anytype, out: []usize) usize {
+    var n: usize = 0;
+    for (cmds, 0..) |c, i| {
+        if (c == .text_input) {
+            out[n] = i;
+            n += 1;
+        }
+    }
+    return n;
+}
+
+test "rows owning two TextFields: click a sub-field, type into it, focus survives a remove" {
+    const testing = std.testing;
+    var m: LoadApp.Model = .{};
+    for (0..3) |_| LoadApp.update(&m, .{ .rows = .{ .append = .{} } }); // keys 1, 2, 3
+
+    var cb = cmd.CmdBuffer(LoadApp.Msg).init(testing.allocator);
+    defer cb.deinit();
+    var idx: [8]usize = undefined;
+    LoadComp.view(&m.comp, &cb);
+    try testing.expectEqual(@as(usize, 6), inputIndices(cb.cmds.items, &idx));
+
+    // Click the `a` input of the last row: hit-test returns the Msg its leaf
+    // carries; the app dispatches it.
+    LoadApp.update(&m, focus.focusMsgAt(cb.cmds.items, idx[5]).?);
+    try testing.expectEqual(@as(u64, 3), m.focus.?.key);
+    try testing.expectEqual(LoadApp.Which.a, m.focus.?.field);
+    try testing.expectEqual(@as(?usize, idx[5]), focus.indexOfFocusMsg(cb.cmds.items, LoadApp.focusedMsg(&m).?));
+
+    // Keys go to exactly that sub-field.
+    for ("42") |c| LoadApp.update(&m, LoadApp.keyCharMsg(&m, c).?);
+    try testing.expectEqualStrings("42", LoadApp.rowOf(&m, 3).?.a.content());
+    try testing.expectEqualStrings("", LoadApp.rowOf(&m, 3).?.p.content());
+    try testing.expectEqualStrings("", LoadApp.rowOf(&m, 2).?.a.content());
+
+    // Switch to the `p` field of row 1 (idx 0), then back.
+    LoadApp.update(&m, focus.focusMsgAt(cb.cmds.items, idx[0]).?);
+    LoadApp.update(&m, LoadApp.keyCharMsg(&m, '9').?);
+    try testing.expectEqualStrings("9", LoadApp.rowOf(&m, 1).?.p.content());
+    LoadApp.update(&m, focus.focusMsgAt(cb.cmds.items, idx[5]).?);
+
+    // Remove the first row: key 3 now lives at visual index 1, focus follows.
+    LoadApp.update(&m, .{ .rows = .{ .remove_at = 0 } });
+    cb.reset();
+    LoadComp.view(&m.comp, &cb);
+    try testing.expectEqual(@as(usize, 4), inputIndices(cb.cmds.items, &idx));
+    try testing.expectEqual(@as(?usize, idx[3]), focus.indexOfFocusMsg(cb.cmds.items, LoadApp.focusedMsg(&m).?));
+    LoadApp.update(&m, LoadApp.keyCharMsg(&m, '7').?);
+    try testing.expectEqualStrings("427", LoadApp.rowOf(&m, 3).?.a.content());
+
+    // Tab traversal visits p, a of each row in visual order.
+    var cur: ?usize = idx[3];
+    cur = focus.nextFocusable(cb.cmds.items, cur);
+    try testing.expectEqual(@as(?usize, idx[0]), cur); // wraps to the first input
+}

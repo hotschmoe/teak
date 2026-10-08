@@ -13,7 +13,25 @@ fn isFocusable(c: anytype) bool {
         // A disabled input is skipped by Tab traversal, mirroring how
         // hit-test refuses to focus it on click.
         .text_input => |t| !t.disabled,
-        else => false,
+        .push_group,
+        .pop_group,
+        .push_scroll,
+        .pop_scroll,
+        .push_overlay,
+        .pop_overlay,
+        .push_virtual_list,
+        .pop_virtual_list,
+        .text,
+        .rich_text,
+        .image,
+        .divider,
+        .button,
+        .checkbox,
+        .radio,
+        .slider,
+        .canvas,
+        .scene3d,
+        => false,
     };
 }
 
@@ -65,7 +83,21 @@ fn activationMsg(c: anytype) ?@TypeOf(c).MsgT {
         .checkbox => |cb| cb.msg,
         .radio => |r| r.msg,
         .slider => |s| s.grab_msg,
-        else => null,
+        .push_group,
+        .pop_group,
+        .push_scroll,
+        .pop_scroll,
+        .push_overlay,
+        .pop_overlay,
+        .push_virtual_list,
+        .pop_virtual_list,
+        .text,
+        .rich_text,
+        .image,
+        .divider,
+        .canvas,
+        .scene3d,
+        => null,
     };
 }
 

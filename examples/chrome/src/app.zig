@@ -136,6 +136,25 @@ const parts_table: teak.Table = .{
     },
 };
 
+const materials = [_][]const u8{
+    "6061-T6 ALUMINUM", "7075-T6 ALUMINUM", "304 STAINLESS",     "316 STAINLESS",
+    "1018 MILD STEEL",  "4140 CHROMOLY",    "TI-6AL-4V",         "C360 BRASS",
+    "C110 COPPER",      "DELRIN (POM)",     "ABS",               "NYLON 6/6",
+    "PEEK",             "G10 / FR4",        "BLACK OXIDE 12L14",
+};
+
+/// Searchable material picker (a `teak.Combobox`: query field + filtered overlay list).
+const Material = teak.Combobox(24);
+/// The list anchors under the input at a fixed window position (the app does not see
+/// layout rects in `view`; real apps pass the previous frame's rect, see the cookbook).
+const material_opts: teak.ComboboxViewOpts = .{
+    .list_x = 12,
+    .list_y = 390,
+    .list_width = 336,
+    .max_visible = 6,
+    .input_style = theme.field,
+};
+
 const tab_names = [_][]const u8{ "PARTS", "NOTES", "DIFF" };
 
 // ── Model / Msg / update ───────────────────────────────────────────
@@ -155,6 +174,7 @@ pub const Model = struct {
     name_len: u8 = default_name_text.len,
     name_focused: bool = false,
     help_open: bool = true,
+    material: Material.Model = .{ .selected = 0 },
 };
 
 pub const Msg = union(enum) {
@@ -164,6 +184,7 @@ pub const Msg = union(enum) {
     name_char: u8,
     name_backspace,
     toggle_help,
+    material: Material.Msg,
     noop,
 };
 
@@ -171,7 +192,14 @@ pub fn update(m: *Model, msg: Msg) void {
     switch (msg) {
         .select_tab => |t| m.tab = @min(t, tab_names.len - 1),
         .select_part => |p| m.selected = @intCast(@min(p, parts.len - 1)),
-        .focus_name => m.name_focused = true,
+        .focus_name => {
+            m.name_focused = true;
+            m.material.open = false;
+        },
+        .material => |mm| {
+            if (mm == .focus) m.name_focused = false;
+            Material.update(&m.material, mm);
+        },
         .name_char => |c| if (m.name_len < MAX_NAME) {
             m.name[m.name_len] = c;
             m.name_len += 1;
@@ -182,6 +210,16 @@ pub fn update(m: *Model, msg: Msg) void {
         .toggle_help => m.help_open = !m.help_open,
         .noop => {},
     }
+}
+
+const material_msgs = .{
+    .focus = Msg{ .material = .focus },
+    .close = Msg{ .material = .close },
+    .selectMsg = materialSelect,
+};
+
+fn materialSelect(i: usize) Msg {
+    return .{ .material = .{ .select = i } };
 }
 
 // ── View ───────────────────────────────────────────────────────────
@@ -257,7 +295,7 @@ fn leftColumn(m: *const Model, cb: anytype) void {
     cb.textMuted("NAME");
     cb.textInputStyled(.focus_name, m.name[0..m.name_len], m.name_len, theme.field);
     cb.textMuted("MATERIAL");
-    cb.textInputDisabled(.noop, "6061-T6 ALUMINUM", 0);
+    Material.viewWith(&m.material, cb, &materials, material_msgs, material_opts);
 
     cb.spacer(1);
     cb.textMuted("6 PARTS  /  91 PIECES");
@@ -369,11 +407,16 @@ fn helpPopover(cb: anytype) void {
 // ── Host integration ───────────────────────────────────────────────
 
 pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    if (m.material.open) return .{ .material = Material.charMsg(c) };
     if (!m.name_focused) return null;
     return .{ .name_char = c };
 }
 
 pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
+    if (m.material.open) {
+        const mm = Material.keyMsg(&m.material, key, &materials, material_opts) orelse return null;
+        return .{ .material = mm };
+    }
     if (!m.name_focused) return null;
     return switch (key) {
         .backspace => .name_backspace,
@@ -381,8 +424,15 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     };
 }
 
-/// Lets `teak.run` draw the focus rule + caret on the name field.
+/// Wheel over the open material list scrolls it.
+pub fn wheelMsg(m: *const Model, wheel_dy: f32) ?Msg {
+    if (!m.material.open or wheel_dy == 0) return null;
+    return .{ .material = Material.scrollByMsg(&m.material, wheel_dy, &materials, material_opts) };
+}
+
+/// Lets `teak.run` draw the focus rule + caret on the focused field.
 pub fn focusedMsg(m: *const Model) ?Msg {
+    if (m.material.open) return Msg{ .material = .focus };
     return if (m.name_focused) Msg.focus_name else null;
 }
 
@@ -454,4 +504,34 @@ test "update: tab, selection wrap, and name editing" {
     try std.testing.expectEqualStrings("BASE-PLATEX", m.name[0..m.name_len]);
     update(&m, .name_backspace);
     try std.testing.expectEqualStrings("BASE-PLATE", m.name[0..m.name_len]);
+}
+
+test "material combobox: type to filter, arrows + enter select, escape closes" {
+    var m: Model = .{ .help_open = false };
+    update(&m, .{ .material = .focus });
+    try std.testing.expect(m.material.open);
+    for ("alu") |c| update(&m, keyCharMsg(&m, c).?);
+    update(&m, keySpecialMsg(&m, .down).?);
+    update(&m, keySpecialMsg(&m, .enter).?);
+    try std.testing.expectEqual(@as(?usize, 1), m.material.selected); // 7075-T6 ALUMINUM
+    try std.testing.expect(!m.material.open);
+    update(&m, .{ .material = .focus });
+    update(&m, keySpecialMsg(&m, .escape).?);
+    try std.testing.expect(!m.material.open);
+    try std.testing.expectEqual(@as(?usize, 1), m.material.selected);
+    // Focusing the name field closes an open list.
+    update(&m, .{ .material = .focus });
+    update(&m, .focus_name);
+    try std.testing.expect(!m.material.open and m.name_focused);
+}
+
+test "open material list view is balanced and within the rect budget" {
+    var m: Model = .{ .help_open = false };
+    update(&m, .{ .material = .focus });
+    var cb = teak.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+    var rects: [512]teak.Rect = undefined;
+    _ = frame(&m, &cb, &rects, 1440, 900);
+    try std.testing.expect(teak.validateBalance(cb.cmds.items) == null);
+    try std.testing.expect(cb.cmds.items.len < 512);
 }

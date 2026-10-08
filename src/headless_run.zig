@@ -91,23 +91,16 @@ pub const ShotOptions = struct {
     height: u32 = 800,
     /// 4x MSAA of the UI pass (as a windowed app would run it).
     msaa: bool = true,
+    /// Device pixels per logical pixel: the PNG is `width * scale` by
+    /// `height * scale` and text is rasterized at that size (HiDPI).
+    scale: f32 = 1,
     /// Input script; see `Step`.
     steps: []const Step = &.{},
     /// Extra frames after the script so animations / one-frame input
     /// latency settle before the capture.
     settle: u32 = 3,
     run: run_mod.RunOptions = .{},
-    /// Display scale (device pixels per logical pixel). `null`: the
-    /// `TEAK_SCALE` environment variable, else 1. The PNG is
-    /// `width * scale` by `height * scale`.
-    scale: ?f32 = null,
 };
-
-fn envScale() f32 {
-    const v = std.c.getenv("TEAK_SCALE") orelse return 1;
-    const f = std.fmt.parseFloat(f32, std.mem.span(v)) catch return 1;
-    return if (f >= 1 and f <= 8) f else 1;
-}
 
 /// Run `App` headlessly: build the Host and offscreen Gpu, play the
 /// script, capture the last frame to `path` as a PNG. `Host` is
@@ -122,8 +115,7 @@ pub fn shot(
 ) !void {
     var host = try Host.init(gpa, o.width, o.height);
     defer host.deinit();
-    if (@hasField(Host, "scale")) host.scale = o.scale orelse envScale();
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = o.scale });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
@@ -225,8 +217,7 @@ pub fn writePng(gpa: std.mem.Allocator, path: []const u8, rgba: []const u8, widt
 pub fn writeFramePng(gpu: anytype, gpa: std.mem.Allocator, path: []const u8) !void {
     const rgba = try gpu.readFrame(gpa);
     defer gpa.free(rgba);
-    const px = if (@hasDecl(@TypeOf(gpu.*), "framePixels")) gpu.framePixels() else .{ gpu.width, gpu.height };
-    try writePng(gpa, path, rgba, px[0], px[1]);
+    try writePng(gpa, path, rgba, gpu.width, gpu.height);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

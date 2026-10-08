@@ -12,11 +12,17 @@ const std = @import("std");
 const teak = @import("teak");
 const zunk = @import("zunk");
 
+/// `std.Options.logFn` that writes `std.log` to the browser console. The
+/// default logFn does not compile on wasm32-freestanding, so every web entry
+/// point must declare `pub const std_options: std.Options = .{ .logFn = platform.logFn };`.
+pub const logFn = zunk.web.logFn;
+
 const zinput = zunk.web.input;
 const zapp = zunk.web.app;
 const zgpu = zunk.web.gpu;
 const fx = zunk.web.fx;
-const web_font = @import("teak-web-font");
+const teak_text = @import("teak-text");
+const font_data = @import("teak-web-fontdata");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -34,16 +40,6 @@ pub const FileDialogFilter = teak.FileDialogFilter;
 pub const FileDialogPoll = teak.FileDialogPoll;
 
 pub const NativeHandle = struct {};
-
-const MEASURE_CACHE_CAPACITY: usize = 128;
-
-const MeasureCacheEntry = struct {
-    content_hash: u64,
-    content_len: u32,
-    font: FontSpec,
-    metrics: TextMetrics,
-    last_used: u64,
-};
 
 /// zunk key code -> host-neutral key. Letters only matter as Ctrl chords;
 /// `InputQueue.pushNav` drops them when Ctrl is not held.
@@ -247,14 +243,23 @@ const externs = struct {
 /// by `Host.deinit`. Single-host process — single global is sufficient.
 var g_active_host: ?*Host = null;
 
+/// The default face (Plex Mono subset) is the fallback for every family without
+/// a registered face, like the system font on native; then each `.fonts` file
+/// goes into its slot and weight.
+fn registerEmbeddedFonts() void {
+    if (font_data.default_font.len > 0) teak_text.face.setFallbackBytes(font_data.default_font);
+    for (font_data.faces) |f| {
+        const family: teak.FontFamily = @fromBackingInt(@intCast(f.slot));
+        const weight: teak.FontWeight = if (f.weight < 450) .regular else if (f.weight < 600) .medium else .bold;
+        teak_text.registerFace(family, weight, f.bytes) catch {};
+    }
+}
+
 pub const Host = struct {
     width: u32,
     height: u32,
     first_poll: bool = true,
     queue: InputQueue = .{},
-    measure_cache: [MEASURE_CACHE_CAPACITY]MeasureCacheEntry = undefined,
-    measure_cache_len: usize = 0,
-    measure_tick: u64 = 0,
     file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = @splat(.{}),
     /// This frame's effect completions (`zunk.web.fx`), fetched by
     /// `pollInputs` so `Clipboard.read` can see a paste before the keys are
@@ -271,6 +276,7 @@ pub const Host = struct {
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         zinput.init();
         zapp.setTitle(title);
+        registerEmbeddedFonts();
         return .{ .width = width, .height = height };
     }
 
@@ -346,82 +352,23 @@ pub const Host = struct {
         return .{};
     }
 
-    /// Measures via canvas 2D through `zunk.web.gpu.measureText`. Results
-    /// are cached by (content_hash, size, family) because every
-    /// measurement pays a wasm↔JS round-trip. Zunk's `TextMetrics`
-    /// carries only width/height; ascent/descent are synthesized with
-    /// the same 0.75/0.25 split `teak.monoMeasurer` uses.
+    /// Measures with the shared stb_truetype shaper (`teak-text`), on the
+    /// faces embedded in the wasm: the same advances the Gpu rasterizes with, and
+    /// the same numbers as every native backend. Results are cached by the
+    /// module, so repeated labels cost a hash.
     pub fn textMeasurer(self: *Host) TextMeasurer {
-        return .{ .ctx = @ptrCast(self), .measure_fn = zunkMeasure };
+        return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
     }
 
-    fn zunkMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        const self: *Host = @ptrCast(@alignCast(ctx));
-        self.measure_tick += 1;
-        const content_hash = std.hash.Wyhash.hash(0, text_bytes);
-
-        for (self.measure_cache[0..self.measure_cache_len]) |*e| {
-            if (e.content_hash == content_hash and
-                e.content_len == text_bytes.len and
-                std.meta.eql(e.font, font))
-            {
-                e.last_used = self.measure_tick;
-                return e.metrics;
-            }
-        }
-
-        var font_buf: [web_font.css_buf_len]u8 = undefined;
-        const css = web_font.css(&font_buf, font);
-
-        const raw = zgpu.measureText(text_bytes, css, font.letter_spacing);
-        // Canvas `measureText` returns glyph-tight height
-        // (actualBoundingBoxAscent + Descent), which varies per string —
-        // "hello" is shorter than "helloy". Native returns font-scope
-        // `tm.tmHeight` so every label sits on the same baseline.
-        // Stabilize the web side with an em-plus-leading approximation;
-        // rasterize-side em still fits because canvas `textBaseline='top'`
-        // draws em-top at y=0 and 1.2× em leaves room for descenders.
-        const stable_h = @ceil(font.size_px * 1.2);
-        const metrics: TextMetrics = .{
-            .width = @floatFromInt(raw.width),
-            .height = stable_h,
-            .ascent = font.size_px * 0.75,
-            .descent = font.size_px * 0.25,
-        };
-
-        const slot = if (self.measure_cache_len < self.measure_cache.len) blk: {
-            const i = self.measure_cache_len;
-            self.measure_cache_len += 1;
-            break :blk i;
-        } else blk: {
-            var oldest: usize = 0;
-            var oldest_tick: u64 = self.measure_cache[0].last_used;
-            for (self.measure_cache[0..self.measure_cache_len], 0..) |*e, i| {
-                if (e.last_used < oldest_tick) {
-                    oldest = i;
-                    oldest_tick = e.last_used;
-                }
-            }
-            break :blk oldest;
-        };
-
-        self.measure_cache[slot] = .{
-            .content_hash = content_hash,
-            .content_len = @intCast(text_bytes.len),
-            .font = font,
-            .metrics = metrics,
-            .last_used = self.measure_tick,
-        };
-        return metrics;
+    fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
+        return teak_text.measure(text_bytes, font);
     }
 
-    fn fallbackMetrics(font: FontSpec) TextMetrics {
-        return .{
-            .width = 0,
-            .height = font.size_px,
-            .ascent = font.size_px * 0.75,
-            .descent = font.size_px * 0.25,
-        };
+    /// Register a TTF for (`family`, `weight`) at runtime; the bytes are
+    /// borrowed (an `@embedFile` slice). The `.fonts` build option already
+    /// registers its files at `init`.
+    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
+        try teak_text.registerFace(family, weight, ttf);
     }
 
     /// Clipboard vtable. `write` goes through the effects bridge
@@ -828,7 +775,7 @@ test "serializeA11yTree: oversized label is skipped, record still emitted" {
 
 test "wasm key table reaches every SpecialKey through the shared policy" {
     var seen = std.EnumSet(SpecialKey).empty;
-    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true } };
+    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = true } };
     for (mod_sets) |mods| {
         for (key_mappings) |m| {
             if (teak.resolveKey(m.to, mods)) |sk| seen.insert(sk);
