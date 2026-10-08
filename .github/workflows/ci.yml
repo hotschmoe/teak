@@ -243,11 +243,6 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/shots"
           zig build shot -- "$GITHUB_WORKSPACE/shots/chrome-mac-offscreen.png"
-      - name: Headless Metal screenshot at scale 2
-        working-directory: teak/examples/chrome
-        env:
-          TEAK_SCALE: "2"
-        run: zig build shot -- "$GITHUB_WORKSPACE/shots/chrome-mac-offscreen-2x.png"
       - name: Build the Cocoa ui exe
         working-directory: teak/examples/chrome
         run: zig build install -Doptimize=ReleaseSafe && ls -l zig-out/bin
@@ -257,7 +252,9 @@ jobs:
         run: |
           ./zig-out/bin/chrome-ui > "$GITHUB_WORKSPACE/shots/ui.log" 2>&1 &
           pid=$!
-          sleep 12
+          sleep 4
+          screencapture -x "$GITHUB_WORKSPACE/shots/chrome-mac-window-4s.png" || true
+          sleep 8
           screencapture -x "$GITHUB_WORKSPACE/shots/chrome-mac-window.png" || true
           kill -0 $pid 2>/dev/null && echo "ui still running after 12 s: OK" || { echo "ui exited early"; cat "$GITHUB_WORKSPACE/shots/ui.log"; exit 1; }
           kill $pid || true

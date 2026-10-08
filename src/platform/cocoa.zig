@@ -415,6 +415,11 @@ pub const Host = struct {
         objc.setState(view, s);
         objc.setState(delegate, s);
 
+        // Layer-hosting: we own the layer, so size it with the view
+        // (width + height sizable) instead of relying on AppKit to.
+        msg(void, layer, sel("setFrame:"), .{frame});
+        msg(void, layer, sel("setAutoresizingMask:"), .{@as(u32, 2 | 16)});
+        msg(void, layer, sel("setOpaque:"), .{true});
         msg(void, view, sel("setLayer:"), .{layer});
         msg(void, view, sel("setWantsLayer:"), .{true});
         msg(void, window, sel("setContentView:"), .{view});
@@ -462,6 +467,8 @@ pub const Host = struct {
                 msg(void, s.layer, sel("setContentsScale:"), .{@as(f64, scale)});
             }
             s.resized_pending = true;
+            msg(void, s.layer, sel("setFrame:"), .{b});
+            std.log.info("teak/cocoa: view {d}x{d} pt, scale {d}", .{ w, h, scale });
         }
     }
 
