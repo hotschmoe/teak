@@ -131,6 +131,7 @@ const KEYEVENTF_KEYUP: DWORD = 2;
 const KEYEVENTF_UNICODE: DWORD = 4;
 const SWP_NOZORDER: UINT = 4;
 const SWP_NOMOVE: UINT = 2;
+const SWP_NOSIZE: UINT = 1;
 
 var failures: u32 = 0;
 var out_dir: []const u8 = ".";
@@ -239,6 +240,8 @@ fn focusWindow() void {
         .{ .type = 1, .u = .{ .ki = .{ .wVk = 0x12, .wScan = 0, .dwFlags = KEYEVENTF_KEYUP, .time = 0, .dwExtraInfo = 0 } } },
     };
     _ = SendInput(2, &alt, @sizeOf(INPUT));
+    // Topmost first: some runner images keep a full-screen setup page open.
+    _ = SetWindowPos(hwnd, @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     _ = SetForegroundWindow(hwnd);
     sleepMs(300);
     if (GetForegroundWindow() != hwnd) {
@@ -389,7 +392,9 @@ fn capture(name: []const u8) void {
     _ = BitBlt(mem, 0, 0, cw, ch, screen, o.x, o.y, SRCCOPY | CAPTUREBLT);
     _ = GetDIBits(mem, bmp, 0, @intCast(ch), px.ptr, &hdr, 0);
     var method: []const u8 = "BitBlt";
-    if (allBlack(px)) {
+    // Without the foreground another window may cover ours on screen:
+    // ask the compositor for the window's own pixels instead.
+    if (allBlack(px) or !foreground) {
         _ = PrintWindow(hwnd, mem, 2); // PW_RENDERFULLCONTENT
         _ = GetDIBits(mem, bmp, 0, @intCast(ch), px.ptr, &hdr, 0);
         method = "PrintWindow";
