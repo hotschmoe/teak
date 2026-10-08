@@ -4,11 +4,24 @@
 
 ### Added
 
+- `teak.unicode`, `teak.linebreak`, `teak.text_wrap`: UAX#29 graphemes, word classes, UAX#14-lite line
+  breaking, wrapping/measure/caret mapping (text-engine PR2a/b).
+- `teak.editor`: `Editor(cap, undo_cap)` with grapheme-aware editing, word jumps, undo/redo (PR10).
+- `SpecialKey`: `ctrl_left/right/home/end` (+ `ctrl_shift_*`), `ctrl_backspace`, `ctrl_delete`,
+  `ctrl_shift_z`; `resolveKey` maps them.
 - `Shaper` / `ShapedGlyph` / `ShapeResult` (core) and `FontSpec.snap_advance` (default false).
 - `teak-text` now ships `SimpleShaper` (stb kerning, fi/fl/ff/ffi/ffl ligatures on proportional
   faces) in `src/text/`; the module root moved from `src/gpu/text_stbtt.zig` to `src/text/text.zig`
   (same exports). Measurement and rasterization both place glyphs from the shaper; invalid
   UTF-8 now yields U+FFFD per bad byte (was byte-as-codepoint).
+
+### Changed
+
+- `TextField(N)` is now built on `Editor`: backspace/Delete remove whole grapheme clusters, multi-byte
+  characters typed byte-wise are inserted atomically, and it gains `delete`, `home`/`end`, word jumps,
+  `undo`/`redo` Msgs (the `Model` field names `len`/`cursor`/`selection_anchor` are unchanged; the byte array is now `buf`).
+
+- **wgpu-native prebuilts updated v25.0.2.2 -> v29.0.1.1** (all four Windows/Linux deps). No source API fixes were needed (the v25 code already used the StringView / callback-info API); device creation now installs an uncaptured-error callback that logs loudly, and sets the device-lost callback mode explicitly.
 
 ### Changed (breaking)
 
