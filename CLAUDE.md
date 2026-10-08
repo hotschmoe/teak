@@ -59,19 +59,15 @@ The native UI backend is chosen per target OS: **Windows** (Win32 window + GDI t
 
 The `wgpu-native` prebuilts live in teak's own `build.zig.zon` (one per OS × arch) and are fetched lazily on the first native/web UI build; pure-library consumers never pay for them. The build targets Windows ARM64 (Snapdragon X Elite) with a workaround for Zig's missing `i8mm` CPU feature detection on aarch64.
 
-### Windows ARM64 toolchain workaround (Zig 0.16.0)
+### Windows ARM64 (Zig 0.17+)
 
-Zig 0.16.0's native `aarch64-windows` compiler binary is broken upstream ([Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865)) — it segfaults on any compile. This machine runs the **x86_64-windows** `zig.exe` (installed at `C:\zig\`) under Windows-on-ARM (Prism) emulation and **cross-compiles** to aarch64-windows.
+With Zig 0.17 the native `aarch64-windows` `zig.exe` works (the 0.16 crash, [Codeberg #31865](https://codeberg.org/ziglang/zig/issues/31865), is fixed). CI proves it on a `windows-11-arm` runner: the ARM64 toolchain builds and runs the library tests (ReleaseSafe), all examples, and an optimized `examples/chrome` canary natively ([run](https://github.com/hotschmoe/teak/actions/runs/37712840052)). So on a Windows ARM64 host:
 
-This workaround is **Windows-specific** — building/running the Linux UI on a Linux host (including aarch64) needs no `-Dtarget` flag.
+- Install the **aarch64-windows** Zig build; no x86_64 `zig.exe` under Prism emulation, no `-Dtarget=` flag. The native default target is `aarch64-windows`, and `zig build ui` produces a native ARM64 binary.
+- Cross-compiling still works from any host (`-Dtarget=aarch64-windows-gnu`, `-Dtarget=x86_64-windows-gnu`).
+- teak's `build.zig.zon` declares the wgpu-native prebuilts per OS × arch; `linkNativeWgpu` selects the matching one by `target.result.os.tag` + `cpu.arch`, so no flags are needed on a native host.
 
-Implications for building:
-- The native default target when running `zig build` is `x86_64-windows` (what Prism reports).
-- teak's `build.zig.zon` declares the wgpu-native prebuilts per OS × arch (`wgpu-native-windows-{aarch64,x86_64}`, `wgpu-native-linux-{aarch64,x86_64}`); `linkNativeWgpu` selects the matching one by `target.result.os.tag` + `cpu.arch`, so no flags are needed on a native host.
-- **On this aarch64 Windows host, pass `-Dtarget=aarch64-windows-gnu` to `zig build ui`** so the output binary runs natively instead of under Prism. Without it, the build still succeeds — you just get an x86_64 UI binary that runs emulated. (On a native x86_64 Windows host, no flag is needed.)
-- Library `zig build test` from the root works without the flag (it doesn't link wgpu).
-
-Full details: [`docs/zig-016-win-arm64-crash.md`](docs/zig-016-win-arm64-crash.md). When #31865 ships a fix, drop the emulation workaround and remove `-Dtarget=` from `zig build ui`.
+History of the 0.16 crash and the old emulation workaround: [`docs/archive/zig-016-win-arm64-crash.md`](docs/archive/zig-016-win-arm64-crash.md).
 
 ## Architecture
 
