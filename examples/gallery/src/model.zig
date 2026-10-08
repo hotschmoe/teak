@@ -103,6 +103,8 @@ pub const Msg = union(enum) {
     focus_set: Field,
     /// Tab left the text fields for another widget: nothing has text focus.
     blur,
+    /// A leaf with nothing to do (tree files).
+    noop,
     focus_clear,
     name: NameField.Msg,
     search: NameField.Msg,
@@ -277,6 +279,7 @@ pub fn update(m: *Model, msg: Msg) void {
 
         .focus_set => |f| m.focus = f,
         .blur => m.focus = null,
+        .noop => {},
         .focus_clear => m.focus = null,
         .name => |s| NameField.update(&m.name, s),
         .search => |s| NameField.update(&m.search, s),

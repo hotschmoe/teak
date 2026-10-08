@@ -328,6 +328,9 @@ A text leaf gets its focus Msg dispatched (the Model owns text focus); any other
 and select inside a radio group, arrows / Home / End / PageUp / PageDown set a slider through `sliderMsg`. Optional App hook
 `blurMsg(*const Model) ?Msg` clears the app's text focus when Tab leaves a text field (so typing keys stop reaching it). App key
 hooks (`keyCharMsg`, `keySpecialMsg`, `submitMsg`, menus, dialogs) run first; the focused widget only gets keys they decline.
+List rows: `cb.buttonNav(msg, label, style, .{ .tab_stop = bool, .roving = .none|.focus|.select })` — `tab_stop = false` makes Tab skip the row (a list is ONE Tab stop),
+roving rows move the focus with arrows / Home / End / PageUp / PageDown (`.select` also dispatches the row Msg). `SpecialKey.context_menu` (Menu key, Shift+F10) calls
+the app's `contextMsg` at the focused widget. `Dropdown.keyMsg(model, key, options_len, opts) ?Msg`: keys while the list is open.
 Focus is keyed by the leaf's Msg, so it follows the widget through list inserts / removals; a click on a widget moves it there.
 
 ### Keys (`teak.keys` → input/keys.zig)
