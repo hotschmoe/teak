@@ -55,6 +55,8 @@ pub const Role = enum {
     button,
     /// Editable single-line text field.
     text_input,
+    /// Editable multi-line text.
+    text_area,
     /// Two-state toggle.
     checkbox,
     /// Member of a single-select radio group.
@@ -359,7 +361,7 @@ fn collectLayer(
                 continue;
             },
             .push_virtual_list, .pop_virtual_list => continue,
-            .text, .rich_text, .image, .divider, .button, .text_input, .checkbox, .radio, .slider, .canvas, .scene3d => {},
+            .text, .rich_text, .image, .divider, .button, .text_input, .text_area, .checkbox, .radio, .slider, .canvas, .scene3d => {},
         }
 
         if (!visible_to_layer) continue;
@@ -397,6 +399,14 @@ fn collectLayer(
                     .focused = focused,
                     .disabled = ti.disabled,
                 };
+            },
+            .text_area => |ta| .{
+                .role = .text_area,
+                .cmd_index = @intCast(i),
+                .bounds = b,
+                .label = ta.content,
+                .focused = if (focus_index) |fi| fi == i else false,
+                .disabled = ta.disabled,
             },
             .checkbox => |cb| .{
                 .role = .checkbox,
@@ -861,4 +871,24 @@ test "TreeCache: same / store deep-copies strings and detects every kind of chan
     nodes[0].bounds.w = 10;
     try testing.expect(!cache.same(nodes[0..1])); // length
     try testing.expect(cache.same(&nodes));
+}
+
+test "text_area maps to the text_area role with content, focus and disabled" {
+    const testing = std.testing;
+    const Msg = union(enum) { f };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{});
+    cb.textArea(.{ .focus_msg = .f, .id = 1, .content = "multi\nline", .width = 100, .height = 50 });
+    cb.textArea(.{ .focus_msg = .f, .id = 2, .content = "", .width = 100, .height = 50, .disabled = true });
+    cb.popGroup();
+    var rects: [4]layout.Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 300, 300, text_mod.monoMeasurer());
+    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], 1);
+    try testing.expectEqual(Role.text_area, tree[1].role);
+    try testing.expectEqualStrings("multi\nline", tree[1].label);
+    try testing.expect(tree[1].focused);
+    try testing.expect(tree[2].disabled);
 }

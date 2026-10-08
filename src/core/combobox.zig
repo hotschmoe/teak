@@ -45,8 +45,12 @@ pub const Match = enum {
 };
 
 pub const ViewOpts = struct {
-    /// Window-absolute top-left of the open list (typically the bottom-left of
-    /// the input's previous-frame rect).
+    /// Open the list against the input automatically (anchored to the
+    /// `msgs.focus` input, below its left edge; resolved by layout in the same
+    /// frame). `list_x` / `list_y` are then ignored; false = place it yourself.
+    auto_anchor: bool = true,
+    anchor_side: cmd.AnchorSide = .below_start,
+    /// Window-absolute top-left of the open list when `auto_anchor` is false.
     list_x: f32 = 0,
     list_y: f32 = 0,
     list_width: f32 = 200,
@@ -328,6 +332,8 @@ pub fn Combobox(comptime cap: usize) type {
             cb.pushOverlay(.{
                 .x = opts.list_x,
                 .y = opts.list_y,
+                .anchor_msg = if (opts.auto_anchor) msgs.focus else null,
+                .anchor_side = opts.anchor_side,
                 .width = opts.list_width,
                 .height = viewport_h,
                 .modal = true,
@@ -349,13 +355,18 @@ pub fn Combobox(comptime cap: usize) type {
                 cb.pushGroup(.{ .direction = .vertical, .bg = cb.theme.panel_bg, .padding = 0, .gap = 0 });
             }
             if (n == 0) {
-                cb.buttonDisabled(msgs.close, NO_MATCHES);
+                var row = cb.theme.button;
+                row.min_width = opts.list_width;
+                row.height = ITEM_HEIGHT;
+                cb.buttonStyledDisabled(msgs.close, NO_MATCHES, row);
             } else {
                 var ordinal: usize = 0;
                 for (options, 0..) |opt, i| {
                     if (!matches(q, opt, opts.match)) continue;
                     var row = cb.theme.button;
                     row.min_width = opts.list_width;
+                    // The scroll math counts ITEM_HEIGHT rows whatever the theme's button height is.
+                    row.height = ITEM_HEIGHT;
                     if (ordinal == model.highlighted) {
                         row.bg = cb.theme.button.hover_bg;
                         row.fg = cb.theme.button.hover_fg orelse cb.theme.button.fg;
@@ -554,7 +565,7 @@ test "snapshot golden: open list filtered by 'a'" {
     var m: CB.Model = .{};
     CB.update(&m, .focus);
     typeStr(&m, "a");
-    try renderSnapshot(&m, .{ .list_x = 20, .list_y = 40, .list_width = 120, .max_visible = 4 },
+    try renderSnapshot(&m, .{ .auto_anchor = false, .list_x = 20, .list_y = 40, .list_width = 120, .max_visible = 4 },
         \\group (0,0,400,400) vertical
         \\  text_input (0,0,400,28) "a" cursor=1
         \\  overlay (20,40,120,144) layer=1 [modal]
@@ -563,6 +574,23 @@ test "snapshot golden: open list filtered by 'a'" {
         \\      button (20,76,120,36) "Maple"
         \\      button (20,112,120,36) "Cedar"
         \\      button (20,148,120,36) "Ash"
+        \\
+    );
+}
+
+test "snapshot golden: auto_anchor opens the list under the input, no coordinates" {
+    var m: CB.Model = .{};
+    CB.update(&m, .focus);
+    typeStr(&m, "a");
+    try renderSnapshot(&m, .{ .list_width = 120, .max_visible = 4 },
+        \\group (0,0,400,400) vertical
+        \\  text_input (0,0,400,28) "a" cursor=1
+        \\  overlay (0,28,120,144) layer=1 [modal]
+        \\    group (0,28,120,144) vertical bg
+        \\      button (0,28,120,36) "Oak"
+        \\      button (0,64,120,36) "Maple"
+        \\      button (0,100,120,36) "Cedar"
+        \\      button (0,136,120,36) "Ash"
         \\
     );
 }

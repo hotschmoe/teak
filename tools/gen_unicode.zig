@@ -6,18 +6,28 @@
 //!
 //! `<ucd-dir>` must hold these files from https://www.unicode.org/Public/<ver>/ucd/
 //! (flattened into one directory): GraphemeBreakProperty.txt, emoji-data.txt,
-//! DerivedCoreProperties.txt (InCB), LineBreak.txt, EastAsianWidth.txt.
+//! DerivedCoreProperties.txt (InCB), LineBreak.txt, EastAsianWidth.txt,
+//! DerivedBidiClass.txt (from extracted/), BidiBrackets.txt.
 //!
 //! Output: two run-length tables (`start | value << 21` per change of value,
 //! binary-searched at lookup).
 //!   grapheme byte = GCB (bits 0-3) | Extended_Pictographic << 4 | InCB << 5
 //!   linebreak byte = reduced UAX#14 class (bits 0-3) | East-Asian-wide << 7
+//!   bidi byte = Bidi_Class index; plus a sorted bracket-pair list.
 
 const std = @import("std");
 
 const Gcb = enum(u4) { other, cr, lf, control, extend, zwj, ri, prepend, spacing_mark, l, v, t, lv, lvt };
 const Incb = enum(u2) { none, consonant, linker, extend };
 const Lb = enum(u4) { other, nu, id, sp, zw, bk, cr, lf, gl, wj, ba, hy, op, cl, no_before, qu };
+
+const BIDI_NAMES = [_][]const u8{ "L", "R", "AL", "EN", "ES", "ET", "AN", "CS", "NSM", "BN", "B", "S", "WS", "ON", "LRE", "LRO", "RLE", "RLO", "PDF", "LRI", "RLI", "FSI", "PDI" };
+
+fn bidiFromName(name: []const u8) !u8 {
+    for (BIDI_NAMES, 0..) |n, i| if (std.mem.eql(u8, n, name)) return @intCast(i);
+    std.debug.print("unknown Bidi_Class: {s}\n", .{name});
+    return error.UnknownBidi;
+}
 
 const MAX_CP = 0x110000;
 
@@ -176,6 +186,47 @@ pub fn main(init: std.process.Init) !void {
         while (c <= r.hi) : (c += 1) flat_l[c] = if (wide) flat_l[c] | 0x80 else flat_l[c] & 0x7F;
     }
 
+    // ── Bidi_Class: defaults from the @missing lines of DerivedBidiClass.txt, then explicit entries ──
+    const flat_b = try gpa.alloc(u8, MAX_CP);
+    @memset(flat_b, 0);
+    const bidi_defaults = [_]struct { u32, u32, []const u8 }{
+        .{ 0x0590, 0x05FF, "R" },    .{ 0x0600, 0x07BF, "AL" },   .{ 0x07C0, 0x085F, "R" },    .{ 0x0860, 0x08FF, "AL" },
+        .{ 0x20A0, 0x20CF, "ET" },   .{ 0xFB1D, 0xFB4F, "R" },    .{ 0xFB50, 0xFDCF, "AL" },   .{ 0xFDF0, 0xFDFF, "AL" },
+        .{ 0xFE70, 0xFEFF, "AL" },   .{ 0x10800, 0x10CFF, "R" },  .{ 0x10D00, 0x10D3F, "AL" }, .{ 0x10D40, 0x10EBF, "R" },
+        .{ 0x10EC0, 0x10EFF, "AL" }, .{ 0x10F00, 0x10F2F, "R" },  .{ 0x10F30, 0x10F6F, "AL" }, .{ 0x10F70, 0x10FFF, "R" },
+        .{ 0x1E800, 0x1EC6F, "R" },  .{ 0x1EC70, 0x1ECBF, "AL" }, .{ 0x1ECC0, 0x1ECFF, "R" },  .{ 0x1ED00, 0x1ED4F, "AL" },
+        .{ 0x1ED50, 0x1EDFF, "R" },  .{ 0x1EE00, 0x1EEFF, "AL" }, .{ 0x1EF00, 0x1EFFF, "R" },
+    };
+    for (bidi_defaults) |d| {
+        const v = try bidiFromName(d[2]);
+        var c = d[0];
+        while (c <= d[1]) : (c += 1) flat_b[c] = v;
+    }
+    const dbc = try readFile(gpa, io, dir, "DerivedBidiClass.txt");
+    for (try parseRanges(gpa, dbc, false)) |r| {
+        const v = try bidiFromName(r.value);
+        var c = r.lo;
+        while (c <= r.hi) : (c += 1) flat_b[c] = v;
+    }
+    // ── Bidi_Paired_Bracket(_Type): `cp | pair << 21 | is_close << 42`, sorted by cp ──
+    var brackets: std.ArrayList(u64) = .empty;
+    const bb = try readFile(gpa, io, dir, "BidiBrackets.txt");
+    var bl = std.mem.splitScalar(u8, bb, '\n');
+    while (bl.next()) |raw| {
+        const line = std.mem.trim(u8, raw[0 .. std.mem.indexOfScalar(u8, raw, '#') orelse raw.len], " \t\r");
+        if (line.len == 0) continue;
+        var f = std.mem.splitScalar(u8, line, ';');
+        const cp = try std.fmt.parseInt(u64, std.mem.trim(u8, f.next().?, " \t"), 16);
+        const pair = try std.fmt.parseInt(u64, std.mem.trim(u8, f.next().?, " \t"), 16);
+        const ty = std.mem.trim(u8, f.next().?, " \t");
+        try brackets.append(gpa, cp | pair << 21 | @as(u64, if (ty[0] == 'c') 1 else 0) << 42);
+    }
+    std.mem.sort(u64, brackets.items, {}, struct {
+        fn lt(_: void, a: u64, b: u64) bool {
+            return (a & 0x1FFFFF) < (b & 0x1FFFFF);
+        }
+    }.lt);
+
     const pg = try runs(gpa, flat_g);
     const pl = try runs(gpa, flat_l);
 
@@ -186,7 +237,7 @@ pub fn main(init: std.process.Init) !void {
         \\//!
         \\//! Derived from the Unicode Character Database (GraphemeBreakProperty.txt,
         \\//! emoji-data.txt, DerivedCoreProperties.txt [InCB], LineBreak.txt,
-        \\//! EastAsianWidth.txt), Unicode 16.0.0.
+        \\//! EastAsianWidth.txt, DerivedBidiClass.txt, BidiBrackets.txt), Unicode 16.0.0.
         \\//! Copyright (c) 1991-2024 Unicode, Inc. All rights reserved. Distributed under
         \\//! the Terms of Use in https://www.unicode.org/copyright.html (Unicode License
         \\//! v3): the data files and any derived software may be used and distributed
@@ -195,6 +246,7 @@ pub fn main(init: std.process.Init) !void {
         \\//!   Each table is a run list: `start | value << 21`; value byte layout:
         \\//!   grapheme byte  = Gcb (bits 0-3) | Extended_Pictographic << 4 | Incb << 5
         \\//!   linebreak byte = Lb  (bits 0-3) | East-Asian-wide << 7
+        \\//!   bidi byte      = Bidi_Class index (see core/bidi.zig `Class`)
         \\
         \\pub const Gcb = enum(u4) { other, cr, lf, control, extend, zwj, ri, prepend, spacing_mark, l, v, t, lv, lvt };
         \\pub const Incb = enum(u2) { none, consonant, linker, extend };
@@ -216,6 +268,14 @@ pub fn main(init: std.process.Init) !void {
     );
     try emitTable(w, "grapheme", pg);
     try emitTable(w, "linebreak", pl);
+    const pb = try runs(gpa, flat_b);
+    try emitTable(w, "bidi", pb);
+    try w.writeAll("/// Paired brackets sorted by code point: `cp | pair << 21 | is_close << 42`.\npub const bidi_brackets = [_]u64{");
+    for (brackets.items, 0..) |v, i| {
+        if (i % 6 == 0) try w.writeAll("\n   ");
+        try w.print(" 0x{x},", .{v});
+    }
+    try w.writeAll("\n};\n");
     std.debug.print("grapheme: {d} runs ({d} bytes); linebreak: {d} runs ({d} bytes)\n", .{ pg.len, pg.len * 4, pl.len, pl.len * 4 });
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = args[2], .data = aw.written() });
 }

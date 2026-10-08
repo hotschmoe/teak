@@ -39,10 +39,26 @@
 
 const std = @import("std");
 
+/// Longest frame step `animationMsg` is given; a stalled frame must not make
+/// an animation jump to its end.
+pub const max_animation_dt_ms: u32 = 100;
+
+/// True if any listed sub is `.animation_frame`.
+pub fn wantsAnimationFrame(comptime Msg: type, subs: []const Sub(Msg)) bool {
+    for (subs) |sub| if (sub == .animation_frame) return true;
+    return false;
+}
+
 pub fn Sub(comptime Msg: type) type {
     return union(enum) {
         every: struct { interval_ms: u32, msg: Msg },
         at: struct { deadline_ms: u64, msg: Msg },
+        /// Ask the run loop for a frame callback: while listed, every frame
+        /// calls the App's `animationMsg(model, dt_ms) ?Msg` (dt = Host-clock
+        /// ms since the previous frame, capped at `max_animation_dt_ms`) and
+        /// idle skipping is suspended. List it only while an animation is
+        /// active (see `core/anim.zig`).
+        animation_frame,
     };
 }
 
@@ -86,6 +102,8 @@ pub fn runSubs(
                     dispatch.call(a.msg);
                 }
             },
+            // Serviced by the run loop (it needs the App's `animationMsg` hook).
+            .animation_frame => {},
         }
     }
 }
@@ -100,6 +118,7 @@ pub fn nextDueMs(comptime Msg: type, subs: []const Sub(Msg), now_ms: u64) ?u64 {
         const due: u64 = switch (sub) {
             .every => |e| if (e.interval_ms == 0) continue else e.interval_ms - now_ms % e.interval_ms,
             .at => |a| if (a.deadline_ms > now_ms) a.deadline_ms - now_ms else continue,
+            .animation_frame => 0,
         };
         best = if (best) |b| @min(b, due) else due;
     }
