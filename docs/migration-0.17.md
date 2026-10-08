@@ -56,3 +56,8 @@ style guide). Behaviour changes to know about:
   per-frame balance check used to be Debug-only); a stray `popFormRow` panics
   instead of being ignored.
 
+## Cleanup and renames
+
+- `TextField(N).Model` is now a `teak.editor.Editor`: the byte array field `buffer` was renamed
+  `buf`. `len`, `cursor`, `selection_anchor`, `content()`, `selectionText()` and `hasSelection()` are
+  unchanged. Replace `model.field.buffer[...]` with `model.field.buf[...]` (prefer `content()`).

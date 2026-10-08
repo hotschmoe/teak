@@ -21,6 +21,8 @@ change yields.
 | Pop a modal dialog with a dim backdrop | [4. Modal dialog](#4-modal-dialog) |
 | Offer a long, scrolling picker | [5. Dropdown with a scrolling list](#5-dropdown-with-a-scrolling-list) |
 | Render N sub-widgets, focus-stable | [6. Dynamic list with per-item focus](#6-dynamic-list-with-per-item-focus) |
+| Rows that each own several focusable fields | [6b. Rows with several focusable fields](#6b-rows-with-several-focusable-fields) |
+| Pick from a long list by typing (type-ahead) | [14. Searchable combobox](#14-searchable-combobox) |
 | Draw a line chart from a data series | [7. Line chart](#7-line-chart) |
 | Test a view with no Host / GPU | [8. Golden-test a view](#8-golden-test-a-view) |
 | Observe a running app as an agent | [9. Watch a running app](#9-watch-a-running-app) |
@@ -400,6 +402,66 @@ item. Route child Msgs with `Rows.childAt(model, i, child_msg)` /
 `Rows.childMsg(key, child_msg)` and focus with `focusedMsgForKey` — all
 resolve through the stable key. This is an *explicit Model field*, not ID
 hashing (HARDLINE §3 sanctions the former, bans the latter).
+
+---
+
+## 6b. Rows with several focusable fields
+
+**Goal:** a `ComponentList` whose rows each own *two or more* focusable
+inputs (e.g. a point load with `P` and `a` text fields), with the keyboard
+going to "this field of that row". (Consumer issue #1.)
+
+**You will touch:** the row component, the app's `update` + host hooks.
+Worked, tested code: the `LoadRow` / `LoadApp` block at the bottom of
+`src/core/component_list.zig`.
+
+1. Give the row one **payloadless focus variant per field** and one
+   edit variant per field. `ComponentList.view` wires every payloadless
+   variant into `rows.child{key, focus_x}` for you — each input carries its
+   own focus Msg:
+
+   ```zig
+   const Row = struct {
+       const TF = teak.TextField(16);
+       pub const Model = struct { p: TF.Model = .{}, a: TF.Model = .{} };
+       pub const Msg = union(enum) { focus_p, focus_a, p: TF.Msg, a: TF.Msg };
+       // update: .p => |x| TF.update(&m.p, x), .a => ... , focus_* => {}
+       // view:   cb.textInputSelected(msgs.focus_p, m.p.content(), ...);
+       //         cb.textInputSelected(msgs.focus_a, m.a.content(), ...);
+   };
+   ```
+
+2. The app remembers **`(key, field)`** — an explicit Model field — by
+   intercepting the focus click before delegating to the composed `update`:
+
+   ```zig
+   // focus: ?struct { key: u64, field: enum { p, a } } = null,
+   switch (msg) { .rows => |rm| switch (rm) {
+       .child => |c| switch (c.child_msg) {
+           .focus_p => m.focus = .{ .key = c.key, .field = .p },
+           .focus_a => m.focus = .{ .key = c.key, .field = .a },
+           else => {},
+       }, else => {} } }
+   ```
+
+3. Host hooks build Msgs from that key — never from an index:
+
+   ```zig
+   pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+       const f = m.focus orelse return null;
+       const child: Row.Msg = switch (f.field) { .p => .{ .p = .{ .char = c } }, .a => .{ .a = .{ .char = c } } };
+       return .{ .rows = Rows.childMsg(f.key, child) };
+   }
+   pub fn focusedMsg(m: *const Model) ?Msg {          // draws the caret + focus rule
+       const f = m.focus orelse return null;
+       return Rows.focusedMsgForKey(f.key, if (f.field == .p) .focus_p else .focus_a, Msg);
+   }
+   ```
+
+Because the key travels with the item, removing, inserting or reordering
+rows leaves focus on the same field of the same row; Tab/Shift+Tab walk
+`p, a` of each row in visual order (`teak.run` does this when you expose
+`focusedMsg`). Compare the single-field case in recipe 6.
 
 ---
 
@@ -807,3 +869,56 @@ flight (answers mix up); keeping `r.body` instead of copying it; expecting
 `open_file` to open a picker outside a user gesture on the web (it arms
 itself for the next click or key press); expecting a result from the
 fire-and-forget `storage_set` / `write_clipboard`.
+
+---
+
+## 14. Searchable combobox
+
+**Goal:** a picker over a long option list (W-shapes, materials, rebar) that
+filters as you type. (Consumer issue #2; `Dropdown` is the no-search
+variant, recipe 5.)
+
+**You will touch:** `src/app.zig` — a `Model` field, a `Msg` variant, an
+`update` arm, `viewWith` in the view, and four host hooks. Live example:
+the MATERIAL field in `examples/chrome`.
+
+```zig
+const Material = teak.Combobox(24);            // 24 = query capacity (bytes)
+const opts: teak.ComboboxViewOpts = .{ .list_x = 12, .list_y = 390, .list_width = 336, .max_visible = 6 };
+// Model:  material: Material.Model = .{ .selected = 0 },
+// Msg:    material: Material.Msg,
+// update: .material => |mm| Material.update(&m.material, mm),
+// view:   Material.viewWith(&m.material, cb, &options, msgs, opts);
+const msgs = .{ .focus = Msg{ .material = .focus }, .close = Msg{ .material = .close }, .selectMsg = pick };
+fn pick(i: usize) Msg { return .{ .material = .{ .select = i } }; }   // i = ORIGINAL option index
+```
+
+Host hooks (only while `m.material.open`, which doubles as "has focus"):
+
+```zig
+pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    if (m.material.open) return .{ .material = Material.charMsg(c) };
+    ...
+}
+pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
+    if (m.material.open) return if (Material.keyMsg(&m.material, key, &options, opts)) |mm| .{ .material = mm } else null;
+    ...
+}
+pub fn wheelMsg(m: *const Model, dy: f32) ?Msg {
+    if (!m.material.open) return null;
+    return .{ .material = Material.scrollByMsg(&m.material, dy, &options, opts) };
+}
+pub fn focusedMsg(m: *const Model) ?Msg { if (m.material.open) return .{ .material = .focus }; ... }
+```
+
+Behaviour: click the input or press Down to open; typing filters
+(case-insensitive substring, or `.match = .prefix`) and highlights the first
+match; Up/Down/PageUp/PageDown move the highlight (scrolled into view);
+Enter picks it; Escape or a click outside closes; a disabled "No matches"
+row shows when nothing matches. Focus the app's other fields with a Msg that
+sets `material.open = false` (see chrome's `.focus_name`).
+
+**Common mistake:** treating the `selectMsg` index as the filtered ordinal —
+it is the index into *your* options slice, so `m.material.selected` is always
+a valid index into it. `list_x/list_y` are window coordinates (the previous
+frame's rect of the input, as for `Dropdown`).

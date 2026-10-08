@@ -1290,6 +1290,7 @@ const PlainGpu = struct {
     pub fn uploadImage(_: *PlainGpu, _: []const u8, _: u32, _: u32) text.TextureHandle {
         return text.TEXTURE_HANDLE_NONE;
     }
+    pub fn releaseImage(_: *PlainGpu, _: text.TextureHandle) void {}
 };
 
 test "a Gpu without the scene extension still runs scene-bearing apps" {

@@ -116,6 +116,7 @@ examples/todo/             dynamic-list demo; N rows, Msg-with-index, scroll
 examples/tree/             recursive tree with expand/collapse over flat Model
 examples/chrome/           engineering-workstation chrome: cards, tables, bracket tabs, custom Theme
 examples/viewport/         pan/zoom interactive canvas + scroll list with scrollbar
+examples/kerf_viewer/      Kerf mesh.json 3D viewer: Orbit camera, CPU pick, parts panel (scene3d path)
 examples/effects/          declarative effects: HTTP, files, storage, clock, clipboard, paste/drop
 examples/fonts/            IBM Plex Mono at three weights + tracking (web .fonts, native registerFont)
 tools/audit.zig            HARDLINE drift audit (zig build audit)
