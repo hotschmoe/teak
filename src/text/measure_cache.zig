@@ -44,7 +44,7 @@ fn fontBits(font: teak.FontSpec) u64 {
     const size: u64 = @as(u32, @bitCast(font.size_px));
     const ls: u64 = @as(u32, @bitCast(font.letter_spacing));
     return size ^ (ls << 32) ^ (@as(u64, @backingInt(font.family)) << 56) ^
-        (@as(u64, @backingInt(font.weight)) << 48) ^ (@as(u64, @intFromBool(font.snap_advance)) << 40);
+        (@as(u64, @backingInt(font.weight)) << 48) ^ (@as(u64, if (font.snap_advance) |b| 1 + @as(u64, @intFromBool(b)) else 0) << 40);
 }
 
 fn hashKey(text: []const u8, font: teak.FontSpec) struct { key: u64, check: u32 } {
