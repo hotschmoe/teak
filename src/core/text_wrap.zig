@@ -58,6 +58,65 @@ pub const Line = struct {
     ellipsized: bool = false,
 };
 
+/// A measurer over `rich_text` runs: measuring a slice of `content` sums the
+/// pieces in their own span fonts (uncovered bytes use `default_font`); any
+/// other string (the ellipsis, the line-height probe) is measured in
+/// `default_font`, with the height of the tallest run. It lets every function
+/// here wrap mixed-font text unchanged: they only ever measure slices of the
+/// content, and the slice's offset (pointer arithmetic) says which span it is.
+/// Valid while the value lives and `content` / `spans` stay in place.
+pub const RichMeasure = struct {
+    content: []const u8,
+    spans: []const text_mod.RichTextSpan,
+    default_font: FontSpec,
+    base: TextMeasurer,
+    max_height: f32,
+
+    pub fn init(content: []const u8, spans: []const text_mod.RichTextSpan, default_font: FontSpec, base: TextMeasurer) RichMeasure {
+        var h = base.measure(" ", default_font).height;
+        for (spans) |sp| h = @max(h, base.measure(" ", sp.font).height);
+        return .{ .content = content, .spans = spans, .default_font = default_font, .base = base, .max_height = h };
+    }
+
+    /// The measurer for wrapping calls (pass `default_font` as their `font`).
+    pub fn measurer(self: *const RichMeasure) TextMeasurer {
+        return .{ .ctx = @ptrCast(@constCast(self)), .measure_fn = &measureFn };
+    }
+
+    fn measureFn(ctx: *anyopaque, t: []const u8, _: FontSpec) text_mod.TextMetrics {
+        const self: *const RichMeasure = @ptrCast(@alignCast(ctx));
+        const base_addr = @intFromPtr(self.content.ptr);
+        const t_addr = @intFromPtr(t.ptr);
+        var out: text_mod.TextMetrics = .{ .width = 0, .height = self.max_height, .ascent = 0, .descent = 0 };
+        const first = self.base.measure(" ", self.default_font);
+        out.ascent = first.ascent;
+        out.descent = first.descent;
+        if (t.len == 0) return out;
+        if (t_addr < base_addr or t_addr + t.len > base_addr + self.content.len) {
+            out.width = self.base.measure(t, self.default_font).width;
+            return out;
+        }
+        const lo: usize = t_addr - base_addr;
+        const hi = lo + t.len;
+        var cursor = lo;
+        for (self.spans) |sp| {
+            const s: usize = @min(sp.start, self.content.len);
+            const e: usize = @min(sp.end, self.content.len);
+            if (e <= cursor or s >= hi) continue;
+            if (s > cursor) {
+                out.width += self.base.measure(self.content[cursor..s], self.default_font).width;
+                cursor = s;
+            }
+            const stop = @min(e, hi);
+            out.width += self.base.measure(self.content[cursor..stop], sp.font).width;
+            cursor = stop;
+            if (cursor >= hi) break;
+        }
+        if (cursor < hi) out.width += self.base.measure(self.content[cursor..hi], self.default_font).width;
+        return out;
+    }
+};
+
 /// Line height for `font` as the measurer reports it.
 pub fn lineHeight(font: FontSpec, m: TextMeasurer) f32 {
     return m.measure(" ", font).height;
@@ -180,7 +239,15 @@ pub fn nextLine(text: []const u8, start: usize, font: FontSpec, max_w: f32, mode
         }
         if (!any and tw > max_w) {
             // Unbreakable token wider than the line: cut it at graphemes.
-            return charLine(text, start, tr.content, font, max_w, m);
+            var cut = charLine(text, start, tr.content, font, max_w, m);
+            if (cut.end == tr.content) {
+                // The last piece of the token: its trailing spaces hang here
+                // instead of becoming a blank line of their own.
+                cut.hang = @intCast(tr.hang);
+                cut.next = @intCast(b.end);
+                cut.hard_break = b.kind == .hard;
+            }
+            return cut;
         }
         any = true;
         line.end = @intCast(tr.content);
@@ -296,6 +363,27 @@ pub fn minContent(text: []const u8, font: FontSpec, m: TextMeasurer) f32 {
     return best;
 }
 
+/// Min-content width for a wrap mode: the narrowest width layout may shrink
+/// the text to. `.word` = widest unbreakable segment, `.char` = widest
+/// grapheme, `.ellipsis` = the ellipsis glyph, `.none` = never shrinks.
+pub fn minContentFor(text: []const u8, font: FontSpec, mode: Wrap, m: TextMeasurer) f32 {
+    switch (mode) {
+        .none => return maxContent(text, font, m),
+        .word => return minContent(text, font, m),
+        .ellipsis => return widthOf(ELLIPSIS, font, m),
+        .char => {
+            var best: f32 = 0;
+            var p: usize = 0;
+            while (p < text.len) {
+                const e = unicode.nextGrapheme(text, p);
+                best = @max(best, widthOf(text[p..e], font, m));
+                p = e;
+            }
+            return best;
+        },
+    }
+}
+
 /// Unwrapped width of the longest hard line.
 pub fn maxContent(text: []const u8, font: FontSpec, m: TextMeasurer) f32 {
     var best: f32 = 0;
@@ -383,6 +471,58 @@ pub fn indexAt(text: []const u8, x: f32, y: f32, font: FontSpec, max_w: f32, mod
     return best;
 }
 
+/// Visual motion keys resolved against the wrapped layout.
+pub const NavKind = enum { up, down, page_up, page_down, line_start, line_end };
+
+pub const NavResult = struct {
+    index: usize,
+    /// The sticky column to carry (set by vertical motion, null for edges).
+    goal_x: ?f32,
+    line: u32,
+};
+
+/// Where the caret goes for a visual-motion key. `goal_x` is the Model's
+/// sticky column (null = use the caret's own x). `page_lines` is the page
+/// size for PageUp/PageDown. Up/Down past the first/last line go to the start/
+/// end of the text; line_end stops before a soft wrap's hanging spaces.
+pub fn resolveNav(text: []const u8, cursor: usize, goal_x: ?f32, kind: NavKind, page_lines: u32, font: FontSpec, max_w: f32, mode: Wrap, m: TextMeasurer) NavResult {
+    const c = caretPos(text, cursor, font, max_w, mode, 0, m);
+    switch (kind) {
+        .line_start, .line_end => {
+            var it = LineIter.init(text, font, max_w, mode, 0, m);
+            var cur = it.next().?;
+            var li: u32 = 0;
+            while (cursor >= cur.next) {
+                cur = it.next() orelse break;
+                li += 1;
+            }
+            const soft = !cur.hard_break and cur.next < text.len;
+            const idx: usize = if (kind == .line_start) cur.start else if (soft) cur.end else cur.hang;
+            return .{ .index = idx, .goal_x = null, .line = li };
+        },
+        else => {
+            const x = goal_x orelse c.x;
+            const total = measureWrapped(text, font, max_w, mode, 0, m).lines;
+            const step: i64 = switch (kind) {
+                .up => -1,
+                .down => 1,
+                .page_up => -@as(i64, @max(page_lines, 1)),
+                else => @as(i64, @max(page_lines, 1)),
+            };
+            const target = @as(i64, c.line) + step;
+            if (target < 0) return .{ .index = 0, .goal_x = x, .line = 0 };
+            if (target >= total) return .{ .index = text.len, .goal_x = x, .line = total - 1 };
+            const lh = lineHeight(font, m);
+            const tl: u32 = @intCast(target);
+            return .{
+                .index = indexAt(text, x, (@as(f32, @floatFromInt(tl)) + 0.5) * lh, font, max_w, mode, 0, m),
+                .goal_x = x,
+                .line = tl,
+            };
+        },
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────
 
 const testing = std.testing;
@@ -455,6 +595,13 @@ test "word wrap: long token breaks at graphemes, ZWSP breaks" {
     try expectLines("abc", 5, .word, 0, &.{ "a", "b", "c" });
     try expectLines("abc", 0, .word, 0, &.{ "a", "b", "c" });
     try expectLines("one\u{200B}two\u{200B}three", 60, .word, 0, &.{ "one\u{200B}two", "three" });
+}
+
+test "overlong token's trailing spaces hang instead of forming a blank line" {
+    var it = LineIter.init("abcdefgh  x", F, 50, .word, 0, mono());
+    var n: usize = 0;
+    while (it.next()) |l| : (n += 1) try testing.expect(l.end > l.start);
+    try testing.expectEqual(@as(usize, 3), n); // abcde / fgh / x
 }
 
 test "char wrap and none" {
@@ -639,4 +786,31 @@ test "RTL, invalid UTF-8 and mixed text never crash or escape the text" {
             i = unicode.nextGrapheme(s, i);
         }
     }
+}
+
+test "minContentFor per mode" {
+    try testing.expectEqual(@as(f32, 50), minContentFor("hello world", F, .word, mono()));
+    try testing.expectEqual(@as(f32, 10), minContentFor("hello world", F, .char, mono()));
+    try testing.expectEqual(@as(f32, 30), minContentFor("hello world", F, .ellipsis, mono()));
+    try testing.expectEqual(@as(f32, 110), minContentFor("hello world", F, .none, mono()));
+    try testing.expectEqual(@as(f32, 30), minContentFor("e\u{0301}", F, .char, mono())); // one cluster
+}
+
+test "resolveNav: vertical keeps the sticky column, edges use visual lines" {
+    const s = "hello world\nab\nlonger line here";
+    const f = F;
+    // Line 0, column 4 -> down clamps to "ab" end, goal stays 40 -> next line column 4.
+    const r1 = resolveNav(s, 4, null, .down, 1, f, 1000, .word, mono());
+    try testing.expectEqual(@as(usize, 14), r1.index);
+    try testing.expectEqual(@as(?f32, 40), r1.goal_x);
+    const r2 = resolveNav(s, 14, r1.goal_x, .down, 1, f, 1000, .word, mono());
+    try testing.expectEqual(@as(usize, 19), r2.index);
+    // Past the ends.
+    try testing.expectEqual(@as(usize, 0), resolveNav(s, 2, null, .up, 1, f, 1000, .word, mono()).index);
+    try testing.expectEqual(s.len, resolveNav(s, 20, null, .page_down, 9, f, 1000, .word, mono()).index);
+    // Wrapped "hello " / "world": edges of the second visual line.
+    const w = "hello world";
+    try testing.expectEqual(@as(usize, 6), resolveNav(w, 8, null, .line_start, 1, f, 60, .word, mono()).index);
+    try testing.expectEqual(@as(usize, 11), resolveNav(w, 8, null, .line_end, 1, f, 60, .word, mono()).index);
+    try testing.expectEqual(@as(usize, 5), resolveNav(w, 2, null, .line_end, 1, f, 60, .word, mono()).index);
 }

@@ -51,9 +51,11 @@ pub const CanvasEventKind = enum {
     /// The cursor left the canvas and no capture is active.
     leave,
     /// Delivered when the canvas is first laid out and whenever its rect
-    /// SIZE changes. `w`/`h` carry the new size; `x`/`y` are 0. Lets the
-    /// app keep the viewport size in its Model (the view cannot read
-    /// layout results).
+    /// SIZE or POSITION changes. `w`/`h` carry the size and `x`/`y` the
+    /// rect's top-left in WINDOW coordinates (not canvas-local like every
+    /// other event). Lets the app keep the viewport size and origin in its
+    /// Model (the view cannot read layout results), e.g. to anchor overlay
+    /// text over a 3D viewport.
     layout,
 };
 
@@ -78,3 +80,52 @@ pub const CanvasEvent = struct {
     w: f32 = 0,
     h: f32 = 0,
 };
+
+/// A window-space rectangle (`PointerEvent.box`).
+pub const Box = struct {
+    x: f32 = 0,
+    y: f32 = 0,
+    w: f32 = 0,
+    h: f32 = 0,
+};
+
+/// What the App's `hoverMsg` / `contextMsg` hooks receive: where the pointer
+/// is and which interactive widget is under it. `hit` is the Msg that widget
+/// would dispatch on a left click (its identity: the app compares it with
+/// `std.meta.eql`, no id hashing); `null` over empty or non-interactive
+/// space. `box` is that widget's rect from the previous frame's layout (the
+/// view cannot read layout, so this is how a tooltip or menu learns where to
+/// anchor); all zero when `hit` is null. `now_ms` is the host's monotonic
+/// clock, so the app can derive deadlines for `Sub.at`.
+pub fn PointerEvent(comptime Msg: type) type {
+    return struct {
+        pub const Kind = enum {
+            /// The interactive widget under the pointer changed (`hit` is the
+            /// new one, null = empty space). Also what `hoverMsg` receives.
+            hover,
+            /// A button went down. `hit` is the widget under the pointer or
+            /// null for **blank space** (the way an app clears its own focus).
+            down,
+            /// A button was released (`hit` as for `down`).
+            up,
+            /// The right button went down (what `contextMsg` receives).
+            context,
+        };
+
+        /// True when the pointer is over no interactive widget (a click here
+        /// should clear the app's focus / selection / open menus).
+        pub fn isBlank(self: @This()) bool {
+            return self.hit == null;
+        }
+
+        kind: Kind = .hover,
+        /// Which button changed (`down` / `up` / `context`); `.none` for hover.
+        button: Button = .none,
+        x: f32,
+        y: f32,
+        hit: ?Msg = null,
+        box: Box = .{},
+        mods: Modifiers = .{},
+        now_ms: u64 = 0,
+    };
+}

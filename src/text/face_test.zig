@@ -224,8 +224,13 @@ test "combining mark: zero advance, so cafe + U+0301 measures like café" {
     try std.testing.expectApproxEqAbs(composed, decomposed, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 48), decomposed, 0.001); // 4 x 0.6 em
     // The accent glyph sits centred over the e (glyph 3), not after it.
+    // e + U+0301 composes to the face's own é (no separate mark glyph); x has no composite, so its accent stays a centred mark.
     var out: [8]teak.ShapedGlyph = undefined;
-    const r = text.SimpleShaper.shape("cafe\u{301}", f, &out);
+    const rf0 = text.face.resolveFace(.mono, .regular).?;
+    const c = text.SimpleShaper.shape("cafe\u{301}", f, &out);
+    try std.testing.expectEqual(@as(usize, 4), c.count);
+    try std.testing.expectEqual(rf0.face.glyphIndex(0xE9), out[3].glyph);
+    const r = text.SimpleShaper.shape("cafx\u{301}", f, &out);
     try std.testing.expectEqual(@as(usize, 5), r.count);
     try std.testing.expectEqual(@as(f32, 0), out[4].advance);
     const e = out[3];
@@ -234,7 +239,11 @@ test "combining mark: zero advance, so cafe + U+0301 measures like café" {
     try std.testing.expectApproxEqAbs(e.x + e.advance * 0.5, ink_mid, 0.01);
     // A mark with no base, or one the face lacks, adds no width and no box.
     try std.testing.expectApproxEqAbs(@as(f32, 12), text.measure("\u{301}a", f).width, 0.001);
-    try std.testing.expectEqual(@as(usize, 1), text.SimpleShaper.shape("a\u{300}", f, &out).count);
+    // A mark the face lacks: drawn from a fallback face when one has it (system
+    // fonts differ per machine), always at zero advance; dropped otherwise.
+    const lacking = text.SimpleShaper.shape("a\u{300}", f, &out);
+    try std.testing.expect(lacking.count == 1 or lacking.count == 2);
+    if (lacking.count == 2) try std.testing.expectEqual(@as(f32, 0), out[1].advance);
 }
 
 test "combining mark pixels: the accent is drawn over the e, not beside it" {
@@ -242,7 +251,7 @@ test "combining mark pixels: the accent is drawn over the e, not beside it" {
     try text.registerFace(.mono, .regular, marks);
     const f: teak.FontSpec = .{ .size_px = 40, .family = .mono, .snap_advance = false };
     var out: [4]teak.ShapedGlyph = undefined;
-    const r = text.SimpleShaper.shape("e\u{301}", f, &out);
+    const r = text.SimpleShaper.shape("x\u{301}", f, &out);
     try std.testing.expectEqual(@as(usize, 2), r.count);
     var rast = try text.StbttRasterizer.init(std.testing.allocator);
     defer rast.deinit();
@@ -256,4 +265,28 @@ test "combining mark pixels: the accent is drawn over the e, not beside it" {
     // Horizontally inside the e's ink span, vertically above its top.
     try std.testing.expect(ax0 >= bx0 - 1 and ax1 <= bx1 + 1);
     try std.testing.expect(acc.bearing_y + @as(i32, @intCast(acc.height)) <= base_top + 2);
+}
+
+const accents = @embedFile("test-font-IBMPlexMonoAccents");
+
+test "NFC composition: a face with é but no U+0301 still shows café (the mark would be dropped)" {
+    defer text.releaseFaces();
+    try text.registerFace(.mono, .regular, accents);
+    const f: teak.FontSpec = .{ .size_px = 20, .family = .mono, .snap_advance = false };
+    var out: [8]teak.ShapedGlyph = undefined;
+    const rf = text.face.resolveFace(.mono, .regular).?;
+    try std.testing.expectEqual(@as(u16, 0), rf.face.glyphIndex(0x301)); // the face has no combining mark
+    const r = text.SimpleShaper.shape("cafe\u{301} \u{0}n\u{303}", f, &out);
+    try std.testing.expectEqual(rf.face.glyphIndex(0xE9), out[3].glyph);
+    try std.testing.expectEqual(rf.face.glyphIndex(0xF1), out[r.count - 1].glyph); // n + U+0303 -> ñ
+    try std.testing.expectApproxEqAbs(text.measure("caf\u{e9}", f).width, text.measure("cafe\u{301}", f).width, 0.001);
+    // A pair with no composite in the face is dropped (the face has nothing to draw), without a missing-glyph box.
+    // A system fallback face that has the mark may draw it instead (host-dependent), so assert only "no tofu".
+    const x1 = text.SimpleShaper.shape("x\u{301}", f, &out);
+    try std.testing.expect(x1.count >= 1 and x1.count <= 2);
+    for (out[0..x1.count]) |g| try std.testing.expect(g.glyph != 0);
+    // Chained: nothing composes e + U+0301 + U+0301; the second mark is dropped (or drawn from a fallback face).
+    const e1 = text.SimpleShaper.shape("e\u{301}\u{301}", f, &out);
+    try std.testing.expect(e1.count >= 1 and e1.count <= 3);
+    for (out[0..e1.count]) |g| try std.testing.expect(g.glyph != 0);
 }

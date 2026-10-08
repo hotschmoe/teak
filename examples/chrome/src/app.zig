@@ -116,6 +116,192 @@ const tab_button: teak.ButtonStyle = .{
     .h_padding = 8,
 };
 
+// ── Looks: retro (above) and modern ────────────────────────────────
+
+/// The modern theme: the stock `Theme.modern_light` (rounded, soft shadows,
+/// indigo accent) in the default sans typography.
+pub const modern_theme: teak.Theme = blk: {
+    var t = teak.Theme.modern_light;
+    t.card.align_cross = .stretch; // label / value rows span the card
+    break :blk t;
+};
+
+/// Everything `view` styles, in one value, so the same layout renders in
+/// either look. `retro` is the engineering-workstation look above, field for
+/// field; `modernLook` is the rounded one built from `modern_theme`'s tokens.
+const Look = struct {
+    modern: bool,
+    font: teak.FontSpec,
+    font_bold: teak.FontSpec,
+    /// Fixed-column text (the parts table is built from monospace columns).
+    mono: teak.FontSpec,
+    mono_bold: teak.FontSpec,
+    /// Text on surfaces, secondary text, accent.
+    ink: [4]f32,
+    paper: [4]f32,
+    muted: [4]f32,
+    accent: [4]f32,
+    // header
+    header_bg: [4]f32,
+    header_fg: [4]f32,
+    header_dim: [4]f32,
+    header_button: teak.ButtonStyle,
+    // columns
+    col_bg: [4]f32,
+    col_border: ?[4]f32,
+    col_pad: f32,
+    col_gap: f32,
+    /// Modern: the left column's content sits in one raised card.
+    panel: ?teak.GroupStyle,
+    center_bg: [4]f32,
+    key: teak.ButtonStyle,
+    tab: teak.ButtonStyle,
+    tab_on: teak.ButtonStyle,
+    tab_bar: bool,
+    // parts table
+    table_box: teak.GroupStyle,
+    table_head_bg: ?[4]f32,
+    table_head_fg: [4]f32,
+    table_sel_bg: ?[4]f32,
+    table_sel_fg: [4]f32,
+    table_rule: [4]f32,
+    field: teak.TextInputStyle,
+    // status line and the drawing sheet
+    status_bg: [4]f32,
+    status_border: ?[4]f32,
+    sheet: teak.GroupStyle,
+    sheet_grid: [4]f32,
+    sheet_line_w: f32,
+    sheet_mark: [4]f32,
+    // popover
+    pop: teak.OverlayStyle(Msg),
+};
+
+const retro: Look = .{
+    .modern = false,
+    .font = plex,
+    .font_bold = plex_bold,
+    .mono = plex,
+    .mono_bold = plex_bold,
+    .ink = ink,
+    .paper = paper,
+    .muted = muted,
+    .accent = red,
+    .header_bg = ink,
+    .header_fg = paper,
+    .header_dim = .{ 0.7, 0.68, 0.6, 1 },
+    .header_button = header_button,
+    .col_bg = paper,
+    .col_border = ink,
+    .col_pad = 12,
+    .col_gap = 10,
+    .panel = null,
+    .center_bg = paper_dark,
+    .key = key_button,
+    .tab = tab_button,
+    .tab_on = tab_button,
+    .tab_bar = true,
+    .table_box = .{ .padding = 1, .gap = 0, .border = ink, .align_cross = .stretch },
+    .table_head_bg = ink,
+    .table_head_fg = paper,
+    .table_sel_bg = ink,
+    .table_sel_fg = paper,
+    .table_rule = paper_dark,
+    .field = theme.field,
+    .status_bg = paper_dark,
+    .status_border = ink,
+    .sheet = .{ .width = 200, .height = 120, .flex = 1, .padding = 0, .gap = 0, .bg = paper },
+    .sheet_grid = .{ 0.10, 0.09, 0.08, 0.10 },
+    .sheet_line_w = 2,
+    .sheet_mark = red,
+    .pop = .{
+        // Overlaps the left column's parts table on purpose: the opaque
+        // backdrop must hide the table text beneath it.
+        .x = 150,
+        .y = 120,
+        .width = 300,
+        .padding = 12,
+        .gap = 6,
+        .backdrop = paper,
+        .border = ink,
+        .border_width = 1,
+        .shadow = ink,
+        .shadow_offset = .{ 4, 4 },
+        .align_cross = .stretch,
+    },
+};
+
+const modern: Look = blk: {
+    const t = modern_theme;
+    const p = t.palette;
+    const soft = [4]f32{ p.accent[0], p.accent[1], p.accent[2], 0.12 };
+    break :blk .{
+        .modern = true,
+        .font = .{ .size_px = 14, .family = .sans },
+        .font_bold = .{ .size_px = 14, .family = .sans, .weight = .bold },
+        .mono = .{ .size_px = 13, .family = .mono },
+        .mono_bold = .{ .size_px = 13, .family = .mono, .weight = .bold },
+        .ink = p.fg,
+        .paper = p.bg_panel,
+        .muted = p.fg_muted,
+        .accent = p.accent,
+        .header_bg = .{ 0.106, 0.122, 0.165, 1 },
+        .header_fg = .{ 1, 1, 1, 1 },
+        .header_dim = .{ 0.62, 0.66, 0.74, 1 },
+        .header_button = .{
+            .bg = .{ 1, 1, 1, 0.08 },
+            .hover_bg = .{ 1, 1, 1, 0.18 },
+            .press_bg = .{ 1, 1, 1, 0.26 },
+            .fg = .{ 1, 1, 1, 1 },
+            .radius = t.tokens.radii(.md),
+            .label_align = .center,
+            .height = 28,
+            .min_width = 0,
+            .h_padding = 14,
+        },
+        .col_bg = p.bg,
+        .col_border = null,
+        .col_pad = 16,
+        .col_gap = 14,
+        .panel = .{ .padding = 16, .gap = 12, .flex = 1, .bg = p.bg_panel, .radius = t.tokens.radii(.lg), .soft_shadow = t.tokens.shadowAt(2), .align_cross = .stretch },
+        .center_bg = .{ 0.914, 0.929, 0.957, 1 },
+        .key = t.button,
+        .tab = .{ .bg = clear, .hover_bg = .{ p.accent[0], p.accent[1], p.accent[2], 0.08 }, .press_bg = soft, .fg = p.fg_muted, .radius = t.tokens.radii(.md), .label_align = .center, .height = 30, .min_width = 0, .h_padding = 14 },
+        .tab_on = .{ .bg = soft, .hover_bg = soft, .press_bg = soft, .fg = p.accent, .radius = t.tokens.radii(.md), .label_align = .center, .height = 30, .min_width = 0, .h_padding = 14 },
+        .tab_bar = false,
+        .table_box = .{ .padding = 4, .gap = 0, .border = p.border, .radius = t.tokens.radii(.md), .bg = p.bg_panel, .align_cross = .stretch },
+        .table_head_bg = null,
+        .table_head_fg = p.fg_muted,
+        .table_sel_bg = soft,
+        .table_sel_fg = p.fg,
+        .table_rule = .{ 0.93, 0.94, 0.96, 1 },
+        .field = t.text_input,
+        .status_bg = p.bg_panel,
+        .status_border = null,
+        .sheet = .{ .flex = 1, .padding = 0, .gap = 0, .bg = .{ 1, 1, 1, 1 }, .radius = t.tokens.radii(.lg), .soft_shadow = t.tokens.shadowAt(2), .align_cross = .stretch },
+        .sheet_grid = .{ 0.31, 0.42, 0.93, 0.08 },
+        .sheet_line_w = 2.5,
+        .sheet_mark = p.accent,
+        .pop = .{
+            .x = 640,
+            .y = 96,
+            .width = 280,
+            .padding = 16,
+            .gap = 8,
+            .backdrop = p.bg_panel,
+            .border = p.border,
+            .border_width = 1,
+            .radius = t.tokens.radii(.lg),
+            .soft_shadow = t.tokens.shadowAt(3),
+            .align_cross = .stretch,
+        },
+    };
+};
+
+fn lookFor(is_modern: bool) *const Look {
+    return if (is_modern) &modern else &retro;
+}
+
 // ── Data ───────────────────────────────────────────────────────────
 
 const Part = struct { name: []const u8, qty: u32, len_mm: f32 };
@@ -145,11 +331,8 @@ const materials = [_][]const u8{
 
 /// Searchable material picker (a `teak.Combobox`: query field + filtered overlay list).
 const Material = teak.Combobox(24);
-/// The list anchors under the input at a fixed window position (the app does not see
-/// layout rects in `view`; real apps pass the previous frame's rect, see the cookbook).
+/// The list anchors itself under the input (`auto_anchor`): no window coordinates.
 const material_opts: teak.ComboboxViewOpts = .{
-    .list_x = 12,
-    .list_y = 390,
     .list_width = 336,
     .max_visible = 6,
     .input_style = theme.field,
@@ -174,6 +357,12 @@ pub const Model = struct {
     name_len: u8 = default_name_text.len,
     name_focused: bool = false,
     help_open: bool = true,
+    /// The modern look (`StyleToggle` in the header) instead of the retro one.
+    modern: bool = false,
+    /// 0 = hidden, 1 = fully shown. Drives the popover's slide-in / slide-out
+    /// (a `teak.anim.Tween` in the Model; advanced by `.frame` Msgs while it
+    /// is active). Starts settled at 1 because the popover starts open.
+    help_slide: teak.anim.Tween(f32) = .still(1),
     material: Material.Model = .{ .selected = 0 },
 };
 
@@ -181,9 +370,14 @@ pub const Msg = union(enum) {
     select_tab: u8,
     select_part: u8,
     focus_name,
+    /// A press on blank space: drop the text focus.
+    blur,
     name_char: u8,
     name_backspace,
     toggle_help,
+    toggle_style,
+    /// Frame time in ms, delivered by `animationMsg` while an animation runs.
+    frame: u32,
     material: Material.Msg,
     noop,
 };
@@ -194,6 +388,10 @@ pub fn update(m: *Model, msg: Msg) void {
         .select_part => |p| m.selected = @intCast(@min(p, parts.len - 1)),
         .focus_name => {
             m.name_focused = true;
+            m.material.open = false;
+        },
+        .blur => {
+            m.name_focused = false;
             m.material.open = false;
         },
         .material => |mm| {
@@ -207,7 +405,13 @@ pub fn update(m: *Model, msg: Msg) void {
         .name_backspace => if (m.name_len > 0) {
             m.name_len -= 1;
         },
-        .toggle_help => m.help_open = !m.help_open,
+        .toggle_help => {
+            m.help_open = !m.help_open;
+            // Opening eases out over 400 ms; closing slides out faster.
+            if (m.help_open) m.help_slide.start(1, 400, .out_cubic) else m.help_slide.start(0, 160, .in_cubic);
+        },
+        .toggle_style => m.modern = !m.modern,
+        .frame => |dt| m.help_slide.advance(dt),
         .noop => {},
     }
 }
@@ -225,61 +429,68 @@ fn materialSelect(i: usize) Msg {
 // ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
-    // Root: the window-sized paper sheet; every direct child fills its width.
-    cb.pushGroup(.{ .padding = 0, .gap = 0, .bg = paper, .align_cross = .stretch });
-    header(cb);
+    const l = lookFor(m.modern);
+    // Root: the window-sized sheet; every direct child fills its width.
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .bg = l.col_bg, .align_cross = .stretch });
+    header(m, cb, l);
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .flex = 1, .align_cross = .stretch });
-    leftColumn(m, cb);
-    centerColumn(cb);
-    rightColumn(cb);
+    leftColumn(m, cb, l);
+    centerColumn(cb, l);
+    rightColumn(cb, l);
     cb.popGroup();
-    statusLine(cb);
+    statusLine(cb, l);
     cb.popGroup();
 
-    if (m.help_open) helpPopover(cb);
+    if (m.help_open or m.help_slide.active()) helpPopover(cb, l, m.help_slide.value());
 }
 
-fn header(cb: anytype) void {
-    cb.pushGroup(.{ .direction = .horizontal, .pad_x = 12, .pad_y = 0, .gap = 14, .height = 40, .bg = ink, .align_cross = .center });
-    cb.textStyled("KERF", plex_bold, paper);
-    cb.textStyled("DWG 0417-B   REV C", plex, .{ 0.7, 0.68, 0.6, 1 });
+fn header(m: *const Model, cb: anytype, l: *const Look) void {
+    cb.pushGroup(.{ .direction = .horizontal, .pad_x = 12, .pad_y = 0, .gap = 14, .height = 40, .bg = l.header_bg, .align_cross = .center });
+    cb.textStyled("KERF", l.font_bold, l.header_fg);
+    cb.textStyled("DWG 0417-B   REV C", l.font, l.header_dim);
     cb.spacer(1);
-    cb.buttonStyled(.noop, "FILE", header_button);
-    cb.buttonStyled(.noop, "EXPORT", header_button);
-    cb.buttonStyled(.toggle_help, "HELP", header_button);
+    cb.buttonStyled(.toggle_style, if (m.modern) "RETRO" else "MODERN", l.header_button);
+    cb.buttonStyled(.noop, "FILE", l.header_button);
+    cb.buttonStyled(.noop, "EXPORT", l.header_button);
+    cb.buttonStyled(.toggle_help, "HELP", l.header_button);
     cb.popGroup();
 }
 
-fn leftColumn(m: *const Model, cb: anytype) void {
-    cb.pushGroup(.{ .width = 360, .padding = 12, .gap = 10, .bg = paper, .border = ink, .align_cross = .stretch });
+fn leftColumn(m: *const Model, cb: anytype, l: *const Look) void {
+    cb.pushGroup(.{ .width = 360, .padding = l.col_pad, .gap = l.col_gap, .bg = l.col_bg, .border = l.col_border, .align_cross = .stretch });
+    if (l.panel) |panel| cb.pushGroup(panel);
 
-    // Bracket tabs with an underline bar under the selected one.
+    // Tabs: bracket tabs with an underline bar (retro) or pill tabs (modern).
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 4 });
     for (tab_names, 0..) |name, i| {
         const on = m.tab == i;
-        const label = if (on) std.fmt.allocPrint(cb.arena.allocator(), "[{s}]", .{name}) catch name else name;
-        cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
-        cb.buttonStyled(.{ .select_tab = @intCast(i) }, label, tab_button);
-        cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 3, .bg = if (on) ink else null });
-        cb.popGroup();
-        cb.popGroup();
+        if (l.tab_bar) {
+            const label = if (on) std.fmt.allocPrint(cb.arena.allocator(), "[{s}]", .{name}) catch name else name;
+            cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+            cb.buttonStyled(.{ .select_tab = @intCast(i) }, label, l.tab);
+            cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 3, .bg = if (on) l.ink else null });
+            cb.popGroup();
+            cb.popGroup();
+        } else {
+            cb.buttonStyled(.{ .select_tab = @intCast(i) }, name, if (on) l.tab_on else l.tab);
+        }
     }
     cb.popGroup();
 
-    // Parts table: header band, rule, rows; the selected row is inverted.
-    // Padding 1 keeps the rows inside the 1px border (the border takes no layout space).
-    cb.pushGroup(.{ .padding = 1, .gap = 0, .border = ink, .align_cross = .stretch });
-    parts_table.header(cb, .{ .font = plex_bold, .color = paper, .bg = ink });
+    // Parts table: header band, rule, rows; the selected row is highlighted.
+    // Retro padding 1 keeps the rows inside the 1px border (the border takes no layout space).
+    cb.pushGroup(l.table_box);
+    parts_table.header(cb, .{ .font = l.mono_bold, .color = l.table_head_fg, .bg = l.table_head_bg });
     for (parts, 0..) |p, i| {
         const a = cb.arena.allocator();
         const qty = std.fmt.allocPrint(a, "{d}", .{p.qty}) catch "?";
         const len = std.fmt.allocPrint(a, "{d:.2}", .{p.len_mm}) catch "?";
         const picked = m.selected == i;
         parts_table.row(cb, &.{ p.name, qty, len }, .{
-            .font = plex,
-            .color = if (picked) paper else ink,
-            .bg = if (picked) ink else null,
-            .rule = paper_dark,
+            .font = l.mono,
+            .color = if (picked) l.table_sel_fg else l.ink,
+            .bg = if (picked) l.table_sel_bg else null,
+            .rule = l.table_rule,
         });
     }
     cb.popGroup();
@@ -287,23 +498,33 @@ fn leftColumn(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .justify = .space_between });
     const prev: u8 = if (m.selected == 0) parts.len - 1 else m.selected - 1;
     const next: u8 = if (m.selected + 1 >= parts.len) 0 else m.selected + 1;
-    cb.buttonStyled(.{ .select_part = prev }, "< PREV", key_button);
-    cb.buttonStyled(.{ .select_part = next }, "NEXT >", key_button);
+    cb.buttonStyled(.{ .select_part = prev }, "< PREV", l.key);
+    cb.buttonStyled(.{ .select_part = next }, "NEXT >", l.key);
     cb.popGroup();
 
-    // Typed-form fields: underline variant (focusable) and boxed (read-only).
+    // Typed-form fields: underline variant (focusable) and the material combobox.
     cb.textMuted("NAME");
-    cb.textInputStyled(.focus_name, m.name[0..m.name_len], m.name_len, theme.field);
+    cb.textInputStyled(.focus_name, m.name[0..m.name_len], m.name_len, l.field);
     cb.textMuted("MATERIAL");
-    Material.viewWith(&m.material, cb, &materials, material_msgs, material_opts);
+    Material.viewWith(&m.material, cb, &materials, material_msgs, optsFor(m));
 
     cb.spacer(1);
     cb.textMuted("6 PARTS  /  91 PIECES");
+    if (l.panel != null) cb.popGroup();
     cb.popGroup();
 }
 
-fn centerColumn(cb: anytype) void {
-    cb.pushGroup(.{ .padding = 12, .gap = 8, .flex = 1, .bg = paper_dark, .align_cross = .stretch });
+fn optsFor(m: *const Model) teak.ComboboxViewOpts {
+    var o = material_opts;
+    if (m.modern) {
+        o.list_width = 296; // the modern panel's card inset
+        o.input_style = modern.field;
+    }
+    return o;
+}
+
+fn centerColumn(cb: anytype, l: *const Look) void {
+    cb.pushGroup(.{ .padding = if (l.modern) 16 else 12, .gap = 8, .flex = 1, .bg = l.center_bg, .align_cross = .stretch });
 
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 6 });
     for ([_][]const u8{ "SELECT", "LINE", "ARC", "DIMENSION" }) |label| cb.button(.noop, label);
@@ -316,24 +537,31 @@ fn centerColumn(cb: anytype) void {
     var prims: std.ArrayList(teak.CanvasPrimitive) = .empty;
     var g: f32 = 0;
     while (g < 1600) : (g += 40) {
-        prims.append(a, .{ .hline = .{ .y = g, .color = .{ 0.10, 0.09, 0.08, 0.10 } } }) catch unreachable;
-        prims.append(a, .{ .vline = .{ .x = g, .color = .{ 0.10, 0.09, 0.08, 0.10 } } }) catch unreachable;
+        prims.append(a, .{ .hline = .{ .y = g, .color = l.sheet_grid } }) catch unreachable;
+        prims.append(a, .{ .vline = .{ .x = g, .color = l.sheet_grid } }) catch unreachable;
     }
     const outline = a.dupe(teak.CanvasPoint, &.{
         .{ .x = 140, .y = 120 }, .{ .x = 460, .y = 120 }, .{ .x = 460, .y = 200 },
         .{ .x = 380, .y = 200 }, .{ .x = 380, .y = 340 }, .{ .x = 140, .y = 340 },
         .{ .x = 140, .y = 120 },
     }) catch unreachable;
-    prims.append(a, .{ .polyline = .{ .points = outline, .color = ink, .thickness = 2 } }) catch unreachable;
-    prims.append(a, .{ .marker = .{ .x = 140, .y = 120, .size = 8, .color = red } }) catch unreachable;
-    prims.append(a, .{ .marker = .{ .x = 380, .y = 340, .size = 8, .color = red } }) catch unreachable;
-    cb.canvasLabeled(.{ .width = 200, .height = 120, .flex = 1, .bg = paper }, prims.items, "drawing sheet");
+    prims.append(a, .{ .polyline = .{ .points = outline, .color = l.ink, .thickness = l.sheet_line_w } }) catch unreachable;
+    prims.append(a, .{ .marker = .{ .x = 140, .y = 120, .size = 8, .color = l.sheet_mark } }) catch unreachable;
+    prims.append(a, .{ .marker = .{ .x = 380, .y = 340, .size = 8, .color = l.sheet_mark } }) catch unreachable;
+    if (l.modern) {
+        // Rounded sheet card with the drawing inside it (the canvas itself is a plain rect).
+        cb.pushGroup(l.sheet);
+        cb.canvasLabeled(.{ .width = 200, .height = 120, .flex = 1, .bg = null }, prims.items, "drawing sheet");
+        cb.popGroup();
+    } else {
+        cb.canvasLabeled(.{ .width = 200, .height = 120, .flex = 1, .bg = paper }, prims.items, "drawing sheet");
+    }
 
     cb.popGroup();
 }
 
-fn rightColumn(cb: anytype) void {
-    cb.pushGroup(.{ .width = 320, .padding = 12, .gap = 12, .bg = paper, .border = ink, .align_cross = .stretch });
+fn rightColumn(cb: anytype, l: *const Look) void {
+    cb.pushGroup(.{ .width = 320, .padding = l.col_pad, .gap = if (l.modern) 16 else 12, .bg = l.col_bg, .border = l.col_border, .align_cross = .stretch });
 
     cb.pushGroup(cb.theme.card);
     cb.heading("PROPERTIES");
@@ -342,7 +570,11 @@ fn rightColumn(cb: anytype) void {
     property(cb, "WIDTH", "120.00 MM");
     property(cb, "MASS", "0.412 KG");
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .justify = .space_between });
-    cb.button(.noop, "APPLY");
+    if (l.modern) {
+        cb.buttonStyled(.noop, "APPLY", cb.theme.button_primary);
+    } else {
+        cb.button(.noop, "APPLY");
+    }
     cb.button(.noop, "RESET");
     cb.popGroup();
     cb.popGroup();
@@ -350,9 +582,17 @@ fn rightColumn(cb: anytype) void {
     cb.pushGroup(cb.theme.card);
     cb.heading("NOTES");
     cb.divider();
-    cb.textMuted("1. BREAK ALL SHARP EDGES.");
-    cb.textMuted("2. DIMENSIONS IN MM.");
-    cb.textMuted("3. FINISH: ANODIZE CLEAR.");
+    // Wrapped paragraphs: they take the card's width, re-wrap when the window
+    // or the card changes, and grow the card's height with their line count.
+    cb.paragraphStyled("1. BREAK ALL SHARP EDGES AND DEBURR HOLES; NO BURRS ABOVE 0.1 MM ON MATING FACES.", plex, muted, .{});
+    cb.paragraphStyled("2. DIMENSIONS IN MM, TOLERANCES PER ISO 2768-M UNLESS NOTED.", plex, muted, .{});
+    cb.paragraphStyled("3. FINISH: ANODIZE CLEAR, 10-15 MICRON; MASK THE BORE BEFORE COATING.", plex, muted, .{ .max_lines = 2 });
+    // A shrinking row: the tag keeps its width, the paragraph beside it gives
+    // way (and re-wraps) as the column narrows.
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .align_cross = .start });
+    cb.buttonStyled(.noop, "REV C", l.key);
+    cb.paragraphStyled("SUPERSEDES REV B; RE-INSPECT ALL FIRST-ARTICLE PARTS.", plex, ink, .{});
+    cb.popGroup();
     cb.popGroup();
 
     cb.popGroup();
@@ -365,33 +605,26 @@ fn property(cb: anytype, label: []const u8, value: []const u8) void {
     cb.popGroup();
 }
 
-fn statusLine(cb: anytype) void {
-    cb.pushGroup(.{ .direction = .horizontal, .pad_x = 12, .pad_y = 0, .gap = 16, .height = 24, .bg = paper_dark, .border = ink, .align_cross = .center });
-    cb.textStyled("READY", plex_bold, ink);
+fn statusLine(cb: anytype, l: *const Look) void {
+    cb.pushGroup(.{ .direction = .horizontal, .pad_x = 12, .pad_y = 0, .gap = 16, .height = 24, .bg = l.status_bg, .border = l.status_border, .align_cross = .center });
+    cb.textStyled("READY", l.font_bold, l.ink);
     cb.textMuted("X 120.50   Y 044.00   UNITS MM");
     cb.spacer(1);
     cb.textMuted("SNAP ON   GRID 10");
     cb.popGroup();
 }
 
-/// Floating key-help panel: opaque paper backdrop + ink border + a hard
-/// 4px offset shadow, non-modal so the sheet underneath stays live.
-fn helpPopover(cb: anytype) void {
-    cb.pushOverlay(.{
-        // Overlaps the left column's parts table on purpose: the opaque
-        // backdrop must hide the table text beneath it.
-        .x = 150,
-        .y = 120,
-        .width = 300,
-        .padding = 12,
-        .gap = 6,
-        .backdrop = paper,
-        .border = ink,
-        .border_width = 1,
-        .shadow = ink,
-        .shadow_offset = .{ 4, 4 },
-        .align_cross = .stretch,
-    });
+/// Floating key-help panel: opaque backdrop + border + a hard 4px offset
+/// shadow (retro) or a rounded panel with a soft shadow (modern), non-modal
+/// so the sheet underneath stays live. `slide` (0..1) drops it into place
+/// while the border and hard shadow fade in from the backdrop.
+fn helpPopover(cb: anytype, l: *const Look, slide: f32) void {
+    const t = std.math.clamp(slide, 0, 1);
+    var ov = l.pop;
+    ov.y -= (1 - t) * 70;
+    if (ov.border) |c| ov.border = teak.anim.lerp([4]f32, ov.backdrop, c, t);
+    if (ov.shadow) |c| ov.shadow = teak.anim.lerp([4]f32, ov.backdrop, c, t);
+    cb.pushOverlay(ov);
     cb.heading("QUICK KEYS");
     cb.divider();
     cb.text("L   LINE");
@@ -399,22 +632,39 @@ fn helpPopover(cb: anytype) void {
     cb.text("D   DIMENSION");
     cb.text("ESC CANCEL");
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .justify = .end });
-    cb.buttonStyled(.toggle_help, "CLOSE", key_button);
+    cb.buttonStyled(.toggle_help, "CLOSE", l.key);
     cb.popGroup();
     cb.popOverlay();
 }
 
 // ── Host integration ───────────────────────────────────────────────
 
+/// Ask for frame callbacks only while the popover is animating; once it
+/// settles the run loop goes idle again.
+pub fn subscribe(m: *const Model) []const teak.Sub(Msg) {
+    return if (m.help_slide.active()) &.{.animation_frame} else &.{};
+}
+
+/// The run loop's frame time, as a Msg (never read from a clock in `view`).
+pub fn animationMsg(_: *const Model, dt_ms: u32) ?Msg {
+    return .{ .frame = dt_ms };
+}
+
+/// Clicking empty space clears the focus (no blinking caret left behind).
+pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (ev.kind == .down and ev.isBlank() and (m.name_focused or m.material.open)) return .blur;
+    return null;
+}
+
 pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
     if (m.material.open) return .{ .material = Material.charMsg(c) };
-    if (!m.name_focused) return null;
+    if (!m.name_focused) return if (c == 'm' or c == 'M') Msg.toggle_style else null; // M: retro / modern look
     return .{ .name_char = c };
 }
 
 pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     if (m.material.open) {
-        const mm = Material.keyMsg(&m.material, key, &materials, material_opts) orelse return null;
+        const mm = Material.keyMsg(&m.material, key, &materials, optsFor(m)) orelse return null;
         return .{ .material = mm };
     }
     if (!m.name_focused) return null;
@@ -427,7 +677,7 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
 /// Wheel over the open material list scrolls it.
 pub fn wheelMsg(m: *const Model, wheel_dy: f32) ?Msg {
     if (!m.material.open or wheel_dy == 0) return null;
-    return .{ .material = Material.scrollByMsg(&m.material, wheel_dy, &materials, material_opts) };
+    return .{ .material = Material.scrollByMsg(&m.material, wheel_dy, &materials, optsFor(m)) };
 }
 
 /// Lets `teak.run` draw the focus rule + caret on the focused field.
@@ -437,8 +687,8 @@ pub fn focusedMsg(m: *const Model) ?Msg {
 }
 
 /// `teak.run` calls this each frame; the whole look lives in `theme`.
-pub fn themeFor(_: *const Model) teak.Theme {
-    return theme;
+pub fn themeFor(m: *const Model) teak.Theme {
+    return if (m.modern) modern_theme else theme;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -506,6 +756,23 @@ test "update: tab, selection wrap, and name editing" {
     try std.testing.expectEqualStrings("BASE-PLATE", m.name[0..m.name_len]);
 }
 
+test "help popover: slide tween runs on frame Msgs and settles" {
+    var m: Model = .{};
+    try std.testing.expect(!m.help_slide.active());
+    update(&m, .toggle_help); // close
+    try std.testing.expect(!m.help_open and m.help_slide.active());
+    try std.testing.expectEqual(@as(usize, 1), subscribe(&m).len);
+    update(&m, .{ .frame = 70 });
+    try std.testing.expect(m.help_slide.value() < 1 and m.help_slide.value() > 0);
+    update(&m, .{ .frame = 100 });
+    try std.testing.expect(!m.help_slide.active());
+    try std.testing.expectEqual(@as(f32, 0), m.help_slide.value());
+    try std.testing.expectEqual(@as(usize, 0), subscribe(&m).len); // idle again
+    update(&m, .toggle_help); // reopen
+    update(&m, .{ .frame = 1000 });
+    try std.testing.expectEqual(@as(f32, 1), m.help_slide.value());
+}
+
 test "material combobox: type to filter, arrows + enter select, escape closes" {
     var m: Model = .{ .help_open = false };
     update(&m, .{ .material = .focus });
@@ -534,4 +801,13 @@ test "open material list view is balanced and within the rect budget" {
     _ = frame(&m, &cb, &rects, 1440, 900);
     try std.testing.expect(teak.validateBalance(cb.cmds.items) == null);
     try std.testing.expect(cb.cmds.items.len < 512);
+}
+
+test "pointerMsg: a blank-space press clears the name focus and closes the list" {
+    var m: Model = .{ .name_focused = true };
+    const ev: teak.PointerEvent(Msg) = .{ .kind = .down, .button = .left, .x = 600, .y = 500 };
+    try std.testing.expect(ev.isBlank());
+    update(&m, pointerMsg(&m, ev).?);
+    try std.testing.expect(!m.name_focused);
+    try std.testing.expect(pointerMsg(&m, ev) == null); // nothing left to clear
 }

@@ -172,6 +172,20 @@ const XSelectionClearEvent = extern struct {
     time: c_ulong,
 };
 
+const XExposeEvent = extern struct {
+    kind: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: ?*Display,
+    window: Window,
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+    /// Number of Expose events still to come in this batch; act on 0.
+    count: c_int,
+};
+
 const XPropertyEvent = extern struct {
     kind: c_int,
     serial: c_ulong,
@@ -193,6 +207,7 @@ pub const XEvent = extern union {
     xbutton: XButtonEvent,
     xmotion: XMotionEvent,
     xconfigure: XConfigureEvent,
+    xexpose: XExposeEvent,
     xclient: XClientMessageEvent,
     xselectionrequest: XSelectionRequestEvent,
     xselection: XSelectionEvent,
@@ -203,11 +218,13 @@ pub const XEvent = extern union {
 
 // X protocol event type codes.
 const KeyPress: c_int = 2;
+const KeyRelease: c_int = 3;
 const ButtonPress: c_int = 4;
 const ButtonRelease: c_int = 5;
 const MotionNotify: c_int = 6;
 const FocusIn: c_int = 9;
 const FocusOut: c_int = 10;
+const Expose: c_int = 12;
 const ConfigureNotify: c_int = 22;
 const PropertyNotify: c_int = 28;
 const SelectionClear: c_int = 29;
@@ -233,6 +250,7 @@ const Mod4Mask: c_uint = 1 << 6; // Super
 
 // XSelectInput event masks.
 const KeyPressMask: c_long = 1 << 0;
+const KeyReleaseMask: c_long = 1 << 1;
 const ButtonPressMask: c_long = 1 << 2;
 const ButtonReleaseMask: c_long = 1 << 3;
 const PointerMotionMask: c_long = 1 << 6;
@@ -249,6 +267,9 @@ const XK_Return: KeySym = 0xff0d;
 const XK_KP_Enter: KeySym = 0xff8d;
 const XK_Escape: KeySym = 0xff1b;
 const XK_F12: KeySym = 0xffc9;
+const XK_F10: KeySym = 0xffc7;
+const XK_Alt_L: KeySym = 0xffe9;
+const XK_Alt_R: KeySym = 0xffea;
 const XK_Delete: KeySym = 0xffff;
 const XK_Home: KeySym = 0xff50;
 const XK_Left: KeySym = 0xff51;
@@ -278,6 +299,8 @@ pub const Xlib = struct {
     XMapWindow: *const fn (*Display, Window) callconv(.c) c_int,
     XNextEvent: *const fn (*Display, *XEvent) callconv(.c) c_int,
     XPending: *const fn (*Display) callconv(.c) c_int,
+    /// The connection's file descriptor (for `waitEvents`).
+    XConnectionNumber: *const fn (*Display) callconv(.c) c_int,
     XLookupString: *const fn (*XKeyEvent, [*]u8, c_int, *KeySym, ?*anyopaque) callconv(.c) c_int,
     XInternAtom: *const fn (*Display, [*:0]const u8, c_int) callconv(.c) Atom,
     XSetWMProtocols: *const fn (*Display, Window, *Atom, c_int) callconv(.c) c_int,
@@ -298,6 +321,9 @@ pub const Xlib = struct {
     XFree: *const fn (?*anyopaque) callconv(.c) c_int,
     XExtendedMaxRequestSize: *const fn (*Display) callconv(.c) c_long,
     XMaxRequestSize: *const fn (*Display) callconv(.c) c_long,
+    // Cursors.
+    XCreateFontCursor: *const fn (*Display, c_uint) callconv(.c) c_ulong,
+    XDefineCursor: *const fn (*Display, Window, c_ulong) callconv(.c) c_int,
     // Input methods.
     XSupportsLocale: *const fn () callconv(.c) c_int,
     XSetLocaleModifiers: *const fn ([*:0]const u8) callconv(.c) ?[*:0]const u8,
@@ -575,6 +601,11 @@ pub const Host = struct {
     xim: ?*anyopaque,
     xic: ?*anyopaque,
     ime: *ImeCtx,
+    /// Optional libXcursor (themed cursors with CSS-style names); null when
+    /// absent, in which case classic font cursors are used.
+    xcursor: ?*XcursorLib,
+    /// Created cursors per `CursorShape` (0 = not created yet).
+    cursors: [std.enums.values(teak.CursorShape).len]c_ulong,
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         var lib = std.DynLib.open("libX11.so.6") catch return error.X11LoadFailed;
@@ -584,9 +615,15 @@ pub const Host = struct {
         const display = x.XOpenDisplay(null) orelse return error.X11OpenDisplayFailed;
         errdefer _ = x.XCloseDisplay(display);
 
+        // Display scale: TEAK_SCALE, else GDK_SCALE, else Xft.dpi / 96 (see
+        // `pickScale`). Needed before the window exists: `width`/`height`
+        // are logical, the X window is `scale` times larger.
+        const xrm: ?[]const u8 = if (x.XResourceManagerString(display)) |rm| std.mem.span(rm) else null;
+        const scale = pickScale(envSlice("TEAK_SCALE"), envSlice("GDK_SCALE"), xrm);
+
         const screen = x.XDefaultScreen(display);
         const root = x.XRootWindow(display, screen);
-        const window = x.XCreateSimpleWindow(display, root, 0, 0, width, height, 0, 0, 0);
+        const window = x.XCreateSimpleWindow(display, root, 0, 0, physicalOf(width, scale), physicalOf(height, scale), 0, 0, 0);
 
         setWindowTitle(&x, display, window, title);
         const atoms = Atoms.intern(&x, display);
@@ -606,7 +643,7 @@ pub const Host = struct {
         errdefer gpa.destroy(ime);
         ime.* = .{};
         const im = initIme(&x, display, window, ime);
-        var select_mask: c_long = KeyPressMask | ButtonPressMask | ButtonReleaseMask |
+        var select_mask: c_long = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask |
             PointerMotionMask | StructureNotifyMask | ExposureMask | FocusChangeMask | PropertyChangeMask;
         if (im.ic) |ic| {
             // The IM may need events beyond the ones we asked for.
@@ -623,12 +660,6 @@ pub const Host = struct {
 
         _ = x.XMapWindow(display, window);
         _ = x.XFlush(display);
-
-        // Desktop scale from Xft.dpi (xrdb). Absent / unparsable → 1.0.
-        const scale = if (x.XResourceManagerString(display)) |rm|
-            scaleFromXrm(std.mem.span(rm))
-        else
-            1.0;
 
         const effects = try native_effects.Service.create(title);
 
@@ -655,6 +686,8 @@ pub const Host = struct {
             .xim = im.xim,
             .xic = im.ic,
             .ime = ime,
+            .xcursor = loadXcursor(),
+            .cursors = @splat(0),
         };
     }
 
@@ -670,6 +703,11 @@ pub const Host = struct {
         self.effects.destroy();
         _ = self.x.XDestroyWindow(self.display, self.window);
         _ = self.x.XCloseDisplay(self.display);
+        // libXcursor hooks display close: unload it only after the display.
+        if (self.xcursor) |xc| {
+            xc.lib.close();
+            gpa.destroy(xc);
+        }
         self.lib.close();
     }
 
@@ -688,11 +726,11 @@ pub const Host = struct {
             switch (ev.kind) {
                 MotionNotify => {
                     q.mods = modsFromState(ev.xmotion.state);
-                    q.pointerMoved(@floatFromInt(ev.xmotion.x), @floatFromInt(ev.xmotion.y));
+                    q.pointerMoved(self.logical(ev.xmotion.x), self.logical(ev.xmotion.y));
                 },
                 ButtonPress => {
                     q.mods = modsFromState(ev.xbutton.state);
-                    q.pointerMoved(@floatFromInt(ev.xbutton.x), @floatFromInt(ev.xbutton.y));
+                    q.pointerMoved(self.logical(ev.xbutton.x), self.logical(ev.xbutton.y));
                     switch (ev.xbutton.button) {
                         1 => q.buttonDown(.left),
                         2 => q.buttonDown(.middle),
@@ -708,7 +746,7 @@ pub const Host = struct {
                 },
                 ButtonRelease => {
                     q.mods = modsFromState(ev.xbutton.state);
-                    q.pointerMoved(@floatFromInt(ev.xbutton.x), @floatFromInt(ev.xbutton.y));
+                    q.pointerMoved(self.logical(ev.xbutton.x), self.logical(ev.xbutton.y));
                     switch (ev.xbutton.button) {
                         1 => q.buttonUp(.left),
                         2 => q.buttonUp(.middle),
@@ -717,18 +755,24 @@ pub const Host = struct {
                     }
                 },
                 KeyPress => self.handleKey(&ev.xkey),
+                KeyRelease => self.handleKeyRelease(&ev.xkey),
                 ConfigureNotify => {
                     const w = ev.xconfigure.width;
                     const h = ev.xconfigure.height;
                     if (w > 0 and h > 0) {
-                        const uw: u32 = @intCast(w);
-                        const uh: u32 = @intCast(h);
+                        const uw = logicalOf(@intCast(w), self.scale);
+                        const uh = logicalOf(@intCast(h), self.scale);
                         if (uw != self.width or uh != self.height) {
                             self.width = uw;
                             self.height = uh;
                             self.resized_pending = true;
                         }
                     }
+                },
+                // Uncovered / first-mapped area: the idle loop skips frames, so an
+                // expose must force the next one (the last frame is redrawn).
+                Expose => if (ev.xexpose.count == 0) {
+                    self.resized_pending = true;
                 },
                 ClientMessage => self.handleClientMessage(&ev.xclient),
                 SelectionNotify => self.onSelectionNotify(&ev.xselection),
@@ -773,6 +817,8 @@ pub const Host = struct {
         }
         const chars = buf[0..if (n > 0) @intCast(n) else 0];
 
+        // 0. Alt on its own: the press arms an `alt_tap`, the release fires it.
+        if (keysym == XK_Alt_L or keysym == XK_Alt_R) return q.altDown();
         // 1. Navigation / editing keys (Shift variants resolved by the queue).
         if (navFromKeysym(keysym)) |nk| return q.pushNav(nk);
         // 2. Ctrl chords (their control-char text is not typed).
@@ -801,6 +847,14 @@ pub const Host = struct {
         for (chars) |b| {
             if (b >= 0x20 and b < 0x7f) q.pushCodepoint(b);
         }
+    }
+
+    /// Only Alt releases matter (`alt_tap`); other releases are ignored.
+    fn handleKeyRelease(self: *Host, ev: *XKeyEvent) void {
+        var buf: [16]u8 = undefined;
+        var keysym: KeySym = 0;
+        _ = self.x.XLookupString(ev, &buf, buf.len, &keysym, null);
+        if (keysym == XK_Alt_L or keysym == XK_Alt_R) self.queue.altUp();
     }
 
     // ── Selections: clipboard + XDND ────────────────────────────────
@@ -1214,6 +1268,11 @@ pub const Host = struct {
         if (list) |l| _ = self.x.XFree(l);
     }
 
+    /// A device-pixel pointer coordinate in logical units.
+    fn logical(self: *const Host, v: c_int) f32 {
+        return @as(f32, @floatFromInt(v)) / self.scale;
+    }
+
     pub fn shouldClose(self: *const Host) bool {
         return !self.running;
     }
@@ -1240,6 +1299,24 @@ pub const Host = struct {
 
     pub fn nativeHandle(self: *const Host) NativeHandle {
         return .{ .display = @ptrCast(self.display), .window = @intCast(self.window) };
+    }
+
+    /// Show `shape` over the window. Cursors are created once and cached;
+    /// libXcursor's themed names are tried first, then the classic cursor
+    /// font, so a bare X server still gets a sensible glyph.
+    pub fn setCursor(self: *Host, shape: teak.CursorShape) void {
+        const idx = @backingInt(shape);
+        if (self.cursors[idx] == 0) {
+            var cur: c_ulong = 0;
+            if (self.xcursor) |xc| {
+                const name = xcursorName(shape);
+                cur = xc.load(self.display, name.ptr);
+            }
+            if (cur == 0) cur = self.x.XCreateFontCursor(self.display, fontCursorId(shape));
+            self.cursors[idx] = cur;
+        }
+        _ = self.x.XDefineCursor(self.display, self.window, self.cursors[idx]);
+        _ = self.x.XFlush(self.display);
     }
 
     pub fn setTitle(self: *Host, title: []const u8) void {
@@ -1366,6 +1443,20 @@ pub const Host = struct {
         return .{ .pending = {} };
     }
 
+    /// Event-driven idle: block until the X connection has something to read
+    /// (input, expose/resize, clipboard traffic, IME) or `timeout_ms` passes.
+    /// Returns immediately when events are already buffered in Xlib.
+    pub fn waitEvents(self: *Host, timeout_ms: u32) void {
+        if (self.x.XPending(self.display) > 0) return;
+        _ = self.x.XFlush(self.display);
+        var fds = [_]std.posix.pollfd{.{
+            .fd = self.x.XConnectionNumber(self.display),
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        _ = std.posix.poll(&fds, @intCast(@min(timeout_ms, std.math.maxInt(i32)))) catch {};
+    }
+
     pub fn nowMs(_: *const Host) u64 {
         // Monotonic milliseconds (clocks live behind `std.Io`).
         const now = std.Io.Clock.awake.now(std.Options.debug_io);
@@ -1454,6 +1545,81 @@ fn initIme(x: *const Xlib, display: *Display, window: Window, ctx: *ImeCtx) ImeH
     return .{ .xim = xim, .ic = ic };
 }
 
+const XcursorLib = struct {
+    lib: std.DynLib,
+    load: *const fn (*Display, [*:0]const u8) callconv(.c) c_ulong,
+};
+
+/// libXcursor is optional and dlopened like libX11; any failure just means
+/// font cursors.
+fn loadXcursor() ?*XcursorLib {
+    var lib = std.DynLib.open("libXcursor.so.1") catch return null;
+    const f = lib.lookup(*const fn (*Display, [*:0]const u8) callconv(.c) c_ulong, "XcursorLibraryLoadCursor") orelse {
+        lib.close();
+        return null;
+    };
+    const xc = gpa.create(XcursorLib) catch {
+        lib.close();
+        return null;
+    };
+    xc.* = .{ .lib = lib, .load = f };
+    return xc;
+}
+
+/// Cursor-theme name (freedesktop / CSS spelling) for a shape.
+fn xcursorName(shape: teak.CursorShape) [:0]const u8 {
+    return shape.cssName();
+}
+
+/// Classic `cursorfont.h` glyph for a shape (the no-theme fallback).
+fn fontCursorId(shape: teak.CursorShape) c_uint {
+    return switch (shape) {
+        .arrow => 68, // XC_left_ptr
+        .pointer => 60, // XC_hand2
+        .ibeam => 152, // XC_xterm
+        .crosshair => 34, // XC_crosshair
+        .move, .grabbing => 52, // XC_fleur
+        .resize_ew => 108, // XC_sb_h_double_arrow
+        .resize_ns => 116, // XC_sb_v_double_arrow
+        .resize_nwse => 14, // XC_bottom_right_corner
+        .resize_nesw => 12, // XC_bottom_left_corner
+        .not_allowed => 0, // XC_X_cursor
+        .grab => 58, // XC_hand1
+    };
+}
+
+/// Logical extent -> device pixels (never 0).
+fn physicalOf(logical_px: u32, scale: f32) u32 {
+    return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(logical_px)) * scale))));
+}
+
+/// Device pixels -> logical extent (never 0).
+fn logicalOf(device_px: u32, scale: f32) u32 {
+    return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(device_px)) / scale))));
+}
+
+fn envSlice(name: [*:0]const u8) ?[]const u8 {
+    const v = std.c.getenv(name) orelse return null;
+    return std.mem.span(v);
+}
+
+/// Parse a scale override ("2", "1.5"); null when absent, malformed or
+/// outside [0.5, 8].
+fn parseScaleEnv(v: ?[]const u8) ?f32 {
+    const t = std.mem.trim(u8, v orelse return null, " \t");
+    const f = std.fmt.parseFloat(f32, t) catch return null;
+    if (!(f >= 0.5 and f <= 8)) return null;
+    return f;
+}
+
+/// The display scale: `TEAK_SCALE` wins, then `GDK_SCALE` (an integer toolkit
+/// convention), then `Xft.dpi / 96` from the X resource string, else 1.0.
+fn pickScale(teak_scale: ?[]const u8, gdk_scale: ?[]const u8, xrm: ?[]const u8) f32 {
+    if (parseScaleEnv(teak_scale)) |s| return s;
+    if (parseScaleEnv(gdk_scale)) |s| return s;
+    return scaleFromXrm(xrm orelse "");
+}
+
 /// Parse the `Xft.dpi` value out of an X resource-manager string — the
 /// newline-separated `key:\tvalue` dump from `XResourceManagerString`.
 /// Returns the DPI (e.g. 192) or null when the key is absent/malformed.
@@ -1517,6 +1683,7 @@ fn navFromKeysym(keysym: KeySym) ?NavKey {
         XK_Tab, XK_ISO_Left_Tab => .tab,
         XK_Escape => .escape,
         XK_F12 => .f12,
+        XK_F10 => .f10,
         else => null,
     };
 }
@@ -1553,8 +1720,8 @@ test "X11 key tables reach every SpecialKey through the shared policy" {
     var seen = std.EnumSet(SpecialKey).empty;
     const keysyms = [_]KeySym{
         XK_BackSpace, XK_Delete,   XK_Left, XK_Right,        XK_Up,     XK_Down, XK_Home, XK_End, XK_Prior, XK_Next,
-        XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, 'a',     'c',     'x',    'v',      'y',
-        'z',          XK_F12,
+        XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, XK_F10,  'a',     'c',    'x',      'v',
+        'y',          'z',         XK_F12,
     };
     const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = true } };
     for (mod_sets) |mods| {
@@ -1563,7 +1730,10 @@ test "X11 key tables reach every SpecialKey through the shared policy" {
             if (teak.resolveKey(nk, mods)) |sk| seen.insert(sk);
         }
     }
-    for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
+    for (std.enums.values(SpecialKey)) |sk| {
+        if (sk == .alt_tap) continue; // synthesized by InputQueue.altUp, not a keysym
+        try std.testing.expect(seen.contains(sk));
+    }
 }
 
 test "navFromKeysym: letters are text, not keys" {
@@ -1681,4 +1851,29 @@ test "atomsFromBytes decodes a format-32 property" {
     var out: [4]Atom = undefined;
     try std.testing.expectEqual(@as(usize, 3), atomsFromBytes(&raw, &out));
     try std.testing.expectEqual(@as(Atom, 102), out[2]);
+}
+
+test "pickScale: TEAK_SCALE beats GDK_SCALE beats Xft.dpi; junk falls through" {
+    const xrm = "Xft.dpi:\t144\n";
+    try std.testing.expectEqual(@as(f32, 2), pickScale("2", "3", xrm));
+    try std.testing.expectEqual(@as(f32, 3), pickScale(null, "3", xrm));
+    try std.testing.expectEqual(@as(f32, 1.5), pickScale(null, null, xrm));
+    try std.testing.expectEqual(@as(f32, 1.5), pickScale("banana", "0", xrm));
+    try std.testing.expectEqual(@as(f32, 1), pickScale(null, null, null));
+    try std.testing.expectEqual(@as(f32, 1), pickScale("99", null, null)); // out of range ignored
+}
+
+test "logical <-> device pixel conversion round-trips and never hits 0" {
+    try std.testing.expectEqual(@as(u32, 800), physicalOf(400, 2));
+    try std.testing.expectEqual(@as(u32, 400), logicalOf(800, 2));
+    try std.testing.expectEqual(@as(u32, 600), physicalOf(400, 1.5));
+    try std.testing.expectEqual(@as(u32, 400), logicalOf(600, 1.5));
+    try std.testing.expectEqual(@as(u32, 1), logicalOf(0, 2));
+}
+
+test "every cursor shape maps to a font cursor and a theme name" {
+    for (std.enums.values(teak.CursorShape)) |sh| {
+        try std.testing.expect(xcursorName(sh).len > 0);
+        try std.testing.expect(fontCursorId(sh) % 2 == 0); // cursorfont glyph ids are even
+    }
 }

@@ -12,6 +12,12 @@ It replaces the "per-string texture" text path described in
 Zig 0.16, `-O2`/`ReleaseFast`/`ReleaseSmall` as stated, DejaVuSansMono).
 Scratch sources are not committed; each number says how to re-measure it.
 
+> **Status (fallback):** `src/text/fallback.zig` implements the native fallback chain (risk 2); wrapped `rich_text` reuses `text_wrap` through `RichMeasure` (a measurer over spans). Colour emoji and bidi remain out of scope.
+>
+> **Status (PR11a/b):** `text_area`, `TextEvent`/`textMsg`, `Editor.applyPointer` and `TextArea(cap)` are implemented (docs/features/text-area.md); IME preedit comes from `TransientState`, not a Cmd field, and visual motion keys are resolved by the runtime into `move` events.
+>
+> **Status (PR8/PR9):** wrap + shrink in layout and per-line render are implemented; `cb.wrap_nodes` was not needed (pass 1 detects wrapped nodes itself) and the text field is `text_align` (`align` is a Zig keyword). See layout.md.
+
 ## 0. Summary of decisions
 
 | # | Question | Decision |
@@ -206,6 +212,12 @@ stepping on native and zunk exposes `VertexStepMode.instance`, so no new capabil
   texture per colour).
 
 ### 3.6 SDF / MSDF decision
+
+**Shipped (PR15): `FontSpec.scalable`.** Scalable text uses glyph key `mode = 1` at a fixed 32 px source size; the SDF bitmaps live in the *same*
+R8 pages as coverage glyphs (the instance's `flags` pick the shader branch, so no second page kind was needed). The quad is drawn at
+`size_px * scale / 32` times the stored size (scale in `flags` bits 16-31, 1/256 units) at an unsnapped position, sampled bilinearly and cut with
+`smoothstep(0.502 +- 0.7 * fwidth(d))`. The stb cubic solver needs cbrt/cos/acos; the wasm build carries small polynomial/Newton versions
+(`src/text/stb_wasm_impl.c`) instead of libm. The original analysis follows.
 
 **Recommendation: coverage atlas now; SDF page kind later and only for zoomable canvas text.**
 

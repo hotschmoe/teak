@@ -6,8 +6,9 @@
 //! asks for multi-window.
 
 const std = @import("std");
-const teak = @import("teak");
 const text = @import("teak-text");
+const native_effects = @import("native_effects.zig");
+const teak = @import("teak");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -71,8 +72,15 @@ const CS_HREDRAW: UINT = 0x0002;
 const CS_VREDRAW: UINT = 0x0001;
 const WM_DESTROY: UINT = 0x0002;
 const WM_SIZE: UINT = 0x0005;
+const WM_PAINT: UINT = 0x000F;
+/// `MsgWaitForMultipleObjectsEx`: wake on any queued input / message, and
+/// also when one was already queued before the call.
+const QS_ALLINPUT: DWORD = 0x04FF;
+const MWMO_INPUTAVAILABLE: DWORD = 0x0004;
 const WM_CHAR: UINT = 0x0102;
 const WM_KEYDOWN: UINT = 0x0100;
+const WM_SYSKEYDOWN: UINT = 0x0104;
+const WM_SYSKEYUP: UINT = 0x0105;
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
@@ -87,12 +95,37 @@ const WHEEL_DELTA: f32 = 120;
 /// DOM convention browsers use when `deltaMode == 0` (pixel deltas).
 const WHEEL_PIXELS_PER_NOTCH: f32 = 48;
 const IDC_ARROW: LPCWSTR = @ptrFromInt(32512);
+const WM_SETCURSOR: UINT = 0x0020;
+const HTCLIENT: usize = 1;
+extern "user32" fn SetCursor(?HANDLE) callconv(WINAPI) ?HANDLE;
+
+/// Standard `IDC_*` resource id for a cursor shape. Win32 has no grab
+/// cursor: `grab` is the hand, `grabbing` the four-way move arrow.
+fn idcFor(shape: teak.CursorShape) usize {
+    return switch (shape) {
+        .arrow => 32512,
+        .ibeam => 32513,
+        .crosshair => 32515,
+        .resize_nwse => 32642,
+        .resize_nesw => 32643,
+        .resize_ew => 32644,
+        .resize_ns => 32645,
+        .move, .grabbing => 32646,
+        .not_allowed => 32648,
+        .pointer, .grab => 32649,
+    };
+}
+
+/// The cursor `WM_SETCURSOR` applies over the client area (null: arrow).
+var g_cursor: ?HANDLE = null;
 
 const VK_BACK: WPARAM = 0x08;
 const VK_TAB: WPARAM = 0x09;
 const VK_RETURN: WPARAM = 0x0D;
 const VK_ESCAPE: WPARAM = 0x1B;
 const VK_F12: WPARAM = 0x7B;
+const VK_F10: WPARAM = 0x79;
+const VK_ALT: WPARAM = 0x12; // VK_MENU
 const VK_PRIOR: WPARAM = 0x21; // page up
 const VK_NEXT: WPARAM = 0x22; // page down
 const VK_END: WPARAM = 0x23;
@@ -106,14 +139,13 @@ const VK_DELETE: WPARAM = 0x2E;
 extern "user32" fn RegisterClassExW(*const WNDCLASSEXW) callconv(WINAPI) u16;
 extern "user32" fn CreateWindowExW(DWORD, LPCWSTR, LPCWSTR, DWORD, c_int, c_int, c_int, c_int, ?HANDLE, ?HANDLE, ?HANDLE, ?*anyopaque) callconv(WINAPI) ?HANDLE;
 extern "user32" fn ShowWindow(HANDLE, c_int) callconv(WINAPI) BOOL;
+extern "user32" fn MsgWaitForMultipleObjectsEx(DWORD, ?*const HANDLE, DWORD, DWORD, DWORD) callconv(WINAPI) DWORD;
 extern "user32" fn PeekMessageW(*MSG, ?HANDLE, UINT, UINT, UINT) callconv(WINAPI) BOOL;
 extern "user32" fn TranslateMessage(*const MSG) callconv(WINAPI) BOOL;
 extern "user32" fn DispatchMessageW(*const MSG) callconv(WINAPI) LRESULT;
 extern "user32" fn DefWindowProcW(HANDLE, UINT, WPARAM, LPARAM) callconv(WINAPI) LRESULT;
 extern "user32" fn PostQuitMessage(c_int) callconv(WINAPI) void;
 extern "user32" fn LoadCursorW(?HANDLE, LPCWSTR) callconv(WINAPI) ?HANDLE;
-extern "user32" fn GetDC(?HANDLE) callconv(WINAPI) ?HDC;
-extern "user32" fn ReleaseDC(?HANDLE, HDC) callconv(WINAPI) c_int;
 extern "user32" fn GetKeyState(c_int) callconv(WINAPI) i16;
 extern "user32" fn SetCapture(HANDLE) callconv(WINAPI) ?HANDLE;
 extern "user32" fn ReleaseCapture() callconv(WINAPI) BOOL;
@@ -178,6 +210,58 @@ const OFN_EXPLORER: DWORD = 0x00080000;
 
 extern "comdlg32" fn GetOpenFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
 extern "comdlg32" fn GetSaveFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
+
+// Per-monitor DPI awareness (v2): Windows stops bitmap-stretching the window
+// and reports physical pixels; the Host converts to logical units itself.
+extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(WINAPI) BOOL;
+extern "user32" fn GetDpiForSystem() callconv(WINAPI) UINT;
+extern "user32" fn SetWindowPos(HANDLE, ?HANDLE, c_int, c_int, c_int, c_int, UINT) callconv(WINAPI) BOOL;
+const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
+const WM_DPICHANGED: UINT = 0x02E0;
+const SWP_NOZORDER: UINT = 0x0004;
+const SWP_NOACTIVATE: UINT = 0x0010;
+
+/// Physical pixels per logical unit of the (primary) window, from its DPI.
+/// 1.0 until `Host.init` reads the real value and after `WM_DPICHANGED`.
+var g_scale: f32 = 1.0;
+
+/// Physical client pixels -> the logical units the app sees (at least 1).
+fn toLogical(physical: u32) u32 {
+    const v: f32 = @round(@as(f32, @floatFromInt(physical)) / g_scale);
+    return @max(1, @as(u32, @intFromFloat(v)));
+}
+
+fn dpiScale(dpi: u32) f32 {
+    return if (dpi == 0) 1.0 else @as(f32, @floatFromInt(dpi)) / USER_DEFAULT_SCREEN_DPI;
+}
+
+// Drag-and-drop of files from Explorer (WM_DROPFILES).
+const WM_DROPFILES: UINT = 0x0233;
+extern "shell32" fn DragAcceptFiles(HANDLE, BOOL) callconv(WINAPI) void;
+extern "shell32" fn DragQueryFileW(HANDLE, UINT, ?[*]u16, UINT) callconv(WINAPI) UINT;
+extern "shell32" fn DragFinish(HANDLE) callconv(WINAPI) void;
+
+/// Paths dropped on the window since the last `pollEffectResults` (UTF-8,
+/// written by `wndProc`, drained by the Host). A drop past the table is
+/// ignored.
+const MAX_PENDING_DROPS = 8;
+var g_drops: [MAX_PENDING_DROPS][1024]u8 = undefined;
+var g_drop_lens: [MAX_PENDING_DROPS]usize = @splat(0);
+var g_drop_count: usize = 0;
+
+fn queueDroppedFiles(hdrop: HANDLE) void {
+    defer DragFinish(hdrop);
+    const n = DragQueryFileW(hdrop, 0xFFFFFFFF, null, 0);
+    var i: UINT = 0;
+    while (i < n and g_drop_count < MAX_PENDING_DROPS) : (i += 1) {
+        var wide: [520]u16 = undefined;
+        const len = DragQueryFileW(hdrop, i, &wide, wide.len);
+        if (len == 0 or len >= wide.len) continue;
+        const written = std.unicode.utf16LeToUtf8(&g_drops[g_drop_count], wide[0..len]) catch continue;
+        g_drop_lens[g_drop_count] = written;
+        g_drop_count += 1;
+    }
+}
 
 /// Async file-dialog slot table — see Host.file_dialog_slots. Four
 /// concurrent requests is plenty for any reasonable app; oversaturating
@@ -884,7 +968,7 @@ fn controlTypeForRole(role: A11yRole) c_long {
         .text => UIA_TextControlTypeId,
         .rich_text => UIA_TextControlTypeId,
         .button => UIA_ButtonControlTypeId,
-        .text_input => UIA_EditControlTypeId,
+        .text_input, .text_area => UIA_EditControlTypeId,
         .checkbox => UIA_CheckBoxControlTypeId,
         .radio => UIA_RadioButtonControlTypeId,
         .slider => UIA_SliderControlTypeId,
@@ -900,7 +984,7 @@ fn controlTypeForRole(role: A11yRole) c_long {
 
 fn isFocusableRole(role: A11yRole) bool {
     return switch (role) {
-        .button, .text_input, .checkbox, .radio, .slider => true,
+        .button, .text_input, .text_area, .checkbox, .radio, .slider => true,
         else => false,
     };
 }
@@ -1098,95 +1182,6 @@ fn initNodeProviderPool() void {
 var g_last_tree_len: usize = 0;
 var g_last_focus_index: ?u32 = null;
 
-// ── GDI types + externs (text measurement) ────────────────────────
-
-const HDC = *anyopaque;
-const HFONT = *anyopaque;
-
-const SIZE = extern struct {
-    cx: c_long,
-    cy: c_long,
-};
-
-const TEXTMETRICW = extern struct {
-    tmHeight: c_long,
-    tmAscent: c_long,
-    tmDescent: c_long,
-    tmInternalLeading: c_long,
-    tmExternalLeading: c_long,
-    tmAveCharWidth: c_long,
-    tmMaxCharWidth: c_long,
-    tmWeight: c_long,
-    tmOverhang: c_long,
-    tmDigitizedAspectX: c_long,
-    tmDigitizedAspectY: c_long,
-    tmFirstChar: u16,
-    tmLastChar: u16,
-    tmDefaultChar: u16,
-    tmBreakChar: u16,
-    tmItalic: u8,
-    tmUnderlined: u8,
-    tmStruckOut: u8,
-    tmPitchAndFamily: u8,
-    tmCharSet: u8,
-};
-
-const FW_NORMAL: c_int = 400;
-const FW_MEDIUM: c_int = 500;
-const FW_BOLD: c_int = 700;
-const DEFAULT_CHARSET: DWORD = 1;
-const OUT_TT_PRECIS: DWORD = 4;
-const CLIP_DEFAULT_PRECIS: DWORD = 0;
-const CLEARTYPE_QUALITY: DWORD = 5;
-const DEFAULT_PITCH: DWORD = 0;
-
-extern "gdi32" fn CreateCompatibleDC(?HDC) callconv(WINAPI) ?HDC;
-extern "gdi32" fn DeleteDC(HDC) callconv(WINAPI) BOOL;
-extern "gdi32" fn CreateFontW(
-    nHeight: c_int,
-    nWidth: c_int,
-    nEscapement: c_int,
-    nOrientation: c_int,
-    fnWeight: c_int,
-    fdwItalic: DWORD,
-    fdwUnderline: DWORD,
-    fdwStrikeOut: DWORD,
-    fdwCharSet: DWORD,
-    fdwOutputPrecision: DWORD,
-    fdwClipPrecision: DWORD,
-    fdwQuality: DWORD,
-    fdwPitchAndFamily: DWORD,
-    lpszFace: LPCWSTR,
-) callconv(WINAPI) ?HFONT;
-extern "gdi32" fn SelectObject(HDC, HANDLE) callconv(WINAPI) ?HANDLE;
-extern "gdi32" fn DeleteObject(HANDLE) callconv(WINAPI) BOOL;
-extern "gdi32" fn GetTextExtentPoint32W(HDC, LPCWSTR, c_int, *SIZE) callconv(WINAPI) BOOL;
-extern "gdi32" fn GetTextMetricsW(HDC, *TEXTMETRICW) callconv(WINAPI) BOOL;
-
-// Face names for each FontFamily. Windows ships Segoe UI / Cambria /
-// Cascadia Mono on every supported version; no fallback chain.
-const FACE_SANS = std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI");
-const FACE_SERIF = std.unicode.utf8ToUtf16LeStringLiteral("Cambria");
-const FACE_MONO = std.unicode.utf8ToUtf16LeStringLiteral("Cascadia Mono");
-
-fn fontFaceUtf16(family: FontFamily) LPCWSTR {
-    return switch (family) {
-        .sans => FACE_SANS,
-        .serif => FACE_SERIF,
-        .mono => FACE_MONO,
-    };
-}
-
-const FontCacheEntry = struct {
-    family: FontFamily,
-    weight: teak.FontWeight,
-    size_px: u16,
-    hfont: HFONT,
-    ascent: f32,
-    descent: f32,
-    line_height: f32,
-};
-
 // ── Module-scoped state (written by wndProc, drained by pollInputs) ──
 
 var g_running: bool = true;
@@ -1254,12 +1249,16 @@ fn secondaryWndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WI
             sw.closed = true;
             return 0;
         },
+        WM_DROPFILES => {
+            queueDroppedFiles(@ptrFromInt(wp));
+            return 0;
+        },
         WM_SIZE => {
             const w: u32 = loword(lp);
             const h: u32 = hiword(lp);
             if (w > 0 and h > 0) {
-                sw.width = w;
-                sw.height = h;
+                sw.width = toLogical(w);
+                sw.height = toLogical(h);
                 sw.resized = true;
             }
             return 0;
@@ -1311,6 +1310,7 @@ fn navFromVk(vk: WPARAM) ?NavKey {
         VK_TAB => .tab,
         VK_ESCAPE => .escape,
         VK_F12 => .f12,
+        VK_F10 => .f10,
         VK_A => .a,
         VK_C => .c,
         VK_X => .x,
@@ -1329,7 +1329,7 @@ fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: L
     switch (msg) {
         WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP => {
             q.mods = currentMods();
-            q.pointerMoved(@floatFromInt(lowordSigned(lp)), @floatFromInt(hiwordSigned(lp)));
+            q.pointerMoved(@as(f32, @floatFromInt(lowordSigned(lp))) / g_scale, @as(f32, @floatFromInt(hiwordSigned(lp))) / g_scale);
             switch (msg) {
                 WM_LBUTTONDOWN => q.buttonDown(.left),
                 WM_RBUTTONDOWN => q.buttonDown(.right),
@@ -1359,6 +1359,24 @@ fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: L
             q.mods = currentMods();
             if (navFromVk(wp)) |nk| q.pushNav(nk);
         },
+        // Alt-modified keys and F10 arrive as "system" keys. Alt alone and F10
+        // are ours (menu-bar activation) and are swallowed so Windows does not
+        // open its own system menu; Alt+other still reaches DefWindowProc
+        // (Alt+F4, Alt+Space), after clearing the pending Alt tap.
+        WM_SYSKEYDOWN => {
+            q.mods = currentMods();
+            if (wp == VK_ALT) {
+                if ((lp & (1 << 30)) == 0) q.altDown(); // ignore auto-repeat
+            } else if (wp == VK_F10) {
+                q.pushNav(.f10);
+            } else {
+                q.alt_clean = false;
+                return false;
+            }
+        },
+        WM_SYSKEYUP => {
+            if (wp == VK_ALT) q.altUp() else if (wp != VK_F10) return false;
+        },
         else => return false,
     }
     return true;
@@ -1384,6 +1402,16 @@ fn utf16OffsetToUtf8(utf8: []const u8, utf16_off: usize) usize {
 
 fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
     switch (msg) {
+        WM_SETCURSOR => {
+            // Only the client area is ours; borders keep the system cursor.
+            if ((@as(usize, @bitCast(lp)) & 0xFFFF) == HTCLIENT) {
+                if (g_cursor) |c| {
+                    _ = SetCursor(c);
+                    return 1;
+                }
+            }
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        },
         WM_DESTROY => {
             g_running = false;
             PostQuitMessage(0);
@@ -1393,11 +1421,27 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             const w: u32 = loword(lp);
             const h: u32 = hiword(lp);
             if (w > 0 and h > 0) {
-                g_width = w;
-                g_height = h;
+                g_width = toLogical(w);
+                g_height = toLogical(h);
                 g_resized = true;
             }
             return 0;
+        },
+        WM_DPICHANGED => {
+            // New DPI in the low word of wParam; lParam is the window rect
+            // Windows suggests so the window keeps its logical size on the
+            // new monitor. Accepting it triggers WM_SIZE -> re-layout.
+            g_scale = dpiScale(loword(@bitCast(wp)));
+            const r: *const RECT = @ptrFromInt(@as(usize, @bitCast(lp)));
+            _ = SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            g_resized = true;
+            return 0;
+        },
+        // An uncovered / invalidated area: the idle loop skips frames, so
+        // force the next one. DefWindowProc validates the region.
+        WM_PAINT => {
+            g_resized = true;
+            return DefWindowProcW(hwnd, msg, wp, lp);
         },
         WM_IME_STARTCOMPOSITION => {
             g_ime_active = true;
@@ -1497,13 +1541,9 @@ pub const NativeHandle = struct {
 pub const Host = struct {
     hinstance: HANDLE,
     hwnd: HANDLE,
-    /// Memory DC reused for every measurement. `GetTextExtentPoint32W`
-    /// needs a DC, but we never draw to this one — rasterization lives
-    /// in the GPU layer (`src/gpu/native.zig`) with its own DC.
-    measure_dc: HDC,
-    font_cache: [8]FontCacheEntry,
-    font_cache_len: usize,
-
+    /// Declarative-effects service (HTTP workers, storage, clock, ...);
+    /// the picker / clipboard / drop effects are handled by this Host.
+    effects: *native_effects.Service,
     /// Persistent UTF-8 buffer for the most recent clipboard read.
     /// Valid until the next `clipboard().read()` call (which overwrites
     /// it). 64K is plenty for any reasonable text payload; longer pastes
@@ -1527,6 +1567,13 @@ pub const Host = struct {
     file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = @splat(.{}),
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
+        // Declare per-monitor v2 awareness before any window exists (a
+        // failure — Windows older than 10 1703, or awareness already set by
+        // a manifest — leaves the previous mode, which is fine). The
+        // `width`/`height` asked for are logical; the window is created at
+        // the system DPI's physical size and WM_SIZE converts back.
+        _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        g_scale = dpiScale(GetDpiForSystem());
         g_running = true;
         g_width = width;
         g_height = height;
@@ -1577,30 +1624,28 @@ pub const Host = struct {
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            @intCast(width),
-            @intCast(height),
+            @intFromFloat(@round(@as(f32, @floatFromInt(width)) * g_scale)),
+            @intFromFloat(@round(@as(f32, @floatFromInt(height)) * g_scale)),
             null,
             null,
             hinstance,
             null,
         ) orelse return error.CreateWindowFailed;
         _ = ShowWindow(hwnd, SW_SHOW);
+        DragAcceptFiles(hwnd, 1);
+        g_scale = dpiScale(GetDpiForWindow(hwnd));
+        const effects = try native_effects.Service.create(title);
+        errdefer effects.destroy();
 
         // Capture the HWND so UIA's get_HostRawElementProvider can hand
         // it to UiaHostProviderFromHwnd for any property we don't
         // ourselves answer.
         g_hwnd_for_uia = hwnd;
 
-        const screen_dc = GetDC(null) orelse return error.GetDcFailed;
-        defer _ = ReleaseDC(null, screen_dc);
-        const measure_dc = CreateCompatibleDC(screen_dc) orelse return error.CreateDcFailed;
-
         return .{
             .hinstance = hinstance,
             .hwnd = hwnd,
-            .measure_dc = measure_dc,
-            .font_cache = undefined,
-            .font_cache_len = 0,
+            .effects = effects,
             .clipboard_buf = undefined,
             .clipboard_len = 0,
             .dialog_path_buf = undefined,
@@ -1625,10 +1670,8 @@ pub const Host = struct {
             g_a11y_lock_initialized = false;
         }
 
-        for (self.font_cache[0..self.font_cache_len]) |entry| {
-            _ = DeleteObject(entry.hfont);
-        }
-        _ = DeleteDC(self.measure_dc);
+        self.effects.destroy();
+        text.releaseFaces();
         // Win32 cleans up the window on process exit; explicit teardown
         // would require tracking class registration state.
     }
@@ -1662,6 +1705,13 @@ pub const Host = struct {
     /// conversion: UTF-8 → stack UTF-16 (256 code units) → SetWindowTextW.
     /// A title is cosmetic, so an over-long or invalid string is dropped
     /// rather than erroring.
+    /// Show `shape` over the client area (`WM_SETCURSOR` re-applies it whenever
+    /// Windows asks, so it survives pointer moves).
+    pub fn setCursor(_: *Host, shape: teak.CursorShape) void {
+        g_cursor = LoadCursorW(null, @ptrFromInt(idcFor(shape)));
+        _ = SetCursor(g_cursor);
+    }
+
     pub fn setTitle(self: *Host, title: []const u8) void {
         var title_buf: [256]u16 = undefined;
         const title_len = std.unicode.utf8ToUtf16Le(&title_buf, title) catch return;
@@ -1670,10 +1720,50 @@ pub const Host = struct {
         _ = SetWindowTextW(self.hwnd, @ptrCast(&title_buf));
     }
 
-    /// The shared stb_truetype measurer (`teak-text`): the same shaper the
-    /// Gpu rasterizes with, so layout and glyphs agree. Faces come from
-    /// `registerFont`, else the system font probe (`TEAK_FONT`, then
-    /// `C:\Windows\Fonts`). The GDI helpers below are retained as a fallback.
+    // ── Declarative effects (docs/features/effects.md) ─────────────
+
+    /// Start one effect. The file pickers, the clipboard and downloads are
+    /// native Win32 UI and run here (blocking the frame while a dialog is
+    /// up, like `openFileDialog`); everything else (HTTP on worker threads,
+    /// storage under `%APPDATA%\teak\<app>`, clock, command-line query
+    /// parameters) is the shared `native_effects.Service`. `TEAK_OPEN` /
+    /// `TEAK_OUT` skip the dialogs so scripted runs stay hands-free.
+    pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
+        switch (e) {
+            .open_file => |o| {
+                if (native_effects.envSet("TEAK_OPEN")) return self.effects.submit(e);
+                self.effects.openPath(o.id, runFileDialog(self, .{}, false, ""));
+            },
+            .download => |d| {
+                if (native_effects.envSet("TEAK_OUT")) return self.effects.submit(e);
+                if (runFileDialog(self, .{}, true, std.fs.path.basename(d.name))) |path| {
+                    self.effects.downloadTo(d.id, path, d.bytes);
+                } else self.effects.downloadCancelled(d.id);
+            },
+            .write_clipboard => |w| clipWrite(@ptrCast(self), w.text),
+            else => return self.effects.submit(e),
+        }
+        return .accepted;
+    }
+
+    /// Finished effect results plus files dropped on the window since the
+    /// last poll. Slices stay valid until the next call.
+    pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize {
+        var i: usize = 0;
+        while (i < g_drop_count) : (i += 1) self.effects.dropFile(g_drops[i][0..g_drop_lens[i]]);
+        g_drop_count = 0;
+        return self.effects.poll(buf, self.nowMs());
+    }
+
+    /// Name the app's storage directory (`%APPDATA%\teak\<name>\`);
+    /// defaults to the window title.
+    pub fn setAppName(self: *Host, name: []const u8) void {
+        self.effects.setAppName(name) catch {};
+    }
+
+    /// The shared stb_truetype measurer (`teak-text`): the same faces and
+    /// scale math the Gpu rasterizes from, so layout and render agree and
+    /// `FontSpec.letter_spacing` is honoured identically on every native OS.
     pub fn textMeasurer(self: *Host) TextMeasurer {
         return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
     }
@@ -1682,87 +1772,13 @@ pub const Host = struct {
         return text.measure(text_bytes, font);
     }
 
-    /// Register a TTF for (`family`, `weight`); the bytes are borrowed (pass an
-    /// `@embedFile` slice). Without one the family uses a system font.
+    /// Register the TTF `ttf` (typically `@embedFile`, borrowed — keep it
+    /// alive) as the face for (`family`, `weight`), shared by the measurer
+    /// and the Gpu's rasterizer. Register before the first frame. A family
+    /// without a registered face uses the system monospace font
+    /// (`%WINDIR%\Fonts\consola.ttf`, or `TEAK_FONT`).
     pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
         try text.registerFace(family, weight, ttf);
-    }
-
-    fn gdiMeasure(ctx: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        const self: *Host = @ptrCast(@alignCast(ctx));
-        const entry = getOrCreateFont(self, font) orelse return fallbackMetrics();
-
-        // UTF-8 → UTF-16 on the stack. 1024 code units covers any label
-        // we'll ever measure; longer inputs clamp to len 0.
-        var utf16_buf: [1024]u16 = undefined;
-        const len = std.unicode.utf8ToUtf16Le(&utf16_buf, text_bytes) catch 0;
-
-        _ = SelectObject(self.measure_dc, entry.hfont);
-
-        var size: SIZE = undefined;
-        const ok = GetTextExtentPoint32W(
-            self.measure_dc,
-            @ptrCast(&utf16_buf),
-            @intCast(len),
-            &size,
-        );
-        const width: f32 = if (ok != 0) @floatFromInt(size.cx) else 0;
-
-        return .{
-            .width = width,
-            .height = entry.line_height,
-            .ascent = entry.ascent,
-            .descent = entry.descent,
-        };
-    }
-
-    fn getOrCreateFont(self: *Host, font: FontSpec) ?*const FontCacheEntry {
-        const size_px: u16 = @intFromFloat(font.size_px);
-        for (self.font_cache[0..self.font_cache_len]) |*e| {
-            if (e.family == font.family and e.weight == font.weight and e.size_px == size_px) return e;
-        }
-        if (self.font_cache_len >= self.font_cache.len) return null;
-
-        // Negative lfHeight selects font by character (cell-less) height
-        // in logical units — closest to "pixel size" for a 100% DPI DC.
-        const hfont = CreateFontW(
-            -@as(c_int, @intCast(size_px)),
-            0,
-            0,
-            0,
-            gdiWeight(font.weight),
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_TT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            DEFAULT_PITCH,
-            fontFaceUtf16(font.family),
-        ) orelse return null;
-
-        _ = SelectObject(self.measure_dc, hfont);
-        var tm: TEXTMETRICW = undefined;
-        _ = GetTextMetricsW(self.measure_dc, &tm);
-
-        self.font_cache[self.font_cache_len] = .{
-            .family = font.family,
-            .weight = font.weight,
-            .size_px = size_px,
-            .hfont = hfont,
-            .ascent = @floatFromInt(tm.tmAscent),
-            .descent = @floatFromInt(tm.tmDescent),
-            .line_height = @floatFromInt(tm.tmHeight),
-        };
-        self.font_cache_len += 1;
-        return &self.font_cache[self.font_cache_len - 1];
-    }
-
-    /// Returned when font creation or conversion fails. Mirrors the
-    /// WS1 stub numbers so a broken font path doesn't explode layouts.
-    fn fallbackMetrics() TextMetrics {
-        return .{ .width = 0, .height = 20, .ascent = 15, .descent = 5 };
     }
 
     pub fn clipboard(self: *Host) Clipboard {
@@ -1847,11 +1863,11 @@ pub const Host = struct {
     /// slice into the Host's dialog buffer (valid until the next
     /// dialog call) or null on cancel.
     pub fn openFileDialog(self: *Host, filter: FileDialogFilter) FileDialogResult {
-        return runFileDialog(self, filter, false);
+        return runFileDialog(self, filter, false, "");
     }
 
     pub fn saveFileDialog(self: *Host, filter: FileDialogFilter) FileDialogResult {
-        return runFileDialog(self, filter, true);
+        return runFileDialog(self, filter, true, "");
     }
 
     /// Async file dialog request. Win32 has a synchronous file picker
@@ -2006,6 +2022,12 @@ pub const Host = struct {
     /// Monotonic milliseconds since some arbitrary epoch. Uses Zig's
     /// the `std.Io` awake clock, which is fine for sub-driven cadence
     /// — subs compare deltas, not absolute values.
+    /// Event-driven idle: block until a message is queued for this thread
+    /// (input, paint, resize, IME) or `timeout_ms` passes.
+    pub fn waitEvents(_: *Host, timeout_ms: u32) void {
+        _ = MsgWaitForMultipleObjectsEx(0, null, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+
     pub fn nowMs(_: *const Host) u64 {
         // Monotonic milliseconds (clocks live behind `std.Io`).
         const now = std.Io.Clock.awake.now(std.Options.debug_io);
@@ -2013,18 +2035,10 @@ pub const Host = struct {
     }
 
     /// Physical device pixels per logical unit at the window's current
-    /// DPI. **Important:** this returns 1.0 today because the process is
-    /// DPI-*unaware* (no `SetProcessDpiAwarenessContext` / manifest) — in
-    /// that mode Windows virtualizes the window's coordinate space and
-    /// bitmap-stretches the framebuffer to the physical resolution, so
-    /// `WM_SIZE` / mouse coords are already in the same 1.0 space the
-    /// renderer draws into (self-consistent, but blurry at scale != 1).
-    /// `GetDpiForWindow` only reports the true monitor factor once
-    /// Per-Monitor(-v2) awareness is declared; that, plus consuming the
-    /// factor to scale fonts + layout, is the render-at-scale follow-up
-    /// documented in docs/features/host.md. Reporting the real ratio here
-    /// keeps this decl honest the moment awareness lands.
+    /// DPI. The process declares per-monitor v2 awareness in `init`, so
+    /// this is the true monitor factor (1.0 at 96 DPI, 2.0 at 192).
     pub fn scaleFactor(self: *const Host) f32 {
+        // (per-monitor v2 is declared in `init`, so this is the real factor)
         const dpi = GetDpiForWindow(self.hwnd);
         if (dpi == 0) return 1.0; // pre-1607 or invalid HWND
         return @as(f32, @floatFromInt(dpi)) / USER_DEFAULT_SCREEN_DPI;
@@ -2044,7 +2058,7 @@ pub const Host = struct {
         }
         if (slot_idx == MAX_FILE_DIALOG_SLOTS) return 0;
 
-        const result = runFileDialog(self, filter, save);
+        const result = runFileDialog(self, filter, save, "");
         const slot = &self.file_dialog_slots[slot_idx];
         slot.active = true;
         if (result) |_| {
@@ -2057,8 +2071,15 @@ pub const Host = struct {
         return @intCast(slot_idx + 1);
     }
 
-    fn runFileDialog(self: *Host, filter: FileDialogFilter, save: bool) FileDialogResult {
+    /// Show the (modal, blocking) picker. `initial_name` prefills the file
+    /// name of a save dialog.
+    fn runFileDialog(self: *Host, filter: FileDialogFilter, save: bool, initial_name: []const u8) FileDialogResult {
         var file_buf: [260]u16 = @splat(0);
+        if (save and initial_name.len > 0) {
+            // Truncate to leave the terminating NUL; an unconvertible name
+            // just opens the dialog empty.
+            _ = std.unicode.utf8ToUtf16Le(file_buf[0 .. file_buf.len - 1], initial_name) catch {};
+        }
 
         // OFN filter format: "Name\0pattern\0Name2\0pattern2\0\0" — a
         // double-null-terminated alternating list. Build it on the stack.
@@ -2235,10 +2256,19 @@ test "uia per-node providers: publishA11yTree copies labels into the heap" {
     try std.testing.expectEqual(@as(u32, 1), focused_node.index);
 }
 
-fn gdiWeight(w: teak.FontWeight) c_int {
-    return switch (w) {
-        .regular => FW_NORMAL,
-        .medium => FW_MEDIUM,
-        .bold => FW_BOLD,
-    };
+test "DPI helpers: dpiScale and toLogical convert physical client pixels" {
+    const saved = g_scale;
+    defer g_scale = saved;
+    try std.testing.expectEqual(@as(f32, 1.0), dpiScale(0));
+    try std.testing.expectEqual(@as(f32, 1.5), dpiScale(144));
+    g_scale = dpiScale(192);
+    try std.testing.expectEqual(@as(u32, 640), toLogical(1280));
+    try std.testing.expectEqual(@as(u32, 1), toLogical(0));
+    g_scale = dpiScale(144);
+    try std.testing.expectEqual(@as(u32, 800), toLogical(1200));
+}
+
+test "dropped paths queue is bounded and starts empty" {
+    try std.testing.expectEqual(@as(usize, 0), g_drop_count);
+    try std.testing.expect(MAX_PENDING_DROPS > 0);
 }
