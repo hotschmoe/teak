@@ -28,6 +28,7 @@ comptime {
 test {
     _ = @import("face.zig");
     _ = @import("shaper.zig");
+    _ = @import("compose_table.zig");
     _ = @import("measure.zig");
     _ = @import("raster.zig");
     if (has_harfbuzz) _ = @import("hb_shaper_test.zig");

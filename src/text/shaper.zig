@@ -15,6 +15,7 @@
 const std = @import("std");
 const teak = @import("teak");
 const face_mod = @import("face.zig");
+const compose_table = @import("compose_table.zig");
 
 const Font = face_mod.Font;
 const ShapedGlyph = teak.ShapedGlyph;
@@ -46,6 +47,8 @@ const Unit = struct {
     wide: bool = false,
     /// A combining mark: zero advance, centred over the preceding base glyph.
     mark: bool = false,
+    /// The code point of a plain (non-ligature) unit, else 0: what composition combines.
+    cp: u21 = 0,
 };
 
 /// Glyph for `cp`: the primary face, else another registered weight of the same
@@ -95,7 +98,7 @@ fn nextUnit(primary: *const Font, primary_id: u16, text: []const u8, i: usize, f
     const d = decode(text, i);
     const m = mapGlyph(primary, primary_id, font.family, d.cp);
     const adv: ?u16 = if (d.cp < 128 and m.face == primary) primary.ascii_adv[d.cp] else null;
-    return .{ .glyph = m.glyph, .face_id = m.face_id, .face = m.face, .len = d.len, .adv = adv, .wide = m.glyph == 0 and isWide(d.cp), .mark = isCombining(d.cp) };
+    return .{ .glyph = m.glyph, .face_id = m.face_id, .face = m.face, .len = d.len, .adv = adv, .wide = m.glyph == 0 and isWide(d.cp), .mark = isCombining(d.cp), .cp = d.cp };
 }
 
 /// Full-width code points (CJK ideographs, kana, hangul, full-width forms).
@@ -155,10 +158,26 @@ pub fn shapeSimple(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeRe
     var pending_face: ?*const Font = null;
     var pending_glyph: u16 = 0;
     var pending_scale: f32 = 0;
+    var pending_cp: u21 = 0; // the base's code point (0 = a ligature / unknown)
 
     while (pos < text.len) {
         const u = nextUnit(primary, primary_id, text, pos, font, ligatures);
         if (u.mark) {
+            // Prefer the precomposed letter (NFC) when the face has it: e + U+0301 -> U+00E9. Works
+            // even when the face lacks the combining mark itself, and needs no mark placement.
+            if (have_pending and pending_cp != 0) {
+                if (compose_table.compose(pending_cp, u.cp)) |composed| {
+                    const g = pending_face.?.glyphIndex(composed);
+                    if (g != 0) {
+                        out[pending_idx].glyph = g;
+                        pending_glyph = g;
+                        pending_cp = composed;
+                        pending_raw = @as(f32, @floatFromInt(@max(0, pending_face.?.advanceUnits(g)))) * pending_scale + font.letter_spacing;
+                        pos += u.len;
+                        continue;
+                    }
+                }
+            }
             // Zero advance, centred over the base (the font's own vertical
             // placement is kept). A mark the face lacks is dropped rather than
             // drawn as a missing-glyph box.
@@ -204,6 +223,7 @@ pub fn shapeSimple(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeRe
         pending_glyph = u.glyph;
         pending_scale = scale;
         pending_idx = count;
+        pending_cp = u.cp;
         have_pending = true;
         count += 1;
         pos += u.len;

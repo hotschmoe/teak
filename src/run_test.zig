@@ -259,7 +259,7 @@ pub const StubGpu = struct {
     pub fn releaseImage(self: *StubGpu, _: u32) void {
         self.image_releases += 1;
     }
-    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw) void {
+    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw, _: []const render.SceneItem) void {
         self.scene_calls += 1;
         self.last_scene_count = d.len;
         if (d.len > 0) self.last_scene_mesh = d[0].mesh;
@@ -378,6 +378,113 @@ test "run: drag-off cancels the click" {
     try std.testing.expectEqual(@as(i32, 0), t.rt.model.count);
 }
 
+const HookApp = struct {
+    pub const Model = struct {
+        hovers: u32 = 0,
+        hovered_a: bool = false,
+        last_box: pointer.Box = .{},
+        last_now: u64 = 0,
+        contexts: u32 = 0,
+        ctx_on_a: bool = false,
+        ctx_x: f32 = -1,
+    };
+    pub const Msg = union(enum) { a, b, hover: ?u8, ctx: struct { on_a: bool, x: f32 } };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .a, .b => {},
+            .hover => |h| {
+                m.hovers += 1;
+                m.hovered_a = h != null and h.? == 'a';
+            },
+            .ctx => |c| {
+                m.contexts += 1;
+                m.ctx_on_a = c.on_a;
+                m.ctx_x = c.x;
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .direction = .vertical });
+        cb.button(.a, "A");
+        cb.button(.b, "B");
+        cb.popGroup();
+    }
+    pub fn hoverMsg(_: *const Model, ev: pointer.PointerEvent(Msg)) ?Msg {
+        const h = ev.hit orelse return .{ .hover = null };
+        return .{ .hover = if (std.meta.eql(h, Msg.a)) 'a' else 'b' };
+    }
+    pub fn contextMsg(_: *const Model, ev: pointer.PointerEvent(Msg)) ?Msg {
+        const on_a = if (ev.hit) |h| std.meta.eql(h, Msg.a) else false;
+        return .{ .ctx = .{ .on_a = on_a, .x = ev.x } };
+    }
+};
+
+test "run: hoverMsg fires when the widget under the pointer changes, not every frame" {
+    const t = try play(HookApp, &.{
+        .{}, // 1: lays out; the pointer is off-window and over nothing
+        .{ .x = 5, .y = 5 }, // 2: enters A
+        .{ .x = 6, .y = 6 }, // 3: still A: no event
+        .{ .x = 5, .y = 45 }, // 4: B
+        .{ .x = 500, .y = 500 }, // 5: leaves everything
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 3), t.rt.model.hovers); // A, B, none
+    try std.testing.expect(!t.rt.model.hovered_a);
+}
+
+test "run: contextMsg fires on right-button down with the widget under the cursor" {
+    const t = try play(HookApp, &.{
+        .{},
+        .{ .x = 5, .y = 5, .held = right, .down = right },
+        .{ .x = 5, .y = 5, .up = right },
+        .{ .x = 300, .y = 200, .held = right, .down = right }, // empty space
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.rt.model.contexts);
+    try std.testing.expect(!t.rt.model.ctx_on_a); // the last one was over nothing
+    try std.testing.expectEqual(@as(f32, 300), t.rt.model.ctx_x);
+}
+
+const SliderApp = struct {
+    pub const Model = struct { value: f32 = -1, clicks: u32 = 0, updates: u32 = 0 };
+    pub const Msg = union(enum) { grab, set: f32, other };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .grab, .other => m.clicks += 1,
+            .set => |v| {
+                m.value = v;
+                m.updates += 1;
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .direction = .vertical });
+        cb.slider(.grab, 0);
+        cb.button(.other, "B");
+        cb.popGroup();
+    }
+    pub fn sliderMsg(_: *const Model, _: Msg, value: f32) ?Msg {
+        return .{ .set = value };
+    }
+};
+
+test "run: sliderMsg drags with capture, and the slider's plain click is not dispatched" {
+    // The slider sits at the top-left, min_width 120.
+    const t = try play(SliderApp, &.{
+        .{},
+        .{ .x = 30, .y = 5, .held = left, .down = left }, // press at ~1/4
+        .{ .x = 90, .y = 200, .held = left }, // dragged far off the track: still captured
+        .{ .x = 500, .y = 5, .held = left }, // past the end: clamps to 1
+        .{ .x = 500, .y = 5, .up = left },
+        .{ .x = 5, .y = 60, .held = left, .down = left }, // press the button below: normal click
+        .{ .x = 5, .y = 60, .up = left },
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(f32, 1), t.rt.model.value);
+    try std.testing.expect(t.rt.model.updates >= 3);
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.clicks); // only the button; the slider never fired `.grab`
+}
+
 const KeyApp = struct {
     pub const Model = struct {
         typed: [8]u8 = undefined,
@@ -475,6 +582,68 @@ test "run: Shift+Tab walks focus backwards" {
     try std.testing.expectEqual(TabApp.Focus.a, t.rt.model.focus);
 }
 
+// ── Measured rows + modifier reports ────────────────────────────────
+
+const RowsApp = struct {
+    pub const Model = struct { got: [4]f32 = @splat(0), n: usize = 0, first: u32 = 99, calls: u32 = 0, shift: bool = false, mods_calls: u32 = 0 };
+    pub const Msg = union(enum) { rows: struct { first: u32, n: u8, h: [4]f32 }, mods: pointer.Modifiers };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .rows => |r| {
+                m.calls += 1;
+                m.first = r.first;
+                m.n = r.n;
+                m.got = r.h;
+            },
+            .mods => |mm| {
+                m.shift = mm.shift;
+                m.mods_calls += 1;
+            },
+        }
+    }
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushScroll(.{ .padding = 0, .gap = 0, .width = 200, .height = 100, .id = 1 });
+        cb.pushVirtualList(.{ .total_extent = 1000, .start_offset = 300, .visible_start = 7, .visible_end = 9, .id = 4, .align_cross = .stretch });
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 20 });
+        cb.popGroup();
+        cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 30 });
+        cb.popGroup();
+        cb.popVirtualList();
+        cb.popScroll();
+    }
+    pub fn virtualRowsMsg(_: *const Model, id: u32, first: u32, heights: []const f32) ?Msg {
+        if (id != 4) return null;
+        var h: [4]f32 = @splat(0);
+        @memcpy(h[0..heights.len], heights);
+        return .{ .rows = .{ .first = first, .n = @intCast(heights.len), .h = h } };
+    }
+    pub fn modsMsg(_: *const Model, mods: pointer.Modifiers) ?Msg {
+        return .{ .mods = mods };
+    }
+};
+
+test "run: virtualRowsMsg reports the measured row heights once, and again only when they change" {
+    const t = try playWith(RowsApp, .{ .script = &.{ .{}, .{}, .{}, .{} } }, .{ .idle_skip = false });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls);
+    try std.testing.expectEqual(@as(u32, 7), t.rt.model.first);
+    try std.testing.expectEqual(@as(usize, 2), t.rt.model.n);
+    try std.testing.expectEqual(@as(f32, 20), t.rt.model.got[0]);
+    try std.testing.expectEqual(@as(f32, 30), t.rt.model.got[1]);
+}
+
+test "run: modsMsg fires when the modifier keys change, not every frame" {
+    const t = try playWith(RowsApp, .{ .script = &.{
+        .{},
+        .{ .mods = .{ .shift = true } },
+        .{ .mods = .{ .shift = true } },
+        .{},
+    } }, .{ .idle_skip = false });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.rt.model.mods_calls); // shift down, shift up
+    try std.testing.expect(!t.rt.model.shift);
+}
+
 // ── Frame diff: IME aliasing, over-long title ───────────────────────
 
 const NoopApp = struct {
@@ -497,7 +666,7 @@ test "run: a same-length IME composition change forces a rebuild" {
             .{ .ime = "ab" }, // composition starts
             .{ .ime = "cd" }, // same length, written over "ab" in the Host's one shared buffer
         },
-    }, .{ .blink_period = 0 });
+    }, .{ .blink_half_ms = 0 });
     defer t.destroy();
     // Frame 1: first content. Frame 2: IME activates. Frame 3: "cd" — a
     // rebuild ONLY if the loop copies each frame's composition into its own
@@ -1777,7 +1946,7 @@ const mutation = struct {
         switch (@typeInfo(T)) {
             .void => return {},
             .bool => return false,
-            .int => return if (comptime std.mem.eql(u8, name, "key")) 0 else @truncate(3 + pick),
+            .int => return if (comptime std.mem.eql(u8, name, "key")) 0 else std.math.cast(T, (3 + pick) % 4) orelse 0,
             .float => return 1.5,
             .@"enum" => |i| return @fromBackingInt(@intCast(i.field_values[0])),
             .optional => |i| return try sample(i.child, a, pick, name),
@@ -1859,7 +2028,14 @@ const mutation = struct {
             },
             .@"struct" => |i| {
                 inline for (i.field_names, i.field_types) |n, F| {
-                    if (mutate(F, &@field(v.*, n), k)) return true;
+                    if (i.layout == .@"packed") {
+                        // fields of a packed struct have no addressable storage: edit a copy
+                        var f = @field(v.*, n);
+                        if (mutate(F, &f, k)) {
+                            @field(v.*, n) = f;
+                            return true;
+                        }
+                    } else if (mutate(F, &@field(v.*, n), k)) return true;
                 }
                 return false;
             },
@@ -1971,6 +2147,70 @@ test "idle: a fired sub, a moved mouse and a click each wake the pipeline; idle_
     const never = try runIdle(&.{ .{}, .{}, .{}, .{} }, .{ .idle_skip = false });
     try std.testing.expectEqual(@as(u32, 4), never.renders);
     try std.testing.expectEqual(@as(u32, 0), never.waits);
+}
+
+// ── Blink-aware idle ────────────────────────────────────────────────
+
+const FocusApp = struct {
+    pub const Model = struct {};
+    pub const Msg = union(enum) { focus, noop };
+    pub fn update(_: *Model, _: Msg) void {}
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.textInput(.focus, "ab", 2);
+        cb.popGroup();
+    }
+    pub fn focusedMsg(_: *const Model) ?Msg {
+        return .focus;
+    }
+};
+
+test "idle + blink: a focused input idles, toggling the caret with a vertex-only re-render" {
+    // Half-period 500 ms: caret on at t=0..499, off at 500..999, on at 1000.
+    const t = try playWith(FocusApp, .{
+        .script = &.{
+            .{ .clock_ms = 0 }, // builds (caret on)
+            .{ .clock_ms = 100 }, // idle, same phase: nothing
+            .{ .clock_ms = 499 }, // idle, same phase: nothing
+            .{ .clock_ms = 500 }, // toggles off: re-render, still no view
+            .{ .clock_ms = 700 }, // idle
+            .{ .clock_ms = 1000 }, // toggles on
+        },
+    }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 1), t.rt.ts.frame_counter); // only the first frame ran view/layout
+    try std.testing.expectEqual(@as(u32, 3), t.gpu.upload_vert_calls); // build + off + on
+    try std.testing.expect(t.rt.ts.blink_on);
+    try std.testing.expect(t.rt.quiet);
+}
+
+test "idle + blink: the wait timeout is the nearer of the next caret toggle and the next sub" {
+    var host: ScriptHost = .{ .script = &.{ .{ .clock_ms = 0 }, .{ .clock_ms = 120 } } };
+    var gpu: PlainGpu = .{};
+    try run_mod.run(FocusApp, std.testing.allocator, &host, &gpu, .{});
+    try std.testing.expectEqual(@as(u32, 380), host.last_wait_ms); // 500 - 120
+    // With blink off the same app has no focus timer: it waits the 1 s cap.
+    var host2: ScriptHost = .{ .script = &.{ .{ .clock_ms = 0 }, .{ .clock_ms = 120 } } };
+    var gpu2: PlainGpu = .{};
+    try run_mod.run(FocusApp, std.testing.allocator, &host2, &gpu2, .{ .blink_half_ms = 0 });
+    try std.testing.expectEqual(@as(u32, 1000), host2.last_wait_ms);
+}
+
+test "idle + blink: a sub due before the toggle wins the timeout" {
+    const FocusSub = struct {
+        pub const Model = FocusApp.Model;
+        pub const Msg = FocusApp.Msg;
+        pub const update = FocusApp.update;
+        pub const view = FocusApp.view;
+        pub const focusedMsg = FocusApp.focusedMsg;
+        pub fn subscribe(_: *const Model) []const sub_mod.Sub(Msg) {
+            return &.{.{ .every = .{ .interval_ms = 100, .msg = .noop } }};
+        }
+    };
+    var host: ScriptHost = .{ .script = &.{ .{ .clock_ms = 10 }, .{ .clock_ms = 20 } } };
+    var gpu: PlainGpu = .{};
+    try run_mod.run(FocusSub, std.testing.allocator, &host, &gpu, .{});
+    try std.testing.expectEqual(@as(u32, 80), host.last_wait_ms); // sub at 100 vs caret at 500
 }
 
 const AnimApp = struct {
