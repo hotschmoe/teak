@@ -661,6 +661,20 @@ caretPos(text, index, font, max_w, mode, max_lines, m) Caret{x, y, line}
 indexAt(text, x, y, font, max_w, mode, max_lines, m) usize  // inverse of caretPos at grapheme boundaries
 ```
 
+### Bidi (`teak.bidi`, UAX #9; core/bidi.zig, docs/features/bidi.md)
+One paragraph per `analyze` (split at hard breaks). Pure; allocator only for working storage / results.
+```zig
+analyze(gpa, text, Direction(.auto|.ltr|.rtl)) !Analysis{ para_level, levels: []u8, classes: []Class, offsets: []u32 }  // per code point; .deinit(gpa)
+Analysis.isPlainLtr() bool            // skip all bidi work
+Analysis.isRemoved(i) bool            // X9-removed (embeddings, BN); they keep their predecessor's level
+lineLevels(an, start, end, out) []u8  // L1 on a wrapped line (byte range, e.g. text_wrap.Line.start..hang)
+lineRuns(gpa, an, start, end) ![]Run{ start, end, level }   // L2: runs left-to-right as shown; odd level = draw right-to-left
+visualOrder(levels, order) void       // L2 on any level array (code points or clusters)
+caretMove(gpa, text, an, start, end, Caret{ index, trailing }, Arrow(.left|.right)) !?Caret   // visual arrows; null = line edge; word jumps stay logical
+selectionSpans(gpa, text, an, start, end, advances_per_cluster, sel_start, sel_end) ![]Span{ x0, x1 }
+mirrored(cp) ?u21;  classOf(cp) Class
+```
+
 ### Host interface (`teak.host` → platform/host.zig)
 Backends live in `platform/{win32,x11,wasm}.zig` — NOT re-exported (web entry points must also declare `pub const std_options: std.Options = .{ .logFn = platform.logFn };` — the default std.log sink does not build on wasm32-freestanding); the build
 picks one under the import name `teak-platform-native`.

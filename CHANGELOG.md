@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Bidi (UAX #9)
+
+- New `teak.bidi` (pure, `src/core/bidi.zig`): the full Unicode 16 bidirectional algorithm
+  (P2-P3, X1-X10 with isolates, W1-W7, N0 bracket pairs, N1-N2, I1-I2, L1-L2) plus per-line
+  visual runs, visual-order left/right caret movement (with affinity) and selection highlight
+  spans. Passes all 91,707 lines of BidiCharacterTest.txt (a 306-line excerpt is the committed
+  regression test). `tools/gen_unicode.zig` now also generates `Bidi_Class` and paired-bracket
+  tables. Not yet wired into rendering / `Editor` (see docs/features/bidi.md).
+
 ### Animation primitive
 
 - New `teak.anim`: `Tween(T)` (Model-resident), `Ease`/`ease`, `lerp`. New
