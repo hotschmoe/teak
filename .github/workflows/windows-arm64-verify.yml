@@ -12,9 +12,6 @@ on:
     paths:
       - .github/workflows/windows-arm64-verify.yml
 
-env:
-  ZIG_VERSION: 0.17.0
-
 jobs:
   hello:
     name: hello world (native aarch64-windows zig ${{ matrix.zig }})
@@ -54,33 +51,3 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "zig build-exe failed ($LASTEXITCODE)" }
           .\hello.exe
           if ($LASTEXITCODE -ne 0) { throw "hello.exe failed" }
-
-  teak:
-    name: teak optimized build + run (native zig 0.17)
-    runs-on: windows-11-arm
-    defaults:
-      run:
-        working-directory: teak
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: teak
-      - uses: actions/checkout@v4
-        with:
-          repository: hotschmoe/zunk
-          path: zunk
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-      - name: zig env
-        run: zig env
-      - name: Library tests (ReleaseSafe, native ARM64)
-        run: zig build test -Doptimize=ReleaseSafe --summary all
-      - name: examples/chrome build (ReleaseFast, incl. ui exe)
-        working-directory: teak/examples/chrome
-        run: zig build -Doptimize=ReleaseFast --summary all
-      - name: Run chrome canary natively
-        working-directory: teak/examples/chrome
-        run: |
-          zig build run -Doptimize=ReleaseFast
-          zig build test -Doptimize=ReleaseFast --summary all
