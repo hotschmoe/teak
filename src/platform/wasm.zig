@@ -203,7 +203,7 @@ fn serializeA11yTree(nodes: []const A11yNode) struct { records_len: u32, strings
 
         records[i] = .{
             .cmd_index = node.cmd_index,
-            .role = @intFromEnum(node.role),
+            .role = @backingInt(node.role),
             .label_offset = label_offset,
             .label_len = label_len,
             .bounds_x = @intFromFloat(@round(node.bounds.x)),
@@ -754,7 +754,7 @@ test "serializeA11yTree: layout matches wire format" {
 
     // Record 0: focused button.
     try testing.expectEqual(@as(u32, 7), records[0].cmd_index);
-    try testing.expectEqual(@as(u32, @intFromEnum(teak.A11yRole.button)), records[0].role);
+    try testing.expectEqual(@as(u32, @backingInt(teak.A11yRole.button)), records[0].role);
     try testing.expectEqual(@as(u32, 0), records[0].label_offset);
     try testing.expectEqual(@as(u32, 4), records[0].label_len);
     try testing.expectEqual(@as(i32, 10), records[0].bounds_x);
@@ -765,7 +765,7 @@ test "serializeA11yTree: layout matches wire format" {
 
     // Record 1: checked, non-focused checkbox stacked after.
     try testing.expectEqual(@as(u32, 9), records[1].cmd_index);
-    try testing.expectEqual(@as(u32, @intFromEnum(teak.A11yRole.checkbox)), records[1].role);
+    try testing.expectEqual(@as(u32, @backingInt(teak.A11yRole.checkbox)), records[1].role);
     try testing.expectEqual(@as(u32, 4), records[1].label_offset);
     try testing.expectEqual(@as(u32, 5), records[1].label_len);
     try testing.expectEqual(@as(f32, 1.0), records[1].state);
@@ -822,7 +822,7 @@ test "serializeA11yTree: oversized label is skipped, record still emitted" {
 }
 
 test "wasm key table reaches every SpecialKey through the shared policy" {
-    var seen = std.EnumSet(SpecialKey).initEmpty();
+    var seen = std.EnumSet(SpecialKey).empty;
     const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true } };
     for (mod_sets) |mods| {
         for (key_mappings) |m| {
@@ -881,7 +881,7 @@ test "effectResult maps every completion kind to the contract type" {
 }
 
 test "dropOf: image metadata and a thumbnail that matches its width" {
-    const thumb = [_]u8{7} ** (4 * 3 * 2); // 3 x 2 RGBA
+    const thumb: [4 * 3 * 2]u8 = @splat(7); // 3 x 2 RGBA
     const img = dropOf(.{ .kind = .dropped, .id = 0, .a = 1, .b = 1568, .c = 900, .d = 3, .blobs = .{ "s.png", "image/png", "PNG", &thumb } });
     try std.testing.expectEqual(teak.DropKind.image, img.kind);
     try std.testing.expectEqual(@as(u32, 1568), img.width);

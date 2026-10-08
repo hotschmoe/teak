@@ -334,7 +334,7 @@ const VARIANT = extern struct {
     wReserved2: u16 = 0,
     wReserved3: u16 = 0,
     // 8-byte payload union. Use raw bytes; cast per vt.
-    payload: [16]u8 = [_]u8{0} ** 16,
+    payload: [16]u8 = @splat(0),
 };
 
 /// Win32 RECT — top-left/bottom-right pixel coordinates. Used by
@@ -1038,7 +1038,7 @@ var g_node_provider_vtbl_fragment: IRawElementProviderFragment_Vtbl = .{
 
 /// Window title in UTF-16, allocated once and reused across
 /// GetPropertyValue(NamePropertyId) calls. Updated by `Host.init`.
-var g_window_title_w: [256]u16 = [_]u16{0} ** 256;
+var g_window_title_w: [256]u16 = @splat(0);
 
 /// HWND captured at Host.init for UiaHostProviderFromHwnd. Null before
 /// init / after deinit so the property getter can fail closed.
@@ -1999,7 +1999,7 @@ pub const Host = struct {
     /// the `std.Io` awake clock, which is fine for sub-driven cadence
     /// — subs compare deltas, not absolute values.
     pub fn nowMs(_: *const Host) u64 {
-        // Monotonic milliseconds (Zig 0.16: clocks live behind `std.Io`).
+        // Monotonic milliseconds (clocks live behind `std.Io`).
         const now = std.Io.Clock.awake.now(std.Options.debug_io);
         return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms));
     }
@@ -2050,7 +2050,7 @@ pub const Host = struct {
     }
 
     fn runFileDialog(self: *Host, filter: FileDialogFilter, save: bool) FileDialogResult {
-        var file_buf: [260]u16 = [_]u16{0} ** 260;
+        var file_buf: [260]u16 = @splat(0);
 
         // OFN filter format: "Name\0pattern\0Name2\0pattern2\0\0" — a
         // double-null-terminated alternating list. Build it on the stack.

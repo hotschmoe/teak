@@ -154,7 +154,7 @@ test "mesh table: invalid data rejected, release frees the slot" {
     var fx = try Fixture.init(false);
     defer fx.deinit();
 
-    const v = [_]teak.MeshVertex{vert(0, 0, 0, .{ 1, 1, 1 })} ** 3;
+    const v: [3]teak.MeshVertex = @splat(vert(0, 0, 0, .{ 1, 1, 1 }));
     try std.testing.expectEqual(teak.MESH_HANDLE_NONE, fx.renderer.uploadMesh(.{ .vertices = &v, .indices = &.{ 0, 1, 7 } }));
     try std.testing.expectEqual(teak.MESH_HANDLE_NONE, fx.renderer.uploadMesh(.{ .vertices = &v, .indices = &.{ 0, 1 } }));
 

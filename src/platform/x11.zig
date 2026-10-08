@@ -530,7 +530,7 @@ pub const Host = struct {
     }
 
     pub fn nowMs(_: *const Host) u64 {
-        // Monotonic milliseconds (Zig 0.16: clocks live behind `std.Io`).
+        // Monotonic milliseconds (clocks live behind `std.Io`).
         const now = std.Io.Clock.awake.now(std.Options.debug_io);
         return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms));
     }
@@ -642,7 +642,7 @@ comptime {
 }
 
 test "X11 key tables reach every SpecialKey through the shared policy" {
-    var seen = std.EnumSet(SpecialKey).initEmpty();
+    var seen = std.EnumSet(SpecialKey).empty;
     const keysyms = [_]KeySym{
         XK_BackSpace, XK_Delete,   XK_Left, XK_Right,        XK_Up,     XK_Down, XK_Home, XK_End, XK_Prior, XK_Next,
         XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, 'a',     'c',     'x',    'v',      'y',

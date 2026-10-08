@@ -1141,7 +1141,7 @@ fn transientSame(a: TransientState, b: TransientState) bool {
 /// framework-core dirs, so the builtin.mode gate is allowed here
 /// (HARDLINE §3 scopes the conditional-compilation ban to core).
 fn debugCheckBalance(cmds: anytype, view_name: []const u8) void {
-    if (@import("builtin").mode != .Debug) return;
+    if (@import("builtin").mode != .debug) return;
     if (cmd.validateBalance(cmds)) |bal_err| {
         var buf: [128]u8 = undefined;
         std.debug.panic("teak: unbalanced cmd buffer from {s}() — {s}", .{

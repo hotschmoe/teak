@@ -500,7 +500,7 @@ test "run: a same-length IME composition change forces a rebuild" {
 const LongTitleApp = struct {
     pub const Model = struct {};
     pub const Msg = union(enum) { noop };
-    const long_title = "T" ** 300; // longer than the loop's 256-byte title cache
+    const long_title: [300]u8 = @splat('T');
     pub fn update(_: *Model, _: Msg) void {}
     pub fn view(_: *const Model, cb: anytype) void {
         cb.pushGroup(.{ .padding = 0, .gap = 0 });
@@ -508,7 +508,7 @@ const LongTitleApp = struct {
         cb.popGroup();
     }
     pub fn windowTitle(_: *const Model) ?[]const u8 {
-        return long_title;
+        return &long_title;
     }
 };
 
