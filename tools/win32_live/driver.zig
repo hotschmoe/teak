@@ -613,7 +613,8 @@ fn dragFile(path: []const u8, over_lx: f32, over_ly: f32) bool {
     drop_path_w[drop_path_len] = 0;
     drag_polls = 0;
     moveTo(over_lx, over_ly);
-    mouse(2); // hold the left button like a real drag
+    // No synthetic button press: the app window would capture the mouse and
+    // OLE's drag loop (which listens on the dragging thread) never sees moves.
     drag_deadline = GetTickCount64() + 1500;
     drag_running.store(true, .release);
     const nudger = std.Thread.spawn(.{}, nudge, .{ over_lx, over_ly }) catch null;
@@ -623,7 +624,6 @@ fn dragFile(path: []const u8, over_lx: f32, over_ly: f32) bool {
     const finished = drag_done.load(.acquire);
     drag_running.store(false, .release);
     if (nudger) |t| t.join();
-    mouse(4);
     if (finished) drag.join() else drag.detach();
     log("DoDragDrop finished={} hr=0x{x} effect={d} polls={d}", .{ finished, @as(u32, @bitCast(drag_hr)), drag_effect, drag_polls });
     sleepMs(300);
