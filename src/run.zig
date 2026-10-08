@@ -1188,6 +1188,7 @@ pub fn rectsEqual(a: []const Rect, b: []const Rect) bool {
 
 test {
     _ = @import("core/eql.zig");
+    _ = @import("core/oom.zig");
     _ = @import("run_test.zig");
     _ = @import("run_effects_test.zig");
 }

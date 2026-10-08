@@ -1,4 +1,5 @@
 const std = @import("std");
+const oom = @import("oom.zig").oom;
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
 const scene = @import("scene.zig");
@@ -1006,11 +1007,11 @@ pub fn CmdBuffer(comptime Msg: type) type {
         // ── Convenience emitters ───────────────────────────────────
 
         pub fn pushGroup(self: *Self, style: GroupStyle) void {
-            self.cmds.append(self.backing, .{ .push_group = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_group = style }) catch oom();
         }
 
         pub fn popGroup(self: *Self) void {
-            self.cmds.append(self.backing, .pop_group) catch unreachable;
+            self.cmds.append(self.backing, .pop_group) catch oom();
         }
 
         /// Invisible flex filler: an empty zero-padding group with the given
@@ -1027,7 +1028,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.body,
                 .color = self.theme.text_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Body text in the theme's heading color/size — for section
@@ -1037,7 +1038,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.heading,
                 .color = self.theme.heading_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Body text in the theme's "muted" color — placeholders, units,
@@ -1047,7 +1048,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.small,
                 .color = self.theme.muted_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Body text in the theme's danger color — validation messages.
@@ -1056,7 +1057,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.small,
                 .color = self.theme.danger_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Monospace text in body color — column data, code, numerics.
@@ -1065,7 +1066,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.mono,
                 .color = self.theme.text_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Text with explicit font + color, bypassing theme defaults.
@@ -1076,15 +1077,15 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = font,
                 .color = color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn divider(self: *Self) void {
-            self.cmds.append(self.backing, .{ .divider = self.theme.divider }) catch unreachable;
+            self.cmds.append(self.backing, .{ .divider = self.theme.divider }) catch oom();
         }
 
         pub fn dividerStyled(self: *Self, style: DividerStyle) void {
-            self.cmds.append(self.backing, .{ .divider = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .divider = style }) catch oom();
         }
 
         pub fn button(self: *Self, msg: Msg, label: []const u8) void {
@@ -1093,7 +1094,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = self.theme.button,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn buttonStyled(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle) void {
@@ -1102,7 +1103,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a greyed-out, non-interactive button. Same as `button`
@@ -1116,7 +1117,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = self.theme.button,
                 .font = self.theme.typography.body,
                 .disabled = true,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn textInput(
@@ -1131,7 +1132,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cursor = cursor,
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn textInputStyled(
@@ -1147,7 +1148,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cursor = cursor,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a greyed-out, non-interactive text input. Same as
@@ -1166,15 +1167,15 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
                 .disabled = true,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn pushScroll(self: *Self, style: ScrollStyle) void {
-            self.cmds.append(self.backing, .{ .push_scroll = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_scroll = style }) catch oom();
         }
 
         pub fn popScroll(self: *Self) void {
-            self.cmds.append(self.backing, .pop_scroll) catch unreachable;
+            self.cmds.append(self.backing, .pop_scroll) catch oom();
         }
 
         pub fn checkbox(self: *Self, msg: Msg, checked: bool, label: []const u8) void {
@@ -1184,7 +1185,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = self.theme.checkbox,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn radio(self: *Self, msg: Msg, selected: bool, label: []const u8) void {
@@ -1194,7 +1195,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = self.theme.radio,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn slider(self: *Self, grab_msg: Msg, value: f32) void {
@@ -1202,32 +1203,32 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .grab_msg = grab_msg,
                 .value = value,
                 .style = self.theme.slider,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         // ── Overlay / virtual list / image / rich text ─────────────
 
         pub fn pushOverlay(self: *Self, style: OverlayStyle(Msg)) void {
-            self.cmds.append(self.backing, .{ .push_overlay = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_overlay = style }) catch oom();
         }
 
         pub fn popOverlay(self: *Self) void {
-            self.cmds.append(self.backing, .pop_overlay) catch unreachable;
+            self.cmds.append(self.backing, .pop_overlay) catch oom();
         }
 
         pub fn pushVirtualList(self: *Self, style: VirtualListStyle) void {
-            self.cmds.append(self.backing, .{ .push_virtual_list = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_virtual_list = style }) catch oom();
         }
 
         pub fn popVirtualList(self: *Self) void {
-            self.cmds.append(self.backing, .pop_virtual_list) catch unreachable;
+            self.cmds.append(self.backing, .pop_virtual_list) catch oom();
         }
 
         pub fn image(self: *Self, handle: TextureHandle, style: ImageStyle) void {
             self.cmds.append(self.backing, .{ .image = .{
                 .handle = handle,
                 .style = style,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a non-interactive canvas. `style` carries size + optional
@@ -1237,7 +1238,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .canvas = .{
                 .style = style,
                 .primitives = primitives,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Canvas with an accessibility label (announced by the a11y tree)
@@ -1252,7 +1253,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = style,
                 .primitives = primitives,
                 .label = label,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Clickable canvas: `msg` fires on click. The app pairs it with
@@ -1270,13 +1271,13 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .primitives = primitives,
                 .msg = msg,
                 .label = label,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a 3D scene leaf; see `SceneCmd`. Typical use:
         /// `cb.scene3d(.{ .style = .{ .width = 480, .height = 360 }, .mesh = key, .camera = cam, .key = rev })`.
         pub fn scene3d(self: *Self, cmd: SceneCmd(Msg)) void {
-            self.cmds.append(self.backing, .{ .scene3d = cmd }) catch unreachable;
+            self.cmds.append(self.backing, .{ .scene3d = cmd }) catch oom();
         }
 
         /// Interactive canvas: pointer input over it (down/move/up/wheel/
@@ -1297,7 +1298,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .pointer = true,
                 .id = id,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn textInputSelected(
@@ -1315,7 +1316,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .selection_anchor = selection_anchor,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn richText(
@@ -1326,11 +1327,11 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .rich_text = .{
                 .content = content,
                 .spans = spans,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn richTextStyled(self: *Self, c: RichTextCmd) void {
-            self.cmds.append(self.backing, .{ .rich_text = c }) catch unreachable;
+            self.cmds.append(self.backing, .{ .rich_text = c }) catch oom();
         }
 
         /// Begin a form row. Emits an outer vertical group + an inner
@@ -1352,19 +1353,19 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .direction = .vertical,
                 .padding = 0,
                 .gap = opts.validation_gap,
-            } }) catch unreachable;
+            } }) catch oom();
             // Inner horizontal (label + content + units).
             self.cmds.append(self.backing, .{ .push_group = .{
                 .direction = .horizontal,
                 .padding = 0,
                 .gap = opts.gap,
-            } }) catch unreachable;
+            } }) catch oom();
             if (opts.label.len > 0) {
                 self.cmds.append(self.backing, .{ .text = .{
                     .content = opts.label,
                     .font = self.theme.typography.body,
                     .color = self.theme.text_color,
-                } }) catch unreachable;
+                } }) catch oom();
             }
             self.form_row_stack[self.form_row_depth] = .{
                 .units = opts.units,
@@ -1386,17 +1387,17 @@ pub fn CmdBuffer(comptime Msg: type) type {
                     .content = pending.units,
                     .font = self.theme.typography.small,
                     .color = self.theme.muted_color,
-                } }) catch unreachable;
+                } }) catch oom();
             }
-            self.cmds.append(self.backing, .pop_group) catch unreachable;
+            self.cmds.append(self.backing, .pop_group) catch oom();
             if (pending.validation.len > 0) {
                 self.cmds.append(self.backing, .{ .text = .{
                     .content = pending.validation,
                     .font = self.theme.typography.small,
                     .color = self.theme.danger_color,
-                } }) catch unreachable;
+                } }) catch oom();
             }
-            self.cmds.append(self.backing, .pop_group) catch unreachable;
+            self.cmds.append(self.backing, .pop_group) catch oom();
         }
 
         /// Build a RichTextCmd from a slice of MixedPart, baking content
@@ -1416,8 +1417,8 @@ pub fn CmdBuffer(comptime Msg: type) type {
             var total_len: usize = 0;
             for (parts) |p| total_len += p.text.len;
 
-            const content = arena_alloc.alloc(u8, total_len) catch unreachable;
-            const spans = arena_alloc.alloc(RichTextSpan, parts.len) catch unreachable;
+            const content = arena_alloc.alloc(u8, total_len) catch oom();
+            const spans = arena_alloc.alloc(RichTextSpan, parts.len) catch oom();
 
             var cursor: usize = 0;
             for (parts, 0..) |p, i| {
@@ -1438,7 +1439,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .spans = spans,
                 .default_font = self.theme.typography.body,
                 .default_color = self.theme.text_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
     };
 }

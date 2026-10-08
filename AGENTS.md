@@ -265,5 +265,5 @@ Shipped phases, in order: prototype core loop → cleanup/abstraction hardening 
 
 - Types: `PascalCase`. Functions: `camelCase` (std-lib style — `hitTest`, `buttonDisabled`). Enum variants: lowercase with underscores.
 - Explicit allocators everywhere. Arena allocators for per-frame data.
-- Convenience emitters on `CmdBuffer` use `catch unreachable` (arena OOM is unrecoverable).
+- Convenience emitters on `CmdBuffer` stay non-error-returning; allocation failure goes through `core/oom.zig`'s `oom()` (`alloc(...) catch oom()`), a loud `@panic` in every optimize mode. Never `catch unreachable` an allocation (UB in release).
 - Text measurement flows through the Host's `TextMeasurer` (real platform metrics at layout time). `teak.monoMeasurer()` is the stateless stub for CLI canaries and tests. `CHAR_WIDTH` is gone — `zig build audit` forbids reintroducing it.
