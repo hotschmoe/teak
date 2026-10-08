@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Idle hosts and blink-aware idle
+
+- `Host.waitEvents(timeout_ms)` on X11 (poll on the connection fd), Win32
+  (`MsgWaitForMultipleObjectsEx`); `Expose` / `WM_PAINT` now request a repaint.
+  Wayland: see its branch.
+- **Breaking:** `RunOptions.blink_period` (frames) is replaced by
+  `blink_half_ms` (Host-clock ms, default 500; 0 = no blink). The caret phase is
+  the new `TransientState.blink_on`; a focused text input no longer prevents
+  idle skipping — the loop wakes at each toggle and re-uploads vertices only.
+
 ### Event-driven idle
 
 - `RunOptions.idle_skip` (default true): a frame with no input, no dispatched
