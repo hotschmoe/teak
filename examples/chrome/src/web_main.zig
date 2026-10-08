@@ -8,7 +8,12 @@ const std = @import("std");
 const teak = @import("teak");
 const platform = @import("teak-platform-wasm");
 const gpu_web = @import("teak-gpu-web");
-const App = @import("app.zig");
+const build_options = @import("build_options");
+const stress = build_options.stress;
+const App = if (stress > 0) @import("textstress.zig") else @import("app.zig");
+
+/// std.log -> browser console (the default logFn does not build for wasm32-freestanding).
+pub const std_options: std.Options = .{ .logFn = platform.logFn };
 
 const Host = platform.Host;
 const Gpu = gpu_web.Gpu;
@@ -28,7 +33,14 @@ export fn init() void {
     host = Host.init("Kerf chrome", 1440, 900) catch @panic("host init failed");
     host.activate();
     gpu = Gpu.init(host.nativeHandle(), 1440, 900) catch @panic("gpu init failed");
-    runtime = Runtime.init(std.heap.wasm_allocator, &host, &gpu, .{ .clear_color = App.paper }) catch @panic("runtime init failed");
+    runtime = Runtime.init(std.heap.wasm_allocator, &host, &gpu, .{ .clear_color = if (stress > 0) .{ 0.08, 0.08, 0.1, 1 } else App.paper }) catch @panic("runtime init failed");
+    if (stress > 0) {
+        // Same grid as `zig build shot -- --stress N`.
+        const many = stress > 640;
+        runtime.model.cols = if (many) 48 else 16;
+        runtime.model.rows = (stress + runtime.model.cols - 1) / runtime.model.cols;
+        runtime.model.size_px = if (many) 8 else 11;
+    }
 }
 
 export fn resize(w: u32, h: u32) void {
