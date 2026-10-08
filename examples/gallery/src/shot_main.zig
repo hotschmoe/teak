@@ -31,6 +31,8 @@ const states = [_]State{
     .{ .name = "toasts", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 174 } }, .{ .click = .{ 644, 124 } }, .{ .click = .{ 722, 124 } }, .{ .click = .{ 738, 156 } }, .{ .move = .{ 600, 600 } }, .{ .frames = 30 } } },
     .{ .name = "toast_sliding", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 174 } }, .{ .click = .{ 644, 124 } }, .{ .move = .{ 600, 600 } }, .{ .frames = 5 } } },
     .{ .name = "dialog", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 174 } }, .{ .click = .{ 790, 263 } }, .{ .frames = 2 } } },
+    .{ .name = "focus_ring", .steps = &.{ .{ .frames = 2 }, .{ .key = .tab }, .{ .frames = 1 }, .{ .key = .tab }, .{ .frames = 1 }, .{ .key = .tab }, .{ .frames = 1 }, .{ .key = .tab }, .{ .frames = 2 } } },
+    .{ .name = "focus_ring_light", .steps = &.{ .{ .frames = 2 }, light, .{ .move = .{ 900, 700 } }, .{ .key = .tab }, .{ .frames = 1 }, .{ .key = .tab }, .{ .frames = 1 }, .{ .key = .tab }, .{ .frames = 2 } } },
     .{ .name = "controls", .steps = &.{.{ .frames = 3 }} },
     .{ .name = "data", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 142 } }, .{ .frames = 2 } } },
     .{ .name = "data_scrolled", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 142 } }, .{ .frames = 2 }, .{ .move = .{ 600, 240 } }, .{ .wheel = .{ 0, 4400 } }, .{ .frames = 3 } } },

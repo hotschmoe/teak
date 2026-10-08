@@ -56,7 +56,11 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 360, .align_cross = .stretch });
     ui.card(cb, "Table (fixed-column monospace)", 0, 0);
     cb.pushGroup(.{ .padding = 1, .gap = 0, .border = pal.border, .align_cross = .stretch });
-    parts_table.header(cb, .{ .font = cb.theme.typography.heading, .color = pal.bg, .bg = pal.fg });
+    // The header must use the row font's size (bold is fine: monospace advances match),
+    // or its columns drift away from the cells below.
+    var head_font = cb.theme.typography.mono;
+    head_font.weight = .bold;
+    parts_table.header(cb, .{ .font = head_font, .color = pal.bg, .bg = pal.fg });
     for (parts, 0..) |p, i| {
         const qty = ui.fmt(cb, "{d}", .{p.qty});
         const len = ui.fmt(cb, "{d:.2}", .{p.len_mm});

@@ -169,8 +169,11 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// Bind group layout + sampler shared by the image/scene pipelines.
         text_bgl: c.WGPUBindGroupLayout,
         sampler: c.WGPUSampler,
+        glyph_sampler: c.WGPUSampler,
         text: text_stage.TextStage(Rasterizer),
         atlas_pages: std.ArrayList(AtlasPage),
+        /// RGBA pages of colour glyphs (emoji), parallel to `text.cpages`.
+        color_pages: std.ArrayList(AtlasPage),
         glyph_buf: c.WGPUBuffer,
         glyph_buf_size: u64,
         /// Device pixels per logical pixel (`InitOptions.scale`).
@@ -422,6 +425,10 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             sampler_desc.lodMaxClamp = 1;
             sampler_desc.maxAnisotropy = 1;
             const sampler = c.wgpuDeviceCreateSampler(device, &sampler_desc) orelse return error.SamplerFailed;
+            // Distance-field glyphs are minified AND magnified: plain bilinear.
+            sampler_desc.label = wgpuStr("glyph-sampler");
+            sampler_desc.magFilter = c.WGPUFilterMode_Linear;
+            const glyph_sampler = c.wgpuDeviceCreateSampler(device, &sampler_desc) orelse return error.SamplerFailed;
 
             const scene = try wgpu_scene.Renderer.init(device, ctx.queue, surf_format, options.scene_msaa);
 
@@ -436,6 +443,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             var glyph_bgl_entries = [_]c.WGPUBindGroupLayoutEntry{
                 std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
                 std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
+                std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
             };
             glyph_bgl_entries[0].binding = 0;
             glyph_bgl_entries[0].visibility = c.WGPUShaderStage_Vertex | c.WGPUShaderStage_Fragment;
@@ -445,6 +453,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             glyph_bgl_entries[1].visibility = c.WGPUShaderStage_Fragment;
             glyph_bgl_entries[1].texture.sampleType = c.WGPUTextureSampleType_Float;
             glyph_bgl_entries[1].texture.viewDimension = c.WGPUTextureViewDimension_2D;
+            glyph_bgl_entries[2].binding = 2;
+            glyph_bgl_entries[2].visibility = c.WGPUShaderStage_Fragment;
+            glyph_bgl_entries[2].sampler.type = c.WGPUSamplerBindingType_Filtering;
             var glyph_bgl_desc = std.mem.zeroes(c.WGPUBindGroupLayoutDescriptor);
             glyph_bgl_desc.label = wgpuStr("glyph-bgl");
             glyph_bgl_desc.entryCount = glyph_bgl_entries.len;
@@ -509,11 +520,13 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .height = 0,
                 .text_bgl = text_bgl,
                 .sampler = sampler,
+                .glyph_sampler = glyph_sampler,
                 .glyph_pipeline = glyph_pipeline,
                 .glyph_bgl = glyph_bgl,
                 .glyph_uniform_buf = glyph_uniform_buf,
                 .text = text,
                 .atlas_pages = .empty,
+                .color_pages = .empty,
                 .glyph_buf = null,
                 .glyph_buf_size = 0,
                 .scale = scale,
@@ -568,12 +581,19 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 c.wgpuTextureRelease(pg.texture);
             }
             self.atlas_pages.deinit(std.heap.page_allocator);
+            for (self.color_pages.items) |pg| {
+                c.wgpuBindGroupRelease(pg.bind_group);
+                c.wgpuTextureViewRelease(pg.view);
+                c.wgpuTextureRelease(pg.texture);
+            }
+            self.color_pages.deinit(std.heap.page_allocator);
             self.text.deinit();
             if (self.glyph_buf) |gb| c.wgpuBufferRelease(gb);
             c.wgpuBufferRelease(self.glyph_uniform_buf);
             c.wgpuRenderPipelineRelease(self.glyph_pipeline);
             c.wgpuBindGroupLayoutRelease(self.glyph_bgl);
             c.wgpuSamplerRelease(self.sampler);
+            c.wgpuSamplerRelease(self.glyph_sampler);
             c.wgpuBindGroupLayoutRelease(self.text_bgl);
 
             self.releaseMsaa();
@@ -624,6 +644,28 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// window size (identical to device pixels while the scale is 1).
         fn devicePx(self: *const Self, logical: u32) u32 {
             return @intFromFloat(@round(@as(f32, @floatFromInt(logical)) * self.scale));
+        }
+
+        /// Change the device-pixels-per-logical-pixel factor at runtime (the
+        /// window moved to a monitor with another DPI): the surfaces keep
+        /// their logical size and are reconfigured at the new device size,
+        /// and later `uploadText` calls bake glyphs at the new scale.
+        /// Out-of-range factors are ignored.
+        pub fn setScale(self: *Self, new_scale: f32) void {
+            if (!(new_scale >= 0.25 and new_scale <= 16) or new_scale == self.scale) return;
+            const old = self.scale;
+            const logical_w: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(self.width)) / old));
+            const logical_h: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(self.height)) / old));
+            self.scale = new_scale;
+            self.resize(logical_w, logical_h);
+            for (&self.secondary_surfaces) |*slot| {
+                if (!slot.active or slot.surface == null) continue;
+                const lw: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(slot.width)) / old));
+                const lh: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(slot.height)) / old));
+                slot.width = self.devicePx(lw);
+                slot.height = self.devicePx(lh);
+                self.configureSurface(slot.surface, slot.width, slot.height);
+            }
         }
 
         pub fn resize(self: *Self, logical_w: u32, logical_h: u32) void {
@@ -979,21 +1021,28 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             }
         }
 
-        /// Create GPU textures for atlas pages added since the last frame.
+        /// Create GPU textures for text atlas pages (coverage and colour) added since the last frame.
         fn ensurePages(self: *Self) void {
+            self.growPages(&self.atlas_pages, self.text.pageCount(), c.WGPUTextureFormat_R8Unorm);
+            self.growPages(&self.color_pages, self.text.colorPageCount(), c.WGPUTextureFormat_RGBA8Unorm);
+        }
+
+        /// Create GPU textures for atlas pages added since the last frame.
+        fn growPages(self: *Self, pages: *std.ArrayList(AtlasPage), want: usize, format: c.WGPUTextureFormat) void {
             const alloc = std.heap.page_allocator;
-            while (self.atlas_pages.items.len < self.text.pageCount()) {
+            while (pages.items.len < want) {
                 const texture = wgpu_c.createTexture2D(self.device, "glyph-atlas", .{
                     .width = atlas_dim,
                     .height = atlas_dim,
-                    .format = c.WGPUTextureFormat_R8Unorm,
+                    .format = format,
                     .usage = c.WGPUTextureUsage_TextureBinding | c.WGPUTextureUsage_CopyDst,
                 }) orelse return;
-                const view = wgpu_c.createView2D(texture, "glyph-atlas", c.WGPUTextureFormat_R8Unorm) orelse {
+                const view = wgpu_c.createView2D(texture, "glyph-atlas", format) orelse {
                     c.wgpuTextureRelease(texture);
                     return;
                 };
                 var entries = [_]c.WGPUBindGroupEntry{
+                    std.mem.zeroes(c.WGPUBindGroupEntry),
                     std.mem.zeroes(c.WGPUBindGroupEntry),
                     std.mem.zeroes(c.WGPUBindGroupEntry),
                 };
@@ -1002,6 +1051,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 entries[0].size = 16;
                 entries[1].binding = 1;
                 entries[1].textureView = view;
+                entries[2].binding = 2;
+                entries[2].sampler = self.glyph_sampler;
                 var desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
                 desc.label = wgpuStr("glyph-atlas-bg");
                 desc.layout = self.glyph_bgl;
@@ -1012,7 +1063,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                     c.wgpuTextureRelease(texture);
                     return;
                 };
-                self.atlas_pages.append(alloc, .{ .texture = texture, .view = view, .bind_group = bg }) catch return;
+                pages.append(alloc, .{ .texture = texture, .view = view, .bind_group = bg }) catch return;
             }
         }
 
@@ -1036,6 +1087,23 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 c.wgpuQueueWriteTexture(self.queue, &dst, staging[start..].ptr, len, &layout, &extent);
             }
 
+            for (self.color_pages.items, 0..) |pg, i| {
+                if (i >= self.text.colorPageCount()) break;
+                const d = self.text.takeColorDirty(i) orelse continue;
+                var dst = std.mem.zeroes(c.WGPUTexelCopyTextureInfo);
+                dst.texture = pg.texture;
+                dst.aspect = c.WGPUTextureAspect_All;
+                dst.origin = .{ .x = d.x, .y = d.y, .z = 0 };
+                var layout = std.mem.zeroes(c.WGPUTexelCopyBufferLayout);
+                layout.bytesPerRow = atlas_dim * 4;
+                layout.rowsPerImage = d.h;
+                const extent = c.WGPUExtent3D{ .width = d.w, .height = d.h, .depthOrArrayLayers = 1 };
+                const staging = self.text.colorStaging(i);
+                const start = (@as(usize, d.y) * atlas_dim + d.x) * 4;
+                const len = ((@as(usize, d.h) - 1) * atlas_dim + d.w) * 4;
+                c.wgpuQueueWriteTexture(self.queue, &dst, staging[start..].ptr, len, &layout, &extent);
+            }
+
             const total = self.text.finish();
             if (total == 0) return;
             const bytes: u64 = @as(u64, total) * @sizeOf(glyph_atlas.GlyphInstance);
@@ -1049,6 +1117,12 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                     const off: u64 = @as(u64, pi.first[layer]) * @sizeOf(glyph_atlas.GlyphInstance);
                     c.wgpuQueueWriteBuffer(self.queue, self.glyph_buf, off, list.ptr, @as(u64, list.len) * @sizeOf(glyph_atlas.GlyphInstance));
                 }
+                for (self.text.cinsts.items) |*pi| {
+                    const list = pi.list[layer].items;
+                    if (list.len == 0) continue;
+                    const off: u64 = @as(u64, pi.first[layer]) * @sizeOf(glyph_atlas.GlyphInstance);
+                    c.wgpuQueueWriteBuffer(self.queue, self.glyph_buf, off, list.ptr, @as(u64, list.len) * @sizeOf(glyph_atlas.GlyphInstance));
+                }
             }
         }
 
@@ -1056,16 +1130,18 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         fn drawGlyphs(self: *Self, pass: c.WGPURenderPassEncoder, layer: usize) void {
             if (self.glyph_buf == null) return;
             var bound = false;
-            for (self.text.insts.items, 0..) |pi, i| {
-                const n = pi.list[layer].items.len;
-                if (n == 0 or i >= self.atlas_pages.items.len) continue;
-                if (!bound) {
-                    c.wgpuRenderPassEncoderSetPipeline(pass, self.glyph_pipeline);
-                    c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.glyph_buf, 0, self.glyph_buf_size);
-                    bound = true;
+            inline for (.{ .{ self.text.insts.items, self.atlas_pages.items }, .{ self.text.cinsts.items, self.color_pages.items } }) |set| {
+                for (set[0], 0..) |pi, i| {
+                    const n = pi.list[layer].items.len;
+                    if (n == 0 or i >= set[1].len) continue;
+                    if (!bound) {
+                        c.wgpuRenderPassEncoderSetPipeline(pass, self.glyph_pipeline);
+                        c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, self.glyph_buf, 0, self.glyph_buf_size);
+                        bound = true;
+                    }
+                    c.wgpuRenderPassEncoderSetBindGroup(pass, 0, set[1][i].bind_group, 0, null);
+                    c.wgpuRenderPassEncoderDraw(pass, 6, @intCast(n), 0, pi.first[layer]);
                 }
-                c.wgpuRenderPassEncoderSetBindGroup(pass, 0, self.atlas_pages.items[i].bind_group, 0, null);
-                c.wgpuRenderPassEncoderDraw(pass, 6, @intCast(n), 0, pi.first[layer]);
             }
         }
 
@@ -1150,6 +1226,21 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             };
         }
 
+        /// Read-only view of the image table for the scene renderer's sprites.
+        const ImageLookup = struct {
+            cache: *ImageCache,
+            pub fn hasImage(self: ImageLookup, handle: u32) bool {
+                return self.cache.get(handle) != null;
+            }
+            pub fn viewOf(self: ImageLookup, handle: u32) ?c.WGPUTextureView {
+                return (self.cache.get(handle) orelse return null).view;
+            }
+        };
+
+        fn imageLookup(self: *Self) ImageLookup {
+            return .{ .cache = &self.images };
+        }
+
         /// Free an image uploaded with `uploadImage`. The handle (and any
         /// `ImageDraw` still carrying it) is dead afterwards; the slot is
         /// reused by the next upload.
@@ -1201,7 +1292,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// composite quad per visible scene for the next `renderFrame`.
         /// Call after `uploadImages`, before `renderFrame`. Scenes whose
         /// content did not change since the last frame are not redrawn.
-        pub fn renderScenes(self: *Self, draws: []const teak.SceneDraw, items: []const teak.SceneItem) void {
+        pub fn renderScenes(self: *Self, draws: []const teak.SceneDraw, data: teak.SceneData) void {
             self.scene_draw_count = 0;
             self.scene_vert_count = 0;
             var mark: overlay.Marker = .{ .start = self.splitOf("scenes", draws.len) };
@@ -1217,7 +1308,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const scale = self.scale;
             for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
                 mark.visit(i, self.scene_draw_count);
-                const size = self.scene.renderInto(encoder, i, draw, scene_common.itemsOf(draw, items), scale) orelse continue;
+                const size = self.scene.renderInto(encoder, i, draw, scene_common.itemsOf(draw, data.items), scene_common.spritesOf(draw, data.sprites), self.imageLookup(), scale) orelse continue;
                 const quad = scene_common.compositeQuad(draw, size, scale) orelse continue;
                 const bind_group = self.sceneBindGroup(i) orelse continue;
 
