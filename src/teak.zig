@@ -93,6 +93,9 @@ pub const LineVertex = scene.LineVertex;
 pub const MeshData = scene.MeshData;
 pub const Camera = scene.Camera;
 pub const SceneDraw = scene.SceneDraw;
+pub const SceneItem = scene.Item;
+pub const SceneItemFlags = scene.ItemFlags;
+pub const SceneView = scene.View;
 
 pub const Resource = resources.Resource;
 pub const MeshResource = resources.MeshResource;

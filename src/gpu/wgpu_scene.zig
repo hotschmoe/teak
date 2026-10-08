@@ -314,7 +314,8 @@ pub const Renderer = struct {
     /// size (the owner composites `target(index).color_view`), or null if
     /// the scene has no pixels or the device could not allocate targets.
     /// `scale` = device pixels per logical pixel.
-    pub fn renderInto(self: *Renderer, encoder: c.WGPUCommandEncoder, index: usize, draw: SceneDraw, scale: f32) ?TargetSize {
+    pub fn renderInto(self: *Renderer, encoder: c.WGPUCommandEncoder, index: usize, draw: SceneDraw, items: []const teak.SceneItem, scale: f32) ?TargetSize {
+        _ = items; // S4: instanced items
         const size = common.targetSize(draw.rect_w, draw.rect_h, scale) orelse return null;
         const t = self.ensureTarget(index, size) orelse return null;
 

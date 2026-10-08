@@ -622,10 +622,13 @@ pub fn SceneCmd(comptime Msg: type) type {
         msg: ?Msg = null,
         /// Accessible name for the a11y tree.
         label: []const u8 = "",
+        /// Placed items, grid, gizmo, cut, material (`viewport3d`). With no
+        /// items this is the legacy single-mesh scene.
+        view: scene.view.View = .{},
 
         /// Content equality for the frame diff.
         pub fn eql(a: @This(), b: @This()) bool {
-            return std.meta.eql(a.style, b.style) and a.mesh == b.mesh and
+            return a.view.eql(b.view) and std.meta.eql(a.style, b.style) and a.mesh == b.mesh and
                 std.meta.eql(a.camera, b.camera) and std.meta.eql(a.clear, b.clear) and
                 std.meta.eql(a.edge_color, b.edge_color) and a.edge_px == b.edge_px and
                 a.key == b.key and a.id == b.id and a.pointer == b.pointer and
@@ -1286,6 +1289,10 @@ pub fn CmdBuffer(comptime Msg: type) type {
         pub fn scene3d(self: *Self, cmd: SceneCmd(Msg)) void {
             self.cmds.append(self.backing, .{ .scene3d = cmd }) catch unreachable;
         }
+
+        /// The 3D viewport: `scene3d` with `cmd.view` populated (placed
+        /// `Item`s, grid, gizmo, section cut). Same Cmd, same passes.
+        pub const viewport3d = scene3d;
 
         /// Interactive canvas: pointer input over it (down/move/up/wheel/
         /// leave, plus `layout` on first layout and resize) reaches the
@@ -1990,11 +1997,22 @@ test "CmdBuffer.pushFormRow: documented depth of 8 is reachable without tripping
     while (i < DEPTH) : (i += 1) {
         cb.pushFormRow(.{ .label = "row" });
     }
-    try testing.expectEqual(DEPTH, cb.form_row_depth);
+    try std.testing.expectEqual(DEPTH, cb.form_row_depth);
 
     i = 0;
     while (i < DEPTH) : (i += 1) cb.popFormRow();
-    try testing.expectEqual(@as(u8, 0), cb.form_row_depth);
+    try std.testing.expectEqual(@as(u8, 0), cb.form_row_depth);
+}
+
+test "SceneCmd.eql compares view content (items by value)" {
+    const SC = SceneCmd(void);
+    const items_a = [_]scene.view.Item{.{ .mesh = 1, .id = 4 }};
+    const items_b = [_]scene.view.Item{.{ .mesh = 1, .id = 4 }};
+    const a: SC = .{ .view = .{ .items = &items_a } };
+    var b: SC = .{ .view = .{ .items = &items_b } };
+    try std.testing.expect(a.eql(b));
+    b.view.grid = .{};
+    try std.testing.expect(!a.eql(b));
 }
 
 test "CmdBuffer.scene3d emits a scene3d cmd with defaults" {

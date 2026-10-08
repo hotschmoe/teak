@@ -159,7 +159,7 @@ test "a scene is rendered offscreen and composited at its rect, honouring clip" 
     try std.testing.expect(mesh != teak.MESH_HANDLE_NONE);
 
     // A 32x32 scene at (16, 16); its red quad covers the whole target.
-    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 0)});
+    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 0)}, &.{});
     const full = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(full);
     try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(full, 30, 30)); // scene (red, BGRA)
@@ -169,14 +169,14 @@ test "a scene is rendered offscreen and composited at its rect, honouring clip" 
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(full, 15, 15));
 
     // Same scene clipped by a scroll container starting at x = 32.
-    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 32)});
+    h.gpu.renderScenes(&.{sceneAt(mesh, 16, 16, 32, 32, 32)}, &.{});
     const clipped = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(clipped);
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(clipped, 20, 30)); // clipped away
     try std.testing.expectEqual([4]u8{ 0, 0, 255, 255 }, at(clipped, 40, 30)); // still visible
 
     // No scenes staged: nothing composited.
-    h.gpu.renderScenes(&.{});
+    h.gpu.renderScenes(&.{}, &.{});
     const none = try h.frame(.{ 0, 0, 0, 1 });
     defer std.testing.allocator.free(none);
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(none, 30, 30));

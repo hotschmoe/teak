@@ -105,8 +105,11 @@ pub const Table = struct {
     }
 
     /// Same for scene draws: an unknown mesh key draws just the clear colour.
-    pub fn remapScenes(self: *Table, draws: []render.SceneDraw) void {
+    /// Item keys (the flat list `buildFrame` produced) are remapped too; an
+    /// item with an unknown key gets the none handle and is not drawn.
+    pub fn remapScenes(self: *Table, draws: []render.SceneDraw, items: []render.SceneItem) void {
         for (draws) |*d| d.mesh = self.handleOf(.mesh, d.mesh);
+        for (items) |*it| it.mesh = self.handleOf(.mesh, it.mesh);
     }
 };
 
@@ -135,13 +138,14 @@ pub fn stageDraws(
     table: ?*Table,
     images: []render.ImageDraw,
     scenes: []render.SceneDraw,
+    items: []render.SceneItem,
 ) void {
     if (table) |t| {
         t.remapImages(images);
-        t.remapScenes(scenes);
+        t.remapScenes(scenes, items);
     }
     gpu.uploadImages(images);
-    if (comptime @hasDecl(@TypeOf(gpu.*), "renderScenes")) gpu.renderScenes(scenes);
+    if (comptime @hasDecl(@TypeOf(gpu.*), "renderScenes")) gpu.renderScenes(scenes, items);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -258,7 +262,10 @@ test "remap turns keys into handles; unknown keys become none" {
         .{ .mesh = 20, .rect_x = 0, .rect_y = 0, .rect_w = 1, .rect_h = 1, .clip_x = 0, .clip_y = 0, .clip_w = 1, .clip_h = 1 },
         .{ .mesh = 0, .rect_x = 0, .rect_y = 0, .rect_w = 1, .rect_h = 1, .clip_x = 0, .clip_y = 0, .clip_w = 1, .clip_h = 1 },
     };
-    t.remapScenes(&scenes);
+    var items = [_]render.SceneItem{ .{ .mesh = 20 }, .{ .mesh = 21 } };
+    t.remapScenes(&scenes, &items);
+    try std.testing.expectEqual(t.handleOf(.mesh, 20), items[0].mesh);
+    try std.testing.expectEqual(@as(u32, 0), items[1].mesh);
     try std.testing.expectEqual(t.handleOf(.mesh, 20), scenes[0].mesh);
     try std.testing.expectEqual(@as(u32, 0), scenes[1].mesh);
 }

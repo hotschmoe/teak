@@ -244,7 +244,8 @@ pub const Renderer = struct {
     /// no-op when the slot already holds this exact picture. Returns the
     /// target size, or null if the scene has no pixels. `scale` = device
     /// pixels per logical pixel (the canvas devicePixelRatio).
-    pub fn renderInto(self: *Renderer, index: usize, draw: SceneDraw, scale: f32) ?TargetSize {
+    pub fn renderInto(self: *Renderer, index: usize, draw: SceneDraw, items: []const teak.SceneItem, scale: f32) ?TargetSize {
+        _ = items; // S4: instanced items
         const size = common.targetSize(draw.rect_w, draw.rect_h, scale) orelse return null;
         const t = self.ensureTarget(index, size);
 

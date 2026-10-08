@@ -14,6 +14,7 @@ const cmd_types = @import("../core/cmd.zig");
 const CanvasPrimitive = cmd_types.CanvasPrimitive;
 const scene_types = @import("../core/scene.zig");
 pub const SceneDraw = scene_types.SceneDraw;
+pub const SceneItem = scene_types.Item;
 const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
@@ -124,6 +125,7 @@ pub fn buildFrame(
     text_draws: *std.ArrayList(TextDraw),
     image_draws: *std.ArrayList(ImageDraw),
     scene_draws: *std.ArrayList(SceneDraw),
+    scene_items: *std.ArrayList(SceneItem),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
@@ -134,15 +136,16 @@ pub fn buildFrame(
     text_draws.clearRetainingCapacity();
     image_draws.clearRetainingCapacity();
     scene_draws.clearRetainingCapacity();
+    scene_items.clearRetainingCapacity();
 
-    buildLayer(verts, text_draws, image_draws, scene_draws, alloc, cmds, rects, transient, measurer, .base);
+    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, alloc, cmds, rects, transient, measurer, .base);
     const split: OverlaySplit = .{
         .verts = @intCast(verts.items.len),
         .text = @intCast(text_draws.items.len),
         .images = @intCast(image_draws.items.len),
         .scenes = @intCast(scene_draws.items.len),
     };
-    buildLayer(verts, text_draws, image_draws, scene_draws, alloc, cmds, rects, transient, measurer, .overlay);
+    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, alloc, cmds, rects, transient, measurer, .overlay);
     return split;
 }
 
@@ -161,7 +164,9 @@ pub fn buildVertices(
 ) void {
     var scenes: std.ArrayList(SceneDraw) = .empty;
     defer scenes.deinit(alloc);
-    _ = buildFrame(verts, text_draws, image_draws, &scenes, alloc, cmds, rects, transient, measurer);
+    var items: std.ArrayList(SceneItem) = .empty;
+    defer items.deinit(alloc);
+    _ = buildFrame(verts, text_draws, image_draws, &scenes, &items, alloc, cmds, rects, transient, measurer);
 }
 
 const Layer = enum { base, overlay };
@@ -171,6 +176,7 @@ fn buildLayer(
     text_draws: *std.ArrayList(TextDraw),
     image_draws: *std.ArrayList(ImageDraw),
     scene_draws: *std.ArrayList(SceneDraw),
+    scene_items: *std.ArrayList(SceneItem),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
@@ -287,8 +293,20 @@ fn buildLayer(
             .scene3d => |sc| {
                 if (!visible) continue;
                 if (rect.w <= 0 or rect.h <= 0) continue;
+                const item_first: u32 = @intCast(scene_items.items.len);
+                for (sc.view.items) |it| {
+                    if (!it.flags.hidden) scene_items.append(alloc, it) catch {};
+                }
                 scene_draws.append(alloc, .{
                     .mesh = sc.mesh,
+                    .item_first = item_first,
+                    .item_count = @as(u32, @intCast(scene_items.items.len)) - item_first,
+                    .grid = sc.view.grid,
+                    .gizmo = sc.view.gizmo,
+                    .cut = sc.view.cut,
+                    .material = sc.view.material,
+                    .highlight_color = sc.view.highlight_color,
+                    .highlight_mix = sc.view.highlight_mix,
                     .rect_x = rect.x,
                     .rect_y = rect.y,
                     .rect_w = rect.w,
@@ -1344,6 +1362,7 @@ const TestFrame = struct {
     texts: std.ArrayList(TextDraw) = .empty,
     images: std.ArrayList(ImageDraw) = .empty,
     scenes: std.ArrayList(SceneDraw) = .empty,
+    items: std.ArrayList(SceneItem) = .empty,
     split: OverlaySplit = .{},
 
     fn deinit(self: *TestFrame, alloc: std.mem.Allocator) void {
@@ -1351,6 +1370,7 @@ const TestFrame = struct {
         self.texts.deinit(alloc);
         self.images.deinit(alloc);
         self.scenes.deinit(alloc);
+        self.items.deinit(alloc);
     }
 };
 
@@ -1360,7 +1380,7 @@ fn buildTestFrame(alloc: std.mem.Allocator, cb: anytype) !TestFrame {
     defer alloc.free(rects);
     layout.LayoutEngine.doLayout(rects, cb.cmds.items, 1000, 1000, text_mod.monoMeasurer());
     var f: TestFrame = .{};
-    f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
+    f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, &f.items, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
     return f;
 }
 
@@ -1486,6 +1506,37 @@ test "canvas lines: one quad per visible segment, trimmed to the canvas" {
         try testing.expect(v.x <= 100 + 0.001);
         try testing.expectEqual(@as(f32, 1), v.r);
     }
+}
+
+test "viewport3d items are flattened per scene with their range; hidden items are dropped" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    const first = [_]SceneItem{ .{ .mesh = 1, .id = 1 }, .{ .mesh = 2, .id = 2, .flags = .{ .hidden = true } }, .{ .mesh = 1, .id = 3 } };
+    const second = [_]SceneItem{.{ .mesh = 4, .id = 9 }};
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.viewport3d(.{ .style = .{ .width = 100, .height = 50 }, .view = .{ .items = &first, .grid = .{}, .material = .flat } });
+    cb.viewport3d(.{ .style = .{ .width = 100, .height = 50 }, .view = .{ .items = &second, .cut = .{ .plane = .{ 0, 1, 0, 2 } } } });
+    cb.scene3d(.{ .style = .{ .width = 100, .height = 50 }, .mesh = 5 }); // legacy single mesh
+    cb.popGroup();
+
+    var f = try buildTestFrame(testing.allocator, &cb);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 3), f.scenes.items.len);
+    try testing.expectEqual(@as(usize, 3), f.items.items.len);
+    const a = f.scenes.items[0];
+    try testing.expectEqual(@as(u32, 0), a.item_first);
+    try testing.expectEqual(@as(u32, 2), a.item_count);
+    try testing.expect(a.grid != null and a.material == .flat and a.cut == null);
+    try testing.expectEqual(@as(u32, 3), f.items.items[1].id); // hidden id 2 skipped
+    const b = f.scenes.items[1];
+    try testing.expectEqual(@as(u32, 2), b.item_first);
+    try testing.expectEqual(@as(u32, 1), b.item_count);
+    try testing.expect(b.cut != null);
+    const legacy = f.scenes.items[2];
+    try testing.expectEqual(@as(u32, 0), legacy.item_count);
+    try testing.expectEqual(@as(u32, 5), legacy.mesh);
 }
 
 test "scene3d emits a SceneDraw with rect, clip and camera; buildVertices skips it" {

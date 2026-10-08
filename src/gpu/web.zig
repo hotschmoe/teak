@@ -639,7 +639,7 @@ pub const Gpu = struct {
     /// per visible scene for the next `renderFrame`. Call after
     /// `uploadImages`, before `renderFrame`. Scenes whose content did not
     /// change since the last frame are not redrawn.
-    pub fn renderScenes(self: *Gpu, draws: []const teak.SceneDraw) void {
+    pub fn renderScenes(self: *Gpu, draws: []const teak.SceneDraw, items: []const teak.SceneItem) void {
         self.scene_draw_count = 0;
         self.scene_vert_count = 0;
         var mark: overlay.Marker = .{ .start = self.splitOf("scenes", draws.len) };
@@ -656,7 +656,7 @@ pub const Gpu = struct {
 
         for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
             mark.visit(i, self.scene_draw_count);
-            const size = self.scene.renderInto(i, draw, scale) orelse continue;
+            const size = self.scene.renderInto(i, draw, scene_common.itemsOf(draw, items), scale) orelse continue;
             const quad = scene_common.compositeQuad(draw, size, scale) orelse continue;
             const bind_group = self.sceneBindGroup(i) orelse continue;
 

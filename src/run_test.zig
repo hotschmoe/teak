@@ -251,7 +251,7 @@ pub const StubGpu = struct {
     pub fn releaseImage(self: *StubGpu, _: u32) void {
         self.image_releases += 1;
     }
-    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw) void {
+    pub fn renderScenes(self: *StubGpu, d: []const render.SceneDraw, _: []const render.SceneItem) void {
         self.scene_calls += 1;
         self.last_scene_count = d.len;
         if (d.len > 0) self.last_scene_mesh = d[0].mesh;
