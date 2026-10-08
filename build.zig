@@ -252,6 +252,42 @@ pub fn build(b: *std.Build) void {
     const wasm_step = b.step("test-wasm", "Compile framework core for wasm32-freestanding (posix-dep canary)");
     wasm_step.dependOn(&wasm_canary.step);
 
+    // `zig build bench`: CPU pipeline benchmark (tools/bench/main.zig), always
+    // ReleaseFast. Text case measures through the stb `teak-text` module.
+    {
+        const bench_teak = b.createModule(.{
+            .root_source_file = b.path("src/teak.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        });
+        const bench_text = b.createModule(.{
+            .root_source_file = b.path("src/text/text.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{.{ .name = "teak", .module = bench_teak }},
+        });
+        bench_text.addImport("stb-c", translateC(b, b.path("src/gpu/vendor/stb_truetype.h"), null, target, .ReleaseFast));
+        bench_text.addIncludePath(b.path("src/gpu/vendor"));
+        bench_text.addCSourceFile(.{ .file = b.path("src/gpu/vendor/stb_truetype_impl.c"), .flags = &.{"-std=c99"} });
+        const bench_exe = b.addExecutable(.{
+            .name = "teak-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/bench/main.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .strip = false, // keep symbols so `perf report` works on the binary
+                .imports = &.{
+                    .{ .name = "teak", .module = bench_teak },
+                    .{ .name = "teak-text", .module = bench_text },
+                },
+            }),
+        });
+        const bench_run = b.addRunArtifact(bench_exe);
+        bench_run.has_side_effects = true;
+        b.step("bench", "CPU pipeline benchmark (view/layout/hit/render/cmdsEqual + text)").dependOn(&bench_run.step);
+    }
+
     // HARDLINE drift audit — greppable half of docs/HARDLINE.md §5.
     // Depends on the wasm canary so one command gates both.
     const audit_exe = b.addExecutable(.{
