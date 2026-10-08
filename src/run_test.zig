@@ -270,6 +270,7 @@ pub const StubGpu = struct {
     resize_calls: u32 = 0,
     upload_vert_calls: u32 = 0,
     render_calls: u32 = 0,
+    last_clear: [4]f32 = .{ 0, 0, 0, 0 },
     secondary_opened: u32 = 0,
     secondary_rendered: u32 = 0,
     secondary_closed: u32 = 0,
@@ -320,8 +321,9 @@ pub const StubGpu = struct {
         defer self.next_handle += 1;
         return self.next_handle;
     }
-    pub fn renderFrame(self: *StubGpu, _: [4]f32) void {
+    pub fn renderFrame(self: *StubGpu, clear: [4]f32) void {
         self.render_calls += 1;
+        self.last_clear = clear;
     }
     pub fn rasterizeText(_: *StubGpu, _: []const u8, _: text.FontSpec, _: [4]f32, _: u32, _: u32) text.TextureHandle {
         return text.TEXTURE_HANDLE_NONE;
@@ -580,6 +582,17 @@ test "run: routes typed chars + special keys through the optional hooks" {
     try std.testing.expectEqual(@as(u32, 1), t.rt.model.backspaces);
     // `themeFor` reached the view's CmdBuffer.
     try std.testing.expect(std.meta.eql(theme_mod.Theme.light_default, t.rt.bufs[t.rt.current].theme));
+}
+
+test "run: the clear colour follows the theme unless RunOptions pins one" {
+    // KeyApp's themeFor is the light theme.
+    const t = try play(KeyApp, &.{.{}});
+    defer t.destroy();
+    try std.testing.expectEqual(theme_mod.light_palette.bg, t.gpu.last_clear);
+
+    const pinned = try playWith(KeyApp, .{ .script = &.{.{}} }, .{ .clear_color = .{ 0.5, 0.25, 0.125, 1 } });
+    defer pinned.destroy();
+    try std.testing.expectEqual([4]f32{ 0.5, 0.25, 0.125, 1 }, pinned.gpu.last_clear);
 }
 
 const TabApp = struct {
@@ -2373,6 +2386,34 @@ test "idle: a fired sub, a moved mouse and a click each wake the pipeline; idle_
     const never = try runIdle(&.{ .{}, .{}, .{}, .{} }, .{ .idle_skip = false });
     try std.testing.expectEqual(@as(u32, 4), never.renders);
     try std.testing.expectEqual(@as(u32, 0), never.waits);
+}
+
+const LayoutIdleApp = struct {
+    pub const Model = struct { w: f32 = 0 };
+    pub const Msg = union(enum) { size: f32 };
+    pub fn update(m: *Model, msg: Msg) void {
+        switch (msg) {
+            .size => |w| m.w = w,
+        }
+    }
+    pub fn view(m: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.canvasInteractive(.{ .width = 40 + m.w * 0, .height = 20 }, &.{}, 3, "c");
+        cb.popGroup();
+    }
+    pub fn canvasMsg(_: *const Model, ev: pointer.CanvasEvent) ?Msg {
+        return if (ev.kind == .layout) Msg{ .size = ev.w } else null;
+    }
+};
+
+test "idle: a canvas layout Msg dispatched after the build wakes the next frame" {
+    // Frame 1 builds and reports the canvas size, which updates the Model after the
+    // build; frame 2 has no input and no dispatch of its own but must still rebuild
+    // (or the shown frame would keep the stale Model until the next event).
+    var host: ScriptHost = .{ .script = &.{ .{}, .{}, .{}, .{} } };
+    var gpu: PlainGpu = .{};
+    try run_mod.run(LayoutIdleApp, std.testing.allocator, &host, &gpu, .{});
+    try std.testing.expectEqual(@as(u32, 2), gpu.renders); // frame 1 and the follow-up; then idle
 }
 
 // ── Blink-aware idle ────────────────────────────────────────────────

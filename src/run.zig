@@ -183,8 +183,11 @@ pub const RunOptions = struct {
     /// sliders). Text fields keep their Model-owned focus. Off = Tab only
     /// walks text fields (apps with `focusedMsg`), as before.
     keyboard_nav: bool = true,
-    /// Scene clear color passed to `Gpu.renderFrame` each frame.
-    clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },
+    /// Scene clear color passed to `Gpu.renderFrame` each frame. `null`
+    /// (the default) follows the frame's theme: `theme.palette.bg`, so an
+    /// app that switches theme (`themeFor`) switches its background with it.
+    /// Set it for a fixed backdrop (a paper colour, a 3D scene).
+    clear_color: ?[4]f32 = null,
     /// Text-cursor blink half-period in ms of the Host clock (500 = 500 ms on,
     /// 500 ms off). 0 disables blinking (the caret stays on). While a text
     /// input is focused the loop wakes at each toggle and re-renders only the
@@ -609,6 +612,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         animating: bool = false,
         /// The first frame always builds (nothing to show yet).
         built_once: bool = false,
+        /// `reportLayout` dispatched a Msg after the frame's build (a canvas
+        /// size, a scroll extent): the shown frame is stale until the next one
+        /// rebuilds, so that frame must not be skipped as idle.
+        layout_dirty: bool = false,
 
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
@@ -712,7 +719,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
             // Event-driven idle: nothing changed since the frame on screen.
             self.quiet = self.opts.idle_skip and self.built_once and
-                self.dispatch_count == dispatched_before and self.inputIdle(input) and !self.ctl.consumeDirty();
+                self.dispatch_count == dispatched_before and !self.layout_dirty and self.inputIdle(input) and !self.ctl.consumeDirty();
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
@@ -724,14 +731,17 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     const last = self.current;
                     self.uploadFrame(self.bufs[last].cmds.items, self.rects[last].items, self.ts);
                     self.prev_ts = self.ts;
-                    self.gpu.renderFrame(self.opts.clear_color);
+                    self.gpu.renderFrame(self.opts.clear_color orelse self.bufs[last].theme.palette.bg);
                 }
                 return;
             }
             self.built_once = true;
+            self.layout_dirty = false;
 
             const cur = try self.buildView(input);
+            const before_layout = self.dispatch_count;
             self.reportLayout(prev, cur);
+            self.layout_dirty = self.dispatch_count != before_layout;
             const cur_cmds = self.bufs[cur].cmds.items;
             const cur_rects = self.rects[cur].items;
             self.updateTransient(input, cur);
@@ -761,7 +771,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.prev_ts = self.ts;
             self.publishA11y(cur, diff);
 
-            self.gpu.renderFrame(self.opts.clear_color);
+            self.gpu.renderFrame(self.opts.clear_color orelse self.bufs[self.current].theme.palette.bg);
             self.ctl.timings.render_ms = control.msBetween(t_render, control.stamp(&self.ctl));
 
             const sec = if (has_secondary) try self.driveSecondary() else SecondaryFrame{};
@@ -2078,7 +2088,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // The secondary window has no interactive/transient state of its
             // own — a fresh default is correct.
             self.uploadFrame(cmds, sec.rects[scur].items, .{});
-            self.gpu.renderToWindow(wid, self.opts.clear_color);
+            self.gpu.renderToWindow(wid, self.opts.clear_color orelse sec.bufs[scur].theme.palette.bg);
             return .{
                 .title = if (spec) |s| s.title else "secondary",
                 .content_changed = !cmdsEqual(Msg, cmds, sec.bufs[sprev].cmds.items) or

@@ -1,6 +1,8 @@
-//! Headless screenshot of the viewport example: `zig build shot -- out.png [--zoom Z] [--scale S]`.
-//! `--zoom` sets the canvas zoom (the canvas labels are scalable text: one distance-field glyph set
-//! serves every zoom); `--scale` renders HiDPI.
+//! Headless screenshots of the viewport example (no display needed):
+//! `zig build shot -- out.png [--state <name>]`, `-- --list` for the states.
+//! Each state plays a short input script against the real App on the
+//! native wgpu backend and captures the last frame (the visual-regression
+//! goldens in `test/golden/` come from these; see docs/features/visual-regression.md).
 
 const std = @import("std");
 const teak = @import("teak");
@@ -9,32 +11,34 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 
 pub fn main(init: std.process.Init) !void {
-    var path: []const u8 = "viewport.png";
-    var zoom: f32 = 1;
-    var scale: f32 = 1;
-    var it = init.minimal.args.iterate();
-    _ = it.next();
-    while (it.next()) |a| {
-        if (std.mem.eql(u8, a, "--zoom")) {
-            zoom = std.fmt.parseFloat(f32, it.next() orelse "1") catch 1;
-        } else if (std.mem.eql(u8, a, "--scale")) {
-            scale = std.fmt.parseFloat(f32, it.next() orelse "1") catch 1;
-        } else path = a;
-    }
-    const gpa = init.gpa;
-    var host = try Host.init(gpa, 900, 520);
-    defer host.deinit();
-    var gpu = try Gpu.initOffscreen(900, 520, .{ .msaa = false, .scale = scale });
-    defer gpu.deinit();
-    var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, .{ .idle_skip = false });
-    defer rt.deinit();
-    for (0..3) |_| try rt.frame();
-    // Zoom about the canvas centre so a different set of labels fills the view.
-    rt.model.zoom = zoom;
-    rt.model.pan_x = 280 - 130 * zoom;
-    rt.model.pan_y = 230 - 100 * zoom;
-    for (0..3) |_| try rt.frame();
-    std.debug.print("zoom {d:.2}, atlas pages {d}\n", .{ zoom, gpu.text.atlas.pageCount() });
-    try teak.headless.writeFramePng(&gpu, gpa, path);
-    std.debug.print("wrote {s}\n", .{path});
+    try teak.headless.shotCli(App, Host, Gpu, init, "viewport.png", .{
+        .width = 900,
+        .height = 520,
+    }, &.{
+        .{ .name = "initial", .steps = &.{.{ .frames = 2 }} },
+        .{
+            .name = "zoomed_panned",
+            .steps = &.{
+                .{ .frames = 2 },
+                .{ .move = .{ 290, 240 } },
+                .{ .wheel = .{ 0, -240 } }, // zoom in around the cursor
+                .{ .frames = 2 },
+                .{ .drag = .{ .{ 300, 250 }, .{ 380, 300 } } }, // pan
+                .{ .frames = 2 },
+            },
+        },
+        // Canvas labels are scalable text (one distance-field glyph set serves every zoom).
+        .{ .name = "zoomed_in", .steps = &.{
+            .{ .frames = 2 },
+            .{ .move = .{ 290, 240 } },
+            .{ .wheel = .{ 0, -600 } },
+            .{ .frames = 3 },
+        } },
+        .{ .name = "list_scrolled", .steps = &.{
+            .{ .frames = 2 },
+            .{ .move = .{ 660, 300 } },
+            .{ .wheel = .{ 0, 200 } },
+            .{ .frames = 3 },
+        } },
+    });
 }

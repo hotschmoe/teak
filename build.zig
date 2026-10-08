@@ -443,6 +443,32 @@ pub fn build(b: *std.Build) void {
     const audit_step = b.step("audit", "Run HARDLINE drift audit (greppable rules from HARDLINE §5)");
     audit_step.dependOn(&audit_run.step);
     audit_step.dependOn(wasm_step);
+
+    // Visual-regression runner (tools/vreg.zig): renders every example's
+    // `zig build shot` states and compares them with test/golden/. Runs on
+    // the build host; needs a Vulkan device (native) or Chromium (--web).
+    // See docs/features/visual-regression.md.
+    const vreg_teak = b.createModule(.{
+        .root_source_file = b.path("src/teak.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    const vreg_mod = b.createModule(.{
+        .root_source_file = b.path("tools/vreg.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+        .imports = &.{.{ .name = "teak", .module = vreg_teak }},
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = vreg_mod })).step);
+    const vreg_exe = b.addExecutable(.{ .name = "vreg", .root_module = vreg_mod });
+    const vreg_run = b.addRunArtifact(vreg_exe);
+    vreg_run.setCwd(b.path("."));
+    vreg_run.has_side_effects = true;
+    vreg_run.stdio = .inherit;
+    vreg_run.addArgs(&.{ "--zig", b.graph.zig_exe });
+    vreg_run.addPassthruArgs();
+    b.step("vreg", "Visual regression: render example shots and compare with test/golden/ (-- --update, --web, ...)")
+        .dependOn(&vreg_run.step);
 }
 
 fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {
