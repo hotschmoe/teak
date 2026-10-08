@@ -13,7 +13,26 @@ fn isFocusable(c: anytype) bool {
         // A disabled input is skipped by Tab traversal, mirroring how
         // hit-test refuses to focus it on click.
         .text_input => |t| !t.disabled,
-        else => false,
+        .text_area => |t| !t.disabled,
+        .push_group,
+        .pop_group,
+        .push_scroll,
+        .pop_scroll,
+        .push_overlay,
+        .pop_overlay,
+        .push_virtual_list,
+        .pop_virtual_list,
+        .text,
+        .rich_text,
+        .image,
+        .divider,
+        .button,
+        .checkbox,
+        .radio,
+        .slider,
+        .canvas,
+        .scene3d,
+        => false,
     };
 }
 
@@ -62,10 +81,25 @@ fn activationMsg(c: anytype) ?@TypeOf(c).MsgT {
     return switch (c) {
         .button => |b| b.msg,
         .text_input => |t| t.focus_msg,
+        .text_area => |t| t.focus_msg,
         .checkbox => |cb| cb.msg,
         .radio => |r| r.msg,
         .slider => |s| s.grab_msg,
-        else => null,
+        .push_group,
+        .pop_group,
+        .push_scroll,
+        .pop_scroll,
+        .push_overlay,
+        .pop_overlay,
+        .push_virtual_list,
+        .pop_virtual_list,
+        .text,
+        .rich_text,
+        .image,
+        .divider,
+        .canvas,
+        .scene3d,
+        => null,
     };
 }
 
@@ -246,4 +280,21 @@ test "Tab traversal skips a disabled input" {
     try testing.expectEqual(@as(?usize, 2), nextFocusable(cb.cmds.items, 0));
     // And back-wraps the same way.
     try testing.expectEqual(@as(?usize, 0), prevFocusable(cb.cmds.items, 2));
+}
+
+test "text_area is focusable (Tab traversal, focus Msg) unless disabled" {
+    const testing = std.testing;
+    const Msg = union(enum) { a, b, c };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{});
+    cb.textArea(.{ .focus_msg = .a, .id = 1, .content = "" });
+    cb.textArea(.{ .focus_msg = .b, .id = 2, .content = "", .disabled = true });
+    cb.textInput(.c, "", 0);
+    cb.popGroup();
+    const cmds = cb.cmds.items;
+    try testing.expectEqual(@as(?usize, 1), nextFocusable(cmds, null));
+    try testing.expectEqual(@as(?usize, 3), nextFocusable(cmds, 1)); // skips the disabled area
+    try testing.expectEqual(@as(?Msg, Msg.a), focusMsgAt(cmds, 1));
+    try testing.expectEqual(@as(?usize, 1), indexOfFocusMsg(cmds, Msg.a));
 }

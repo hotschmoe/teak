@@ -41,6 +41,15 @@
 //!     leave, plus `layout` on first layout and resize. A press captures the
 //!     pointer for its canvas until every button is released. A wheel over a
 //!     pointer canvas becomes a `wheel` event INSTEAD of `wheelMsg`.
+//!   - `textMsg(*const Model, TextEvent) ?Msg`        — input over `text_area`
+//!     cmds (core/text_event.zig): down / drag / up / double + triple click /
+//!     wheel with the nearest grapheme `index` resolved against the wrapped
+//!     layout; `move` for Up/Down/PageUp/PageDown/Home/End of the FOCUSED
+//!     area (resolved visually, the key is consumed); and `metrics` (viewport,
+//!     content and caret rect) on first layout and whenever they change, so
+//!     the app can clamp scroll and reveal the caret. A press captures the
+//!     pointer (drag-select continues outside the rect). The focused caret
+//!     rect also feeds `Host.setImeSpot` when the Host has it.
 //!   - `scrollMsg(*const Model, id, dx, dy) ?Msg`     — wheel over the
 //!     innermost hovered scroll region with `ScrollStyle.id != 0` (a pointer
 //!     canvas inside it wins when it is the innermost).
@@ -72,6 +81,7 @@
 //!     services the returned subs each frame via `runSubs` on the host's
 //!     monotonic clock (`Host.nowMs`) and dispatches any fired `Msg`
 //!     through the normal `update` loop. See `docs/features/subscriptions.md`.
+//!   - `animationMsg(*const Model, dt_ms: u32) ?Msg`   — frame time while a `Sub.animation_frame` is listed (core/anim.zig)
 //!   - `effects(*const Model) []const Effect`         — declarative effects
 //!     (HARDLINE §2 hatch 7): HTTP, downloads, file picker, storage, clock,
 //!     clipboard, query params. Pure; each effect `id` is handed to the host
@@ -99,12 +109,15 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const cmd = @import("core/cmd.zig");
+const eql = @import("core/eql.zig");
 const snapshot = @import("core/snapshot.zig");
 const sub_mod = @import("core/sub.zig");
 const effects_mod = @import("core/effects.zig");
 const transient = @import("core/transient.zig");
 const text = @import("core/text.zig");
 const pointer = @import("core/pointer.zig");
+const text_event = @import("core/text_event.zig");
+const text_wrap = @import("core/text_wrap.zig");
 const layout = @import("layout/engine.zig");
 const scroll_extent = @import("layout/scroll_extent.zig");
 const hit_test = @import("input/hit_test.zig");
@@ -145,6 +158,15 @@ pub const RunOptions = struct {
     /// under `<config>/teak/<app_name>/`). Empty: the Host's default, the
     /// window title. Ignored by hosts without `setAppName`.
     app_name: []const u8 = "",
+    /// Event-driven idle. When true, a frame in which nothing happened (no
+    /// input event, no Msg dispatched by a sub / effect result / window hook,
+    /// no focused text input blinking, no secondary window, not the first
+    /// frame) skips view, layout, diff, upload and present entirely —
+    /// `Runtime.quiet` reports it — and `run` then blocks in the Host's
+    /// optional `waitEvents(timeout_ms)` until input or the next sub is due.
+    /// Set false for an app that needs a frame every tick. The web Host stays
+    /// rAF-driven but still skips the work. See docs/features/run.md.
+    idle_skip: bool = true,
 };
 
 /// The target has a host filesystem to mirror snapshots into. Freestanding
@@ -339,7 +361,12 @@ pub fn run(
 ) !void {
     var rt = try Runtime(App, @TypeOf(host.*), @TypeOf(gpu.*)).init(gpa, host, gpu, opts);
     defer rt.deinit();
-    while (!host.shouldClose()) try rt.frame();
+    while (!host.shouldClose()) {
+        try rt.frame();
+        if (comptime @hasDecl(@TypeOf(host.*), "waitEvents")) {
+            if (rt.quiet and !host.shouldClose()) host.waitEvents(rt.idleTimeoutMs());
+        }
+    }
 }
 
 /// The canonical loop body, one `frame` call per iteration, parameterized on
@@ -371,6 +398,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// the web Gpu has none (and its Host never opens a second window),
         /// so the hooks compile away there.
         const has_canvas_hook = @hasDecl(App, "canvasMsg");
+        const has_text_hook = @hasDecl(App, "textMsg");
+        /// Any hook that consumes pointer input over id-bearing surfaces.
+        const has_pointer_hook = has_canvas_hook or has_text_hook;
         const has_scroll_hook = @hasDecl(App, "scrollMsg");
         const has_scroll_layout_hook = @hasDecl(App, "scrollLayoutMsg");
         const has_resources = @hasDecl(App, "resources");
@@ -424,6 +454,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// own state still lives in its Model.
         canvas_ptr: CanvasPointer = .{},
 
+        /// Click-count tracking for text areas (same spot within 400 ms).
+        text_click: TextClick = .{},
+        /// Last `metrics` reported per text area (by id). Loop bookkeeping:
+        /// only used to decide when to re-send; extra areas beyond the table
+        /// are re-reported every frame they differ from "unknown".
+        text_metrics: [8]TextMetricsSlot = @splat(.{}),
+        /// Last IME spot pushed to the Host (avoid per-frame calls).
+        ime_spot: ?[2]i32 = null,
+
         /// Press model: arm on mousedown over a widget, fire the click only
         /// if mouseup lands on the same widget; drag-off cancels.
         press_target: ?usize = null,
@@ -449,6 +488,23 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// match the empty previous buffer.
         snap_first: bool = true,
         prev_secondary_open: bool = false,
+
+        /// True when the last `frame()` found nothing to do and skipped the
+        /// pipeline (see `RunOptions.idle_skip`). `run` blocks in
+        /// `Host.waitEvents` while this holds.
+        quiet: bool = false,
+        /// Count of Msgs dispatched so far; a frame that leaves it unchanged
+        /// changed no state.
+        dispatch_count: u64 = 0,
+        /// Pointer position / buttons of the previous frame, to tell a still
+        /// mouse from a moved one.
+        last_mouse_x: f32 = -1,
+        last_mouse_y: f32 = -1,
+        last_buttons: pointer.Buttons = .{},
+        /// A `Sub.animation_frame` is listed: frames must keep flowing.
+        animating: bool = false,
+        /// The first frame always builds (nothing to show yet).
+        built_once: bool = false,
 
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
@@ -512,6 +568,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // Input is routed against the PREVIOUS frame's layout — the one
             // the user is looking at — so `prev` is captured before the swap.
             const prev = self.current;
+            const dispatched_before = self.dispatch_count;
             self.routeMouse(input, prev);
             self.routeCanvasPointer(input, prev);
             self.routeKeys(input, prev);
@@ -520,11 +577,21 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.fireSubs();
             self.serviceEffects();
 
+            // Event-driven idle: nothing changed since the frame on screen.
+            self.quiet = self.opts.idle_skip and self.built_once and
+                self.dispatch_count == dispatched_before and self.inputIdle(input);
+            self.last_mouse_x = input.mouse_x;
+            self.last_mouse_y = input.mouse_y;
+            self.last_buttons = input.buttons;
+            if (self.quiet) return;
+            self.built_once = true;
+
             const cur = try self.buildView(input);
             self.reportLayout(prev, cur);
             const cur_cmds = self.bufs[cur].cmds.items;
             const cur_rects = self.rects[cur].items;
             self.updateTransient(input, cur);
+            self.updateImeSpot(cur);
             self.pushTitle();
 
             // Frame diff: skip the vertex rebuild + upload when nothing
@@ -572,10 +639,39 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
         }
 
+        /// True when `input` carries nothing the pipeline must react to and no
+        /// loop-owned animation (cursor blink, live secondary window, IME
+        /// composition) needs the next frame.
+        fn inputIdle(self: *Self, input: Input) bool {
+            if (input.resized or input.mouse_down or input.mouse_up) return false;
+            if (input.mouse_x != self.last_mouse_x or input.mouse_y != self.last_mouse_y) return false;
+            if (!std.meta.eql(input.buttons, self.last_buttons)) return false;
+            if (input.wheel_dx != 0 or input.wheel_dy != 0) return false;
+            if (input.chars.len != 0 or input.keys.len != 0) return false;
+            if (self.animating) return false;
+            if (self.ts.ime_active or self.host.imeState().active) return false;
+            if (self.opts.blink_period > 0 and self.ts.focus_index != null) return false;
+            if (has_secondary and App.secondaryWindow(&self.model) != null) return false;
+            if (has_secondary and self.secondary.window_id != null) return false;
+            return true;
+        }
+
+        /// How long the Host may block after a quiet frame: until the next
+        /// `Sub` is due, capped so a Host without its own wake-ups is polled.
+        pub fn idleTimeoutMs(self: *Self) u32 {
+            // Effect results arrive from the Host asynchronously; poll them
+            // at frame rate while any effect is outstanding.
+            const cap: u32 = if (self.issued.len != 0) 16 else 1000;
+            if (!@hasDecl(App, "subscribe")) return cap;
+            const due = sub_mod.nextDueMs(Msg, App.subscribe(&self.model), self.host.nowMs()) orelse return cap;
+            return @intCast(@min(due, cap));
+        }
+
         /// Every Msg is routed through here so the live snapshot's header can
         /// name the last transition. Adds nothing to the TEA loop — it is
         /// `App.update` plus one string assignment.
         fn dispatch(self: *Self, msg: Msg) void {
+            self.dispatch_count +%= 1;
             self.last_msg = @tagName(std.meta.activeTag(msg));
             App.update(&self.model, msg);
         }
@@ -615,6 +711,11 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 }
             }
             for (input.keys) |k| {
+                // Visual motion in a focused text area is resolved against the
+                // wrapped layout, so it becomes a `move` TextEvent (key consumed).
+                if (has_text_hook) {
+                    if (self.sendTextNav(k, input, prev)) continue;
+                }
                 // Built-in Tab / Shift+Tab focus traversal — only for apps
                 // that expose `focusedMsg` (so the loop knows the current
                 // focus and how to move it). Walk the PREVIOUS frame's
@@ -661,13 +762,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const cmds = self.bufs[prev].cmds.items;
             const rects = self.rects[prev].items;
 
-            if (has_canvas_hook) {
+            if (has_pointer_hook) {
                 // A captured canvas takes every wheel event, wherever the cursor is.
                 if (self.canvas_ptr.capture) |id| return self.sendCanvasEvent(id, .wheel, input, prev, .none);
             }
-            if (has_canvas_hook or has_scroll_hook) {
+            if (has_pointer_hook or has_scroll_hook) {
                 if (hit_test.wheelTarget(cmds, rects, input.mouse_x, input.mouse_y)) |target| switch (target) {
-                    .canvas => |c| if (has_canvas_hook) return self.sendCanvasEvent(c.id, .wheel, input, prev, .none),
+                    .canvas => |c| if (has_pointer_hook) return self.sendCanvasEvent(c.id, .wheel, input, prev, .none),
                     .scroll => |sc| if (has_scroll_hook) {
                         if (App.scrollMsg(&self.model, sc.id, input.wheel_dx, input.wheel_dy)) |m| self.dispatch(m);
                         return;
@@ -688,7 +789,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// slider across a canvas does not poke the canvas. Wheel is routed
         /// separately (`routeWheel`).
         fn routeCanvasPointer(self: *Self, input: Input, prev: u1) void {
-            if (!has_canvas_hook) return;
+            if (!has_pointer_hook) return;
             const cmds = self.bufs[prev].cmds.items;
             const rects = self.rects[prev].items;
             const p = &self.canvas_ptr;
@@ -754,6 +855,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn sendCanvasMove(self: *Self, id: u32, input: Input, prev: u1, dx: f32, dy: f32) void {
             const cmds = self.bufs[prev].cmds.items;
             const idx = findPointerCanvas(cmds, id) orelse return;
+            if (cmds[idx] == .text_area) return self.sendTextPointer(idx, .move, input, prev, .none);
             var ev = canvasEventAt(id, .move, input, self.rects[prev].items[idx], .none);
             ev.dx = dx;
             ev.dy = dy;
@@ -765,6 +867,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn sendCanvasEvent(self: *Self, id: u32, kind: pointer.CanvasEventKind, input: Input, prev: u1, button: pointer.Button) void {
             const cmds = self.bufs[prev].cmds.items;
             const idx = findPointerCanvas(cmds, id) orelse return;
+            if (cmds[idx] == .text_area) return self.sendTextPointer(idx, kind, input, prev, button);
             var ev = canvasEventAt(id, kind, input, self.rects[prev].items[idx], button);
             if (kind == .wheel) {
                 ev.dx = input.wheel_dx;
@@ -774,7 +877,188 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         }
 
         fn dispatchCanvas(self: *Self, ev: pointer.CanvasEvent) void {
+            if (!has_canvas_hook) return;
             if (App.canvasMsg(&self.model, ev)) |m| self.dispatch(m);
+        }
+
+        // ── text_area routing ──────────────────────────────────────────
+
+        /// Wrap mode + width a text area lays its content out with.
+        fn textAreaGeometry(ta: anytype, rect: Rect) struct { inner: Rect, wrap_w: f32, mode: text_wrap.Wrap } {
+            const inner = layout.textAreaInner(rect, ta);
+            return .{
+                .inner = inner,
+                .wrap_w = layout.textAreaWrapWidth(inner, ta),
+                .mode = if (ta.wrap == .ellipsis) .none else ta.wrap,
+            };
+        }
+
+        /// A pointer event over (or captured by) text area `idx`, resolved
+        /// against the previous frame's layout into a `TextEvent`.
+        fn sendTextPointer(self: *Self, idx: usize, kind: pointer.CanvasEventKind, input: Input, prev: u1, button: pointer.Button) void {
+            if (!has_text_hook) return;
+            const ta = self.bufs[prev].cmds.items[idx].text_area;
+            const rect = self.rects[prev].items[idx];
+            const g = textAreaGeometry(ta, rect);
+            var ev: text_event.TextEvent = .{
+                .id = ta.id,
+                .kind = .down,
+                .x = input.mouse_x - rect.x,
+                .y = input.mouse_y - rect.y,
+                .mods = input.mods,
+            };
+            switch (kind) {
+                .down => {
+                    if (button != .left) return;
+                    const now = self.host.nowMs();
+                    const c = &self.text_click;
+                    const near = @abs(input.mouse_x - c.x) <= 4 and @abs(input.mouse_y - c.y) <= 4;
+                    c.count = if (c.count > 0 and c.count < 3 and near and now -| c.ms <= 400) c.count + 1 else 1;
+                    c.ms = now;
+                    c.x = input.mouse_x;
+                    c.y = input.mouse_y;
+                    ev.clicks = c.count;
+                    ev.kind = switch (c.count) {
+                        1 => .down,
+                        2 => .double_click,
+                        else => .triple_click,
+                    };
+                },
+                .move => {
+                    if (!input.buttons.left) return;
+                    ev.kind = .drag;
+                },
+                .up => {
+                    if (button != .left) return;
+                    ev.kind = .up;
+                },
+                .wheel => {
+                    ev.kind = .wheel;
+                    ev.dx = input.wheel_dx;
+                    ev.dy = input.wheel_dy;
+                },
+                .leave => ev.kind = .leave,
+                .layout => return,
+            }
+            switch (ev.kind) {
+                .down, .drag, .double_click, .triple_click, .up => {
+                    const lx = input.mouse_x - g.inner.x + ta.scroll_x;
+                    const ly = input.mouse_y - g.inner.y + ta.scroll_y;
+                    const at = text_wrap.indexAt(ta.content, lx, ly, ta.font, g.wrap_w, g.mode, 0, self.measurer);
+                    ev.index = @intCast(at);
+                    ev.line = text_wrap.caretPos(ta.content, at, ta.font, g.wrap_w, g.mode, 0, self.measurer).line;
+                },
+                else => {},
+            }
+            if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
+        }
+
+        /// Up/Down/PageUp/PageDown/Home/End (and Shift variants) while a text
+        /// area has focus: resolve against the wrapped layout and deliver a
+        /// `move` event instead of the key. Returns true when consumed.
+        fn sendTextNav(self: *Self, k: @import("input/keys.zig").SpecialKey, input: Input, prev: u1) bool {
+            const Nav = struct { kind: text_wrap.NavKind, extend: bool };
+            const nav: Nav = switch (k) {
+                .up => .{ .kind = .up, .extend = false },
+                .shift_up => .{ .kind = .up, .extend = true },
+                .down => .{ .kind = .down, .extend = false },
+                .shift_down => .{ .kind = .down, .extend = true },
+                .page_up => .{ .kind = .page_up, .extend = false },
+                .page_down => .{ .kind = .page_down, .extend = false },
+                .home => .{ .kind = .line_start, .extend = false },
+                .shift_home => .{ .kind = .line_start, .extend = true },
+                .end => .{ .kind = .line_end, .extend = false },
+                .shift_end => .{ .kind = .line_end, .extend = true },
+                else => return false,
+            };
+            const cmds = self.bufs[prev].cmds.items;
+            const fi = focusIndex(App, &self.model, cmds) orelse return false;
+            if (fi >= cmds.len or cmds[fi] != .text_area) return false;
+            const ta = cmds[fi].text_area;
+            const g = textAreaGeometry(ta, self.rects[prev].items[fi]);
+            const lh = text_wrap.lineHeight(ta.font, self.measurer);
+            const rows: f32 = if (lh > 0) @floor(g.inner.h / lh) else 1;
+            const page: u32 = @intFromFloat(@max(1, rows - 1));
+            const r = text_wrap.resolveNav(ta.content, ta.cursor, ta.goal_x, nav.kind, page, ta.font, g.wrap_w, g.mode, self.measurer);
+            var mods = input.mods;
+            mods.shift = nav.extend;
+            const ev: text_event.TextEvent = .{
+                .id = ta.id,
+                .kind = .move,
+                .index = @intCast(r.index),
+                .line = r.line,
+                .goal_x = r.goal_x orelse 0,
+                .keep_goal = r.goal_x != null,
+                .mods = mods,
+            };
+            if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
+            return true;
+        }
+
+        /// The layout facts of text area `i` as a `metrics` event.
+        fn textMetricsAt(self: *Self, cmds: anytype, rects: []const Rect, i: usize) text_event.TextEvent {
+            const ta = cmds[i].text_area;
+            const g = textAreaGeometry(ta, rects[i]);
+            const mw = text_wrap.measureWrapped(ta.content, ta.font, g.wrap_w, g.mode, 0, self.measurer);
+            const c = text_wrap.caretPos(ta.content, ta.cursor, ta.font, g.wrap_w, g.mode, 0, self.measurer);
+            return .{
+                .id = ta.id,
+                .kind = .metrics,
+                .line = c.line,
+                .viewport_w = g.inner.w,
+                .viewport_h = g.inner.h,
+                .content_w = mw.w,
+                .content_h = mw.h,
+                .caret_x = c.x,
+                .caret_y = c.y,
+                .caret_h = text_wrap.lineHeight(ta.font, self.measurer),
+            };
+        }
+
+        /// Send `metrics` for text area `i` on first sight and on change.
+        fn reportTextMetrics(self: *Self, cmds: anytype, rects: []const Rect, i: usize) void {
+            const ev = self.textMetricsAt(cmds, rects, i);
+            var free: ?usize = null;
+            for (&self.text_metrics, 0..) |*slot, s| {
+                if (slot.id == ev.id) {
+                    if (std.meta.eql(slot.ev, ev)) return;
+                    slot.ev = ev;
+                    break;
+                }
+                if (slot.id == 0 and free == null) free = s;
+            } else if (free) |s| {
+                self.text_metrics[s] = .{ .id = ev.id, .ev = ev };
+            }
+            if (App.textMsg(&self.model, ev)) |m| self.dispatch(m);
+        }
+
+        /// Tell the Host where the focused caret is so an IME candidate
+        /// window opens next to it (window logical px, just below the caret).
+        fn updateImeSpot(self: *Self, cur: u1) void {
+            if (!@hasDecl(Host, "setImeSpot")) return;
+            const cmds = self.bufs[cur].cmds.items;
+            const rects = self.rects[cur].items;
+            const fi = self.ts.focus_index orelse return;
+            if (fi >= cmds.len) return;
+            var sx: f32 = undefined;
+            var sy: f32 = undefined;
+            switch (cmds[fi]) {
+                .text_area => |ta| {
+                    const g = textAreaGeometry(ta, rects[fi]);
+                    const c = text_wrap.caretPos(ta.content, ta.cursor, ta.font, g.wrap_w, g.mode, 0, self.measurer);
+                    sx = g.inner.x - ta.scroll_x + c.x;
+                    sy = g.inner.y - ta.scroll_y + c.y + text_wrap.lineHeight(ta.font, self.measurer);
+                },
+                .text_input => |ti| {
+                    sx = rects[fi].x + 6 + self.measurer.prefixWidth(ti.content, ti.font, ti.cursor);
+                    sy = rects[fi].y + rects[fi].h;
+                },
+                else => return,
+            }
+            const spot = [2]i32{ @intFromFloat(sx), @intFromFloat(sy) };
+            if (self.ime_spot) |old| if (old[0] == spot[0] and old[1] == spot[1]) return;
+            self.ime_spot = spot;
+            self.host.setImeSpot(spot[0], spot[1]);
         }
 
         /// Tell the app about layout results it cannot read from `view`:
@@ -783,7 +1067,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// on first layout and whenever the value differs from the previous
         /// frame's. The resulting Msg takes effect in the NEXT frame's view.
         fn reportLayout(self: *Self, prev: u1, cur: u1) void {
-            if (!has_canvas_hook and !has_scroll_layout_hook) return;
+            if (!has_pointer_hook and !has_scroll_layout_hook) return;
             const cmds = self.bufs[cur].cmds.items;
             const rects = self.rects[cur].items;
             const prev_cmds = self.bufs[prev].cmds.items;
@@ -795,6 +1079,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         self.dispatchCanvas(.{ .id = t.id, .kind = .layout, .w = rects[i].w, .h = rects[i].h });
                     }
                 },
+                .text_area => if (has_text_hook) self.reportTextMetrics(cmds, rects, i),
                 .push_scroll => |sc| if (has_scroll_layout_hook and sc.id != 0) {
                     const now = scroll_extent.scrollExtent(cmds, rects, i);
                     const unchanged = if (findScroll(prev_cmds, sc.id)) |old|
@@ -827,8 +1112,16 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             };
             const now_ms = self.host.nowMs();
             const since = self.last_sub_ms orelse now_ms; // first frame: no window, no fire
-            sub_mod.runSubs(Msg, App.subscribe(&self.model), since, now_ms, Dispatch{ .rt = self });
+            const subs = App.subscribe(&self.model);
+            sub_mod.runSubs(Msg, subs, since, now_ms, Dispatch{ .rt = self });
             self.last_sub_ms = now_ms;
+            // `.animation_frame`: feed the frame time to the App while it asks
+            // for it, and keep frames flowing (no idle skip) meanwhile.
+            self.animating = sub_mod.wantsAnimationFrame(Msg, subs);
+            if (self.animating and @hasDecl(App, "animationMsg")) {
+                const dt: u32 = @intCast(@min(now_ms -| since, sub_mod.max_animation_dt_ms));
+                if (App.animationMsg(&self.model, dt)) |m| self.dispatch(m);
+            }
         }
 
         /// Hand the host's finished effect results (and unsolicited drops /
@@ -897,7 +1190,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (@hasDecl(App, "themeFor")) self.bufs[cur].theme = App.themeFor(&self.model);
             App.view(&self.model, &self.bufs[cur]);
             const cmds = self.bufs[cur].cmds.items;
-            debugCheckBalance(cmds, "view");
+            checkBalance(cmds, "view");
 
             try self.rects[cur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
@@ -1009,7 +1302,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             App.secondaryView(&self.model, &sec.bufs[scur]);
 
             const cmds = sec.bufs[scur].cmds.items;
-            debugCheckBalance(cmds, "secondaryView");
+            checkBalance(cmds, "secondaryView");
             try sec.rects[scur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
                 sec.rects[scur].items,
@@ -1045,6 +1338,20 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         }
     };
 }
+
+/// Click-count state for text areas; see `Runtime.text_click`.
+const TextClick = struct {
+    count: u8 = 0,
+    ms: u64 = 0,
+    x: f32 = 0,
+    y: f32 = 0,
+};
+
+/// One remembered `metrics` event; see `Runtime.text_metrics`.
+const TextMetricsSlot = struct {
+    id: u32 = 0,
+    ev: text_event.TextEvent = .{ .id = 0, .kind = .metrics },
+};
 
 /// Pointer-canvas routing state; see `Runtime.canvas_ptr`.
 const CanvasPointer = struct {
@@ -1134,14 +1441,12 @@ fn transientSame(a: TransientState, b: TransientState) bool {
         std.mem.eql(u8, a.ime_text, b.ime_text);
 }
 
-/// Debug-only cmd-buffer balance check. A missed pop_group (or friends)
-/// is otherwise a silent layout bug; in Debug builds this panics naming
-/// the offending cmd index before the layout passes consume the buffer.
-/// Compiled out entirely in release modes. run.zig sits outside the
-/// framework-core dirs, so the builtin.mode gate is allowed here
-/// (HARDLINE §3 scopes the conditional-compilation ban to core).
-fn debugCheckBalance(cmds: anytype, view_name: []const u8) void {
-    if (@import("builtin").mode != .debug) return;
+/// Per-frame cmd-buffer balance check, in EVERY optimize mode. An unbalanced
+/// or too-deeply-nested buffer (`cmd.MAX_BALANCE_DEPTH`) is otherwise a
+/// silent wrong-rects bug or an out-of-bounds stack write in release; this
+/// panics naming the view and the offending cmd index before any pass runs.
+/// O(n), allocation-free (a few microseconds at thousands of cmds).
+fn checkBalance(cmds: anytype, view_name: []const u8) void {
     if (cmd.validateBalance(cmds)) |bal_err| {
         var buf: [128]u8 = undefined;
         std.debug.panic("teak: unbalanced cmd buffer from {s}() — {s}", .{
@@ -1161,98 +1466,17 @@ fn focusIndex(comptime App: type, model: *const App.Model, cmds: anytype) ?usize
 
 // ── Frame diff ──────────────────────────────────────────────────────
 //
-// Shared with what every example's ui_main hand-rolled. Compares the
-// observable content of two cmd buffers: tags, styles, and — for
-// variants carrying slices — string/span content (not pointer identity,
-// since the arena hands out fresh addresses each frame).
+// Compares the observable content of two cmd buffers (slices by content,
+// not pointer identity — the arena hands out fresh addresses each frame).
 
-/// True if two cmd buffers would render identically.
+/// True if two cmd buffers would render identically. Derived by comptime
+/// reflection over `Cmd(Msg)` (`core/eql.zig`): every field of every
+/// variant participates, so a new widget or a new style field can never be
+/// forgotten here.
 pub fn cmdsEqual(comptime Msg: type, a: []const cmd.Cmd(Msg), b: []const cmd.Cmd(Msg)) bool {
     if (a.len != b.len) return false;
     for (a, b) |ca, cb| {
-        if (std.meta.activeTag(ca) != std.meta.activeTag(cb)) return false;
-        switch (ca) {
-            .push_group => |g| if (!std.meta.eql(g, cb.push_group)) return false,
-            .pop_group => {},
-            .push_scroll => |s| if (!std.meta.eql(s, cb.push_scroll)) return false,
-            .pop_scroll => {},
-            .push_overlay => |o| if (!std.meta.eql(o, cb.push_overlay)) return false,
-            .pop_overlay => {},
-            .push_virtual_list => |v| if (!std.meta.eql(v, cb.push_virtual_list)) return false,
-            .pop_virtual_list => {},
-            .text => |t| {
-                const o = cb.text;
-                if (!std.mem.eql(u8, t.content, o.content)) return false;
-                if (!std.meta.eql(t.font, o.font) or !std.meta.eql(t.color, o.color)) return false;
-            },
-            .button => |x| {
-                // Compare the FULL payload: label (slice) by content, then
-                // msg / style / font / disabled. Omitting style or font makes
-                // a theme flip or a per-widget restyle (e.g. a danger-colored
-                // button) skip the vertex rebuild AND the snapshot write —
-                // stale pixels.
-                const o = cb.button;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-                if (x.disabled != o.disabled) return false;
-            },
-            .text_input => |x| {
-                const o = cb.text_input;
-                if (x.cursor != o.cursor or x.selection_anchor != o.selection_anchor) return false;
-                if (x.disabled != o.disabled) return false;
-                if (!std.mem.eql(u8, x.content, o.content)) return false;
-                if (!std.meta.eql(x.focus_msg, o.focus_msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-            },
-            .checkbox => |x| {
-                const o = cb.checkbox;
-                if (x.checked != o.checked) return false;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-            },
-            .radio => |x| {
-                const o = cb.radio;
-                if (x.selected != o.selected) return false;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.font, o.font)) return false;
-            },
-            .slider => |x| {
-                const o = cb.slider;
-                if (x.value != o.value) return false;
-                if (!std.meta.eql(x.grab_msg, o.grab_msg)) return false;
-                if (!std.meta.eql(x.style, o.style)) return false;
-            },
-            .divider => |d| if (!std.meta.eql(d, cb.divider)) return false,
-            .image => |im| if (!std.meta.eql(im, cb.image)) return false,
-            .rich_text => |rt| {
-                const o = cb.rich_text;
-                if (!std.mem.eql(u8, rt.content, o.content)) return false;
-                if (!std.meta.eql(rt.default_color, o.default_color)) return false;
-                if (!std.meta.eql(rt.default_font, o.default_font)) return false;
-                if (rt.spans.len != o.spans.len) return false;
-                for (rt.spans, o.spans) |sa, sb| if (!std.meta.eql(sa, sb)) return false;
-            },
-            .scene3d => |x| if (!x.eql(cb.scene3d)) return false,
-            .canvas => |x| {
-                const o = cb.canvas;
-                if (!std.meta.eql(x.style, o.style)) return false;
-                if (!std.meta.eql(x.msg, o.msg)) return false;
-                if (!std.mem.eql(u8, x.label, o.label)) return false;
-                if (x.id != o.id or x.pointer != o.pointer) return false;
-                if (x.primitives.len != o.primitives.len) return false;
-                // Compare by content, not slice identity — the arena hands
-                // out fresh addresses each frame (`eql` walks nested slices;
-                // big triangle/line batches compare by their `key`).
-                for (x.primitives, o.primitives) |pa, pb| if (!pa.eql(pb)) return false;
-            },
-        }
+        if (!eql.deepEql(cmd.Cmd(Msg), ca, cb)) return false;
     }
     return true;
 }
@@ -1267,6 +1491,9 @@ pub fn rectsEqual(a: []const Rect, b: []const Rect) bool {
 }
 
 test {
+    _ = @import("core/eql.zig");
+    _ = @import("core/oom.zig");
+    _ = @import("core/anim.zig");
     _ = @import("run_test.zig");
     _ = @import("run_effects_test.zig");
 }

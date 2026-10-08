@@ -89,7 +89,7 @@ Every arrow is a function call with explicit inputs and outputs. No globals, no 
 |-------|-------------|-----------|
 | **State (TEA)** | `Model` struct holds all app state. `Msg` tagged union enumerates transitions. `update` is a switch. | `Model`, `Msg`, `update()` |
 | **View** | `view()` emits flat `[]Cmd` tagged unions into an arena-allocated `CmdBuffer`. Runs every frame. | `Cmd`, `CmdBuffer`, `view()` |
-| **Layout** | Two O(n) linear passes (measure bottom-up, position top-down) over `[]Cmd` producing `[]Rect`. Stack-based, no tree allocation. | `Rect`, `LayoutEngine` |
+| **Layout** | Two to four O(n) linear passes (measure bottom-up, position top-down; plus resolve-widths / re-measure-heights only when wrapped or shrinkable nodes exist) over `[]Cmd` producing `[]Rect`. Stack-based, no tree allocation. | `Rect`, `LayoutEngine` |
 | **Hit-test** | Walks `[]Cmd` + `[]Rect` backwards (painter's order). Returns the `Msg` embedded in the command. No ID hashing. | `hit_test()` |
 | **Render** | Converts `[]Cmd` + `[]Rect` + `TransientState` into wgpu draw calls (colored quads). | `render_pass()`, `Vertex` |
 | **TransientState** | Hover/press/focus state that bypasses the TEA loop entirely -- short circuits from input to render. | `TransientState` |
@@ -115,23 +115,31 @@ The compiler enforces exhaustive switching -- missing a `Msg` arm won't compile.
 
 ### Adding Widgets
 
-A genuinely new `Cmd` variant touches every pass over the flat buffer — miss
-one and you get a silent wrong-rects bug or an un-clickable widget, not a
-compile error (the passes take `anytype`). Full checklist:
+A genuinely new `Cmd` variant touches every pass over the flat buffer. The
+passes take `anytype`, but every switch over the `Cmd` tag in layout
+(`measurePass`, `positionPass`), hit-test, focus, render, snapshot, a11y,
+scroll extent is **exhaustive (no `else =>`)**, so adding a variant makes each
+of them fail to compile until it is handled (a pass that legitimately ignores
+it lists it explicitly). The frame diff (`cmdsEqual`) is derived by comptime
+reflection (`core/eql.zig`) — nothing to write. Do not add `else =>` to a
+switch over Cmd tags. Checklist:
+
+*Compiler-enforced (follow the errors):*
 
 1. **`Cmd` variant + style/cmd struct** in `src/core/cmd.zig` (data only, no
    fn-pointers) + a convenience **emitter** method on `CmdBuffer`.
 2. **Layout** (`layout/engine.zig`): arms in `measurePass` + `positionPass`.
-3. **Hit-test** (`input/hit_test.zig`): return its click `Msg` (or `null`).
+3. **Hit-test / focus** (`input/hit_test.zig`, `input/focus.zig`): return its
+   click `Msg` (or `null`); say whether it is focusable.
 4. **Render** (`render/build.zig`; + `render/vertex.zig` for a new quad shape).
 5. **Snapshot** (`core/snapshot.zig`): a `writeCmd` arm (`tag (x,y,w,h) …`).
 6. **A11y** (`input/a11y.zig`): a `Role` member + mapping arm.
-7. **Frame-diff** (`src/run.zig`): a `cmdsEqual` arm comparing observable
-   content (the arena hands out fresh addresses each frame).
-8. **Win32 UIA** (`platform/win32.zig`): map the `Role` in
-   `controlTypeForRole` (+ `isFocusableRole` / `input/focus.zig`'s
-   `isFocusable` if keyboard-focusable).
-9. **Re-export** in `src/teak.zig` **and** document in `llms.txt` — the
+
+*Manual (nothing fails to compile):*
+
+7. **Win32 UIA** (`platform/win32.zig`): map the `Role` in
+   `controlTypeForRole` (+ `isFocusableRole` if keyboard-focusable).
+8. **Re-export** in `src/teak.zig` **and** document in `llms.txt` — the
    `zig build audit` `LLMS_TXT_RULE` fails the build otherwise.
 
 Prefer composing from existing primitives (that's how `Dropdown` works — zero
@@ -205,7 +213,8 @@ src/                           -- the library, consumable as a Zig module
     surface_xlib.zig           -- Xlib Window surface provider } Linux stitch:
     native_linux.zig           -- Gpu(surface_xlib, StbttRasterizer) + validateGpu
     web.zig                    -- zunk WebGPU backend (wasm)
-    glyph_cache.zig            -- GlyphCache(Backend): shared LRU glyph-texture cache
+    glyph_atlas.zig            -- GlyphAtlas: paged R8 shelf atlas, page-granular eviction, GlyphInstance
+    text_stage.zig             -- TextStage(Raster): shape -> pack -> glyph instances (native + web)
     vendor/stb_truetype.h(.c)  -- vendored public-domain rasterizer (Linux text)
   text/                        -- teak-text module (stb; shared by X11 Host measurer + Gpu rasterizer)
     text.zig                   -- module root; face.zig (Font + face table), shaper.zig (SimpleShaper:
@@ -234,7 +243,7 @@ examples/
 
 shaders/
   quad.wgsl              -- shader for colored rectangles
-  textured_quad.wgsl     -- alpha-from-texture (text glyphs)
+  glyph.wgsl             -- instanced glyph quads from the R8 atlas (native + web)
   scene.wgsl             -- 3D scenes: flat-lit triangles + instanced line quads
   image.wgsl             -- texture * tint (RGBA images)
 ```
@@ -267,5 +276,8 @@ Shipped phases, in order: prototype core loop → cleanup/abstraction hardening 
 
 - Types: `PascalCase`. Functions: `camelCase` (std-lib style — `hitTest`, `buttonDisabled`). Enum variants: lowercase with underscores.
 - Explicit allocators everywhere. Arena allocators for per-frame data.
-- Convenience emitters on `CmdBuffer` use `catch unreachable` (arena OOM is unrecoverable).
+- Convenience emitters on `CmdBuffer` stay non-error-returning; allocation failure goes through `core/oom.zig`'s `oom()` (`alloc(...) catch oom()`), a loud `@panic` in every optimize mode. Never `catch unreachable` an allocation (UB in release).
 - Text measurement flows through the Host's `TextMeasurer` (real platform metrics at layout time). `teak.monoMeasurer()` is the stateless stub for CLI canaries and tests. `CHAR_WIDTH` is gone — `zig build audit` forbids reintroducing it.
+
+## Versioning
+`build.zig.zon` `.version` is the single source of truth; code reads `teak.version` (from `build_options`). Never write a version literal elsewhere, never bump it in a feature PR. Releases are cut explicitly with `tools/release.sh <semver>`. See [`docs/VERSIONING.md`](docs/VERSIONING.md).

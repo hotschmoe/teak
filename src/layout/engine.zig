@@ -1,6 +1,7 @@
 const std = @import("std");
 const cmd = @import("../core/cmd.zig");
 const text = @import("../core/text.zig");
+const text_wrap = @import("../core/text_wrap.zig");
 const Direction = cmd.Direction;
 const Align = cmd.Align;
 const Justify = cmd.Justify;
@@ -21,6 +22,9 @@ pub const Rect = struct {
     fixed_main: f32 = 0,
     flex_total: f32 = 0,
     child_count: u32 = 0,
+    /// Index of the matching `pop_*` (containers only). Lets the width
+    /// passes hop over a child's subtree, keeping them linear.
+    end: u32 = 0,
 };
 
 /// Intersect two rects. Returns a zero-size rect if fully disjoint.
@@ -33,26 +37,53 @@ pub fn clipRect(a: Rect, b: Rect) Rect {
     return .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
 }
 
-/// Scroll-clip stack shared by hit-test and render. Fixed depth mirrors
-/// LayoutEngine's FixedStack — exceeding it is a bug, not an allocation
-/// trigger. `top()` returns a huge sentinel rect when empty so callers
-/// don't branch on depth.
+/// The content box of a `text_area` inside its layout rect: inset by the
+/// border and padding. Render, pointer resolution and the metrics event all
+/// use this one function so they agree on where text starts and how wide it
+/// wraps.
+pub fn textAreaInner(rect: Rect, ta: anytype) Rect {
+    const inset = ta.style.border_width + ta.padding;
+    return .{
+        .x = rect.x + inset,
+        .y = rect.y + inset,
+        .w = @max(0, rect.w - 2 * inset),
+        .h = @max(0, rect.h - 2 * inset),
+    };
+}
+
+/// Width a `text_area` wraps at: its inner width, or unbounded for `.none`.
+pub fn textAreaWrapWidth(inner: Rect, ta: anytype) f32 {
+    return switch (ta.wrap) {
+        .word, .char => inner.w,
+        .none, .ellipsis => std.math.inf(f32),
+    };
+}
+
+/// Container nesting capacity of every fixed stack in the passes. One value
+/// with `cmd.validateBalance`, so a buffer it accepts can never overflow.
+const MAX_DEPTH = cmd.MAX_BALANCE_DEPTH;
+
+/// Scroll-clip stack shared by hit-test, render and a11y. Fixed depth
+/// (`MAX_DEPTH`, same as the layout stacks) — exceeding it is a bug, not an
+/// allocation trigger. `top()` returns a huge sentinel rect when empty so
+/// callers don't branch on depth.
 ///
-/// `push` and `pop` `std.debug.assert` the depth invariant: overflow on
-/// push and underflow on pop are programmer errors, not recoverable
-/// conditions. Zero-cost in ReleaseFast; loud crash in Debug/ReleaseSafe.
+/// Overflow on `push` and underflow on `pop` are programmer errors (an
+/// unbalanced or too-deep buffer), reported with an unconditional `@panic`
+/// in EVERY optimize mode — never an out-of-bounds write. The run loop runs
+/// `cmd.validateBalance` first, which names the offending cmd index.
 pub const ClipStack = struct {
-    buffer: [16]Rect = undefined,
+    buffer: [MAX_DEPTH]Rect = undefined,
     len: usize = 0,
 
     pub fn push(self: *ClipStack, r: Rect) void {
-        std.debug.assert(self.len < self.buffer.len);
+        if (self.len >= self.buffer.len) @panic("teak: clip stack overflow (scroll/overlay nesting too deep; see cmd.validateBalance)");
         self.buffer[self.len] = r;
         self.len += 1;
     }
 
     pub fn pop(self: *ClipStack) void {
-        std.debug.assert(self.len > 0);
+        if (self.len == 0) @panic("teak: clip stack underflow (stray pop_scroll/pop_overlay; see cmd.validateBalance)");
         self.len -= 1;
     }
 
@@ -113,26 +144,25 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
 
         const Self = @This();
 
-        // push / pop / top `std.debug.assert` against the capacity bound
-        // and the non-empty bound respectively. Overflow on push,
-        // underflow on pop, and read-empty on top are all programmer
-        // errors — the layout passes own the matched push/pop discipline.
-        // Zero cost in ReleaseFast; loud crash in Debug/ReleaseSafe.
+        // push / pop / top check the capacity and non-empty bounds with an
+        // unconditional `@panic` (every optimize mode): overflow, underflow
+        // and read-empty are programmer errors — the passes call
+        // `assertPushable` / `assertPoppable` first to name the cmd index.
 
         fn push(self: *Self, item: T) void {
-            std.debug.assert(self.len < capacity);
+            if (self.len >= capacity) @panic("teak layout: container stack overflow");
             self.buffer[self.len] = item;
             self.len += 1;
         }
 
         fn pop(self: *Self) T {
-            std.debug.assert(self.len > 0);
+            if (self.len == 0) @panic("teak layout: container stack underflow");
             self.len -= 1;
             return self.buffer[self.len];
         }
 
         fn top(self: *Self) *T {
-            std.debug.assert(self.len > 0);
+            if (self.len == 0) @panic("teak layout: container stack is empty");
             return &self.buffer[self.len - 1];
         }
     };
@@ -140,7 +170,8 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
 
 // ── Layout Engine ──────────────────────────────────────────────────
 //
-// Two O(n) passes over a flat []Cmd. Works for any Cmd(Msg) since we
+// Two O(n) passes over a flat []Cmd (four when the frame has wrapped text or
+// `shrink > 0` nodes: widths resolve top-down, heights re-measure bottom-up). Works for any Cmd(Msg) since we
 // only read Msg-independent fields (styles, labels, content).
 //
 // Sizing model (details in docs/features/layout.md):
@@ -155,9 +186,18 @@ pub const LayoutEngine = struct {
     const TEXT_HEIGHT: f32 = 20;
     const SLIDER_HEIGHT: f32 = 24;
 
-    /// Run both passes: measure then position. The first push_group (the
-    /// root) is resized to the window before position runs, so flex
-    /// resolves against the real window size.
+    /// What `doLayoutStats` did, for tests that pin the pass structure.
+    pub const Stats = struct {
+        /// Passes 2 (resolve widths) and 3 (re-measure heights) ran: the frame
+        /// has wrapped text or `shrink > 0` containers.
+        wrap_passes: bool = false,
+    };
+
+    /// Run the layout passes: measure, position -- and, only when the frame
+    /// contains wrapped text or shrinkable containers, resolve widths and
+    /// re-measure heights in between. The first push_group (the root) is
+    /// resized to the window before widths resolve, so flex and wrapping
+    /// resolve against the real window size.
     pub fn doLayout(
         rects: []Rect,
         cmds: anytype,
@@ -165,29 +205,52 @@ pub const LayoutEngine = struct {
         window_h: f32,
         measurer: TextMeasurer,
     ) void {
-        measurePass(rects, cmds, measurer);
-        if (cmds.len > 0) {
-            switch (cmds[0]) {
-                .push_group => {
-                    rects[0].w = window_w;
-                    rects[0].h = window_h;
-                },
-                else => {},
-            }
+        _ = doLayoutStats(rects, cmds, window_w, window_h, measurer);
+    }
+
+    /// `doLayout`, reporting which passes ran.
+    pub fn doLayoutStats(
+        rects: []Rect,
+        cmds: anytype,
+        window_w: f32,
+        window_h: f32,
+        measurer: TextMeasurer,
+    ) Stats {
+        const needs_wrap = measurePassImpl(rects, cmds, measurer);
+        const root_is_group = cmds.len > 0 and cmds[0] == .push_group;
+        if (root_is_group) {
+            rects[0].w = window_w;
+            rects[0].h = window_h;
+        }
+        if (needs_wrap) {
+            resolveWidths(rects, cmds, measurer);
+            remeasureHeights(rects, cmds, measurer);
+            if (root_is_group) rects[0].h = window_h;
         }
         positionPass(rects, cmds);
+        return .{ .wrap_passes = needs_wrap };
     }
 
     /// Pass 1 — measure. Bottom-up via an explicit stack. Each command
     /// writes its intrinsic size to rects[i]; container entries also
     /// record fixed_main, flex_total, child_count for the position pass.
     pub fn measurePass(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void {
-        var stack: FixedStack(GroupContext, 32) = .{};
+        _ = measurePassImpl(rects, cmds, measurer);
+    }
+
+    /// Pass 1 body. Returns true when the frame needs passes 2-3: some `text`
+    /// wraps or some group/scroll has `shrink > 0`. Wrapped text measures at
+    /// its max-content width (one line per hard break) here; the real width
+    /// comes from pass 2.
+    fn measurePassImpl(rects: []Rect, cmds: anytype, measurer: TextMeasurer) bool {
+        var stack: FixedStack(GroupContext, MAX_DEPTH) = .{};
+        var needs_wrap = false;
 
         for (cmds, 0..) |c, i| {
             switch (c) {
                 .push_group => |grp| {
                     assertPushable(stack.len, stack.buffer.len, i);
+                    if (grp.shrink > 0) needs_wrap = true;
                     stack.push(.{
                         .cmd_index = i,
                         .direction = grp.direction,
@@ -203,6 +266,7 @@ pub const LayoutEngine = struct {
                 },
                 .push_scroll => |sc| {
                     assertPushable(stack.len, stack.buffer.len, i);
+                    if (sc.shrink > 0) needs_wrap = true;
                     stack.push(.{
                         .cmd_index = i,
                         .direction = sc.direction,
@@ -269,6 +333,7 @@ pub const LayoutEngine = struct {
                             },
                         }
                     }
+                    r.end = @intCast(i);
                     rects[grp.cmd_index] = r;
                     addLeafToTop(&stack, r.w, r.h, grp.flex);
                 },
@@ -277,7 +342,9 @@ pub const LayoutEngine = struct {
                     const grp = stack.pop();
                     // Overlays do NOT contribute to their parent's
                     // measured size — they hop the layout.
-                    rects[grp.cmd_index] = finishContainer(grp);
+                    var r = finishContainer(grp);
+                    r.end = @intCast(i);
+                    rects[grp.cmd_index] = r;
                 },
                 .pop_virtual_list => {
                     assertPoppable(stack.len, i);
@@ -290,10 +357,18 @@ pub const LayoutEngine = struct {
                         .vertical => r.h = total_main + 2 * grp.pad_y,
                     }
                     r.fixed_main = total_main;
+                    r.end = @intCast(i);
                     rects[grp.cmd_index] = r;
                     addLeafToTop(&stack, r.w, r.h, 0);
                 },
                 .text => |txt| {
+                    if (txt.wrap != .none) {
+                        needs_wrap = true;
+                        const mw = text_wrap.measureWrapped(txt.content, txt.font, std.math.inf(f32), txt.wrap, txt.max_lines, measurer);
+                        rects[i] = .{ .w = mw.w, .h = mw.h };
+                        addLeafToTop(&stack, mw.w, mw.h, 0);
+                        continue;
+                    }
                     const m = measurer.measure(txt.content, txt.font);
                     rects[i] = .{ .w = m.width, .h = m.height };
                     addLeafToTop(&stack, m.width, m.height, 0);
@@ -311,6 +386,13 @@ pub const LayoutEngine = struct {
                     const h = ti.style.height;
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, rowFlex(&stack, ti.style.flex));
+                },
+                .text_area => |ta| {
+                    // Canvas-like box: explicit size; flex grows the main axis,
+                    // a stretching parent fills the cross axis in pass 2/position.
+                    const w = if (ta.width > 0) ta.width else ta.min_width;
+                    rects[i] = .{ .w = w, .h = ta.height };
+                    addLeafToTop(&stack, w, ta.height, ta.flex);
                 },
                 .checkbox => |cb| {
                     const label_w = measurer.measure(cb.label, cb.font).width;
@@ -383,7 +465,7 @@ pub const LayoutEngine = struct {
                             total_w += m.width;
                             max_h = @max(max_h, m.height);
                         }
-                        const end = @min(sp.end, @as(u32, @intCast(rt.content.len)));
+                        const end = @min(sp.end, std.math.lossyCast(u32, rt.content.len));
                         if (end > sp.start) {
                             const m = measurer.measure(rt.content[sp.start..end], sp.font);
                             total_w += m.width;
@@ -405,14 +487,285 @@ pub const LayoutEngine = struct {
                 },
             }
         }
+        return needs_wrap;
     }
 
-    /// Pass 2 — position. Top-down, forward scan. A container is sized
+    // ── Passes 2-3: wrapped text and flex shrink (docs/features/layout.md) ──
+    //
+    // Only run when pass 1 saw wrapped `text` or a `shrink > 0` container.
+    // Pass 2 walks forward over containers and, for each, settles its direct
+    // children's WIDTHS (flex growth, shrink down to min-content, cross-axis
+    // stretch, wrapped-text width) -- exactly the width decisions the position
+    // pass would make later, made early so heights can depend on them. Pass 3
+    // re-measures HEIGHTS bottom-up (wrapped text height = its line count)
+    // and refreshes the container accumulators the position pass reads.
+    // After both, the position pass finds no width left to distribute.
+
+    /// A direct child as the width passes see it.
+    const Kid = struct {
+        flex: f32 = 0,
+        /// Shrink weight (wrapped text counts as 1).
+        shrink: f32 = 0,
+        fixed_w: bool = false,
+        min_w: f32 = 0,
+        fills_cross: bool = false,
+        /// Wrapped text: width is decided by wrapping, not by plain stretch.
+        wrapped: bool = false,
+    };
+
+    fn kidOf(c: anytype) Kid {
+        return switch (c) {
+            .push_group => |g| .{ .flex = g.flex, .shrink = g.shrink, .fixed_w = g.width > 0, .min_w = g.min_width },
+            .push_scroll => |sc| .{ .flex = sc.flex, .shrink = sc.shrink, .fixed_w = sc.width > 0 },
+            .push_virtual_list => .{},
+            .text => |t| if (t.wrap != .none) .{ .shrink = 1, .wrapped = true, .fills_cross = t.text_align != .start } else .{},
+            .button => |b| .{ .flex = b.style.flex },
+            .image => |img| .{ .flex = img.style.flex },
+            .canvas => |cv| .{ .flex = cv.style.flex },
+            .scene3d => |sc| .{ .flex = sc.style.flex },
+            .text_input => |ti| .{ .flex = ti.style.flex, .fills_cross = true },
+            .text_area => |ta| .{ .flex = ta.flex, .fixed_w = ta.width > 0, .fills_cross = true },
+            .slider => |sl| .{ .flex = sl.style.flex, .fills_cross = true },
+            .divider => .{ .fills_cross = true },
+            .checkbox, .radio, .rich_text => .{},
+            .push_overlay, .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => .{},
+        };
+    }
+
+    /// Next direct child of the container whose subtree ends before `end`,
+    /// skipping overlays (they hop layout) and hopping over child subtrees.
+    fn nextKid(rects: []const Rect, cmds: anytype, it: *usize, end: usize) ?usize {
+        while (it.* < end) {
+            const c = it.*;
+            switch (cmds[c]) {
+                .push_overlay => it.* = rects[c].end + 1,
+                .push_group, .push_scroll, .push_virtual_list => {
+                    it.* = rects[c].end + 1;
+                    return c;
+                },
+                else => {
+                    it.* += 1;
+                    return c;
+                },
+            }
+        }
+        return null;
+    }
+
+    /// Container facts pass 2 needs; null for non-containers.
+    const WidthSpec = struct { direction: Direction, pad_x: f32, pad_y: f32, gap: f32, align_cross: Align, can_shrink: bool };
+
+    fn widthSpecOf(c: anytype) ?WidthSpec {
+        return switch (c) {
+            .push_group => |g| .{ .direction = g.direction, .pad_x = g.padX(), .pad_y = g.padY(), .gap = g.gap, .align_cross = g.align_cross, .can_shrink = true },
+            .push_scroll => |sc| .{ .direction = sc.direction, .pad_x = sc.padding, .pad_y = sc.padding, .gap = sc.gap, .align_cross = sc.align_cross, .can_shrink = sc.direction == .vertical },
+            .push_overlay => |ov| .{ .direction = ov.direction, .pad_x = ov.padding, .pad_y = ov.padding, .gap = ov.gap, .align_cross = ov.align_cross, .can_shrink = true },
+            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list, .push_virtual_list, .text, .rich_text, .button, .text_input, .text_area, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas => null,
+        };
+    }
+
+    /// Pass 2: settle the widths of every container's direct children.
+    pub fn resolveWidths(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void {
+        for (cmds, 0..) |c, i| {
+            const spec = widthSpecOf(c) orelse continue;
+            const r = rects[i];
+            const inner_w = @max(0, r.w - 2 * spec.pad_x);
+            if (spec.direction == .horizontal) {
+                const left = inner_w - (r.fixed_main + gapTotal(r.child_count, spec.gap));
+                if (left > EPS and r.flex_total > 0) {
+                    const per = left / r.flex_total;
+                    var it = i + 1;
+                    while (nextKid(rects, cmds, &it, r.end)) |k| rects[k].w += kidOf(cmds[k]).flex * per;
+                } else if (left < -EPS and spec.can_shrink) {
+                    shrinkChildren(rects, cmds, i, spec, inner_w, measurer);
+                }
+            } else if (inner_w > 0) {
+                var it = i + 1;
+                while (nextKid(rects, cmds, &it, r.end)) |k| {
+                    const kid = kidOf(cmds[k]);
+                    const stretch = spec.align_cross == .stretch or (spec.align_cross == .start and kid.fills_cross);
+                    if (kid.wrapped) {
+                        // Wrapped text fills a stretching parent (and any
+                        // aligned paragraph); otherwise it takes its natural
+                        // width capped by the room it has.
+                        rects[k].w = if (stretch) inner_w else @min(rects[k].w, inner_w);
+                    } else if (stretch and !kid.fixed_w) {
+                        rects[k].w = @max(inner_w, kid.min_w);
+                    }
+                }
+            }
+        }
+        // `measurer` is used by min-content (shrink) only.
+    }
+
+    const EPS: f32 = 0.001;
+
+    /// CSS-style flex-shrink with floors: share the deficit among shrinkable
+    /// children in proportion to `shrink * width`, clamping each at its
+    /// min-content and redistributing what the clamped ones could not give.
+    fn shrinkChildren(rects: []Rect, cmds: anytype, i: usize, spec: WidthSpec, inner_w: f32, measurer: TextMeasurer) void {
+        const r = rects[i];
+        const gaps = gapTotal(r.child_count, spec.gap);
+        var round: usize = 0;
+        while (round <= r.child_count) : (round += 1) {
+            var sum: f32 = gaps;
+            var scaled: f32 = 0;
+            var it = i + 1;
+            while (nextKid(rects, cmds, &it, r.end)) |k| {
+                sum += rects[k].w;
+                const kid = kidOf(cmds[k]);
+                if (kid.shrink > 0 and rects[k].w > minWidth(rects, cmds, k, measurer) + EPS) scaled += kid.shrink * rects[k].w;
+            }
+            const deficit = sum - inner_w;
+            if (deficit <= EPS or scaled <= 0) break;
+            it = i + 1;
+            while (nextKid(rects, cmds, &it, r.end)) |k| {
+                const kid = kidOf(cmds[k]);
+                if (kid.shrink <= 0) continue;
+                const floor = minWidth(rects, cmds, k, measurer);
+                const w = rects[k].w;
+                if (w <= floor + EPS) continue;
+                rects[k].w = @max(floor, w - deficit * (kid.shrink * w) / scaled);
+            }
+        }
+    }
+
+    /// Narrowest width node `k` may be shrunk to (its pass-1 width when it
+    /// cannot shrink): wrapped text -> its min-content; a shrinkable
+    /// container -> what its children need at their own minimums.
+    fn minWidth(rects: []const Rect, cmds: anytype, k: usize, measurer: TextMeasurer) f32 {
+        const w = rects[k].w;
+        switch (cmds[k]) {
+            .text => |t| {
+                if (t.wrap == .none) return w;
+                return @min(w, text_wrap.minContentFor(t.content, t.font, t.wrap, measurer));
+            },
+            .push_group, .push_scroll => {
+                const kid = kidOf(cmds[k]);
+                const spec = widthSpecOf(cmds[k]).?;
+                if (kid.shrink <= 0 or !spec.can_shrink) return w;
+                var sum: f32 = 0;
+                var widest: f32 = 0;
+                var n: u32 = 0;
+                var it = k + 1;
+                while (nextKid(rects, cmds, &it, rects[k].end)) |ch| {
+                    const m = if (kidOf(cmds[ch]).shrink > 0) minWidth(rects, cmds, ch, measurer) else rects[ch].w;
+                    sum += m;
+                    widest = @max(widest, m);
+                    n += 1;
+                }
+                const content = if (spec.direction == .horizontal) sum + gapTotal(n, spec.gap) else widest;
+                return @min(w, @max(kid.min_w, content + 2 * spec.pad_x));
+            },
+            else => return w,
+        }
+    }
+
+    /// Pass 3: re-measure heights bottom-up with the resolved widths. Widths
+    /// are final (pass 2); containers recompute their height and their
+    /// `fixed_main` (so the position pass sees the real child sizes).
+    pub fn remeasureHeights(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void {
+        var stack: FixedStack(GroupContext, MAX_DEPTH) = .{};
+        for (cmds, 0..) |c, i| {
+            switch (c) {
+                .push_group => |g| stack.push(refreshCtx(rects[i], i, .{
+                    .cmd_index = i,
+                    .direction = g.direction,
+                    .pad_x = g.padX(),
+                    .pad_y = g.padY(),
+                    .gap = g.gap,
+                    .fixed_w = g.width,
+                    .fixed_h = g.height,
+                    .min_w = g.min_width,
+                    .min_h = g.min_height,
+                })),
+                .push_scroll => |sc| stack.push(refreshCtx(rects[i], i, .{
+                    .cmd_index = i,
+                    .direction = sc.direction,
+                    .pad_x = sc.padding,
+                    .pad_y = sc.padding,
+                    .gap = sc.gap,
+                    .flex = sc.flex,
+                    .fixed_w = sc.width,
+                    .fixed_h = sc.height,
+                    .is_scroll = true,
+                })),
+                .push_overlay => |ov| stack.push(refreshCtx(rects[i], i, .{
+                    .cmd_index = i,
+                    .direction = ov.direction,
+                    .pad_x = ov.padding,
+                    .pad_y = ov.padding,
+                    .gap = ov.gap,
+                    .fixed_w = ov.width,
+                    .fixed_h = ov.height,
+                })),
+                .push_virtual_list => |vl| stack.push(refreshCtx(rects[i], i, .{
+                    .cmd_index = i,
+                    .direction = vl.direction,
+                    .pad_x = vl.padding,
+                    .pad_y = vl.padding,
+                    .gap = vl.gap,
+                    .is_virtual = true,
+                })),
+                .pop_group, .pop_scroll => {
+                    const grp = stack.pop();
+                    const old = rects[grp.cmd_index];
+                    var r = finishContainer(grp);
+                    r.w = old.w;
+                    r.end = old.end;
+                    // A flex scroll's main-axis size was zeroed in pass 1; keep it.
+                    if (grp.is_scroll and grp.flex > 0) r.h = old.h;
+                    rects[grp.cmd_index] = r;
+                    foldChild(&stack, r.w, r.h);
+                },
+                .pop_overlay => {
+                    const grp = stack.pop();
+                    const old = rects[grp.cmd_index];
+                    var r = finishContainer(grp);
+                    r.w = old.w;
+                    r.end = old.end;
+                    rects[grp.cmd_index] = r;
+                },
+                .pop_virtual_list => {
+                    const grp = stack.pop();
+                    foldChild(&stack, rects[grp.cmd_index].w, rects[grp.cmd_index].h);
+                },
+                .text => |t| {
+                    if (t.wrap != .none) {
+                        rects[i].h = text_wrap.measureWrapped(t.content, t.font, rects[i].w, t.wrap, t.max_lines, measurer).h;
+                    }
+                    foldChild(&stack, rects[i].w, rects[i].h);
+                },
+                .button, .text_input, .text_area, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas, .rich_text => foldChild(&stack, rects[i].w, rects[i].h),
+            }
+        }
+    }
+
+    /// A pass-3 container context: accumulators reset, flex/child totals kept
+    /// from pass 1 (the child set is unchanged).
+    fn refreshCtx(old: Rect, i: usize, base: GroupContext) GroupContext {
+        var g = base;
+        g.cmd_index = i;
+        g.flex_total = old.flex_total;
+        g.child_count = old.child_count;
+        return g;
+    }
+
+    /// Fold a child's (possibly re-measured) size into its parent's accumulators.
+    fn foldChild(stack: *FixedStack(GroupContext, MAX_DEPTH), child_w: f32, child_h: f32) void {
+        if (stack.len == 0) return;
+        const t = stack.top();
+        const horizontal = t.direction == .horizontal;
+        t.fixed_main += if (horizontal) child_w else child_h;
+        t.cross_axis_max = @max(t.cross_axis_max, if (horizontal) child_h else child_w);
+    }
+
+    /// Pass 4 — position (pass 2 when the frame has no wrapped nodes). Top-down, forward scan. A container is sized
     /// (flex growth, stretch) while it is placed in its parent, so by the
     /// time its own children are placed its final rect is known; each child
     /// goes at the running cursor.
     pub fn positionPass(rects: []Rect, cmds: anytype) void {
-        var stack: FixedStack(CursorContext, 32) = .{};
+        var stack: FixedStack(CursorContext, MAX_DEPTH) = .{};
 
         for (cmds, 0..) |c, i| {
             switch (c) {
@@ -491,6 +844,7 @@ pub const LayoutEngine = struct {
                 .button => |b| placeChild(rects, &stack, i, .{ .flex = b.style.flex }),
                 .image => |img| placeChild(rects, &stack, i, .{ .flex = img.style.flex }),
                 .canvas => |cv| placeChild(rects, &stack, i, .{ .flex = cv.style.flex }),
+                .text_area => |ta| placeChild(rects, &stack, i, .{ .flex = ta.flex, .fixed_w = ta.width > 0, .fixed_h = true, .fills_cross = true }),
                 .scene3d => |sc| placeChild(rects, &stack, i, .{ .flex = sc.style.flex }),
                 .text_input => |ti| placeChild(rects, &stack, i, .{ .flex = ti.style.flex, .row_only = true, .fills_cross = true }),
                 .slider => |sl| placeChild(rects, &stack, i, .{ .flex = sl.style.flex, .row_only = true, .fills_cross = true }),
@@ -522,7 +876,7 @@ pub const LayoutEngine = struct {
     /// Place one child (leaf or container) at the parent's cursor: grow it
     /// along the main axis by its flex share, size it along the cross axis
     /// per the parent's `align_cross`, then advance the cursor.
-    fn placeChild(rects: []Rect, stack: *FixedStack(CursorContext, 32), i: usize, spec: ChildSpec) void {
+    fn placeChild(rects: []Rect, stack: *FixedStack(CursorContext, MAX_DEPTH), i: usize, spec: ChildSpec) void {
         const ctx = stack.top();
         if (ctx.child_count > 0) advanceCursor(ctx, ctx.gap);
         const r = &rects[i];
@@ -566,7 +920,7 @@ pub const LayoutEngine = struct {
     /// Open the cursor for the children of container `i`, whose rect is
     /// final by now: split the leftover main-axis space (flex weights, else
     /// `justify`) and record the inner cross extent for `align_cross`.
-    fn pushChildren(rects: []Rect, stack: *FixedStack(CursorContext, 32), i: usize, spec: ContainerSpec) void {
+    fn pushChildren(rects: []Rect, stack: *FixedStack(CursorContext, MAX_DEPTH), i: usize, spec: ContainerSpec) void {
         const r = rects[i];
         const horizontal = spec.direction == .horizontal;
         const inner_w = @max(0, r.w - 2 * spec.pad_x);
@@ -661,12 +1015,12 @@ pub const LayoutEngine = struct {
     /// Flex weight of a single-line control (text_input, slider): it only
     /// grows along a horizontal main axis. In a vertical parent its height
     /// stays fixed instead of ballooning into the leftover column space.
-    fn rowFlex(stack: *FixedStack(GroupContext, 32), flex: f32) f32 {
+    fn rowFlex(stack: *FixedStack(GroupContext, MAX_DEPTH), flex: f32) f32 {
         return if (stack.len > 0 and stack.top().direction == .horizontal) flex else 0;
     }
 
     /// Fold a finished child into its parent's accumulators.
-    fn addLeafToTop(stack: *FixedStack(GroupContext, 32), child_w: f32, child_h: f32, child_flex: f32) void {
+    fn addLeafToTop(stack: *FixedStack(GroupContext, MAX_DEPTH), child_w: f32, child_h: f32, child_flex: f32) void {
         if (stack.len == 0) return;
         const t = stack.top();
         const horizontal = t.direction == .horizontal;
@@ -1055,22 +1409,22 @@ test "ClipStack: round-trip up to capacity without tripping bounds" {
     const empty_top = clips.top();
     try testing.expect(empty_top.w > 1e8);
 
-    // Push the full capacity (16) and confirm the stack accepts every
+    // Push the full capacity and confirm the stack accepts every
     // one without a panic.
     var i: usize = 0;
     while (i < clips.buffer.len) : (i += 1) {
         clips.push(.{ .x = @floatFromInt(i), .y = 0, .w = 10, .h = 10 });
     }
-    try testing.expectEqual(@as(usize, 16), clips.len);
-    try testing.expectEqual(@as(f32, 15), clips.top().x);
+    try testing.expectEqual(@as(usize, MAX_DEPTH), clips.len);
+    try testing.expectEqual(@as(f32, MAX_DEPTH - 1), clips.top().x);
 
     // Pop them all; depth returns to zero, no underflow.
     i = 0;
-    while (i < 16) : (i += 1) clips.pop();
+    while (i < MAX_DEPTH) : (i += 1) clips.pop();
     try testing.expectEqual(@as(usize, 0), clips.len);
 }
 
-test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
+test "FixedStack (via MAX_DEPTH-deep group nesting): documented depth is reachable" {
     const testing = std.testing;
     const Msg = union(enum) { noop };
     const CmdBuffer = cmd.CmdBuffer(Msg);
@@ -1078,10 +1432,10 @@ test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
     var cb = CmdBuffer.init(testing.allocator);
     defer cb.deinit();
 
-    // Documented max for the measure-pass FixedStack is 32. Push 32
-    // groups, all of which must coexist on the stack simultaneously
+    // Documented max for the measure-pass FixedStack is MAX_DEPTH. Push that
+    // many groups, all of which must coexist on the stack simultaneously
     // during the measure pass — this is the boundary case.
-    const DEPTH: usize = 32;
+    const DEPTH: usize = MAX_DEPTH;
     var i: usize = 0;
     while (i < DEPTH) : (i += 1) {
         cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
@@ -1091,10 +1445,10 @@ test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
     i = 0;
     while (i < DEPTH) : (i += 1) cb.popGroup();
 
-    const rects = testing.allocator.alloc(Rect, cb.cmds.items.len) catch unreachable;
+    const rects = try testing.allocator.alloc(Rect, cb.cmds.items.len);
     defer testing.allocator.free(rects);
-    // If FixedStack's push asserted on overflow this would panic — it
-    // must not, because 32 is the documented capacity.
+    // The stacks panic on overflow in every mode — this must not, because
+    // MAX_DEPTH is the documented capacity.
     LayoutEngine.doLayout(rects, cb.cmds.items, 800, 600, test_measurer);
     try testing.expectEqual(@as(f32, 800), rects[0].w);
 }
@@ -1103,6 +1457,7 @@ test "FixedStack (via 32-deep group nesting): documented depth is reachable" {
 // snapshots) live in their own file to keep this one readable.
 test {
     _ = @import("sizing_test.zig");
+    _ = @import("wrap_test.zig");
 }
 
 test "scene3d is a fixed-size leaf sized from its style" {

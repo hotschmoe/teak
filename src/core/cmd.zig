@@ -1,4 +1,5 @@
 const std = @import("std");
+const oom = @import("oom.zig").oom;
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
 const scene = @import("scene.zig");
@@ -7,8 +8,13 @@ const surface = @import("surface.zig");
 pub const Radii = surface.Radii;
 pub const Shadow = surface.Shadow;
 pub const Gradient = surface.Gradient;
+const text_wrap = @import("text_wrap.zig");
+const eql = @import("eql.zig");
 
 pub const FontSpec = text.FontSpec;
+
+/// How a `text` Cmd breaks into lines: `none | word | char | ellipsis`.
+pub const Wrap = text_wrap.Wrap;
 const DEFAULT_FONT = text.DEFAULT_FONT;
 const TextureHandle = text.TextureHandle;
 
@@ -37,6 +43,13 @@ pub const Justify = enum { start, center, end, space_between };
 /// Horizontal placement of a label inside its box (button labels).
 pub const TextAlign = enum { start, center, end };
 
+/// Options for `CmdBuffer.paragraphStyled`.
+pub const ParagraphOpts = struct {
+    wrap: Wrap = .word,
+    max_lines: u16 = 0,
+    text_align: TextAlign = .start,
+};
+
 /// Look of a `text_input`.
 pub const InputVariant = enum {
     /// A filled, bordered box (`bg`, `border` / `focus_border`, `border_width`).
@@ -58,6 +71,11 @@ pub const GroupStyle = struct {
     /// child's own size (flex-basis auto). Flex never shrinks a group below
     /// its content; wrap overflowing content in a scroll.
     flex: f32 = 0,
+    /// 0 = never shrinks (the default). >0 = shrink weight: when a horizontal
+    /// parent overflows, the deficit is shared among shrinkable children in
+    /// proportion to `shrink * width`, down to each child's min-content width
+    /// (wrapped text inside it re-wraps). Wrapped `text` shrinks implicitly.
+    shrink: f32 = 0,
     /// Fixed OUTER size (padding included) on that axis; 0 = measured from
     /// children. A fixed size is the flex basis and beats `align_cross`
     /// stretch from the parent.
@@ -107,6 +125,18 @@ pub const TextCmd = struct {
     /// Foreground color for the rendered glyphs. Default is light grey
     /// suitable for the dark scene bg that examples currently use.
     color: [4]f32 = .{ 0.92, 0.92, 0.94, 1.0 },
+    /// Line breaking. `.none` (default) keeps the single-line behaviour
+    /// (hard newlines are NOT interpreted unless wrapping is on). `.word` /
+    /// `.char` wrap to the width layout resolves; `.ellipsis` truncates one
+    /// line with U+2026. See docs/features/text-engine.md section 7.
+    wrap: Wrap = .none,
+    /// Visible line cap for wrapped text (0 = unlimited); the last visible
+    /// line is ellipsized when text remains.
+    max_lines: u16 = 0,
+    /// Horizontal placement of each line inside the text's rect. Anything but
+    /// `.start` makes a wrapped paragraph fill its parent's cross axis so the
+    /// alignment has room to act.
+    text_align: TextAlign = .start,
 };
 
 pub const ButtonStyle = struct {
@@ -229,6 +259,9 @@ pub const ScrollStyle = struct {
     /// space (its content may be taller and is clipped), instead of growing
     /// to fit its content and pushing siblings out of the window.
     flex: f32 = 0,
+    /// Shrink weight, as `GroupStyle.shrink` (a vertical scroll shrinks to
+    /// its min-content width; a horizontal scroll never shrinks its content).
+    shrink: f32 = 0,
     /// Fixed viewport sizes; they win over `align_cross` stretch. 0 means
     /// "measured from children" (in which case overflow scrolling is
     /// pointless, but the shape still works).
@@ -636,7 +669,7 @@ pub fn SceneCmd(comptime Msg: type) type {
         /// Multiplied into each line vertex's colour; line width in px.
         edge_color: [4]f32 = .{ 1, 1, 1, 1 },
         edge_px: f32 = 1.5,
-        /// Content revision. The frame diff compares the whole struct, but
+        /// Content revision. The frame diff (`core/eql.zig`) compares the whole struct, but
         /// the mesh's *contents* live behind `mesh` — bump `key` when the
         /// geometry behind an unchanged handle/key changes (typically the
         /// resource `rev`), or the frame is skipped as unchanged.
@@ -650,15 +683,6 @@ pub fn SceneCmd(comptime Msg: type) type {
         msg: ?Msg = null,
         /// Accessible name for the a11y tree.
         label: []const u8 = "",
-
-        /// Content equality for the frame diff.
-        pub fn eql(a: @This(), b: @This()) bool {
-            return std.meta.eql(a.style, b.style) and a.mesh == b.mesh and
-                std.meta.eql(a.camera, b.camera) and std.meta.eql(a.clear, b.clear) and
-                std.meta.eql(a.edge_color, b.edge_color) and a.edge_px == b.edge_px and
-                a.key == b.key and a.id == b.id and a.pointer == b.pointer and
-                std.meta.eql(a.msg, b.msg) and std.mem.eql(u8, a.label, b.label);
-        }
     };
 }
 
@@ -700,6 +724,45 @@ pub fn TextInputCmd(comptime Msg: type) type {
         /// When true, the input renders greyed-out and is non-interactive
         /// (no focus, selection, or cursor; hit-test/hover skip it). Layout
         /// is unaffected — same rect either way.
+        disabled: bool = false,
+    };
+}
+
+/// Multi-line editable text (`text_area`). Layout sizes it like a canvas
+/// (`width`/`min_width`, `height`, `flex`; it fills a stretching parent's
+/// cross axis); render wraps `content` to the inner width, draws the
+/// selection across lines, the caret, and the IME composition (from
+/// `TransientState`) clipped to the box. Pointer input over it becomes
+/// `TextEvent`s for the app's `textMsg` hook (see `core/text_event.zig`) -- the
+/// framework never builds a Msg from a pointer, and nothing here is a callback.
+pub fn TextAreaCmd(comptime Msg: type) type {
+    return struct {
+        /// Msg emitted when the area is clicked (the app sets its focus).
+        focus_msg: Msg,
+        /// Distinct non-zero id: `TextEvent.id` names the target.
+        id: u32,
+        content: []const u8,
+        cursor: usize = 0,
+        selection_anchor: ?usize = null,
+        /// Scroll offsets into the wrapped content, from the Model.
+        scroll_x: f32 = 0,
+        scroll_y: f32 = 0,
+        /// Sticky x for Up/Down (from the Model); lets the runtime resolve
+        /// vertical motion against the real layout.
+        goal_x: ?f32 = null,
+        /// `.word` / `.char` wrap to the inner width; `.none` scrolls
+        /// horizontally. (`.ellipsis` behaves like `.none`.)
+        wrap: Wrap = .word,
+        font: FontSpec = DEFAULT_FONT,
+        style: TextInputStyle = .{},
+        /// Box sizing: `width > 0` fixes the width, else `min_width` (or the
+        /// parent's cross extent when it stretches); `flex` grows the main axis.
+        width: f32 = 0,
+        min_width: f32 = 120,
+        height: f32 = 120,
+        flex: f32 = 0,
+        /// Inner padding inside the border.
+        padding: f32 = 6,
         disabled: bool = false,
     };
 }
@@ -762,6 +825,7 @@ pub fn Cmd(comptime Msg: type) type {
         image: ImageCmd,
         button: ButtonCmd(Msg),
         text_input: TextInputCmd(Msg),
+        text_area: TextAreaCmd(Msg),
         checkbox: CheckboxCmd(Msg),
         radio: RadioCmd(Msg),
         slider: SliderCmd(Msg),
@@ -833,7 +897,7 @@ pub const BalanceError = struct {
         mismatched_pop,
         /// Container nesting exceeded the validator's fixed depth
         /// (`MAX_BALANCE_DEPTH`, mirroring LayoutEngine's
-        /// `FixedStack(_, 32)`); deeper input would also overflow the
+        /// `MAX_BALANCE_DEPTH`); deeper input would also overflow the
         /// layout stack. Reported instead of panicked so the caller gets
         /// a named error. `open_kind` / `open_index` name the push that
         /// overflowed.
@@ -854,11 +918,13 @@ pub const BalanceError = struct {
     close_index: usize = 0,
 };
 
-/// Validator depth cap. Mirrors LayoutEngine's `FixedStack(_, 32)` — a
-/// buffer nesting deeper than this would overflow the layout stack
-/// anyway, so the validator flags it as `depth_overflow` rather than
-/// silently accepting it.
-pub const MAX_BALANCE_DEPTH = 32;
+/// Container nesting cap for the whole framework: the layout passes' stacks
+/// and the hit-test / render / a11y clip stacks are all sized to it. A
+/// buffer nesting deeper is rejected by `validateBalance` as
+/// `depth_overflow` (the run loop checks every frame, in every optimize
+/// mode), and the stacks themselves `@panic` on overflow rather than write
+/// out of bounds.
+pub const MAX_BALANCE_DEPTH = 64;
 
 /// `.group` / `.scroll` / … if `c` opens a container, else `null`.
 /// `anytype` so it works for any `Cmd(Msg)` instantiation (the tag set
@@ -1042,11 +1108,11 @@ pub fn CmdBuffer(comptime Msg: type) type {
         // ── Convenience emitters ───────────────────────────────────
 
         pub fn pushGroup(self: *Self, style: GroupStyle) void {
-            self.cmds.append(self.backing, .{ .push_group = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_group = style }) catch oom();
         }
 
         pub fn popGroup(self: *Self) void {
-            self.cmds.append(self.backing, .pop_group) catch unreachable;
+            self.cmds.append(self.backing, .pop_group) catch oom();
         }
 
         /// Invisible flex filler: an empty zero-padding group with the given
@@ -1063,7 +1129,31 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.body,
                 .color = self.theme.text_color,
-            } }) catch unreachable;
+            } }) catch oom();
+        }
+
+        /// Wrapped body text (`wrap = .word`): breaks at UAX #14 opportunities
+        /// to the width layout gives it, shrinks with its row, grows its
+        /// height to the line count. Long unbreakable tokens break at graphemes.
+        pub fn paragraph(self: *Self, content: []const u8) void {
+            self.paragraphStyled(content, self.theme.typography.body, self.theme.text_color, .{});
+        }
+
+        /// `paragraph` with an explicit font, color and options.
+        pub fn paragraphStyled(self: *Self, content: []const u8, font: FontSpec, color: [4]f32, opts: ParagraphOpts) void {
+            self.cmds.append(self.backing, .{ .text = .{
+                .content = content,
+                .font = font,
+                .color = color,
+                .wrap = opts.wrap,
+                .max_lines = opts.max_lines,
+                .text_align = opts.text_align,
+            } }) catch oom();
+        }
+
+        /// One line of body text truncated with "…" where it does not fit.
+        pub fn textEllipsis(self: *Self, content: []const u8) void {
+            self.paragraphStyled(content, self.theme.typography.body, self.theme.text_color, .{ .wrap = .ellipsis });
         }
 
         /// Body text in the theme's heading color/size — for section
@@ -1073,7 +1163,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.heading,
                 .color = self.theme.heading_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Body text in the theme's "muted" color — placeholders, units,
@@ -1083,7 +1173,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.small,
                 .color = self.theme.muted_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Body text in the theme's danger color — validation messages.
@@ -1092,7 +1182,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.small,
                 .color = self.theme.danger_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Monospace text in body color — column data, code, numerics.
@@ -1101,7 +1191,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = self.theme.typography.mono,
                 .color = self.theme.text_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Text with explicit font + color, bypassing theme defaults.
@@ -1112,15 +1202,15 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .content = content,
                 .font = font,
                 .color = color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn divider(self: *Self) void {
-            self.cmds.append(self.backing, .{ .divider = self.theme.divider }) catch unreachable;
+            self.cmds.append(self.backing, .{ .divider = self.theme.divider }) catch oom();
         }
 
         pub fn dividerStyled(self: *Self, style: DividerStyle) void {
-            self.cmds.append(self.backing, .{ .divider = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .divider = style }) catch oom();
         }
 
         pub fn button(self: *Self, msg: Msg, label: []const u8) void {
@@ -1129,7 +1219,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = self.theme.button,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn buttonStyled(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle) void {
@@ -1138,7 +1228,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a greyed-out, non-interactive button. Same as `button`
@@ -1152,7 +1242,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = self.theme.button,
                 .font = self.theme.typography.body,
                 .disabled = true,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn textInput(
@@ -1167,7 +1257,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cursor = cursor,
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn textInputStyled(
@@ -1183,7 +1273,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .cursor = cursor,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a greyed-out, non-interactive text input. Same as
@@ -1202,15 +1292,15 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = self.theme.text_input,
                 .font = self.theme.typography.body,
                 .disabled = true,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn pushScroll(self: *Self, style: ScrollStyle) void {
-            self.cmds.append(self.backing, .{ .push_scroll = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_scroll = style }) catch oom();
         }
 
         pub fn popScroll(self: *Self) void {
-            self.cmds.append(self.backing, .pop_scroll) catch unreachable;
+            self.cmds.append(self.backing, .pop_scroll) catch oom();
         }
 
         pub fn checkbox(self: *Self, msg: Msg, checked: bool, label: []const u8) void {
@@ -1220,7 +1310,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = self.theme.checkbox,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn radio(self: *Self, msg: Msg, selected: bool, label: []const u8) void {
@@ -1230,7 +1320,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .style = self.theme.radio,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn slider(self: *Self, grab_msg: Msg, value: f32) void {
@@ -1238,32 +1328,32 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .grab_msg = grab_msg,
                 .value = value,
                 .style = self.theme.slider,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         // ── Overlay / virtual list / image / rich text ─────────────
 
         pub fn pushOverlay(self: *Self, style: OverlayStyle(Msg)) void {
-            self.cmds.append(self.backing, .{ .push_overlay = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_overlay = style }) catch oom();
         }
 
         pub fn popOverlay(self: *Self) void {
-            self.cmds.append(self.backing, .pop_overlay) catch unreachable;
+            self.cmds.append(self.backing, .pop_overlay) catch oom();
         }
 
         pub fn pushVirtualList(self: *Self, style: VirtualListStyle) void {
-            self.cmds.append(self.backing, .{ .push_virtual_list = style }) catch unreachable;
+            self.cmds.append(self.backing, .{ .push_virtual_list = style }) catch oom();
         }
 
         pub fn popVirtualList(self: *Self) void {
-            self.cmds.append(self.backing, .pop_virtual_list) catch unreachable;
+            self.cmds.append(self.backing, .pop_virtual_list) catch oom();
         }
 
         pub fn image(self: *Self, handle: TextureHandle, style: ImageStyle) void {
             self.cmds.append(self.backing, .{ .image = .{
                 .handle = handle,
                 .style = style,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a non-interactive canvas. `style` carries size + optional
@@ -1273,7 +1363,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .canvas = .{
                 .style = style,
                 .primitives = primitives,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Canvas with an accessibility label (announced by the a11y tree)
@@ -1288,7 +1378,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .style = style,
                 .primitives = primitives,
                 .label = label,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Clickable canvas: `msg` fires on click. The app pairs it with
@@ -1306,13 +1396,13 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .primitives = primitives,
                 .msg = msg,
                 .label = label,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         /// Emit a 3D scene leaf; see `SceneCmd`. Typical use:
         /// `cb.scene3d(.{ .style = .{ .width = 480, .height = 360 }, .mesh = key, .camera = cam, .key = rev })`.
         pub fn scene3d(self: *Self, cmd: SceneCmd(Msg)) void {
-            self.cmds.append(self.backing, .{ .scene3d = cmd }) catch unreachable;
+            self.cmds.append(self.backing, .{ .scene3d = cmd }) catch oom();
         }
 
         /// Interactive canvas: pointer input over it (down/move/up/wheel/
@@ -1333,7 +1423,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .label = label,
                 .pointer = true,
                 .id = id,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn textInputSelected(
@@ -1351,7 +1441,26 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .selection_anchor = selection_anchor,
                 .style = style,
                 .font = self.theme.typography.body,
-            } }) catch unreachable;
+            } }) catch oom();
+        }
+
+        /// Multi-line editable text; see `TextAreaCmd`. The theme's
+        /// `text_input` style and body font are used.
+        pub fn textArea(self: *Self, c: TextAreaCmd(Msg)) void {
+            self.cmds.append(self.backing, .{ .text_area = c }) catch oom();
+        }
+
+        /// `textArea` with the theme's input style + body font filled in.
+        pub fn textAreaThemed(self: *Self, focus_msg: Msg, id: u32, content: []const u8, cursor: usize, selection_anchor: ?usize) void {
+            self.textArea(.{
+                .focus_msg = focus_msg,
+                .id = id,
+                .content = content,
+                .cursor = cursor,
+                .selection_anchor = selection_anchor,
+                .style = self.theme.text_input,
+                .font = self.theme.typography.body,
+            });
         }
 
         pub fn richText(
@@ -1362,11 +1471,11 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.cmds.append(self.backing, .{ .rich_text = .{
                 .content = content,
                 .spans = spans,
-            } }) catch unreachable;
+            } }) catch oom();
         }
 
         pub fn richTextStyled(self: *Self, c: RichTextCmd) void {
-            self.cmds.append(self.backing, .{ .rich_text = c }) catch unreachable;
+            self.cmds.append(self.backing, .{ .rich_text = c }) catch oom();
         }
 
         /// Begin a form row. Emits an outer vertical group + an inner
@@ -1382,25 +1491,25 @@ pub fn CmdBuffer(comptime Msg: type) type {
             // Cap of 8 in-flight form rows; deeper nesting is a bug, not
             // a growth trigger. Assert mirrors the layout stacks: loud
             // crash in Debug/ReleaseSafe, zero cost in ReleaseFast.
-            std.debug.assert(self.form_row_depth < self.form_row_stack.len);
+            if (self.form_row_depth >= self.form_row_stack.len) @panic("teak: pushFormRow nested deeper than 8 (form_row_stack capacity)");
             // Outer vertical (content row + validation message).
             self.cmds.append(self.backing, .{ .push_group = .{
                 .direction = .vertical,
                 .padding = 0,
                 .gap = opts.validation_gap,
-            } }) catch unreachable;
+            } }) catch oom();
             // Inner horizontal (label + content + units).
             self.cmds.append(self.backing, .{ .push_group = .{
                 .direction = .horizontal,
                 .padding = 0,
                 .gap = opts.gap,
-            } }) catch unreachable;
+            } }) catch oom();
             if (opts.label.len > 0) {
                 self.cmds.append(self.backing, .{ .text = .{
                     .content = opts.label,
                     .font = self.theme.typography.body,
                     .color = self.theme.text_color,
-                } }) catch unreachable;
+                } }) catch oom();
             }
             self.form_row_stack[self.form_row_depth] = .{
                 .units = opts.units,
@@ -1414,7 +1523,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
         /// validation message (if any), then closes the outer vertical
         /// group.
         pub fn popFormRow(self: *Self) void {
-            if (self.form_row_depth == 0) return;
+            if (self.form_row_depth == 0) @panic("teak: popFormRow without a matching pushFormRow");
             self.form_row_depth -= 1;
             const pending = self.form_row_stack[self.form_row_depth];
             if (pending.units.len > 0) {
@@ -1422,17 +1531,17 @@ pub fn CmdBuffer(comptime Msg: type) type {
                     .content = pending.units,
                     .font = self.theme.typography.small,
                     .color = self.theme.muted_color,
-                } }) catch unreachable;
+                } }) catch oom();
             }
-            self.cmds.append(self.backing, .pop_group) catch unreachable;
+            self.cmds.append(self.backing, .pop_group) catch oom();
             if (pending.validation.len > 0) {
                 self.cmds.append(self.backing, .{ .text = .{
                     .content = pending.validation,
                     .font = self.theme.typography.small,
                     .color = self.theme.danger_color,
-                } }) catch unreachable;
+                } }) catch oom();
             }
-            self.cmds.append(self.backing, .pop_group) catch unreachable;
+            self.cmds.append(self.backing, .pop_group) catch oom();
         }
 
         /// Build a RichTextCmd from a slice of MixedPart, baking content
@@ -1452,8 +1561,8 @@ pub fn CmdBuffer(comptime Msg: type) type {
             var total_len: usize = 0;
             for (parts) |p| total_len += p.text.len;
 
-            const content = arena_alloc.alloc(u8, total_len) catch unreachable;
-            const spans = arena_alloc.alloc(RichTextSpan, parts.len) catch unreachable;
+            const content = arena_alloc.alloc(u8, total_len) catch oom();
+            const spans = arena_alloc.alloc(RichTextSpan, parts.len) catch oom();
 
             var cursor: usize = 0;
             for (parts, 0..) |p, i| {
@@ -1474,7 +1583,7 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .spans = spans,
                 .default_font = self.theme.typography.body,
                 .default_color = self.theme.text_color,
-            } }) catch unreachable;
+            } }) catch oom();
         }
     };
 }
@@ -1941,7 +2050,7 @@ test "formatBalanceError: each tag renders an actionable line" {
         }, &buf),
     );
     try testing.expectEqualStrings(
-        "push_scroll at cmd #33 exceeds the max container nesting depth (32)",
+        "push_scroll at cmd #33 exceeds the max container nesting depth (64)",
         formatBalanceError(.{ .tag = .depth_overflow, .open_kind = .scroll, .open_index = 33 }, &buf),
     );
 }
@@ -2047,7 +2156,7 @@ test "CmdBuffer.scene3d emits a scene3d cmd with defaults" {
     try testing.expectEqual(@as(?Msg, Msg.poke), b.msg);
 }
 
-test "SceneCmd.eql compares content (label by value) and the revision key" {
+test "SceneCmd: deepEql compares content (label by value) and the revision key" {
     const testing = std.testing;
     const Msg = union(enum) { poke };
     const S = SceneCmd(Msg);
@@ -2055,15 +2164,15 @@ test "SceneCmd.eql compares content (label by value) and the revision key" {
     var label_b = [_]u8{ 'a', 'b' };
     const x: S = .{ .label = &label_a, .key = 1 };
     var y: S = .{ .label = &label_b, .key = 1 };
-    try testing.expect(x.eql(y)); // different addresses, same content
+    try testing.expect(eql.deepEql(S, x, y)); // different addresses, same content
     y.key = 2;
-    try testing.expect(!x.eql(y)); // geometry behind the handle changed
+    try testing.expect(!eql.deepEql(S, x, y)); // geometry behind the handle changed
     y.key = 1;
     y.camera.eye[1] = 4;
-    try testing.expect(!x.eql(y));
+    try testing.expect(!eql.deepEql(S, x, y));
     y.camera.eye[1] = 0;
     y.msg = .poke;
-    try testing.expect(!x.eql(y));
+    try testing.expect(!eql.deepEql(S, x, y));
 }
 
 test "CanvasPrimitive.eql: batches compare by key (or by bytes when key is 0)" {
@@ -2100,4 +2209,28 @@ test "CanvasPrimitive.eql: batches compare by key (or by bytes when key is 0)" {
     try testing.expect(l1.eql(l1));
     try testing.expect(!l1.eql(l2));
     try testing.expect(!l1.eql(pa));
+}
+
+test "validateBalance: nesting at MAX_BALANCE_DEPTH passes, one deeper is depth_overflow (every optimize mode)" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    var i: usize = 0;
+    while (i < MAX_BALANCE_DEPTH) : (i += 1) cb.pushGroup(.{});
+    i = 0;
+    while (i < MAX_BALANCE_DEPTH) : (i += 1) cb.popGroup();
+    try testing.expect(validateBalance(cb.cmds.items) == null);
+
+    // One more level: reported with the offending cmd index, not a crash.
+    cb.reset();
+    i = 0;
+    while (i <= MAX_BALANCE_DEPTH) : (i += 1) cb.pushGroup(.{});
+    const err = validateBalance(cb.cmds.items).?;
+    try testing.expectEqual(BalanceError.Tag.depth_overflow, err.tag);
+    try testing.expectEqual(@as(usize, MAX_BALANCE_DEPTH), err.open_index);
+    var buf: [128]u8 = undefined;
+    const msg = formatBalanceError(err, &buf);
+    try testing.expect(std.mem.indexOf(u8, msg, "cmd #64") != null);
 }

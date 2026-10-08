@@ -86,7 +86,8 @@ pub fn write(writer: anytype, cmds: anytype, rects: []const Rect, opts: Snapshot
                 if (depth > 0) depth -= 1;
                 continue;
             },
-            else => {},
+            .push_group, .push_scroll, .push_overlay, .push_virtual_list => {},
+            .text, .rich_text, .image, .divider, .button, .text_input, .text_area, .checkbox, .radio, .slider, .canvas, .scene3d => {},
         }
 
         try writeIndent(writer, depth);
@@ -97,7 +98,8 @@ pub fn write(writer: anytype, cmds: anytype, rects: []const Rect, opts: Snapshot
 
         switch (c) {
             .push_group, .push_scroll, .push_overlay, .push_virtual_list => depth += 1,
-            else => {},
+            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => unreachable, // skipped above
+            .text, .rich_text, .image, .divider, .button, .text_input, .text_area, .checkbox, .radio, .slider, .canvas, .scene3d => {},
         }
     }
 }
@@ -170,6 +172,9 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writeRect(writer, r);
             try writer.writeByte(' ');
             try writeQuoted(writer, t.content);
+            if (t.wrap != .none) try writer.print(" wrap={s}", .{@tagName(t.wrap)});
+            if (t.max_lines != 0) try writer.print(" max_lines={d}", .{t.max_lines});
+            if (t.text_align != .start) try writer.print(" align={s}", .{@tagName(t.text_align)});
         },
         .rich_text => |rt| {
             // Flattened text = the full content string; spans index into it.
@@ -202,6 +207,21 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
                 if (lo != hi) try writer.print(" sel=[{d},{d})", .{ lo, hi });
             }
             if (ti.disabled) try writer.writeAll(" [disabled]");
+        },
+        .text_area => |ta| {
+            try writer.writeAll("text_area ");
+            try writeRect(writer, r);
+            try writer.print(" id={d} ", .{ta.id});
+            try writeQuoted(writer, ta.content);
+            try writer.print(" cursor={d}", .{ta.cursor});
+            if (ta.selection_anchor) |a| {
+                const lo = @min(a, ta.cursor);
+                const hi = @max(a, ta.cursor);
+                if (lo != hi) try writer.print(" sel=[{d},{d})", .{ lo, hi });
+            }
+            if (ta.scroll_x != 0 or ta.scroll_y != 0) try writer.print(" scroll=({d},{d})", .{ ri(ta.scroll_x), ri(ta.scroll_y) });
+            if (ta.wrap != .word) try writer.print(" wrap={s}", .{@tagName(ta.wrap)});
+            if (ta.disabled) try writer.writeAll(" [disabled]");
         },
         .checkbox => |cbx| {
             try writer.writeAll("checkbox ");
@@ -798,6 +818,23 @@ test "snapshot: scene3d shows rect, mesh, key, id and label" {
         \\group (0,0,400,300) vertical
         \\  scene3d (0,0,320,200) mesh=3 key=9
         \\  scene3d (0,200,100,50) mesh=0 key=0 id=4 pointer "model view"
+        \\
+    );
+}
+
+test "snapshot: text_area with caret, selection and scroll" {
+    const testing = std.testing;
+    const Msg = union(enum) { focus };
+    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb.textArea(.{ .focus_msg = .focus, .id = 3, .content = "one\ntwo", .cursor = 5, .selection_anchor = 1, .scroll_y = 20, .width = 200, .height = 100 });
+    cb.popGroup();
+    var rects: [4]layout.Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 300, 300, text.monoMeasurer());
+    try expectSnapshot(cb.cmds.items, rects[0..cb.cmds.items.len], .{},
+        \\group (0,0,300,300) vertical
+        \\  text_area (0,0,200,100) id=3 "one\ntwo" cursor=5 sel=[1,5) scroll=(0,20)
         \\
     );
 }

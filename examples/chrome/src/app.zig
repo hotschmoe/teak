@@ -362,6 +362,10 @@ pub const Model = struct {
     help_open: bool = true,
     /// The modern look (`StyleToggle` in the header) instead of the retro one.
     modern: bool = false,
+    /// 0 = hidden, 1 = fully shown. Drives the popover's slide-in / slide-out
+    /// (a `teak.anim.Tween` in the Model; advanced by `.frame` Msgs while it
+    /// is active). Starts settled at 1 because the popover starts open.
+    help_slide: teak.anim.Tween(f32) = .still(1),
     material: Material.Model = .{ .selected = 0 },
 };
 
@@ -373,6 +377,8 @@ pub const Msg = union(enum) {
     name_backspace,
     toggle_help,
     toggle_style,
+    /// Frame time in ms, delivered by `animationMsg` while an animation runs.
+    frame: u32,
     material: Material.Msg,
     noop,
 };
@@ -396,8 +402,13 @@ pub fn update(m: *Model, msg: Msg) void {
         .name_backspace => if (m.name_len > 0) {
             m.name_len -= 1;
         },
-        .toggle_help => m.help_open = !m.help_open,
+        .toggle_help => {
+            m.help_open = !m.help_open;
+            // Opening eases out over 400 ms; closing slides out faster.
+            if (m.help_open) m.help_slide.start(1, 400, .out_cubic) else m.help_slide.start(0, 160, .in_cubic);
+        },
         .toggle_style => m.modern = !m.modern,
+        .frame => |dt| m.help_slide.advance(dt),
         .noop => {},
     }
 }
@@ -427,7 +438,7 @@ pub fn view(m: *const Model, cb: anytype) void {
     statusLine(cb, l);
     cb.popGroup();
 
-    if (m.help_open) helpPopover(cb, l);
+    if (m.help_open or m.help_slide.active()) helpPopover(cb, l, m.help_slide.value());
 }
 
 fn header(m: *const Model, cb: anytype, l: *const Look) void {
@@ -571,9 +582,17 @@ fn rightColumn(cb: anytype, l: *const Look) void {
     cb.pushGroup(cb.theme.card);
     cb.heading("NOTES");
     cb.divider();
-    cb.textMuted("1. BREAK ALL SHARP EDGES.");
-    cb.textMuted("2. DIMENSIONS IN MM.");
-    cb.textMuted("3. FINISH: ANODIZE CLEAR.");
+    // Wrapped paragraphs: they take the card's width, re-wrap when the window
+    // or the card changes, and grow the card's height with their line count.
+    cb.paragraphStyled("1. BREAK ALL SHARP EDGES AND DEBURR HOLES; NO BURRS ABOVE 0.1 MM ON MATING FACES.", plex, muted, .{});
+    cb.paragraphStyled("2. DIMENSIONS IN MM, TOLERANCES PER ISO 2768-M UNLESS NOTED.", plex, muted, .{});
+    cb.paragraphStyled("3. FINISH: ANODIZE CLEAR, 10-15 MICRON; MASK THE BORE BEFORE COATING.", plex, muted, .{ .max_lines = 2 });
+    // A shrinking row: the tag keeps its width, the paragraph beside it gives
+    // way (and re-wraps) as the column narrows.
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .align_cross = .start });
+    cb.buttonStyled(.noop, "REV C", key_button);
+    cb.paragraphStyled("SUPERSEDES REV B; RE-INSPECT ALL FIRST-ARTICLE PARTS.", plex, ink, .{});
+    cb.popGroup();
     cb.popGroup();
 
     cb.popGroup();
@@ -597,9 +616,15 @@ fn statusLine(cb: anytype, l: *const Look) void {
 
 /// Floating key-help panel: opaque backdrop + border + a hard 4px offset
 /// shadow (retro) or a rounded panel with a soft shadow (modern), non-modal
-/// so the sheet underneath stays live.
-fn helpPopover(cb: anytype, l: *const Look) void {
-    cb.pushOverlay(l.pop);
+/// so the sheet underneath stays live. `slide` (0..1) drops it into place
+/// while the border and hard shadow fade in from the backdrop.
+fn helpPopover(cb: anytype, l: *const Look, slide: f32) void {
+    const t = std.math.clamp(slide, 0, 1);
+    var ov = l.pop;
+    ov.y -= (1 - t) * 70;
+    if (ov.border) |c| ov.border = teak.anim.lerp([4]f32, ov.backdrop, c, t);
+    if (ov.shadow) |c| ov.shadow = teak.anim.lerp([4]f32, ov.backdrop, c, t);
+    cb.pushOverlay(ov);
     cb.heading("QUICK KEYS");
     cb.divider();
     cb.text("L   LINE");
@@ -613,6 +638,17 @@ fn helpPopover(cb: anytype, l: *const Look) void {
 }
 
 // ── Host integration ───────────────────────────────────────────────
+
+/// Ask for frame callbacks only while the popover is animating; once it
+/// settles the run loop goes idle again.
+pub fn subscribe(m: *const Model) []const teak.Sub(Msg) {
+    return if (m.help_slide.active()) &.{.animation_frame} else &.{};
+}
+
+/// The run loop's frame time, as a Msg (never read from a clock in `view`).
+pub fn animationMsg(_: *const Model, dt_ms: u32) ?Msg {
+    return .{ .frame = dt_ms };
+}
 
 pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
     if (m.material.open) return .{ .material = Material.charMsg(c) };
@@ -712,6 +748,23 @@ test "update: tab, selection wrap, and name editing" {
     try std.testing.expectEqualStrings("BASE-PLATEX", m.name[0..m.name_len]);
     update(&m, .name_backspace);
     try std.testing.expectEqualStrings("BASE-PLATE", m.name[0..m.name_len]);
+}
+
+test "help popover: slide tween runs on frame Msgs and settles" {
+    var m: Model = .{};
+    try std.testing.expect(!m.help_slide.active());
+    update(&m, .toggle_help); // close
+    try std.testing.expect(!m.help_open and m.help_slide.active());
+    try std.testing.expectEqual(@as(usize, 1), subscribe(&m).len);
+    update(&m, .{ .frame = 70 });
+    try std.testing.expect(m.help_slide.value() < 1 and m.help_slide.value() > 0);
+    update(&m, .{ .frame = 100 });
+    try std.testing.expect(!m.help_slide.active());
+    try std.testing.expectEqual(@as(f32, 0), m.help_slide.value());
+    try std.testing.expectEqual(@as(usize, 0), subscribe(&m).len); // idle again
+    update(&m, .toggle_help); // reopen
+    update(&m, .{ .frame = 1000 });
+    try std.testing.expectEqual(@as(f32, 1), m.help_slide.value());
 }
 
 test "material combobox: type to filter, arrows + enter select, escape closes" {

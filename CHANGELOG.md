@@ -2,8 +2,68 @@
 
 ## Unreleased
 
+### Animation primitive
+
+- New `teak.anim`: `Tween(T)` (Model-resident), `Ease`/`ease`, `lerp`. New
+  `Sub.animation_frame` and the optional App hook `animationMsg(model, dt_ms)`:
+  while the sub is listed the run loop feeds frame time (capped at 100 ms) to
+  the app and suspends idle skipping. `Sub` gained a variant (exhaustive
+  switches over `Sub` need an arm). `examples/chrome`: sliding QUICK KEYS popover.
+  See docs/features/animation.md.
+
+### Event-driven idle
+
+- `RunOptions.idle_skip` (default true): a frame with no input, no dispatched
+  Msg, no blinking focused input, no IME / secondary window skips view,
+  layout, diff, upload and present; `Runtime.quiet` reports it and `run`
+  calls the Host's optional `waitEvents(timeout_ms)` (headless implements it;
+  X11/Win32 hosts still to add it, see `platform/host.zig`). New
+  `sub.nextDueMs`. Behaviour change: `frame_counter` / snapshot `frame=` count
+  built frames only; set `.idle_skip = false` for the old every-frame behaviour.
+### Web build: stripped wasm by default
+
+- `linkWebWgpu` now strips DWARF and the name section from the wasm in every
+  non-Debug build (`WebWgpuOptions.strip`, default true). The shipped
+  `chrome-web.wasm` was 1.27 MB, of which 1.15 MB was debug info (the
+  apparent 0.16 -> 0.17 growth of +65 KB was all DWARF: code actually shrank
+  97.5 KB -> 89.8 KB); stripped it is 120 KB. Pass `.{ .strip = false }` to
+  keep symbols for wasm debugging.
+
+### Core cleanup (idiomatic Zig + silent-failure hardening)
+
+- **Frame diff is derived by reflection.** `cmdsEqual` now uses the generic
+  `core/eql.zig` `deepEql` over `Cmd(Msg)` (slices by content, floats bitwise,
+  `Msg` deep-compared): a new `Cmd` field can no longer be forgotten. Tests
+  mutate every leaf of every variant. `SceneCmd.eql` is removed (breaking, but
+  `deepEql` covers it); `CanvasPrimitive.eql` stays (revision-`key` shortcut).
+- **Every pass is exhaustive over `Cmd` tags** (no `else =>`): a new variant
+  fails to compile in layout, hit-test, focus, render, snapshot, a11y and
+  scroll extent. The CLAUDE.md/AGENTS.md widget checklist is shortened.
+- **OOM policy:** allocation `catch unreachable` (UB in release) replaced by
+  `core/oom.zig`'s `oom()`, a `@panic` in every optimize mode. Emitters stay
+  non-error-returning.
+- **Loud capacities:** `MAX_BALANCE_DEPTH` 32 -> 64 (layout stacks and
+  `ClipStack`). Stack overflow/underflow, `pushFormRow` nesting past 8 and a
+  stray `popFormRow` now `@panic` in every mode. `teak.run` runs
+  `validateBalance` every frame in every mode (was Debug only) and panics
+  naming the offending cmd index. The resource table logs once when full
+  (`Table.overflowed`).
 ### Changed
 
+- Web text now uses the same glyph atlas as native: stb_truetype compiled into the wasm
+  (`src/text/stb_wasm_impl.c` + a malloc/libm shim) shapes and rasterizes glyphs, the web Host
+  measures with `teak-text` (layout == render, and chrome's web render is pixel-identical to
+  native), and glyphs no shipped face has (CJK, symbols) are rasterized by canvas 2D one cluster
+  at a time. The `.fonts` files are embedded in the wasm (and still copied to `dist/fonts/` for
+  the canvas fallback); a small Plex Mono subset is embedded as the default face. Text is
+  vertically centred in buttons on web now. `glyph_cache.zig`, `textured_quad.wgsl` and the old
+  `rasterizeText` web path are removed. Chrome's wasm grows ~23 KB gzip (ReleaseFast, stripped; ~21 KB with ReleaseSmall), 5.5 KB of it the embedded default face, which apps that ship `.fonts` do not pay.
+- Combining marks (U+0300 block and friends) take no advance and are centred over the preceding base glyph (`cafe` + U+0301 measures like `café`); a mark the face lacks is dropped instead of drawn as a missing-glyph box.
+- `shaders/glyph.wgsl` reads the instance as raw 32-bit words (shared by native and web, since
+  zunk vertex formats are 32-bit). `TextStage` (src/gpu/text_stage.zig) holds the backend-neutral
+  staging code with a shaped-run cache; `teak-text`'s `measure` has a small result cache.
+
+- **Image cache is growable** (native + web): the fixed 64-slot table and 64-draw/frame limit are gone (65536 live images, log at the ceiling on native). `releaseImage` is now a required `Gpu` declaration (`validateGpu`). `resources.MAX_RESOURCES` 128 -> 1024 and overflow now logs a warning and counts `Table.dropped`. Part of #7.
 - Native text (Linux, Windows) is drawn from a glyph atlas: shaped glyphs are packed into R8
   pages and drawn as instanced quads (`shaders/glyph.wgsl`), replacing the per-string BGRA
   texture cache. Text is rasterized at the device pixel size with quarter-pixel x positioning.
@@ -26,6 +86,14 @@
 - **Theme tokens**: `Theme.tokens` (`ThemeTokens`: radii, border width, spacing scale, shadow elevations),
   `Theme.fromPaletteTokens`, `button_primary`, and the `Theme.modern_light` / `Theme.modern_dark` presets. The chrome example
   renders both looks (`M` key, header toggle, `zig build shot -- out.png --state modern`).
+- `text_area` Cmd + `TextArea(cap)` component + `textMsg` hook (text-engine PR11a/PR11b, closes the multi-line half of #6):
+  wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,
+  drag incl. outside, double/triple click, wheel), visual Up/Down/Home/End with a sticky column, layout `metrics` events,
+  `Host.setImeSpot` from the focused caret; `Editor.applyPointer`; `examples/notes`. See docs/features/text-area.md.
+- Wrapped text and flex shrink (text-engine PR8/PR9, closes #8): `text` gains `wrap` (`none|word|char|ellipsis`),
+  `max_lines`, `text_align`; groups/scrolls gain `shrink`; emitters `paragraph`, `paragraphStyled`, `textEllipsis`.
+  Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;
+  render draws one `TextDraw` per line. HARDLINE hatch 3 amended accordingly. Chrome's NOTES panel shows it.
 - **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
   - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
     selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,
