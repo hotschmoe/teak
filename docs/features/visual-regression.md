@@ -32,7 +32,10 @@ create a display, set `WEBSHOT_ANGLE=vulkan`. scene3d has no web golden: its orb
 
 Defaults (`tools/vreg.zig`): native `--tol 24 --budget 150`, web `--tol 32 --budget 600`. They are chosen
 so the Mali-vs-lavapipe antialiasing difference passes while a 1 px layout shift (a shifted button is ~290
-differing pixels) or a missing text row fails. Measured numbers are in the PR that introduced them. Tighten
+differing pixels) or a missing text row fails. Deliberate-regression checks (todo example, raw `--tol 0 --budget 0`): widening one gap by 1 px shifted the Add
+button and changed 290 pixels (bbox 148..208 x 48..84), over the native budget of 150; commenting out the title text
+reflowed the page (12,760+ pixels). Same-box reruns are bit-identical (0 noisy pixels), so any difference is real
+except GPU/driver AA on CI. Tighten
 a single run with `--tol 0 --budget 0` to see the raw difference.
 
 ## When a change is intentional (the `--update` workflow)
