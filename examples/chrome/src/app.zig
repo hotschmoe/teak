@@ -370,6 +370,8 @@ pub const Msg = union(enum) {
     select_tab: u8,
     select_part: u8,
     focus_name,
+    /// A press on blank space: drop the text focus.
+    blur,
     name_char: u8,
     name_backspace,
     toggle_help,
@@ -386,6 +388,10 @@ pub fn update(m: *Model, msg: Msg) void {
         .select_part => |p| m.selected = @intCast(@min(p, parts.len - 1)),
         .focus_name => {
             m.name_focused = true;
+            m.material.open = false;
+        },
+        .blur => {
+            m.name_focused = false;
             m.material.open = false;
         },
         .material => |mm| {
@@ -584,7 +590,7 @@ fn rightColumn(cb: anytype, l: *const Look) void {
     // A shrinking row: the tag keeps its width, the paragraph beside it gives
     // way (and re-wraps) as the column narrows.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .align_cross = .start });
-    cb.buttonStyled(.noop, "REV C", key_button);
+    cb.buttonStyled(.noop, "REV C", l.key);
     cb.paragraphStyled("SUPERSEDES REV B; RE-INSPECT ALL FIRST-ARTICLE PARTS.", plex, ink, .{});
     cb.popGroup();
     cb.popGroup();
@@ -642,6 +648,12 @@ pub fn subscribe(m: *const Model) []const teak.Sub(Msg) {
 /// The run loop's frame time, as a Msg (never read from a clock in `view`).
 pub fn animationMsg(_: *const Model, dt_ms: u32) ?Msg {
     return .{ .frame = dt_ms };
+}
+
+/// Clicking empty space clears the focus (no blinking caret left behind).
+pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+    if (ev.kind == .down and ev.isBlank() and (m.name_focused or m.material.open)) return .blur;
+    return null;
 }
 
 pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
@@ -789,4 +801,13 @@ test "open material list view is balanced and within the rect budget" {
     _ = frame(&m, &cb, &rects, 1440, 900);
     try std.testing.expect(teak.validateBalance(cb.cmds.items) == null);
     try std.testing.expect(cb.cmds.items.len < 512);
+}
+
+test "pointerMsg: a blank-space press clears the name focus and closes the list" {
+    var m: Model = .{ .name_focused = true };
+    const ev: teak.PointerEvent(Msg) = .{ .kind = .down, .button = .left, .x = 600, .y = 500 };
+    try std.testing.expect(ev.isBlank());
+    update(&m, pointerMsg(&m, ev).?);
+    try std.testing.expect(!m.name_focused);
+    try std.testing.expect(pointerMsg(&m, ev) == null); // nothing left to clear
 }

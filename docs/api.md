@@ -145,11 +145,10 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.ImageCmd` = `cmd.ImageCmd`
   - fields: `handle, style`
 > A styled byte range inside a `RichTextCmd`.
-- `teak.RichTextSpan` = `cmd.RichTextSpan`
-  - fields: `start, end, color, font, bold, italic`
+- `teak.RichTextSpan`: `pub const RichTextSpan = cmd.RichTextSpan`
 > Multi-style text: shared content plus spans.
 - `teak.RichTextCmd` = `cmd.RichTextCmd`
-  - fields: `content, spans, default_color, default_font`
+  - fields: `content, spans, default_color, default_font, wrap, max_lines, text_align`
 > One run of a `mixedText` line (own font, color, weight).
 - `teak.MixedPart` = `cmd.MixedPart`
   - fields: `text, font, color, bold, italic`
@@ -581,7 +580,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, resized, width, height`
 > Event accumulator turning native events into an `InputState`.
 - `teak.InputQueue` = `input_queue.InputQueue`
-  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, alt_clean`
+  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, dropped, alt_clean`
   > Drop last frame's text and keys. Call once at the top of a poll,
   > before pumping events: the slices handed out by `finish` alias the
   > queue's buffers and stay valid until this runs.
@@ -755,10 +754,11 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `handle, style`
 - `struct VirtualListStyle`
   - fields: `direction, total_count, item_extent, visible_start, visible_end, padding, gap, total_extent, start_offset, align_cross, id`
-- `struct RichTextSpan`
-  - fields: `start, end, color, font, bold, italic`
+> A styled byte range of a `rich_text` (defined in `text.zig` so `text_wrap`
+> can measure runs without importing the Cmd types).
+- `pub const RichTextSpan = text.RichTextSpan`
 - `struct RichTextCmd`
-  - fields: `content, spans, default_color, default_font`
+  - fields: `content, spans, default_color, default_font, wrap, max_lines, text_align`
 - `struct MixedPart`
   - fields: `text, font, color, bold, italic`
 > A point in canvas-local logical pixels.
@@ -898,6 +898,8 @@ Text measurement and rasterization types.
   > The resolved `snap_advance` (see the field).
   - `pub fn snapsAdvance(self: FontSpec) bool`
 - `pub const DEFAULT_FONT: FontSpec = .{}`
+- `struct RichTextSpan`
+  - fields: `start, end, color, font, bold, italic`
 - `struct TextMetrics`
   - fields: `width, height, ascent, descent`
 - `struct TextMeasurer`
@@ -1104,6 +1106,18 @@ Pure text wrapping, height-for-width measurement and caret/point mapping.
 - `pub const ELLIPSIS = "\u{2026}"`
 - `struct Line`
   - fields: `start, end, hang, next, width, hard_break, ellipsized`
+> A measurer over `rich_text` runs: measuring a slice of `content` sums the
+> pieces in their own span fonts (uncovered bytes use `default_font`); any
+> other string (the ellipsis, the line-height probe) is measured in
+> `default_font`, with the height of the tallest run. It lets every function
+> here wrap mixed-font text unchanged: they only ever measure slices of the
+> content, and the slice's offset (pointer arithmetic) says which span it is.
+> Valid while the value lives and `content` / `spans` stay in place.
+- `struct RichMeasure`
+  - fields: `content, spans, default_font, base, max_height`
+  - `pub fn init(content: []const u8, spans: []const text_mod.RichTextSpan, default_font: FontSpec, base: TextMeasurer) RichMeasure`
+  > The measurer for wrapping calls (pass `default_font` as their `font`).
+  - `pub fn measurer(self: *const RichMeasure) TextMeasurer`
 > Line height for `font` as the measurer reports it.
 - `pub fn lineHeight(font: FontSpec, m: TextMeasurer) f32`
 > Next line of `text[start..]` for a maximum width (`start` must be a line
@@ -1279,6 +1293,8 @@ convenience emitters.
   > `fromPalette` with shape tokens: the derived button / input / card
   > styles get the radii, borders and elevations from `t`.
   - `pub fn fromPaletteTokens(p: Palette, t: Tokens) Theme`
+> WCAG contrast ratio of two colours (1 .. 21).
+- `pub fn contrast(a: [4]f32, b: [4]f32) f32`
 - `pub const dark_palette: Palette = .{ .bg = .{ 0.08, 0.08, 0.10, 1.0 }, .bg_panel = .{ 0.15, 0.15, 0.18, 1.0 }, .bg_sunken = .{ 0.12, 0.12, 0.14, 1.0 }, .bg_raised = .{ 0.25, 0.25, 0.28, 1.0 }, .bg_hover = .{ 0.35, 0.35, `
 - `pub const light_palette: Palette = .{ .bg = .{ 0.96, 0.96, 0.97, 1.0 }, .bg_panel = .{ 0.97, 0.97, 0.98, 1.0 }, .bg_sunken = .{ 1.00, 1.00, 1.00, 1.0 }, .bg_raised = .{ 0.88, 0.88, 0.92, 1.0 }, .bg_hover = .{ 0.82, 0.82,`
 - `pub const modern_light_palette: Palette = .{ .bg = .{ 0.957, 0.961, 0.973, 1.0 }, .bg_panel = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_sunken = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_raised = .{ 1.0, 1.0, 1.0, 1.0 }, .bg_hover = .{ 0.945, 0.9`
@@ -2160,7 +2176,7 @@ Shared per-window input accumulator for event-driven Hosts (Win32, X11).
 > with Left/Right/Home/End/Backspace/Delete selects the word/document variants.
 - `pub fn resolveKey(k: NavKey, mods: Modifiers) ?SpecialKey`
 - `struct InputQueue`
-  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, alt_clean`
+  - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, pending_high, dropped, alt_clean`
   > Drop last frame's text and keys. Call once at the top of a poll,
   > before pumping events: the slices handed out by `finish` alias the
   > queue's buffers and stay valid until this runs.

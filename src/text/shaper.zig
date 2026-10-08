@@ -15,6 +15,7 @@
 const std = @import("std");
 const teak = @import("teak");
 const face_mod = @import("face.zig");
+const fallback = @import("fallback.zig");
 const compose_table = @import("compose_table.zig");
 
 const Font = face_mod.Font;
@@ -64,6 +65,21 @@ fn mapGlyph(primary: *const Font, primary_id: u16, family: teak.FontFamily, cp: 
         const alt = f.glyphIndex(cp);
         if (alt != 0) return .{ .glyph = alt, .face_id = id, .face = f };
     }
+    // Other registered families, then the app's explicit chain and the system
+    // last-resort list (text/fallback.zig). Tofu only when nothing has it.
+    var fam_i: u8 = 0;
+    while (fam_i < 3) : (fam_i += 1) {
+        const fam: teak.FontFamily = @fromBackingInt(@intCast(fam_i));
+        if (fam == family) continue;
+        var w2: u8 = 0;
+        while (w2 < 3) : (w2 += 1) {
+            const id = face_mod.faceId(fam, @fromBackingInt(@intCast(w2)));
+            const f = face_mod.faceById(id) orelse continue;
+            const alt = f.glyphIndex(cp);
+            if (alt != 0) return .{ .glyph = alt, .face_id = id, .face = f };
+        }
+    }
+    if (fallback.glyphFor(cp)) |h| return .{ .glyph = h.glyph, .face_id = h.face_id, .face = h.face };
     return .{ .glyph = 0, .face_id = primary_id, .face = primary };
 }
 
@@ -192,6 +208,14 @@ pub fn shapeSimple(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeRe
     var pending_cp: u21 = 0; // the base's code point (0 = a ligature / unknown)
 
     while (pos < text.len) {
+        // Default-ignorable code points (ZWJ, variation selectors, ...) draw
+        // nothing and take no space; skipping them avoids tofu in emoji
+        // sequences.
+        const d = decode(text, pos);
+        if (fallback.isInvisible(d.cp)) {
+            pos += d.len;
+            continue;
+        }
         const u = nextUnit(primary, primary_id, text, pos, font, ligatures);
         if (u.mark) {
             // Prefer the precomposed letter (NFC) when the face has it: e + U+0301 -> U+00E9. Works

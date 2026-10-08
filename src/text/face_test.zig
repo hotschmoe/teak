@@ -239,7 +239,11 @@ test "combining mark: zero advance, so cafe + U+0301 measures like café" {
     try std.testing.expectApproxEqAbs(e.x + e.advance * 0.5, ink_mid, 0.01);
     // A mark with no base, or one the face lacks, adds no width and no box.
     try std.testing.expectApproxEqAbs(@as(f32, 12), text.measure("\u{301}a", f).width, 0.001);
-    try std.testing.expectEqual(@as(usize, 1), text.SimpleShaper.shape("a\u{300}", f, &out).count);
+    // A mark the face lacks: drawn from a fallback face when one has it (system
+    // fonts differ per machine), always at zero advance; dropped otherwise.
+    const lacking = text.SimpleShaper.shape("a\u{300}", f, &out);
+    try std.testing.expect(lacking.count == 1 or lacking.count == 2);
+    if (lacking.count == 2) try std.testing.expectEqual(@as(f32, 0), out[1].advance);
 }
 
 test "combining mark pixels: the accent is drawn over the e, not beside it" {
@@ -277,7 +281,12 @@ test "NFC composition: a face with é but no U+0301 still shows café (the mark 
     try std.testing.expectEqual(rf.face.glyphIndex(0xF1), out[r.count - 1].glyph); // n + U+0303 -> ñ
     try std.testing.expectApproxEqAbs(text.measure("caf\u{e9}", f).width, text.measure("cafe\u{301}", f).width, 0.001);
     // A pair with no composite in the face is dropped (the face has nothing to draw), without a missing-glyph box.
-    try std.testing.expectEqual(@as(usize, 1), text.SimpleShaper.shape("x\u{301}", f, &out).count);
-    // Chained: nothing composes e + U+0301 + U+0301; the second mark has no glyph and is dropped.
-    try std.testing.expectEqual(@as(usize, 1), text.SimpleShaper.shape("e\u{301}\u{301}", f, &out).count);
+    // A system fallback face that has the mark may draw it instead (host-dependent), so assert only "no tofu".
+    const x1 = text.SimpleShaper.shape("x\u{301}", f, &out);
+    try std.testing.expect(x1.count >= 1 and x1.count <= 2);
+    for (out[0..x1.count]) |g| try std.testing.expect(g.glyph != 0);
+    // Chained: nothing composes e + U+0301 + U+0301; the second mark is dropped (or drawn from a fallback face).
+    const e1 = text.SimpleShaper.shape("e\u{301}\u{301}", f, &out);
+    try std.testing.expect(e1.count >= 1 and e1.count <= 3);
+    for (out[0..e1.count]) |g| try std.testing.expect(g.glyph != 0);
 }

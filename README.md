@@ -20,6 +20,19 @@ Every arrow is an explicit function call with typed inputs and outputs. No globa
 
 ## Status
 
+At a glance (verified against master `4f898c0`; the open list is [`tasks.md`](tasks.md), the competitor matrix [`docs/PARITY.md`](docs/PARITY.md)):
+
+| | Ships on master | In review / not yet |
+|---|---|---|
+| **Platforms** | Windows (Win32 + wgpu, x86_64 and native ARM64), Linux (Wayland or X11 from one binary), web (WebGPU via zunk), headless | macOS (#54), web WebGL2 fallback (evaluated only) |
+| **Text** | glyph atlas, built-in shaper + optional HarfBuzz, wrapping, grapheme / line-break / bidi algorithms, multi-line `TextArea`, undo, IME on X11 / Win32 | bidi rendering, font fallback, colour emoji, SDF text, web IME |
+| **Rendering** | SDF rounded rects / borders / gradients / soft shadows, images, canvas + charts, `scene3d` (camera, picking, instancing, grid, section cuts, layers) | SVG, subpixel LCD AA |
+| **Widgets** | button, checkbox, radio, slider, dropdown, combobox, numeric + date field, toggle, progress, tabs, split, tooltip, toast, dialog, menus, `DataTable`, `VarList`, `TreeList` | colour picker, number spinner, whole-UI keyboard navigation |
+| **Loop** | event-driven idle, `Sub` timers, `teak.anim` tweens, declarative effects + GPU resources, `pointerMsg` | commands / shortcuts / drag and drop |
+| **Tooling** | `zig build audit` / `bench` / `shot` / `api`, `TEAK_SNAPSHOT`, golden snapshots, generated API reference | agent driver + MCP (#46), hot reload (#79), visual regression (#32), a11y publishing (#58) |
+
+Examples: `chrome`, `counter_greeter`, `effects`, `fonts`, `gallery`, `kerf_viewer`, `notes`, `scene3d`, `scene_layers`, `tables`, `todo`, `tree`, `viewport`.
+
 - **Proto-2 shipped** on three hosts: **Windows** (Win32 + wgpu-native), **Linux** (X11 + wgpu-native), and **WebAssembly** (WebGPU via [zunk](https://github.com/hotschmoe/zunk)). One `linkNativeWgpu` call picks the native backend by target OS. *(Linux picks **Wayland** when `WAYLAND_DISPLAY` is set and its libraries load, else X11/XWayland, at runtime from one binary; `TEAK_BACKEND=x11|wayland` forces one.)*
 - **Text rendering shipped.** Both backends rasterize glyph-accurate text into a texture atlas and draw via `uploadText` / `renderFrame`.
 - **Functional-gaps push landed** on `functional_gaps_yolo`: overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs surface, virtual list, a11y tree, rich text. See [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md).

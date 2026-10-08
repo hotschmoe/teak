@@ -1,6 +1,6 @@
 # Proposal: one `pointerMsg` hook instead of five pointer hooks
 
-Status: **proposal** (drift audit 2026-10). Not implemented: the hooks it would
+Status: **stage 1 landed** (`pointerMsg` for hover/down/up/context incl. blank-space presses; `canvasMsg` / `textMsg` / `sliderMsg` keep their capture logic and migrate in later stages). The rest is the original **proposal** (drift audit 2026-10). Not implemented: the hooks it would
 replace are still landing in open PRs, and the queue must not break. Revisit once
 `textMsg`, `hoverMsg`, `contextMsg` and `sliderMsg` are on master.
 

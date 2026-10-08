@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### `pointerMsg`: one pointer hook, blank-space clicks delivered
+
+- New optional App hook `pointerMsg(*const Model, PointerEvent(Msg)) ?Msg`.
+  `PointerEvent` gained `kind` (`hover` / `down` / `up` / `context`), `button`
+  and `isBlank()`. A press on blank space arrives as `kind = .down, hit = null`,
+  so an app can clear its own focus (the old hooks never reported it).
+  `hoverMsg` / `contextMsg` keep working. chrome and gallery now clear their
+  text focus on a blank click.
+
 ### Clipboard: Msg-returning hooks (HARDLINE §1 fix)
 
 - New optional App hooks `clipboardText(*const Model, SpecialKey) ?[]const u8`
@@ -170,6 +179,12 @@
   with scalable text and gains `zig build shot -- out.png --zoom Z`. Native and web (the wasm math shim gained small cbrt/cos/acos; chrome-sized
   apps pay about 4-5 KB gzip for the SDF code). Not for UI text: a distance field is softer than a hinted bitmap at 12-16 px.
 
+- Native glyph fallback chain (`src/text/fallback.zig`): per code point the shaper tries the requested face, the family's other weights,
+  the other registered families, `registerFallbackFace` faces, then lazily-probed system fonts (DejaVu Sans, Noto Sans / CJK / Emoji,
+  WenQuanYi, FreeSans, Unifont; `TEAK_FALLBACK_FONTS` prepends paths). Tofu only when nothing has the glyph; ZWJ / variation selectors /
+  other default-ignorables take no space. Measurement, raster and atlas agree (one shaper decision, face ids above `fallback_face_id`).
+- Wrapped `rich_text` (`RichTextCmd.wrap/max_lines/text_align`, `cb.richParagraph`): lines break across spans with mixed fonts and colours.
+- `InputQueue` caps raised to 256 chars / 64 keys per frame and overflow is counted (`dropped`) and logged.
 - `text_area` Cmd + `TextArea(cap)` component + `textMsg` hook (text-engine PR11a/PR11b, closes the multi-line half of #6):
   wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,
   drag incl. outside, double/triple click, wheel), visual Up/Down/Home/End with a sticky column, layout `metrics` events,
