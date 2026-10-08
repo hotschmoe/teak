@@ -108,15 +108,10 @@ pub const Palette = struct {
     }
 };
 
-/// One vertex of the output triangle list (24 bytes, tightly packed f32s).
-pub const Vert = extern struct {
-    x: f32,
-    y: f32,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-};
+/// One vertex of the output triangle list (6 f32: x, y, r, g, b, a). It is
+/// teak's own canvas vertex, so the tessellator's buffer feeds a
+/// `CanvasPrimitive.triangles` batch without a copy.
+pub const Vert = @import("teak").CanvasPrimitive.TriVertex;
 
 /// Growable triangle list (3 consecutive verts = 1 triangle). `clear()` keeps capacity.
 pub const TriBuf = struct {
