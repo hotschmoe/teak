@@ -41,7 +41,6 @@ ship is [docs/PARITY.md](docs/PARITY.md).
 | #93 | Keyboard navigation everywhere: Tab ring over all widgets, Space/Enter, radio+slider arrows, modal focus resto |
 | #94 | Keyboard gaps: split divider, keyboard scrolling, focus tooltips, toast Escape (stacked on #93) |
 | #95 | Keyboard gaps: lists as one Tab stop with roving arrows, dropdown list keys, keyboard context menu (stacked on |
-| #110 | pointerMsg stage 1: blank-space presses, one hook for widget pointer events |
 
 ### Open by area (not yet in a PR, or deliberately deferred)
 
