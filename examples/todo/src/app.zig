@@ -113,7 +113,7 @@ pub fn update(m: *Model, msg: Msg) void {
 // ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
-    cb.pushGroup(.{ .direction = .vertical, .padding = 20, .gap = 12 });
+    cb.pushGroup(.{ .direction = .vertical, .padding = 20, .gap = 12, .align_cross = .stretch });
 
     cb.text("Todo");
 
@@ -132,6 +132,7 @@ pub fn view(m: *const Model, cb: anytype) void {
         .padding = 0,
         .gap = 4,
         .flex = 1,
+        .align_cross = .stretch, // rows span the list so each "x" pins right
         .width = 0, // 0 → inherit parent width
         .height = 320,
     });

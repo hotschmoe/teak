@@ -37,5 +37,14 @@ pub fn main(init: std.process.Init) !void {
                 .{ .frames = 2 },
             },
         },
+        .{
+            .name = "light_mode",
+            .steps = &.{
+                .{ .frames = 2 },
+                .{ .click = .{ 126, 25 } }, // theme toggle: the clear colour follows the theme
+                .{ .move = .{ 600, 400 } },
+                .{ .frames = 2 },
+            },
+        },
     });
 }

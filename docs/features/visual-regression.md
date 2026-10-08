@@ -30,11 +30,11 @@ create a display, set `WEBSHOT_ANGLE=vulkan`. scene3d has no web golden: its orb
 
 ## Tolerances
 
-Defaults (`tools/vreg.zig`): native `--tol 24 --budget 150`, web `--tol 32 --budget 600`. They are chosen
+Defaults (`tools/vreg.zig`): native `--tol 24 --budget 150 --tile-budget 48`, web `--tol 32 --budget 600 --tile-budget 200`. The tile budget is the most differing pixels allowed in any one 16x16 tile: driver antialiasing noise is thin and spread along edges, while a dropped or changed text run is dense in a few tiles. They are chosen
 so the Mali-vs-lavapipe antialiasing difference passes while a 1 px layout shift (a shifted button is ~290
 differing pixels) or a missing text row fails. Deliberate-regression checks (todo example, raw `--tol 0 --budget 0`): widening one gap by 1 px shifted the Add
 button and changed 290 pixels (bbox 148..208 x 48..84), over the native budget of 150; commenting out the title text
-reflowed the page (12,760+ pixels). Same-box reruns are bit-identical (0 noisy pixels), so any difference is real
+reflowed the page (12,760+ pixels). Dropping a 4-character label without reflow (todo title replaced by spaces) gives 161 differing pixels and a worst tile of 76, so it fails; three dropped one-character button labels (93 px, worst tile 31) and a one-letter change (22 px) do not. Catching those needs `--budget 40 --tile-budget 24`, which is only safe once the real Mali-vs-lavapipe noise is measured (the box's lavapipe, Mesa with API 1.1.230, cannot create a wgpu device, so that measurement has to come from a CI run: the `vreg` job prints the raw zero-tolerance difference). Same-box reruns are bit-identical (0 noisy pixels), so any difference is real
 except GPU/driver AA on CI. Tighten
 a single run with `--tol 0 --budget 0` to see the raw difference.
 
@@ -52,9 +52,8 @@ until the goldens move:
 
 ## Known issues recorded in goldens
 
-- Web buttons place the label ~3 px higher than native (`textBaseline = 'top'` vs the ascent baseline);
+- Web buttons place the label ~3 px higher than native (`textBaseline = 'top'` vs the ascent baseline; the web glyph-atlas path replaces this code, so it is left alone);
   visible in `test/golden/web/{todo,tree,counter_greeter,effects}.png`. Fix, then `--update --web`.
-- counter_greeter's light theme keeps the dark `clear_color`, so its text is unreadable; no golden is kept for it.
 
 ## Cookbook
 

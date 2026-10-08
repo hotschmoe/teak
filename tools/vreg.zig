@@ -10,7 +10,9 @@
 //!   zig build vreg -- --tol 8 --budget 100       # per-channel tolerance / max differing pixels
 //!
 //! A pixel "differs" when any RGB channel is off by more than `--tol`. A
-//! shot passes when at most `--budget` pixels differ. On failure the actual
+//! shot passes when at most `--budget` pixels differ in total and at most
+//! `--tile-budget` in any one 16x16 tile (catches a small local change, such as
+//! a dropped text run, that the global budget would hide). On failure the actual
 //! image and a diff image (expected, dimmed, with differing pixels in red and
 //! within-tolerance noise in dark yellow) are written to `--out`
 //! (default `zig-out/vreg`). See docs/features/visual-regression.md.
@@ -25,9 +27,22 @@ const png = teak.headless;
 /// docs/features/visual-regression.md for the measurements.
 pub const default_tol: u8 = 24;
 pub const default_budget: u32 = 150;
+/// Differing pixels allowed in any one 16x16 tile. Driver AA noise is thin and
+/// spread along edges; a dropped or moved text run is dense in a few tiles, so
+/// this catches small local changes the global budget would let through.
+pub const default_tile_budget: u32 = 48;
+pub const tile = 16;
 /// Web shots go through SwiftShader and Chromium's compositor: looser.
 pub const default_web_tol: u8 = 32;
 pub const default_web_budget: u32 = 600;
+pub const default_web_tile_budget: u32 = 200;
+
+/// Pass/fail limits for one run.
+pub const Limits = struct {
+    tol: u8,
+    budget: u32,
+    tile_budget: u32,
+};
 
 /// Examples whose web build is not deterministic (wall-clock driven
 /// animation): they have native goldens (fake clock) but no web golden.
@@ -38,6 +53,8 @@ pub const Compare = struct {
     height: u32,
     /// Pixels whose largest RGB channel difference exceeds the tolerance.
     differing: u32 = 0,
+    /// Most differing pixels in any single `tile` x `tile` block.
+    max_tile: u32 = 0,
     /// Largest RGB channel difference anywhere.
     max_delta: u8 = 0,
     /// Pixels that differ at all (noise included).
@@ -49,20 +66,25 @@ pub const Compare = struct {
     y1: u32 = 0,
     size_mismatch: bool = false,
 
-    pub fn pass(self: Compare, budget: u32) bool {
-        return !self.size_mismatch and self.differing <= budget;
+    pub fn pass(self: Compare, budget: u32, tile_budget: u32) bool {
+        return !self.size_mismatch and self.differing <= budget and self.max_tile <= tile_budget;
     }
 };
 
 /// Compare two images of equal size. When `diff` is non-null (RGBA, same size)
 /// it receives the diff visualisation.
-pub fn compare(expected: png.Image, actual: png.Image, tol: u8, diff: ?[]u8) Compare {
+pub fn compare(gpa: std.mem.Allocator, expected: png.Image, actual: png.Image, tol: u8, diff: ?[]u8) !Compare {
     var r: Compare = .{ .width = actual.width, .height = actual.height };
     if (expected.width != actual.width or expected.height != actual.height) {
         r.size_mismatch = true;
         return r;
     }
     const n = @as(usize, actual.width) * actual.height;
+    const tiles_x = (actual.width + tile - 1) / tile;
+    const tiles_y = (actual.height + tile - 1) / tile;
+    const tiles = try gpa.alloc(u32, @as(usize, tiles_x) * tiles_y);
+    defer gpa.free(tiles);
+    @memset(tiles, 0);
     for (0..n) |i| {
         const e = expected.rgba[i * 4 ..][0..4];
         const a = actual.rgba[i * 4 ..][0..4];
@@ -79,6 +101,9 @@ pub fn compare(expected: png.Image, actual: png.Image, tol: u8, diff: ?[]u8) Com
             r.x1 = @max(r.x1, x);
             r.y0 = @min(r.y0, y);
             r.y1 = @max(r.y1, y);
+            const t = &tiles[(y / tile) * tiles_x + x / tile];
+            t.* += 1;
+            r.max_tile = @max(r.max_tile, t.*);
         }
         if (diff) |out| {
             const o = out[i * 4 ..][0..4];
@@ -107,6 +132,7 @@ const Options = struct {
     golden: []const u8 = "test/golden",
     tol: ?u8 = null,
     budget: ?u32 = null,
+    tile_budget: ?u32 = null,
     examples: ?[]const u8 = null,
     state: ?[]const u8 = null,
     /// Examples processed concurrently.
@@ -143,6 +169,8 @@ pub fn main(init: std.process.Init) !void {
             o.tol = std.fmt.parseInt(u8, it.next() orelse return usage(), 10) catch return usage();
         } else if (std.mem.eql(u8, a, "--budget")) {
             o.budget = std.fmt.parseInt(u32, it.next() orelse return usage(), 10) catch return usage();
+        } else if (std.mem.eql(u8, a, "--tile-budget")) {
+            o.tile_budget = std.fmt.parseInt(u32, it.next() orelse return usage(), 10) catch return usage();
         } else if (std.mem.eql(u8, a, "--examples")) {
             o.examples = it.next() orelse return usage();
         } else if (std.mem.eql(u8, a, "--jobs")) {
@@ -153,6 +181,11 @@ pub fn main(init: std.process.Init) !void {
     }
     const tol = o.tol orelse if (o.web) default_web_tol else default_tol;
     const budget = o.budget orelse if (o.web) default_web_budget else default_budget;
+    const lim: Limits = .{
+        .tol = tol,
+        .budget = budget,
+        .tile_budget = o.tile_budget orelse if (o.web) default_web_tile_budget else default_tile_budget,
+    };
 
     const cwd = std.Io.Dir.cwd();
     try cwd.createDirPath(io, o.out);
@@ -172,7 +205,7 @@ pub fn main(init: std.process.Init) !void {
     while (start < jobs.len) : (start += o.jobs) {
         var group: std.Io.Group = .init;
         for (jobs[start..@min(jobs.len, start + o.jobs)]) |*j| {
-            group.concurrent(io, runExample, .{ j, io, o, tol, budget }) catch runExample(j, io, o, tol, budget);
+            group.concurrent(io, runExample, .{ j, io, o, lim }) catch runExample(j, io, o, lim);
         }
         try group.await(io);
     }
@@ -183,7 +216,7 @@ pub fn main(init: std.process.Init) !void {
     var w = std.Io.Writer.Allocating.init(arena);
     var name_w: usize = 4;
     for (rows.items) |r| name_w = @max(name_w, r.name.len);
-    try w.writer.print("\nvisual regression ({s}, tol {d}, budget {d})\n", .{ if (o.web) "web" else "native", tol, budget });
+    try w.writer.print("\nvisual regression ({s}, tol {d}, budget {d}, tile budget {d})\n", .{ if (o.web) "web" else "native", lim.tol, lim.budget, lim.tile_budget });
     try writeRow(&w.writer, name_w, "NAME", "STATUS", "DETAIL");
     var failed: usize = 0;
     for (rows.items) |r| {
@@ -202,30 +235,30 @@ const Job = struct {
     rows: std.ArrayList(Row) = .empty,
 };
 
-fn runExample(j: *Job, io: std.Io, o: Options, tol: u8, budget: u32) void {
-    runExampleInner(j, io, o, tol, budget) catch |e| {
+fn runExample(j: *Job, io: std.Io, o: Options, lim: Limits) void {
+    runExampleInner(j, io, o, lim) catch |e| {
         const a = j.arena.allocator();
         j.rows.append(a, .{ .name = j.ex, .status = "ERROR", .detail = @errorName(e), .ok = false }) catch {};
     };
 }
 
-fn runExampleInner(j: *Job, io: std.Io, o: Options, tol: u8, budget: u32) !void {
+fn runExampleInner(j: *Job, io: std.Io, o: Options, lim: Limits) !void {
     const arena = j.arena.allocator();
     const ex = j.ex;
     if (o.web) {
         if (for (web_skip) |sk| {
             if (std.mem.eql(u8, sk, ex)) break true;
         } else false) return;
-        try webShot(arena, io, o, ex, tol, budget, &j.rows);
+        try webShot(arena, io, o, ex, lim, &j.rows);
         return;
     }
-    const states = listStates(arena, io, o, ex) catch |e| {
+    const states = renderAll(arena, io, o, ex) catch |e| {
         try j.rows.append(arena, .{ .name = ex, .status = "ERROR", .detail = @errorName(e), .ok = false });
         return;
     };
     for (states) |st| {
         if (o.state) |want| if (!std.mem.eql(u8, want, st)) continue;
-        try nativeShot(arena, io, o, ex, st, tol, budget, &j.rows);
+        try judgeState(arena, io, o, ex, st, lim, &j.rows);
     }
 }
 
@@ -238,7 +271,7 @@ fn writeRow(w: *std.Io.Writer, name_w: usize, name: []const u8, status: []const 
 }
 
 fn usage() error{BadArgs} {
-    std.debug.print("usage: vreg [--update] [--web] [--examples a,b] [--state name] [--jobs N] [--tol N] [--budget N] [--out dir] [--golden dir] [--zig path] [--node path]\n", .{});
+    std.debug.print("usage: vreg [--update] [--web] [--examples a,b] [--state name] [--jobs N] [--tol N] [--budget N] [--tile-budget N] [--out dir] [--golden dir] [--zig path] [--node path]\n", .{});
     return error.BadArgs;
 }
 
@@ -273,15 +306,19 @@ fn exampleDir(arena: std.mem.Allocator, ex: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "examples/{s}", .{ex});
 }
 
-fn listStates(arena: std.mem.Allocator, io: std.Io, o: Options, ex: []const u8) ![]const []const u8 {
-    std.debug.print("[vreg] {s}: listing states\n", .{ex});
+/// One `zig build shot -- --all` per example: renders every state into
+/// `o.out` and returns the state names.
+fn renderAll(arena: std.mem.Allocator, io: std.Io, o: Options, ex: []const u8) ![]const []const u8 {
+    // The shot runs with cwd = the example, so the output dir must be absolute.
+    const abs_out = try std.Io.Dir.cwd().realPathFileAlloc(io, o.out, arena);
+    std.debug.print("[vreg] {s}: rendering all states\n", .{ex});
     const res = try std.process.run(arena, io, .{
-        .argv = &.{ o.zig, "build", "shot", "--", "--list" },
+        .argv = &.{ o.zig, "build", "shot", "--", "--all", abs_out, "--prefix", ex },
         .cwd = .{ .path = try exampleDir(arena, ex) },
     });
     if (res.term != .exited or res.term.exited != 0) {
-        std.debug.print("{s}: `zig build shot -- --list` failed:\n{s}\n", .{ ex, res.stderr });
-        return error.ListFailed;
+        std.debug.print("{s}: `zig build shot -- --all` failed:\n{s}\n", .{ ex, res.stderr });
+        return error.ShotFailed;
     }
     var states: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, res.stdout, '\n');
@@ -292,28 +329,14 @@ fn listStates(arena: std.mem.Allocator, io: std.Io, o: Options, ex: []const u8) 
     return states.items;
 }
 
-fn nativeShot(arena: std.mem.Allocator, io: std.Io, o: Options, ex: []const u8, state: []const u8, tol: u8, budget: u32, rows: *std.ArrayList(Row)) !void {
+fn judgeState(arena: std.mem.Allocator, io: std.Io, o: Options, ex: []const u8, state: []const u8, lim: Limits, rows: *std.ArrayList(Row)) !void {
     const name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ ex, state });
     const actual_path = try std.fmt.allocPrint(arena, "{s}/{s}.actual.png", .{ o.out, name });
     const golden_path = try std.fmt.allocPrint(arena, "{s}/{s}.png", .{ o.golden, name });
-    // The shot runs with cwd = the example, so the output path must be absolute.
-    const abs_actual = try std.Io.Dir.cwd().realPathFileAlloc(io, o.out, arena);
-    const abs_out = try std.fmt.allocPrint(arena, "{s}/{s}.actual.png", .{ abs_actual, name });
-
-    std.debug.print("[vreg] {s}: rendering\n", .{name});
-    const res = try std.process.run(arena, io, .{
-        .argv = &.{ o.zig, "build", "shot", "--", abs_out, "--state", state },
-        .cwd = .{ .path = try exampleDir(arena, ex) },
-    });
-    if (res.term != .exited or res.term.exited != 0) {
-        std.debug.print("{s}: shot failed:\n{s}\n", .{ name, res.stderr });
-        try rows.append(arena, .{ .name = name, .status = "ERROR", .detail = "shot step failed (see stderr above)", .ok = false });
-        return;
-    }
-    try judge(arena, io, o, name, actual_path, golden_path, tol, budget, rows);
+    try judge(arena, io, o, name, actual_path, golden_path, lim, rows);
 }
 
-fn webShot(arena: std.mem.Allocator, io: std.Io, o: Options, ex: []const u8, tol: u8, budget: u32, rows: *std.ArrayList(Row)) !void {
+fn webShot(arena: std.mem.Allocator, io: std.Io, o: Options, ex: []const u8, lim: Limits, rows: *std.ArrayList(Row)) !void {
     const dir = try exampleDir(arena, ex);
     const name = try std.fmt.allocPrint(arena, "web/{s}", .{ex});
     const actual_path = try std.fmt.allocPrint(arena, "{s}/web-{s}.actual.png", .{ o.out, ex });
@@ -334,12 +357,12 @@ fn webShot(arena: std.mem.Allocator, io: std.Io, o: Options, ex: []const u8, tol
         try rows.append(arena, .{ .name = name, .status = "ERROR", .detail = "webshot failed (page error / blank canvas / no browser)", .ok = false });
         return;
     }
-    try judge(arena, io, o, name, actual_path, golden_path, tol, budget, rows);
+    try judge(arena, io, o, name, actual_path, golden_path, lim, rows);
 }
 
 /// Compare `actual_path` with `golden_path`; record a table row; write
 /// the diff image on failure; with `--update` rewrite the golden.
-fn judge(arena: std.mem.Allocator, io: std.Io, o: Options, name: []const u8, actual_path: []const u8, golden_path: []const u8, tol: u8, budget: u32, rows: *std.ArrayList(Row)) !void {
+fn judge(arena: std.mem.Allocator, io: std.Io, o: Options, name: []const u8, actual_path: []const u8, golden_path: []const u8, lim: Limits, rows: *std.ArrayList(Row)) !void {
     const cwd = std.Io.Dir.cwd();
     const actual_bytes = try cwd.readFileAlloc(io, actual_path, arena, .limited(256 << 20));
     const actual = try png.decodePng(arena, actual_bytes);
@@ -359,7 +382,7 @@ fn judge(arena: std.mem.Allocator, io: std.Io, o: Options, name: []const u8, act
     const expected = try png.decodePng(arena, golden_bytes);
 
     const diff_buf = try arena.alloc(u8, actual.rgba.len);
-    const c = compare(expected, actual, tol, if (expected.width == actual.width and expected.height == actual.height) diff_buf else null);
+    const c = try compare(arena, expected, actual, lim.tol, if (expected.width == actual.width and expected.height == actual.height) diff_buf else null);
 
     if (c.size_mismatch) {
         try rows.append(arena, .{ .name = name, .status = "FAIL", .detail = try std.fmt.allocPrint(arena, "size {d}x{d} vs golden {d}x{d}", .{ actual.width, actual.height, expected.width, expected.height }), .ok = false });
@@ -370,8 +393,8 @@ fn judge(arena: std.mem.Allocator, io: std.Io, o: Options, name: []const u8, act
         return;
     }
     const bbox = if (c.differing > 0) try std.fmt.allocPrint(arena, " bbox x {d}..{d} y {d}..{d}", .{ c.x0, c.x1, c.y0, c.y1 }) else "";
-    const detail = try std.fmt.allocPrint(arena, "{d} px > tol (budget {d}), {d} px noisy, max delta {d}{s}", .{ c.differing, budget, c.nonzero, c.max_delta, bbox });
-    if (c.pass(budget)) {
+    const detail = try std.fmt.allocPrint(arena, "{d} px > tol (budget {d}), worst tile {d}, {d} px noisy, max delta {d}{s}", .{ c.differing, lim.budget, c.max_tile, c.nonzero, c.max_delta, bbox });
+    if (c.pass(lim.budget, lim.tile_budget)) {
         try rows.append(arena, .{ .name = name, .status = "ok", .detail = detail, .ok = true });
         return;
     }
@@ -406,21 +429,21 @@ test "compare: identical images pass, noise within tolerance is not counted, rea
     defer a.deinit(gpa);
     const b = try solid(gpa, 20, 10, .{ 10, 10, 10, 255 });
     defer b.deinit(gpa);
-    try std.testing.expectEqual(@as(u32, 0), compare(a, b, 8, null).differing);
+    try std.testing.expectEqual(@as(u32, 0), (try compare(gpa, a, b, 8, null)).differing);
 
     // 5 px of +6 noise: within tol 8, counted as noisy only.
     for (0..5) |i| b.rgba[i * 4] += 6;
-    var r = compare(a, b, 8, null);
+    var r = try compare(gpa, a, b, 8, null);
     try std.testing.expectEqual(@as(u32, 0), r.differing);
     try std.testing.expectEqual(@as(u32, 5), r.nonzero);
-    try std.testing.expect(r.pass(0));
+    try std.testing.expect(r.pass(0, 0));
 
     // 3 px of +60: over tol.
     for (10..13) |i| b.rgba[i * 4 + 1] += 60;
-    r = compare(a, b, 8, null);
+    r = try compare(gpa, a, b, 8, null);
     try std.testing.expectEqual(@as(u32, 3), r.differing);
     try std.testing.expectEqual(@as(u8, 60), r.max_delta);
-    try std.testing.expect(!r.pass(2) and r.pass(3));
+    try std.testing.expect(!r.pass(2, 99) and r.pass(3, 99));
     try std.testing.expectEqual(@as(u32, 10), r.x0);
     try std.testing.expectEqual(@as(u32, 12), r.x1);
 }
@@ -431,14 +454,14 @@ test "compare: size mismatch fails; diff image marks the changed pixels red" {
     defer a.deinit(gpa);
     const small = try solid(gpa, 4, 3, .{ 30, 30, 30, 255 });
     defer small.deinit(gpa);
-    try std.testing.expect(!compare(a, small, 8, null).pass(1000));
+    try std.testing.expect(!(try compare(gpa, a, small, 8, null)).pass(1000, 1000));
 
     const b = try solid(gpa, 4, 4, .{ 30, 30, 30, 255 });
     defer b.deinit(gpa);
     b.rgba[5 * 4] = 200;
     const diff = try gpa.alloc(u8, 4 * 4 * 4);
     defer gpa.free(diff);
-    _ = compare(a, b, 8, diff);
+    _ = try compare(gpa, a, b, 8, diff);
     try std.testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255 }, diff[5 * 4 ..][0..4]);
     try std.testing.expectEqualSlices(u8, &.{ 10, 10, 10, 255 }, diff[0..4]);
 }

@@ -192,7 +192,7 @@ and run everywhere but the second window only actually opens on Windows;
 the primary window is unaffected on the other backends.
 
 `RunOptions`:
-- `clear_color: [4]f32` — scene clear color (default dark).
+- `clear_color: ?[4]f32` — scene clear color; `null` (default) follows `theme.palette.bg`, so `themeFor` apps switch background with the theme.
 - `blink_period: u32` — frames between forced rebuilds while a widget is
   focused, so the text cursor blinks (default 30; matches the renderer's
   cursor phase). Apps with no text input pay nothing.

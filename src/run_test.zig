@@ -210,6 +210,7 @@ pub const StubGpu = struct {
     resize_calls: u32 = 0,
     upload_vert_calls: u32 = 0,
     render_calls: u32 = 0,
+    last_clear: [4]f32 = .{ 0, 0, 0, 0 },
     secondary_opened: u32 = 0,
     secondary_rendered: u32 = 0,
     secondary_closed: u32 = 0,
@@ -260,8 +261,9 @@ pub const StubGpu = struct {
         defer self.next_handle += 1;
         return self.next_handle;
     }
-    pub fn renderFrame(self: *StubGpu, _: [4]f32) void {
+    pub fn renderFrame(self: *StubGpu, clear: [4]f32) void {
         self.render_calls += 1;
+        self.last_clear = clear;
     }
     pub fn rasterizeText(_: *StubGpu, _: []const u8, _: text.FontSpec, _: [4]f32, _: u32, _: u32) text.TextureHandle {
         return text.TEXTURE_HANDLE_NONE;
@@ -413,6 +415,17 @@ test "run: routes typed chars + special keys through the optional hooks" {
     try std.testing.expectEqual(@as(u32, 1), t.rt.model.backspaces);
     // `themeFor` reached the view's CmdBuffer.
     try std.testing.expect(std.meta.eql(theme_mod.Theme.light_default, t.rt.bufs[t.rt.current].theme));
+}
+
+test "run: the clear colour follows the theme unless RunOptions pins one" {
+    // KeyApp's themeFor is the light theme.
+    const t = try play(KeyApp, &.{.{}});
+    defer t.destroy();
+    try std.testing.expectEqual(theme_mod.light_palette.bg, t.gpu.last_clear);
+
+    const pinned = try playWith(KeyApp, .{ .script = &.{.{}} }, .{ .clear_color = .{ 0.5, 0.25, 0.125, 1 } });
+    defer pinned.destroy();
+    try std.testing.expectEqual([4]f32{ 0.5, 0.25, 0.125, 1 }, pinned.gpu.last_clear);
 }
 
 const TabApp = struct {

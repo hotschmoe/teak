@@ -150,10 +150,12 @@ pub const ShotState = struct {
 };
 
 /// The whole `shot_main.zig` for an example: parses
-/// `[out.png] [--state <name>] [--list]` from argv, plays that state's
+/// `[out.png] [--state <name>] [--list] [--all <dir> --prefix <p>]` from argv, plays that state's
 /// script (`o.steps` is ignored; the first of `states` is the default),
 /// and writes the PNG. `--list` prints the state names, one per line, on
-/// stdout and exits: `tools/vreg` uses it to enumerate golden shots.
+/// stdout and exits. `--all <dir> --prefix <p>` renders every state to
+/// `<dir>/<p>-<state>.actual.png` in one process and prints the names:
+/// `tools/vreg` uses it so each example needs a single `zig build` call.
 pub fn shotCli(
     comptime App: type,
     comptime Host: type,
@@ -167,17 +169,35 @@ pub fn shotCli(
     var path: []const u8 = default_path;
     var want: []const u8 = states[0].name;
     var list = false;
+    var all_dir: ?[]const u8 = null;
+    var prefix: []const u8 = "shot";
     var it = init.minimal.args.iterate();
     _ = it.next();
     while (it.next()) |a| {
         if (std.mem.eql(u8, a, "--list")) {
             list = true;
+        } else if (std.mem.eql(u8, a, "--all")) {
+            all_dir = it.next() orelse return error.MissingAllDir;
+        } else if (std.mem.eql(u8, a, "--prefix")) {
+            prefix = it.next() orelse return error.MissingPrefix;
         } else if (std.mem.eql(u8, a, "--state")) {
             want = it.next() orelse return error.MissingStateName;
         } else path = a;
     }
     if (list) {
         for (states) |st| {
+            try std.Io.File.stdout().writeStreamingAll(init.io, st.name);
+            try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
+        }
+        return;
+    }
+    if (all_dir) |dir| {
+        for (states) |st| {
+            var opts = o;
+            opts.steps = st.steps;
+            const out = try std.fmt.allocPrint(init.gpa, "{s}/{s}-{s}.actual.png", .{ dir, prefix, st.name });
+            defer init.gpa.free(out);
+            try shot(App, Host, Gpu, init.gpa, out, opts);
             try std.Io.File.stdout().writeStreamingAll(init.io, st.name);
             try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
         }

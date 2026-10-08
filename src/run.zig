@@ -123,8 +123,11 @@ const max_issued_effects = 32;
 const effect_batch = 16;
 
 pub const RunOptions = struct {
-    /// Scene clear color passed to `Gpu.renderFrame` each frame.
-    clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },
+    /// Scene clear color passed to `Gpu.renderFrame` each frame. `null`
+    /// (the default) follows the frame's theme: `theme.palette.bg`, so an
+    /// app that switches theme (`themeFor`) switches its background with it.
+    /// Set it for a fixed backdrop (a paper colour, a 3D scene).
+    clear_color: ?[4]f32 = null,
     /// Frames between forced vertex rebuilds while a widget is focused,
     /// so the text cursor blink animates. 0 disables the blink tick
     /// (apps with no text input pay nothing). The renderer toggles the
@@ -549,7 +552,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
             self.prev_ts = self.ts;
 
-            self.gpu.renderFrame(self.opts.clear_color);
+            self.gpu.renderFrame(self.opts.clear_color orelse self.bufs[self.current].theme.palette.bg);
 
             const sec = if (has_secondary) try self.driveSecondary() else SecondaryFrame{};
 
@@ -1021,7 +1024,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // The secondary window has no interactive/transient state of its
             // own — a fresh default is correct.
             self.uploadFrame(cmds, sec.rects[scur].items, .{});
-            self.gpu.renderToWindow(wid, self.opts.clear_color);
+            self.gpu.renderToWindow(wid, self.opts.clear_color orelse sec.bufs[scur].theme.palette.bg);
             return .{
                 .title = if (spec) |s| s.title else "secondary",
                 .content_changed = !cmdsEqual(Msg, cmds, sec.bufs[sprev].cmds.items) or
