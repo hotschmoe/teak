@@ -1,7 +1,7 @@
 //! Headless screenshots of the kerf_viewer example (no display needed):
-//! `zig build shot -- out.png [section|iso|3d|chat|notes]`. Plays an input
-//! script against the real App on the native wgpu backend and writes the last
-//! frame; the variant picks the script (default: `section`).
+//! `zig build shot -- out.png [--state <name>]` (`-- --list` prints the states).
+//! Each state plays an input script against the real App on the native wgpu
+//! backend and writes the last frame (same CLI as `teak.headless.shotCli`).
 
 const std = @import("std");
 const teak = @import("teak");
@@ -77,26 +77,39 @@ const notes_steps = [_]Step{
     .{ .frames = 3 },
 };
 
+const State = struct { name: []const u8, steps: []const Step };
+const states = [_]State{
+    .{ .name = "section_selected", .steps = &section_steps },
+    .{ .name = "iso_selected", .steps = &iso_steps },
+    .{ .name = "three_d", .steps = &three_d_steps },
+    .{ .name = "chat_demo", .steps = &chat_steps },
+    .{ .name = "notes", .steps = &notes_steps },
+};
+
 pub fn main(init: std.process.Init) !void {
     var it = init.minimal.args.iterate();
     _ = it.next();
-    const path = it.next() orelse "kerf_viewer.png";
-    const variant = it.next() orelse "section";
-    const steps: []const Step = if (std.mem.eql(u8, variant, "iso"))
-        &iso_steps
-    else if (std.mem.eql(u8, variant, "3d"))
-        &three_d_steps
-    else if (std.mem.eql(u8, variant, "chat"))
-        &chat_steps
-    else if (std.mem.eql(u8, variant, "notes"))
-        &notes_steps
-    else
-        &section_steps;
-    try teak.headless.shot(App, Host, Gpu, init.gpa, path, .{
-        .width = 1280,
-        .height = 800,
-        .run = .{ .clear_color = App.paper },
-        .steps = steps,
-    });
-    std.debug.print("wrote {s} ({s})\n", .{ path, variant });
+    var path: []const u8 = "kerf_viewer.png";
+    var state: []const u8 = states[0].name;
+    while (it.next()) |a| {
+        if (std.mem.eql(u8, a, "--list")) {
+            for (states) |st| std.debug.print("{s}\n", .{st.name});
+            return;
+        } else if (std.mem.eql(u8, a, "--state")) {
+            state = it.next() orelse state;
+        } else path = a;
+    }
+    for (states) |st| {
+        if (!std.mem.eql(u8, st.name, state)) continue;
+        try teak.headless.shot(App, Host, Gpu, init.gpa, path, .{
+            .width = 1280,
+            .height = 800,
+            .run = .{ .clear_color = App.paper },
+            .steps = st.steps,
+        });
+        std.debug.print("wrote {s} ({s})\n", .{ path, st.name });
+        return;
+    }
+    std.debug.print("unknown state '{s}' (try --list)\n", .{state});
+    return error.UnknownState;
 }
