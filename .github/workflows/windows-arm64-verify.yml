@@ -1,0 +1,86 @@
+name: Windows ARM64 native Zig
+
+# Evidence job: does the *native* aarch64-windows Zig compiler work?
+# Zig 0.16's segfaulted on any compile (Codeberg #31865, docs/zig-016-win-arm64-crash.md);
+# the 0.17 release notes say the underlying LLVM bug was worked around.
+# mlugg/setup-zig picks the runner's architecture, so on windows-11-arm this
+# installs the aarch64-windows build.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/windows-arm64-verify.yml
+
+env:
+  ZIG_VERSION: 0.17.0
+
+jobs:
+  hello:
+    name: hello world (native aarch64-windows zig ${{ matrix.zig }})
+    runs-on: windows-11-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: [0.17.0, 0.16.0]   # 0.16.0 is the known-broken control
+    continue-on-error: ${{ matrix.zig == '0.16.0' }}
+    steps:
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+          use-cache: false
+      - name: Which zig, and is the compiler itself ARM64?
+        shell: pwsh
+        run: |
+          zig version
+          zig env
+          $p = (Get-Command zig).Source
+          $b = [IO.File]::ReadAllBytes($p)
+          $off = [BitConverter]::ToInt32($b, 0x3C)
+          $m = [BitConverter]::ToUInt16($b, $off + 4)
+          "{0}: PE machine = 0x{1:X4} ({2})" -f $p, $m, $(if ($m -eq 0xAA64) {'ARM64'} elseif ($m -eq 0x8664) {'x86_64'} else {'other'})
+          "PROCESSOR_ARCHITECTURE = $env:PROCESSOR_ARCHITECTURE"
+          if ($m -ne 0xAA64) { throw "zig.exe is not an ARM64 binary" }
+      - name: Compile and run hello world
+        shell: pwsh
+        run: |
+          Set-Content hello.zig @'
+          const std = @import("std");
+          pub fn main() void {
+              std.debug.print("hello from {s}-{s}\n", .{ @tagName(@import("builtin").cpu.arch), @tagName(@import("builtin").os.tag) });
+          }
+          '@
+          zig build-exe hello.zig -O ReleaseFast
+          if ($LASTEXITCODE -ne 0) { throw "zig build-exe failed ($LASTEXITCODE)" }
+          .\hello.exe
+          if ($LASTEXITCODE -ne 0) { throw "hello.exe failed" }
+
+  teak:
+    name: teak optimized build + run (native zig 0.17)
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        working-directory: teak
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: teak
+      - uses: actions/checkout@v4
+        with:
+          repository: hotschmoe/zunk
+          path: zunk
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: zig env
+        run: zig env
+      - name: Library tests (ReleaseSafe, native ARM64)
+        run: zig build test -Doptimize=ReleaseSafe --summary all
+      - name: examples/chrome build (ReleaseFast, incl. ui exe)
+        working-directory: teak/examples/chrome
+        run: zig build -Doptimize=ReleaseFast --summary all
+      - name: Run chrome canary natively
+        working-directory: teak/examples/chrome
+        run: |
+          zig build run -Doptimize=ReleaseFast
+          zig build test -Doptimize=ReleaseFast --summary all
