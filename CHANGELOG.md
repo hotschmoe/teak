@@ -88,6 +88,12 @@
 ### Added
 
 - `widgets.date` (pure calendar maths, ISO parse / format) and `widgets.date_field` (ISO text field + calendar popover, keyboard navigation; "today" comes from a clock effect).
+- `ButtonCmd.underline` / `cb.buttonStyledUnderlined`: one underlined character in a button label (a 1 px quad under the
+  glyph). Menu bars and panels use it for their `&` mnemonics.
+
+- **DataTable: pixel-accurate ellipsis and type-to-search.** New `ButtonStyle.ellipsis` (fixed-width button whose label is cut with U+2026 at the pixel, any
+  font); DataTable cells and headers use it instead of counting characters (`ViewOpts.char_w` is gone). Type a prefix to jump to the first row whose
+  sort-column cell starts with it (`Table.charMsg`, `Table.searchText`).
 
 - **Tables and lists at scale**: `teak.DataTable` (virtualized, sortable, resizable, selectable, sticky header), `teak.VarList`
   (rows of different heights, measured by layout, scroll-anchored), `teak.TreeList` (virtualized tree, keyboard) and `teak.Scroller`

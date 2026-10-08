@@ -236,6 +236,11 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     };
 }
 
+pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+    if (m.tab != .table or !m.table.focused) return null;
+    return if (Table.charMsg(c)) |k| .{ .table = k } else null;
+}
+
 pub fn animationMsg(_: *const Model, dt_ms: u32) ?Msg {
     // One frame time feeds whichever scroller is moving; the others ignore a step at rest.
     return .{ .table = .{ .frame = dt_ms } };
@@ -288,10 +293,11 @@ pub fn view(m: *const Model, cb: anytype) void {
     tabButton(cb, m, .list, "List");
     tabButton(cb, m, .tree, "Tree");
     const status = switch (m.tab) {
-        .table => std.fmt.allocPrint(cb.arena.allocator(), "{d} rows, {d} selected{s}", .{
+        .table => std.fmt.allocPrint(cb.arena.allocator(), "{d} rows, {d} selected{s}{s}", .{
             m.table.n_rows,
             m.table.sel_count,
             if (m.table.sort_col) |c| std.fmt.allocPrint(cb.arena.allocator(), ", sorted by {s} {s}", .{ columns[c].title, if (m.table.sort_desc) "desc" else "asc" }) catch "" else "",
+            if (m.table.search_len > 0) std.fmt.allocPrint(cb.arena.allocator(), ", find \"{s}\"", .{Table.searchText(m.table)}) catch "" else "",
         }) catch "",
         .list => std.fmt.allocPrint(cb.arena.allocator(), "{d} messages of 1-6 lines, {d:.0} px tall", .{ m.list.n, m.list.total() }) catch "",
         .tree => std.fmt.allocPrint(cb.arena.allocator(), "{d} nodes, {d} visible", .{ m.tree.n_nodes, m.tree.n_visible }) catch "",

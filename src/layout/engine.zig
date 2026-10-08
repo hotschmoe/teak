@@ -376,7 +376,7 @@ pub const LayoutEngine = struct {
                 },
                 .button => |btn| {
                     const label_w = measurer.measure(btn.label, btn.font).width + 2 * btn.style.h_padding;
-                    const w = @max(label_w, btn.style.min_width);
+                    const w = if (btn.style.ellipsis) btn.style.min_width else @max(label_w, btn.style.min_width);
                     const h = btn.style.height;
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, btn.style.flex);

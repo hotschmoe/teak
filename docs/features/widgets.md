@@ -294,7 +294,7 @@ enabled / checked, separator, children). Choosing a leaf dispatches
 `msgs.run(action)`; the app's `update` for that Msg also closes the menu
 (`MenuBar.update(&m.bar, .close)`). Keyboard: F10 or a bare Alt tap
 (`SpecialKey.f10` / `.alt_tap`) activates the bar, arrows / Enter / Escape
-navigate, a letter is a mnemonic while the bar is active. Because `view` cannot
+navigate, a letter is a mnemonic while the bar is active. Mnemonic letters are underlined (`ButtonCmd.underline`). Because `view` cannot
 read layout, geometry is computed from fixed sizes (`top_width`, `row_h`,
 `panel_w`, `SEP_H`); rows pad their text to `cols` columns so shortcuts align
 in a monospaced font. Panels clamp to the window. A transparent full-window

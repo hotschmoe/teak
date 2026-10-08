@@ -181,6 +181,9 @@ pub const ButtonStyle = struct {
     soft_shadow: ?Shadow = null,
     /// Flex weight on the parent's main axis (see `GroupStyle.flex`).
     flex: f32 = 0,
+    /// Fixed-width label: the button is exactly `min_width` wide whatever the label,
+    /// and a label that does not fit is cut with U+2026 at the pixel (table cells).
+    ellipsis: bool = false,
 };
 
 pub const TextInputStyle = struct {
@@ -715,6 +718,9 @@ pub fn ButtonCmd(comptime Msg: type) type {
         /// (hit-test/hover skip it). Layout is unaffected — same rect either
         /// way, so a disabled button stays where it is without shifting.
         disabled: bool = false,
+        /// Byte index into `label` of one ASCII character to underline (a
+        /// menu mnemonic: the "F" of "File"). Null = no underline.
+        underline: ?u16 = null,
     };
 }
 
@@ -1256,6 +1262,18 @@ pub fn CmdBuffer(comptime Msg: type) type {
                 .font = self.theme.typography.body,
                 .disabled = true,
             } }) catch oom();
+        }
+
+        /// A styled button whose label has one underlined character (a
+        /// mnemonic hint). `at` indexes `label`; out of range draws nothing.
+        pub fn buttonStyledUnderlined(self: *Self, msg: Msg, label: []const u8, style: ButtonStyle, at: ?usize) void {
+            self.cmds.append(self.backing, .{ .button = .{
+                .msg = msg,
+                .label = label,
+                .style = style,
+                .font = self.theme.typography.body,
+                .underline = if (at) |i| @intCast(i) else null,
+            } }) catch unreachable;
         }
 
         /// `buttonDisabled` with an explicit style (a compact menu row stays

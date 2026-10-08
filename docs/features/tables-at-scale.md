@@ -42,9 +42,12 @@ const Table = teak.DataTable(.{ .max_rows = 131_072, .max_cols = 8 });
   Widths live in the Model (`min 24 px`).
 * **Sticky header** is a sibling above the scroll region, not inside it. Alignment is per column; zebra and selection colours come from
   `cb.theme.palette`.
-* **Cell text** is cut with an ellipsis to the column width in *characters* (`ViewOpts.char_w`, the font's advance): use a monospace
-  face. Truncation never splits a code point. (Pixel-accurate proportional ellipsis needs the layout-time `textEllipsis` of the wrap work.)
-* **Cost.** `view` emits header + ~30 rows x ncols buttons whatever `n_rows` is. Type-to-search is not included.
+* **Cell text** that does not fit its column is cut with U+2026 at the pixel, in any font: cells and header cells are buttons with the new
+  `ButtonStyle.ellipsis` (fixed width, the renderer cuts the label with the same line walk as `wrap = .ellipsis` text).
+* **Type-to-search**: `Table.charMsg(c)` from `keyCharMsg` (when `model.table.focused`) selects the first row, from after the cursor and wrapping,
+  whose cell in the sort column (column 0 unsorted) starts with what was typed, case-insensitively. Navigation, clicks, sorting and Escape start a new
+  search; `Table.searchText(model.table)` shows it.
+* **Cost.** `view` emits header + ~30 rows x ncols buttons whatever `n_rows` is.
 
 ## VarList: rows of different heights
 
