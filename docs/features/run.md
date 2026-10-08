@@ -231,7 +231,7 @@ and run everywhere but the second window only actually opens on Windows;
 the primary window is unaffected on the other backends.
 
 `RunOptions`:
-- `clear_color: [4]f32` — scene clear color (default dark).
+- `clear_color: ?[4]f32` — scene clear color; `null` (default) follows `theme.palette.bg`, so `themeFor` apps switch background with the theme.
 - `blink_half_ms: u32` — text-cursor blink half-period in Host-clock ms
   (default 500; 0 = no blinking). The caret phase is `TransientState.blink_on`,
   set from the clock; while idle the loop wakes only at each toggle.

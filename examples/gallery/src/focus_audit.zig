@@ -1,6 +1,7 @@
 //! Keyboard-focus audit of the gallery: on every page, in every look, each
 //! interactive leaf (button, checkbox, radio, slider, text field) is reachable
-//! with Tab, disabled ones are not, and Tab visits each exactly once per cycle.
+//! with Tab (a list is ONE Tab stop; its other rows must be arrow-reachable, i.e. roving),
+//! disabled ones are not, and Tab visits each exactly once per cycle.
 
 const std = @import("std");
 const teak = @import("teak");
@@ -15,9 +16,10 @@ fn interactive(c: anytype) bool {
     };
 }
 
+/// Tab skips it: a disabled widget, or a list row that is not the list's Tab stop.
 fn disabled(c: anytype) bool {
     return switch (c) {
-        .button => |b| b.disabled,
+        .button => |b| b.disabled or !b.tab_stop,
         .text_input => |t| t.disabled,
         .text_area => |t| t.disabled,
         else => false,
@@ -37,6 +39,7 @@ test "every enabled interactive widget on every page is reachable with Tab, exac
 
         var want: usize = 0;
         for (cmds) |c| {
+            if (c == .button and !c.button.tab_stop) try std.testing.expect(c.button.roving != .none);
             if (interactive(c) and !disabled(c)) want += 1;
         }
         var seen = try std.testing.allocator.alloc(bool, cmds.len);

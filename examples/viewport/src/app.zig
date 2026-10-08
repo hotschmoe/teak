@@ -91,7 +91,7 @@ pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
             Msg{ .hover = .{ ev.x, ev.y } },
         .wheel => Msg{ .zoom_at = .{ .dy = ev.dy, .x = ev.x, .y = ev.y } },
         .leave => Msg{ .hover = null },
-        .down, .up => null,
+        .down, .up, .key => null,
     };
 }
 

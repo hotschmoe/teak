@@ -139,6 +139,9 @@ const notes = [_][]const u8{
 fn tree(m: *const Model, cb: anytype) void {
     const pal = cb.theme.palette;
     var hide_below: ?u8 = null; // depth of the collapsed ancestor we are inside
+    // The tree is one Tab stop (its first row); arrows move the keyboard focus between rows,
+    // Enter / Space toggle a folder.
+    var first_row = true;
     for (nodes, 0..) |node, i| {
         if (hide_below) |d| {
             if (node.depth > d) continue;
@@ -156,12 +159,13 @@ fn tree(m: *const Model, cb: anytype) void {
         const mark: []const u8 = if (!node.folder) "  " else if (open) "v " else "> ";
         const label = ui.fmt(cb, "{s}{s}{s}", .{ lead, mark, node.name });
         if (node.folder) {
-            cb.buttonStyled(.{ .tree_toggle = @intCast(i) }, label, st);
+            cb.buttonNav(.{ .tree_toggle = @intCast(i) }, label, st, .{ .tab_stop = first_row, .roving = .focus });
             if (!open) hide_below = node.depth;
         } else {
             st.fg = pal.fg_muted;
-            cb.buttonStyled(.{ .row_pick = 0 }, label, st);
+            cb.buttonNav(.noop, label, st, .{ .tab_stop = first_row, .roving = .focus });
         }
+        first_row = false;
     }
 }
 

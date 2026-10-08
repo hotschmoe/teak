@@ -204,7 +204,10 @@ pub const Gpu = struct {
     // Image pipeline. Shares `text_bgl` + `sampler` with the text path
     // since both bind {uniform, texture, sampler}. Only the shader differs
     // — `image.wgsl` modulates the texture by the tint (real RGBA), while
-    image_pipeline: zgpu.RenderPipeline,
+    /// Created on first use (an image or a scene composite): most apps never draw either, and each
+    /// pipeline costs shader compile time before the first frame.
+    image_pipeline: ?zgpu.RenderPipeline,
+    text_pl: zgpu.PipelineLayout,
     images: ImageCache,
     image_draws: std.ArrayList(QuadDraw),
     image_verts: std.ArrayList(Vertex),
@@ -214,7 +217,9 @@ pub const Gpu = struct {
     // 3D scenes: `scene` renders offscreen; the main pass draws each
     // target as an image-pipeline quad. Composite bind groups are cached
     // per slot and rebuilt when the slot's target is recreated.
-    scene: web_scene.Renderer,
+    /// Created on first mesh upload / scene draw (two more shaders' worth of start-up).
+    scene: ?web_scene.Renderer,
+    scene_msaa: bool,
     /// Device pixels per logical (CSS) pixel, refreshed every `renderScenes`.
     scene_scale: f32,
     scene_bind_groups: [scene_common.max_scenes]?zgpu.BindGroup,
@@ -311,7 +316,6 @@ pub const Gpu = struct {
             .address_w = .clamp_to_edge,
         });
         const glyph_uniform_buf = zgpu.createBuffer(16, zgpu.BufferUsage.UNIFORM | zgpu.BufferUsage.COPY_DST);
-        const image_pipeline = uiPipeline(text_pl, zgpu.createShaderModule(SHADER_IMAGE), &layouts, samples);
 
         const sampler = zgpu.createSampler(.{
             .mag_filter = .nearest,
@@ -353,13 +357,15 @@ pub const Gpu = struct {
             .color_pages = .empty,
             .glyph_buf = null,
             .glyph_buf_size = 0,
-            .image_pipeline = image_pipeline,
+            .image_pipeline = null,
+            .text_pl = text_pl,
             .images = .{},
             .image_draws = .empty,
             .image_verts = .empty,
             .image_vert_buf = null,
             .image_vert_buf_size = 0,
-            .scene = web_scene.Renderer.init(options.scene_msaa),
+            .scene = null,
+            .scene_msaa = options.scene_msaa,
             .scene_scale = 1,
             .scene_bind_groups = @splat(null),
             .scene_bg_gen = @splat(0),
@@ -398,7 +404,7 @@ pub const Gpu = struct {
     pub fn deinit(self: *Gpu) void {
         for (self.scene_bind_groups) |bg| if (bg) |g| zgpu.release(g);
         if (self.scene_vert_buf) |b| zgpu.bufferDestroy(b);
-        self.scene.deinit();
+        if (self.scene) |*sc| sc.deinit();
 
         var images = self.images.iterator();
         while (images.next()) |e| e.release();
@@ -534,8 +540,10 @@ pub const Gpu = struct {
         const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
         inline for (.{ "base", "overlay" }) |layer| {
             self.drawSolids(pass, @field(overlay.Range, layer)(solid));
-            drawQuads(pass, self.image_pipeline, self.image_vert_buf, @intCast(self.image_verts.items.len), self.image_draws.items, @field(overlay.Range, layer)(imgs));
-            drawQuads(pass, self.image_pipeline, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count], @field(overlay.Range, layer)(scns));
+            if (self.image_pipeline) |ip| {
+                drawQuads(pass, ip, self.image_vert_buf, @intCast(self.image_verts.items.len), self.image_draws.items, @field(overlay.Range, layer)(imgs));
+                drawQuads(pass, ip, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count], @field(overlay.Range, layer)(scns));
+            }
             self.drawGlyphs(pass, if (comptime std.mem.eql(u8, layer, "base")) 0 else 1);
         }
 
@@ -717,6 +725,7 @@ pub const Gpu = struct {
         if (width == 0 or height == 0) return teak.TEXTURE_HANDLE_NONE;
         const need = @as(usize, width) * @as(usize, height) * 4;
         if (bytes.len < need) return teak.TEXTURE_HANDLE_NONE;
+        self.ensureImagePipeline();
 
         const texture = zgpu.createTexture(width, height, .rgba8unorm, zgpu.TextureUsage.TEXTURE_BINDING | zgpu.TextureUsage.COPY_DST);
         zgpu.writeTexture(texture, bytes[0..need], width * 4, width, height);
@@ -784,12 +793,31 @@ pub const Gpu = struct {
     /// Upload mesh geometry; the returned handle goes into
     /// `SceneDraw.mesh`. `MESH_HANDLE_NONE` on invalid data or a full
     /// table. Release meshes between frames (see `releaseImage`).
+    fn sceneRenderer(self: *Gpu) *web_scene.Renderer {
+        if (self.scene == null) self.scene = web_scene.Renderer.init(self.scene_msaa);
+        return &self.scene.?;
+    }
+
+    /// The image / composite pipeline, compiled on first use.
+    fn ensureImagePipeline(self: *Gpu) void {
+        if (self.image_pipeline != null) return;
+        const attrs = [_]zgpu.VertexAttribute{
+            .{ .shader_location = 0, .format = .float32x2, .offset = 0 },
+            .{ .shader_location = 1, .format = .float32x4, .offset = 8 },
+            .{ .shader_location = 2, .format = .float32x2, .offset = 24 },
+        };
+        const layouts = [_]zgpu.VertexBufferLayout{
+            zgpu.VertexBufferLayout.fromSlice(@sizeOf(Vertex), .vertex, &attrs),
+        };
+        self.image_pipeline = uiPipeline(self.text_pl, zgpu.createShaderModule(SHADER_IMAGE), &layouts, self.samples);
+    }
+
     pub fn uploadMesh(self: *Gpu, data: teak.MeshData) teak.MeshHandle {
-        return self.scene.uploadMesh(data);
+        return self.sceneRenderer().uploadMesh(data);
     }
 
     pub fn releaseMesh(self: *Gpu, handle: teak.MeshHandle) void {
-        self.scene.releaseMesh(handle);
+        if (self.scene) |*sc| sc.releaseMesh(handle);
     }
 
     /// Render each scene into its offscreen target (recorded into this
@@ -803,6 +831,7 @@ pub const Gpu = struct {
         var mark: overlay.Marker = .{ .start = self.splitOf("scenes", draws.len) };
         defer self.scene_ov = mark.finish(self.scene_draw_count);
         if (draws.len == 0) return;
+        self.ensureImagePipeline();
 
         // Logical (CSS) pixels -> device pixels of the canvas.
         const canvas = zgpu.canvasSize();
@@ -814,7 +843,7 @@ pub const Gpu = struct {
 
         for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
             mark.visit(i, self.scene_draw_count);
-            const size = self.scene.renderInto(i, draw, scene_common.itemsOf(draw, data.items), scene_common.spritesOf(draw, data.sprites), self.imageLookup(), scale) orelse continue;
+            const size = self.sceneRenderer().renderInto(i, draw, scene_common.itemsOf(draw, data.items), scene_common.spritesOf(draw, data.sprites), self.imageLookup(), scale) orelse continue;
             const quad = scene_common.compositeQuad(draw, size, scale) orelse continue;
             const bind_group = self.sceneBindGroup(i) orelse continue;
 
@@ -831,7 +860,7 @@ pub const Gpu = struct {
     /// Composite bind group for scene slot `i`, rebuilt whenever the
     /// slot's target was recreated.
     fn sceneBindGroup(self: *Gpu, i: usize) ?zgpu.BindGroup {
-        const target = self.scene.target(i) orelse return null;
+        const target = (self.scene orelse return null).target(i) orelse return null;
         if (self.scene_bind_groups[i]) |bg| {
             if (self.scene_bg_gen[i] == target.generation) return bg;
             zgpu.release(bg);

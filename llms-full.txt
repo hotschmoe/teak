@@ -124,7 +124,7 @@ pub fn handleClipboard(*Model, SpecialKey, Clipboard) void   // DEPRECATED: muta
 pub fn wheelMsg(*const Model, f32) ?Msg               // vertical wheel delta → Msg (when no canvas / scroll region took it)
 pub fn canvasMsg(*const Model, CanvasEvent) ?Msg      // pointer events over CanvasCmd.pointer canvases and SceneCmd.pointer scenes (shared id space) (see "Pointer events")
 pub fn pointerMsg(*const Model, PointerEvent(Msg)) ?Msg   // one hook: kind hover/down/up/context, hit=null on blank space (ev.isBlank())
-pub fn hoverMsg(*const Model, PointerEvent(Msg)) ?Msg     // the interactive widget under the pointer changed (drives Tooltip)
+pub fn hoverMsg(*const Model, PointerEvent(Msg)) ?Msg     // the interactive widget under the pointer OR on keyboard focus changed (drives Tooltip)
 pub fn sliderMsg(*const Model, grab: Msg, value: f32) ?Msg     // a `slider` cmd is dragged (pointer captured); value 0..1; without it a slider is click-only
 pub fn contextMsg(*const Model, PointerEvent(Msg)) ?Msg   // right button down; ev.hit = Msg of the widget under the cursor (drives ContextMenu)
 pub fn scrollMsg(*const Model, id: u32, dx: f32, dy: f32) ?Msg   // wheel over innermost hovered ScrollStyle.id != 0 region
@@ -155,7 +155,7 @@ frame with no opt-in. A static read-only app is just Model/Msg/update/view.
 ### RunOptions
 ```zig
 pub const RunOptions = struct {
-    clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },  // scene clear each frame
+    clear_color: ?[4]f32 = null,  // scene clear each frame; null = theme.palette.bg (follows themeFor)
     blink_half_ms: u32 = 500, // caret blink half-period in Host-clock ms (0 = no blink); idle wakes at each toggle
     snapshot_path: ?[]const u8 = null,   // live snapshot sink; TEAK_SNAPSHOT env wins (see below)
     control_path: ?[]const u8 = null,    // agent control socket; TEAK_CONTROL env wins (see "Agent driver")
@@ -220,7 +220,7 @@ Emitters (all `catch unreachable` on arena OOM):
   `pushFormRow(FormRowOpts)`/`popFormRow()`
 - `scene3d(SceneCmd(Msg))` — 3D mesh leaf (see "3D scenes" below).
 - `image(TextureHandle, ImageStyle)`, `canvas(CanvasStyle, prims)`, `canvasLabeled(...)`,
-  `canvasClickable(msg, style, prims, label)`, `canvasInteractive(style, prims, id, label)`,
+  `canvasClickable(msg, style, prims, label)`, `canvasInteractive(style, prims, id, label)`, `canvasInteractiveFocusable(style, prims, id, label, focus_msg)` (also a Tab stop; keys reach `canvasMsg` as `.key` events),
   `richText(content, spans)`, `richTextStyled(RichTextCmd)`
 
 Style / option structs an app constructs:
@@ -355,6 +355,9 @@ A text leaf gets its focus Msg dispatched (the Model owns text focus); any other
 and select inside a radio group, arrows / Home / End / PageUp / PageDown set a slider through `sliderMsg`. Optional App hook
 `blurMsg(*const Model) ?Msg` clears the app's text focus when Tab leaves a text field (so typing keys stop reaching it). App key
 hooks (`keyCharMsg`, `keySpecialMsg`, `submitMsg`, menus, dialogs) run first; the focused widget only gets keys they decline.
+List rows: `cb.buttonNav(msg, label, style, .{ .tab_stop = bool, .roving = .none|.focus|.select })` — `tab_stop = false` makes Tab skip the row (a list is ONE Tab stop),
+roving rows move the focus with arrows / Home / End / PageUp / PageDown (`.select` also dispatches the row Msg). `SpecialKey.context_menu` (Menu key, Shift+F10) calls
+the app's `contextMsg` at the focused widget. `Dropdown.keyMsg(model, key, options_len, opts) ?Msg`: keys while the list is open.
 Focus is keyed by the leaf's Msg, so it follows the widget through list inserts / removals; a click on a widget moves it there.
 
 ### Keys (`teak.keys` → input/keys.zig)
@@ -930,7 +933,13 @@ Step = union(enum) { frames: u32, move: [2]f32, down, up: Button, wheel: [2]f32,
                      key: SpecialKey, mods: Modifiers, click: [2]f32, drag: [2][2]f32 }
 headless.play(rt: anytype, host: anytype, steps: []const Step) !void
 headless.shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa, steps, settle, run }) !void  // script -> PNG
-headless.writeFramePng(gpu, gpa, path) !void;  encodePng(gpa, rgba, w, h) ![]u8;  pathArg(init, default) []const u8
+headless.writeFramePng(gpu, gpa, path) !void;  pathArg(init, default) []const u8
+headless.encodePng(gpa, rgba, w, h) ![]u8      // deflate-compressed + per-row PNG filters, deterministic (tens of KB)
+headless.decodePng(gpa, png_bytes) !Image{width,height,rgba}   // 8-bit RGB/RGBA, any filter
+headless.shotCli(App, Host, Gpu, init, default_path, ShotOptions, states: []const ShotState{name, steps}) !void
+    // a whole shot_main.zig: `[out.png] [--state name] [--list]`; ShotOptions.fonts registers embedded TTFs
+// Visual regression: `zig build vreg [-- --update | --web | --examples a,b | --state s | --tol N --budget N]`
+//   compares every example's states with test/golden/ (docs/features/visual-regression.md)
 // Host: pushMouseMove/Down/Up, pushWheel, pushChars, pushKey, setModifiers, close, injectEffectResult(EffectResult),
 //       submittedEffects() []const Captured{kind,id,name,bytes,mime,method}, countEffects(kind), clearSubmittedEffects()
 ```
@@ -1349,7 +1358,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `none, left, middle, right`
 > One pointer event on an interactive canvas or scene.
 - `teak.CanvasEvent` = `pointer.CanvasEvent`
-  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h`
+  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h, key`
 > What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
 - `teak.PointerEvent`: `pub const PointerEvent = pointer.PointerEvent`
 > A window-space rectangle (`PointerEvent.box`).
@@ -1357,7 +1366,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `x, y, w, h`
 > Kind of a `CanvasEvent` (press, move, release, wheel, ...).
 - `teak.CanvasEventKind` = `pointer.CanvasEventKind`
-  - fields: `down, move, up, wheel, leave, layout`
+  - fields: `down, move, up, wheel, leave, layout, key`
 > Opaque backend mesh handle.
 - `teak.MeshHandle`: `pub const MeshHandle = scene.MeshHandle`
 > The "no mesh" handle; a scene with it draws only the clear colour.
@@ -1687,7 +1696,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - `pub fn finish(self: *InputQueue, resized: bool, width: u32, height: u32) host.InputState`
 > Navigation keys a Host may deliver.
 - `teak.NavKey` = `input_queue.NavKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, a, c, x, v, y, z`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, menu, a, c, x, v, y, z`
 > The one Shift/Ctrl policy: map a key plus modifiers to a `SpecialKey`.
 - `teak.resolveKey`: `pub const resolveKey = input_queue.resolveKey`
 > Host-owned clipboard surface.
@@ -1877,6 +1886,12 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `struct SceneStyle`
   - fields: `width, height, flex`
 - `pub fn SceneCmd(comptime Msg: type) type`
+> Keyboard grouping of list-row buttons (see docs/features/focus.md).
+- `enum Roving`
+  - fields: `none, focus, select`
+> Keyboard-navigation options of a button (`CmdBuffer.buttonNav`).
+- `struct ButtonNav`
+  - fields: `tab_stop, roving`
 - `pub fn ButtonCmd(comptime Msg: type) type`
 - `pub fn TextInputCmd(comptime Msg: type) type`
 > Multi-line editable text (`text_area`). Layout sizes it like a canvas
@@ -2657,12 +2672,12 @@ and the App.
 - `enum Button`
   - fields: `none, left, middle, right`
 - `enum CanvasEventKind`
-  - fields: `down, move, up, wheel, leave, layout`
+  - fields: `down, move, up, wheel, leave, layout, key`
 > One pointer event on an interactive canvas / scene. Coordinates are
 > canvas-LOCAL logical pixels (origin = the canvas rect's top-left), the
 > same space as `CanvasPrimitive` coordinates.
 - `struct CanvasEvent`
-  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h`
+  - fields: `id, kind, x, y, dx, dy, button, buttons, mods, w, h, key`
 > A window-space rectangle (`PointerEvent.box`).
 - `struct Box`
   - fields: `x, y, w, h`
@@ -2995,9 +3010,16 @@ translate a resulting cmd index into its own `Model.focused` field.
 > `current` is null (or outside the traversal scope), start from the
 > scope's last index. Wraps at the start of the scope.
 - `pub fn prevFocusable(cmds: anytype, current: ?usize) ?usize`
+> `isNavigable` minus buttons that opted out of Tab (`ButtonCmd.tab_stop = false`).
+- `pub fn isTabStop(c: anytype) bool`
 > A cmd the keyboard can operate: everything `isFocusable` accepts plus
 > enabled buttons, checkboxes, radios and sliders.
 - `pub fn isNavigable(c: anytype) bool`
+> Buttons of the roving group `idx` belongs to (contiguous `roving != .none` buttons
+> sharing one container): the neighbour `delta` steps away (negative = back), clamped to the
+> group (no wrap); `delta` of `minInt`/`maxInt` jumps to the first / last. Null when `idx` is
+> not a roving button or the group has one member.
+- `pub fn rovingTarget(cmds: anytype, idx: usize, delta: i32) ?usize`
 > The next (`forward`) or previous radio of the radio group `idx` belongs to,
 > wrapping inside the group; null when `idx` is not a radio or is alone. A
 > group is the run of radios that share one container (same nesting depth,
@@ -3320,7 +3342,7 @@ Shared per-window input accumulator for event-driven Hosts (Win32, X11).
 > Shift/Ctrl policy once, so the `SpecialKey` variants (shift_left,
 > ctrl_a, ...) are derived in one place instead of per host.
 - `enum NavKey`
-  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, a, c, x, v, y, z`
+  - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, menu, a, c, x, v, y, z`
 > The `SpecialKey` for `k` under `mods`, or null when the combination is
 > not a special key (a plain letter, or Ctrl/Alt/Meta-less letter chord).
 > Shift extends motion keys and reverses Tab; Ctrl+letter is a chord; Ctrl
@@ -3446,6 +3468,10 @@ docs/features/headless.md.
 > script, capture the last frame to `path` as a PNG. `Host` is
 > `teak-platform-headless`'s `Host`, `Gpu` is `teak-gpu-headless`'s `Gpu`.
 - `pub fn shot( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, path: []const u8, o: ShotOptions, ) !void`
+> `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
+> headless run, so any example's `zig build shot` can be taken at 2x without
+> code changes. Unset or invalid: `default`.
+- `pub fn envScale(default: f32) f32`
 - `struct ServeOptions`
   - fields: `width, height, msaa, frame_sleep_ms, run`
 > Run `App` headlessly until the Host closes (the control channel's `quit`
@@ -3456,10 +3482,32 @@ docs/features/headless.md.
 > `argv[1]` of a `pub fn main(init: std.process.Init)` program, or
 > `default` when absent: the output path of a `zig build shot -- out.png`.
 - `pub fn pathArg(init: anytype, default: []const u8) []const u8`
-> Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). The
-> zlib stream uses stored (uncompressed) blocks: dependency-free and
-> instant, at the cost of ~raw size (1280x800 -> 4 MB). Caller frees.
+> A named, scripted app state for screenshots (`--state <name>`).
+- `struct ShotState`
+  - fields: `name, steps, msaa`
+> The whole `shot_main.zig` for an example: parses
+> `[out.png] [--state <name>] [--list] [--all <dir> --prefix <p>]` from argv, plays that state's
+> script (`o.steps` is ignored; the first of `states` is the default),
+> and writes the PNG. `--list` prints the state names, one per line, on
+> stdout and exits. `--all <dir> --prefix <p>` renders every state to
+> `<dir>/<p>-<state>.actual.png` in one process and prints the names:
+> `tools/vreg` uses it so each example needs a single `zig build` call.
+- `pub fn shotCli( comptime App: type, comptime Host: type, comptime Gpu: type, init: anytype, default_path: []const u8, o: ShotOptions, states: []const ShotState, ) !void`
+> Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). Each
+> scanline picks the PNG filter (none / sub / up / average / paeth) with
+> the smallest sum of absolute residuals, and the filtered stream is
+> deflate-compressed (`std.compress.flate`, default level), so UI
+> screenshots shrink from ~4 MB raw to tens of KB. Deterministic: the
+> same pixels always produce the same bytes. Caller frees.
 - `pub fn encodePng(gpa: std.mem.Allocator, rgba: []const u8, width: u32, height: u32) ![]u8`
+> A decoded image: tightly packed RGBA8 (top-down).
+- `struct Image`
+  - fields: `width, height, rgba`
+  - `pub fn deinit(self: Image, gpa: std.mem.Allocator) void`
+> Decode a PNG: 8-bit RGB or RGBA, non-interlaced, any scanline filter
+> (so both teak's own `encodePng` output and browser screenshots work).
+> RGB gets alpha 255. Caller frees with `Image.deinit`.
+- `pub fn decodePng(gpa: std.mem.Allocator, png: []const u8) !Image`
 > Write RGBA8 pixels to `path` (relative to the cwd) as a PNG.
 - `pub fn writePng(gpa: std.mem.Allocator, path: []const u8, rgba: []const u8, width: u32, height: u32) !void`
 > Read back the Gpu's last offscreen frame (`Gpu.readFrame`) and write it

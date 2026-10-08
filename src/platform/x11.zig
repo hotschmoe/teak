@@ -268,6 +268,7 @@ const XK_KP_Enter: KeySym = 0xff8d;
 const XK_Escape: KeySym = 0xff1b;
 const XK_F12: KeySym = 0xffc9;
 const XK_F10: KeySym = 0xffc7;
+const XK_Menu: KeySym = 0xff67;
 const XK_Alt_L: KeySym = 0xffe9;
 const XK_Alt_R: KeySym = 0xffea;
 const XK_Delete: KeySym = 0xffff;
@@ -1684,6 +1685,7 @@ fn navFromKeysym(keysym: KeySym) ?NavKey {
         XK_Escape => .escape,
         XK_F12 => .f12,
         XK_F10 => .f10,
+        XK_Menu => .menu,
         else => null,
     };
 }
@@ -1720,8 +1722,8 @@ test "X11 key tables reach every SpecialKey through the shared policy" {
     var seen = std.EnumSet(SpecialKey).empty;
     const keysyms = [_]KeySym{
         XK_BackSpace, XK_Delete,   XK_Left, XK_Right,        XK_Up,     XK_Down, XK_Home, XK_End, XK_Prior, XK_Next,
-        XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, XK_F10,  'a',     'c',    'x',      'v',
-        'y',          'z',         XK_F12,
+        XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, XK_F10,  XK_Menu, 'a',    'c',      'x',
+        'v',          'y',         'z',     XK_F12,
     };
     const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = true } };
     for (mod_sets) |mods| {

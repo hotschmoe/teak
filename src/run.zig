@@ -182,8 +182,11 @@ pub const RunOptions = struct {
     /// sliders). Text fields keep their Model-owned focus. Off = Tab only
     /// walks text fields (apps with `focusedMsg`), as before.
     keyboard_nav: bool = true,
-    /// Scene clear color passed to `Gpu.renderFrame` each frame.
-    clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },
+    /// Scene clear color passed to `Gpu.renderFrame` each frame. `null`
+    /// (the default) follows the frame's theme: `theme.palette.bg`, so an
+    /// app that switches theme (`themeFor`) switches its background with it.
+    /// Set it for a fixed backdrop (a paper colour, a 3D scene).
+    clear_color: ?[4]f32 = null,
     /// Text-cursor blink half-period in ms of the Host clock (500 = 500 ms on,
     /// 500 ms off). 0 disables blinking (the caret stays on). While a text
     /// input is focused the loop wakes at each toggle and re-renders only the
@@ -552,6 +555,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         nav: ?NavFocus = null,
         /// Where the navigation focus was when a modal overlay opened; restored when it closes.
         nav_return: ?NavFocus = null,
+        /// The navigation focus last reported to `hoverMsg` (keyboard focus shows tooltips).
+        nav_hover: ?usize = null,
 
         /// The previous frame's `nowMs`. `runSubs` is stateless — it decides
         /// fire/skip from (last_sub_ms, now_ms, sub data) — so this single
@@ -595,6 +600,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         animating: bool = false,
         /// The first frame always builds (nothing to show yet).
         built_once: bool = false,
+        /// `reportLayout` dispatched a Msg after the frame's build (a canvas
+        /// size, a scroll extent): the shown frame is stale until the next one
+        /// rebuilds, so that frame must not be skipped as idle.
+        layout_dirty: bool = false,
 
         /// Last title pushed to the host, so `setTitle` fires only on change.
         title_buf: [256]u8 = undefined,
@@ -696,7 +705,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
             // Event-driven idle: nothing changed since the frame on screen.
             self.quiet = self.opts.idle_skip and self.built_once and
-                self.dispatch_count == dispatched_before and self.inputIdle(input) and !self.ctl.consumeDirty();
+                self.dispatch_count == dispatched_before and !self.layout_dirty and self.inputIdle(input) and !self.ctl.consumeDirty();
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
@@ -708,14 +717,17 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     const last = self.current;
                     self.uploadFrame(self.bufs[last].cmds.items, self.rects[last].items, self.ts);
                     self.prev_ts = self.ts;
-                    self.gpu.renderFrame(self.opts.clear_color);
+                    self.gpu.renderFrame(self.opts.clear_color orelse self.bufs[last].theme.palette.bg);
                 }
                 return;
             }
             self.built_once = true;
+            self.layout_dirty = false;
 
             const cur = try self.buildView(input);
+            const before_layout = self.dispatch_count;
             self.reportLayout(prev, cur);
+            self.layout_dirty = self.dispatch_count != before_layout;
             const cur_cmds = self.bufs[cur].cmds.items;
             const cur_rects = self.rects[cur].items;
             self.updateTransient(input, cur);
@@ -744,7 +756,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
             self.prev_ts = self.ts;
 
-            self.gpu.renderFrame(self.opts.clear_color);
+            self.gpu.renderFrame(self.opts.clear_color orelse self.bufs[self.current].theme.palette.bg);
             self.ctl.timings.render_ms = control.msBetween(t_render, control.stamp(&self.ctl));
 
             const sec = if (has_secondary) try self.driveSecondary() else SecondaryFrame{};
@@ -860,6 +872,24 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (self.press_target != null and hover != self.press_target) self.press_target = null;
         }
 
+        /// `contextMsg` for the Menu key / Shift+F10: the pointer event is anchored at the
+        /// focused widget (the navigation focus, else the Model's text focus, else the
+        /// mouse), `hit` = that widget's Msg.
+        fn sendContextKey(self: *Self, input: Input, prev: u1) void {
+            const cmds = self.bufs[prev].cmds.items;
+            const rects = self.rects[prev].items;
+            const idx: ?usize = self.navResolve(cmds) orelse focusIndex(App, &self.model, cmds);
+            var ev: pointer.PointerEvent(Msg) = .{ .x = input.mouse_x, .y = input.mouse_y, .mods = input.mods, .now_ms = self.host.nowMs() };
+            if (idx) |i| if (i < rects.len) {
+                const r = rects[i];
+                ev.x = r.x;
+                ev.y = r.y + r.h;
+                ev.hit = focus.activationMsg(cmds[i]);
+                ev.box = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
+            };
+            if (App.contextMsg(&self.model, ev)) |m| self.dispatch(m);
+        }
+
         /// `hoverMsg` / `contextMsg`: both resolve the pointer against the
         /// previous frame's layout like a click does.
         fn routePointerHooks(self: *Self, input: Input, prev: u1) void {
@@ -872,6 +902,24 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const hit = if (cmds.len > 0) hit_test.hitTest(cmds, rects, input.mouse_x, input.mouse_y) else null;
             const under: ?usize = if (hit) |h| h.index else null;
 
+            // Keyboard focus is reported to `hoverMsg` like a pointer resting on the
+            // focused widget (so a tooltip shows for it); leaving non-text focus
+            // reports "nothing". The pointer's own reports are unaffected.
+            if (has_hover and self.opts.keyboard_nav) {
+                const ni = self.navResolve(cmds);
+                if (ni != self.nav_hover) {
+                    const was = self.nav_hover;
+                    self.nav_hover = ni;
+                    const NavHit = struct { index: usize, msg: ?Msg };
+                    if (ni) |i| {
+                        const nh: ?NavHit = .{ .index = i, .msg = focus.activationMsg(cmds[i]) };
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, nh, rects, .hover, .none))) |m| self.dispatch(m);
+                    } else if (was != null) {
+                        const none: ?NavHit = null;
+                        if (App.hoverMsg(&self.model, self.pointerEvent(input, none, rects, .hover, .none))) |m| self.dispatch(m);
+                    }
+                }
+            }
             if (has_hover) {
                 if (!self.hover_seen or under != self.hover_reported) {
                     const first = !self.hover_seen;
@@ -989,6 +1037,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (!handled and ch == ' ') _ = self.navActivate(prev_cmds);
             }
             for (input.keys) |k| {
+                // Menu key / Shift+F10: a context-menu request at the keyboard-focused
+                // widget (below its left edge), through the same `contextMsg` hook a
+                // right click uses. Without the hook the key reaches `keySpecialMsg`.
+                if (comptime @hasDecl(App, "contextMsg")) {
+                    if (k == .context_menu) {
+                        self.sendContextKey(input, prev);
+                        continue;
+                    }
+                }
                 if (k == .f12 and self.opts.inspect_hotkey) {
                     control.toggleInspect(&self.ctl);
                     continue;
@@ -1053,7 +1110,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     }
                     // Nothing in the app took the key: the keyboard-focused
                     // widget gets it (Enter, arrows).
-                    _ = self.navKey(prev_cmds, k);
+                    _ = self.navKey(prev_cmds, prev, k);
                 }
             }
         }
@@ -1176,16 +1233,53 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// key hooks ran first and declined): Enter activates, arrows move
         /// inside a radio group, arrows / Home / End / PageUp / PageDown set a
         /// slider through `sliderMsg`.
-        fn navKey(self: *Self, cmds: anytype, k: @import("input/keys.zig").SpecialKey) bool {
+        fn navKey(self: *Self, cmds: anytype, prev: u1, k: @import("input/keys.zig").SpecialKey) bool {
             const idx = self.navResolve(cmds) orelse return false;
             switch (cmds[idx]) {
-                .button, .checkbox, .canvas => return k == .enter and self.navActivate(cmds),
+                .button => |b| {
+                    if (b.roving != .none) {
+                        const delta: i32 = switch (k) {
+                            .up, .left => -1,
+                            .down, .right => 1,
+                            .page_up => -5,
+                            .page_down => 5,
+                            .home => std.math.minInt(i32),
+                            .end => std.math.maxInt(i32),
+                            else => 0,
+                        };
+                        if (delta != 0) {
+                            if (focus.rovingTarget(cmds, idx, delta)) |to| {
+                                self.nav = self.navCapture(cmds, to);
+                                if (cmds[to].button.roving == .select) self.dispatch(cmds[to].button.msg);
+                            }
+                            return true;
+                        }
+                    }
+                    if (k == .enter) return self.navActivate(cmds);
+                    return self.navScroll(cmds, prev, idx, k);
+                },
+                .checkbox => {
+                    if (k == .enter) return self.navActivate(cmds);
+                    return self.navScroll(cmds, prev, idx, k);
+                },
+                .canvas => |cv| {
+                    // A focusable pointer canvas (split divider...) gets the key as an event.
+                    if (cv.pointer and cv.id != 0 and has_canvas_hook) {
+                        const ev: pointer.CanvasEvent = .{ .id = cv.id, .kind = .key, .key = k };
+                        if (App.canvasMsg(&self.model, ev)) |m| {
+                            self.dispatch(m);
+                            return true;
+                        }
+                    }
+                    if (k == .enter) return self.navActivate(cmds);
+                    return self.navScroll(cmds, prev, idx, k);
+                },
                 .radio => {
                     if (k == .enter) return self.navActivate(cmds);
                     const forward = switch (k) {
                         .right, .down => true,
                         .left, .up => false,
-                        else => return false,
+                        else => return self.navScroll(cmds, prev, idx, k),
                     };
                     const to = focus.groupNeighbor(cmds, idx, forward) orelse return true;
                     self.nav = self.navCapture(cmds, to);
@@ -1203,7 +1297,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                         .page_up => v += 0.2,
                         .home => v = 0,
                         .end => v = 1,
-                        else => return false,
+                        else => return self.navScroll(cmds, prev, idx, k),
                     }
                     v = std.math.clamp(v, 0, 1);
                     if (App.sliderMsg(&self.model, sl.grab_msg, v)) |m| self.dispatch(m);
@@ -1211,6 +1305,58 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 },
                 else => return false,
             }
+        }
+
+        /// Keys the focused widget did not use scroll the innermost id-bearing
+        /// scroll region that contains it, through `scrollMsg` (arrows a line,
+        /// PageUp / PageDown a viewport less a line, Home / End to the ends; the
+        /// app clamps like it does for the wheel).
+        fn navScroll(self: *Self, cmds: anytype, prev: u1, idx: usize, k: @import("input/keys.zig").SpecialKey) bool {
+            if (comptime !has_scroll_hook) return false;
+            // Innermost enclosing scroll region with an id.
+            var depth: i32 = 0;
+            var i = idx;
+            var found: ?usize = null;
+            while (i > 0) {
+                i -= 1;
+                switch (cmds[i]) {
+                    .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => depth += 1,
+                    .push_group, .push_overlay, .push_virtual_list => depth -= 1,
+                    .push_scroll => |sc| {
+                        if (depth == 0 and sc.id != 0) {
+                            found = i;
+                            break;
+                        }
+                        depth -= 1;
+                    },
+                    else => {},
+                }
+            }
+            const si = found orelse return false;
+            const sc = cmds[si].push_scroll;
+            const r = self.rects[prev].items[si];
+            const horiz = sc.direction == .horizontal;
+            const line: f32 = 40;
+            const page = @max(line, (if (horiz) r.w else r.h) - line);
+            const along: f32 = switch (k) {
+                .down => if (horiz) 0 else line,
+                .up => if (horiz) 0 else -line,
+                .right => if (horiz) line else 0,
+                .left => if (horiz) -line else 0,
+                .page_down => page,
+                .page_up => -page,
+                .home => -1.0e7,
+                .end => 1.0e7,
+                else => return false,
+            };
+            if (along == 0) return false;
+            const dx: f32 = if (horiz) along else 0;
+            const dy: f32 = if (horiz) 0 else along;
+            if (App.scrollMsg(&self.model, sc.id, dx, dy)) |m| {
+                self.dispatch(m);
+                return true;
+            }
+            return false;
         }
 
         fn sliderValue(_: *Self, sl: anytype) f32 {
@@ -1421,7 +1567,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     ev.dy = input.wheel_dy;
                 },
                 .leave => ev.kind = .leave,
-                .layout => return,
+                .layout, .key => return,
             }
             switch (ev.kind) {
                 .down, .drag, .double_click, .triple_click, .up => {
@@ -1846,7 +1992,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // The secondary window has no interactive/transient state of its
             // own — a fresh default is correct.
             self.uploadFrame(cmds, sec.rects[scur].items, .{});
-            self.gpu.renderToWindow(wid, self.opts.clear_color);
+            self.gpu.renderToWindow(wid, self.opts.clear_color orelse sec.bufs[scur].theme.palette.bg);
             return .{
                 .title = if (spec) |s| s.title else "secondary",
                 .content_changed = !cmdsEqual(Msg, cmds, sec.bufs[sprev].cmds.items) or

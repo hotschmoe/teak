@@ -69,6 +69,7 @@ Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no
 ## Where to read next
 
 - [`docs/HARDLINE.md`](docs/HARDLINE.md) — the non-negotiable rules. Start here.
+- [`docs/showcase.md`](docs/showcase.md) — screenshots of the examples, native and web, retro / modern / dark / light, with the PR behind each feature.
 - [`docs/consuming-teak.md`](docs/consuming-teak.md) — **build an app**: `build.zig.zon` → `teak.run` in a few steps.
 - [`docs/cookbook.md`](docs/cookbook.md) — **add X to my app**: ~12 intent-oriented recipes (modal, dropdown, chart, golden test, second window, new widget…).
 - [`CLAUDE.md`](CLAUDE.md) — orientation for LLMs and new contributors.

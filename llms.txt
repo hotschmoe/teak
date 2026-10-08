@@ -124,7 +124,7 @@ pub fn handleClipboard(*Model, SpecialKey, Clipboard) void   // DEPRECATED: muta
 pub fn wheelMsg(*const Model, f32) ?Msg               // vertical wheel delta → Msg (when no canvas / scroll region took it)
 pub fn canvasMsg(*const Model, CanvasEvent) ?Msg      // pointer events over CanvasCmd.pointer canvases and SceneCmd.pointer scenes (shared id space) (see "Pointer events")
 pub fn pointerMsg(*const Model, PointerEvent(Msg)) ?Msg   // one hook: kind hover/down/up/context, hit=null on blank space (ev.isBlank())
-pub fn hoverMsg(*const Model, PointerEvent(Msg)) ?Msg     // the interactive widget under the pointer changed (drives Tooltip)
+pub fn hoverMsg(*const Model, PointerEvent(Msg)) ?Msg     // the interactive widget under the pointer OR on keyboard focus changed (drives Tooltip)
 pub fn sliderMsg(*const Model, grab: Msg, value: f32) ?Msg     // a `slider` cmd is dragged (pointer captured); value 0..1; without it a slider is click-only
 pub fn contextMsg(*const Model, PointerEvent(Msg)) ?Msg   // right button down; ev.hit = Msg of the widget under the cursor (drives ContextMenu)
 pub fn scrollMsg(*const Model, id: u32, dx: f32, dy: f32) ?Msg   // wheel over innermost hovered ScrollStyle.id != 0 region
@@ -155,7 +155,7 @@ frame with no opt-in. A static read-only app is just Model/Msg/update/view.
 ### RunOptions
 ```zig
 pub const RunOptions = struct {
-    clear_color: [4]f32 = .{ 0.08, 0.08, 0.1, 1.0 },  // scene clear each frame
+    clear_color: ?[4]f32 = null,  // scene clear each frame; null = theme.palette.bg (follows themeFor)
     blink_half_ms: u32 = 500, // caret blink half-period in Host-clock ms (0 = no blink); idle wakes at each toggle
     snapshot_path: ?[]const u8 = null,   // live snapshot sink; TEAK_SNAPSHOT env wins (see below)
     control_path: ?[]const u8 = null,    // agent control socket; TEAK_CONTROL env wins (see "Agent driver")
@@ -220,7 +220,7 @@ Emitters (all `catch unreachable` on arena OOM):
   `pushFormRow(FormRowOpts)`/`popFormRow()`
 - `scene3d(SceneCmd(Msg))` — 3D mesh leaf (see "3D scenes" below).
 - `image(TextureHandle, ImageStyle)`, `canvas(CanvasStyle, prims)`, `canvasLabeled(...)`,
-  `canvasClickable(msg, style, prims, label)`, `canvasInteractive(style, prims, id, label)`,
+  `canvasClickable(msg, style, prims, label)`, `canvasInteractive(style, prims, id, label)`, `canvasInteractiveFocusable(style, prims, id, label, focus_msg)` (also a Tab stop; keys reach `canvasMsg` as `.key` events),
   `richText(content, spans)`, `richTextStyled(RichTextCmd)`
 
 Style / option structs an app constructs:
@@ -355,6 +355,9 @@ A text leaf gets its focus Msg dispatched (the Model owns text focus); any other
 and select inside a radio group, arrows / Home / End / PageUp / PageDown set a slider through `sliderMsg`. Optional App hook
 `blurMsg(*const Model) ?Msg` clears the app's text focus when Tab leaves a text field (so typing keys stop reaching it). App key
 hooks (`keyCharMsg`, `keySpecialMsg`, `submitMsg`, menus, dialogs) run first; the focused widget only gets keys they decline.
+List rows: `cb.buttonNav(msg, label, style, .{ .tab_stop = bool, .roving = .none|.focus|.select })` — `tab_stop = false` makes Tab skip the row (a list is ONE Tab stop),
+roving rows move the focus with arrows / Home / End / PageUp / PageDown (`.select` also dispatches the row Msg). `SpecialKey.context_menu` (Menu key, Shift+F10) calls
+the app's `contextMsg` at the focused widget. `Dropdown.keyMsg(model, key, options_len, opts) ?Msg`: keys while the list is open.
 Focus is keyed by the leaf's Msg, so it follows the widget through list inserts / removals; a click on a widget moves it there.
 
 ### Keys (`teak.keys` → input/keys.zig)
@@ -930,7 +933,13 @@ Step = union(enum) { frames: u32, move: [2]f32, down, up: Button, wheel: [2]f32,
                      key: SpecialKey, mods: Modifiers, click: [2]f32, drag: [2][2]f32 }
 headless.play(rt: anytype, host: anytype, steps: []const Step) !void
 headless.shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa, steps, settle, run }) !void  // script -> PNG
-headless.writeFramePng(gpu, gpa, path) !void;  encodePng(gpa, rgba, w, h) ![]u8;  pathArg(init, default) []const u8
+headless.writeFramePng(gpu, gpa, path) !void;  pathArg(init, default) []const u8
+headless.encodePng(gpa, rgba, w, h) ![]u8      // deflate-compressed + per-row PNG filters, deterministic (tens of KB)
+headless.decodePng(gpa, png_bytes) !Image{width,height,rgba}   // 8-bit RGB/RGBA, any filter
+headless.shotCli(App, Host, Gpu, init, default_path, ShotOptions, states: []const ShotState{name, steps}) !void
+    // a whole shot_main.zig: `[out.png] [--state name] [--list]`; ShotOptions.fonts registers embedded TTFs
+// Visual regression: `zig build vreg [-- --update | --web | --examples a,b | --state s | --tol N --budget N]`
+//   compares every example's states with test/golden/ (docs/features/visual-regression.md)
 // Host: pushMouseMove/Down/Up, pushWheel, pushChars, pushKey, setModifiers, close, injectEffectResult(EffectResult),
 //       submittedEffects() []const Captured{kind,id,name,bytes,mime,method}, countEffects(kind), clearSubmittedEffects()
 ```
