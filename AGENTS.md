@@ -205,7 +205,8 @@ src/                           -- the library, consumable as a Zig module
     surface_xlib.zig           -- Xlib Window surface provider } Linux stitch:
     native_linux.zig           -- Gpu(surface_xlib, StbttRasterizer) + validateGpu
     web.zig                    -- zunk WebGPU backend (wasm)
-    glyph_cache.zig            -- GlyphCache(Backend): shared LRU glyph-texture cache
+    glyph_atlas.zig            -- GlyphAtlas: paged R8 shelf atlas, page-granular eviction, GlyphInstance
+    text_stage.zig             -- TextStage(Raster): shape -> pack -> glyph instances (native + web)
     vendor/stb_truetype.h(.c)  -- vendored public-domain rasterizer (Linux text)
   text/                        -- teak-text module (stb; shared by X11 Host measurer + Gpu rasterizer)
     text.zig                   -- module root; face.zig (Font + face table), shaper.zig (SimpleShaper:
@@ -233,7 +234,7 @@ examples/
 
 shaders/
   quad.wgsl              -- shader for colored rectangles
-  textured_quad.wgsl     -- alpha-from-texture (text glyphs)
+  glyph.wgsl             -- instanced glyph quads from the R8 atlas (native + web)
   image.wgsl             -- texture * tint (RGBA images)
 ```
 
@@ -265,3 +266,6 @@ Shipped phases, in order: prototype core loop → cleanup/abstraction hardening 
 - Explicit allocators everywhere. Arena allocators for per-frame data.
 - Convenience emitters on `CmdBuffer` stay non-error-returning; allocation failure goes through `core/oom.zig`'s `oom()` (`alloc(...) catch oom()`), a loud `@panic` in every optimize mode. Never `catch unreachable` an allocation (UB in release).
 - Text measurement flows through the Host's `TextMeasurer` (real platform metrics at layout time). `teak.monoMeasurer()` is the stateless stub for CLI canaries and tests. `CHAR_WIDTH` is gone — `zig build audit` forbids reintroducing it.
+
+## Versioning
+`build.zig.zon` `.version` is the single source of truth; code reads `teak.version` (from `build_options`). Never write a version literal elsewhere, never bump it in a feature PR. Releases are cut explicitly with `tools/release.sh <semver>`. See [`docs/VERSIONING.md`](docs/VERSIONING.md).
