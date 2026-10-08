@@ -204,7 +204,7 @@ jobs:
           foreach ($ex in "chrome", "scene3d") {
             Push-Location "examples/$ex"
             zig build shot -- "$env:GITHUB_WORKSPACE\shots\win-$ex-${{ matrix.arch }}.png"
-            if ($LASTEXITCODE -ne 0) { throw "$ex: headless shot failed" }
+            if ($LASTEXITCODE -ne 0) { throw "${ex}: headless shot failed" }
             Pop-Location
           }
           Get-ChildItem "$env:GITHUB_WORKSPACE\shots"
