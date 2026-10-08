@@ -169,6 +169,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// Bind group layout + sampler shared by the image/scene pipelines.
         text_bgl: c.WGPUBindGroupLayout,
         sampler: c.WGPUSampler,
+        glyph_sampler: c.WGPUSampler,
         text: text_stage.TextStage(Rasterizer),
         atlas_pages: std.ArrayList(AtlasPage),
         glyph_buf: c.WGPUBuffer,
@@ -422,6 +423,10 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             sampler_desc.lodMaxClamp = 1;
             sampler_desc.maxAnisotropy = 1;
             const sampler = c.wgpuDeviceCreateSampler(device, &sampler_desc) orelse return error.SamplerFailed;
+            // Distance-field glyphs are minified AND magnified: plain bilinear.
+            sampler_desc.label = wgpuStr("glyph-sampler");
+            sampler_desc.magFilter = c.WGPUFilterMode_Linear;
+            const glyph_sampler = c.wgpuDeviceCreateSampler(device, &sampler_desc) orelse return error.SamplerFailed;
 
             const scene = try wgpu_scene.Renderer.init(device, ctx.queue, surf_format, options.scene_msaa);
 
@@ -436,6 +441,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             var glyph_bgl_entries = [_]c.WGPUBindGroupLayoutEntry{
                 std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
                 std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
+                std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
             };
             glyph_bgl_entries[0].binding = 0;
             glyph_bgl_entries[0].visibility = c.WGPUShaderStage_Vertex | c.WGPUShaderStage_Fragment;
@@ -445,6 +451,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             glyph_bgl_entries[1].visibility = c.WGPUShaderStage_Fragment;
             glyph_bgl_entries[1].texture.sampleType = c.WGPUTextureSampleType_Float;
             glyph_bgl_entries[1].texture.viewDimension = c.WGPUTextureViewDimension_2D;
+            glyph_bgl_entries[2].binding = 2;
+            glyph_bgl_entries[2].visibility = c.WGPUShaderStage_Fragment;
+            glyph_bgl_entries[2].sampler.type = c.WGPUSamplerBindingType_Filtering;
             var glyph_bgl_desc = std.mem.zeroes(c.WGPUBindGroupLayoutDescriptor);
             glyph_bgl_desc.label = wgpuStr("glyph-bgl");
             glyph_bgl_desc.entryCount = glyph_bgl_entries.len;
@@ -509,6 +518,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .height = 0,
                 .text_bgl = text_bgl,
                 .sampler = sampler,
+                .glyph_sampler = glyph_sampler,
                 .glyph_pipeline = glyph_pipeline,
                 .glyph_bgl = glyph_bgl,
                 .glyph_uniform_buf = glyph_uniform_buf,
@@ -574,6 +584,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             c.wgpuRenderPipelineRelease(self.glyph_pipeline);
             c.wgpuBindGroupLayoutRelease(self.glyph_bgl);
             c.wgpuSamplerRelease(self.sampler);
+            c.wgpuSamplerRelease(self.glyph_sampler);
             c.wgpuBindGroupLayoutRelease(self.text_bgl);
 
             self.releaseMsaa();
@@ -996,12 +1007,15 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 var entries = [_]c.WGPUBindGroupEntry{
                     std.mem.zeroes(c.WGPUBindGroupEntry),
                     std.mem.zeroes(c.WGPUBindGroupEntry),
+                    std.mem.zeroes(c.WGPUBindGroupEntry),
                 };
                 entries[0].binding = 0;
                 entries[0].buffer = self.glyph_uniform_buf;
                 entries[0].size = 16;
                 entries[1].binding = 1;
                 entries[1].textureView = view;
+                entries[2].binding = 2;
+                entries[2].sampler = self.glyph_sampler;
                 var desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
                 desc.label = wgpuStr("glyph-atlas-bg");
                 desc.layout = self.glyph_bgl;

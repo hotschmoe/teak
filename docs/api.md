@@ -216,11 +216,12 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `width, height, flex, bg`
 > One draw op inside a canvas (polyline, rect, lines, triangles, ...).
 - `teak.CanvasPrimitive` = `cmd.CanvasPrimitive`
-  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text`
   - `struct Polyline`
   - `struct FilledRect`
   - `struct HLine`
   - `struct VLine`
+  - `struct Text`
   - `struct Marker`
   > One vertex of a `Triangles` list: canvas-local position + RGBA.
   - `struct TriVertex`
@@ -649,7 +650,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `sans, serif, mono`
 > A font request: family, size and weight.
 - `teak.FontSpec` = `text.FontSpec`
-  - fields: `size_px, family, weight, letter_spacing, snap_advance`
+  - fields: `size_px, family, weight, letter_spacing, snap_advance, scalable`
   > The resolved `snap_advance` (see the field).
   - `pub fn snapsAdvance(self: FontSpec) bool`
 > Regular or bold.
@@ -765,11 +766,12 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `x, y`
 > One 2D draw op inside a canvas. All coordinates are canvas-local.
 - `union CanvasPrimitive`
-  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text`
   - `struct Polyline`
   - `struct FilledRect`
   - `struct HLine`
   - `struct VLine`
+  - `struct Text`
   - `struct Marker`
   > One vertex of a `Triangles` list: canvas-local position + RGBA.
   - `struct TriVertex`
@@ -892,7 +894,7 @@ Text measurement and rasterization types.
 > (web: CSS `font-weight` + canvas `letterSpacing`; native: face selection).
 > Both take part in the glyph-cache key, so changing them re-rasterizes.
 - `struct FontSpec`
-  - fields: `size_px, family, weight, letter_spacing, snap_advance`
+  - fields: `size_px, family, weight, letter_spacing, snap_advance, scalable`
   > The resolved `snap_advance` (see the field).
   - `pub fn snapsAdvance(self: FontSpec) bool`
 - `pub const DEFAULT_FONT: FontSpec = .{}`

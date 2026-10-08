@@ -175,6 +175,13 @@
   wrapped multi-line editing with selection across lines, scrolling, caret, IME composition, pointer (click, shift-click,
   drag incl. outside, double/triple click, wheel), visual Up/Down/Home/End with a sticky column, layout `metrics` events,
   `Host.setImeSpot` from the focused caret; `Editor.applyPointer`; `examples/notes`. See docs/features/text-area.md.
+- **Scalable (SDF) text.** `FontSpec.scalable = true` draws a glyph from a signed distance field rasterized ONCE (stb
+  `GetGlyphSDF`, 32 px source, shared R8 atlas pages, `GlyphKey.mode = 1`) instead of once per size: crisp from below 1x to 8x+ with no
+  re-rasterization or blur, positioned at exact (unsnapped) coordinates. `shaders/glyph.wgsl` branches per instance on `flags` (bits 0-1 mode,
+  bits 16-31 quad scale) and samples bilinearly. New `CanvasPrimitive.text` draws labels inside a canvas; `examples/viewport` labels its grid
+  with scalable text and gains `zig build shot -- out.png --zoom Z`. Native and web (the wasm math shim gained small cbrt/cos/acos; chrome-sized
+  apps pay about 4-5 KB gzip for the SDF code). Not for UI text: a distance field is softer than a hinted bitmap at 12-16 px.
+
 - Wrapped text and flex shrink (text-engine PR8/PR9, closes #8): `text` gains `wrap` (`none|word|char|ellipsis`),
   `max_lines`, `text_align`; groups/scrolls gain `shrink`; emitters `paragraph`, `paragraphStyled`, `textEllipsis`.
   Layout runs two extra passes (resolve widths, re-measure heights) only when a frame has wrapped or shrinkable nodes;

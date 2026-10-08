@@ -124,6 +124,13 @@ const WebRaster = struct {
         return self.inner.rasterizeGlyph(face, gid, size_px, bin);
     }
 
+    /// Signed-distance glyphs (`FontSpec.scalable`): see `raster.zig`.
+    pub const sdf_em = text.StbttRasterizer.sdf_em;
+
+    pub fn rasterizeSdf(self: *WebRaster, face: u16, gid: u16) ?text.GlyphBitmap {
+        return self.inner.rasterizeSdf(face, gid);
+    }
+
     pub fn rasterizeCluster(self: *WebRaster, utf8: []const u8, font: FontSpec, size_px: f32) ?text.GlyphBitmap {
         var font_buf: [web_font.css_buf_len]u8 = undefined;
         const css = web_font.css(&font_buf, font);
@@ -171,6 +178,7 @@ pub const Gpu = struct {
     glyph_bgl: zgpu.BindGroupLayout,
     /// {logical size, device scale, text gamma}; see shaders/glyph.wgsl.
     glyph_uniform_buf: zgpu.Buffer,
+    glyph_sampler: zgpu.Sampler,
     /// Layout + sampler shared by the image and scene-composite pipelines.
     text_bgl: zgpu.BindGroupLayout,
     sampler: zgpu.Sampler,
@@ -267,6 +275,7 @@ pub const Gpu = struct {
             zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX | zgpu.ShaderVisibility.FRAGMENT, .uniform)
                 .withMinSize(16),
             zgpu.BindGroupLayoutEntry.initTexture(1, zgpu.ShaderVisibility.FRAGMENT, .float),
+            zgpu.BindGroupLayoutEntry.initSampler(2, zgpu.ShaderVisibility.FRAGMENT, .filtering),
         });
         const glyph_attrs = [_]zgpu.VertexAttribute{
             .{ .shader_location = 0, .format = .float32x2, .offset = @offsetOf(glyph_atlas.GlyphInstance, "x") },
@@ -279,6 +288,14 @@ pub const Gpu = struct {
             zgpu.VertexBufferLayout.fromSlice(@sizeOf(glyph_atlas.GlyphInstance), .instance, &glyph_attrs),
         };
         const glyph_pipeline = uiPipeline(zgpu.createPipelineLayout(&.{glyph_bgl}), zgpu.createShaderModule(SHADER_GLYPH), &glyph_layouts, samples);
+        // Distance-field glyphs are sampled bilinearly (coverage glyphs use textureLoad).
+        const glyph_sampler = zgpu.createSampler(.{
+            .mag_filter = .linear,
+            .min_filter = .linear,
+            .address_u = .clamp_to_edge,
+            .address_v = .clamp_to_edge,
+            .address_w = .clamp_to_edge,
+        });
         const glyph_uniform_buf = zgpu.createBuffer(16, zgpu.BufferUsage.UNIFORM | zgpu.BufferUsage.COPY_DST);
         const image_pipeline = uiPipeline(text_pl, zgpu.createShaderModule(SHADER_IMAGE), &layouts, samples);
 
@@ -314,6 +331,7 @@ pub const Gpu = struct {
             .glyph_pipeline = glyph_pipeline,
             .glyph_bgl = glyph_bgl,
             .glyph_uniform_buf = glyph_uniform_buf,
+            .glyph_sampler = glyph_sampler,
             .text_bgl = text_bgl,
             .sampler = sampler,
             .text = web_text,
@@ -381,6 +399,7 @@ pub const Gpu = struct {
         self.text.deinit();
         if (self.glyph_buf) |gb| zgpu.bufferDestroy(gb);
         zgpu.bufferDestroy(self.glyph_uniform_buf);
+        zgpu.destroySampler(self.glyph_sampler);
         zgpu.destroySampler(self.sampler);
         if (self.image_vert_buf) |ib| zgpu.bufferDestroy(ib);
         if (self.vert_buf) |vb| zgpu.bufferDestroy(vb);
@@ -595,6 +614,7 @@ pub const Gpu = struct {
             const bg = zgpu.createBindGroup(self.glyph_bgl, &.{
                 zgpu.BindGroupEntry.initBufferFull(0, self.glyph_uniform_buf, 16),
                 zgpu.BindGroupEntry.initTextureView(1, view),
+                zgpu.BindGroupEntry.initSampler(2, self.glyph_sampler),
             });
             self.atlas_pages.append(std.heap.wasm_allocator, .{ .texture = texture, .view = view, .bind_group = bg }) catch return;
         }

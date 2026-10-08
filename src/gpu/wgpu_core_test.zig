@@ -23,6 +23,7 @@ const NoSurface = struct {
 const BoxRaster = struct {
     const GlyphBitmap = struct { pixels: []const u8, width: u32, height: u32, bearing_x: i32, bearing_y: i32 };
     pixels: [6 * 8]u8 = @splat(255),
+    sdf: [16 * 16]u8 = undefined,
 
     pub fn init(_: std.mem.Allocator) !BoxRaster {
         return .{};
@@ -34,6 +35,18 @@ const BoxRaster = struct {
             out[i] = .{ .glyph = ch, .face = 0, .cluster = @intCast(i), .x = @floatFromInt(i * 8), .advance = 8 };
         }
         return .{ .count = n, .width = @floatFromInt(n * 8), .consumed = n };
+    }
+    /// A 16x16 distance field of an 8x8 box (texels 4..12): byte = 128 + 16 * signed distance.
+    pub const sdf_em: f32 = 16;
+    pub fn rasterizeSdf(self: *BoxRaster, _: u16, gid: u16) ?GlyphBitmap {
+        if (gid == ' ') return .{ .pixels = &.{}, .width = 0, .height = 0, .bearing_x = 0, .bearing_y = 0 };
+        for (0..16) |y| for (0..16) |x| {
+            const fx: f32 = @as(f32, @floatFromInt(x)) + 0.5;
+            const fy: f32 = @as(f32, @floatFromInt(y)) + 0.5;
+            const inside = @min(@min(fx - 4, 12 - fx), @min(fy - 4, 12 - fy));
+            self.sdf[y * 16 + x] = @intFromFloat(std.math.clamp(128 + 16 * inside, 0, 255));
+        };
+        return .{ .pixels = &self.sdf, .width = 16, .height = 16, .bearing_x = 0, .bearing_y = -12 };
     }
     pub fn ascent(_: *BoxRaster, _: teak.FontSpec, _: f32) f32 {
         return 8; // device px: the box glyph is a fixed size at any scale
@@ -458,6 +471,55 @@ test "atlas text: scale 2 places glyphs in device pixels and scales solids as ve
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 5, 9));
     try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, at(f, 50, 50)); // blue (BGRA) quad scaled 2x
     try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 35, 50));
+}
+
+fn scalable(d: teak.TextDraw, size: f32) teak.TextDraw {
+    var out = d;
+    out.font = .{ .size_px = size, .scalable = true };
+    out.rect_w = 64;
+    out.rect_h = 64;
+    return out;
+}
+
+test "scalable text: one distance field, crisp edges at 2x and 4x, placed by the zoom" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    // size 32 -> k = 2: the 8x8 box becomes 16x16 at x 4+8..4+24, y (48-24)+8..(48-24)+24.
+    h.gpu.uploadText(&.{scalable(textAt(4, 40, 0, 0, "a"), 32)});
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 20, 40)); // inside
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 8, 40)); // left of the box
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 20, 28)); // above it
+    try std.testing.expect(at(f, 11, 40)[0] < 60); // one pixel outside the edge: almost nothing
+    try std.testing.expect(at(f, 13, 40)[0] > 195); // one pixel inside: almost full
+    const at_2x = h.gpu.text.atlas.pageCount();
+
+    // 4x: the SAME atlas entry (no new glyph), edges still one pixel wide.
+    h.gpu.uploadText(&.{scalable(textAt(4, 40, 0, 0, "a"), 64)});
+    const g = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(g);
+    try std.testing.expectEqual(at_2x, h.gpu.text.atlas.pageCount());
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(g, 30, 30));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(g, 12, 30));
+    try std.testing.expect(at(g, 19, 30)[0] < 60); // box edge at x = 4 + 16 = 20
+    try std.testing.expect(at(g, 21, 30)[0] > 195);
+    try std.testing.expectEqual(@as(u32, 0), h.gpu.text.dropped);
+}
+
+test "scalable text keeps its clip, and a non-scalable draw of the same glyph still uses bitmaps" {
+    var h = try Harness.init(.{});
+    defer h.deinit();
+    var d = scalable(textAt(4, 40, 0, 0, "a"), 32);
+    d.clip_w = 20; // clip x 0..20 cuts the box (12..28) at 20
+    var bitmap = textAt(4, 8, 16, 8, "b");
+    bitmap.color = .{ 0, 1, 0, 1 };
+    h.gpu.uploadText(&.{ d, bitmap });
+    const f = try h.frame(.{ 0, 0, 0, 1 });
+    defer std.testing.allocator.free(f);
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, at(f, 16, 40));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, at(f, 22, 40)); // beyond the clip
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, at(f, 6, 10)); // the 6x8 box bitmap glyph
 }
 
 // ── SDF quads: rounded rects, borders, gradients, soft shadows ─────
