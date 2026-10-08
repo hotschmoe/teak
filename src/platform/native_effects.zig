@@ -1,4 +1,4 @@
-//! Declarative-effects service for native hosts (Linux/X11 today): what
+//! Declarative-effects service for native hosts (Linux/X11 and Windows): what
 //! `Host.submit` / `Host.pollEffectResults` stand on. See
 //! docs/features/effects.md for the contract; this file is the native half.
 //!
@@ -10,16 +10,20 @@
 //!                    client has no socket timeout, so a stuck connect lingers
 //!                    on its own thread until the OS gives up).
 //!   storage_*        one file per key under `$XDG_CONFIG_HOME/teak/<app>/`
-//!                    (default `~/.config`). An empty value deletes the key.
+//!                    (default `~/.config`; Windows `%APPDATA%\teak\<app>\`).
+//!                    An empty value deletes the key.
 //!   open_file        a native dialog (`file_picker.zig`: `$TEAK_PICKER`,
 //!                    zenity or kdialog) on a worker thread; `file_cancelled`
 //!                    when cancelled or no picker is installed. The env var
 //!                    `TEAK_OPEN=path` bypasses the dialog: every request
 //!                    reads that file (lets agents and tests drive the app).
+//!                    A Host with its own picker (Win32) answers through
+//!                    `openPath`.
 //!   download         with `pick = true` a Save As dialog, else written to
 //!                    `$TEAK_OUT` (default: the cwd).
 //!   clock            the OS wall clock and UTC offset.
-//!   query_param      argv `--name=value`, else env `TEAK_<NAME_UPPER>`.
+//!   query_param      argv `--name=value` (Windows: the command line), else
+//!                    env `TEAK_<NAME_UPPER>`.
 //!   write_clipboard  logged once and ignored (X11 selections are async);
 //!   write_clipboard_image   likewise: the X11 host serves both itself.
 //!
@@ -28,8 +32,12 @@
 //! slices stay valid until then.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const teak = @import("teak");
 const file_picker = @import("file_picker.zig");
+const x11_data = @import("x11_data.zig");
+
+const is_windows = builtin.os.tag == .windows;
 
 const Effect = teak.Effect;
 const EffectResult = teak.EffectResult;
@@ -131,11 +139,11 @@ pub const Service = struct {
             },
             .open_file => |o| {
                 if (envValue("TEAK_OPEN") != null) {
-                    self.openFile(o.id);
+                    self.openPath(o.id, envValue("TEAK_OPEN"));
                 } else return self.startDialog(.open, o.id, o.accept, o.title, "", "");
             },
-            // The X11 host intercepts this before it reaches the service
-            // (it owns the selection); any other embedder gets a one-time note.
+            // Hosts with a real clipboard (X11, Win32) intercept this before
+            // it reaches the service; any other embedder gets a one-time note.
             .write_clipboard, .write_clipboard_image => {
                 if (!self.clipboard_warned) {
                     self.clipboard_warned = true;
@@ -442,16 +450,56 @@ pub const Service = struct {
         }
     }
 
-    fn openFile(self: *Service, id: u32) void {
-        const path = envValue("TEAK_OPEN") orelse return self.finish(.{ .file_cancelled = .{ .id = id } });
+    /// Answer open request `id` with the file at `path` (null: the user
+    /// cancelled, or there is no picker).
+    pub fn openPath(self: *Service, id: u32, path_or_null: ?[]const u8) void {
+        const path = path_or_null orelse return self.finish(.{ .file_cancelled = .{ .id = id } });
         const arena = newArena() orelse return;
         const bytes = Io.Dir.cwd().readFileAlloc(self.io, path, arena.allocator(), .limited(max_body_bytes)) catch |e| {
-            warn("teak: TEAK_OPEN={s}: {s}", .{ path, @errorName(e) });
+            warn("teak: open {s}: {s}", .{ path, @errorName(e) });
             freeArena(arena);
             return self.finish(.{ .file_cancelled = .{ .id = id } });
         };
         const name = std.fs.path.basename(path);
         self.push(arena, .{ .file_opened = .{ .id = id, .name = name, .mime = mimeFromName(name), .bytes = bytes } });
+    }
+
+    /// Write `bytes` to the exact `path` the user picked and answer
+    /// download request `id`.
+    pub fn downloadTo(self: *Service, id: u32, path: []const u8, bytes: []const u8) void {
+        Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = bytes }) catch |e| {
+            warn("teak: download {s}: {s}", .{ path, @errorName(e) });
+            return self.finish(.{ .downloaded = .{ .id = id, .ok = false } });
+        };
+        self.finish(.{ .downloaded = .{ .id = id, .ok = true } });
+    }
+
+    /// Answer download request `id` as failed (the user cancelled the picker).
+    pub fn downloadCancelled(self: *Service, id: u32) void {
+        self.finish(.{ .downloaded = .{ .id = id, .ok = false } });
+    }
+
+    /// Report a file dropped on the window: read it and queue an unsolicited
+    /// `dropped` result. Unreadable or oversized files are ignored.
+    pub fn dropFile(self: *Service, path: []const u8) void {
+        const arena = newArena() orelse return;
+        const bytes = Io.Dir.cwd().readFileAlloc(self.io, path, arena.allocator(), .limited(max_body_bytes)) catch |e| {
+            warn("teak: drop {s}: {s}", .{ path, @errorName(e) });
+            return freeArena(arena);
+        };
+        const name = std.fs.path.basename(path);
+        const mime = mimeFromName(name);
+        // PNG / JPEG files are images (size known for PNG), like web and X11.
+        const is_image = std.mem.eql(u8, mime, "image/png") or std.mem.eql(u8, mime, "image/jpeg");
+        const size = if (is_image) x11_data.pngSize(bytes) else null;
+        self.push(arena, .{ .dropped = .{
+            .kind = if (is_image) .image else .file,
+            .name = name,
+            .mime = mime,
+            .bytes = bytes,
+            .width = if (size) |sz| sz.w else 0,
+            .height = if (size) |sz| sz.h else 0,
+        } });
     }
 
     fn clock(self: *Service, id: u32) void {
@@ -467,7 +515,10 @@ pub const Service = struct {
     fn queryParam(self: *Service, id: u32, name: []const u8) void {
         const arena = newArena() orelse return;
         const a = arena.allocator();
-        const cmdline = Io.Dir.cwd().readFileAlloc(self.io, "/proc/self/cmdline", a, .limited(1 << 20)) catch "";
+        const cmdline = if (is_windows)
+            windowsCmdline(a) catch ""
+        else
+            selfCmdline(self.io, a);
         const value: ?[]const u8 = argValue(cmdline, name) orelse blk: {
             var env_buf: [128]u8 = undefined;
             const env_name = envVarName(&env_buf, name) orelse break :blk null;
@@ -476,6 +527,25 @@ pub const Service = struct {
         self.push(arena, .{ .query_value = .{ .id = id, .value = value } });
     }
 };
+
+/// This process's argv as a NUL-separated buffer (`/proc/self/cmdline` on
+/// Linux; rebuilt from `_NSGetArgv` on macOS, which has no procfs).
+fn selfCmdline(io: Io, a: std.mem.Allocator) []const u8 {
+    if (builtin.os.tag == .macos) {
+        const argc = _NSGetArgc().*;
+        const argv = _NSGetArgv().*;
+        var out: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < argc) : (i += 1) {
+            out.appendSlice(a, std.mem.span(argv[i])) catch return "";
+            out.append(a, 0) catch return "";
+        }
+        return out.items;
+    }
+    return Io.Dir.cwd().readFileAlloc(io, "/proc/self/cmdline", a, .limited(1 << 20)) catch "";
+}
+extern "c" fn _NSGetArgc() *c_int;
+extern "c" fn _NSGetArgv() *[*][*:0]u8;
 
 // ── Pure helpers ────────────────────────────────────────────────────
 
@@ -520,12 +590,20 @@ fn storagePath(buf: []u8, app_name: []const u8, key: []const u8) ?[]const u8 {
     if (key.len == 0) return null;
     const base = configDir(buf[0 .. std.fs.max_path_bytes / 2]) orelse return null;
     var w: Io.Writer = .fixed(buf[base.len..]);
-    w.print("/teak/{f}/{f}", .{ EscapedName{ .name = app_name }, EscapedName{ .name = key } }) catch return null;
+    const sep = std.fs.path.sep;
+    w.print("{c}teak{c}{f}{c}{f}", .{ sep, sep, EscapedName{ .name = app_name }, sep, EscapedName{ .name = key } }) catch return null;
     return buf[0 .. base.len + w.buffered().len];
 }
 
-/// `$XDG_CONFIG_HOME`, else `$HOME/.config`, written into `buf`.
+/// `$XDG_CONFIG_HOME`, else `$HOME/.config`, written into `buf`. Windows:
+/// `%APPDATA%` (Roaming app data).
 fn configDir(buf: []u8) ?[]const u8 {
+    if (is_windows) {
+        const appdata = envValue("APPDATA") orelse return null;
+        if (appdata.len > buf.len) return null;
+        @memcpy(buf[0..appdata.len], appdata);
+        return buf[0..appdata.len];
+    }
     if (envValue("XDG_CONFIG_HOME")) |x| {
         if (x.len > 0 and x.len <= buf.len) {
             @memcpy(buf[0..x.len], x);
@@ -549,10 +627,91 @@ const EscapedName = struct {
     }
 };
 
+/// True when the environment variable `name` is set and non-empty.
+pub fn envSet(name: [:0]const u8) bool {
+    return envValue(name) != null;
+}
+
+/// Windows reads the process environment as UTF-16 (the CRT's `getenv` is
+/// ANSI and misses non-ASCII profile paths); results live in a small
+/// per-thread ring so a few lookups can be held at once.
+threadlocal var env_ring: [4][2048]u8 = undefined;
+threadlocal var env_next: usize = 0;
+
 fn envValue(name: [:0]const u8) ?[]const u8 {
+    if (is_windows) {
+        var wname: [128]u16 = undefined;
+        const n = std.unicode.utf8ToUtf16Le(&wname, name) catch return null;
+        if (n >= wname.len) return null;
+        wname[n] = 0;
+        var wval: [2048]u16 = undefined;
+        const len = win.GetEnvironmentVariableW(@ptrCast(&wname), &wval, wval.len);
+        if (len == 0 or len >= wval.len) return null;
+        const slot = &env_ring[env_next % env_ring.len];
+        env_next +%= 1;
+        const m = std.unicode.utf16LeToUtf8(slot, wval[0..len]) catch return null;
+        return if (m == 0) null else slot[0..m];
+    }
     const v = std.c.getenv(name) orelse return null;
     const s = std.mem.span(v);
     return if (s.len == 0) null else s;
+}
+
+/// The few kernel32 calls the Windows build needs.
+const win = struct {
+    extern "kernel32" fn GetEnvironmentVariableW(name: [*:0]const u16, buf: ?[*]u16, size: u32) callconv(.winapi) u32;
+    extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: ?[*:0]const u16) callconv(.winapi) i32;
+    extern "kernel32" fn GetCommandLineW() callconv(.winapi) [*:0]const u16;
+    extern "kernel32" fn GetTimeZoneInformation(info: *TimeZoneInformation) callconv(.winapi) u32;
+
+    const SystemTime = extern struct {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        millis: u16,
+    };
+    const TimeZoneInformation = extern struct {
+        bias: i32,
+        standard_name: [32]u16,
+        standard_date: SystemTime,
+        standard_bias: i32,
+        daylight_name: [32]u16,
+        daylight_date: SystemTime,
+        daylight_bias: i32,
+    };
+};
+
+/// The process command line as NUL-separated UTF-8 arguments (the shape
+/// `argValue` reads), split with the usual Windows quoting: a double-quoted
+/// run is one argument, whitespace separates the rest.
+fn windowsCmdline(a: std.mem.Allocator) ![]const u8 {
+    const wide = std.mem.span(win.GetCommandLineW());
+    const utf8 = try std.unicode.utf16LeToUtf8Alloc(a, wide);
+    return splitCommandLine(a, utf8);
+}
+
+fn splitCommandLine(a: std.mem.Allocator, line: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var in_quotes = false;
+    var in_arg = false;
+    for (line) |ch| {
+        if (ch == '"') {
+            in_quotes = !in_quotes;
+            in_arg = true;
+        } else if ((ch == ' ' or ch == '\t') and !in_quotes) {
+            if (in_arg) try out.append(a, 0);
+            in_arg = false;
+        } else {
+            try out.append(a, ch);
+            in_arg = true;
+        }
+    }
+    if (in_arg) try out.append(a, 0);
+    return out.toOwnedSlice(a);
 }
 
 /// `TEAK_<NAME_UPPER>`: letters and digits upper-cased, everything else `_`.
@@ -612,7 +771,7 @@ pub fn mimeFromName(name: []const u8) []const u8 {
 }
 
 /// glibc / musl `struct tm` (the part `localtime_r` fills).
-const Tm = extern struct {
+const Tm = if (is_windows) void else extern struct {
     sec: c_int,
     min: c_int,
     hour: c_int,
@@ -625,9 +784,24 @@ const Tm = extern struct {
     gmtoff: c_long,
     zone: ?[*:0]const u8,
 };
-extern "c" fn localtime_r(t: *const i64, out: *Tm) ?*Tm;
+const localtime_r = if (is_windows) {} else struct {
+    extern "c" fn localtime_r(t: *const i64, out: *Tm) ?*Tm;
+}.localtime_r;
 
 fn utcOffsetMinutes(unix_secs: i64) i32 {
+    if (is_windows) {
+        // `bias` is minutes to add to local time to get UTC; the active
+        // (standard or daylight) adjustment is added on top. The current
+        // rules are applied to every instant, which is exact for "now".
+        var info: win.TimeZoneInformation = undefined;
+        const id = win.GetTimeZoneInformation(&info);
+        const extra: i32 = switch (id) {
+            1 => info.standard_bias,
+            2 => info.daylight_bias,
+            else => 0,
+        };
+        return -(info.bias + extra);
+    }
     var tm: Tm = undefined;
     if (localtime_r(&unix_secs, &tm) == null) return 0;
     return @intCast(@divTrunc(tm.gmtoff, 60));
@@ -659,7 +833,8 @@ test "storagePath is under the config dir and refuses an empty key" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     try std.testing.expect(storagePath(&buf, "kerf", "") == null);
     const p = storagePath(&buf, "my app", "doc/1") orelse return; // no HOME in this environment
-    try std.testing.expect(std.mem.endsWith(u8, p, "/teak/my%20app/doc%2F1"));
+    const sep = std.fs.path.sep_str;
+    try std.testing.expect(std.mem.endsWith(u8, p, sep ++ "teak" ++ sep ++ "my%20app" ++ sep ++ "doc%2F1"));
 }
 
 test "argValue finds --name=value only as a whole name" {
@@ -783,6 +958,7 @@ fn waitOne(svc: *Service, out: *EffectResult) !void {
 }
 
 test "http: a POST round-trips with its body and headers, off the calling thread" {
+    if (is_windows) return error.SkipZigTest; // the test server uses POSIX sockets
     const server = try TestServer.start(.echo);
     defer server.stop();
     const svc = try Service.create("test");
@@ -802,6 +978,7 @@ test "http: a POST round-trips with its body and headers, off the calling thread
 }
 
 test "http: a refused connection is status 0 with a reason" {
+    if (is_windows) return error.SkipZigTest; // the test server uses POSIX sockets
     const server = try TestServer.start(.echo);
     var url_buf: [64]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/", .{server.port});
@@ -817,6 +994,7 @@ test "http: a refused connection is status 0 with a reason" {
 }
 
 test "http: the timeout answers at the deadline and the late reply is dropped" {
+    if (is_windows) return error.SkipZigTest; // the test server uses POSIX sockets
     const server = try TestServer.start(.silent);
     defer server.stop();
     const svc = try Service.create("test");
@@ -845,7 +1023,11 @@ test "http: the timeout answers at the deadline and the late reply is dropped" {
 }
 
 test "storage: set, get, overwrite, delete" {
-    const svc = try Service.create("teak-test-storage");
+    // Several test binaries import this file and run in parallel: a per-process
+    // app name keeps their storage directories apart.
+    var name_buf: [64]u8 = undefined;
+    const app = try std.fmt.bufPrint(&name_buf, "teak-test-storage-{d}", .{std.c.getpid()});
+    const svc = try Service.create(app);
     defer svc.destroy();
     const cfg = envValue("XDG_CONFIG_HOME") orelse envValue("HOME") orelse return;
     _ = cfg;
@@ -893,20 +1075,87 @@ test "open_file without TEAK_OPEN is cancelled; clipboard and storage_set make n
     try std.testing.expectEqual(@as(usize, 0), svc.poll(&buf, 0));
 }
 
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+const posix_env = struct {
+    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+};
 
 fn setEnv(name: [:0]const u8, value: [:0]const u8) void {
-    _ = setenv(name, value, 1);
+    if (is_windows) {
+        var wname: [64]u16 = undefined;
+        var wvalue: [512]u16 = undefined;
+        const n = std.unicode.utf8ToUtf16Le(&wname, name) catch unreachable;
+        wname[n] = 0;
+        const v = std.unicode.utf8ToUtf16Le(&wvalue, value) catch unreachable;
+        wvalue[v] = 0;
+        _ = win.SetEnvironmentVariableW(@ptrCast(&wname), @ptrCast(&wvalue));
+    } else _ = posix_env.setenv(name, value, 1);
 }
 fn unsetEnv(name: [:0]const u8) void {
-    _ = unsetenv(name);
+    if (is_windows) {
+        var wname: [64]u16 = undefined;
+        const n = std.unicode.utf8ToUtf16Le(&wname, name) catch unreachable;
+        wname[n] = 0;
+        _ = win.SetEnvironmentVariableW(@ptrCast(&wname), null);
+    } else _ = posix_env.unsetenv(name);
+}
+
+test "splitCommandLine honours quotes and yields NUL-separated arguments" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const cmd = try splitCommandLine(arena.allocator(), "\"C:\\Program Files\\app.exe\"  --who=ada --path=\"a b\" last");
+    try std.testing.expectEqualStrings("C:\\Program Files\\app.exe\x00--who=ada\x00--path=a b\x00last\x00", cmd);
+    try std.testing.expectEqualStrings("ada", argValue(cmd, "who").?);
+    try std.testing.expectEqualStrings("a b", argValue(cmd, "path").?);
+}
+
+test "environment values round-trip through envValue (UTF-8, per-OS API)" {
+    setEnv("TEAK_ENV_TEST", "h\xc3\xa9llo");
+    defer unsetEnv("TEAK_ENV_TEST");
+    try std.testing.expectEqualStrings("h\xc3\xa9llo", envValue("TEAK_ENV_TEST").?);
+    unsetEnv("TEAK_ENV_TEST");
+    try std.testing.expect(envValue("TEAK_ENV_TEST") == null);
+}
+
+test "dropFile reports a dropped file with its bytes and MIME" {
+    const svc = try Service.create("test");
+    defer svc.destroy();
+    const dir = ".zig-cache/teak-native-fx-drop";
+    try Io.Dir.cwd().createDirPath(svc.io, dir);
+    try Io.Dir.cwd().writeFile(svc.io, .{ .sub_path = dir ++ "/note.txt", .data = "dropped!" });
+    svc.dropFile(dir ++ "/note.txt");
+    var r: EffectResult = undefined;
+    try waitOne(svc, &r);
+    try std.testing.expectEqual(teak.DropKind.file, r.dropped.kind);
+    try std.testing.expectEqualStrings("note.txt", r.dropped.name);
+    try std.testing.expectEqualStrings("text/plain", r.dropped.mime);
+    try std.testing.expectEqualStrings("dropped!", r.dropped.bytes);
+}
+
+test "downloadTo writes the picked path and openPath reads it back" {
+    const svc = try Service.create("test");
+    defer svc.destroy();
+    const dir = ".zig-cache/teak-native-fx-pick";
+    try Io.Dir.cwd().createDirPath(svc.io, dir);
+    var r: EffectResult = undefined;
+    svc.downloadTo(1, dir ++ "/picked.json", "{}");
+    try waitOne(svc, &r);
+    try std.testing.expect(r.downloaded.ok);
+    svc.openPath(2, dir ++ "/picked.json");
+    try waitOne(svc, &r);
+    try std.testing.expectEqualStrings("{}", r.file_opened.bytes);
+    svc.openPath(3, null);
+    try waitOne(svc, &r);
+    try std.testing.expectEqual(@as(u32, 3), r.file_cancelled.id);
+    svc.downloadCancelled(4);
+    try waitOne(svc, &r);
+    try std.testing.expect(!r.downloaded.ok);
 }
 
 test "download goes to TEAK_OUT and open_file reads TEAK_OPEN, once per request" {
     const svc = try Service.create("test");
     defer svc.destroy();
-    const dir = "/tmp/teak-native-fx-test";
+    const dir = ".zig-cache/teak-native-fx-test";
     setEnv("TEAK_OUT", dir);
     defer unsetEnv("TEAK_OUT");
 
@@ -1008,4 +1257,24 @@ test "open_file runs the native picker off-thread, reads the chosen file; save w
 
 test {
     _ = file_picker;
+}
+
+test "dropFile reports a PNG file as an image with its pixel size" {
+    const svc = try Service.create("test");
+    defer svc.destroy();
+    const dir = ".zig-cache/teak-native-fx-drop";
+    try Io.Dir.cwd().createDirPath(svc.io, dir);
+    var png: [33]u8 = @splat(0);
+    @memcpy(png[0..8], "\x89PNG\r\n\x1a\n");
+    std.mem.writeInt(u32, png[8..12], 13, .big);
+    @memcpy(png[12..16], "IHDR");
+    std.mem.writeInt(u32, png[16..20], 7, .big);
+    std.mem.writeInt(u32, png[20..24], 5, .big);
+    try Io.Dir.cwd().writeFile(svc.io, .{ .sub_path = dir ++ "/pic.png", .data = &png });
+    svc.dropFile(dir ++ "/pic.png");
+    var r: EffectResult = undefined;
+    try waitOne(svc, &r);
+    try std.testing.expectEqual(teak.DropKind.image, r.dropped.kind);
+    try std.testing.expectEqual(@as(u32, 7), r.dropped.width);
+    try std.testing.expectEqual(@as(u32, 5), r.dropped.height);
 }

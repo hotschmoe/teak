@@ -50,8 +50,12 @@ pub const ImeState = struct {
     cursor: usize = 0,
 };
 
+pub const CursorShape = @import("../core/cursor.zig").CursorShape;
+
 pub const A11yNode = @import("../input/a11y.zig").A11yNode;
 
+pub const A11yActionKind = @import("../input/a11y.zig").ActionKind;
+pub const A11yAction = @import("../input/a11y.zig").Action;
 const effects = @import("../core/effects.zig");
 pub const Effect = effects.Effect;
 pub const EffectResult = effects.EffectResult;
@@ -234,6 +238,14 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   devicePixelRatio backing store internally). Nothing in the
 ///   framework consumes it yet; see docs/features/host.md "DPI and
 ///   scaling" for the end-to-end render-at-scale follow-up.
+///   This is the one scale API: apps pass it to the Gpu as
+///   `InitOptions.scale`, and when it changes at runtime (Win32
+///   `WM_DPICHANGED`) the run loop forwards the new value to `Gpu.setScale`.
+/// - `setCursor(shape)` — **optional**: show the OS mouse cursor for a
+///   `CursorShape`. `teak.run` calls it only when the shape picked from
+///   the hovered cmd (or the App's `cursorFor` hook) changes. X11 maps to
+///   XCursor theme names (font cursors as fallback), Win32 to `IDC_*` via
+///   `WM_SETCURSOR`, web to CSS `cursor` through zunk.
 /// - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
 ///   surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
 ///   a pair** (a Host with neither answers every effect as unsupported;
@@ -294,6 +306,10 @@ pub fn validateHost(comptime T: type) void {
     // `submit` and `pollEffectResults` come as a pair.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
+        // Assistive-technology requests (web DOM mirror, UIA patterns): fills
+        // `out` and returns the count; called once per frame before input routing.
+        .{ .name = "pollA11yActions", .sig = "fn(*Host, []A11yAction) usize" },
+        .{ .name = "setCursor", .sig = "fn(*Host, CursorShape) void" },
         .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
         .{ .name = "pollEffectResults", .sig = "fn(*Host, []EffectResult) usize" },
     };

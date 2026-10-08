@@ -315,3 +315,161 @@ test "input method negotiation either completes or falls back cleanly" {
     // Either a full input method (xim + ic) or a clean fallback (neither).
     try std.testing.expectEqual(host.xim != null, host.xic != null);
 }
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
+test "every cursor shape can be set (themed or font fallback)" {
+    try requireDisplay();
+    var host = try Host.init("teak x11 test", 200, 100);
+    defer host.deinit();
+    _ = host.pollInputs();
+    for (std.enums.values(teak.CursorShape)) |shape| host.setCursor(shape);
+    // Cached on the second pass: no new server round trips needed.
+    for (std.enums.values(teak.CursorShape)) |shape| host.setCursor(shape);
+    _ = host.pollInputs();
+}
+
+test "TEAK_SCALE=2: window is 2x physical, input and size are logical" {
+    try requireDisplay();
+    _ = setenv("TEAK_SCALE", "2", 1);
+    defer _ = unsetenv("TEAK_SCALE");
+    var host = try Host.init("teak x11 test", 200, 100);
+    defer host.deinit();
+    try std.testing.expectEqual(@as(f32, 2), host.scaleFactor());
+    _ = host.pollInputs();
+    // Physical size as the server sees it.
+    try sh("xdotool getwindowgeometry {d} | grep -q 'Geometry: 400x200'", .{host.window});
+    // The Host still reports logical size ...
+    var st = host.pollInputs();
+    var spins: usize = 0;
+    while (st.width != 200 and spins < 200) : (spins += 1) st = host.pollInputs();
+    try std.testing.expectEqual(@as(u32, 200), st.width);
+    try std.testing.expectEqual(@as(u32, 100), st.height);
+    // ... and a pointer at device pixel (100, 60) is logical (50, 30).
+    try sh("xdotool mousemove --window {d} 100 60", .{host.window});
+    spins = 0;
+    while (spins < 200) : (spins += 1) {
+        st = host.pollInputs();
+        if (st.mouse_x != 0) break;
+        std.Io.sleep(std.Options.debug_io, .fromMilliseconds(2), .awake) catch {};
+    }
+    try std.testing.expectEqual(@as(f32, 50), st.mouse_x);
+    try std.testing.expectEqual(@as(f32, 30), st.mouse_y);
+}
+
+fn elapsedMs(host: *const Host, since: u64) u64 {
+    return host.nowMs() - since;
+}
+
+test "waitEvents: blocks for the timeout when idle, wakes early on input" {
+    try requireDisplay();
+    var host = try Host.init("teak x11 test", 200, 100);
+    defer host.deinit();
+    _ = host.pollInputs();
+    // Let the map / configure traffic drain so the wait really is idle.
+    var settle: usize = 0;
+    while (settle < 20) : (settle += 1) {
+        host.waitEvents(20);
+        _ = host.pollInputs();
+    }
+
+    const t0 = host.nowMs();
+    host.waitEvents(300);
+    const idle = elapsedMs(&host, t0);
+    try std.testing.expect(idle >= 250 and idle < 1000); // slept, did not spin out early
+
+    // A client moves the pointer over our window after 100 ms: wake well
+    // before the 3 s timeout.
+    try sh("(sleep 0.1; xdotool mousemove 50 50; xdotool mousemove 60 60) >/dev/null 2>&1 &", .{});
+    const t1 = host.nowMs();
+    host.waitEvents(3000);
+    try std.testing.expect(elapsedMs(&host, t1) < 2000);
+}
+
+// ── Idle CPU probe (opt-in: TEAK_IDLE_PROBE=1 zig build test-x11) ──────
+
+const ProbeGpu = struct {
+    renders: u32 = 0,
+    pub fn deinit(_: *ProbeGpu) void {}
+    pub fn resize(_: *ProbeGpu, _: u32, _: u32) void {}
+    pub fn uploadVertices(_: *ProbeGpu, _: []const teak.Vertex) void {}
+    pub fn uploadText(_: *ProbeGpu, _: []const teak.TextDraw) void {}
+    pub fn uploadImage(_: *ProbeGpu, _: []const u8, _: u32, _: u32) teak.TextureHandle {
+        return teak.TEXTURE_HANDLE_NONE;
+    }
+    pub fn releaseImage(_: *ProbeGpu, _: teak.TextureHandle) void {}
+    pub fn uploadImages(_: *ProbeGpu, _: []const teak.ImageDraw) void {}
+    pub fn renderFrame(self: *ProbeGpu, _: [4]f32) void {
+        self.renders += 1;
+    }
+};
+
+const ProbeApp = struct {
+    pub const Model = struct {};
+    pub const Msg = union(enum) { focus, noop };
+    pub fn update(_: *Model, _: Msg) void {}
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .direction = .vertical });
+        cb.pushScroll(.{ .id = 1, .flex = 1 });
+        for (0..500) |_| {
+            cb.pushGroup(.{ .direction = .horizontal, .gap = 8 });
+            cb.text("some description text");
+            cb.button(.noop, "Edit");
+            cb.popGroup();
+        }
+        cb.popScroll();
+        cb.textInput(.focus, "hello", 5);
+        cb.popGroup();
+    }
+    pub fn focusedMsg(_: *const Model) ?Msg {
+        return .focus; // a focused input: the blink case
+    }
+};
+
+fn processCpuMs() u64 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.PROCESS_CPUTIME_ID, &ts);
+    return @as(u64, @intCast(ts.sec)) * 1000 + @as(u64, @intCast(ts.nsec)) / 1_000_000;
+}
+
+/// Run the real loop on a live X11 Host for `secs`; returns CPU ms used.
+fn idleRun(secs: u64, idle_skip: bool) !struct { cpu_ms: u64, renders: u32 } {
+    var host = try Host.init("teak idle probe", 800, 600);
+    defer host.deinit();
+    var gpu: ProbeGpu = .{};
+    var rt = try teak.Runtime(ProbeApp, Host, ProbeGpu).init(std.testing.allocator, &host, &gpu, .{ .idle_skip = idle_skip });
+    defer rt.deinit();
+    try rt.frame();
+    try rt.frame();
+    const cpu0 = processCpuMs();
+    const t0 = host.nowMs();
+    while (host.nowMs() - t0 < secs * 1000) {
+        try rt.frame();
+        if (idle_skip) {
+            if (rt.quiet) host.waitEvents(rt.idleTimeoutMs());
+        } else {
+            // What vsync (FIFO present) does for the old always-render loop.
+            std.Io.sleep(std.Options.debug_io, .fromMilliseconds(16), .awake) catch {};
+        }
+    }
+    return .{ .cpu_ms = processCpuMs() - cpu0, .renders = gpu.renders };
+}
+
+test "idle CPU probe: an idle window with a blinking caret, idle_skip off vs on" {
+    if (getenv("TEAK_IDLE_PROBE") == null) return error.SkipZigTest;
+    try requireDisplay();
+    const secs = 10;
+    const off = try idleRun(secs, false);
+    const on = try idleRun(secs, true);
+    std.debug.print("\nidle {d}s, 1000-cmd view + focused input:\n  idle_skip=off: {d} ms CPU = {d:.2}% ({d} renders)\n  idle_skip=on : {d} ms CPU = {d:.2}% ({d} renders)\n", .{
+        secs,
+        off.cpu_ms,
+        @as(f64, @floatFromInt(off.cpu_ms)) / (secs * 10),
+        off.renders,
+        on.cpu_ms,
+        @as(f64, @floatFromInt(on.cpu_ms)) / (secs * 10),
+        on.renders,
+    });
+    try std.testing.expect(on.cpu_ms * 5 < off.cpu_ms);
+}

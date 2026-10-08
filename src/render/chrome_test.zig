@@ -160,7 +160,7 @@ test "button: disabled ignores hover/press colors and keeps its border" {
     var cb = Buf.init(std.testing.allocator);
     defer cb.deinit();
     cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.cmds.append(cb.backing, .{ .button = .{ .msg = .a, .label = "OK", .style = inkButton(), .disabled = true } }) catch unreachable;
+    cb.cmds.append(cb.backing, cb.box(.button, .{ .msg = .a, .label = "OK", .style = inkButton(), .disabled = true })) catch unreachable;
     cb.popGroup();
     var f: Frame = .{};
     defer f.deinit();
@@ -189,7 +189,7 @@ test "text_input underline: a 1px bottom rule, 2px in focus_border when focused,
     // Focused, blink phase off (frame 30): only the thicker focus rule.
     var focused: Frame = .{};
     defer focused.deinit();
-    focused.render(&cb, 200, 100, .{ .focus_index = 1, .frame_counter = 30 });
+    focused.render(&cb, 200, 100, .{ .focus_index = 1, .blink_on = false });
     try std.testing.expectEqual(@as(usize, 1), focused.quadCount());
     try expectRect(.{ .x = 0, .y = 26, .w = 200, .h = 2 }, focused.quad(0));
     try std.testing.expectEqual(red, focused.quadColor(0));
@@ -197,7 +197,7 @@ test "text_input underline: a 1px bottom rule, 2px in focus_border when focused,
     // Blink on: the caret is drawn too, inset 2px from the left edge.
     var blink: Frame = .{};
     defer blink.deinit();
-    blink.render(&cb, 200, 100, .{ .focus_index = 1, .frame_counter = 0 });
+    blink.render(&cb, 200, 100, .{ .focus_index = 1, .blink_on = true });
     try std.testing.expectEqual(@as(usize, 2), blink.quadCount());
     try std.testing.expectEqual(@as(f32, 2), blink.quad(1).x);
 }
@@ -213,7 +213,7 @@ test "text_input boxed: border_width and selection_bg are honored" {
 
     var f: Frame = .{};
     defer f.deinit();
-    f.render(&cb, 200, 100, .{ .focus_index = 1, .frame_counter = 30 });
+    f.render(&cb, 200, 100, .{ .focus_index = 1, .blink_on = false });
     // border rect, bg inset by 1, selection (cursor blinked off).
     try std.testing.expectEqual(@as(usize, 3), f.quadCount());
     try expectRect(.{ .x = 1, .y = 1, .w = 198, .h = 26 }, f.quad(1));

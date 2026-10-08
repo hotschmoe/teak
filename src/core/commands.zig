@@ -162,7 +162,7 @@ pub const PaletteViewOpts = struct {
 /// palette option index), composed from existing primitives (zero new Cmd
 /// variants). All state is the `Model`.
 ///
-/// Wiring (docs/cookbook.md recipe 16): the App keeps a `palette: Palette.Model`,
+/// Wiring (docs/cookbook.md recipe 21): the App keeps a `palette: Palette.Model`,
 /// routes chars with `charMsg` and keys with `keyMsg` while `palette.open`,
 /// renders with `viewPalette`, and on `.select(i)` closes the palette and runs
 /// `list.paletteCommand(i).msg`.

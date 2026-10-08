@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [master]
+    paths-ignore: ['docs/**', '**/*.md', 'llms.txt', 'llms-full.txt']
   pull_request:
+    paths-ignore: ['docs/**', '**/*.md', 'llms.txt', 'llms-full.txt']
   workflow_dispatch:
 
 concurrency:
@@ -52,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [chrome, counter_greeter, effects, fonts, scene3d, todo, tree, viewport]
+        example: [chrome, counter_greeter, effects, fonts, gallery, notes, scene3d, todo, tree, viewport]
     defaults:
       run:
         working-directory: teak/examples/${{ matrix.example }}
@@ -128,6 +130,55 @@ jobs:
       - name: test-x11
         run: xvfb-run -a zig build test-x11 --summary all
 
+  wayland-host:
+    name: Wayland host (live tests on weston, real surface on lavapipe)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: teak
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - name: Install weston, Xvfb, xdotool, lavapipe, libwayland / xkbcommon
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends weston xvfb xdotool xclip \
+            libwayland-client0 libwayland-cursor0 libxkbcommon0 libx11-6 \
+            mesa-vulkan-drivers libvulkan1
+          ICD=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
+          echo "VK_ICD_FILENAMES=$ICD" >> "$GITHUB_ENV"
+      # weston's x11 backend on Xvfb gives a compositor WITH a seat, so
+      # xdotool drives real keyboard / pointer / clipboard-focus events
+      # (weston's headless backend has no wl_seat).
+      - name: Start Xvfb + weston
+        working-directory: .
+        run: |
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg"
+          mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          Xvfb :99 -screen 0 1280x800x24 &
+          sleep 2
+          DISPLAY=:99 weston --backend=x11-backend.so --use-pixman --socket=wl-ci --no-config --width=1000 --height=700 > weston.log 2>&1 &
+          sleep 3
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          echo "WAYLAND_DISPLAY=wl-ci" >> "$GITHUB_ENV"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+      - name: test-wayland
+        run: zig build test-wayland --summary all
+      - name: Real GPU surface on Wayland (chrome ui stays up for 20 s)
+        working-directory: teak/examples/chrome
+        env:
+          TEAK_BACKEND: wayland
+        run: |
+          zig build
+          rc=0
+          timeout 20 ./zig-out/bin/chrome-ui || rc=$?
+          test $rc -eq 124
+
   web-smoke:
     name: Web smoke (${{ matrix.example }}, headless Chromium + SwiftShader WebGPU)
     runs-on: ubuntu-latest
@@ -163,6 +214,111 @@ jobs:
         with:
           name: web-${{ matrix.example }}
           path: teak/web-${{ matrix.example }}.png
+
+  # Visual regression (tools/vreg.zig): every example's scripted states vs
+  # test/golden/. Goldens are produced on a Mali box; lavapipe differs
+  # slightly in AA, which the tolerance in tools/vreg.zig absorbs.
+  vreg:
+    name: Visual regression (native, lavapipe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: teak
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - name: Install lavapipe
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools
+          echo "VK_ICD_FILENAMES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)" >> "$GITHUB_ENV"
+      - name: Compare shots with goldens
+        run: zig build vreg
+      - name: Raw difference vs goldens (zero tolerance; informational)
+        if: always()
+        continue-on-error: true
+        run: zig build vreg -- --tol 0 --budget 4294967295 --out zig-out/vreg-raw
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vreg-native
+          path: |
+            teak/zig-out/vreg/*.png
+            teak/zig-out/vreg-raw/*.png
+          if-no-files-found: ignore
+
+  vreg-web:
+    name: Visual regression (web, headless Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: teak/tools/package-lock.json
+      - name: Install puppeteer-core
+        working-directory: teak/tools
+        run: npm ci --no-audit --no-fund
+      - name: Compare web builds with goldens
+        working-directory: teak
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: zig build vreg -- --web
+      - name: Raw difference vs goldens (zero tolerance; informational)
+        if: always()
+        continue-on-error: true
+        working-directory: teak
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: zig build vreg -- --web --tol 0 --budget 4294967295 --out zig-out/vreg-raw
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vreg-web
+          path: |
+            teak/zig-out/vreg/*.png
+            teak/zig-out/vreg-raw/*.png
+          if-no-files-found: ignore
+
+  a11y-probe:
+    name: A11y probe (todo via the DOM mirror, headless Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: teak }
+      - uses: actions/checkout@v4
+        with: { repository: hotschmoe/zunk, ref: "${{ env.ZUNK_REF }}", path: zunk }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: teak/tools/package-lock.json
+      - name: Build web dist
+        working-directory: teak/examples/todo
+        run: zig build web
+      - name: Install puppeteer-core
+        working-directory: teak/tools
+        run: npm ci --no-audit --no-fund
+      - name: Read the browser accessibility tree and drive the app through it
+        working-directory: teak
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node tools/a11yprobe.mjs todo examples/todo/dist
 
   windows:
     name: Windows ${{ matrix.arch }} (native)
@@ -214,9 +370,33 @@ jobs:
         run: |
           zig build -Dtarget=${{ matrix.cross }} --summary all
           zig build -Dtarget=x86_64-linux-gnu --summary all
+      # Headless wgpu on the runner's software adapter (DX12 WARP): proves
+      # the Windows wgpu-native + stb text path renders real pixels. The
+      # PNGs are uploaded for a human to look at. `zig build shot` runs the
+      # exe from the zig cache, where Windows cannot find wgpu_native.dll;
+      # the build installs the DLL to zig-out\bin, so put that on PATH.
+      - name: Headless screenshots (WARP software adapter)
+        env:
+          TEAK_GPU_FALLBACK: "1"
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\shots" | Out-Null
+          foreach ($ex in "chrome", "scene3d") {
+            Push-Location "examples/$ex"
+            $env:PATH = "$PWD\zig-out\bin;$env:PATH"
+            zig build shot -- "$env:GITHUB_WORKSPACE\shots\win-$ex-${{ matrix.arch }}.png"
+            if ($LASTEXITCODE -ne 0) { throw "${ex}: headless shot failed" }
+            Pop-Location
+          }
+          Get-ChildItem "$env:GITHUB_WORKSPACE\shots"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-shots-${{ matrix.arch }}
+          path: shots/*.png
+          if-no-files-found: warn
 
   macos:
-    name: macOS (library + web; no native backend yet)
+    name: macOS (library, web, Cocoa + Metal native)
     runs-on: macos-latest
     defaults:
       run:
@@ -235,3 +415,32 @@ jobs:
         run: |
           zig build test --summary all
           zig build web
+      # Native backend: build the Cocoa/Metal ui exe, take an offscreen Metal
+      # screenshot (no window needed), then launch the real window for a few
+      # seconds and screencapture it. Both PNGs are uploaded: LOOK at them.
+      - name: Headless Metal screenshot (chrome)
+        working-directory: teak/examples/chrome
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/shots"
+          zig build shot -- "$GITHUB_WORKSPACE/shots/chrome-mac-offscreen.png"
+      - name: Build the Cocoa ui exe
+        working-directory: teak/examples/chrome
+        run: zig build install -Doptimize=ReleaseSafe && ls -l zig-out/bin
+      - name: Launch the window and capture it
+        working-directory: teak/examples/chrome
+        continue-on-error: true
+        run: |
+          TEAK_COCOA_DEBUG=1 ./zig-out/bin/chrome-ui > "$GITHUB_WORKSPACE/shots/ui.log" 2>&1 &
+          pid=$!
+          sleep 4
+          screencapture -x "$GITHUB_WORKSPACE/shots/chrome-mac-window-4s.png" || true
+          sleep 8
+          screencapture -x "$GITHUB_WORKSPACE/shots/chrome-mac-window.png" || true
+          kill -0 $pid 2>/dev/null && echo "ui still running after 12 s: OK" || { echo "ui exited early"; cat "$GITHUB_WORKSPACE/shots/ui.log"; exit 1; }
+          kill $pid || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-shots
+          path: shots/*
+          if-no-files-found: warn
