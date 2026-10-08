@@ -120,6 +120,9 @@ examples/scene3d/          depth-tested 3D scene: meshes, camera, declarative re
 examples/kerf_viewer/      Kerf mesh.json 3D viewer: Orbit camera, CPU pick, parts panel (scene3d path)
 examples/effects/          declarative effects: HTTP, files, storage, clock, clipboard, paste/drop
 examples/fonts/            IBM Plex Mono at three weights + tracking (web .fonts, native registerFont)
+examples/tables/            DataTable / VarList / TreeList / Scroller at 100k rows
+examples/gallery/           every widget in one place
+examples/notes/             multi-line TextArea editor
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)

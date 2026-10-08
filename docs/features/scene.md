@@ -1,6 +1,6 @@
 # `teak.scene` — Viewport3D and 2.5D layers (design)
 
-**Status**: design, not implemented. Builds on the shipped `scene3d` Cmd
+**Status**: partly shipped (S1/S2 camera, pick, section math; S3 View payload; S4 instanced items with tint / highlight / flat; the rest is design). Builds on the shipped `scene3d` Cmd
 ([scene3d.md](scene3d.md)); nothing here changes the existing contract, it
 extends it. Consumers: Kerf's teak app (CAD model view, section cuts, picking),
 diagram / sheet previews (M2).
@@ -180,7 +180,7 @@ pub const ItemFlags = packed struct(u8) {
     _pad: u3 = 0,
 };
 
-/// One placed instance. 64 B on the GPU (3x vec4 transform rows, vec4 tint,
+/// One placed instance. 80 B on the GPU (3x vec4 transform rows, vec4 tint,
 /// u32 id, u32 flags, 2 spare).
 pub const Item = struct {
     mesh: u32,                              // resource key (MeshResource.key), like ImageCmd.handle
