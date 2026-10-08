@@ -34,12 +34,35 @@ pub fn signedDistance(plane: Plane, p: Vec3) f32 {
 /// by the triangle winding (they run kept->over at the up-crossing edge), so
 /// a closed outward-wound mesh chains into consistently oriented loops.
 pub fn outline(gpa: std.mem.Allocator, mesh: MeshData, transform: Affine, plane: Plane, out: *std.ArrayList(Segment)) std.mem.Allocator.Error!void {
-    const n_tri = mesh.indices.len / 3;
+    const Src = struct {
+        mesh: MeshData,
+        fn vertex(self: @This(), i: u32) Vec3 {
+            return self.mesh.vertices[i].pos;
+        }
+    };
+    return outlineFrom(gpa, Src{ .mesh = mesh }, mesh.indices, transform, plane, out);
+}
+
+/// `outline` over bare positions (`positions[i]` for index `i`): what a Gpu
+/// keeps of an uploaded mesh to compute cut outlines without the full
+/// vertex data.
+pub fn outlinePositions(gpa: std.mem.Allocator, positions: []const Vec3, indices: []const u32, transform: Affine, plane: Plane, out: *std.ArrayList(Segment)) std.mem.Allocator.Error!void {
+    const Src = struct {
+        pos: []const Vec3,
+        fn vertex(self: @This(), i: u32) Vec3 {
+            return self.pos[i];
+        }
+    };
+    return outlineFrom(gpa, Src{ .pos = positions }, indices, transform, plane, out);
+}
+
+fn outlineFrom(gpa: std.mem.Allocator, src: anytype, indices: []const u32, transform: Affine, plane: Plane, out: *std.ArrayList(Segment)) std.mem.Allocator.Error!void {
+    const n_tri = indices.len / 3;
     for (0..n_tri) |t| {
         var p: [3]Vec3 = undefined;
         var d: [3]f32 = undefined;
         for (0..3) |k| {
-            p[k] = mat.affinePoint(transform, mesh.vertices[mesh.indices[t * 3 + k]].pos);
+            p[k] = mat.affinePoint(transform, src.vertex(indices[t * 3 + k]));
             d[k] = signedDistance(plane, p[k]);
         }
         const over = [3]bool{ d[0] > 0, d[1] > 0, d[2] > 0 };
@@ -308,6 +331,20 @@ test "plane through vertices, a face, or missing the mesh" {
     const loops = try chain(gpa, segs.items);
     defer loops.deinit(gpa);
     try testing.expect(loops.allClosed());
+}
+
+test "outlinePositions matches outline" {
+    const gpa = testing.allocator;
+    var pos: [8]Vec3 = undefined;
+    for (cube_verts, 0..) |v, i| pos[i] = v.pos;
+    var a: std.ArrayList(Segment) = .empty;
+    defer a.deinit(gpa);
+    var b: std.ArrayList(Segment) = .empty;
+    defer b.deinit(gpa);
+    try outline(gpa, cube, mat.identity_affine, .{ 0, 0, 1, -0.5 }, &a);
+    try outlinePositions(gpa, &pos, &cube_idx, mat.identity_affine, .{ 0, 0, 1, -0.5 }, &b);
+    try testing.expectEqual(a.items.len, b.items.len);
+    for (a.items, b.items) |x, y| try testing.expect(std.meta.eql(x, y));
 }
 
 test "transform is applied" {

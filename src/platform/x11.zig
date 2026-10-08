@@ -171,6 +171,20 @@ const XSelectionClearEvent = extern struct {
     time: c_ulong,
 };
 
+const XExposeEvent = extern struct {
+    kind: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: ?*Display,
+    window: Window,
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+    /// Number of Expose events still to come in this batch; act on 0.
+    count: c_int,
+};
+
 const XPropertyEvent = extern struct {
     kind: c_int,
     serial: c_ulong,
@@ -192,6 +206,7 @@ pub const XEvent = extern union {
     xbutton: XButtonEvent,
     xmotion: XMotionEvent,
     xconfigure: XConfigureEvent,
+    xexpose: XExposeEvent,
     xclient: XClientMessageEvent,
     xselectionrequest: XSelectionRequestEvent,
     xselection: XSelectionEvent,
@@ -208,6 +223,7 @@ const ButtonRelease: c_int = 5;
 const MotionNotify: c_int = 6;
 const FocusIn: c_int = 9;
 const FocusOut: c_int = 10;
+const Expose: c_int = 12;
 const ConfigureNotify: c_int = 22;
 const PropertyNotify: c_int = 28;
 const SelectionClear: c_int = 29;
@@ -281,6 +297,8 @@ pub const Xlib = struct {
     XMapWindow: *const fn (*Display, Window) callconv(.c) c_int,
     XNextEvent: *const fn (*Display, *XEvent) callconv(.c) c_int,
     XPending: *const fn (*Display) callconv(.c) c_int,
+    /// The connection's file descriptor (for `waitEvents`).
+    XConnectionNumber: *const fn (*Display) callconv(.c) c_int,
     XLookupString: *const fn (*XKeyEvent, [*]u8, c_int, *KeySym, ?*anyopaque) callconv(.c) c_int,
     XInternAtom: *const fn (*Display, [*:0]const u8, c_int) callconv(.c) Atom,
     XSetWMProtocols: *const fn (*Display, Window, *Atom, c_int) callconv(.c) c_int,
@@ -727,6 +745,11 @@ pub const Host = struct {
                             self.resized_pending = true;
                         }
                     }
+                },
+                // Uncovered / first-mapped area: the idle loop skips frames, so an
+                // expose must force the next one (the last frame is redrawn).
+                Expose => if (ev.xexpose.count == 0) {
+                    self.resized_pending = true;
                 },
                 ClientMessage => self.handleClientMessage(&ev.xclient),
                 SelectionNotify => self.onSelectionNotify(&ev.xselection),
@@ -1349,6 +1372,20 @@ pub const Host = struct {
 
     pub fn pollFileDialogResult(_: *Host, _: u32) FileDialogPoll {
         return .{ .pending = {} };
+    }
+
+    /// Event-driven idle: block until the X connection has something to read
+    /// (input, expose/resize, clipboard traffic, IME) or `timeout_ms` passes.
+    /// Returns immediately when events are already buffered in Xlib.
+    pub fn waitEvents(self: *Host, timeout_ms: u32) void {
+        if (self.x.XPending(self.display) > 0) return;
+        _ = self.x.XFlush(self.display);
+        var fds = [_]std.posix.pollfd{.{
+            .fd = self.x.XConnectionNumber(self.display),
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        _ = std.posix.poll(&fds, @intCast(@min(timeout_ms, std.math.maxInt(i32)))) catch {};
     }
 
     pub fn nowMs(_: *const Host) u64 {

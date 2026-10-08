@@ -1041,3 +1041,25 @@ Short recipes; all are in `examples/gallery`.
 
 **Common mistake:** writing `Msg.toggle_wifi` for a payload-free variant of a union that also has payload variants:
 that is the tag enum, not a `Msg` (`runtime coercion ... to union`). Write `Msg{ .toggle_wifi = {} }`.
+## 15. A 100k-row table
+
+**Goal:** a sortable, resizable, selectable table that scrolls smoothly at 100 000 rows.
+Full wiring in `examples/tables/src/app.zig`; background in `docs/features/tables-at-scale.md`.
+
+```zig
+const Table = teak.DataTable(.{ .max_rows = 131_072, .max_cols = 8 });
+const Rows = struct {                       // the app's data, passed per call: nothing is copied into the Model
+    items: []const Item,
+    pub fn cell(self: Rows, arena: std.mem.Allocator, col: u8, row: u32) []const u8 { ... }
+    pub fn compare(self: Rows, col: u8, a: u32, b: u32) std.math.Order { ... }
+};
+// Model:   table: *Table.Model      (allocate it: ~1 MB of permutation arrays)   init: table.setRows(n); table.setColumns(&cols)
+// update:  .table => |t| Table.update(m.table, t, Rows{ .items = m.items })
+// hooks:   scrollMsg/scrollLayoutMsg (wheel + viewport), canvasMsg (column grips), modsMsg (shift/ctrl clicks),
+//          keySpecialMsg (Table.keyMsg), animationMsg + subscribe (smooth scrolling)
+// view:    Table.view(m.table, cb, &cols, Rows{ ... }, msgs, .{ .id = TABLE_ID, .grip_base = GRIP_BASE });
+```
+
+**Common mistake:** keeping the rows in the Model and copying them on sort. `DataTable` sorts an *index permutation* (`order`); the
+selection is keyed by the *data* row so it survives sorting. For rows of different heights use `VarList` (heights are measured by layout and fed back
+through `virtualRowsMsg`); for hierarchies `TreeList` (preorder + depth, no pointers).
