@@ -33,6 +33,7 @@ A Host type must expose these declarations:
 | `nowMs` | `fn(*const Host) u64` | Monotonic millisecond timestamp on the host's clock. Used by `Sub.at(deadline_ms, msg)` and anything else needing a host-side wall clock without violating HARDLINE §3's "no wall-clock in `view`". |
 | `submit` + `pollEffectResults` *(optional pair)* | `fn(*Host, Effect) EffectSubmit` / `fn(*Host, []EffectResult) usize` | Declarative effects ([effects.md](effects.md), HARDLINE hatch 7): `submit` starts one effect (slices valid only during the call), `pollEffectResults` fills `buf` with finished results and unsolicited drops / pastes (slices valid until the next `pollInputs`). Declare both or neither; a Host without them answers every effect as unsupported. |
 | `registerFont` *(X11, Win32; not in `validateHost`)* | `fn(*Host, FontFamily, FontWeight, []const u8) !void` | Register a TTF (typically `@embedFile`) as the face for a family and weight, shared with the Gpu rasterizer. Win32 accepts and ignores it. See [text.md](text.md#custom-fonts-ibm-plex-mono-and-friends). |
+| `setCursor` *(optional)* | `fn(*Host, CursorShape) void` | Show an OS mouse cursor. `teak.run` calls it only when the shape changes; the shape comes from the hovered cmd (button/checkbox/radio/slider pointer, text_input ibeam, canvas its `cursor`, else arrow) and the App's optional `cursorFor(model, HoverKind) ?CursorShape`. X11: libXcursor theme names (dlopened) with `cursorfont` fallback; Win32: `IDC_*` re-applied in `WM_SETCURSOR`; web: CSS `cursor` via zunk `app.setCursor`. Win32 has no grab cursor (hand / four-way arrow). Disabled widgets do not hit-test, so they show the arrow. |
 | `scaleFactor` *(optional)* | `fn(*const Host) f32` | Physical device pixels per logical UI unit at the window's current DPI (1.0 = no scaling). **Optional** — `validateHost` checks it for callability only when present, so Hosts (and `run.zig`'s test stubs) that predate it still validate. Nothing in the framework consumes it yet; see [DPI and scaling](#dpi-and-scaling). |
 
 `validateHost` comptime-asserts every non-`init` **required** decl above, and checks the optional `scaleFactor` only when a Host declares it. The clipboard / IME / a11y / dialog / secondary-window / `nowMs` decls landed during the `functional_gaps_yolo` push as HARDLINE §4(d) surface extensions. Compile-error format:
@@ -101,15 +102,14 @@ happen at the *physical* framebuffer resolution to stay crisp.
 
 Today the three backends sit in three different places on that spectrum.
 `scaleFactor()` reports each backend's true factor so a future
-orchestrator can close the loop; **no framework code consumes it yet, so
-current rendering behavior is unchanged.**
+orchestrator can close the loop; **`teak.run` now feeds it to the Gpu (`Gpu.setScale`, optional) before each resize; X11 is the first host with a value above 1.**
 
 ### Per-host truth table
 
 | Host | Input + `width`/`height` units | GPU surface configured at | `scaleFactor()` today | Result at scale ≠ 1 |
 |---|---|---|---|---|
 | **Win32** | Virtualized logical px (process is DPI-*unaware*) | Same virtualized px (DXGI swap-chain = client rect) | `GetDpiForWindow/96` → **1.0** while unaware | **Blurry** — Windows renders at logical res then bitmap-stretches the whole window to physical. Self-consistent coords, upscaled output. |
-| **X11** | Device (physical) px — no automatic scaling | Same physical px (Vulkan swap-chain) | `Xft.dpi/96` (e.g. 2.0 on a 192-DPI desktop) | **Crisp but undersized** — fonts rasterize at logical `size_px`, so on a 200 % desktop the UI is ~half the intended physical size. No blur. |
+| **X11** | **Logical** px (the Host divides device px by the scale; the X window is created at `logical * scale`) | Physical px (`logical * scale`; `Gpu.setScale`) | `TEAK_SCALE`, else `GDK_SCALE`, else `Xft.dpi/96` (clamped 0.5-8) | **Crisp and correctly sized** — glyph textures are rasterized at `size_px * scale` and snapped in device pixels; quads/images are drawn in logical units over the physical swap-chain. Fractional scales (1.5) keep text crisp but quad edges may land between device pixels. |
 | **wasm/zunk** | CSS px (zunk v0.5.2+) | zunk owns the canvas; backing store sized at CSS×`devicePixelRatio` internally | **1.0** (teak never sees physical px) | **Crisp and correctly sized** — zunk rasterizes glyphs at DPR into its backing store; teak works purely in CSS px. |
 
 The web path is the only one crisp *and* correctly sized today, and it is
@@ -122,7 +122,9 @@ extent and UVs) assumes 1 layout unit = 1 texture texel = 1 framebuffer
 pixel — i.e. **scale == 1** — which is why the native paths cannot yet
 render at scale without the follow-up below.
 
-### Follow-up: render-at-scale (not yet landed)
+### Render-at-scale (landed for X11; Win32 awareness still pending)
+
+The design below is implemented for X11: `run.zig` calls `gpu.setScale(host.scaleFactor())` before `resize`; `wgpu_core` keeps `width`/`height`, the screen-size uniform and all vertices logical while the surface, MSAA target, offscreen frame and glyph textures are `scale` times larger (3D scenes already took a scale). Headless screenshots honor `TEAK_SCALE` (`teak.headless.shot`, PNG is `width*scale`). Win32 still needs step 1 (DPI awareness) before it reports a factor above 1.
 
 The coherent end-to-end fix spans the orchestrator (`run.zig`) and the
 render pass (framework core), which are out of scope for the platform/GPU

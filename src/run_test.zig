@@ -67,6 +67,9 @@ pub const ScriptHost = struct {
     height: u32 = 300,
     clock_ms: u64 = 0,
     set_title_calls: u32 = 0,
+    cursor_calls: u32 = 0,
+    cursor: host_iface.CursorShape = .arrow,
+    scale: f32 = 1,
     ime_buf: [8]u8 = undefined,
     ime_len: usize = 0,
     ime_on: bool = false,
@@ -196,6 +199,13 @@ pub const ScriptHost = struct {
         return in;
     }
     pub fn closeSecondaryWindow(_: *ScriptHost, _: u32) void {}
+    pub fn setCursor(self: *ScriptHost, shape: host_iface.CursorShape) void {
+        self.cursor_calls += 1;
+        self.cursor = shape;
+    }
+    pub fn scaleFactor(self: *const ScriptHost) f32 {
+        return self.scale;
+    }
     pub fn setTitle(self: *ScriptHost, _: []const u8) void {
         self.set_title_calls += 1;
     }
@@ -227,6 +237,10 @@ pub const StubGpu = struct {
     last_image_handle: u32 = 0,
     last_split: ?render.OverlaySplit = null,
 
+    scale: f32 = 1,
+    pub fn setScale(self: *StubGpu, s: f32) void {
+        self.scale = s;
+    }
     pub fn deinit(_: *StubGpu) void {}
     pub fn resize(self: *StubGpu, _: u32, _: u32) void {
         self.resize_calls += 1;
@@ -1483,4 +1497,50 @@ test "run: windowMsg reports the window size on the first frame" {
     try std.testing.expectEqual(@as(f32, 400), t.rt.model.w);
     try std.testing.expectEqual(@as(f32, 300), t.rt.model.h);
     try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls); // only the first frame resized
+}
+
+// ── Cursor shapes + display scale ───────────────────────────────────
+
+const CursorApp = struct {
+    pub const Model = struct { override: bool = false };
+    pub const Msg = union(enum) { click, edit };
+    pub fn update(_: *Model, _: Msg) void {}
+    pub fn view(_: *const Model, cb: anytype) void {
+        cb.pushGroup(.{ .padding = 0, .gap = 0 });
+        cb.button(.click, "X");
+        cb.buttonDisabled(.click, "off");
+        cb.popGroup();
+    }
+    pub fn cursorFor(m: *const Model, kind: @import("core/cursor.zig").HoverKind) ?host_iface.CursorShape {
+        return if (m.override and kind == .none) .crosshair else null;
+    }
+};
+
+test "run: the cursor follows the hovered widget and setCursor fires only on change" {
+    const t = try play(CursorApp, &.{
+        .{}, // arrow (nothing hovered; matches the initial shape: no call)
+        .{ .x = 5, .y = 5 }, // over the button -> pointer
+        .{ .x = 6, .y = 6 }, // still the button: no new call
+        .{ .x = 380, .y = 280 }, // empty space -> arrow
+    });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(u32, 2), t.host.cursor_calls);
+    try std.testing.expectEqual(host_iface.CursorShape.arrow, t.host.cursor);
+}
+
+test "run: cursorFor can override the default and sees the hovered kind" {
+    const p = try begin(CursorApp, .{ .script = &.{ .{}, .{}, .{ .x = 5, .y = 5 } } }, .{});
+    defer p.destroy();
+    p.rt.model.override = true;
+    try p.rt.frame(); // empty space + override -> crosshair
+    try std.testing.expectEqual(host_iface.CursorShape.crosshair, p.host.cursor);
+    try p.rt.frame();
+    try p.rt.frame(); // over the button: kind = button, hook declines -> pointer
+    try std.testing.expectEqual(host_iface.CursorShape.pointer, p.host.cursor);
+}
+
+test "run: the Gpu is told the display scale before its first resize" {
+    const t = try playWith(ClickApp, .{ .script = &.{ .{}, .{} }, .scale = 2 }, .{});
+    defer t.destroy();
+    try std.testing.expectEqual(@as(f32, 2), t.gpu.scale);
 }

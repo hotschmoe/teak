@@ -286,3 +286,45 @@ test "input method negotiation either completes or falls back cleanly" {
     // Either a full input method (xim + ic) or a clean fallback (neither).
     try std.testing.expectEqual(host.xim != null, host.xic != null);
 }
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
+test "every cursor shape can be set (themed or font fallback)" {
+    try requireDisplay();
+    var host = try Host.init("teak x11 test", 200, 100);
+    defer host.deinit();
+    _ = host.pollInputs();
+    for (std.enums.values(teak.CursorShape)) |shape| host.setCursor(shape);
+    // Cached on the second pass: no new server round trips needed.
+    for (std.enums.values(teak.CursorShape)) |shape| host.setCursor(shape);
+    _ = host.pollInputs();
+}
+
+test "TEAK_SCALE=2: window is 2x physical, input and size are logical" {
+    try requireDisplay();
+    _ = setenv("TEAK_SCALE", "2", 1);
+    defer _ = unsetenv("TEAK_SCALE");
+    var host = try Host.init("teak x11 test", 200, 100);
+    defer host.deinit();
+    try std.testing.expectEqual(@as(f32, 2), host.scaleFactor());
+    _ = host.pollInputs();
+    // Physical size as the server sees it.
+    try sh("xdotool getwindowgeometry {d} | grep -q 'Geometry: 400x200'", .{host.window});
+    // The Host still reports logical size ...
+    var st = host.pollInputs();
+    var spins: usize = 0;
+    while (st.width != 200 and spins < 200) : (spins += 1) st = host.pollInputs();
+    try std.testing.expectEqual(@as(u32, 200), st.width);
+    try std.testing.expectEqual(@as(u32, 100), st.height);
+    // ... and a pointer at device pixel (100, 60) is logical (50, 30).
+    try sh("xdotool mousemove --window {d} 100 60", .{host.window});
+    spins = 0;
+    while (spins < 200) : (spins += 1) {
+        st = host.pollInputs();
+        if (st.mouse_x != 0) break;
+        std.Io.sleep(std.Options.debug_io, .fromMilliseconds(2), .awake) catch {};
+    }
+    try std.testing.expectEqual(@as(f32, 50), st.mouse_x);
+    try std.testing.expectEqual(@as(f32, 30), st.mouse_y);
+}

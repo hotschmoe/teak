@@ -2,6 +2,7 @@ const std = @import("std");
 const text = @import("text.zig");
 const theme_mod = @import("theme.zig");
 const scene = @import("scene.zig");
+const CursorShape = @import("cursor.zig").CursorShape;
 
 pub const FontSpec = text.FontSpec;
 const DEFAULT_FONT = text.DEFAULT_FONT;
@@ -575,6 +576,9 @@ pub fn CanvasCmd(comptime Msg: type) type {
         /// Identifies the canvas in `CanvasEvent.id`. Non-zero and distinct
         /// per interactive canvas.
         id: u32 = 0,
+        /// Cursor shown while the pointer is over this (interactive) canvas;
+        /// null keeps the arrow. The App's `cursorFor` hook still wins.
+        cursor: ?CursorShape = null,
     };
 }
 
