@@ -150,7 +150,7 @@ Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 `cmd component component_list transient text sub theme text_field text_area text_event numeric_field
 `cmd component component_list transient text sub anim theme text_field numeric_field
-dropdown debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
+dropdown data_table var_list tree_list debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
 vertex host input_queue gpu runtime`.
 
 ### Version (`teak.version`)
@@ -184,7 +184,7 @@ Emitters (all `catch unreachable` on arena OOM):
 - text: `text(s)`, `heading(s)`, `textMuted(s)`, `textDanger(s)`, `textMono(s)`,
   `textStyled(s, font, color)`, `mixedText(parts: []const MixedPart)`
 - `divider()`, `dividerStyled(DividerStyle)`
-- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`
+- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`, `buttonStyledUnderlined(msg, label, ButtonStyle, at: ?usize)` (one underlined ASCII char: a mnemonic hint; `ButtonCmd.underline: ?u16`)
 - `textInput(focus_msg, content, cursor)`, `textInputStyled(...)`, `textInputDisabled(...)`,
   `textInputSelected(focus_msg, content, cursor, ?selection_anchor, TextInputStyle)`
 - `checkbox(msg, checked, label)`, `radio(msg, selected, label)`, `slider(grab_msg, value)`
@@ -229,7 +229,7 @@ ButtonStyle = struct { bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg: [4]
                        press_offset_y: f32 = 0, label_align: TextAlign = .start,
                        h_padding: f32 = 8, min_width: f32 = 60, height: f32 = 36, flex: f32 = 0 }
                        // corners are square (no corner_radius: the quad renderer has no rounding)
-ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false }
+ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false, underline: ?u16 = null }
 TextCmd = struct { content: []const u8, font: FontSpec, color: [4]f32 }
 TextInputStyle = struct { bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg,
                        disabled_border, selection_bg: [4]f32, variant: InputVariant = .boxed,
@@ -368,14 +368,33 @@ Theme = struct { palette, text_color, heading_color, muted_color, danger_color, 
                  typography, button, text_input, checkbox, radio, slider, divider, card: GroupStyle,
                  field: TextInputStyle (underline);   // all default to their struct defaults
                  // a fully custom Theme is a plain literal; see docs/features/ergonomic-helpers.md
+                 tokens: ThemeTokens, button_primary: ButtonStyle (accent call-to-action);
                  pub const dark_default: Theme; pub const light_default: Theme;
-                 pub fn fromPalette(p: Palette) Theme }
+                 pub const modern_light: Theme; pub const modern_dark: Theme;   // rounded, soft shadows, indigo accent
+                 pub fn fromPalette(p: Palette) Theme;  pub fn fromPaletteTokens(p: Palette, t: ThemeTokens) Theme }
+ThemeTokens = struct { radius_sm, radius_md, radius_lg, border_width: f32, space: [5]f32 /*xs..xl*/,
+                       elevation: [4]?Shadow /*steps 0..3*/; pub fn radii(Size) Radii; pub fn shadowAt(level: u2) ?Shadow }
+                       // default = retro (square, no soft shadows); theme.modern_tokens = rounded + soft elevations
 Palette = struct { bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted,
                    accent, danger, border: [4]f32 }
 Typography = struct { body, heading, mono, small: FontSpec }
 dark_palette: Palette      // built-in dark
 light_palette: Palette     // built-in light
 ```
+
+### Surface decoration: radii, soft shadows, gradients (`core/surface.zig`, drawn by `render/sdf.zig`)
+```zig
+Radii = struct { tl, tr, br, bl: f32 = 0; pub fn all(r) Radii; top(r); bottom(r) }     // clamped to half the short side
+Shadow = struct { dx: f32 = 0, dy: f32 = 2, blur: f32 = 8, spread: f32 = 0, color: [4]f32 }  // CSS box-shadow, outside only
+Gradient = struct { from, to: [4]f32, kind: .linear | .radial, angle_deg: f32 = 180 /*CSS: 90 = left to right*/;
+                    pub fn vertical(from, to); horizontal(from, to) }
+// fields: GroupStyle / ButtonStyle { radius: Radii, gradient: ?Gradient, soft_shadow: ?Shadow }, TextInputStyle.radius,
+//         OverlayStyle { radius, soft_shadow } (the hard retro `shadow` is separate), Theme.tokens
+```
+A rect that sets none of these draws as plain solid quads, pixel for pixel as before. With any of them it is ONE SDF quad in the same
+vertex stream (painter's order kept): anti-aliased edges (one device pixel at any DPR), per-corner radii, an inside border stroke that
+follows the corners, a two-stop gradient, a Gaussian-blurred shadow. Not covered: rounded clipping of scroll regions, images and canvas
+primitives (they stay rectangular).
 
 ### Text components (`teak.text_field`, `teak.numeric_field`, `teak.dropdown`)
 ```zig
@@ -602,6 +621,33 @@ TextDraw = struct { rect_x, rect_y, rect_w, rect_h, content, font, color, clip_x
 monoMeasurer() TextMeasurer    // stateless 10px/byte, 20px line — for headless tests + CLI
 ```
 
+### Tables & lists at scale (`teak.DataTable`, `teak.VarList`, `teak.TreeList`, `teak.Scroller`)
+Virtualized components for 100k-row data (docs/features/tables-at-scale.md). All state in the Model; rows are the app's,
+passed as a `src` value; each emits only the visible rows. Wire the hooks `scrollMsg`, `scrollLayoutMsg`, `animationMsg` + `subscribe`.
+```zig
+Scroller = struct { pos, target, vel, max, smooth_ms = 70, friction_ms = 325 }   // smooth wheel + fling, as Model data
+  wheel(dy) / glideTo(y) / jumpTo(y) / fling(px_per_s) / shift(d) /*anchor*/ / setExtent(viewport, content)
+  animating() bool  /* list Sub.animation_frame while true */ ;  step(dt_ms)
+DataTable(comptime cfg: struct { max_rows = 131072, max_cols = 16 }) type
+  Model: n_rows, order/rank (display<->data permutation), sort_col/sort_desc, widths, selection (bitset by DATA row),
+         cursor/anchor, focused, mods, sc: Scroller, view_h;  setRows(n) / setColumns(cols) / isSelected(row) / selectedRows(out)
+  Msg = union(enum) { sort: u8, grip: {col, dx}, row: u32 /*display idx*/, key: Key, wheel: f32, viewport: {vw,vh,cw,ch}, mods: Modifiers, frame: u32, blur }
+  update(model, msg, src)   // src.compare(col: u8, a: u32, b: u32) std.math.Order  (stable index sort); src.cell(arena, col: u8, row: u32) []const u8
+  view(model, cb, cols: []const DataTableColumn, src, msgs /*.sort(col) .row(display)*/, ViewOpts{ id, grip_base, row_h = 22, header_h = 26, char_w = 8, ... })
+  keyMsg(SpecialKey, mods) ?Msg;  gripMsg(CanvasEvent, grip_base) ?Msg;  charMsg(u8) ?Msg /*type-to-search*/;  searchText(model) []const u8;  reveal(model, display_row)
+DataTableColumn = struct { title, width = 120, min_width = 36, cell_align: CellAlign = .left, sortable = true }
+VarList(comptime cap: usize) type      // rows of different heights, measured by layout, scroll-anchored
+  Model: n, est, h[], prefix[], sc, view_h;  setCount(n, est) / insert(at, h) / remove(at) / rowAt(y) / total()
+  Msg = union(enum) { wheel, viewport, measured: {first, count, heights[96]}, frame };  measuredMsg(first, heights) Msg
+  view(model, cb, src /* src.row(cb, i) emits ONE child */, ViewOpts{ id, height, ... })
+TreeList(comptime cap: usize) type     // preorder nodes + depth; expand/collapse; keyboard
+  Model: n_nodes, expanded (bitset), visible[], n_visible, selected, sc;  setNodes(n, src, expand_depth) / rowOf(node)
+  Msg = union(enum) { toggle: u32, select: u32, key: Key, wheel, viewport, frame, blur };  update(model, msg, src)  // src.depth(node) u16, src.label(arena, node) []const u8
+  view(model, cb, src, msgs /*.toggle(node) .select(node)*/, ViewOpts{ id, row_h = 22, indent = 16, ... });  keyMsg(SpecialKey) ?Msg
+// VirtualListStyle gained total_extent / start_offset (variable rows), id (measured-row reports) and align_cross.
+// App hooks added: virtualRowsMsg(model, id, first_row, heights: []const f32) ?Msg;  modsMsg(model, mods: Modifiers) ?Msg
+```
+
 ### TextArea and text events (`teak.TextArea`, `teak.text_area`, `teak.text_event`)
 Multi-line editing: `cb.textArea(TextAreaCmd{ focus_msg, id, content, cursor, selection_anchor, scroll_x/y, goal_x,
 wrap: Wrap = .word, font, style: TextInputStyle, width, min_width = 120, height = 120, flex, padding = 6, disabled })`
@@ -662,7 +708,7 @@ widgets.menu.MenuBar(Action) type: Item (= MenuItem(Action){label "&File" mnemon
     viewWith(model, cb, items, msgs /*.menu(Msg) .run(Action)*/, ViewOpts{x,y,window_w,window_h,top_width,bar_height,panel_w,row_h,cols,bar_bg});
     keyMsg(model, SpecialKey, items, msgs) ?AppMsg (F10/Alt activate; arrows, Enter, Escape); charMsg(model, u8, items, msgs) ?AppMsg (mnemonics)
 widgets.menu.ContextMenu(Action) type: Model{x,y,st}; Msg{open_at, goto, close}; openAt(x, y) Msg; isOpen; viewWith / keyMsg / charMsg as MenuBar
-widgets.menu.State{active, hot, open, depth, sel[4]}; menu.displayLabel(cb, label); menu.max_depth; menu.SEP_H
+widgets.menu.State{active, hot, open, depth, sel[4]}; menu.displayLabel(cb, label); menu.mnemonicIndex(label) ?usize; menu.max_depth; menu.SEP_H
 ```
 Choosing a leaf dispatches `msgs.run(action)`; the app's update also runs `MenuBar.update(&m.bar, .close)`.
 Tab traversal (`focus.nextFocusable` / `prevFocusable`) stays inside the topmost modal overlay (dialogs, menus).
