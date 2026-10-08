@@ -16,7 +16,10 @@ pub fn main(init: std.process.Init) !void {
         .run = .{ .clear_color = App.paper },
         .steps = &.{
             .{ .frames = 3 },
-            .{ .click = .{ 250, 520 } }, // click the model: CPU pick selects the part
+            .{ .click = .{ 65, 98 } }, // [CUT OFF] -> [CUT ON]: section through the model
+            .{ .chars = "z" }, // cut along Z (through footing, stem, sill ...)
+            .{ .click = .{ 395, 98 } }, // slider: a bit before the middle
+            .{ .click = .{ 250, 560 } }, // click the model: CPU pick selects the part
             .{ .drag = .{ .{ 600, 650 }, .{ 640, 620 } } }, // orbit a little (empty space: no pick)
             .{ .frames = 2 },
             // NOTES: click, type a wrapped note, drag-select across both lines.

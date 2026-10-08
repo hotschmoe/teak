@@ -193,7 +193,7 @@ Emitters (all `catch unreachable` on arena OOM):
 - text: `text(s)`, `heading(s)`, `textMuted(s)`, `textDanger(s)`, `textMono(s)`,
   `textStyled(s, font, color)`, `mixedText(parts: []const MixedPart)`
 - `divider()`, `dividerStyled(DividerStyle)`
-- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`
+- `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`, `buttonStyledUnderlined(msg, label, ButtonStyle, at: ?usize)` (one underlined ASCII char: a mnemonic hint; `ButtonCmd.underline: ?u16`)
 - `textInput(focus_msg, content, cursor)`, `textInputStyled(...)`, `textInputDisabled(...)`,
   `textInputSelected(focus_msg, content, cursor, ?selection_anchor, TextInputStyle)`
 - `checkbox(msg, checked, label)`, `radio(msg, selected, label)`, `slider(grab_msg, value)`
@@ -238,7 +238,7 @@ ButtonStyle = struct { bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg: [4]
                        press_offset_y: f32 = 0, label_align: TextAlign = .start,
                        h_padding: f32 = 8, min_width: f32 = 60, height: f32 = 36, flex: f32 = 0 }
                        // corners are square (no corner_radius: the quad renderer has no rounding)
-ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false }
+ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false, underline: ?u16 = null }
 TextCmd = struct { content: []const u8, font: FontSpec, color: [4]f32 }
 TextInputStyle = struct { bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg,
                        disabled_border, selection_bg: [4]f32, variant: InputVariant = .boxed,
@@ -537,12 +537,12 @@ TransientState = struct { hover_index, press_index, focus_index: ?usize = null,
 
 ### Render (`teak.render`, `teak.vertex`)
 ```zig
-buildFrame(verts, text_draws, image_draws, scene_draws: *std.ArrayList(...), alloc, cmds, rects,
+buildFrame(verts, text_draws, image_draws, scene_draws, scene_items: *std.ArrayList(...), alloc, cmds, rects,
            transient: TransientState, measurer: TextMeasurer) OverlaySplit   // what teak.run uses
 OverlaySplit = struct { verts, text, images, scenes: u32 }   // counts the BASE layer produced = where the overlay starts
 buildVertices(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer) void  // = buildFrame, scenes skipped
 ResourceTable = struct { sync(self, gpu, []const Resource) bool /*changed*/, deinit(self, gpu), handleOf(kind, key) u32 }
-stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw) void  // remap keys, uploadImages, renderScenes
+stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw, items: []SceneItem) void  // remap keys (incl. item keys), uploadImages, renderScenes
                                       // (hand-written web loops call these; teak.run does it for you)
 ImageDraw = struct { rect_x, rect_y, rect_w, rect_h: f32, handle: TextureHandle,
                      tint: [4]f32, clip_x, clip_y, clip_w, clip_h: f32 }
@@ -575,6 +575,21 @@ Flat-shaded two-sided lighting (one directional light + ambient), depth-tested, 
 as camera-facing pixel-width quads (colour = vertex colour * `edge_color`). The Gpu renders each
 `SceneDraw` offscreen, then composites it like an image.
 
+### viewport3d: placed items + scene options (`teak.SceneView`, `SceneItem`; design: docs/features/scene.md)
+`cb.viewport3d(.{ .style, .camera, .view = .{ .items = arena_slice, ... }, .clear, .key, .id, .pointer })` is `scene3d` with
+`SceneCmd.view` populated; with no items it is the legacy single-mesh scene. A `cut` plane discards the removed half and fills
+caps by stencil parity per closed item (hatched, per-item colour) with an exact outline from the CPU mesh copy; `no_cap` items
+(open shells) get the outline only. A canvas `layout` event carries the rect's window origin in `x`,`y`.
+```zig
+SceneItem = struct { mesh: u32 /*resource key*/, transform: [12]f32 /*3x4 rows, identity*/, tint: [4]f32 = white,
+                     id: u32 = 0 /*echoed by pick*/, flags: SceneItemFlags{hidden, unlit, no_edges, no_pick, highlight, no_cap},
+                     cap_color: [4]f32 = 0 /*section-cap fill; alpha 0 = Cut.cap_color*/ }
+SceneView = struct { items: []const SceneItem, grid: ?Grid, gizmo: ?Gizmo, cut: ?Cut /*keeps n.p+d<=0*/,
+                     material: enum{lambert,flat}, highlight_color: [4]f32, highlight_mix: f32; pub fn eql }
+```
+`buildFrame` flattens each scene's visible items into `scene_items` (`SceneDraw.item_first/item_count`); `stageDraws` remaps their
+keys to handles; `Gpu.renderScenes(draws, items)` draws them. Snapshot suffix: `items=N grid cut gizmo flat`.
+
 ### Scene camera, picking, section cuts (`teak.scene.{Orbit,camera,pick,section,mat}`; design: docs/features/scene.md)
 Pure math, no allocation except where noted. Right-handed, column-major, depth 0..1.
 ```zig
@@ -595,7 +610,9 @@ pick.Item = struct { mesh: u32, transform: [12]f32 /*3x4 rows*/, id: u32, hidden
 pick.MeshRef = struct { key: u32, mesh: MeshData, bvh: ?*const pick.Bvh, bounds: ?Bounds }
 pick.Bvh.build(gpa, MeshData) !Bvh;  pick.rayTriangle / pick.rayAabb / pick.nearestBrute
 pick.gizmoHit(Orbit, GizmoLayout, w, h, x, y) ?GizmoAxis;  pick.gizmoTips;  GizmoAxis.preset(up) Preset
+pick.gizmoLabels(Orbit, GizmoLayout, w, h, origin_x, origin_y, gap_px) [3]GizmoLabel  // X/Y/Z letter centres; pass the canvas `layout` event's x,y as origin for window space
 section.outline(gpa, MeshData, transform, plane [nx,ny,nz,d] /*keeps n.p+d<=0*/, *ArrayList(Segment)) !void
+section.outlinePositions(gpa, []const Vec3, []const u32, transform, plane, *ArrayList(Segment)) !void  // same, over bare positions
 section.chain(gpa, []const Segment) !Loops;  section.isClosed(gpa, MeshData) !bool   // even-edge watertight check
 ```
 
@@ -609,7 +626,7 @@ DEFAULT_FONT: FontSpec        // sans 14px
 TextMetrics = struct { width, height, ascent, descent: f32 }
 TextMeasurer = struct { ctx: *anyopaque, measure_fn; pub fn measure(text, font) TextMetrics;
                         pub fn prefixWidth(text, font, byte_prefix: usize) f32 }
-ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32 }  // logical order; sum(advance)==width
+ShapedGlyph = extern struct { glyph: u16, face: u16, cluster: u32, x: f32, advance: f32, y: f32 = 0 }  // logical order (RTL runs from the optional HarfBuzz shaper: visual); y = baseline offset px, down; sum(advance)==width
 ShapeResult = struct { count: usize, width: f32, consumed: usize }   // consumed < text.len only when `out` filled
 Shaper = struct { ctx: *anyopaque, shape_fn; pub fn shape(text, font, out: []ShapedGlyph) ShapeResult }
 TextureHandle = u32
@@ -705,7 +722,7 @@ widgets.menu.MenuBar(Action) type: Item (= MenuItem(Action){label "&File" mnemon
     viewWith(model, cb, items, msgs /*.menu(Msg) .run(Action)*/, ViewOpts{x,y,window_w,window_h,top_width,bar_height,panel_w,row_h,cols,bar_bg});
     keyMsg(model, SpecialKey, items, msgs) ?AppMsg (F10/Alt activate; arrows, Enter, Escape); charMsg(model, u8, items, msgs) ?AppMsg (mnemonics)
 widgets.menu.ContextMenu(Action) type: Model{x,y,st}; Msg{open_at, goto, close}; openAt(x, y) Msg; isOpen; viewWith / keyMsg / charMsg as MenuBar
-widgets.menu.State{active, hot, open, depth, sel[4]}; menu.displayLabel(cb, label); menu.max_depth; menu.SEP_H
+widgets.menu.State{active, hot, open, depth, sel[4]}; menu.displayLabel(cb, label); menu.mnemonicIndex(label) ?usize; menu.max_depth; menu.SEP_H
 ```
 Choosing a leaf dispatches `msgs.run(action)`; the app's update also runs `MenuBar.update(&m.bar, .close)`.
 Tab traversal (`focus.nextFocusable` / `prevFocusable`) stays inside the topmost modal overlay (dialogs, menus).
@@ -757,6 +774,20 @@ caretPos(text, index, font, max_w, mode, max_lines, m) Caret{x, y, line}
 indexAt(text, x, y, font, max_w, mode, max_lines, m) usize  // inverse of caretPos at grapheme boundaries
 ```
 
+### Bidi (`teak.bidi`, UAX #9; core/bidi.zig, docs/features/bidi.md)
+One paragraph per `analyze` (split at hard breaks). Pure; allocator only for working storage / results.
+```zig
+analyze(gpa, text, Direction(.auto|.ltr|.rtl)) !Analysis{ para_level, levels: []u8, classes: []Class, offsets: []u32 }  // per code point; .deinit(gpa)
+Analysis.isPlainLtr() bool            // skip all bidi work
+Analysis.isRemoved(i) bool            // X9-removed (embeddings, BN); they keep their predecessor's level
+lineLevels(an, start, end, out) []u8  // L1 on a wrapped line (byte range, e.g. text_wrap.Line.start..hang)
+lineRuns(gpa, an, start, end) ![]Run{ start, end, level }   // L2: runs left-to-right as shown; odd level = draw right-to-left
+visualOrder(levels, order) void       // L2 on any level array (code points or clusters)
+caretMove(gpa, text, an, start, end, Caret{ index, trailing }, Arrow(.left|.right)) !?Caret   // visual arrows; null = line edge; word jumps stay logical
+selectionSpans(gpa, text, an, start, end, advances_per_cluster, sel_start, sel_end) ![]Span{ x0, x1 }
+mirrored(cp) ?u21;  classOf(cp) Class
+```
+
 ### Host interface (`teak.host` → platform/host.zig)
 Backends live in `platform/{win32,x11,wasm}.zig` — NOT re-exported (web entry points must also declare `pub const std_options: std.Options = .{ .logFn = platform.logFn };` — the default std.log sink does not build on wasm32-freestanding); the build
 picks one under the import name `teak-platform-native`.
@@ -798,7 +829,7 @@ validateGpu(comptime T: type) void    // comptime contract: deinit, resize, uplo
                                        //   renderFrame, rasterizeText, uploadText, uploadImage, uploadImages, releaseImage
 // Optional extension (checked only when present; the scene trio is all-or-none):
 //   uploadMesh(*Gpu, MeshData) MeshHandle      releaseMesh(*Gpu, MeshHandle) void
-//   renderScenes(*Gpu, []const SceneDraw) void  // before renderFrame; offscreen 3D -> composite quads
+//   renderScenes(*Gpu, []const SceneDraw, []const SceneItem) void  // before renderFrame; offscreen 3D -> composite quads
 //   setOverlayStart(*Gpu, OverlaySplit) void    // before the uploads: draw base solids/images/scenes/text, THEN
 //                                              //   the overlay's, so an opaque overlay hides base text (hatch 5)
 ```
