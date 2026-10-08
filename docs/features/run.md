@@ -87,6 +87,7 @@ table does not name.
 | `keyNeedsClipboard` + `handleClipboard` | `(SpecialKey) bool` / `(*Model, SpecialKey, Clipboard) void` | **deprecated**; only when neither new hook exists | mutates the Model outside `update` (HARDLINE §1); removed next release, see [migration-clipboard.md](../migration-clipboard.md) |
 | `submitMsg` | `(*const Model) ?Msg` | Enter key (before `keySpecialMsg`) | a Msg |
 | `focusedMsg` | `(*const Model) ?Msg` | every frame | the focus Msg of the focused widget; enables Tab traversal + the focus ring + caret |
+| `blurMsg` | `(*const Model) ?Msg` | when Tab moves keyboard focus from a text field onto a non-text widget | the Msg that clears the Model's text focus, so the field stops receiving typed characters |
 | `wheelMsg` | `(*const Model, f32) ?Msg` | vertical wheel not claimed by a scroll region / pointer canvas | a Msg |
 | `scrollMsg` | `(*const Model, id, dx, dy) ?Msg` | wheel over the innermost `ScrollStyle.id != 0` region | a Msg |
 | `scrollLayoutMsg` | `(*const Model, id, vw, vh, cw, ch) ?Msg` | a scroll region's first layout and each size change | a Msg (the view cannot read layout) |
