@@ -610,7 +610,13 @@ Step = union(enum) { frames: u32, move: [2]f32, down, up: Button, wheel: [2]f32,
                      key: SpecialKey, mods: Modifiers, click: [2]f32, drag: [2][2]f32 }
 headless.play(rt: anytype, host: anytype, steps: []const Step) !void
 headless.shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa, steps, settle, run }) !void  // script -> PNG
-headless.writeFramePng(gpu, gpa, path) !void;  encodePng(gpa, rgba, w, h) ![]u8;  pathArg(init, default) []const u8
+headless.writeFramePng(gpu, gpa, path) !void;  pathArg(init, default) []const u8
+headless.encodePng(gpa, rgba, w, h) ![]u8      // deflate-compressed + per-row PNG filters, deterministic (tens of KB)
+headless.decodePng(gpa, png_bytes) !Image{width,height,rgba}   // 8-bit RGB/RGBA, any filter
+headless.shotCli(App, Host, Gpu, init, default_path, ShotOptions, states: []const ShotState{name, steps}) !void
+    // a whole shot_main.zig: `[out.png] [--state name] [--list]`; ShotOptions.fonts registers embedded TTFs
+// Visual regression: `zig build vreg [-- --update | --web | --examples a,b | --state s | --tol N --budget N]`
+//   compares every example's states with test/golden/ (docs/features/visual-regression.md)
 // Host: pushMouseMove/Down/Up, pushWheel, pushChars, pushKey, setModifiers, close, injectEffectResult(EffectResult),
 //       submittedEffects() []const Captured{kind,id,name,bytes,mime,method}, countEffects(kind), clearSubmittedEffects()
 ```

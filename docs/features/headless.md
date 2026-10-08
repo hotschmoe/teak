@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `teak.headless` (tool API) and `teak.linkHeadless` (build helper, `build.zig`). Backends are import-only: `teak-platform-headless` (`src/platform/headless.zig`) and `teak-gpu-headless` (`src/gpu/native_headless.zig`).
 **Source**: `src/headless_run.zig`, `src/platform/headless.zig`, `src/gpu/native_headless.zig`, `Gpu.initOffscreen` / `readFrame` in `src/gpu/wgpu_core.zig`.
-**Tests**: `zig build test` (PNG encoder with CRC/Adler/inflate round-trip, `play` scripting, the Host's queue / clock / effects / text); `zig build test-gpu` (offscreen render + RGBA readback, resize).
+**Tests**: `zig build test` (PNG encode/decode round-trip, `play` scripting, the Host's queue / clock / effects / text); `zig build test-gpu` (offscreen render + RGBA readback, resize).
 
 Run any teak App on the real native wgpu backend with **no display**, drive it with scripted mouse / keyboard / wheel input, and write the last frame as a PNG that an agent (or CI) can look at. It needs a Vulkan device (a real GPU driver works; wgpu-native cannot use Chromium's SwiftShader) and a TTF (DejaVuSansMono by default, `TEAK_FONT` overrides), nothing else.
 
@@ -71,7 +71,7 @@ play(rt: anytype, host: anytype, steps: []const Step) !void
 shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa = true, steps, settle = 3, run: RunOptions }) !void
 writeFramePng(gpu, gpa, path) !void      // gpu.readFrame -> PNG
 writePng(gpa, path, rgba, w, h) !void
-encodePng(gpa, rgba, w, h) ![]u8         // dependency-free; zlib stored blocks (~raw size)
+encodePng(gpa, rgba, w, h) ![]u8         // dependency-free; deflate-compressed with per-row PNG filters, deterministic
 pathArg(init, default) []const u8        // argv[1] of main(init: std.process.Init)
 ```
 
@@ -118,3 +118,12 @@ Same App, same layout engine, same shaders, same MSAA path, so geometry, colours
 - One primary window; secondary windows are not simulated.
 - `zig build shot` runs the GPU for real: it needs a Vulkan driver (no software fallback is guaranteed) and exits with an error where none opens.
 - The PNG writer stores uncompressed blocks; run an external optimizer if size matters.
+
+## Named states and the `shotCli` entry
+
+`teak.headless.shotCli` is a whole `shot_main.zig`: it parses `[out.png] [--state <name>] [--list]`
+and plays one of several named scripts (`ShotState{ .name, .steps }`; the first is the default).
+`--list` prints the state names on stdout, which `tools/vreg` uses to enumerate golden shots. Every
+example's `zig build shot` uses it. `ShotOptions.fonts` registers embedded TTFs on the Host (the
+fonts example). `decodePng` reads PNGs back (8-bit RGB/RGBA, any filter). See
+[visual-regression.md](visual-regression.md).

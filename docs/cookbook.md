@@ -803,3 +803,32 @@ flight (answers mix up); keeping `r.body` instead of copying it; expecting
 `open_file` to open a picker outside a user gesture on the web (it arms
 itself for the next click or key press); expecting a result from the
 fire-and-forget `storage_set` / `write_clipboard`.
+
+## 14. Add a golden screenshot test
+
+**Intent**: pin how a screen looks (layout + text + clicks that must land) so a regression fails CI.
+
+1. Give the example a `shot` step (copy `examples/todo/build.zig`'s block; it needs `teak.linkHeadless`) and a
+   `src/shot_main.zig`:
+
+```zig
+pub fn main(init: std.process.Init) !void {
+    try teak.headless.shotCli(App, Host, Gpu, init, "myapp.png", .{ .width = 720, .height = 600 }, &.{
+        .{ .name = "initial", .steps = &.{.{ .frames = 2 }} },
+        .{ .name = "filled", .steps = &.{
+            .{ .frames = 2 },
+            .{ .click = .{ 80, 66 } },   // focus the input
+            .{ .chars = "hello" },
+            .{ .key = .enter },
+            .{ .frames = 2 },
+        } },
+    });
+}
+```
+
+2. `zig build vreg -- --examples myapp --update`, then LOOK at `test/golden/myapp-*.png`.
+3. Commit the PNGs. From now on `zig build vreg` (and the CI `vreg` job) fails when pixels move.
+   Click coordinates come from the screenshot itself: shoot the initial state and read positions off it.
+   Put a frame between actions that depend on each other (a `click` already runs three frames).
+
+Details, tolerances and the `--update` workflow: [docs/features/visual-regression.md](features/visual-regression.md).
