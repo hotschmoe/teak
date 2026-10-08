@@ -2659,7 +2659,7 @@ docs/features/headless.md.
 > `wheel`, `chars`, `key`, `mods`) do not run a frame; `frames` and the
 > compound steps do.
 - `union Step`
-  - fields: `frames, move, down, up, wheel, chars, key, mods, click, drag`
+  - fields: `frames, move, down, up, wheel, chars, key, mods, chord, click, drag`
 > Run `steps` against a Runtime + Host (anything with `frame()` and the
 > scripting `push*` API of `platform/headless.zig`).
 - `pub fn play(rt: anytype, host: anytype, steps: []const Step) !void`

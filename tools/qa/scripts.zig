@@ -147,13 +147,14 @@ const scene_layers: Spec = .{ .clear_decl = "paper", .states = &.{
 
 const kerf_viewer: Spec = .{ .clear_decl = "paper", .states = &.{
     .{ .name = "section", .steps = &.{.{ .frames = 10 }} },
-    .{ .name = "section_hover", .steps = &.{ .{ .frames = 3 }, .{ .click = .{ 542, 350 } }, .{ .move = .{ 470, 505 } }, .{ .frames = 2 } } },
-    .{ .name = "three_d", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 547, 66 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 134 } }, .{ .frames = 3 } } },
-    .{ .name = "iso", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 1111, 20 } }, .{ .frames = 2 }, .{ .click = .{ 491, 66 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 134 } }, .{ .move = .{ 640, 400 } }, .{ .frames = 2 } } },
-    .{ .name = "cut", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 547, 66 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 134 } }, .{ .click = .{ 416, 133 } }, .{ .frames = 4 } } },
+    .{ .name = "section_hover", .steps = &.{ .{ .frames = 3 }, .{ .click = .{ 542, 376 } }, .{ .move = .{ 470, 531 } }, .{ .frames = 2 } } },
+    .{ .name = "three_d", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 547, 92 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 160 } }, .{ .frames = 3 } } },
+    .{ .name = "iso", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 1044, 46 } }, .{ .frames = 2 }, .{ .click = .{ 491, 92 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 160 } }, .{ .move = .{ 640, 426 } }, .{ .frames = 2 } } },
+    .{ .name = "cut", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 547, 92 } }, .{ .frames = 2 }, .{ .click = .{ 1100, 160 } }, .{ .click = .{ 416, 159 } }, .{ .frames = 4 } } },
+    .{ .name = "palette", .steps = &.{ .{ .frames = 4 }, .{ .chord = teak.Chord.ctrl(.k) }, .{ .frames = 2 }, .{ .chars = "view" }, .{ .frames = 3 } } },
     .{ .name = "chat", .steps = &.{
         .{ .frames = 2 },
-        .{ .click = .{ 180, 690 } },
+        .{ .click = .{ 180, 716 } },
         .{ .chars = "where is the stem wall" },
         .{ .frames = 1 },
         .{ .key = .shift_enter },
