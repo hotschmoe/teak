@@ -124,9 +124,10 @@ pub const Table = struct {
     /// Same for scene draws: an unknown mesh key draws just the clear colour.
     /// Item keys (the flat list `buildFrame` produced) are remapped too; an
     /// item with an unknown key gets the none handle and is not drawn.
-    pub fn remapScenes(self: *Table, draws: []render.SceneDraw, items: []render.SceneItem) void {
+    pub fn remapScenes(self: *Table, draws: []render.SceneDraw, data: render.SceneData) void {
         for (draws) |*d| d.mesh = self.handleOf(.mesh, d.mesh);
-        for (items) |*it| it.mesh = self.handleOf(.mesh, it.mesh);
+        for (data.items) |*it| it.mesh = self.handleOf(.mesh, it.mesh);
+        for (data.sprites) |*sp| sp.image = self.handleOf(.image, sp.image);
     }
 };
 
@@ -155,14 +156,14 @@ pub fn stageDraws(
     table: ?*Table,
     images: []render.ImageDraw,
     scenes: []render.SceneDraw,
-    items: []render.SceneItem,
+    data: render.SceneData,
 ) void {
     if (table) |t| {
         t.remapImages(images);
-        t.remapScenes(scenes, items);
+        t.remapScenes(scenes, data);
     }
     gpu.uploadImages(images);
-    if (comptime @hasDecl(@TypeOf(gpu.*), "renderScenes")) gpu.renderScenes(scenes, items);
+    if (comptime @hasDecl(@TypeOf(gpu.*), "renderScenes")) gpu.renderScenes(scenes, data);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -280,7 +281,9 @@ test "remap turns keys into handles; unknown keys become none" {
         .{ .mesh = 0, .rect_x = 0, .rect_y = 0, .rect_w = 1, .rect_h = 1, .clip_x = 0, .clip_y = 0, .clip_w = 1, .clip_h = 1 },
     };
     var items = [_]render.SceneItem{ .{ .mesh = 20 }, .{ .mesh = 21 } };
-    t.remapScenes(&scenes, &items);
+    var sprites = [_]render.SceneSprite{.{ .pos = .{ 0, 0, 0 }, .image = 10, .size = .{ 8, 8 } }};
+    t.remapScenes(&scenes, .{ .items = &items, .sprites = &sprites });
+    try std.testing.expectEqual(t.handleOf(.image, 10), sprites[0].image);
     try std.testing.expectEqual(t.handleOf(.mesh, 20), items[0].mesh);
     try std.testing.expectEqual(@as(u32, 0), items[1].mesh);
     try std.testing.expectEqual(t.handleOf(.mesh, 20), scenes[0].mesh);

@@ -256,16 +256,8 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     };
 }
 
-/// True if this key requires clipboard interaction at the host level.
-/// The host loop calls clipboard.read()/write() then dispatches the
-/// resulting bytes through a normal Msg (paste → name_replace_selection,
-/// copy/cut → write selectionText to clipboard).
-pub fn keyNeedsClipboard(key: teak.SpecialKey) bool {
-    return key == .ctrl_c or key == .ctrl_x or key == .ctrl_v;
-}
-
 /// Currently selected greeter text, or "" if none. Used by
-/// `handleClipboard` for ctrl_c / ctrl_x.
+/// `clipboardText` / `clipboardMsg` for ctrl_c / ctrl_x.
 pub fn greeterSelection(m: *const Model) []const u8 {
     return greeter.selectionText(&m.greeter);
 }
@@ -290,28 +282,22 @@ pub fn focusedMsg(m: *const Model) ?Msg {
     return Msg{ .focus_set = .greeter };
 }
 
-/// OS clipboard policy for cut/copy/paste. `teak.run` calls this (with the
-/// Host's clipboard vtable) for keys where `keyNeedsClipboard` is true;
-/// the app owns whether a chord copies the selection, cuts it, or pastes.
-pub fn handleClipboard(m: *Model, key: teak.SpecialKey, clip: teak.Clipboard) void {
-    switch (key) {
-        .ctrl_c => {
-            const sel = greeterSelection(m);
-            if (sel.len > 0) clip.write(sel);
-        },
-        .ctrl_x => {
-            const sel = greeterSelection(m);
-            if (sel.len > 0) {
-                clip.write(sel);
-                update(m, .{ .greeter = .name_backspace });
-            }
-        },
-        .ctrl_v => {
-            const bytes = clip.read();
-            if (bytes.len > 0) update(m, .{ .greeter = .{ .name_replace_selection = bytes } });
-        },
-        else => {},
-    }
+/// What Ctrl+C / Ctrl+X put on the OS clipboard: the greeter's selection (a
+/// pure query; `teak.run` does the write).
+pub fn clipboardText(m: *const Model, key: teak.SpecialKey) ?[]const u8 {
+    if (key != .ctrl_c and key != .ctrl_x) return null;
+    const sel = greeterSelection(m);
+    return if (sel.len > 0) sel else null;
+}
+
+/// The Msg for a clipboard chord: Ctrl+V pastes over the selection, Ctrl+X
+/// deletes it (after `clipboardText` copied it), Ctrl+C changes nothing.
+pub fn clipboardMsg(m: *const Model, key: teak.SpecialKey, paste: []const u8) ?Msg {
+    return switch (key) {
+        .ctrl_x => if (greeterSelection(m).len > 0) Msg{ .greeter = .name_backspace } else null,
+        .ctrl_v => Msg{ .greeter = .{ .name_replace_selection = paste } },
+        else => null,
+    };
 }
 
 /// Declares the secondary "Stats" window when the user has toggled it on.
@@ -360,17 +346,17 @@ test "app: snapshot golden — real view at a fixed Model (LLM dev loop)" {
         \\    button (8,8,60,36) "Help"
         \\    button (76,8,116,36) "Light mode"
         \\    button (200,8,116,36) "Open stats"
-        \\  group (0,52,376,188) horizontal
-        \\    group (16,68,176,156) vertical
+        \\  group (0,52,360,172) horizontal
+        \\    group (16,68,160,140) vertical
         \\      text (32,84,80,20) "Count: 1"
-        \\      group (32,112,144,52) horizontal
-        \\        button (40,120,60,36) "+"
-        \\        button (108,120,60,36) "-"
-        \\      button (32,172,66,36) "Reset"
-        \\    group (208,68,152,88) vertical
-        \\      group (208,68,152,88) vertical
-        \\        text_input (224,84,120,28) "A" cursor=1
-        \\        text (224,120,90,20) "Hello, A!"
+        \\      group (32,112,128,36) horizontal
+        \\        button (32,112,60,36) "+"
+        \\        button (100,112,60,36) "-"
+        \\      button (32,156,66,36) "Reset"
+        \\    group (192,68,152,88) vertical
+        \\      group (192,68,152,88) vertical
+        \\        text_input (208,84,120,28) "A" cursor=1
+        \\        text (208,120,90,20) "Hello, A!"
         \\
     );
 }

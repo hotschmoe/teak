@@ -230,3 +230,45 @@ test "layout height equals render line count for random strings and widths" {
         try std.testing.expectEqual(lines * 20, rs[1].h);
     }
 }
+
+test "rich_text wraps across spans: mixed-font widths decide the breaks, height = line count" {
+    var cb = Buf.init(std.testing.allocator);
+    defer cb.deinit();
+    // "bbbb" is in a wide font (20 px per byte): 80 px instead of 40.
+    const wide: text.FontSpec = .{ .letter_spacing = 10 };
+    const spans = [_]cmd.RichTextSpan{.{ .start = 3, .end = 7, .font = wide }};
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+    cb.richParagraph("aa bbbb cc dd", &spans, .{});
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    // 130 px: "aa " (30) + "bbbb " (80) = 110 fits, "cc" (20) -> 130 fits exactly; "dd" wraps.
+    const rs = layout(&cb, &rects, 130, 400);
+    try std.testing.expectEqual(@as(f32, 40), rs[1].h);
+    // At 100 px the wide word cannot share the first line with anything after "aa ".
+    const rs2 = layout(&cb, &rects, 100, 400);
+    try std.testing.expectEqual(@as(f32, 60), rs2[1].h); // "aa" / "bbbb cc"? no: "aa " | "bbbb" | "cc dd"
+    // Natural (unwrapped) width counts the span font: 3*10 + 80 + 6*10 = 170.
+    var cb2 = Buf.init(std.testing.allocator);
+    defer cb2.deinit();
+    cb2.pushGroup(.{ .padding = 0, .gap = 0 });
+    cb2.richParagraph("aa bbbb cc dd", &spans, .{});
+    cb2.popGroup();
+    const rs3 = layout(&cb2, &rects, 600, 400);
+    try std.testing.expectEqual(@as(f32, 170), rs3[1].w);
+    try std.testing.expectEqual(@as(f32, 20), rs3[1].h);
+}
+
+test "rich_text shrinks in a row down to its widest unbreakable run" {
+    var cb = Buf.init(std.testing.allocator);
+    defer cb.deinit();
+    const wide: text.FontSpec = .{ .letter_spacing = 10 };
+    const spans = [_]cmd.RichTextSpan{.{ .start = 0, .end = 5, .font = wide }};
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0 });
+    cb.richParagraph("wide! and then some more words", &spans, .{});
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    const rs = layout(&cb, &rects, 120, 400);
+    try std.testing.expect(rs[1].w >= 100); // "wide!" = 5 * 20
+    try std.testing.expect(rs[1].w <= 120);
+    try std.testing.expect(rs[1].h > 20);
+}

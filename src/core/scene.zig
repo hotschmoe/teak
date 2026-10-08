@@ -113,6 +113,20 @@ pub const SceneDraw = struct {
     material: view.Material = .lambert,
     highlight_color: [4]f32 = .{ 0.114, 0.306, 0.62, 1 },
     highlight_mix: f32 = 0.6,
+    /// Plane layers: a read-only slice of the Cmd's own arena data (no key
+    /// remapping is needed, so no copy is made).
+    planes: []const view.Plane = &.{},
+    /// This scene's sprites are `sprites[sprite_first..][0..sprite_count]` of
+    /// the flat list (image keys remapped to handles by `stageDraws`).
+    sprite_first: u32 = 0,
+    sprite_count: u32 = 0,
+};
+
+/// The flat per-frame lists `buildFrame` collects for all scenes; what the
+/// Gpu's `renderScenes` reads (mutable so `stageDraws` can remap keys).
+pub const SceneData = struct {
+    items: []Item = &.{},
+    sprites: []Sprite = &.{},
 };
 
 test "MeshData.validate rejects bad indices and partial triangles" {
@@ -139,6 +153,7 @@ pub const camera = @import("scene/camera.zig");
 pub const pick = @import("scene/pick.zig");
 pub const section = @import("scene/section.zig");
 pub const view = @import("scene/view.zig");
+pub const sort = @import("scene/sort.zig");
 pub const Item = view.Item;
 pub const ItemFlags = view.ItemFlags;
 pub const View = view.View;
@@ -146,6 +161,8 @@ pub const Grid = view.Grid;
 pub const Gizmo = view.Gizmo;
 pub const Cut = view.Cut;
 pub const Material = view.Material;
+pub const Plane = view.Plane;
+pub const Sprite = view.Sprite;
 pub const Orbit = camera.Orbit;
 pub const Projection = camera.Projection;
 pub const Bounds = camera.Bounds;
@@ -159,4 +176,5 @@ test {
     _ = pick;
     _ = section;
     _ = view;
+    _ = sort;
 }

@@ -113,7 +113,7 @@ pub fn update(m: *Model, msg: Msg) void {
 // ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
-    cb.pushGroup(.{ .direction = .vertical, .padding = 20, .gap = 12 });
+    cb.pushGroup(.{ .direction = .vertical, .padding = 20, .gap = 12, .align_cross = .stretch });
 
     cb.text("Todo");
 
@@ -132,10 +132,11 @@ pub fn view(m: *const Model, cb: anytype) void {
         .padding = 0,
         .gap = 4,
         .flex = 1,
+        .align_cross = .stretch, // rows span the list so each "x" pins right
         .width = 0, // 0 → inherit parent width
         .height = 320,
     });
-    for (m.items[0..m.items_len], 0..) |item, i| {
+    for (m.items[0..m.items_len], 0..) |*item, i| {
         cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 4 });
         cb.checkbox(.{ .toggle = i }, item.done, item.label[0..item.label_len]);
         // Spacer claims the middle so the delete button pins right.
@@ -182,6 +183,14 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
 /// is `.input_focus`, so `run` maps this back to its cmd index by value.
 pub fn focusedMsg(m: *const Model) ?Msg {
     return if (m.input_focused) Msg.input_focus else null;
+}
+
+/// Agent-driver hook (`state` command): the Model as text, read-only.
+pub fn debugState(m: *const Model, w: *std.Io.Writer) void {
+    w.print("items={d} input=\"{s}\" focused={}\n", .{ m.items_len, m.input[0..m.input_len], m.input_focused }) catch return;
+    for (m.items[0..m.items_len], 0..) |it, i| {
+        w.print("  [{d}] {s} \"{s}\"\n", .{ i, if (it.done) "x" else " ", it.label[0..it.label_len] }) catch return;
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -310,4 +319,28 @@ test "end-to-end: click delete button on item 0 removes it" {
 
     try t.expectEqual(@as(u16, 1), m.items_len);
     try t.expectEqualStrings("b", m.items[0].label[0..m.items[0].label_len]);
+}
+
+test "view: item labels point into the Model, not a loop-local copy of the item" {
+    const t = std.testing;
+    var m = Model{};
+    for ("ab") |ch| update(&m, .{ .input_char = ch });
+    update(&m, .add_item);
+    for ("cd") |ch| update(&m, .{ .input_char = ch });
+    update(&m, .add_item);
+
+    var cb = teak.CmdBuffer(Msg).init(t.allocator);
+    defer cb.deinit();
+    view(&m, &cb);
+    var seen: usize = 0;
+    for (cb.cmds.items) |c| switch (c) {
+        .checkbox => |cbx| {
+            // A `for (items) |item|` capture copies the item (and its inline label array);
+            // the slice would then dangle once the loop iteration ends.
+            try t.expectEqual(@intFromPtr(&m.items[seen].label), @intFromPtr(cbx.label.ptr));
+            seen += 1;
+        },
+        else => {},
+    };
+    try t.expectEqual(@as(usize, 2), seen);
 }

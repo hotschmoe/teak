@@ -16,10 +16,17 @@ const CanvasPrimitive = cmd_types.CanvasPrimitive;
 const scene_types = @import("../core/scene.zig");
 pub const SceneDraw = scene_types.SceneDraw;
 pub const SceneItem = scene_types.Item;
+pub const SceneSprite = scene_types.Sprite;
+pub const SceneData = scene_types.SceneData;
 const vertex = @import("vertex.zig");
 const Vertex = vertex.Vertex;
 const emitQuad = vertex.emitQuad;
 const emitQuadCorners = vertex.emitQuadCorners;
+pub const canvas_tess = @import("canvas_tess.zig");
+const emit = canvas_tess.emit;
+const emitCanvasPrimitive = canvas_tess.emitCanvasPrimitive;
+const clipSegment = canvas_tess.clipSegment;
+const emitTriangles = canvas_tess.emitTriangles;
 pub const sdf = @import("sdf.zig");
 
 /// Image draw record. Parallel to TextDraw — the GPU backend consumes
@@ -69,12 +76,6 @@ fn insetRect(r: Rect, amount: f32) Rect {
     const w = @max(0, r.w - 2 * amount);
     const h = @max(0, r.h - 2 * amount);
     return .{ .x = r.x + amount, .y = r.y + amount, .w = w, .h = h };
-}
-
-fn emit(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, r: Rect, color: [4]f32, clip: Rect) void {
-    const cr = clipRect(r, clip);
-    if (cr.w <= 0 or cr.h <= 0) return;
-    emitQuad(verts, alloc, cr, color);
 }
 
 fn emitText(
@@ -167,6 +168,59 @@ fn emitWrapped(
             emitText(text_draws, alloc, text_wrap.ELLIPSIS, txt.font, txt.color, .{ .x = x + kept_w, .y = y, .w = ew, .h = lh }, clip);
         } else {
             emitText(text_draws, alloc, piece, txt.font, txt.color, .{ .x = x, .y = y, .w = line.width, .h = lh }, clip);
+        }
+    }
+}
+
+/// A wrapped `rich_text`: lines break across spans with the same `text_wrap`
+/// walk layout used (via `RichMeasure`); each line is drawn as one TextDraw
+/// per same-font/colour piece, left to right, aligned by `text_align`.
+fn emitRichWrapped(
+    text_draws: *std.ArrayList(TextDraw),
+    alloc: std.mem.Allocator,
+    rt: anytype,
+    rect: Rect,
+    clip: Rect,
+    measurer: TextMeasurer,
+) void {
+    if (rect.w <= 0 or rect.h <= 0) return;
+    const rm = text_wrap.RichMeasure.init(rt.content, rt.spans, rt.default_font, measurer);
+    const lh = rm.max_height;
+    var it = text_wrap.LineIter.init(rt.content, rt.default_font, rect.w, rt.wrap, rt.max_lines, rm.measurer());
+    var li: f32 = 0;
+    while (it.next()) |line| : (li += 1) {
+        const y = rect.y + li * lh;
+        if (y + lh <= clip.y or y >= clip.y + clip.h) continue;
+        var x = switch (rt.text_align) {
+            .start => rect.x,
+            .center => rect.x + (rect.w - line.width) * 0.5,
+            .end => rect.x + rect.w - line.width,
+        };
+        var cursor: usize = line.start;
+        while (cursor < line.end) {
+            var font = rt.default_font;
+            var color = rt.default_color;
+            var stop: usize = line.end;
+            for (rt.spans) |sp| {
+                const s: usize = @min(sp.start, rt.content.len);
+                const e: usize = @min(sp.end, rt.content.len);
+                if (e <= cursor) continue;
+                if (s <= cursor) {
+                    font = sp.font;
+                    color = sp.color;
+                    stop = @min(e, stop);
+                } else stop = @min(s, stop);
+                break;
+            }
+            const piece = rt.content[cursor..stop];
+            const w = measurer.measure(piece, font).width;
+            emitText(text_draws, alloc, piece, font, color, .{ .x = x, .y = y, .w = w, .h = lh }, clip);
+            x += w;
+            cursor = stop;
+        }
+        if (line.ellipsized) {
+            const ew = measurer.measure(text_wrap.ELLIPSIS, rt.default_font).width;
+            emitText(text_draws, alloc, text_wrap.ELLIPSIS, rt.default_font, rt.default_color, .{ .x = x, .y = y, .w = ew, .h = lh }, clip);
         }
     }
 }
@@ -267,6 +321,7 @@ pub fn buildFrame(
     image_draws: *std.ArrayList(ImageDraw),
     scene_draws: *std.ArrayList(SceneDraw),
     scene_items: *std.ArrayList(SceneItem),
+    scene_sprites: *std.ArrayList(SceneSprite),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
@@ -278,15 +333,16 @@ pub fn buildFrame(
     image_draws.clearRetainingCapacity();
     scene_draws.clearRetainingCapacity();
     scene_items.clearRetainingCapacity();
+    scene_sprites.clearRetainingCapacity();
 
-    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, alloc, cmds, rects, transient, measurer, .base);
+    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites, alloc, cmds, rects, transient, measurer, .base);
     const split: OverlaySplit = .{
         .verts = @intCast(verts.items.len),
         .text = @intCast(text_draws.items.len),
         .images = @intCast(image_draws.items.len),
         .scenes = @intCast(scene_draws.items.len),
     };
-    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, alloc, cmds, rects, transient, measurer, .overlay);
+    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites, alloc, cmds, rects, transient, measurer, .overlay);
     return split;
 }
 
@@ -307,7 +363,9 @@ pub fn buildVertices(
     defer scenes.deinit(alloc);
     var items: std.ArrayList(SceneItem) = .empty;
     defer items.deinit(alloc);
-    _ = buildFrame(verts, text_draws, image_draws, &scenes, &items, alloc, cmds, rects, transient, measurer);
+    var sprites: std.ArrayList(SceneSprite) = .empty;
+    defer sprites.deinit(alloc);
+    _ = buildFrame(verts, text_draws, image_draws, &scenes, &items, &sprites, alloc, cmds, rects, transient, measurer);
 }
 
 const Layer = enum { base, overlay };
@@ -318,6 +376,7 @@ fn buildLayer(
     image_draws: *std.ArrayList(ImageDraw),
     scene_draws: *std.ArrayList(SceneDraw),
     scene_items: *std.ArrayList(SceneItem),
+    scene_sprites: *std.ArrayList(SceneSprite),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
@@ -389,6 +448,10 @@ fn buildLayer(
             },
             .rich_text => |rt| {
                 if (!visible) continue;
+                if (rt.wrap != .none) {
+                    emitRichWrapped(text_draws, alloc, rt, rect, cur_clip, measurer);
+                    continue;
+                }
                 // Walk spans + uncovered ranges, emitting one TextDraw
                 // per run. Maintains an x cursor along the rect.
                 var x_cursor = rect.x;
@@ -444,6 +507,10 @@ fn buildLayer(
                 if (!visible) continue;
                 if (rect.w <= 0 or rect.h <= 0) continue;
                 const item_first: u32 = @intCast(scene_items.items.len);
+                const sprite_first: u32 = @intCast(scene_sprites.items.len);
+                for (sc.view.sprites) |sp| {
+                    if (!sp.flags.hidden) scene_sprites.append(alloc, sp) catch {};
+                }
                 for (sc.view.items) |it| {
                     if (!it.flags.hidden) scene_items.append(alloc, it) catch {};
                 }
@@ -451,6 +518,9 @@ fn buildLayer(
                     .mesh = sc.mesh,
                     .item_first = item_first,
                     .item_count = @as(u32, @intCast(scene_items.items.len)) - item_first,
+                    .sprite_first = sprite_first,
+                    .sprite_count = @as(u32, @intCast(scene_sprites.items.len)) - sprite_first,
+                    .planes = sc.view.planes,
                     .grid = sc.view.grid,
                     .gizmo = sc.view.gizmo,
                     .cut = sc.view.cut,
@@ -765,320 +835,15 @@ fn buildLayer(
                 if (canvas_clip.w <= 0 or canvas_clip.h <= 0) continue;
                 if (cv.style.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
                 for (cv.primitives) |prim| {
-                    emitCanvasPrimitive(verts, alloc, rect, prim, canvas_clip);
+                    if (prim == .text) {
+                        const t = prim.text;
+                        const m = measurer.measure(t.content, t.font);
+                        emitText(text_draws, alloc, t.content, t.font, t.color, .{ .x = rect.x + t.x, .y = rect.y + t.y, .w = m.width, .h = m.height }, canvas_clip);
+                    } else emitCanvasPrimitive(verts, alloc, rect, prim, canvas_clip);
                 }
             },
         }
     }
-}
-
-// ── Canvas primitive emission ──────────────────────────────────────
-
-/// Translate one canvas-local primitive to window space and emit it.
-/// Axis-aligned prims go through `emit` (rect-clipped). Polyline segments
-/// are clipped in data space then drawn as rotated quads via
-/// `emitQuadCorners`.
-fn emitCanvasPrimitive(
-    verts: *std.ArrayList(Vertex),
-    alloc: std.mem.Allocator,
-    canvas: Rect,
-    prim: CanvasPrimitive,
-    clip: Rect,
-) void {
-    switch (prim) {
-        .filled_rect => |fr| {
-            emit(verts, alloc, .{
-                .x = canvas.x + fr.x,
-                .y = canvas.y + fr.y,
-                .w = fr.w,
-                .h = fr.h,
-            }, fr.color, clip);
-        },
-        .hline => |h| {
-            const half = h.thickness * 0.5;
-            emit(verts, alloc, .{
-                .x = canvas.x,
-                .y = canvas.y + h.y - half,
-                .w = canvas.w,
-                .h = h.thickness,
-            }, h.color, clip);
-        },
-        .vline => |v| {
-            const half = v.thickness * 0.5;
-            emit(verts, alloc, .{
-                .x = canvas.x + v.x - half,
-                .y = canvas.y,
-                .w = v.thickness,
-                .h = canvas.h,
-            }, v.color, clip);
-        },
-        .marker => |mk| {
-            const half = mk.size * 0.5;
-            emit(verts, alloc, .{
-                .x = canvas.x + mk.x - half,
-                .y = canvas.y + mk.y - half,
-                .w = mk.size,
-                .h = mk.size,
-            }, mk.color, clip);
-        },
-        .triangles => |tr| emitTriangles(verts, alloc, canvas, tr.verts, clip),
-        .lines => |ln| {
-            verts.ensureUnusedCapacity(alloc, ln.segs.len * 6) catch return;
-            for (ln.segs) |sg| {
-                var x0 = canvas.x + sg[0];
-                var y0 = canvas.y + sg[1];
-                var x1 = canvas.x + sg[2];
-                var y1 = canvas.y + sg[3];
-                if (clipSegment(&x0, &y0, &x1, &y1, clip)) {
-                    emitSegmentQuad(verts, alloc, x0, y0, x1, y1, ln.thickness, ln.color);
-                }
-            }
-        },
-        .polyline => |pl| {
-            if (pl.points.len < 2) return;
-            var i: usize = 1;
-            while (i < pl.points.len) : (i += 1) {
-                const a = pl.points[i - 1];
-                const b = pl.points[i];
-                var x0 = canvas.x + a.x;
-                var y0 = canvas.y + a.y;
-                var x1 = canvas.x + b.x;
-                var y1 = canvas.y + b.y;
-                // Fully-outside segments are rejected; partially-outside
-                // ones are trimmed to the clip rect at the data level. The
-                // thick quad may still bulge by up to thickness/2 past the
-                // boundary at a trimmed endpoint — negligible and bounded.
-                if (clipSegment(&x0, &y0, &x1, &y1, clip)) {
-                    emitSegmentQuad(verts, alloc, x0, y0, x1, y1, pl.thickness, pl.color);
-                }
-            }
-        },
-    }
-}
-
-// ── Triangle list emission ─────────────────────────────────────────
-
-const TriVertex = CanvasPrimitive.TriVertex;
-
-fn toVertex(canvas: Rect, v: TriVertex) Vertex {
-    return .{ .x = canvas.x + v.x, .y = canvas.y + v.y, .r = v.r, .g = v.g, .b = v.b, .a = v.a, .u = 0, .v = 0 };
-}
-
-fn finiteVertex(v: TriVertex) bool {
-    return std.math.isFinite(v.x) and std.math.isFinite(v.y);
-}
-
-/// Emit a canvas-local triangle list, clipped to `clip` (window space).
-/// Three tiers, cheapest first: (1) the whole list's bounds sit inside the
-/// clip — convert the vertices in one pass; (2) a triangle's own bounds do —
-/// copy it; (3) otherwise Sutherland–Hodgman against the clip rect,
-/// interpolating color, fan-triangulating the result. Triangles with a
-/// non-finite position are dropped; a trailing partial triangle is ignored.
-fn emitTriangles(
-    verts: *std.ArrayList(Vertex),
-    alloc: std.mem.Allocator,
-    canvas: Rect,
-    list: []const TriVertex,
-    clip: Rect,
-) void {
-    const n = list.len - list.len % 3;
-    if (n == 0) return;
-    const tris = list[0..n];
-
-    // Tier 1: bounds of everything (and finiteness) in one linear scan.
-    var min_x = std.math.inf(f32);
-    var min_y = std.math.inf(f32);
-    var max_x = -std.math.inf(f32);
-    var max_y = -std.math.inf(f32);
-    var all_finite = true;
-    for (tris) |v| {
-        if (!finiteVertex(v)) {
-            all_finite = false;
-            break;
-        }
-        min_x = @min(min_x, v.x);
-        min_y = @min(min_y, v.y);
-        max_x = @max(max_x, v.x);
-        max_y = @max(max_y, v.y);
-    }
-    if (all_finite and boundsInside(canvas, min_x, min_y, max_x, max_y, clip)) {
-        const out = verts.addManyAsSlice(alloc, n) catch return;
-        for (tris, out) |v, *o| o.* = toVertex(canvas, v);
-        return;
-    }
-
-    var i: usize = 0;
-    while (i < n) : (i += 3) {
-        const t = tris[i..][0..3];
-        if (!(finiteVertex(t[0]) and finiteVertex(t[1]) and finiteVertex(t[2]))) continue;
-        const tx0 = @min(t[0].x, @min(t[1].x, t[2].x));
-        const ty0 = @min(t[0].y, @min(t[1].y, t[2].y));
-        const tx1 = @max(t[0].x, @max(t[1].x, t[2].x));
-        const ty1 = @max(t[0].y, @max(t[1].y, t[2].y));
-        if (boundsInside(canvas, tx0, ty0, tx1, ty1, clip)) {
-            // Tier 2.
-            verts.appendSlice(alloc, &.{ toVertex(canvas, t[0]), toVertex(canvas, t[1]), toVertex(canvas, t[2]) }) catch return;
-        } else if (boundsOverlap(canvas, tx0, ty0, tx1, ty1, clip)) {
-            // Tier 3.
-            clipTriangle(verts, alloc, .{ toVertex(canvas, t[0]), toVertex(canvas, t[1]), toVertex(canvas, t[2]) }, clip);
-        }
-    }
-}
-
-fn boundsInside(canvas: Rect, x0: f32, y0: f32, x1: f32, y1: f32, clip: Rect) bool {
-    return canvas.x + x0 >= clip.x and canvas.y + y0 >= clip.y and
-        canvas.x + x1 <= clip.x + clip.w and canvas.y + y1 <= clip.y + clip.h;
-}
-
-fn boundsOverlap(canvas: Rect, x0: f32, y0: f32, x1: f32, y1: f32, clip: Rect) bool {
-    return canvas.x + x1 > clip.x and canvas.y + y1 > clip.y and
-        canvas.x + x0 < clip.x + clip.w and canvas.y + y0 < clip.y + clip.h;
-}
-
-fn lerpVertex(a: Vertex, b: Vertex, t: f32) Vertex {
-    return .{
-        .x = a.x + (b.x - a.x) * t,
-        .y = a.y + (b.y - a.y) * t,
-        .r = a.r + (b.r - a.r) * t,
-        .g = a.g + (b.g - a.g) * t,
-        .b = a.b + (b.b - a.b) * t,
-        .a = a.a + (b.a - a.a) * t,
-        .u = 0,
-        .v = 0,
-    };
-}
-
-/// A triangle clipped by four half-planes has at most 3 + 4 = 7 vertices.
-const MAX_CLIP_POLY = 8;
-
-/// Sutherland–Hodgman: clip one window-space triangle to `clip` and emit
-/// the resulting convex polygon as a triangle fan.
-fn clipTriangle(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, tri: [3]Vertex, clip: Rect) void {
-    // Ping-pong between two scratch polygons, one pass per clip edge.
-    var buf_a: [MAX_CLIP_POLY]Vertex = undefined;
-    var buf_b: [MAX_CLIP_POLY]Vertex = undefined;
-    buf_a[0..3].* = tri;
-    var src: []Vertex = buf_a[0..3];
-    var dst: *[MAX_CLIP_POLY]Vertex = &buf_b;
-    var spare: *[MAX_CLIP_POLY]Vertex = &buf_a;
-
-    // Four edges: x >= left, x <= right, y >= top, y <= bottom.
-    const Edge = struct { axis_y: bool, bound: f32, keep_greater: bool };
-    const edges = [4]Edge{
-        .{ .axis_y = false, .bound = clip.x, .keep_greater = true },
-        .{ .axis_y = false, .bound = clip.x + clip.w, .keep_greater = false },
-        .{ .axis_y = true, .bound = clip.y, .keep_greater = true },
-        .{ .axis_y = true, .bound = clip.y + clip.h, .keep_greater = false },
-    };
-    for (edges) |e| {
-        var out_len: usize = 0;
-        for (src, 0..) |cur, i| {
-            const prev = src[(i + src.len - 1) % src.len];
-            const cur_c = if (e.axis_y) cur.y else cur.x;
-            const prev_c = if (e.axis_y) prev.y else prev.x;
-            const cur_in = if (e.keep_greater) cur_c >= e.bound else cur_c <= e.bound;
-            const prev_in = if (e.keep_greater) prev_c >= e.bound else prev_c <= e.bound;
-            if (cur_in != prev_in) {
-                dst[out_len] = lerpVertex(prev, cur, (e.bound - prev_c) / (cur_c - prev_c));
-                out_len += 1;
-            }
-            if (cur_in) {
-                dst[out_len] = cur;
-                out_len += 1;
-            }
-        }
-        if (out_len < 3) return;
-        src = dst[0..out_len];
-        std.mem.swap(*[MAX_CLIP_POLY]Vertex, &dst, &spare);
-    }
-
-    verts.ensureUnusedCapacity(alloc, (src.len - 2) * 3) catch return;
-    var k: usize = 1;
-    while (k + 1 < src.len) : (k += 1) {
-        verts.appendSliceAssumeCapacity(&.{ src[0], src[k], src[k + 1] });
-    }
-}
-
-/// Build the 4 corners of a `thickness`-wide quad along segment
-/// (x0,y0)→(x1,y1) and emit it. Zero-length segments draw nothing.
-fn emitSegmentQuad(
-    verts: *std.ArrayList(Vertex),
-    alloc: std.mem.Allocator,
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    thickness: f32,
-    color: [4]f32,
-) void {
-    const dx = x1 - x0;
-    const dy = y1 - y0;
-    const len = @sqrt(dx * dx + dy * dy);
-    if (len <= 0) return;
-    const half = thickness * 0.5;
-    // Unit normal (perpendicular to the segment) scaled by half-thickness.
-    const nx = -dy / len * half;
-    const ny = dx / len * half;
-    emitQuadCorners(
-        verts,
-        alloc,
-        .{ x0 + nx, y0 + ny },
-        .{ x1 + nx, y1 + ny },
-        .{ x1 - nx, y1 - ny },
-        .{ x0 - nx, y0 - ny },
-        color,
-    );
-}
-
-/// Liang–Barsky segment clip against an axis-aligned rect. Mutates the
-/// endpoints to the visible sub-segment and returns true if any part is
-/// visible; returns false (endpoints untouched-but-ignored) if fully out.
-fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
-    // Reject a segment with any NaN endpoint outright. Every Liang–Barsky
-    // t-comparison against a NaN is false, so a NaN segment would otherwise
-    // sail through "accepted" and `emitSegmentQuad`'s `len <= 0` guard is also
-    // false for a NaN length — the net result being six NaN vertices in the
-    // buffer. Drop it here instead.
-    if (std.math.isNan(x0.*) or std.math.isNan(y0.*) or
-        std.math.isNan(x1.*) or std.math.isNan(y1.*)) return false;
-
-    const dx = x1.* - x0.*;
-    const dy = y1.* - y0.*;
-    const xmin = clip.x;
-    const xmax = clip.x + clip.w;
-    const ymin = clip.y;
-    const ymax = clip.y + clip.h;
-
-    const p = [_]f32{ -dx, dx, -dy, dy };
-    const q = [_]f32{ x0.* - xmin, xmax - x0.*, y0.* - ymin, ymax - y0.* };
-
-    var t0: f32 = 0;
-    var t1: f32 = 1;
-    for (p, q) |pk, qk| {
-        if (pk == 0) {
-            // Segment parallel to this edge: reject if it starts outside.
-            if (qk < 0) return false;
-        } else {
-            const t = qk / pk;
-            if (pk < 0) {
-                if (t > t1) return false;
-                if (t > t0) t0 = t;
-            } else {
-                if (t < t0) return false;
-                if (t < t1) t1 = t;
-            }
-        }
-    }
-
-    const nx0 = x0.* + t0 * dx;
-    const ny0 = y0.* + t0 * dy;
-    const nx1 = x0.* + t1 * dx;
-    const ny1 = y0.* + t1 * dy;
-    x0.* = nx0;
-    y0.* = ny0;
-    x1.* = nx1;
-    y1.* = ny1;
-    return true;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -1580,6 +1345,7 @@ const TestFrame = struct {
     images: std.ArrayList(ImageDraw) = .empty,
     scenes: std.ArrayList(SceneDraw) = .empty,
     items: std.ArrayList(SceneItem) = .empty,
+    sprites: std.ArrayList(SceneSprite) = .empty,
     split: OverlaySplit = .{},
 
     fn deinit(self: *TestFrame, alloc: std.mem.Allocator) void {
@@ -1588,6 +1354,7 @@ const TestFrame = struct {
         self.images.deinit(alloc);
         self.scenes.deinit(alloc);
         self.items.deinit(alloc);
+        self.sprites.deinit(alloc);
     }
 };
 
@@ -1597,7 +1364,7 @@ fn buildTestFrame(alloc: std.mem.Allocator, cb: anytype) !TestFrame {
     defer alloc.free(rects);
     layout.LayoutEngine.doLayout(rects, cb.cmds.items, 1000, 1000, text_mod.monoMeasurer());
     var f: TestFrame = .{};
-    f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, &f.items, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
+    f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, &f.items, &f.sprites, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
     return f;
 }
 
@@ -2068,7 +1835,9 @@ test "text_area: multi-line selection quads, per-line text, scroll culling, care
     defer scenes.deinit(testing.allocator);
     var items: std.ArrayList(SceneItem) = .empty;
     defer items.deinit(testing.allocator);
-    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, &items, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], ts, text_mod.monoMeasurer());
+    var sprites: std.ArrayList(SceneSprite) = .empty;
+    defer sprites.deinit(testing.allocator);
+    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, &items, &sprites, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], ts, text_mod.monoMeasurer());
 
     // Three wrapped lines of text.
     try testing.expectEqual(@as(usize, 3), text_draws.items.len);
@@ -2109,6 +1878,42 @@ test "text_area: scrolled content culls lines above the viewport" {
     try testing.expectEqual(@as(usize, 2), text_draws.items.len);
     try testing.expectEqualStrings("4", text_draws.items[0].content);
     try testing.expectEqualStrings("5", text_draws.items[1].content);
+}
+
+test "wrapped rich_text: per-line pieces keep their span font and colour, ellipsis closes the last line" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+    const wide: FontSpec = .{ .letter_spacing = 10 };
+    const red: [4]f32 = .{ 1, 0, 0, 1 };
+    const spans = [_]cmd_mod.RichTextSpan{.{ .start = 3, .end = 7, .font = wide, .color = red }};
+    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
+    cb.richParagraph("aa bbbb cc dd ee ff gg hh", &spans, .{ .max_lines = 2 });
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 130, 300, text_mod.monoMeasurer());
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var draws: std.ArrayList(TextDraw) = .empty;
+    defer draws.deinit(testing.allocator);
+    var imgs: std.ArrayList(ImageDraw) = .empty;
+    defer imgs.deinit(testing.allocator);
+    buildVertices(&verts, &draws, &imgs, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+
+    // Line 1: "aa " default + "bbbb" wide/red; line 2 is ellipsized.
+    try testing.expectEqualStrings("aa ", draws.items[0].content);
+    try testing.expectEqualStrings("bbbb", draws.items[1].content);
+    try testing.expectEqual(red, draws.items[1].color);
+    try testing.expectEqual(@as(f32, 10), draws.items[1].font.letter_spacing);
+    try testing.expectEqual(@as(f32, 30), draws.items[1].rect_x); // after "aa " (30 px)
+    try testing.expectEqualStrings("cc dd ee", draws.items[2].content[0..8]); // line 2 starts at x = 0
+    try testing.expectEqual(@as(f32, 0), draws.items[2].rect_x);
+    try testing.expectEqual(@as(f32, 20), draws.items[2].rect_y);
+    try testing.expectEqual(@as(f32, 0), draws.items[0].rect_y);
+    const last = draws.items[draws.items.len - 1];
+    try testing.expectEqualStrings("\u{2026}", last.content);
+    try testing.expectEqual(@as(f32, 20), last.rect_y);
 }
 
 test "a button with `ellipsis` keeps its width and cuts its label at the pixel" {

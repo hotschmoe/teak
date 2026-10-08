@@ -49,6 +49,7 @@ const key_mappings = [_]struct { from: zinput.Key, to: NavKey }{
     .{ .from = .enter, .to = .enter },
     .{ .from = .tab, .to = .tab },
     .{ .from = .escape, .to = .escape },
+    .{ .from = .f12, .to = .f12 },
     .{ .from = .f10, .to = .f10 },
     .{ .from = .arrow_left, .to = .left },
     .{ .from = .arrow_right, .to = .right },
@@ -582,6 +583,11 @@ pub const Host = struct {
 
     /// Update the browser tab title via zunk (sets `document.title`).
     /// Same call `init` uses for the initial title.
+    /// CSS `cursor` on the page body through zunk (`app.setCursor`).
+    pub fn setCursor(_: *Host, shape: teak.CursorShape) void {
+        zapp.setCursor(shape.cssName());
+    }
+
     pub fn setTitle(_: *Host, title: []const u8) void {
         zapp.setTitle(title);
     }
