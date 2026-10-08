@@ -310,6 +310,16 @@
   - `zig build test-x11` (live display, skips without `DISPLAY`) drives the
     host with xclip / xdotool and an in-process XDND source.
 
+- **macOS backend** (`src/platform/cocoa.zig`, `objc.zig`, `cocoa_data.zig`,
+  `gpu/surface_cocoa.zig`, `gpu/native_macos.zig`): Cocoa host driven through
+  the Objective-C runtime (libobjc / AppKit / QuartzCore `dlopen`ed, so no SDK
+  and no frameworks are needed to build or cross-compile), Metal through
+  wgpu-native (macOS prebuilts as lazy deps), NSTextInputClient text + IME
+  marked text, Cmd as the primary modifier, precise scrolling, NSPasteboard
+  clipboard, file drops, NSCursor shapes, open/save panels, Retina scale.
+  `teak.hasNativeBackend(.macos)` is true; `teak.linkHeadless` now works on
+  macOS (offscreen Metal screenshots); stb text probes `Menlo.ttc` & friends.
+
 ### Fixed
 
 - X11 host failed to compile on first use under Zig 0.17 (`Xlib.load` still

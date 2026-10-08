@@ -27,8 +27,8 @@
 //! slices stay valid until then.
 
 const std = @import("std");
-const teak = @import("teak");
 const builtin = @import("builtin");
+const teak = @import("teak");
 const x11_data = @import("x11_data.zig");
 
 const is_windows = builtin.os.tag == .windows;
@@ -414,7 +414,7 @@ pub const Service = struct {
         const cmdline = if (is_windows)
             windowsCmdline(a) catch ""
         else
-            Io.Dir.cwd().readFileAlloc(self.io, "/proc/self/cmdline", a, .limited(1 << 20)) catch "";
+            selfCmdline(self.io, a);
         const value: ?[]const u8 = argValue(cmdline, name) orelse blk: {
             var env_buf: [128]u8 = undefined;
             const env_name = envVarName(&env_buf, name) orelse break :blk null;
@@ -423,6 +423,25 @@ pub const Service = struct {
         self.push(arena, .{ .query_value = .{ .id = id, .value = value } });
     }
 };
+
+/// This process's argv as a NUL-separated buffer (`/proc/self/cmdline` on
+/// Linux; rebuilt from `_NSGetArgv` on macOS, which has no procfs).
+fn selfCmdline(io: Io, a: std.mem.Allocator) []const u8 {
+    if (builtin.os.tag == .macos) {
+        const argc = _NSGetArgc().*;
+        const argv = _NSGetArgv().*;
+        var out: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < argc) : (i += 1) {
+            out.appendSlice(a, std.mem.span(argv[i])) catch return "";
+            out.append(a, 0) catch return "";
+        }
+        return out.items;
+    }
+    return Io.Dir.cwd().readFileAlloc(io, "/proc/self/cmdline", a, .limited(1 << 20)) catch "";
+}
+extern "c" fn _NSGetArgc() *c_int;
+extern "c" fn _NSGetArgv() *[*][*:0]u8;
 
 // ── Pure helpers ────────────────────────────────────────────────────
 
@@ -900,7 +919,11 @@ test "http: the timeout answers at the deadline and the late reply is dropped" {
 }
 
 test "storage: set, get, overwrite, delete" {
-    const svc = try Service.create("teak-test-storage");
+    // Several test binaries import this file and run in parallel: a per-process
+    // app name keeps their storage directories apart.
+    var name_buf: [64]u8 = undefined;
+    const app = try std.fmt.bufPrint(&name_buf, "teak-test-storage-{d}", .{std.c.getpid()});
+    const svc = try Service.create(app);
     defer svc.destroy();
     const cfg = envValue("XDG_CONFIG_HOME") orelse envValue("HOME") orelse return;
     _ = cfg;

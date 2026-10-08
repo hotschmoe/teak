@@ -175,7 +175,8 @@ jobs:
           TEAK_BACKEND: wayland
         run: |
           zig build
-          timeout 20 ./zig-out/bin/chrome-ui; rc=$?
+          rc=0
+          timeout 20 ./zig-out/bin/chrome-ui || rc=$?
           test $rc -eq 124
 
   web-smoke:
@@ -395,7 +396,7 @@ jobs:
           if-no-files-found: warn
 
   macos:
-    name: macOS (library + web; no native backend yet)
+    name: macOS (library, web, Cocoa + Metal native)
     runs-on: macos-latest
     defaults:
       run:
@@ -414,3 +415,32 @@ jobs:
         run: |
           zig build test --summary all
           zig build web
+      # Native backend: build the Cocoa/Metal ui exe, take an offscreen Metal
+      # screenshot (no window needed), then launch the real window for a few
+      # seconds and screencapture it. Both PNGs are uploaded: LOOK at them.
+      - name: Headless Metal screenshot (chrome)
+        working-directory: teak/examples/chrome
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/shots"
+          zig build shot -- "$GITHUB_WORKSPACE/shots/chrome-mac-offscreen.png"
+      - name: Build the Cocoa ui exe
+        working-directory: teak/examples/chrome
+        run: zig build install -Doptimize=ReleaseSafe && ls -l zig-out/bin
+      - name: Launch the window and capture it
+        working-directory: teak/examples/chrome
+        continue-on-error: true
+        run: |
+          TEAK_COCOA_DEBUG=1 ./zig-out/bin/chrome-ui > "$GITHUB_WORKSPACE/shots/ui.log" 2>&1 &
+          pid=$!
+          sleep 4
+          screencapture -x "$GITHUB_WORKSPACE/shots/chrome-mac-window-4s.png" || true
+          sleep 8
+          screencapture -x "$GITHUB_WORKSPACE/shots/chrome-mac-window.png" || true
+          kill -0 $pid 2>/dev/null && echo "ui still running after 12 s: OK" || { echo "ui exited early"; cat "$GITHUB_WORKSPACE/shots/ui.log"; exit 1; }
+          kill $pid || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-shots
+          path: shots/*
+          if-no-files-found: warn
