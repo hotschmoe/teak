@@ -37,5 +37,6 @@ test {
     std.testing.refAllDecls(App);
     _ = @import("kerf_mesh.zig");
     _ = @import("doc2d.zig");
+    _ = @import("chat.zig");
     _ = @import("draw/mod.zig");
 }

@@ -119,6 +119,7 @@ fn fitLine(p: []const u8, s: usize, limit: usize, cols: usize) usize {
     var last_space: ?usize = null;
     while (j < limit) {
         if (count == cols) {
+            if (p[j] == ' ') return j; // the line ends exactly at a word boundary
             return if (last_space) |sp| sp else j;
         }
         if (p[j] == ' ' and j > s) last_space = j;

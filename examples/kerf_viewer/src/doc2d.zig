@@ -142,8 +142,19 @@ pub const Docs2D = struct {
     pub fn fit(self: *Docs2D, idx: usize) void {
         const s = self.sheet(idx) orelse return;
         if (self.w <= 0 or self.h <= 0) return;
-        s.cam = View.fit(s.d.bounds, self.w, self.h, fit_margin);
+        s.cam = View.fit(self.extent(s), self.w, self.h, fit_margin);
         s.fitted = true;
+    }
+
+    /// The drawing's `bounds` grown to include every text run (callout text
+    /// often runs past the geometry the engine bounded).
+    pub fn extent(self: *const Docs2D, s: *const Sheet) [4]f64 {
+        var bb = s.d.boundsBox();
+        for (s.d.items) |it| switch (it.body) {
+            .text => |t| bb.merge(self.font.textBBox(t.s, t.h, t.x, t.y, t.rot, t.halign, t.valign)),
+            else => {},
+        };
+        return .{ bb.x0, bb.y0, bb.x1, bb.y1 };
     }
 
     /// Size the canvas; unfitted sheets (and every sheet whose camera the user
@@ -311,7 +322,7 @@ test "fit frames the drawing; zoom keeps the anchor; pan moves it" {
     _ = try dx.add(flush_a);
     dx.resize(800, 600);
     try testing.expect(dx.sheets.items[0].fitted);
-    const b = dx.sheets.items[0].d.bounds;
+    const b = dx.extent(&dx.sheets.items[0]);
     const cam = dx.sheets.items[0].cam;
     // the drawing's centre sits at the canvas centre
     try testing.expectApproxEqAbs(@as(f32, 400), cam.sx((b[0] + b[2]) / 2), 0.5);
