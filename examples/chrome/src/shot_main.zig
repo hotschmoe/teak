@@ -47,8 +47,10 @@ pub fn main(init: std.process.Init) !void {
         .steps = if (o.plain) &.{.{ .frames = 2 }} else &.{
             .{ .frames = 2 },
             .{ .click = .{ 43, 239 } }, // "< PREV": selects the previous part
-            .{ .click = .{ 180, 298 } }, // focus the NAME field
+            .{ .click = .{ 180, 313 } }, // focus the NAME field
             .{ .chars = "-X1" },
+            .{ .click = .{ 180, 376 } }, // open the MATERIAL combobox
+            .{ .chars = "al" }, // filter: aluminum alloys, G10 / FR4 ... "al" substring
             .{ .move = .{ 600, 500 } },
             .{ .frames = 1 },
         },

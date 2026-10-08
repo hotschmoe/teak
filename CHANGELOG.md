@@ -29,6 +29,34 @@
 
 ### Added
 
+- **X11 host parity** (issues #4, part of #7). `src/platform/x11.zig`:
+  - Clipboard: `Clipboard.write` / `write_clipboard` own the `CLIPBOARD`
+    selection and answer `SelectionRequest` (`TARGETS`, `UTF8_STRING`,
+    `STRING`, `TEXT`, `text/plain`); `Clipboard.read` does a bounded
+    synchronous `XConvertSelection` round trip; an unclaimed Ctrl+V becomes
+    `.pasted_text` (or a `.dropped` PNG image) asynchronously, with INCR on
+    receive.
+  - XDND v5 drops: `text/uri-list` files and `UTF8_STRING` text arrive as
+    `.dropped` like the web host.
+  - Input methods: XIM input context with on-the-spot preedit callbacks
+    feeding `imeState()`, `Xutf8LookupString` text (also Compose / dead keys),
+    `Host.setImeSpot` for the over-the-spot style, clean fallback when no IM.
+  - `zig build test-x11` (live display, skips without `DISPLAY`) drives the
+    host with xclip / xdotool and an in-process XDND source.
+
+### Fixed
+
+- X11 host failed to compile on first use under Zig 0.17 (`Xlib.load` still
+  used the removed `@typeInfo(...).fields`).
+
+- `teak.Combobox(cap)`: searchable select (query field + filtered overlay list with scrolling, type-ahead
+  highlight, keyboard, "No matches" row), composed from existing primitives; chrome's MATERIAL field uses it (#2).
+- Cookbook recipe 6b + tested `LoadRow`/`LoadApp` example: rows owning several focusable fields (#1).
+- `teak.unicode`, `teak.linebreak`, `teak.text_wrap`: UAX#29 graphemes, word classes, UAX#14-lite line
+  breaking, wrapping/measure/caret mapping (text-engine PR2a/b).
+- `teak.editor`: `Editor(cap, undo_cap)` with grapheme-aware editing, word jumps, undo/redo (PR10).
+- `SpecialKey`: `ctrl_left/right/home/end` (+ `ctrl_shift_*`), `ctrl_backspace`, `ctrl_delete`,
+  `ctrl_shift_z`; `resolveKey` maps them.
 - `Shaper` / `ShapedGlyph` / `ShapeResult` (core) and `FontSpec.snap_advance` (default false).
 - `teak-text` now ships `SimpleShaper` (stb kerning, fi/fl/ff/ffi/ffl ligatures on proportional
   faces) in `src/text/`; the module root moved from `src/gpu/text_stbtt.zig` to `src/text/text.zig`
@@ -36,6 +64,11 @@
   UTF-8 now yields U+FFFD per bad byte (was byte-as-codepoint).
 
 ### Changed
+
+- `Dropdown`/`Combobox`: the keyboard-highlighted row now also takes the theme's `hover_fg` (fixes invisible labels on inverting themes).
+- `TextField(N)` is now built on `Editor`: backspace/Delete remove whole grapheme clusters, multi-byte
+  characters typed byte-wise are inserted atomically, and it gains `delete`, `home`/`end`, word jumps,
+  `undo`/`redo` Msgs (the `Model` field names `len`/`cursor`/`selection_anchor` are unchanged; the byte array is now `buf`).
 
 - **wgpu-native prebuilts updated v25.0.2.2 -> v29.0.1.1** (all four Windows/Linux deps). No source API fixes were needed (the v25 code already used the StringView / callback-info API); device creation now installs an uncaptured-error callback that logs loudly, and sets the device-lost callback mode explicitly.
 

@@ -167,6 +167,27 @@ pub fn build(b: *std.Build) void {
     const x11_tests = b.addTest(.{ .root_module = x11_mod });
     test_step.dependOn(&b.addRunArtifact(x11_tests).step);
 
+    // Display-backed X11 host tests (src/platform/x11_test.zig): clipboard
+    // via xclip, XDND via a second in-process source, key/IME fallback via
+    // xdotool. Opt-in (`zig build test-x11`, run under Xvfb or any X
+    // session); each test skips when DISPLAY is unset or a tool is missing.
+    if (target.result.os.tag == .linux) {
+        const x11_live_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/x11_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "teak", .module = mod },
+                .{ .name = "teak-text", .module = stbtt_mod },
+            },
+        });
+        const test_x11_step = b.step("test-x11", "Run X11 host tests against a live display (skip without DISPLAY)");
+        const run_x11 = b.addRunArtifact(b.addTest(.{ .root_module = x11_live_mod }));
+        run_x11.has_side_effects = true; // depends on $DISPLAY: never cache
+        test_x11_step.dependOn(&run_x11.step);
+    }
+
     // Headless native GPU tests (wgpu-native scene renderer: render offscreen,
     // read pixels back). Needs the wgpu-native prebuilt (fetched lazily) and a
     // Vulkan driver; the tests skip when no adapter opens. Linux only (the
