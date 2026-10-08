@@ -35,9 +35,9 @@ pub const tip_texts = [_][]const u8{
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 14, .align_cross = .start });
 
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 340, .align_cross = .stretch });
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 400, .align_cross = .stretch });
     ui.card(cb, "Tooltips", 0, 0);
-    cb.textMuted("Rest the pointer on a button for half a second.");
+    cb.textMuted("Hover a button for half a second.");
     ui.row(cb);
     cb.button(.{ .demo = 0 }, "Save");
     cb.button(.{ .demo = 1 }, "Open");
@@ -48,20 +48,20 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     ui.card(cb, "Context menu", 0, 0);
     cb.text("Right-click anywhere in this window.");
-    cb.textMuted("The menu opens at the pointer; Up/Down, Enter,");
-    cb.textMuted("Esc and mnemonics (C, P, A...) work, submenus too.");
+    cb.textMuted("Up/Down, Enter, Esc and mnemonics work;");
+    cb.textMuted("Properties has a submenu.");
     cb.textMuted(if (m.last_action) |a| ui.fmt(cb, "last action: {s}", .{@tagName(a)}) else "last action: none");
     ui.endCard(cb);
 
     ui.card(cb, "Menu bar", 0, 0);
     cb.textMuted("F10 or a tap on Alt activates the bar;");
-    cb.textMuted("arrows move, Enter chooses, Esc backs out.");
-    cb.textMuted("While active, a letter is a mnemonic (F, V, H).");
+    cb.textMuted("arrows move, Enter chooses, Esc backs out;");
+    cb.textMuted("then a letter is a mnemonic (F, V, H).");
     cb.text(if (m.menubar.st.active) "menu bar: active" else "menu bar: idle");
     ui.endCard(cb);
     cb.popGroup();
 
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 340, .align_cross = .stretch });
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 400, .align_cross = .stretch });
     ui.card(cb, "Toasts", 0, 0);
     ui.row(cb);
     cb.button(.{ .toast_push = .{ .kind = .info } }, "Info");
@@ -79,9 +79,9 @@ pub fn view(m: *const Model, cb: anytype) void {
     ui.row(cb);
     cb.button(.{ .dialog = .about }, "About...");
     cb.button(.{ .dialog = .shortcuts }, "Shortcuts...");
+    cb.button(.{ .dialog = .confirm_reset }, "Reset...");
     ui.endRow(cb);
-    cb.button(.{ .dialog = .confirm_reset }, "Reset the demo...");
-    cb.textMuted("Modal: Tab stays inside, Enter confirms, Esc cancels.");
+    cb.textMuted("Modal: Enter confirms, Esc cancels.");
     ui.endCard(cb);
     cb.popGroup();
 

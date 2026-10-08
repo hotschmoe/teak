@@ -13,6 +13,8 @@ const page_controls = @import("page_controls.zig");
 const page_inputs = @import("page_inputs.zig");
 const page_data = @import("page_data.zig");
 const page_overlays = @import("page_overlays.zig");
+const page_layout = @import("page_layout.zig");
+const page_scene = @import("page_scene.zig");
 
 pub const Model = model_mod.Model;
 pub const Msg = model_mod.Msg;
@@ -111,7 +113,8 @@ pub fn view(m: *const Model, cb: anytype) void {
         .inputs => page_inputs.view(m, cb),
         .data => page_data.view(m, cb),
         .overlays => page_overlays.view(m, cb),
-        else => cb.text("(page pending)"),
+        .layout => page_layout.view(m, cb),
+        .scene => page_scene.view(m, cb),
     }
     cb.popGroup();
     cb.popGroup();
@@ -243,7 +246,7 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
     };
 }
 
-pub const tab_labels = [_][]const u8{ "General", "Network", "About" };
+pub const tab_labels = page_layout.tab_labels;
 
 fn dialogKey(m: *const Model, key: teak.SpecialKey) ?Msg {
     return W.dialog.keyMsg(key, .{ .confirm = Msg{ .dialog_confirm = {} }, .cancel = Msg{ .dialog_cancel = {} } }, m.dialog != .about and m.dialog != .shortcuts);
@@ -279,6 +282,13 @@ pub fn contextMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
     if (ev.x < ui.sidebar_w or ev.y < ui.menu_h or ev.y > m.win_h - ui.status_h) return null;
     return .{ .ctx = CM.openAt(ev.x, ev.y) };
 }
+
+pub fn canvasMsg(m: *const Model, ev: teak.CanvasEvent) ?Msg {
+    if (W.split.canvasMsg(&m.split, ev, page_layout.split_opts)) |s| return .{ .split = s };
+    return null;
+}
+
+pub const resources = page_scene.resources;
 
 pub fn windowTitle(m: *const Model) ?[]const u8 {
     _ = m;

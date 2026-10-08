@@ -35,7 +35,17 @@ pub fn card(cb: anytype, title: []const u8, width: f32, height: f32) void {
     g.padding = card_pad;
     g.gap = card_gap;
     cb.pushGroup(g);
-    heading(cb, title);
+    cardTitle(cb, title);
+}
+
+/// A card's title: bold body text in a fixed-height box (the stock heading
+/// font is much larger than the body text in the dark / light looks).
+fn cardTitle(cb: anytype, title: []const u8) void {
+    var f = cb.theme.typography.body;
+    f.weight = .bold;
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .height = heading_h, .align_cross = .center });
+    cb.textStyled(title, f, cb.theme.palette.fg);
+    cb.popGroup();
 }
 
 /// A heading in a fixed-height box.

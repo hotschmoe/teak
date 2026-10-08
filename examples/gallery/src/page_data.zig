@@ -120,16 +120,16 @@ pub fn view(m: *const Model, cb: anytype) void {
 }
 
 const notes = [_][]const u8{
-    "Every list below the fold is a ScrollStyle",
-    "with an id: the wheel reaches the app through",
-    "scrollMsg, the viewport and content size come",
-    "back through scrollLayoutMsg, and the offset",
-    "lives in the Model (HARDLINE: no widget state).",
-    "A virtual list adds windowing on top: only the",
-    "visible rows are emitted, so ten thousand rows",
-    "cost the same as ten.",
-    "Scroll clipping is applied by layout, hit-test",
-    "and render alike.",
+    "A ScrollStyle with an id gets the",
+    "wheel through scrollMsg; its size",
+    "comes back through scrollLayoutMsg.",
+    "The offset lives in the Model:",
+    "no hidden widget state.",
+    "A virtual list adds windowing: only",
+    "the visible rows are emitted, so",
+    "ten thousand rows cost the same",
+    "as ten. Clipping is applied by",
+    "layout, hit-test and render alike.",
 };
 
 fn tree(m: *const Model, cb: anytype) void {
