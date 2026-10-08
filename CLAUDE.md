@@ -213,6 +213,7 @@ src/                                          -- the library, consumable as a Zi
       dialog.zig                              -- Modal dialog helper: a centred card over a dimmed window with a title, a message (or app
       menu.zig                                -- Menus: a menu bar with drop-down menus and nested submenus, and a context (right-click) menu
       progress.zig                            -- Progress bar: determinate (a fraction) and indeterminate (a block sliding across the track)
+      spinner.zig                             -- Number spinner: a NumericField with step buttons, plus arrow-key and wheel stepping
       split.zig                               -- Split pane: two panes separated by a draggable divider, with minimum sizes and a ratio that
       tabs.zig                                -- Tab strip: a row of tabs where exactly one is selected, with keyboard navigation
       toast.zig                               -- Toasts: transient notifications stacked in a corner that dismiss themselves

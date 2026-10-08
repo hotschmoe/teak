@@ -785,6 +785,10 @@ widgets.toast.Toast(cap, text_cap): Model{items,len,next_id}; Msg{push: Push{kin
   Kind = enum { info, success, warning, danger };  TICK_MS; default_ttl
 widgets.dialog: view(cb, Opts{window_w, window_h, title, message, confirm_label, cancel_label: ?[]const u8, width, danger,
   dismiss_on_backdrop, scrim}, msgs /*.confirm .cancel*/); begin / end (own body between); keyMsg(key, msgs, has_cancel) ?AppMsg
+widgets.spinner.Spinner(cfg{capacity,min,max,step,big_step,precision,invalid_message}) type: NumericField + step buttons;
+  Model/Msg = NumericField's (drive with textFieldChar/Special); Step = enum{up,down,page_up,page_down};
+  step(model, Step) (call from your update); setValue(model, f64); keyStep(key) ?Step; wheelStep(dy, shift) ?Step;
+  value/isValid/content; viewWith(model, cb, .{ .focus, .up, .down } AppMsgs) draws [-] [field] [+]
 widgets.date: Date{year: i32, month 1..12, day}; isLeap, daysInMonth, valid, toDays/fromDays (days since 1970-01-01), weekday(Mon=0), addDays/addMonths(clamps)/addYears,
   fromUnixMs(unix_ms, utc_offset_min) Date, parseIso("YYYY-MM-DD") ?Date (strict), formatIso(d, buf); month_names, weekday_short
 widgets.date_field: Model{text, open, selected: ?Date, today: ?Date, cursor}; Msg{edit, toggle, close, pick: Date, go: Nav, commit, today, clear, set_today: Date, set: ?Date};
