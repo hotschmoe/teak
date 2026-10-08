@@ -218,9 +218,8 @@ fn serializeA11yTree(nodes: []const A11yNode) struct { records_len: u32, strings
 
 /// JS-side imports (wired by zunk's resolver — see zunk issue #14 for
 /// the file-dialog shim and zunk issue #15 for the a11y DOM mirror).
-/// Stays in a sub-namespace so `@hasDecl` callers can short-circuit
-/// cleanly when a symbol isn't resolved yet (browser builds where
-/// zunk's bridge hasn't shipped).
+/// Never gate a call on a has-decl check of this namespace: the decls are non-`pub`, so
+/// it is always false (audit rule NO_HASDECL_EXTERNS).
 const externs = struct {
     extern "env" fn __zunk_request_file_dialog(
         id: u32,
@@ -422,14 +421,12 @@ pub const Host = struct {
     /// retain into the DOM synchronously before returning.
     pub fn publishA11yTree(_: *Host, nodes: []const A11yNode) void {
         const lens = serializeA11yTree(nodes);
-        if (comptime @hasDecl(externs, "__zunk_publish_a11y_tree")) {
-            externs.__zunk_publish_a11y_tree(
-                &g_a11y_records,
-                lens.records_len,
-                &g_a11y_strings,
-                lens.strings_len,
-            );
-        }
+        externs.__zunk_publish_a11y_tree(
+            &g_a11y_records,
+            lens.records_len,
+            &g_a11y_strings,
+            lens.strings_len,
+        );
     }
 
     // Browser file dialogs go through the showOpenFilePicker API which
@@ -491,10 +488,9 @@ pub const Host = struct {
         self.file_dialog_slots[slot_idx].state = .pending;
         self.file_dialog_slots[slot_idx].path_len = 0;
         const id: u32 = @intCast(slot_idx + 1);
-        // Best-effort dispatch. If zunk hasn't wired the JS shim yet,
-        // the request just stays `.pending` forever (apps treat that
-        // as "no file picker available on this host").
-        if (@hasDecl(externs, "__zunk_request_file_dialog")) {
+        // Unconditional: a has-decl check on the private externs is always false for non-`pub`
+        // decls, which silently dropped every request (audit-enforced).
+        {
             externs.__zunk_request_file_dialog(
                 id,
                 mode,

@@ -130,6 +130,12 @@ pub const MAX_BALANCE_DEPTH = cmd.MAX_BALANCE_DEPTH;
 pub const ButtonCmd = cmd.ButtonCmd;
 /// Colors, size and alignment of a button.
 pub const ButtonStyle = cmd.ButtonStyle;
+/// Per-corner radii for SDF surfaces.
+pub const Radii = cmd.Radii;
+/// Soft box shadow.
+pub const Shadow = cmd.Shadow;
+/// Two-stop gradient.
+pub const Gradient = cmd.Gradient;
 /// A single-style text leaf.
 pub const TextCmd = cmd.TextCmd;
 /// A single-line text input leaf (cursor, selection, focus Msg).
@@ -297,6 +303,8 @@ pub const runSubs = sub.runSubs;
 pub const Theme = theme.Theme;
 /// Semantic color set of a theme.
 pub const Palette = theme.Palette;
+/// Radii, border width, spacing and shadow elevations of a theme.
+pub const ThemeTokens = theme.Tokens;
 /// Font set of a theme.
 pub const Typography = theme.Typography;
 /// The default dark palette.
