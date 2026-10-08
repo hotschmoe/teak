@@ -86,7 +86,8 @@ pub fn write(writer: anytype, cmds: anytype, rects: []const Rect, opts: Snapshot
                 if (depth > 0) depth -= 1;
                 continue;
             },
-            else => {},
+            .push_group, .push_scroll, .push_overlay, .push_virtual_list => {},
+            .text, .rich_text, .image, .divider, .button, .text_input, .text_area, .checkbox, .radio, .slider, .canvas, .scene3d => {},
         }
 
         try writeIndent(writer, depth);
@@ -97,7 +98,8 @@ pub fn write(writer: anytype, cmds: anytype, rects: []const Rect, opts: Snapshot
 
         switch (c) {
             .push_group, .push_scroll, .push_overlay, .push_virtual_list => depth += 1,
-            else => {},
+            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => unreachable, // skipped above
+            .text, .rich_text, .image, .divider, .button, .text_input, .text_area, .checkbox, .radio, .slider, .canvas, .scene3d => {},
         }
     }
 }
@@ -180,6 +182,9 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writeRect(writer, r);
             try writer.writeByte(' ');
             try writeQuoted(writer, rt.content);
+            if (rt.wrap != .none) try writer.print(" wrap={s}", .{@tagName(rt.wrap)});
+            if (rt.max_lines != 0) try writer.print(" max_lines={d}", .{rt.max_lines});
+            if (rt.text_align != .start) try writer.print(" align={s}", .{@tagName(rt.text_align)});
         },
         .image => |img| {
             try writer.writeAll("image ");
@@ -191,6 +196,7 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writeRect(writer, r);
             try writer.writeByte(' ');
             try writeQuoted(writer, b.label);
+            if (b.underline) |u| try writer.print(" underline={d}", .{u});
             if (b.disabled) try writer.writeAll(" [disabled]");
         },
         .text_input => |ti| {
@@ -258,6 +264,11 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writeRect(writer, r);
             try writer.print(" mesh={d} key={d}", .{ sc.mesh, sc.key });
             if (sc.id != 0) try writer.print(" id={d}", .{sc.id});
+            if (sc.view.items.len > 0) try writer.print(" items={d}", .{sc.view.items.len});
+            if (sc.view.grid != null) try writer.writeAll(" grid");
+            if (sc.view.cut != null) try writer.writeAll(" cut");
+            if (sc.view.gizmo != null) try writer.writeAll(" gizmo");
+            if (sc.view.material == .flat) try writer.writeAll(" flat");
             if (sc.pointer) try writer.writeAll(" pointer");
             if (sc.label.len > 0) {
                 try writer.writeByte(' ');
@@ -816,6 +827,29 @@ test "snapshot: scene3d shows rect, mesh, key, id and label" {
         \\group (0,0,400,300) vertical
         \\  scene3d (0,0,320,200) mesh=3 key=9
         \\  scene3d (0,200,100,50) mesh=0 key=0 id=4 pointer "model view"
+        \\
+    );
+}
+
+test "snapshot: viewport3d notes items, grid, cut and gizmo" {
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+    const items = [_]@import("scene.zig").Item{ .{ .mesh = 1 }, .{ .mesh = 2, .id = 7 } };
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.viewport3d(.{ .style = .{ .width = 320, .height = 200 }, .key = 2, .view = .{
+        .items = &items,
+        .grid = .{},
+        .cut = .{ .plane = .{ 0, 1, 0, 0 } },
+        .gizmo = .{},
+        .material = .flat,
+    } });
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    const rs = layoutInto(&rects, cb.cmds.items, 400, 300);
+    try expectSnapshot(cb.cmds.items, rs, .{},
+        \\group (0,0,400,300) vertical
+        \\  scene3d (0,0,320,200) mesh=0 key=2 items=2 grid cut gizmo flat
         \\
     );
 }

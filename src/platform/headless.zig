@@ -29,6 +29,7 @@
 const std = @import("std");
 const teak = @import("teak");
 const text = @import("teak-text");
+const control_socket = @import("control_socket.zig");
 
 pub const InputState = teak.InputState;
 pub const SpecialKey = teak.SpecialKey;
@@ -78,6 +79,9 @@ pub const Host = struct {
     first_poll: bool = true,
     closed: bool = false,
     clock_ms: u64 = 0,
+    /// `waitEvents` calls (idle blocks) and the total fake time they skipped.
+    wait_calls: u32 = 0,
+    waited_ms: u64 = 0,
     /// `pollInputs` calls so far (= frames run).
     frames: u32 = 0,
     title_buf: [128]u8 = undefined,
@@ -85,6 +89,9 @@ pub const Host = struct {
 
     clip: [4096]u8 = undefined,
     clip_len: usize = 0,
+
+    /// Agent control channel (`controlListen`); inactive unless listened.
+    ctl: control_socket.Server = .{},
 
     captured: std.ArrayList(Captured) = .empty,
     injected: [MAX_INJECTED]EffectResult = undefined,
@@ -95,6 +102,7 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
+        self.ctl.deinit();
         for (self.captured.items) |c| freeCaptured(self.gpa, c);
         self.captured.deinit(self.gpa);
     }
@@ -178,9 +186,53 @@ pub const Host = struct {
         return self.title_buf[0..self.title_len];
     }
 
+    // ── Agent control channel (optional Host surface; src/control.zig) ──
+
+    /// Start listening on the Unix socket `path`. False: unsupported OS or
+    /// the socket could not be created.
+    pub fn controlListen(self: *Host, path: []const u8) bool {
+        return self.ctl.listen(path);
+    }
+    /// The next complete protocol line from the client, or null. Never blocks.
+    pub fn controlRecv(self: *Host, out: []u8) ?[]u8 {
+        return self.ctl.recvLine(out);
+    }
+    pub fn controlSend(self: *Host, bytes: []const u8) void {
+        self.ctl.send(bytes);
+    }
+    /// Queue a synthetic event: same queue, same path as the scripted
+    /// `push*` API (applied by the next `pollInputs`).
+    pub fn injectInput(self: *Host, ev: teak.host.InjectEvent) void {
+        switch (ev) {
+            .move => |p| self.pushMouseMove(p[0], p[1]),
+            .down => |b| self.pushMouseDown(b),
+            .up => |b| self.pushMouseUp(b),
+            .wheel => |w| self.pushWheel(w[0], w[1]),
+            .chars => |t| self.pushChars(t),
+            .key => |k| self.pushKey(k),
+            .mods => |m| self.setModifiers(m),
+        }
+    }
+    /// Make `shouldClose` true (the control `quit` command).
+    pub fn requestClose(self: *Host) void {
+        self.close();
+    }
+
     // ── validateHost surface ───────────────────────────────────────
 
     pub fn nativeHandle(_: *Host) void {}
+
+    /// Event-driven idle (`RunOptions.idle_skip`): `run` calls this after a
+    /// quiet frame. A real Host blocks until an input event or `timeout_ms`;
+    /// the headless Host has no event source, so it just jumps its fake clock
+    /// forward by the timeout (minus the frame the next poll adds), which
+    /// makes timer-driven scripts deterministic and fast.
+    pub fn waitEvents(self: *Host, timeout_ms: u32) void {
+        self.wait_calls += 1;
+        const skip = if (timeout_ms > frame_ms) timeout_ms - frame_ms else 0;
+        self.waited_ms += skip;
+        self.clock_ms += skip;
+    }
 
     pub fn shouldClose(self: *const Host) bool {
         return self.closed;
@@ -473,4 +525,18 @@ test "clipboard round-trips, titles are kept, close ends the run" {
     try std.testing.expect(!h.shouldClose());
     h.close();
     try std.testing.expect(h.shouldClose());
+}
+
+test "waitEvents jumps the fake clock by the timeout (minus the next poll's frame)" {
+    var h = try testHost();
+    defer h.deinit();
+    h.waitEvents(116);
+    try std.testing.expectEqual(@as(u32, 1), h.wait_calls);
+    try std.testing.expectEqual(@as(u64, 100), h.nowMs());
+    h.waitEvents(5); // shorter than a frame: nothing to skip
+    try std.testing.expectEqual(@as(u64, 100), h.nowMs());
+}
+
+test {
+    _ = @import("headless_drive_test.zig");
 }

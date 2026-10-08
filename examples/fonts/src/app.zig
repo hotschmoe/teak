@@ -45,6 +45,8 @@ pub fn view(_: *const Model, cb: anytype) void {
     // No shipped face has these: the web build rasterizes them with canvas 2D
     // (the browser's own fonts); native draws the face's missing-glyph box.
     line(cb, mono(16, .regular, 0), "fallback: \u{6F22}\u{5B57} \u{304B}\u{306A} \u{D55C}\u{AE00}");
+    // Colour emoji: canvas 2D on web, drawn from an RGBA atlas page; native needs a colour font strike decoder (not yet), so it shows the missing-glyph box.
+    line(cb, mono(20, .regular, 0), "emoji: \u{1F600} \u{1F389} \u{1F680} \u{2764}\u{FE0F}");
     cb.popGroup();
 }
 

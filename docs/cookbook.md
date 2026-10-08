@@ -30,6 +30,7 @@ change yields.
 | Fire a Msg on a timer | [11. Timer / subscription](#11-timer--subscription) |
 | Add a brand-new widget to the framework | [12. Add a new widget to the framework](#12-add-a-new-widget-to-the-framework) |
 | Call an HTTP API, open / save a file, remember a setting | [13. Effects: HTTP, files, storage](#13-effects-http-files-storage) |
+| Drive my app from an LLM agent (click, type, screenshot, replay) | [15. Drive your app from an LLM agent](#15-drive-your-app-from-an-llm-agent) |
 
 The mechanical spine underneath every app recipe: **1.** field on `Model`
 · **2.** variant on `Msg` · **3.** arm in `update` · **4.** `cb.*` calls in
@@ -94,6 +95,10 @@ entry point). See [consuming-teak.md](consuming-teak.md) for `build.zig`.
        try teak.run(App, gpa_impl.allocator(), &host, &gpu, .{});
    }
    ```
+
+   For a web entry point (`teak-platform-wasm`) also declare
+   `pub const std_options: std.Options = .{ .logFn = platform.logFn };` — the
+   default `std.log` sink does not compile for wasm32-freestanding.
 
 3. `zig build ui` (or `-Dtarget=…` to cross-compile). `teak.run` owns the
    whole loop: double-buffering, hit-test, layout, render, present.
@@ -323,7 +328,8 @@ of drawing a mile-long menu.
    pub fn view(m: *const App.Model, cb: anytype) void {
        cb.pushGroup(.{ .direction = .vertical, .padding = 16, .gap = 8 });
        Picker.viewWith(&m.picker, cb, &options, picker_msgs, .{
-           .list_x = 16, .list_y = 52,   // anchor: usually last frame's closed-button rect
+                                         // (the list anchors itself under the closed button;
+                                         //  `.auto_anchor = false` + list_x/list_y to place it by hand)
            .list_width = 200,
            .max_visible = 8,             // > 8 options → the open list scrolls
        });
@@ -880,7 +886,7 @@ the MATERIAL field in `examples/chrome`.
 
 ```zig
 const Material = teak.Combobox(24);            // 24 = query capacity (bytes)
-const opts: teak.ComboboxViewOpts = .{ .list_x = 12, .list_y = 390, .list_width = 336, .max_visible = 6 };
+const opts: teak.ComboboxViewOpts = .{ .list_width = 336, .max_visible = 6 }; // anchors under the input
 // Model:  material: Material.Model = .{ .selected = 0 },
 // Msg:    material: Material.Msg,
 // update: .material => |mm| Material.update(&m.material, mm),
@@ -918,3 +924,287 @@ sets `material.open = false` (see chrome's `.focus_name`).
 it is the index into *your* options slice, so `m.material.selected` is always
 a valid index into it. `list_x/list_y` are window coordinates (the previous
 frame's rect of the input, as for `Dropdown`).
+
+---
+
+## 15. Drive your app from an LLM agent
+
+**Goal:** let a coding agent launch your app, read the GUI, operate it through
+real input, look at a screenshot, and replay what it did.
+
+**Setup (headless, works in CI):** a 10-line `src/drive_main.zig` plus a `drive`
+build step (copy `examples/todo`'s):
+
+```zig
+// src/drive_main.zig
+const teak = @import("teak");
+const Host = @import("teak-platform-headless").Host;
+const Gpu = @import("teak-gpu-headless").Gpu;
+const App = @import("app.zig");
+pub fn main() !void {
+    var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_impl.deinit();
+    try teak.headless.serve(App, Host, Gpu, gpa_impl.allocator(), .{ .width = 720, .height = 600 });
+}
+```
+
+(`build.zig`: `teak.linkHeadless(b, drive_exe, .{})` + an install step.) A
+windowed app needs nothing: `teak.run` honors `TEAK_CONTROL` on X11.
+
+**Use it:**
+
+```sh
+zig build drive                 # in the teak repo: zig-out/bin/teak-drive
+claude mcp add teak -- $PWD/zig-out/bin/teak-drive mcp   # or any MCP client
+```
+
+The agent then calls `launch_app {example:"todo"}`, `snapshot` / `tree` to read
+the UI, `click {role:"button", label:"Add"}`, `type {text:"milk"}`,
+`key {name:"enter"}`, `screenshot {path:..., include_image:true}`, `msglog`,
+`state`. From a shell: `teak-drive --socket $S click --role text_input`.
+Optional `pub fn debugState(*const Model, *std.Io.Writer) void` on the App
+feeds the `state` tool. Record a session with `TEAK_RECORD=run.rec` and replay
+it headless with `TEAK_REPLAY=run.rec`; `TEAK_INSPECT=1` (or F12 in Debug)
+overlays the widget tree, hovered style, last Msgs and frame timings.
+
+**Guarantees:** injected input takes the exact path real input takes (no second
+mutation path, HARDLINE intact); a selector that matches nothing is a clean
+error. Depth: [agent-driver.md](features/agent-driver.md).
+
+a valid index into it. The list anchors itself under the input
+(`auto_anchor`); `list_x/list_y` are window coordinates used only with
+`auto_anchor = false`.
+
+---
+
+## 16. Menu bar with submenus and a context menu
+
+**Goal:** File / Edit / View menus with shortcuts, mnemonics, submenus and F10 / Alt activation, plus a right-click menu.
+Every piece below is `examples/gallery/src/app.zig`.
+
+1. Describe the menus as data (`&` marks the mnemonic; `Item.sep` is a rule; `children` makes a submenu). `Action` is your own enum.
+
+   ```zig
+   const MB = teak.widgets.menu.MenuBar(Action);
+   const file_menu = [_]MB.Item{
+       .{ .label = "&New", .action = .new, .shortcut = "Ctrl+N" },
+       MB.Item.sep,
+       .{ .label = "E&xit", .action = .quit },
+   };
+   const menus = [_]MB.Item{ .{ .label = "&File", .children = &file_menu } };
+   ```
+
+2. Embed the model and wire two comptime wrappers (the same trick as `Dropdown`'s `selectMsg`):
+
+   ```zig
+   // Model: menubar: MB.Model = .{}     Msg: menubar: MB.Msg, run: Action
+   fn wrapMenu(s: MB.Msg) Msg { return .{ .menubar = s }; }
+   fn wrapRun(a: Action) Msg { return .{ .run = a }; }
+   const bar_msgs = .{ .menu = wrapMenu, .run = wrapRun };
+   // update:
+   //   .menubar => |s| MB.update(&m.menubar, s),
+   //   .run => |a| { MB.update(&m.menubar, .close); perform(m, a); },
+   ```
+
+3. Draw it first in `view`, then route keys. While the bar is active it owns letters (mnemonics) and the arrows:
+
+   ```zig
+   MB.viewWith(&m.menubar, cb, &menus, bar_msgs, .{ .window_w = m.win_w, .window_h = m.win_h });
+   pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
+       if (MB.keyMsg(&m.menubar, key, &menus, bar_msgs)) |r| return r;   // F10 / Alt, arrows, Enter, Esc
+       if (MB.isActive(&m.menubar)) return null;
+       ...
+   }
+   pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
+       if (MB.isActive(&m.menubar)) return MB.charMsg(&m.menubar, c, &menus, bar_msgs);
+       ...
+   }
+   ```
+
+4. **Context menu:** the `contextMsg` hook fires on every right-button press with the widget under the cursor
+   (`ev.hit`, a Msg you can switch on to pick *which* menu) and its rect:
+
+   ```zig
+   const CM = teak.widgets.menu.ContextMenu(Action);
+   pub fn contextMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+       return .{ .ctx = CM.openAt(ev.x, ev.y) };
+   }
+   // view, late: CM.viewWith(&m.ctx, cb, &context_items, ctx_msgs, .{ .window_w = ..., .window_h = ... });
+   ```
+
+**Common mistakes:** forgetting `MB.update(&m.menubar, .close)` in the `.run` arm (the menu stays open after a
+choice); building the item tree per frame in `view` but not in `keySpecialMsg` (both must see the same tree: keep
+it `const`); expecting panels to follow measured text (geometry comes from `top_width` / `row_h` / `panel_w`, set them
+to match your font); an Alt-only activation inside a browser, which may keep the keystroke (F10 is the portable key).
+
+---
+
+## 17. Tooltips
+
+**Goal:** a hint popup after the pointer rests on a button, with no timers in widgets.
+
+1. List the widgets that have tips by the Msg they dispatch, plus the texts:
+
+   ```zig
+   const tip_targets = [_]Msg{ .save, .open, .{ .go = .data } };
+   const tip_texts = [_][]const u8{ "Save (Ctrl+S)", "Open a file", "Table, tree, chart" };
+   ```
+
+2. Feed hover events in and arm the delay with a declarative `Sub.at`:
+
+   ```zig
+   // Model: tip: teak.widgets.tooltip.Model = .{}     Msg: tip: teak.widgets.tooltip.Msg
+   pub fn hoverMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
+       return .{ .tip = Tooltip.hoverMsg(Msg, ev, &tip_targets, 550) };
+   }
+   // subscribe: if (Tooltip.deadline(&m.tip)) |d| -> .{ .at = .{ .deadline_ms = d, .msg = .{ .tip = .show } } }
+   // view, last:  Tooltip.view(&m.tip, cb, &tip_texts, .{ .window_w = m.win_w, .window_h = m.win_h });
+   ```
+
+   `Sub` slices must outlive the call; the gallery rebuilds a small `subs` array in the Model after every `update`
+   (`refreshSubs`) so `subscribe` stays a pure read.
+
+3. Hide it when something else takes over (`.tip = .hide` on a click, a dialog opening).
+
+**Why it is in the Model:** a tooltip changes what `view` emits, so its hover state may not live in
+`TransientState` (presentation-only, never consulted by `view`).
+
+---
+
+## 18. Tabs, split panes, progress, toasts, dialogs
+
+Short recipes; all are in `examples/gallery`.
+
+* **Tabs:** `Tabs.viewWith(&m.tabs, cb, &labels, .{ .selectMsg = pick }, .{})`, then `switch (m.tabs.selected)` for the
+  content. Route `Tabs.keyMsg(&m.tabs, key, labels.len)` from `keySpecialMsg` (Left / Right / Home / End once a tab
+  has been clicked).
+* **Split pane:** `Split.begin(...)`, pane A, `Split.divider(...)`, pane B, `Split.end(cb)`; route the divider's pointer
+  events from `canvasMsg` with `Split.canvasMsg(&m.split, ev, opts)`. The outer size comes from your `windowMsg`.
+* **Progress:** `progress.bar(cb, fraction, .{})`. For an indeterminate bar keep `Progress.Model` and list
+  `Sub.every(progress.TICK_MS)` only while the work runs.
+* **Toasts:** `Toasts.push(&m.toasts, .success, "Saved", Toasts.default_ttl)` from any `update` arm; list
+  `Sub.every(toast.TICK_MS)` only while `Toasts.active(&m.toasts)`; draw `Toasts.viewWith(...)` last.
+* **Dialog:** keep a flag in the Model and call `Dialog.view(cb, opts, .{ .confirm = ..., .cancel = ... })` while it
+  is set. Route `Dialog.keyMsg(key, msgs, has_cancel)` first from `keySpecialMsg`. The card is a modal overlay, so Tab
+  traversal and clicks stay inside it.
+* **Toggle switch:** `toggle.view(cb, Msg{ .toggle_wifi = {} }, m.wifi, "Wi-Fi")`.
+* **Slider that drags:** list the optional `sliderMsg(model, grab_msg, value)` hook; without it a `slider` cmd is
+  click-only.
+
+**Common mistake:** writing `Msg.toggle_wifi` for a payload-free variant of a union that also has payload variants:
+that is the tag enum, not a `Msg` (`runtime coercion ... to union`). Write `Msg{ .toggle_wifi = {} }`.
+## 15. A 100k-row table
+
+**Goal:** a sortable, resizable, selectable table that scrolls smoothly at 100 000 rows.
+Full wiring in `examples/tables/src/app.zig`; background in `docs/features/tables-at-scale.md`.
+
+```zig
+const Table = teak.DataTable(.{ .max_rows = 131_072, .max_cols = 8 });
+const Rows = struct {                       // the app's data, passed per call: nothing is copied into the Model
+    items: []const Item,
+    pub fn cell(self: Rows, arena: std.mem.Allocator, col: u8, row: u32) []const u8 { ... }
+    pub fn compare(self: Rows, col: u8, a: u32, b: u32) std.math.Order { ... }
+};
+// Model:   table: *Table.Model      (allocate it: ~1 MB of permutation arrays)   init: table.setRows(n); table.setColumns(&cols)
+// update:  .table => |t| Table.update(m.table, t, Rows{ .items = m.items })
+// hooks:   scrollMsg/scrollLayoutMsg (wheel + viewport), canvasMsg (column grips), modsMsg (shift/ctrl clicks),
+//          keySpecialMsg (Table.keyMsg), animationMsg + subscribe (smooth scrolling)
+// view:    Table.view(m.table, cb, &cols, Rows{ ... }, msgs, .{ .id = TABLE_ID, .grip_base = GRIP_BASE });
+```
+
+**Common mistake:** keeping the rows in the Model and copying them on sort. `DataTable` sorts an *index permutation* (`order`); the
+selection is keyed by the *data* row so it survives sorting. For rows of different heights use `VarList` (heights are measured by layout and fed back
+through `virtualRowsMsg`); for hierarchies `TreeList` (preorder + depth, no pointers).
+
+---
+
+## 19. Add a 3D viewport
+
+**You want** a model on screen you can orbit, click, section and annotate.
+
+State lives in the `Model`; the viewport is one `viewport3d` Cmd whose `View`
+you rebuild every frame from it. Meshes are resources (uploaded once by key),
+placement is per-frame data.
+
+```zig
+const scene = teak.scene;
+
+pub const Model = struct {
+    cam: scene.Orbit = .{},
+    vp: [2]f32 = .{ 800, 600 }, // from the viewport's `layout` event
+    selected: u32 = 0,
+    cut_on: bool = false,
+};
+pub const Msg = union(enum) { view_event: teak.CanvasEvent };
+
+// 1. mesh data, once, through the resources hook (key = your part id)
+pub fn resources(m: *const Model) []const teak.Resource { return m.mesh_resources; }
+
+// 2. pointer events: orbit / pan / zoom-to-cursor, click to pick
+pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg { return if (ev.id == 7) .{ .view_event = ev } else null; }
+pub fn update(m: *Model, msg: Msg) void {
+    switch (msg) {
+        .view_event => |ev| {
+            if (ev.kind == .layout) m.vp = .{ ev.w, ev.h };
+            if (ev.kind == .up and ev.button == .left) {
+                const ray = scene.pickRay(m.cam.camera(ev.w, ev.h, null), ev.w, ev.h, ev.x, ev.y);
+                if (scene.pick.items(ray, m.pick_items, m.pick_meshes, .{})) |hit| m.selected = hit.id;
+            }
+            _ = m.cam.onEvent(ev, .{});
+        },
+    }
+}
+
+// 3. the view: one Item per part, selection is a flag, not geometry
+pub fn view(m: *const Model, cb: anytype) void {
+    const items = cb.arena.allocator().alloc(teak.SceneItem, parts.len) catch return;
+    for (items, parts, 1..) |*it, p, id| it.* = .{ .mesh = p.key, .id = @intCast(id), .flags = .{ .highlight = m.selected == id } };
+    cb.viewport3d(.{
+        .style = .{ .width = 480, .height = 320, .flex = 1 },
+        .camera = m.cam.camera(m.vp[0], m.vp[1], bounds),
+        .id = 7, .pointer = true, .label = "3D model",
+        .view = .{ .items = items, .grid = .{}, .gizmo = .{}, .cut = if (m.cut_on) .{ .plane = .{ 0, 1, 0, -20 } } else null },
+    });
+}
+```
+
+- `scene.pick.items` is pure CPU ray picking (BVH optional); no GPU readback, so `update` stays a pure function of (Model, Msg).
+- A `cut` discards one side of the plane and caps closed parts by stencil parity (`Item.cap_color`, hatch); give open shells `no_cap`
+  (outline only). `scene.section.isClosed` tells you which they are.
+- 2.5D: `View.planes` (tilted sheets drawn from `CanvasPrimitive`s) and `View.sprites` (billboards from image resources) live in the
+  same pass; see `examples/scene_layers`. Labels in 3D are ordinary overlay text at `scene.project(...)` plus the viewport's window
+  origin from the `layout` event (`pick.gizmoLabels` does it for the axis gizmo).
+- Examples: `examples/kerf_viewer` (parts panel, cut controls, picking) and `examples/scene_layers`.
+
+**Common mistakes:** forgetting `.pointer = true` / an `id` (no events arrive); rebuilding the *mesh resource* on every selection
+change (use item flags); using `Item.mesh` with a key that is not in `resources()` (it draws nothing); expecting `screen_px` sprite
+sizes in non-camera-facing modes; a plane whose `u`/`v` are not unit-length changes its world size (it is a scale).
+
+## 20. Add a golden screenshot test
+
+**Intent**: pin how a screen looks (layout + text + clicks that must land) so a regression fails CI.
+
+1. Give the example a `shot` step (copy `examples/todo/build.zig`'s block; it needs `teak.linkHeadless`) and a
+   `src/shot_main.zig`:
+
+```zig
+pub fn main(init: std.process.Init) !void {
+    try teak.headless.shotCli(App, Host, Gpu, init, "myapp.png", .{ .width = 720, .height = 600 }, &.{
+        .{ .name = "initial", .steps = &.{.{ .frames = 2 }} },
+        .{ .name = "filled", .steps = &.{
+            .{ .frames = 2 },
+            .{ .click = .{ 80, 66 } },   // focus the input
+            .{ .chars = "hello" },
+            .{ .key = .enter },
+            .{ .frames = 2 },
+        } },
+    });
+}
+```
+
+2. `zig build vreg -- --examples myapp --update`, then LOOK at `test/golden/myapp-*.png`.
+3. Commit the PNGs. From now on `zig build vreg` (and the CI `vreg` job) fails when pixels move.
+   Click coordinates come from the screenshot itself: shoot the initial state and read positions off it.
+   Put a frame between actions that depend on each other (a `click` already runs three frames).
+
+Details, tolerances and the `--update` workflow: [docs/features/visual-regression.md](features/visual-regression.md).

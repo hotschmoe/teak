@@ -75,8 +75,8 @@ pub const Table = struct {
                 self.dropped += 1;
                 if (!self.warned) {
                     self.warned = true;
-                    // Freestanding (web) has no default log sink; there `dropped` is the signal.
-                    if (comptime !builtin.is_test and builtin.os.tag != .freestanding) std.log.warn("teak: more than {d} resources declared; the extra ones are not uploaded (resources.MAX_RESOURCES)", .{MAX_RESOURCES});
+                    // Web entry points route std.log through `platform.logFn` (std_options).
+                    std.log.warn("teak: more than {d} resources declared; the extra ones are not uploaded (resources.MAX_RESOURCES)", .{MAX_RESOURCES});
                 }
             }
         }
@@ -122,8 +122,12 @@ pub const Table = struct {
     }
 
     /// Same for scene draws: an unknown mesh key draws just the clear colour.
-    pub fn remapScenes(self: *Table, draws: []render.SceneDraw) void {
+    /// Item keys (the flat list `buildFrame` produced) are remapped too; an
+    /// item with an unknown key gets the none handle and is not drawn.
+    pub fn remapScenes(self: *Table, draws: []render.SceneDraw, data: render.SceneData) void {
         for (draws) |*d| d.mesh = self.handleOf(.mesh, d.mesh);
+        for (data.items) |*it| it.mesh = self.handleOf(.mesh, it.mesh);
+        for (data.sprites) |*sp| sp.image = self.handleOf(.image, sp.image);
     }
 };
 
@@ -152,13 +156,14 @@ pub fn stageDraws(
     table: ?*Table,
     images: []render.ImageDraw,
     scenes: []render.SceneDraw,
+    data: render.SceneData,
 ) void {
     if (table) |t| {
         t.remapImages(images);
-        t.remapScenes(scenes);
+        t.remapScenes(scenes, data);
     }
     gpu.uploadImages(images);
-    if (comptime @hasDecl(@TypeOf(gpu.*), "renderScenes")) gpu.renderScenes(scenes);
+    if (comptime @hasDecl(@TypeOf(gpu.*), "renderScenes")) gpu.renderScenes(scenes, data);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -275,17 +280,28 @@ test "remap turns keys into handles; unknown keys become none" {
         .{ .mesh = 20, .rect_x = 0, .rect_y = 0, .rect_w = 1, .rect_h = 1, .clip_x = 0, .clip_y = 0, .clip_w = 1, .clip_h = 1 },
         .{ .mesh = 0, .rect_x = 0, .rect_y = 0, .rect_w = 1, .rect_h = 1, .clip_x = 0, .clip_y = 0, .clip_w = 1, .clip_h = 1 },
     };
-    t.remapScenes(&scenes);
+    var items = [_]render.SceneItem{ .{ .mesh = 20 }, .{ .mesh = 21 } };
+    var sprites = [_]render.SceneSprite{.{ .pos = .{ 0, 0, 0 }, .image = 10, .size = .{ 8, 8 } }};
+    t.remapScenes(&scenes, .{ .items = &items, .sprites = &sprites });
+    try std.testing.expectEqual(t.handleOf(.image, 10), sprites[0].image);
+    try std.testing.expectEqual(t.handleOf(.mesh, 20), items[0].mesh);
+    try std.testing.expectEqual(@as(u32, 0), items[1].mesh);
     try std.testing.expectEqual(t.handleOf(.mesh, 20), scenes[0].mesh);
     try std.testing.expectEqual(@as(u32, 0), scenes[1].mesh);
 }
 
-test "table is bounded: overflow entries are ignored, not a crash" {
+test "table is bounded: overflow entries are dropped loudly (warned), not a crash" {
+    // The one-time overflow warning is the behaviour under test; keep it off
+    // the test runner's stderr (the runner reports logged output as failure).
+    const saved_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = saved_level;
     var gpu: StubGpu = .{};
     var t: Table = .{};
     var list: [MAX_RESOURCES + 4]Resource = undefined;
     for (&list, 0..) |*r, i| r.* = img(@intCast(i + 1), 1);
     _ = t.sync(&gpu, &list);
+    try std.testing.expect(t.warned);
     try std.testing.expectEqual(MAX_RESOURCES, t.len);
     try std.testing.expectEqual(@as(usize, 4), t.dropped);
     try std.testing.expectEqual(@as(u32, 0), t.handleOf(.image, MAX_RESOURCES + 1));

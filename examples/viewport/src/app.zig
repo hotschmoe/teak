@@ -91,7 +91,7 @@ pub fn canvasMsg(_: *const Model, ev: teak.CanvasEvent) ?Msg {
             Msg{ .hover = .{ ev.x, ev.y } },
         .wheel => Msg{ .zoom_at = .{ .dy = ev.dy, .x = ev.x, .y = ev.y } },
         .leave => Msg{ .hover = null },
-        .down, .up => null,
+        .down, .up, .key => null,
     };
 }
 
@@ -154,6 +154,23 @@ fn gridPrimitives(arena: std.mem.Allocator, m: *const Model) []const teak.Canvas
     while (y < m.view_h) : (y += step) {
         const major = @mod(@round((y - m.pan_y) / step), 5) == 0;
         prims.append(arena, .{ .hline = .{ .y = y, .color = if (major) .{ 0.32, 0.34, 0.42, 1 } else .{ 0.2, 0.21, 0.27, 1 } } }) catch return prims.items;
+    }
+    // Coordinate labels at grid intersections, spaced >= ~130 px apart on screen. They are
+    // world-space text: the font size follows the zoom, and `scalable` draws every size from
+    // one distance-field glyph set, so zooming 0.2x - 8x never re-rasterizes or blurs.
+    const every: f32 = @max(1, @ceil(130 / step));
+    const label_font: teak.FontSpec = .{ .size_px = 11 * m.zoom, .family = .mono, .scalable = true };
+    var ly = first_y;
+    while (ly < m.view_h) : (ly += step) {
+        const iy = @round((ly - m.pan_y) / step);
+        if (@mod(iy, every) != 0) continue;
+        var lx = first_x;
+        while (lx < m.view_w) : (lx += step) {
+            const ix = @round((lx - m.pan_x) / step);
+            if (@mod(ix, every) != 0) continue;
+            const label = std.fmt.allocPrint(arena, "{d:.0},{d:.0}", .{ ix * GRID, iy * GRID }) catch continue;
+            prims.append(arena, .{ .text = .{ .x = lx + 3 * m.zoom, .y = ly + 2 * m.zoom, .content = label, .font = label_font, .color = .{ 0.62, 0.68, 0.85, 1 } } }) catch break;
+        }
     }
     // World origin.
     prims.append(arena, .{ .marker = .{ .x = m.pan_x, .y = m.pan_y, .size = 10, .color = .{ 0.95, 0.6, 0.2, 1 } } }) catch {};

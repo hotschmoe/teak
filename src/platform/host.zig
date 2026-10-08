@@ -49,8 +49,12 @@ pub const ImeState = struct {
     cursor: usize = 0,
 };
 
+pub const CursorShape = @import("../core/cursor.zig").CursorShape;
+
 pub const A11yNode = @import("../input/a11y.zig").A11yNode;
 
+pub const A11yActionKind = @import("../input/a11y.zig").ActionKind;
+pub const A11yAction = @import("../input/a11y.zig").Action;
 const effects = @import("../core/effects.zig");
 pub const Effect = effects.Effect;
 pub const EffectResult = effects.EffectResult;
@@ -85,6 +89,22 @@ pub const FileDialogPoll = union(enum) {
     pending: void,
     ok: []const u8,
     cancelled: void,
+};
+
+/// One synthetic input event, injected by the agent control channel
+/// (`src/control.zig`) through the Host's optional `injectInput`. It lands in
+/// the same queue real OS events do, so injected input takes exactly the path
+/// real input takes (HARDLINE: no second mutation path).
+pub const InjectEvent = union(enum) {
+    move: [2]f32,
+    down: pointer.Button,
+    up: pointer.Button,
+    /// DOM sign convention: positive `dy` scrolls content down.
+    wheel: [2]f32,
+    /// UTF-8 text; at most `InputQueue.CHARS_CAP` bytes land per frame.
+    chars: []const u8,
+    key: SpecialKey,
+    mods: Modifiers,
 };
 
 /// Per-frame input snapshot returned by `Host.pollInputs`.
@@ -155,6 +175,15 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   user picks a path. Return `null` on cancel. Native hosts call the
 ///   OS file picker; web stubs return `null` (browser file APIs need a
 ///   completely different flow).
+/// - Optional `waitEvents(timeout_ms: u32) void` (NOT checked by
+///   `validateHost`): event-driven idle. `teak.run` calls it after a frame
+///   that did nothing (`Runtime.quiet`, see `RunOptions.idle_skip`); the Host
+///   should block until an input event arrives (including resize / expose,
+///   which must surface as `InputState.resized`), an async effect result is
+///   ready, or `timeout_ms` elapses — then return. Hosts without it keep
+///   polling at their own pace (the skipped frames are still nearly free).
+///   X11: `XPending` + `poll` on the connection fd; Win32:
+///   `MsgWaitForMultipleObjects`; web: n/a (rAF drives `frame`).
 /// - `openSecondaryWindow(title, w, h)` returns an opaque window handle
 ///   for a second top-level window sharing this Host's event source.
 ///   Tracked as a Host-internal id; the app holds it and renders into
@@ -206,6 +235,14 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   devicePixelRatio backing store internally). Nothing in the
 ///   framework consumes it yet; see docs/features/host.md "DPI and
 ///   scaling" for the end-to-end render-at-scale follow-up.
+///   This is the one scale API: apps pass it to the Gpu as
+///   `InitOptions.scale`, and when it changes at runtime (Win32
+///   `WM_DPICHANGED`) the run loop forwards the new value to `Gpu.setScale`.
+/// - `setCursor(shape)` — **optional**: show the OS mouse cursor for a
+///   `CursorShape`. `teak.run` calls it only when the shape picked from
+///   the hovered cmd (or the App's `cursorFor` hook) changes. X11 maps to
+///   XCursor theme names (font cursors as fallback), Win32 to `IDC_*` via
+///   `WM_SETCURSOR`, web to CSS `cursor` through zunk.
 /// - `submit(effect)` / `pollEffectResults(buf)` — the declarative-effects
 ///   surface (HARDLINE §2 hatch 7, docs/features/effects.md). **Optional as
 ///   a pair** (a Host with neither answers every effect as unsupported;
@@ -268,6 +305,10 @@ pub fn validateHost(comptime T: type) void {
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
         .{ .name = "setImeSpot", .sig = "fn(*Host, i32, i32) void" },
         .{ .name = "setImeActive", .sig = "fn(*Host, bool) void" },
+        // Assistive-technology requests (web DOM mirror, UIA patterns): fills
+        // `out` and returns the count; called once per frame before input routing.
+        .{ .name = "pollA11yActions", .sig = "fn(*Host, []A11yAction) usize" },
+        .{ .name = "setCursor", .sig = "fn(*Host, CursorShape) void" },
         .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
         .{ .name = "pollEffectResults", .sig = "fn(*Host, []EffectResult) usize" },
     };
