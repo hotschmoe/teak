@@ -57,6 +57,9 @@ pub const tree_list = @import("core/tree_list.zig");
 pub const TreeList = tree_list.TreeList;
 /// `Combobox(cap)`: searchable select composed from TextField + the dropdown overlay.
 pub const combobox = @import("core/combobox.zig");
+/// Widgets built from existing Cmd primitives: toggle, progress, tabs, split pane,
+/// tooltip, toast, dialog, menu bar, context menu.
+pub const widgets = @import("core/widgets.zig");
 /// `ComponentList`: a dynamic homogeneous list of components.
 pub const component_list = @import("core/component_list.zig");
 /// `appendDebugOverlay`: dump the frame's cmds and rects as an overlay.
@@ -140,6 +143,12 @@ pub const MAX_BALANCE_DEPTH = cmd.MAX_BALANCE_DEPTH;
 pub const ButtonCmd = cmd.ButtonCmd;
 /// Colors, size and alignment of a button.
 pub const ButtonStyle = cmd.ButtonStyle;
+/// Per-corner radii for SDF surfaces.
+pub const Radii = cmd.Radii;
+/// Soft box shadow.
+pub const Shadow = cmd.Shadow;
+/// Two-stop gradient.
+pub const Gradient = cmd.Gradient;
 /// A single-style text leaf.
 pub const TextCmd = cmd.TextCmd;
 /// A single-line text input leaf (cursor, selection, focus Msg).
@@ -191,6 +200,10 @@ pub const Modifiers = pointer.Modifiers;
 pub const Button = pointer.Button;
 /// One pointer event on an interactive canvas or scene.
 pub const CanvasEvent = pointer.CanvasEvent;
+/// What the `hoverMsg` / `contextMsg` App hooks receive: pointer position, the widget's click Msg, its rect.
+pub const PointerEvent = pointer.PointerEvent;
+/// A window-space rectangle (`PointerEvent.box`).
+pub const Box = pointer.Box;
 /// Kind of a `CanvasEvent` (press, move, release, wheel, ...).
 pub const CanvasEventKind = pointer.CanvasEventKind;
 
@@ -303,6 +316,8 @@ pub const runSubs = sub.runSubs;
 pub const Theme = theme.Theme;
 /// Semantic color set of a theme.
 pub const Palette = theme.Palette;
+/// Radii, border width, spacing and shadow elevations of a theme.
+pub const ThemeTokens = theme.Tokens;
 /// Font set of a theme.
 pub const Typography = theme.Typography;
 /// The default dark palette.
