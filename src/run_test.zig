@@ -3903,3 +3903,105 @@ test "deprecatedHooks names the old pointer hooks an App still declares" {
     try std.testing.expectEqual(@as(usize, 0), comptime run_mod.deprecatedHooks(PmSurf).len);
     try std.testing.expectEqual(@as(usize, 2), comptime run_mod.deprecatedHooks(HookApp).len);
 }
+
+// ── Frame stats, continuous mode, exit-after-frames, HUD (#127) ─────
+
+test "frame stats: lastFrameStats is filled every frame, quiet frames included" {
+    const t = try begin(ClickApp, .{ .script = &.{ .{}, .{}, .{ .x = 5, .y = 5 } } }, .{});
+    defer t.destroy();
+
+    try t.rt.frame();
+    const s0 = t.rt.lastFrameStats();
+    try std.testing.expectEqual(@as(u64, 0), s0.index);
+    try std.testing.expect(s0.presented and s0.rebuilt and !s0.quiet);
+    try std.testing.expectEqual(@as(f32, 0), s0.frame_ms); // no previous present yet
+    try std.testing.expect(s0.cmds == t.rt.bufs[t.rt.current].cmds.items.len and s0.cmds > 0);
+    try std.testing.expect(s0.vertices > 0);
+    try std.testing.expect(s0.work_ms >= s0.view_ms + s0.layout_ms);
+
+    try t.rt.frame(); // nothing happened: the idle skip runs nothing
+    const s1 = t.rt.lastFrameStats();
+    try std.testing.expectEqual(@as(u64, 1), s1.index);
+    try std.testing.expect(s1.quiet and !s1.presented and !s1.rebuilt);
+    try std.testing.expectEqual(@as(f32, 0), s1.gpu_ms);
+
+    try t.rt.frame(); // the mouse moved: builds and presents again
+    const s2 = t.rt.lastFrameStats();
+    try std.testing.expect(s2.presented and !s2.quiet);
+    try std.testing.expect(s2.frame_ms > 0); // present-to-present since frame 0
+}
+
+test "frame stats: continuous mode never idles and rebuilds every frame" {
+    const script: []const Frame = &.{ .{}, .{}, .{}, .{}, .{} };
+    // Baseline: with the idle skip off, the frame diff still skips the rebuild.
+    const diffed = try playWith(ClickApp, .{ .script = script }, .{ .idle_skip = false });
+    defer diffed.destroy();
+    try std.testing.expectEqual(@as(u32, 5), diffed.gpu.render_calls);
+    try std.testing.expectEqual(@as(u32, 1), diffed.gpu.upload_vert_calls);
+
+    const cont = try playWith(ClickApp, .{ .script = script }, .{ .continuous = true });
+    defer cont.destroy();
+    try std.testing.expectEqual(@as(u32, 5), cont.gpu.render_calls);
+    try std.testing.expectEqual(@as(u32, 5), cont.gpu.upload_vert_calls);
+    const s = cont.rt.lastFrameStats();
+    try std.testing.expect(s.rebuilt and s.presented and !s.quiet);
+
+    // Through `run`: no frame is quiet, so the Host is never asked to wait.
+    var host: ScriptHost = .{ .script = script };
+    var gpu: StubGpu = .{};
+    try run_mod.run(ClickApp, std.testing.allocator, &host, &gpu, .{ .continuous = true });
+    try std.testing.expectEqual(@as(u32, 0), host.wait_calls);
+    try std.testing.expectEqual(@as(u32, 5), gpu.upload_vert_calls);
+}
+
+test "frame stats: exit_after_frames stops run before the window closes" {
+    const frames: [10]Frame = @splat(.{});
+    var host: ScriptHost = .{ .script = &frames };
+    var gpu: StubGpu = .{};
+    try run_mod.run(ClickApp, std.testing.allocator, &host, &gpu, .{ .continuous = true, .exit_after_frames = 3 });
+    try std.testing.expectEqual(@as(u32, 3), gpu.render_calls);
+    try std.testing.expectEqual(@as(usize, 3), host.next); // 3 polls, not 11
+    try std.testing.expect(!host.shouldClose());
+}
+
+test "frame stats: stats_path writes a CSV line per frame and a percentile summary" {
+    const gpa = std.testing.allocator;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const path = try snapshotPath(td, "frames.csv");
+    defer gpa.free(path);
+
+    const frames: [6]Frame = @splat(.{});
+    var host: ScriptHost = .{ .script = &frames };
+    var gpu: StubGpu = .{};
+    try run_mod.run(ClickApp, gpa, &host, &gpu, .{ .continuous = true, .stats_path = path });
+
+    const csv = try readSnapshot(td, "frames.csv");
+    defer gpa.free(csv);
+    try std.testing.expect(std.mem.startsWith(u8, csv, "frame,frame_ms,"));
+    try std.testing.expectEqual(@as(usize, 7), std.mem.count(u8, csv, "\n")); // header + 6 frames
+    try std.testing.expect(std.mem.indexOf(u8, csv, "\n5,") != null);
+
+    const summary = try readSnapshot(td, "frames.csv.summary.txt");
+    defer gpa.free(summary);
+    // 6 presents -> 5 present-to-present samples.
+    try std.testing.expect(std.mem.indexOf(u8, summary, "6 frames, 5 frame_ms samples") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "p95") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "p99") != null);
+}
+
+test "frame stats: the HUD overlay is drawn but clicks fall through to the app" {
+    // The button sits at the origin, under the HUD panel at (8, 8).
+    const t = try playWith(ClickApp, .{ .script = &.{
+        .{},
+        .{ .x = 10, .y = 10, .held = left, .down = left },
+        .{ .x = 10, .y = 10, .up = left },
+    } }, .{ .hud = true });
+    defer t.destroy();
+    try std.testing.expectEqual(@as(i32, 1), t.rt.model.count);
+    var overlays: usize = 0;
+    for (t.rt.bufs[t.rt.current].cmds.items) |c| {
+        if (c == .push_overlay) overlays += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), overlays);
+}

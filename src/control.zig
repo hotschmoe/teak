@@ -252,20 +252,6 @@ pub fn start(st: *State, host: anytype, opts: anytype) void {
 
 // ── Inspector support (called from Runtime) ────────────────────────
 
-/// Monotonic nanoseconds, or 0 when the inspector is off or the target has
-/// no clock (so the normal path never reads one).
-pub fn stamp(st: *const State) u64 {
-    if (comptime !fs_capable) return 0;
-    if (!st.inspect) return 0;
-    const now = std.Io.Clock.awake.now(std.Options.debug_io);
-    return @intCast(now.nanoseconds);
-}
-
-pub fn msBetween(a: u64, b: u64) f32 {
-    if (a == 0 or b < a) return 0;
-    return @as(f32, @floatFromInt(b - a)) / 1_000_000.0;
-}
-
 pub fn toggleInspect(st: *State) void {
     st.inspect = !st.inspect;
     st.dirty = true;

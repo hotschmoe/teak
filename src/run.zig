@@ -183,6 +183,7 @@ const render = @import("render/build.zig");
 const vertex = @import("render/vertex.zig");
 const resources = @import("resources.zig");
 const control = @import("control.zig");
+const frame_stats = @import("frame_stats.zig");
 const keys_mod = @import("input/keys.zig");
 const commands_mod = @import("core/commands.zig");
 
@@ -257,6 +258,29 @@ pub const RunOptions = struct {
     /// Set false for an app that needs a frame every tick. The web Host stays
     /// rAF-driven but still skips the work. See docs/features/run.md.
     idle_skip: bool = true,
+    /// Continuous (benchmark) mode: every frame does the full work — no idle
+    /// skip AND no frame-diff skip of the vertex rebuild + upload — so frame
+    /// pacing reflects the real per-frame cost. `TEAK_CONTINUOUS=1` turns it
+    /// on (`=0` off; env wins, read once at start). The snapshot / a11y
+    /// publish stay change-gated. See `Runtime.lastFrameStats`.
+    continuous: bool = false,
+    /// Per-frame timing CSV (`teak.FrameStats`, one line per `frame` call
+    /// after a header row); at shutdown the `frame_ms` count / mean / p50 /
+    /// p95 / p99 / max and per-phase means go to stderr and
+    /// `<path>.summary.txt`. `TEAK_FRAME_STATS=<path>` wins. Compiled out on
+    /// targets with no filesystem (wasm); `Runtime.lastFrameStats` works
+    /// everywhere.
+    stats_path: ?[]const u8 = null,
+    /// Stop after this many `frame` calls (0 = never): `run` returns as if
+    /// the window closed, so a benchmark terminates itself.
+    /// `TEAK_EXIT_AFTER_FRAMES=<n>` wins. Hosts that own the loop (web) can
+    /// poll `Runtime.exitRequested`.
+    exit_after_frames: u64 = 0,
+    /// Frame-time HUD: a small overlay in the top-left corner with the last
+    /// frame's `FrameStats`, appended by the loop after the app's view (an
+    /// overlay with no Msgs: clicks fall through, the Model never sees it).
+    /// `TEAK_HUD=1` wins.
+    hud: bool = false,
 };
 
 /// The target has a host filesystem to mirror snapshots into. Freestanding
@@ -425,6 +449,24 @@ fn SecondaryDriver(comptime CmdBufT: type) type {
     };
 }
 
+/// The `RunOptions.hud` overlay: the previous frame's `FrameStats` in a
+/// small top-left panel, appended by the loop AFTER the app's (pure) view, like
+/// the inspector. It carries no Msg and is not modal, so clicks and hovers
+/// fall through to the app; the Model never sees it.
+fn appendHud(cb: anytype, s: frame_stats.FrameStats) void {
+    const a = cb.arena.allocator();
+    const fps: f32 = if (s.frame_ms > 0) 1000 / s.frame_ms else 0;
+    const l1 = std.fmt.allocPrint(a, "{d:.2} ms  {d:.0} fps  frame {d}", .{ s.frame_ms, fps, s.index }) catch return;
+    const l2 = std.fmt.allocPrint(a, "upd {d:.2}  view {d:.2}  lay {d:.2}  build {d:.2}  gpu {d:.2}", .{ s.update_ms, s.view_ms, s.layout_ms, s.build_ms, s.gpu_ms }) catch return;
+    const l3 = std.fmt.allocPrint(a, "{d} cmds  {d} verts", .{ s.cmds, s.vertices }) catch return;
+    const font: text.FontSpec = .{ .size_px = 12, .family = .mono };
+    cb.pushOverlay(.{ .x = 8, .y = 8, .padding = 6, .gap = 1, .backdrop = .{ 0, 0, 0, 0.72 } });
+    cb.textStyled(l1, font, .{ 0.55, 1, 0.55, 1 });
+    cb.textStyled(l2, font, .{ 0.92, 0.92, 0.94, 1 });
+    cb.textStyled(l3, font, .{ 0.92, 0.92, 0.94, 1 });
+    cb.popOverlay();
+}
+
 /// True when two secondary-window specs are identical. Used to suppress an
 /// immediate reopen after the user closes the OS window when the app leaves
 /// its intent spec unchanged (it omits `secondaryClosedMsg`).
@@ -451,7 +493,7 @@ pub fn run(
 ) !void {
     var rt = try Runtime(App, @TypeOf(host.*), @TypeOf(gpu.*)).init(gpa, host, gpu, opts);
     defer rt.deinit();
-    while (!host.shouldClose()) {
+    while (!host.shouldClose() and !rt.exitRequested()) {
         try rt.frame();
         if (comptime @hasDecl(@TypeOf(host.*), "waitEvents")) {
             if (rt.quiet and !host.shouldClose()) host.waitEvents(rt.idleTimeoutMs());
@@ -671,6 +713,21 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// so the two reference distinct storage.
         ime_bufs: [2][128]u8 = undefined,
 
+        /// Frame timing (`frame_stats.zig`): the finished record of the last
+        /// `frame` call, the one being filled, and where it goes. Loop
+        /// bookkeeping only — the numbers never reach `update` / `view`.
+        stats: frame_stats.FrameStats = .{},
+        stats_cur: frame_stats.FrameStats = .{},
+        stats_sink: frame_stats.Sink = .{},
+        /// Loop-clock ns of the last `Gpu.renderFrame` return (0 = none yet).
+        last_present_ns: u64 = 0,
+        /// `frame` calls that ran (the stats index / exit counter).
+        frames_run: u64 = 0,
+        /// Resolved once at init: `RunOptions` with the env overrides applied.
+        continuous: bool = false,
+        hud: bool = false,
+        exit_after_frames: u64 = 0,
+
         pub fn init(gpa: std.mem.Allocator, host: *Host, gpu: *Gpu, opts: RunOptions) !Self {
             if (comptime @hasDecl(Host, "setAppName")) {
                 if (opts.app_name.len > 0) host.setAppName(opts.app_name);
@@ -691,7 +748,74 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .bufs = .{ CmdBufT.init(gpa), CmdBufT.init(gpa) },
                 .secondary = SecondaryDriver(CmdBufT).init(gpa),
                 .snap = SnapshotSink.init(gpa, opts.snapshot_path),
+                .stats_sink = frame_stats.Sink.init(gpa, opts.stats_path),
+                .continuous = frame_stats.envFlag(gpa, "TEAK_CONTINUOUS") orelse opts.continuous,
+                .hud = frame_stats.envFlag(gpa, "TEAK_HUD") orelse opts.hud,
+                .exit_after_frames = frame_stats.envInt(gpa, "TEAK_EXIT_AFTER_FRAMES") orelse opts.exit_after_frames,
             };
+        }
+
+        /// Timing and counters of the last `frame` call (see
+        /// `teak.FrameStats`). Measured on the loop clock; never visible to
+        /// `update` / `view`.
+        pub fn lastFrameStats(self: *const Self) frame_stats.FrameStats {
+            return self.stats;
+        }
+
+        /// `exit_after_frames` (or `TEAK_EXIT_AFTER_FRAMES`) frames have run.
+        /// `run` stops on it; a Host that owns the loop may poll it.
+        pub fn exitRequested(self: *const Self) bool {
+            return self.exit_after_frames != 0 and self.frames_run >= self.exit_after_frames;
+        }
+
+        /// Monotonic loop-clock nanoseconds: a high-resolution clock where
+        /// the target has one, else the Host clock (`nowMs`, whole ms).
+        fn clockNs(self: *const Self) u64 {
+            if (comptime frame_stats.fs_capable) {
+                const now = std.Io.Clock.awake.now(std.Options.debug_io);
+                return @intCast(@max(now.nanoseconds, 0));
+            }
+            return self.host.nowMs() *| std.time.ns_per_ms;
+        }
+
+        fn msSince(self: *const Self, t0: u64) f32 {
+            const t1 = self.clockNs();
+            if (t1 <= t0) return 0;
+            return @as(f32, @floatFromInt(t1 - t0)) / std.time.ns_per_ms;
+        }
+
+        /// Time `gpu.renderFrame` and stamp the present-to-present interval.
+        fn present(self: *Self, clear: [4]f32) void {
+            const t0 = self.clockNs();
+            self.gpu.renderFrame(clear);
+            const t1 = self.clockNs();
+            const s = &self.stats_cur;
+            s.gpu_ms = if (t1 > t0) @as(f32, @floatFromInt(t1 - t0)) / std.time.ns_per_ms else 0;
+            s.presented = true;
+            if (self.last_present_ns != 0 and t1 > self.last_present_ns)
+                s.frame_ms = @as(f32, @floatFromInt(t1 - self.last_present_ns)) / std.time.ns_per_ms;
+            self.last_present_ns = t1;
+        }
+
+        /// `uploadFrame`, timed into `build_ms`.
+        fn uploadFrameTimed(self: *Self, cmds: []const cmd.Cmd(Msg), rects: []const Rect, ts: TransientState) void {
+            const t0 = self.clockNs();
+            self.uploadFrame(cmds, rects, ts);
+            self.stats_cur.build_ms = self.msSince(t0);
+            self.stats_cur.rebuilt = true;
+        }
+
+        /// Close the frame's record: publish it and feed the sink.
+        fn endFrameStats(self: *Self, t0: u64) void {
+            const s = &self.stats_cur;
+            s.work_ms = self.msSince(t0);
+            s.vertices = @intCast(self.verts.items.len);
+            s.cmds = @intCast(self.bufs[self.current].cmds.items.len);
+            // The inspector panel shows the same numbers.
+            self.ctl.timings = .{ .view_ms = s.view_ms, .layout_ms = s.layout_ms, .render_ms = s.build_ms + s.gpu_ms };
+            self.stats = s.*;
+            self.stats_sink.record(s.*);
+            self.frames_run += 1;
         }
 
         pub fn deinit(self: *Self) void {
@@ -702,6 +826,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 }
             }
             self.snap.deinit();
+            self.stats_sink.deinit();
             self.a11y_cache.deinit(self.gpa);
             self.ctl.deinit();
             self.secondary.deinit(self.gpa);
@@ -719,6 +844,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// One loop iteration. Returns early, before presenting, when the
         /// host reports close during the input poll.
         pub fn frame(self: *Self) !void {
+            const t_frame = self.clockNs();
+            self.stats_cur = .{ .index = self.frames_run };
             control.beforePoll(self);
             // Runs on EVERY exit (quiet frames included): finishes the control
             // command in flight and advances the frame number.
@@ -726,6 +853,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const input = self.host.pollInputs();
             control.afterPoll(self, input);
             if (self.host.shouldClose()) return;
+            defer self.endFrameStats(t_frame);
             // The window's DPI scale changed (Win32 per-monitor DPI): the Gpu
             // reconfigures its surfaces at the new device size. The initial
             // scale reaches the Gpu through `InitOptions.scale`.
@@ -763,20 +891,22 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.serviceEffects();
 
             // Event-driven idle: nothing changed since the frame on screen.
-            self.quiet = self.opts.idle_skip and self.built_once and
+            self.stats_cur.update_ms = self.msSince(t_frame);
+            self.quiet = self.opts.idle_skip and !self.continuous and self.built_once and
                 self.dispatch_count == dispatched_before and !self.layout_dirty and self.inputIdle(input) and !self.ctl.consumeDirty();
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
+            self.stats_cur.quiet = self.quiet;
             if (self.quiet) {
                 // Idle, but the caret may be due to toggle: redraw the last
                 // built frame with the new phase (no view / layout / diff).
                 if (self.blinkDue()) {
                     self.ts.blink_on = !self.ts.blink_on;
                     const last = self.current;
-                    self.uploadFrame(self.bufs[last].cmds.items, self.rects[last].items, self.ts);
+                    self.uploadFrameTimed(self.bufs[last].cmds.items, self.rects[last].items, self.ts);
                     self.prev_ts = self.ts;
-                    self.gpu.renderFrame(self.opts.clear_color orelse self.bufs[last].theme.palette.bg);
+                    self.present(self.opts.clear_color orelse self.bufs[last].theme.palette.bg);
                 }
                 return;
             }
@@ -809,15 +939,14 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const secondary_open = has_secondary and App.secondaryWindow(&self.model) != null;
             // A resource upload/release changes the handles the draws map to
             // even when no Cmd changed, so it forces a re-stage too.
-            const t_render = control.stamp(&self.ctl);
-            if (diff.changed() or secondary_open or res_changed) {
-                self.uploadFrame(cur_cmds, cur_rects, self.ts);
+            // Continuous (benchmark) mode rebuilds every frame.
+            if (self.continuous or diff.changed() or secondary_open or res_changed) {
+                self.uploadFrameTimed(cur_cmds, cur_rects, self.ts);
             }
             self.prev_ts = self.ts;
             self.publishA11y(cur, diff);
 
-            self.gpu.renderFrame(self.opts.clear_color orelse self.bufs[self.current].theme.palette.bg);
-            self.ctl.timings.render_ms = control.msBetween(t_render, control.stamp(&self.ctl));
+            self.present(self.opts.clear_color orelse self.bufs[self.current].theme.palette.bg);
 
             const sec = if (has_secondary) try self.driveSecondary() else SecondaryFrame{};
 
@@ -2296,7 +2425,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn buildView(self: *Self, input: Input) !u1 {
             self.current ^= 1;
             const cur = self.current;
-            const t_view = control.stamp(&self.ctl);
+            const t_view = self.clockNs();
             self.bufs[cur].reset();
             if (@hasDecl(App, "themeFor")) self.bufs[cur].theme = App.themeFor(&self.model);
             App.view(&self.model, &self.bufs[cur]);
@@ -2304,8 +2433,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             // Dev inspector: appended after the (pure) view, from the previous
             // frame's data; a no-op unless it is switched on.
             control.appendInspectorFor(self, &self.bufs[cur], cur, cur ^ 1, @floatFromInt(input.width), @floatFromInt(input.height));
+            if (self.hud) appendHud(&self.bufs[cur], self.stats);
             const cmds = self.bufs[cur].cmds.items;
-            const t_layout = control.stamp(&self.ctl);
+            const t_layout = self.clockNs();
+            self.stats_cur.view_ms = self.msSince(t_view);
 
             try self.rects[cur].resize(self.gpa, cmds.len);
             layout.LayoutEngine.doLayout(
@@ -2315,9 +2446,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 @floatFromInt(input.height),
                 self.measurer,
             );
-            const t_done = control.stamp(&self.ctl);
-            self.ctl.timings.view_ms = control.msBetween(t_view, t_layout);
-            self.ctl.timings.layout_ms = control.msBetween(t_layout, t_done);
+            self.stats_cur.layout_ms = self.msSince(t_layout);
             return cur;
         }
 

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Frame timing and perf counters (#127)
+
+- `teak.FrameStats`: every `Runtime.frame()` records `frame_ms`
+  (present-to-present), `work_ms`, `update_ms`, `view_ms`, `layout_ms`,
+  `build_ms`, `gpu_ms`, cmd and vertex counts, and whether the frame was
+  quiet / presented / rebuilt, on the loop clock. Read it with
+  `Runtime.lastFrameStats()`.
+- `RunOptions.continuous` / `TEAK_CONTINUOUS=1`: no idle skip and no
+  frame-diff skip, so every frame does the full work (benchmarking).
+- `RunOptions.stats_path` / `TEAK_FRAME_STATS=<path>`: a CSV row per frame,
+  plus a `frame_ms` mean / p50 / p95 / p99 / max summary at exit (stderr and
+  `<path>.summary.txt`). `teak.summarizeFrameMs` / `teak.FrameStatsSummary`.
+- `RunOptions.exit_after_frames` / `TEAK_EXIT_AFTER_FRAMES=<n>`: `run`
+  returns after n frames; `Runtime.exitRequested()`.
+- `RunOptions.hud` / `TEAK_HUD=1`: an on-screen frame-time overlay drawn
+  after the app's view (no Msgs, clicks fall through).
+- The inspector's view / layout / render timings now come from the same
+  record; `control.stamp` / `control.msBetween` are removed.
+
 ## 0.1.0 — 2026-10-09
 
 First release. Zig 0.17.0. See docs/SESSION-2026-10.md for the full account of this cycle.

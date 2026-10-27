@@ -737,12 +737,20 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.Runtime`: `pub const Runtime = runtime.Runtime`
 > Options for `run` (title, clear color, snapshot sink, ...).
 - `teak.RunOptions` = `runtime.RunOptions`
-  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip`
+  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip, continuous, stats_path, exit_after_frames, hud`
 > Pointer hooks superseded by `pointerMsg` that `App` still declares.
 - `teak.deprecatedHooks`: `pub const deprecatedHooks = runtime.deprecatedHooks`
 > A second top-level window the app wants open this frame.
 - `teak.SecondaryWindowSpec` = `runtime.SecondaryWindowSpec`
   - fields: `title, width, height`
+> Per-frame timing + counters of the run loop (`Runtime.lastFrameStats`, `TEAK_FRAME_STATS`).
+- `teak.FrameStats` = `frame_stats.FrameStats`
+  - fields: `index, frame_ms, work_ms, update_ms, view_ms, layout_ms, build_ms, gpu_ms, cmds, vertices, quiet, presented, rebuilt`
+> `frame_ms` distribution (count, mean, min, p50, p95, p99, max) from `summarizeFrameMs`.
+- `teak.FrameStatsSummary` = `frame_stats.Summary`
+  - fields: `count, mean_ms, min_ms, p50_ms, p95_ms, p99_ms, max_ms`
+> Summarize `frame_ms` samples (sorts them in place; nearest-rank percentiles).
+- `teak.summarizeFrameMs`: `pub const summarizeFrameMs = frame_stats.summarize`
 > Font family selector (monospace or sans).
 - `teak.FontFamily` = `text.FontFamily`
   - fields: `sans, serif, mono`
@@ -2632,7 +2640,7 @@ compiles wasm32-freestanding-clean.
 Canonical application loop — the `teak.run` wrapper.
 
 - `struct RunOptions`
-  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip`
+  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip, continuous, stats_path, exit_after_frames, hud`
 > Declares a second top-level window the app wants open this frame.
 > Data-only (HARDLINE §3): `secondaryWindow(*const Model)` returns this
 > or `null`; `run` diffs it against the live window to open / close /
@@ -2822,10 +2830,6 @@ See docs/features/agent-driver.md.
 > Resolve options + environment (env wins) and start whatever is asked for.
 > Failures degrade to "feature off" with a log line, never a crash.
 - `pub fn start(st: *State, host: anytype, opts: anytype) void`
-> Monotonic nanoseconds, or 0 when the inspector is off or the target has
-> no clock (so the normal path never reads one).
-- `pub fn stamp(st: *const State) u64`
-- `pub fn msBetween(a: u64, b: u64) f32`
 - `pub fn toggleInspect(st: *State) void`
 > Append the inspector overlay for the frame being built into `cb`, from the
 > previous frame `prev` (cmds, rects), then remember where the app's own
@@ -2837,6 +2841,57 @@ See docs/features/agent-driver.md.
 - `pub fn afterPoll(rt: anytype, input: anytype) void`
 > After the frame is built and presented: finish the command in flight.
 - `pub fn afterFrame(rt: anytype) void`
+
+### `teak.frame_stats` (`src/frame_stats.zig`)
+
+Frame timing and perf counters for the run loop: `FrameStats`, the percentile summary, and the `TEAK_FRAME_STATS` CSV sink
+
+> The target has a host filesystem + environment (not wasm/freestanding).
+- `pub const fs_capable = builtin.os.tag != .freestanding`
+> What one `Runtime.frame` call cost. Plain data; every duration is in
+> milliseconds of the loop clock (a monotonic high-resolution clock on
+> native, `Host.nowMs` — whole milliseconds — on wasm/freestanding).
+- `struct FrameStats`
+  - fields: `index, frame_ms, work_ms, update_ms, view_ms, layout_ms, build_ms, gpu_ms, cmds, vertices, quiet, presented, rebuilt`
+> `frame_ms` distribution of a run. Percentiles are nearest-rank over the
+> sorted samples (`p50` of 1..100 is 50, `p99` is 99).
+- `struct Summary`
+  - fields: `count, mean_ms, min_ms, p50_ms, p95_ms, p99_ms, max_ms`
+> Nearest-rank percentile `p` (0..100) of ascending `sorted`; 0 if empty.
+- `pub fn percentile(sorted: []const f32, p: f32) f32`
+> Summarize `frame_ms` samples. Sorts `samples` in place.
+- `pub fn summarize(samples: []f32) Summary`
+> Header row of the CSV sink (one `writeCsvLine` per frame follows).
+- `pub const csv_header = "frame,frame_ms,work_ms,update_ms,view_ms,layout_ms,build_ms,gpu_ms,cmds,vertices,quiet,presented,rebuilt\n"`
+- `pub fn writeCsvLine(w: *std.Io.Writer, s: FrameStats) std.Io.Writer.Error!void`
+> Mean of each phase over the presented frames of a run.
+- `struct PhaseMeans`
+  - fields: `work_ms, update_ms, view_ms, layout_ms, build_ms, gpu_ms`
+> The human-readable end-of-run report.
+- `pub fn writeSummary(w: *std.Io.Writer, frames: u64, s: Summary, m: PhaseMeans) std.Io.Writer.Error!void`
+> Owned dupe of environment variable `name` if set and non-empty. Read
+> through the globally-available `Io` handle (no libc), like the snapshot
+> sink's `TEAK_SNAPSHOT`. Always null on wasm/freestanding.
+- `pub fn envVar(gpa: std.mem.Allocator, name: []const u8) ?[]u8`
+> `name` as a flag: unset -> null, "0" -> false, anything else -> true.
+- `pub fn envFlag(gpa: std.mem.Allocator, name: []const u8) ?bool`
+> `name` as an unsigned integer; unset or unparsable -> null.
+- `pub fn envInt(gpa: std.mem.Allocator, name: []const u8) ?u64`
+> CSV sink: one line per frame to `<path>`, then the summary to stderr and
+> `<path>.summary.txt` at `deinit`. Lines are buffered and flushed every
+> 16 KiB so a frame rarely touches the disk. A write failure disables the
+> sink after one warning; it never crashes the app.
+- `struct Sink`
+  - fields: `enabled, gpa, path, file, buf, samples, sums, presented, frames`
+  > Open `path` (env `TEAK_FRAME_STATS` wins over `opt_path`). Any
+  > failure yields a disabled sink.
+  - `pub fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8) Sink`
+  - `pub fn record(self: *Sink, s: FrameStats) void`
+  > The phase means over the presented frames so far.
+  - `pub fn means(self: *const Sink) PhaseMeans`
+  > Flush the CSV, write the summary (stderr + `<path>.summary.txt`),
+  > close the file.
+  - `pub fn deinit(self: *Sink) void`
 
 ### `teak.input_record` (`src/input_record.zig`)
 

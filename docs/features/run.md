@@ -242,6 +242,51 @@ the primary window is unaffected on the other backends.
 - `control_path` / `record_path` / `replay_path: ?[]const u8`, `inspect: bool`, `inspect_hotkey: bool` — agent control socket, input recording / replay, the dev inspector (`TEAK_CONTROL` / `TEAK_RECORD` / `TEAK_REPLAY` / `TEAK_INSPECT` env win); see [agent-driver.md](agent-driver.md).
 - Optional hooks added with `commands` / `dragMsg`: see [commands.md](commands.md) and [drag-drop.md](drag-drop.md).
 - `app_name: []const u8` — names the app for hosts that keep per-app files (native storage under `<config>/teak/<app_name>/`); empty = the window title.
+- `idle_skip: bool` (default true) — event-driven idle, see [below](#event-driven-idle).
+- `continuous`, `stats_path`, `exit_after_frames`, `hud` — frame timing and benchmarking, see [Frame timing](#frame-timing-and-benchmarking-framestats).
+
+### Frame timing and benchmarking (`FrameStats`)
+
+Every `frame()` call fills a plain-data `teak.FrameStats` record, timed by the
+loop itself (never by `view`; HARDLINE §1/§3): native targets use a monotonic
+high-resolution clock, wasm/freestanding the Host clock (`Host.nowMs`, whole
+milliseconds). The numbers never reach `update` or `view`; they leave the loop
+only as data: `Runtime.lastFrameStats()`, the CSV sink, or the HUD.
+
+| Field | Meaning |
+|---|---|
+| `index` | 0-based count of `frame()` calls (quiet ones included) |
+| `frame_ms` | present-to-present: time since the previous `Gpu.renderFrame` returned; 0 when this frame did not present, or on the first present |
+| `work_ms` | the whole `frame()` call, excluding `run`'s idle wait |
+| `update_ms` | input poll + routing + every `update` it dispatched + subs + effects |
+| `view_ms` / `layout_ms` | `view` (plus inspector / HUD overlay) / the layout passes |
+| `build_ms` | `buildFrame` + vertex / text / image / scene uploads; 0 when the frame diff skipped the rebuild |
+| `gpu_ms` | `Gpu.renderFrame` (encode, submit, present; includes vsync blocking) |
+| `cmds` / `vertices` | cmds on screen / vertices last uploaded |
+| `quiet` / `presented` / `rebuilt` | idle skip ran nothing / `renderFrame` ran / vertices were rebuilt |
+
+Options (each env var is read once at `Runtime.init` and wins over the field):
+
+| `RunOptions` field | Env | Effect |
+|---|---|---|
+| `continuous: bool = false` | `TEAK_CONTINUOUS=1` (`0` = off) | every frame does the full work: no idle skip AND no frame-diff skip of the vertex rebuild + upload. Snapshot and a11y publish stay change-gated. |
+| `stats_path: ?[]const u8 = null` | `TEAK_FRAME_STATS=<path>` | one CSV row per `frame()` after a header row (`frame,frame_ms,work_ms,update_ms,view_ms,layout_ms,build_ms,gpu_ms,cmds,vertices,quiet,presented,rebuilt`); at shutdown a summary (frame count, `frame_ms` sample count, mean / min / p50 / p95 / p99 / max, per-phase means over presented frames) goes to stderr and `<path>.summary.txt`. Buffered, flushed every 16 KiB. Compiled out on wasm. |
+| `exit_after_frames: u64 = 0` | `TEAK_EXIT_AFTER_FRAMES=<n>` | `run` returns after n `frame()` calls, as if the window closed; `Runtime.exitRequested()` for loops the host owns. |
+| `hud: bool = false` | `TEAK_HUD=1` | a small top-left overlay with the previous frame's stats, appended by the loop after the app's view (like the inspector). No Msgs, not modal: clicks and hovers fall through; it does appear in the snapshot / a11y tree. |
+
+Percentiles are nearest-rank (`teak.summarizeFrameMs(samples) FrameStatsSummary`,
+also usable on numbers collected from `lastFrameStats`). A benchmark run of an
+example, no custom loop:
+
+```sh
+TEAK_CONTINUOUS=1 TEAK_FRAME_STATS=frames.csv TEAK_EXIT_AFTER_FRAMES=600 zig build ui
+cat frames.csv.summary.txt
+```
+
+Without `continuous`, `frame_ms` includes idle time and many frames are
+`quiet` (nothing presented), which is the true cost of an idle app but not a
+pacing benchmark. `gpu_ms` / `frame_ms` include vsync blocking when the
+backend presents with FIFO.
 
 ### Live snapshot sink (`TEAK_SNAPSHOT`)
 
