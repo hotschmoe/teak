@@ -208,11 +208,11 @@ option, zunk still finds a `bridge.js` or `js/bridge.js` at the build root.
 (zunk's build report may still list such an import as an unresolved stub; the
 bridge's definition wins at load time.)
 
-**Headless screenshot / tests** (no display; needs a Vulkan device and a TTF).
+**Headless screenshot / tests** (no display; needs a Vulkan / DX12 / Metal device and a TTF; Linux, Windows and macOS, use `teak.hasNativeBackend(os)` as the gate).
 `build.zig`:
 
 ```zig
-    if (target.result.os.tag == .linux) {
+    if (teak.hasNativeBackend(target.result.os.tag)) {
         const shot_exe = b.addExecutable(.{
             .name = "myapp-shot",
             .root_module = b.createModule(.{
@@ -222,7 +222,10 @@ bridge's definition wins at load time.)
             }),
         });
         teak.linkHeadless(b, shot_exe, .{});
+        // Run the installed exe: on Windows only zig-out/bin has wgpu_native.dll.
+        const install_shot = b.addInstallArtifact(shot_exe, .{});
         const shot_run = b.addRunArtifact(shot_exe);
+        shot_run.step.dependOn(&install_shot.step);
         shot_run.addPassthruArgs();
         b.step("shot", "zig build shot -- out.png").dependOn(&shot_run.step);
     }
