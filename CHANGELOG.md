@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Windows: native apps link with Zig's self-hosted backend (#154)
+
+- `use_llvm = false` Debug builds of a `linkNativeWgpu` / `linkHeadless` exe
+  failed with `TODO handle name_type NAME_EXPORTAS`. The cause was not
+  wgpu-native's import library but mingw's `_assert` import, pulled in by
+  stb_truetype; `stb_truetype_impl.c` now defines `STBTT_assert` away. The
+  vector_canvas UI links in about 4 s instead of 8-9 s.
+
 ### DataTable: re-sort after a data change (#153)
 
 - `DataTable(cfg).Model.resort(src)` and `Msg.resort` re-apply the current
