@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Theme: a warning colour (#143)
+
+- `Palette.warning` (set in all four built-in palettes), `Theme.warning_color`
+  and `cb.textWarning(text)`, the sibling of `danger` / `textDanger`. Both
+  fields are defaulted, so hand-built palettes and themes still compile.
+
 ### SVG icons: `teak.svg`
 
 - `teak.svg.rasterize` / `rasterizeInto`: a pure CPU rasterizer for the SVG

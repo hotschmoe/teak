@@ -123,6 +123,7 @@ cb.text("Hello");          // uses theme.text_color + theme.typography.body
 cb.heading("Section");     // uses theme.heading_color + theme.typography.heading
 cb.textMuted("(units)");   // uses theme.muted_color + theme.typography.small
 cb.textDanger("invalid");  // uses theme.danger_color + theme.typography.small
+cb.textWarning("auto-restrained");  // theme.warning_color (Palette.warning), small font
 cb.textMono("42.0");       // uses theme.typography.mono
 ```
 

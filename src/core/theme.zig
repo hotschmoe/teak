@@ -54,6 +54,9 @@ pub const Palette = struct {
     danger: [4]f32,
     /// Subtle border / divider color.
     border: [4]f32,
+    /// Non-fatal warning / caution text (amber). Defaulted so palettes
+    /// written before it existed still compile; every built-in sets it.
+    warning: [4]f32 = .{ 0.92, 0.66, 0.20, 1.0 },
 };
 
 // ── Typography ─────────────────────────────────────────────────────
@@ -141,6 +144,9 @@ pub const Theme = struct {
     muted_color: [4]f32,
     /// Color used by `cb.textDanger(...)`.
     danger_color: [4]f32,
+    /// Color used by `cb.textWarning(...)` (`Palette.warning`). Defaulted
+    /// for hand-built themes.
+    warning_color: [4]f32 = .{ 0.92, 0.66, 0.20, 1.0 },
     /// Fill for elevated panel / card group backgrounds (assign to
     /// `GroupStyle.bg`). Typical usage is the inner group of a modal
     /// overlay — the dim overlay scrim sits behind, the panel sits on
@@ -205,6 +211,7 @@ pub const Theme = struct {
             .heading_color = p.fg,
             .muted_color = p.fg_muted,
             .danger_color = p.danger,
+            .warning_color = p.warning,
             .panel_bg = p.bg_panel,
             .button = .{
                 .bg = p.bg_raised,
@@ -322,6 +329,7 @@ pub const dark_palette: Palette = .{
     .accent = .{ 0.30, 0.55, 1.00, 1.0 },
     .danger = .{ 0.95, 0.45, 0.40, 1.0 },
     .border = .{ 0.35, 0.35, 0.40, 1.0 },
+    .warning = .{ 0.95, 0.72, 0.30, 1.0 },
 };
 
 pub const light_palette: Palette = .{
@@ -336,6 +344,7 @@ pub const light_palette: Palette = .{
     .accent = .{ 0.12, 0.38, 0.88, 1.0 },
     .danger = .{ 0.78, 0.18, 0.15, 1.0 },
     .border = .{ 0.72, 0.72, 0.78, 1.0 },
+    .warning = .{ 0.70, 0.45, 0.00, 1.0 },
 };
 
 pub const modern_light_palette: Palette = .{
@@ -350,6 +359,7 @@ pub const modern_light_palette: Palette = .{
     .accent = .{ 0.260, 0.360, 0.850, 1.0 },
     .danger = .{ 0.780, 0.200, 0.220, 1.0 },
     .border = .{ 0.851, 0.863, 0.890, 1.0 },
+    .warning = .{ 0.710, 0.450, 0.040, 1.0 },
 };
 
 pub const modern_dark_palette: Palette = .{
@@ -364,6 +374,7 @@ pub const modern_dark_palette: Palette = .{
     .accent = .{ 0.392, 0.490, 0.969, 1.0 },
     .danger = .{ 0.953, 0.435, 0.443, 1.0 },
     .border = .{ 0.204, 0.224, 0.267, 1.0 },
+    .warning = .{ 0.960, 0.740, 0.330, 1.0 },
 };
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -381,6 +392,14 @@ test "Theme.light_default has light bg" {
     // Light bg means R+G+B should be > 2 (i.e. brighter than dark's ~0.24).
     const sum = t.palette.bg[0] + t.palette.bg[1] + t.palette.bg[2];
     try std.testing.expect(sum > 2.0);
+}
+
+test "Theme.fromPalette: warning flows into warning_color; palettes keep it distinct from danger" {
+    const t = Theme.fromPalette(dark_palette);
+    try std.testing.expectEqual(dark_palette.warning, t.warning_color);
+    inline for (.{ dark_palette, light_palette, modern_light_palette, modern_dark_palette }) |p| {
+        try std.testing.expect(!std.meta.eql(p.warning, p.danger));
+    }
 }
 
 test "Theme.fromPalette: custom accent flows into slider track_fill + input focus_border" {

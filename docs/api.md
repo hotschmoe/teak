@@ -581,7 +581,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.runSubs`: `pub const runSubs = sub.runSubs`
 > Bundled palette, typography and per-widget styles for the theme-aware emitters.
 - `teak.Theme` = `theme.Theme`
-  - fields: `palette, typography, text_color, heading_color, muted_color, danger_color, panel_bg, tokens, button, button_primary, text_input, checkbox, radio, slider, divider, card, field`
+  - fields: `palette, typography, text_color, heading_color, muted_color, danger_color, warning_color, panel_bg, tokens, button, button_primary, text_input, checkbox, radio, slider, divider, card, field`
   > Build a Theme by deriving widget styles from a palette. Apps
   > that want a custom brand palette call this and then optionally
   > tweak individual style fields.
@@ -591,7 +591,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - `pub fn fromPaletteTokens(p: Palette, t: Tokens) Theme`
 > Semantic color set of a theme.
 - `teak.Palette` = `theme.Palette`
-  - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border`
+  - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border, warning`
 > Radii, border width, spacing and shadow elevations of a theme.
 - `teak.ThemeTokens` = `theme.Tokens`
   - fields: `radius_sm, radius_md, radius_lg, border_width, focus_ring_width, space, elevation`
@@ -1503,7 +1503,7 @@ Theme: bundled style + typography defaults consulted by un-styled
 convenience emitters.
 
 - `struct Palette`
-  - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border`
+  - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border, warning`
 - `struct Typography`
   - fields: `body, heading, mono, small`
 > Shape and depth vocabulary next to the palette's colours: corner radii,
@@ -1525,7 +1525,7 @@ convenience emitters.
 > default; the widget styles and typography fall back to their own
 > struct defaults, so a custom theme need only override what it cares about.
 - `struct Theme`
-  - fields: `palette, typography, text_color, heading_color, muted_color, danger_color, panel_bg, tokens, button, button_primary, text_input, checkbox, radio, slider, divider, card, field`
+  - fields: `palette, typography, text_color, heading_color, muted_color, danger_color, warning_color, panel_bg, tokens, button, button_primary, text_input, checkbox, radio, slider, divider, card, field`
   > Build a Theme by deriving widget styles from a palette. Apps
   > that want a custom brand palette call this and then optionally
   > tweak individual style fields.
