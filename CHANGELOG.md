@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### SVG icons: `teak.svg`
+
+- `teak.svg.rasterize` / `rasterizeInto`: a pure CPU rasterizer for the SVG
+  icon subset (all path commands, rect / circle / ellipse / line / polyline /
+  polygon, fill + stroke with caps, joins and fill rules, opacity,
+  transforms, `style`, `currentColor`) into RGBA8 pixels for an image
+  resource. `examples/vector_canvas` draws its toolbar icons with it.
+  docs/features/svg.md.
+
 ### Web: `WebWgpuOptions.bridge_js` (#136)
 
 - `teak.linkWebWgpu(b, exe, .{ .bridge_js = b.path("web/bridge.js") })`

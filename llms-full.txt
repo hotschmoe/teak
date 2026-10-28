@@ -180,7 +180,7 @@ Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
 Namespace submodules also re-exported (`teak.cmd`, `teak.layout`, …):
 `cmd component component_list transient text sub anim theme text_field text_area text_event numeric_field
 `cmd component component_list transient text sub theme text_field numeric_field
-dropdown debug_overlay snapshot chart table cursor layout scroll_extent hit_test focus keys a11y render
+dropdown debug_overlay snapshot chart svg table cursor layout scroll_extent hit_test focus keys a11y render
 `cmd component component_list transient text sub theme text_field text_area text_event numeric_field
 `cmd component component_list transient text sub anim theme text_field numeric_field
 dropdown data_table var_list tree_list debug_overlay snapshot chart table layout scroll_extent hit_test focus keys a11y render
@@ -297,6 +297,11 @@ CanvasPrimitive = union(enum) { polyline, filled_rect, hline, vline, marker, tex
 // triangles/lines: CPU-clipped to canvas+scroll clip; `key` = content revision for the frame diff
 // (same non-zero key+len => treated equal; 0 => bytes compared). Bump it when the batch changes.
 CanvasPoint = struct { x: f32, y: f32 }
+// teak.svg — SVG icons rasterized on the CPU to RGBA8 (docs/features/svg.md); draw as an image resource:
+svg.rasterize(gpa, src, w, h, Options{ .color /*currentColor*/ }) Error![]u8     // caller frees
+svg.rasterizeInto(scratch, src, w, h, out: []u8 /*w*h*4*/, opts) Error!void     // into Model-owned pixels
+// subset: svg/g/path(all cmds)/rect/circle/ellipse/line/polyline/polygon, fill/stroke/width/rule/cap/join,
+// opacity, transform, style="..."; no gradients/text/filters. Rasterize in init/update, never in view.
 RichTextSpan = struct { start, end: u32, color: [4]f32, font: FontSpec, bold, italic: bool }
 RichTextCmd = struct { content: []const u8, spans: []const RichTextSpan,
                        default_color: [4]f32, default_font: FontSpec }
@@ -1250,6 +1255,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.snapshot`: module `src/core/snapshot.zig`; see below
 > Pure line-chart primitive builder for canvases.
 - `teak.chart`: module `src/core/chart.zig`; see below
+> SVG icons: a pure SVG-subset rasterizer to RGBA pixels (for image resources).
+- `teak.svg`: module `src/core/svg.zig`; see below
 > Fixed-column monospace tables built from text cmds.
 - `teak.table`: module `src/core/table.zig`; see below
 > Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
@@ -2974,6 +2981,22 @@ teak.chart — pure line-chart primitive builder.
 > no line to draw). An empty `series` with `grid_lines <= 1` returns an
 > empty slice.
 - `pub fn lineChartPrimitives( arena: std.mem.Allocator, series: []const f32, opts: LineChartOpts, ) []const CanvasPrimitive`
+
+### `teak.svg` (`src/core/svg.zig`)
+
+SVG icons: a small, pure SVG subset rasterized on the CPU into RGBA pixels
+that the app hands to the GPU as an image resource (HARDLINE §2 hatch 8).
+
+- `struct Options`
+  - fields: `color`
+- `pub const Error = error{ OutOfMemory, InvalidSvg }`
+> Rasterize `source` to a `width` x `height` RGBA8 image (straight alpha,
+> row-major, 4 bytes per pixel) written into `out` (len >= width*height*4).
+> The viewBox is scaled uniformly and centred (`preserveAspectRatio`
+> xMidYMid meet). `scratch` holds the flattened paths while drawing.
+- `pub fn rasterizeInto(scratch: Allocator, source: []const u8, width: u32, height: u32, out: []u8, opts: Options) Error!void`
+> `rasterizeInto` with a freshly allocated pixel buffer (caller frees).
+- `pub fn rasterize(gpa: Allocator, source: []const u8, width: u32, height: u32, opts: Options) Error![]u8`
 
 ### `teak.table` (`src/core/table.zig`)
 

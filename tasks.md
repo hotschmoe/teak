@@ -46,7 +46,7 @@ ship is [docs/PARITY.md](docs/PARITY.md).
 
 - **Platforms:** macOS host on master (#54; input/IME/Retina not yet exercised on a real Mac); web WebGL2 fallback **deferred by owner decision 2026-10-09** (`docs/features/web-fallback.md`); secondary windows are real on Win32 only.
 - **Text:** subpixel LCD AA (none); bundled CJK face (none); static-text selection (only input selection); bidi rendering / caret (#85); web IME (#49); font fallback chain + wrapped `rich_text` (#44); colour emoji (#71); SDF text (#66).
-- **Graphics:** no SVG / vector icons; no grid layout. Canvas antialiasing, circles / arcs / polygons and a world transform landed (#125); a GPU-retained canvas vertex buffer (re-lower nothing on pan) is the next step if CPU lowering shows up in profiles.
+- **Graphics:** SVG icons via `teak.svg` (subset: no gradients / text / filters); no grid layout. Canvas antialiasing, circles / arcs / polygons and a world transform landed (#125); a GPU-retained canvas vertex buffer (re-lower nothing on pan) is the next step if CPU lowering shows up in profiles.
 - **Input / a11y:** whole-UI keyboard navigation (#93-#95), shortcuts + command palette + drag and drop (#60), accessibility publishing / actions / web mirror (#58, #64, #65), Win32 IDropTarget + image paste (#57), Win32 live CI (#67).
 - **Tooling:** agent driver + record / replay + MCP (#46), hot reload (#79), visual-regression goldens (#32; regenerate with `zig build vreg -- --update` after the fix PRs land and LOOK at every PNG), web startup profile (#82).
 - **QA findings left open** (`docs/qa-2026-10.md`, "Open"): `ButtonStyle.label_align` defaults to `.start` for hand-built styles; the tree example is noisy (two bordered buttons per row).

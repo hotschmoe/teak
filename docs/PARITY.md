@@ -92,7 +92,7 @@ Legend as above. Competitor cells are terse by design.
 | Shadows | ✓ soft blurred shadows + elevation tokens (#48); hard offset shadow kept | ✓ soft | partial | ✓ | ✓ | ✓ |
 | Gradients | ✓ linear `Gradient` on group and button (#48) | partial (mesh/vertex colour) | partial (draw list gradient rect) | ✓ | ✓ | ✓ |
 | Images | ✓ `image` cmd; growable cache with `releaseImage` (#23, `functional-gaps.md`) | ✓ | ✓ (texture ids) | ✓ | ✓ | ✓ |
-| SVG / vector icons | ✗ | ✓ via resvg image loader | partial (plutosvg) | ✓ `svg` widget | ✓ | ✓ |
+| SVG / vector icons | ✓ `teak.svg`: CPU rasterizer for the icon subset (paths, shapes, strokes, fill rules, transforms) into image resources, tinted per theme (`docs/features/svg.md`); no gradients / text / filters | ✓ via resvg image loader | partial (plutosvg) | ✓ `svg` widget | ✓ | ✓ |
 | Custom 2D canvas | ✓ `canvas` prims (rect, polyline, lines, triangles, circle, arc, polygon, text), world transform with culling for large static geometry, pointer events (#125, `canvas.md`, `examples/vector_canvas`) | ✓ `Painter`, plots | ✓ draw list | ✓ `canvas` | ✓ `Path` | ✓ `CustomPainter` |
 | 3D viewport | ✓ `scene3d`: camera, picking, instanced items with highlight, grid + gizmo, section cut, plane layers (#16, #24, #27, #34, #37, #41, `scene.md`) | partial (paint callback) | partial (callback) | ✓ `shader` widget (wgpu) | partial (wgpu embedding, 1.16) | partial (platform views, Impeller custom shaders) |
 | Backend | wgpu-native / WebGPU (wgpu-native v29, #19); WebGL2 fallback evaluated, policy in `docs/features/web-fallback.md` (#83) | wgpu or glow | any (OpenGL, Vulkan, DX, Metal, wgpu...) | wgpu or tiny-skia | Skia, FemtoVG, software, wgpu (1.16) | Impeller / Skia |
