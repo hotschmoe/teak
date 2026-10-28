@@ -1,4 +1,5 @@
-//! teak.chart — pure line-chart primitive builder.
+//! teak.chart — pure chart primitive builders: line (optionally filled),
+//! bar and scatter.
 //!
 //! Data-in, data-out: maps an `f32` data series plus value bounds into a
 //! slice of `CanvasPrimitive`s (horizontal gridlines + one polyline) that
@@ -39,6 +40,9 @@ pub const LineChartOpts = struct {
     /// Number of evenly-spaced horizontal gridlines, counting both the
     /// top and bottom edges. 0 or 1 draws none.
     grid_lines: u32 = 5,
+    /// Fill the area between the line and the bottom of the plot (an area
+    /// chart); null = line only. Give it some transparency.
+    fill: ?[4]f32 = null,
 };
 
 /// Build the primitives for a line chart of `series`. Returns an
@@ -83,6 +87,13 @@ pub fn lineChartPrimitives(
             const y = plot_bottom - std.math.clamp(vn, 0, 1) * plot_h;
             pts[i] = .{ .x = x, .y = y };
         }
+        if (opts.fill) |fc| {
+            const ring = arena.alloc(CanvasPoint, pts.len + 2) catch oom();
+            @memcpy(ring[0..pts.len], pts);
+            ring[pts.len] = .{ .x = plot_right, .y = plot_bottom };
+            ring[pts.len + 1] = .{ .x = plot_left, .y = plot_bottom };
+            list.append(arena, .{ .polygon = .{ .points = ring, .fill = fc } }) catch oom();
+        }
         list.append(arena, .{ .polyline = .{
             .points = pts,
             .color = opts.line_color,
@@ -91,6 +102,177 @@ pub fn lineChartPrimitives(
     }
 
     return list.toOwnedSlice(arena) catch oom();
+}
+
+// ── Bar and scatter charts ─────────────────────────────────────────
+
+pub const BarChartOpts = struct {
+    /// Canvas size the primitives are laid out for (match the CanvasStyle).
+    width: f32,
+    height: f32,
+    /// Value range on the vertical axis (min at the bottom). Bars grow
+    /// from `baseline` (clamped into the range): negative values hang below.
+    min: f32,
+    max: f32,
+    baseline: f32 = 0,
+    padding: f32 = 4,
+    /// Gap between neighbouring bars as a fraction of a slot (0..0.9).
+    gap: f32 = 0.2,
+    color: [4]f32 = .{ 0.3, 0.7, 1.0, 1.0 },
+    /// Colour of bars below the baseline (null = `color`).
+    negative_color: ?[4]f32 = null,
+    grid_color: [4]f32 = .{ 0.3, 0.3, 0.35, 1.0 },
+    grid_lines: u32 = 5,
+    /// Draw the baseline as a 1 px rule.
+    baseline_color: ?[4]f32 = .{ 0.55, 0.55, 0.6, 1.0 },
+};
+
+/// Gridlines, one filled rect per value, then the baseline rule.
+/// Arena-allocated; pure.
+pub fn barChartPrimitives(arena: std.mem.Allocator, values: []const f32, opts: BarChartOpts) []const CanvasPrimitive {
+    var list: std.ArrayList(CanvasPrimitive) = .empty;
+    const plot = Plot.of(opts.width, opts.height, opts.padding);
+    plot.grid(arena, &list, opts.grid_lines, opts.grid_color);
+    const base_y = plot.yOf(std.math.clamp(opts.baseline, @min(opts.min, opts.max), @max(opts.min, opts.max)), opts.min, opts.max);
+    if (values.len > 0) {
+        const slot = plot.w / @as(f32, @floatFromInt(values.len));
+        const bar_w = @max(1, slot * (1 - std.math.clamp(opts.gap, 0, 0.9)));
+        list.ensureUnusedCapacity(arena, values.len) catch oom();
+        for (values, 0..) |v, i| {
+            if (!std.math.isFinite(v)) continue;
+            const y = plot.yOf(v, opts.min, opts.max);
+            const x = plot.left + slot * @as(f32, @floatFromInt(i)) + (slot - bar_w) / 2;
+            const below = v < opts.baseline;
+            list.appendAssumeCapacity(.{ .filled_rect = .{
+                .x = x,
+                .y = @min(y, base_y),
+                .w = bar_w,
+                .h = @abs(base_y - y),
+                .color = if (below) (opts.negative_color orelse opts.color) else opts.color,
+            } });
+        }
+    }
+    if (opts.baseline_color) |c| list.append(arena, .{ .hline = .{ .y = base_y, .color = c, .thickness = 1 } }) catch oom();
+    return list.toOwnedSlice(arena) catch oom();
+}
+
+pub const ScatterOpts = struct {
+    width: f32,
+    height: f32,
+    /// Data ranges mapped onto the plot area (x_min at the left, y_min at the bottom).
+    x_min: f32,
+    x_max: f32,
+    y_min: f32,
+    y_max: f32,
+    padding: f32 = 4,
+    /// Dot radius in px.
+    radius: f32 = 3,
+    color: [4]f32 = .{ 0.3, 0.7, 1.0, 1.0 },
+    grid_color: [4]f32 = .{ 0.3, 0.3, 0.35, 1.0 },
+    grid_lines: u32 = 5,
+};
+
+/// Gridlines plus one antialiased circle per (xs[i], ys[i]) inside the
+/// ranges (points outside are skipped, not clamped). Arena-allocated; pure.
+pub fn scatterPrimitives(arena: std.mem.Allocator, xs: []const f32, ys: []const f32, opts: ScatterOpts) []const CanvasPrimitive {
+    var list: std.ArrayList(CanvasPrimitive) = .empty;
+    const plot = Plot.of(opts.width, opts.height, opts.padding);
+    plot.grid(arena, &list, opts.grid_lines, opts.grid_color);
+    const n = @min(xs.len, ys.len);
+    list.ensureUnusedCapacity(arena, n) catch oom();
+    const xspan = opts.x_max - opts.x_min;
+    for (xs[0..n], ys[0..n]) |x, y| {
+        if (!std.math.isFinite(x) or !std.math.isFinite(y)) continue;
+        if (x < @min(opts.x_min, opts.x_max) or x > @max(opts.x_min, opts.x_max)) continue;
+        if (y < @min(opts.y_min, opts.y_max) or y > @max(opts.y_min, opts.y_max)) continue;
+        const fx = if (xspan != 0) (x - opts.x_min) / xspan else 0.5;
+        list.appendAssumeCapacity(.{ .circle = .{
+            .x = plot.left + fx * plot.w,
+            .y = plot.yOf(y, opts.y_min, opts.y_max),
+            .radius = opts.radius,
+            .fill = opts.color,
+            .screen_radius = true,
+        } });
+    }
+    return list.toOwnedSlice(arena) catch oom();
+}
+
+const Plot = struct {
+    left: f32,
+    top: f32,
+    w: f32,
+    h: f32,
+
+    fn of(width: f32, height: f32, padding: f32) Plot {
+        return .{ .left = padding, .top = padding, .w = @max(0, width - 2 * padding), .h = @max(0, height - 2 * padding) };
+    }
+
+    /// Value -> y (min at the bottom), clamped to the plot.
+    fn yOf(p: Plot, v: f32, min: f32, max: f32) f32 {
+        const span = max - min;
+        const vn = if (span != 0) (v - min) / span else 0.5;
+        return p.top + p.h - std.math.clamp(vn, 0, 1) * p.h;
+    }
+
+    fn grid(p: Plot, arena: std.mem.Allocator, list: *std.ArrayList(CanvasPrimitive), lines: u32, color: [4]f32) void {
+        if (lines <= 1) return;
+        var g: u32 = 0;
+        while (g < lines) : (g += 1) {
+            const frac = @as(f32, @floatFromInt(g)) / @as(f32, @floatFromInt(lines - 1));
+            list.append(arena, .{ .hline = .{ .y = p.top + frac * p.h, .color = color, .thickness = 1 } }) catch oom();
+        }
+    }
+};
+
+test "barChartPrimitives: bars grow from the baseline, negatives hang below" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const vals = [_]f32{ 10, -5, 0 };
+    const prims = barChartPrimitives(arena.allocator(), &vals, .{
+        .width = 30,
+        .height = 30,
+        .min = -10,
+        .max = 10,
+        .padding = 0,
+        .gap = 0,
+        .grid_lines = 0,
+        .negative_color = .{ 1, 0, 0, 1 },
+    });
+    // 3 bars + baseline rule.
+    try testing.expectEqual(@as(usize, 4), prims.len);
+    const up = prims[0].filled_rect;
+    try testing.expectEqual(@as(f32, 0), up.y); // max at the top
+    try testing.expectEqual(@as(f32, 15), up.h); // baseline 0 at mid-height
+    const down = prims[1].filled_rect;
+    try testing.expectEqual(@as(f32, 15), down.y);
+    try testing.expectApproxEqAbs(@as(f32, 7.5), down.h, 1e-4);
+    try testing.expectEqual(@as(f32, 1), down.color[0]);
+    try testing.expectEqual(@as(f32, 10), prims[1].filled_rect.x); // second slot
+    try testing.expectEqual(@as(f32, 15), prims[3].hline.y);
+}
+
+test "scatterPrimitives: maps points into the plot, skips out-of-range ones" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const xs = [_]f32{ 0, 10, 20 };
+    const ys = [_]f32{ 0, 5, 1 };
+    const prims = scatterPrimitives(arena.allocator(), &xs, &ys, .{
+        .width = 100,
+        .height = 50,
+        .x_min = 0,
+        .x_max = 10,
+        .y_min = 0,
+        .y_max = 5,
+        .padding = 0,
+        .grid_lines = 0,
+    });
+    try testing.expectEqual(@as(usize, 2), prims.len); // x = 20 is outside
+    try testing.expectEqual(@as(f32, 0), prims[0].circle.x);
+    try testing.expectEqual(@as(f32, 50), prims[0].circle.y);
+    try testing.expectEqual(@as(f32, 100), prims[1].circle.x);
+    try testing.expectEqual(@as(f32, 0), prims[1].circle.y);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

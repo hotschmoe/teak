@@ -126,7 +126,7 @@ Legend as above. Competitor cells are terse by design.
 | Date picker | ✓ `widgets.date_field`: ISO field + month-grid popover, no wall clock in `view` (#81) | partial (`egui_extras::DatePickerButton`) | ✗ | partial (3rd party) | ✓ `DatePicker` (Material) | ✓ |
 | Scroll areas | partial: wheel regions, kinetic `Scroller` (#56), keyboard scrolling (#94); scrollbars only inside DataTable | ✓ (drag, scrollbars; touch) | ✓ | ✓ (auto-scroll, smart scrollbars 0.14) | ✓ (touch flick) | ✓ momentum |
 | Drag and drop (in-app) | ✓ drag-and-drop through `Msg`s (#60, `docs/features/drag-drop.md`) | ✓ `dnd_*` | ✓ drag-drop API | partial (3rd party) | partial (experimental 1.16) | ✓ `Draggable` |
-| Charts / plots | partial: `chart.lineChartPrimitives` (line only) | ✓ `egui_plot` | ✓ ImPlot (add-on) | partial (3rd party / canvas) | partial (3rd party / Path) | ✓ (packages, e.g. fl_chart) |
+| Charts / plots | partial: `teak.chart` line (optionally filled), bar and scatter builders over canvas primitives; no axes / ticks / legends helper | ✓ `egui_plot` | ✓ ImPlot (add-on) | partial (3rd party / canvas) | partial (3rd party / Path) | ✓ (packages, e.g. fl_chart) |
 
 ### 2.4 Interaction
 

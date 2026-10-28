@@ -332,7 +332,11 @@ MAX_BALANCE_DEPTH = 64                          // mirrors the layout passes' fi
 LineChartOpts = struct { width, height, min, max: f32, padding: f32 = 4,
                          line_color, grid_color: [4]f32, line_thickness: f32 = 2,
                          grid_lines: u32 = 5 }
-lineChartPrimitives(arena, series: []const f32, opts: LineChartOpts) []const CanvasPrimitive
+lineChartPrimitives(arena, series: []const f32, opts: LineChartOpts) []const CanvasPrimitive   // LineChartOpts.fill: ?[4]f32 = area under the line
+barChartPrimitives(arena, values: []const f32, BarChartOpts{ width, height, min, max, baseline = 0, gap = 0.2,
+    color, negative_color: ?[4]f32, grid_lines, baseline_color: ?[4]f32 }) []const CanvasPrimitive
+scatterPrimitives(arena, xs, ys: []const f32, ScatterOpts{ width, height, x_min, x_max, y_min, y_max, radius = 3,
+    color, grid_lines }) []const CanvasPrimitive   // out-of-range points skipped
 ```
 
 ### Tables (`teak.table` → core/table.zig)
