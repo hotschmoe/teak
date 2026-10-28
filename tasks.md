@@ -8,50 +8,34 @@ per-phase sections below for what shipped earlier.
 
 ## Next up (open)
 
-Snapshot at master `4f898c0` (2026-10). Shipped items live in `CHANGELOG.md`;
-this section is only what is still open. Rebuild the PR table with
+Snapshot refreshed 2026-10-27 (after PR #161). Shipped items live in `CHANGELOG.md`;
+this section is only what is still open. Rebuild the PR list with
 `gh pr list --state open`; the matrix of what exists vs. what competitors
 ship is [docs/PARITY.md](docs/PARITY.md).
 
 ### In review (open PRs)
 
-| PR | What |
+None. Every PR the October snapshot listed (#31 - #95) is merged, except #67
+(Win32 live CI), which was closed and superseded by #121.
+
+### Open issues worth knowing
+
+| Issue | What |
 |---|---|
-| #31 | Win32 parity: effects, stb text, headless, DPI v2 (closes #5) |
-| #32 | Visual regression suite: named shot states, deflate PNG, tools/vreg, goldens |
-| #44 | Font fallback chain (native), wrapped rich_text, input queue cap |
-| #46 | Agent driver: control channel, record/replay, teak-drive (CLI + MCP), dev inspector |
-| #49 | text-engine PR13: web IME bridge (Japanese input in TextArea/TextField on web) |
-| #54 | macOS backend: Cocoa host + Metal (wgpu-native), headless on macOS |
-| #57 | Win32: IDropTarget, image paste, IME test |
-| #58 | M3 accessibility: tree publishing, semantic hints, actions as input, web DOM mirror wiring |
-| #60 | Interaction: shortcuts + command palette, drag and drop, native file dialogs, clipboard image |
-| #62 | HiDPI: scene targets at device resolution + scale-2 pixel tests |
-| #64 | ci: a11y-probe job (stacked on #58) |
-| #65 | Win32 UIA Invoke/Toggle/Value patterns -> actions (stacked on #58) |
-| #66 | text-engine PR15: scalable (SDF) text, canvas text labels |
-| #67 | Win32 live: drive a real window in CI |
-| #71 | text-engine PR16: colour emoji (RGBA atlas pages), web via canvas 2D RGBA |
-| #75 | widgets: number spinner |
-| #78 | widgets: colour picker |
-| #79 | Hot reload: libapp.so + stable loader, Model kept across rebuilds |
-| #82 | web startup: profile (tools/web-startup.mjs), lazy image/scene pipelines, --font-nowait |
-| #85 | Bidi in rendering and editing: visual runs, caret/hit-test/selection, visual arrows (stacked on #74) |
-| #88 | text-engine PR18: docs close-out (text.md, TextArea wiring, cookbook 19, README supported subset) |
-| #93 | Keyboard navigation everywhere: Tab ring over all widgets, Space/Enter, radio+slider arrows, modal focus resto |
-| #94 | Keyboard gaps: split divider, keyboard scrolling, focus tooltips, toast Escape (stacked on #93) |
-| #95 | Keyboard gaps: lists as one Tab stop with roving arrows, dropdown list keys, keyboard context menu (stacked on |
+| #150 | Multi-window: secondary windows on X11 / Wayland / macOS, more than one from `teak.run` |
+| #159 | Canvas: GPU-retained static geometry (transform in the shader) |
+| #139 - #142 | Directions from the egoist review: OS text engines, CPU raster / direct GPU backends, CI gates (idle, latency, memory, size), app shell |
 
 ### Open by area (not yet in a PR, or deliberately deferred)
 
-- **Platforms:** macOS host on master (#54; input/IME/Retina not yet exercised on a real Mac); web WebGL2 fallback **deferred by owner decision 2026-10-09** (`docs/features/web-fallback.md`); secondary windows are real on Win32 only.
-- **Text:** subpixel LCD AA (none); bundled CJK face (none); bidi rendering / caret (#85); web IME (#49); font fallback chain + wrapped `rich_text` (#44); colour emoji (#71); SDF text (#66).
-- **Graphics:** SVG icons via `teak.svg` (subset: no gradients / text / filters); grid layout has fixed columns only (no cell spans, no row tracks). Canvas antialiasing, circles / arcs / polygons and a world transform landed (#125); a GPU-retained canvas vertex buffer (re-lower nothing on pan) is the next step if CPU lowering shows up in profiles.
-- **Input / a11y:** whole-UI keyboard navigation (#93-#95), shortcuts + command palette + drag and drop (#60), accessibility publishing / actions / web mirror (#58, #64, #65), Win32 IDropTarget + image paste (#57), Win32 live CI (#67).
-- **Tooling:** agent driver + record / replay + MCP (#46), hot reload (#79), visual-regression goldens (#32; regenerate with `zig build vreg -- --update` after the fix PRs land and LOOK at every PNG), web startup profile (#82).
+- **Platforms:** macOS host on master (#54; input/IME/Retina not yet exercised on a real Mac); web WebGL2 fallback **deferred by owner decision 2026-10-09** (`docs/features/web-fallback.md`); secondary windows are real on Win32 only (#150).
+- **Text:** subpixel LCD AA (none); bundled CJK face (none); native colour emoji (web only, #71).
+- **Graphics:** SVG icons via `teak.svg` (subset: no gradients / text / filters); grid layout has fixed columns only (no cell spans, no row tracks). Canvas antialiasing, circles / arcs / polygons and a world transform landed (#125); a GPU-retained canvas vertex buffer (re-lower nothing on pan) is the next step if CPU lowering shows up in profiles (#159).
+- **Input / a11y:** X11 AT-SPI and macOS AX are not built (Win32 UIA and the web mirror are).
+- **Tooling:** hot reload is native (Linux) dev builds only; visual-regression goldens regenerate with `zig build vreg -- --update` (LOOK at every PNG); CI gates for idle / latency / memory / size are proposed in #141.
 - **QA findings left open** (`docs/qa-2026-10.md`, "Open"): `ButtonStyle.label_align` defaults to `.start` for hand-built styles; the tree example is noisy (two bordered buttons per row).
 - **API cleanup:** `handleClipboard` / `keyNeedsClipboard` are deprecated (removed next release, `docs/migration-clipboard.md`); `hoverMsg` / `contextMsg` / `canvasMsg` / `textMsg` / `sliderMsg` migrate onto `pointerMsg` in stages (`docs/features/pointer-msg.md`); moving big `Cmd` payloads out of line is a measured proposal (`docs/features/cmd-size.md`), not scheduled.
-- **Carried from earlier phases:** Win32 DPI render-at-scale (#31 in review); dropdown open-scroll-to-reveal on toggle (`.toggle` carries no viewport geometry).
+- **Carried from earlier phases:** dropdown open-scroll-to-reveal on toggle (`.toggle` carries no viewport geometry).
 
 ---
 
