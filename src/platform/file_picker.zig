@@ -163,7 +163,52 @@ pub fn pick(
     return error.NoPicker;
 }
 
+/// `FileDialogFilter.pattern` (`"*.json;*.txt"`, Win32 style) -> the
+/// `accept` list `pick` takes (`".json,.txt"`); `"*.*"` / `"*"` -> empty
+/// (all files). Patterns that are not `*.ext` are dropped.
+pub fn patternToAccept(pattern: []const u8, out: []u8) []const u8 {
+    var n: usize = 0;
+    var it = std.mem.tokenizeAny(u8, pattern, "; ,");
+    while (it.next()) |tok| {
+        if (!std.mem.startsWith(u8, tok, "*.") or tok.len < 3) continue;
+        const ext = tok[1..]; // ".json"
+        if (std.mem.eql(u8, ext, ".*")) continue;
+        const need = ext.len + @intFromBool(n > 0);
+        if (n + need > out.len) break;
+        if (n > 0) {
+            out[n] = ',';
+            n += 1;
+        }
+        @memcpy(out[n..][0..ext.len], ext);
+        n += ext.len;
+    }
+    return out[0..n];
+}
+
+/// The hosts' synchronous `openFileDialog` / `saveFileDialog`: run the
+/// picker (blocking the caller, like Win32's `GetOpenFileNameW`) and copy
+/// the chosen path into `buf`. Null on cancel, when no picker program is
+/// installed, or when the path does not fit `buf`.
+pub fn pickSync(buf: []u8, kind: Kind, pattern: []const u8, env_picker: ?[]const u8) ?[]const u8 {
+    var acc: [256]u8 = undefined;
+    const accept = patternToAccept(pattern, &acc);
+    const title = if (kind == .open) "Open" else "Save As";
+    const chosen = (pick(std.heap.page_allocator, env_picker, kind, accept, title, "") catch return null) orelse return null;
+    defer std.heap.page_allocator.free(chosen);
+    if (chosen.len > buf.len) return null;
+    @memcpy(buf[0..chosen.len], chosen);
+    return buf[0..chosen.len];
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
+
+test "patternToAccept: Win32 globs to an accept list" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(".json,.txt", patternToAccept("*.json;*.txt", &buf));
+    try std.testing.expectEqualStrings("", patternToAccept("*.*", &buf));
+    try std.testing.expectEqualStrings(".f2d", patternToAccept("*.f2d", &buf));
+    try std.testing.expectEqualStrings("", patternToAccept("readme", &buf));
+}
 
 test "acceptToGlobs: extensions, MIME wildcards, unknown types" {
     const a = std.testing.allocator;

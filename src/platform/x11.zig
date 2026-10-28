@@ -20,6 +20,7 @@ const std = @import("std");
 const teak = @import("teak");
 const text = @import("teak-text");
 const native_effects = @import("native_effects.zig");
+const file_picker = @import("file_picker.zig");
 const control_socket = @import("control_socket.zig");
 const data = @import("x11_data.zig");
 
@@ -561,6 +562,8 @@ pub const Host = struct {
     atoms: Atoms,
     /// Effect servicing (HTTP worker threads, storage files, ...).
     effects: *native_effects.Service,
+    /// The last synchronous file dialog's path (`openFileDialog`).
+    dialog_buf: [4096]u8 = undefined,
 
     width: u32,
     height: u32,
@@ -1452,14 +1455,22 @@ pub const Host = struct {
     /// can publish unconditionally.
     pub fn publishA11yTree(_: *Host, _: []const A11yNode) void {}
 
-    /// File dialogs need a portal / toolkit dependency (xdg-desktop-portal
-    /// or GTK); not wired in v1. Returns null (cancel) — callers fall back.
-    pub fn openFileDialog(_: *Host, _: FileDialogFilter) FileDialogResult {
-        return null;
+    /// Synchronous file dialogs through the same external picker the
+    /// `open_file` effect uses (`file_picker.zig`: `$TEAK_PICKER`, zenity,
+    /// kdialog), blocking like Win32's. Null on cancel or with no picker.
+    /// The path lives in `dialog_buf` until the next dialog call.
+    pub fn openFileDialog(self: *Host, f: FileDialogFilter) FileDialogResult {
+        return file_picker.pickSync(&self.dialog_buf, .open, f.pattern, pickerEnv());
     }
 
-    pub fn saveFileDialog(_: *Host, _: FileDialogFilter) FileDialogResult {
-        return null;
+    pub fn saveFileDialog(self: *Host, f: FileDialogFilter) FileDialogResult {
+        return file_picker.pickSync(&self.dialog_buf, .save, f.pattern, pickerEnv());
+    }
+
+    fn pickerEnv() ?[]const u8 {
+        const v = std.c.getenv("TEAK_PICKER") orelse return null;
+        const s = std.mem.span(v);
+        return if (s.len == 0) null else s;
     }
 
     pub fn openSecondaryWindow(_: *Host, _: []const u8, _: u32, _: u32) ?u32 {
