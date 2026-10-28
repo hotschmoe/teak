@@ -82,11 +82,11 @@ pub fn write(writer: anytype, cmds: anytype, rects: []const Rect, opts: Snapshot
     for (cmds, 0..) |c, i| {
         // Closing cmds carry no rect worth showing — they only dedent.
         switch (c) {
-            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => {
+            .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => {
                 if (depth > 0) depth -= 1;
                 continue;
             },
-            .push_group, .push_scroll, .push_overlay, .push_virtual_list => {},
+            .push_group, .push_grid, .push_scroll, .push_overlay, .push_virtual_list => {},
             .text, .rich_text, .image, .divider, .button, .text_input, .text_area, .checkbox, .radio, .slider, .canvas, .scene3d => {},
         }
 
@@ -97,8 +97,8 @@ pub fn write(writer: anytype, cmds: anytype, rects: []const Rect, opts: Snapshot
         try writer.writeByte('\n');
 
         switch (c) {
-            .push_group, .push_scroll, .push_overlay, .push_virtual_list => depth += 1,
-            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => unreachable, // skipped above
+            .push_group, .push_grid, .push_scroll, .push_overlay, .push_virtual_list => depth += 1,
+            .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => unreachable, // skipped above
             .text, .rich_text, .image, .divider, .button, .text_input, .text_area, .checkbox, .radio, .slider, .canvas, .scene3d => {},
         }
     }
@@ -141,6 +141,13 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writer.writeAll("group ");
             try writeRect(writer, r);
             try writer.print(" {s}", .{@tagName(g.direction)});
+            if (g.bg != null) try writer.writeAll(" bg");
+            if (g.border != null) try writer.writeAll(" border");
+        },
+        .push_grid => |g| {
+            try writer.writeAll("grid ");
+            try writeRect(writer, r);
+            try writer.print(" cols={d}", .{g.columnCount()});
             if (g.bg != null) try writer.writeAll(" bg");
             if (g.border != null) try writer.writeAll(" border");
         },
@@ -279,7 +286,7 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             }
         },
         // Pop cmds are handled before writeCmd is ever called.
-        .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => unreachable,
+        .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => unreachable,
     }
 }
 

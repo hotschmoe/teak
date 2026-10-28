@@ -356,7 +356,22 @@ fn collectLayer(
                 plen += 1;
                 continue;
             },
-            .pop_group => {
+            .push_grid => |g| {
+                var my_parent = parent;
+                if (visible_to_layer) {
+                    const b = clipRect(rects[i], cur_clip);
+                    if (hasArea(b)) {
+                        var n: A11yNode = .{ .role = .group, .cmd_index = @intCast(i), .bounds = b, .parent = parent };
+                        applyHint(&n, g.a11y);
+                        my_parent = @intCast(out.items.len);
+                        try out.append(arena, n);
+                    }
+                }
+                parents[plen] = my_parent;
+                plen += 1;
+                continue;
+            },
+            .pop_group, .pop_grid => {
                 plen -= 1;
                 continue;
             },
@@ -436,7 +451,7 @@ fn collectLayer(
             .scene3d => |sc| .{ .role = .image, .cmd_index = @intCast(i), .bounds = b, .label = sc.label },
             // Containers handled above; pop_* + virtual_list never
             // emit leaves.
-            .push_group, .pop_group, .push_scroll, .pop_scroll, .push_overlay, .pop_overlay, .push_virtual_list, .pop_virtual_list => null,
+            .push_group, .push_grid, .pop_group, .pop_grid, .push_scroll, .pop_scroll, .push_overlay, .pop_overlay, .push_virtual_list, .pop_virtual_list => null,
         };
         if (node) |*n| {
             n.parent = parent;

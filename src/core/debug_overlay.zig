@@ -95,14 +95,14 @@ pub fn appendDebugOverlay(
 
 fn isPopTag(tag: anytype) bool {
     return switch (tag) {
-        .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => true,
+        .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => true,
         else => false,
     };
 }
 
 fn isPushTag(tag: anytype) bool {
     return switch (tag) {
-        .push_group, .push_scroll, .push_overlay, .push_virtual_list => true,
+        .push_group, .push_grid, .push_scroll, .push_overlay, .push_virtual_list => true,
         else => false,
     };
 }

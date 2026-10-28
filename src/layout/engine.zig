@@ -156,6 +156,9 @@ const GroupContext = struct {
     min_w: f32 = 0,
     min_h: f32 = 0,
     is_scroll: bool = false,
+    /// A grid sizes itself from a scan of its direct children at its pop
+    /// (`measureGrid`); the accumulators are unused.
+    is_grid: bool = false,
     /// Virtual lists claim `total_count * item_extent` on the main axis
     /// regardless of how many children were emitted in the visible window.
     is_virtual: bool = false,
@@ -180,6 +183,28 @@ const CursorContext = struct {
     inner_cross: f32 = 0,
     align_cross: Align = .start,
     child_count: u32 = 0,
+    /// Set for a grid: its children go to cells instead of the cursor.
+    /// Points into the position pass's fixed grid stack.
+    grid: ?*GridCursor = null,
+};
+
+/// Position-pass state of one open grid: resolved column widths and the
+/// running row. Lives in a fixed stack parallel to the cursor stack.
+const GridCursor = struct {
+    n: usize,
+    col_w: [cmd.MAX_GRID_COLUMNS]f32,
+    col_x: [cmd.MAX_GRID_COLUMNS]f32,
+    row_gap: f32,
+    align_x: Align,
+    align_y: Align,
+    /// Top of the current row and its height (the tallest cell in it).
+    y: f32,
+    row_h: f32 = 0,
+    /// Cells placed so far.
+    count: usize = 0,
+    /// Cmd index of the next direct child, and the grid's `pop_grid`.
+    next: usize,
+    end: usize,
 };
 
 fn FixedStack(comptime T: type, comptime capacity: usize) type {
@@ -309,6 +334,32 @@ pub const LayoutEngine = struct {
                         .min_h = grp.min_height,
                     });
                 },
+                .push_grid => |g| {
+                    assertPushable(stack.len, stack.buffer.len, i);
+                    // `.vertical` so a divider in a cell lies flat and
+                    // single-line controls do not take a flex weight.
+                    stack.push(.{
+                        .cmd_index = i,
+                        .direction = .vertical,
+                        .pad_x = g.padX(),
+                        .pad_y = g.padY(),
+                        .gap = 0,
+                        .flex = g.flex,
+                        .fixed_w = g.width,
+                        .fixed_h = g.height,
+                        .min_w = g.min_width,
+                        .min_h = g.min_height,
+                        .is_grid = true,
+                    });
+                },
+                .pop_grid => {
+                    assertPoppable(stack.len, i);
+                    const grp = stack.pop();
+                    var r = measureGrid(rects, cmds, grp, i);
+                    r.end = @intCast(i);
+                    rects[grp.cmd_index] = r;
+                    addLeafToTop(&stack, r.w, r.h, grp.flex);
+                },
                 .push_scroll => |sc| {
                     assertPushable(stack.len, stack.buffer.len, i);
                     if (sc.shrink > 0) needs_wrap = true;
@@ -354,7 +405,8 @@ pub const LayoutEngine = struct {
                     assertPoppable(stack.len, i);
                     const grp = stack.pop();
                     var r = finishContainer(grp);
-                    if (grp.is_scroll and grp.flex > 0 and stack.len > 0) {
+                    // (Not in a grid cell: cells ignore flex.)
+                    if (grp.is_scroll and grp.flex > 0 and stack.len > 0 and !stack.top().is_grid) {
                         // Scroll content is allowed to overflow, so a flex
                         // scroll starts from zero on the parent's main axis
                         // (unless it fixed a size there) and takes only its
@@ -570,6 +622,7 @@ pub const LayoutEngine = struct {
     fn kidOf(c: anytype) Kid {
         return switch (c) {
             .push_group => |g| .{ .flex = g.flex, .shrink = g.shrink, .fixed_w = g.width > 0, .min_w = g.min_width },
+            .push_grid => |g| .{ .flex = g.flex, .fixed_w = g.width > 0, .min_w = g.min_width },
             .push_scroll => |sc| .{ .flex = sc.flex, .shrink = sc.shrink, .fixed_w = sc.width > 0 },
             .push_virtual_list => .{},
             .text => |t| if (t.wrap != .none) .{ .shrink = 1, .wrapped = true, .fills_cross = t.text_align != .start } else .{},
@@ -583,7 +636,7 @@ pub const LayoutEngine = struct {
             .divider => .{ .fills_cross = true },
             .rich_text => |rt| if (rt.wrap != .none) .{ .shrink = 1, .wrapped = true, .fills_cross = rt.text_align != .start } else .{},
             .checkbox, .radio => .{},
-            .push_overlay, .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => .{},
+            .push_overlay, .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => .{},
         };
     }
 
@@ -594,7 +647,7 @@ pub const LayoutEngine = struct {
             const c = it.*;
             switch (cmds[c]) {
                 .push_overlay => it.* = rects[c].end + 1,
-                .push_group, .push_scroll, .push_virtual_list => {
+                .push_group, .push_grid, .push_scroll, .push_virtual_list => {
                     it.* = rects[c].end + 1;
                     return c;
                 },
@@ -615,13 +668,18 @@ pub const LayoutEngine = struct {
             .push_group => |g| .{ .direction = g.direction, .pad_x = g.padX(), .pad_y = g.padY(), .gap = g.gap, .align_cross = g.align_cross, .can_shrink = true },
             .push_scroll => |sc| .{ .direction = sc.direction, .pad_x = sc.padding, .pad_y = sc.padding, .gap = sc.gap, .align_cross = sc.align_cross, .can_shrink = sc.direction == .vertical },
             .push_overlay => |ov| .{ .direction = ov.direction, .pad_x = ov.padding, .pad_y = ov.padding, .gap = ov.gap, .align_cross = ov.align_cross, .can_shrink = true },
-            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list, .push_virtual_list, .text, .rich_text, .button, .text_input, .text_area, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas => null,
+            // A grid settles its cells' widths in `resolveGridWidths`.
+            .push_grid, .pop_grid, .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list, .push_virtual_list, .text, .rich_text, .button, .text_input, .text_area, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas => null,
         };
     }
 
     /// Pass 2: settle the widths of every container's direct children.
     pub fn resolveWidths(rects: []Rect, cmds: anytype, measurer: TextMeasurer) void {
         for (cmds, 0..) |c, i| {
+            if (c == .push_grid) {
+                resolveGridWidths(rects, cmds, i, c.push_grid.*, measurer);
+                continue;
+            }
             const spec = widthSpecOf(c) orelse continue;
             const r = rects[i];
             const inner_w = @max(0, r.w - 2 * spec.pad_x);
@@ -739,6 +797,27 @@ pub const LayoutEngine = struct {
                     .min_w = g.min_width,
                     .min_h = g.min_height,
                 })),
+                .push_grid => |g| stack.push(refreshCtx(rects[i], i, .{
+                    .cmd_index = i,
+                    .direction = .vertical,
+                    .pad_x = g.padX(),
+                    .pad_y = g.padY(),
+                    .gap = 0,
+                    .fixed_w = g.width,
+                    .fixed_h = g.height,
+                    .min_w = g.min_width,
+                    .min_h = g.min_height,
+                    .is_grid = true,
+                })),
+                .pop_grid => {
+                    const grp = stack.pop();
+                    const old = rects[grp.cmd_index];
+                    var r = measureGrid(rects, cmds, grp, i);
+                    r.w = old.w;
+                    r.end = old.end;
+                    rects[grp.cmd_index] = r;
+                    foldChild(&stack, r.w, r.h);
+                },
                 .push_scroll => |sc| stack.push(refreshCtx(rects[i], i, .{
                     .cmd_index = i,
                     .direction = sc.direction,
@@ -833,9 +912,56 @@ pub const LayoutEngine = struct {
     /// goes at the running cursor.
     pub fn positionPass(rects: []Rect, cmds: anytype) void {
         var stack: FixedStack(CursorContext, MAX_DEPTH) = .{};
+        // Open grids, parallel to `stack` (a grid's CursorContext points here).
+        var grids: FixedStack(GridCursor, MAX_DEPTH) = .{};
 
         for (cmds, 0..) |c, i| {
+            // A direct child of a grid: at the first cell of a row, take the
+            // row's height from the next `n` children (each cmd is scanned
+            // once more here, so the pass stays linear).
+            if (stack.len > 0) if (stack.top().grid) |g| if (i == g.next) beginGridCell(rects, cmds, g, i);
             switch (c) {
+                .push_grid => |g| {
+                    if (stack.len > 0) placeChild(rects, &stack, i, .{
+                        .flex = g.flex,
+                        .fixed_w = g.width > 0,
+                        .fixed_h = g.height > 0,
+                        .min_w = g.min_width,
+                        .min_h = g.min_height,
+                    });
+                    const r = rects[i];
+                    const inner_w = @max(0, r.w - 2 * g.padX());
+                    const content = gridContentWidths(rects, cmds, i, g.*, null);
+                    const n = g.columnCount();
+                    var gc: GridCursor = .{
+                        .n = n,
+                        .col_w = resolveGridColumns(g.*, &content, inner_w),
+                        .col_x = undefined,
+                        .row_gap = g.row_gap,
+                        .align_x = g.align_x,
+                        .align_y = g.align_y,
+                        .y = r.y + g.padY(),
+                        .next = i + 1,
+                        .end = r.end,
+                    };
+                    var x = r.x + g.padX();
+                    for (0..n) |col| {
+                        gc.col_x[col] = x;
+                        x += gc.col_w[col] + g.col_gap;
+                    }
+                    // First direct child (skips leading overlays).
+                    var it = i + 1;
+                    gc.next = nextKid(rects, cmds, &it, r.end) orelse no_cell;
+                    assertPushable(grids.len, grids.buffer.len, i);
+                    grids.push(gc);
+                    assertPushable(stack.len, stack.buffer.len, i);
+                    stack.push(.{ .x = r.x, .y = r.y, .direction = .vertical, .gap = 0, .grid = grids.top() });
+                },
+                .pop_grid => {
+                    assertPoppable(stack.len, i);
+                    _ = stack.pop();
+                    _ = grids.pop();
+                },
                 .push_group => |g| {
                     if (stack.len > 0) placeChild(rects, &stack, i, .{
                         .flex = g.flex,
@@ -949,6 +1075,7 @@ pub const LayoutEngine = struct {
     /// per the parent's `align_cross`, then advance the cursor.
     fn placeChild(rects: []Rect, stack: *FixedStack(CursorContext, MAX_DEPTH), i: usize, spec: ChildSpec) void {
         const ctx = stack.top();
+        if (ctx.grid) |g| return placeGridCell(rects, g, i, spec);
         if (ctx.child_count > 0) advanceCursor(ctx, ctx.gap);
         const r = &rects[i];
         const horizontal = ctx.direction == .horizontal;
@@ -1024,6 +1151,185 @@ pub const LayoutEngine = struct {
             .inner_cross = if (horizontal) inner_h else inner_w,
             .align_cross = spec.align_cross,
         });
+    }
+
+    // ── Grid (docs/features/layout.md#grid) ─────────────────────────
+    //
+    // A grid's direct children fill `columnCount()` columns row by row. Its
+    // per-column and per-row maxima are not kept anywhere: each pass that
+    // needs them rescans the grid's direct children (hopping their subtrees
+    // via `Rect.end`), so every cmd is visited a bounded number of extra
+    // times and each pass stays O(n). Column scratch is a fixed
+    // `MAX_GRID_COLUMNS` array; rows need none (one running row).
+
+    const GridCols = [cmd.MAX_GRID_COLUMNS]f32;
+
+    /// `GridCursor.next` once the grid has no further direct child.
+    const no_cell = std.math.maxInt(usize);
+
+    /// Widest direct child per column. With a `measurer` (pass 2), `fr`
+    /// columns count a shrinkable child (wrapped text, `shrink > 0` group)
+    /// at its min-content width, so wrapped text can wrap to fit.
+    fn gridContentWidths(rects: []const Rect, cmds: anytype, i: usize, g: cmd.GridStyle, measurer: ?TextMeasurer) GridCols {
+        var out: GridCols = @splat(0);
+        const n = g.columnCount();
+        var idx: usize = 0;
+        var it = i + 1;
+        while (nextKid(rects, cmds, &it, rects[i].end)) |k| : (idx += 1) {
+            const col = idx % n;
+            const w = if (measurer != null and g.track(col) == .fr) minWidth(rects, cmds, k, measurer.?) else rects[k].w;
+            out[col] = @max(out[col], w);
+        }
+        return out;
+    }
+
+    /// Column widths for an inner width: `fixed` = px, `auto` = content,
+    /// `fr` = a weighted share of what is left, floored at content (a column
+    /// whose share is below its content is frozen there and the rest
+    /// re-share; at most `n` rounds).
+    fn resolveGridColumns(g: cmd.GridStyle, content: *const GridCols, inner_w: f32) GridCols {
+        const n = g.columnCount();
+        var out: GridCols = @splat(0);
+        var frozen: [cmd.MAX_GRID_COLUMNS]bool = @splat(true);
+        var used = gapTotal(@intCast(n), g.col_gap);
+        for (0..n) |c| switch (g.track(c)) {
+            .auto => {
+                out[c] = content[c];
+                used += out[c];
+            },
+            .fixed => |px| {
+                out[c] = @max(0, px);
+                used += out[c];
+            },
+            .fr => |wt| if (wt > 0) {
+                out[c] = content[c];
+                frozen[c] = false;
+            } else {
+                out[c] = content[c];
+                used += out[c];
+            },
+        };
+        var round: usize = 0;
+        while (round < n) : (round += 1) {
+            var total: f32 = 0;
+            for (0..n) |c| if (!frozen[c]) {
+                total += g.track(c).fr;
+            };
+            if (total <= 0) break;
+            const unit = (inner_w - used) / total;
+            var froze_any = false;
+            for (0..n) |c| if (!frozen[c] and g.track(c).fr * unit < content[c]) {
+                frozen[c] = true;
+                used += content[c];
+                froze_any = true;
+            };
+            if (froze_any) continue;
+            for (0..n) |c| if (!frozen[c]) {
+                out[c] = g.track(c).fr * unit;
+            };
+            break;
+        }
+        return out;
+    }
+
+    /// Pass-1 / pass-3 size of the grid closed by `pop_index`: column
+    /// widths per track at content size, rows as tall as their tallest cell,
+    /// plus gaps and padding; then `width` / `height` / min floors.
+    fn measureGrid(rects: []const Rect, cmds: anytype, grp: GroupContext, pop_index: usize) Rect {
+        const g = cmds[grp.cmd_index].push_grid.*;
+        const n = g.columnCount();
+        var col_max: GridCols = @splat(0);
+        var rows_h: f32 = 0;
+        var row_h: f32 = 0;
+        var count: u32 = 0;
+        var it = grp.cmd_index + 1;
+        while (nextKid(rects, cmds, &it, pop_index)) |k| : (count += 1) {
+            const col = count % n;
+            col_max[col] = @max(col_max[col], rects[k].w);
+            row_h = @max(row_h, rects[k].h);
+            if (col == n - 1) {
+                rows_h += row_h;
+                row_h = 0;
+            }
+        }
+        if (count % n != 0) rows_h += row_h;
+        const rows: u32 = @intCast((count + n - 1) / n);
+        var cols_w = gapTotal(@intCast(n), g.col_gap);
+        for (0..n) |c| cols_w += switch (g.track(c)) {
+            .fixed => |px| @max(0, px),
+            .auto, .fr => col_max[c],
+        };
+        const w = cols_w + 2 * grp.pad_x;
+        const h = rows_h + gapTotal(rows, g.row_gap) + 2 * grp.pad_y;
+        return .{
+            .w = @max(if (grp.fixed_w > 0) grp.fixed_w else w, grp.min_w),
+            .h = @max(if (grp.fixed_h > 0) grp.fixed_h else h, grp.min_h),
+            .child_count = count,
+        };
+    }
+
+    /// Pass 2 for a grid (its own width is final): give each cell's child
+    /// the width the position pass will give it, so wrapped text and nested
+    /// containers re-measure against their column.
+    fn resolveGridWidths(rects: []Rect, cmds: anytype, i: usize, g: cmd.GridStyle, measurer: TextMeasurer) void {
+        const inner_w = @max(0, rects[i].w - 2 * g.padX());
+        const content = gridContentWidths(rects, cmds, i, g, measurer);
+        const cols = resolveGridColumns(g, &content, inner_w);
+        const n = g.columnCount();
+        var idx: usize = 0;
+        var it = i + 1;
+        while (nextKid(rects, cmds, &it, rects[i].end)) |k| : (idx += 1) {
+            const cw = cols[idx % n];
+            const kid = kidOf(cmds[k]);
+            const stretch = g.align_x == .stretch or (g.align_x == .start and kid.fills_cross);
+            if (kid.wrapped) {
+                rects[k].w = if (stretch) cw else @min(rects[k].w, cw);
+            } else if (stretch and !kid.fixed_w) {
+                rects[k].w = @max(cw, kid.min_w);
+            } else if (kid.shrink > 0 and rects[k].w > cw) {
+                rects[k].w = @max(cw, minWidth(rects, cmds, k, measurer));
+            }
+        }
+    }
+
+    /// Position pass: cmd `i` is the grid's next direct child. At a row's
+    /// first cell, move to the row and take its height from the (up to)
+    /// `n` children in it; then point `next` at the following child.
+    fn beginGridCell(rects: []const Rect, cmds: anytype, g: *GridCursor, i: usize) void {
+        if (g.count % g.n == 0) {
+            if (g.count > 0) g.y += g.row_h + g.row_gap;
+            g.row_h = 0;
+            var it = i;
+            var seen: usize = 0;
+            while (seen < g.n) : (seen += 1) {
+                const k = nextKid(rects, cmds, &it, g.end) orelse break;
+                g.row_h = @max(g.row_h, rects[k].h);
+            }
+        }
+        var it = i;
+        _ = nextKid(rects, cmds, &it, g.end);
+        g.next = nextKid(rects, cmds, &it, g.end) orelse no_cell;
+    }
+
+    /// Place cmd `i` in the grid's next cell (`align_x` / `align_y`).
+    fn placeGridCell(rects: []Rect, g: *GridCursor, i: usize, spec: ChildSpec) void {
+        const col = g.count % g.n;
+        const cw = g.col_w[col];
+        const r = &rects[i];
+        const stretch_x = g.align_x == .stretch or (g.align_x == .start and spec.fills_cross);
+        if (stretch_x and !spec.fixed_w) r.w = @max(cw, spec.min_w);
+        if (g.align_y == .stretch and !spec.fixed_h and !spec.row_only) r.h = @max(g.row_h, spec.min_h);
+        r.x = g.col_x[col] + alignOffset(g.align_x, cw - r.w);
+        r.y = g.y + alignOffset(g.align_y, g.row_h - r.h);
+        g.count += 1;
+    }
+
+    fn alignOffset(a: Align, slack: f32) f32 {
+        return switch (a) {
+            .start, .stretch => 0,
+            .center => @max(0, slack) * 0.5,
+            .end => @max(0, slack),
+        };
     }
 
     fn advanceCursor(ctx: *CursorContext, delta: f32) void {
@@ -1547,6 +1853,7 @@ test "FixedStack (via MAX_DEPTH-deep group nesting): documented depth is reachab
 test {
     _ = @import("sizing_test.zig");
     _ = @import("wrap_test.zig");
+    _ = @import("grid_test.zig");
 }
 
 test "scene3d is a fixed-size leaf sized from its style" {

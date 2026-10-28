@@ -43,7 +43,7 @@ pub fn scrollExtent(cmds: anytype, rects: []const Rect, index: usize) Extent {
     while (i < cmds.len and depth > 0) : (i += 1) {
         const c = cmds[i];
         switch (c) {
-            .push_group, .push_virtual_list, .push_scroll, .push_overlay => {
+            .push_group, .push_grid, .push_virtual_list, .push_scroll, .push_overlay => {
                 if (skip_at == null) {
                     switch (c) {
                         .push_overlay => skip_at = depth,
@@ -56,7 +56,7 @@ pub fn scrollExtent(cmds: anytype, rects: []const Rect, index: usize) Extent {
                 }
                 depth += 1;
             },
-            .pop_group, .pop_virtual_list, .pop_scroll, .pop_overlay => {
+            .pop_group, .pop_grid, .pop_virtual_list, .pop_scroll, .pop_overlay => {
                 depth -= 1;
                 if (skip_at) |d| {
                     if (depth == d) skip_at = null;

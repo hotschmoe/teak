@@ -185,6 +185,82 @@ pub const GroupStyle = struct {
     }
 };
 
+/// Most columns a grid lays out. `GridStyle.columnCount` clamps to it so the
+/// layout passes can keep per-column widths in a fixed array (HARDLINE hatch 3:
+/// no allocation, bounded scratch).
+pub const MAX_GRID_COLUMNS = 32;
+
+/// Width rule for one grid column.
+pub const GridTrack = union(enum) {
+    /// The widest child in the column (its measured width).
+    auto,
+    /// Exactly this many pixels.
+    fixed: f32,
+    /// A share of the width left after fixed + auto columns and gaps, in
+    /// proportion to the weight. Never narrower than the column's widest
+    /// child (CSS `minmax(auto, Nfr)`); a column it cannot shrink keeps
+    /// that width and the rest share what remains.
+    fr: f32,
+};
+
+/// Layout and look of a `push_grid` container: children (in buffer order,
+/// one per cell, any leaf or container) fill `columnCount()` columns row by
+/// row. Row height = the tallest child in the row; column width per track.
+pub const GridStyle = struct {
+    /// Number of columns; 0 = `tracks.len`. Columns past `tracks` are
+    /// `.{ .fr = 1 }`, so `.{ .columns = 4 }` is four equal columns.
+    /// Clamped to `MAX_GRID_COLUMNS`.
+    columns: u16 = 0,
+    /// Per-column width rule, e.g. `&.{ .auto, .{ .fr = 1 } }`.
+    tracks: []const GridTrack = &.{},
+    col_gap: f32 = 8,
+    row_gap: f32 = 8,
+    padding: f32 = 8,
+    /// Overrides `padding` on the horizontal / vertical axis when non-null.
+    pad_x: ?f32 = null,
+    pad_y: ?f32 = null,
+    /// Flex weight on the parent's main axis (see `GroupStyle.flex`).
+    flex: f32 = 0,
+    /// Fixed OUTER size (padding included); 0 = measured. A fixed or
+    /// stretched width is what `fr` columns share.
+    width: f32 = 0,
+    height: f32 = 0,
+    min_width: f32 = 0,
+    min_height: f32 = 0,
+    /// Placement of each child inside its cell, horizontally (`align_x`) and
+    /// vertically (`align_y`). `.stretch` sizes the child to the cell (a
+    /// group / scroll with a fixed size on that axis keeps it). As in a
+    /// vertical group, `text_input`, `slider` and `divider` fill the cell
+    /// width under `.start` too.
+    align_x: Align = .start,
+    align_y: Align = .start,
+    /// Accessibility semantics (e.g. `.table`); default: a plain group.
+    a11y: A11yHint = .{},
+    /// Optional fill and border, drawn like `GroupStyle.bg` / `.border`.
+    bg: ?[4]f32 = null,
+    border: ?[4]f32 = null,
+    border_width: f32 = 1,
+
+    pub fn padX(self: GridStyle) f32 {
+        return self.pad_x orelse self.padding;
+    }
+
+    pub fn padY(self: GridStyle) f32 {
+        return self.pad_y orelse self.padding;
+    }
+
+    /// Column count actually laid out (at least 1, at most `MAX_GRID_COLUMNS`).
+    pub fn columnCount(self: GridStyle) usize {
+        const n: usize = if (self.columns > 0) self.columns else self.tracks.len;
+        return std.math.clamp(n, 1, MAX_GRID_COLUMNS);
+    }
+
+    /// Width rule of column `c`.
+    pub fn track(self: GridStyle, c: usize) GridTrack {
+        return if (c < self.tracks.len) self.tracks[c] else .{ .fr = 1 };
+    }
+};
+
 pub const TextCmd = struct {
     content: []const u8,
     font: FontSpec = DEFAULT_FONT,
@@ -458,7 +534,7 @@ pub fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
         .slider => |s| s.grab_msg,
         .canvas => |cv| cv.msg,
         .scene3d => |sc| sc.msg,
-        .push_group, .pop_group, .push_scroll, .pop_scroll, .push_overlay, .pop_overlay, .push_virtual_list, .pop_virtual_list, .text, .rich_text, .image, .divider => null,
+        .push_group, .pop_group, .push_grid, .pop_grid, .push_scroll, .pop_scroll, .push_overlay, .pop_overlay, .push_virtual_list, .pop_virtual_list, .text, .rich_text, .image, .divider => null,
     };
 }
 
@@ -1097,6 +1173,8 @@ pub fn Cmd(comptime Msg: type) type {
 
         push_group: *const GroupStyle,
         pop_group,
+        push_grid: *const GridStyle,
+        pop_grid,
         push_scroll: ScrollStyle,
         pop_scroll,
         push_overlay: *const OverlayStyle(Msg),
@@ -1150,13 +1228,14 @@ pub fn Cmd(comptime Msg: type) type {
 // Pure, O(n), zero allocation. Intended for debug builds / tests / the
 // host loop's per-frame guard (see docs/features/layout.md).
 
-/// The four container kinds that bracket a region of the flat buffer.
+/// The container kinds that bracket a region of the flat buffer.
 /// `pushFormRow` / `popFormRow` are sugar over `push_group` / `pop_group`
 /// (they emit exactly those Cmds), so a form row shows up here as
 /// `.group` — no separate kind, matching what the buffer actually
 /// records.
 pub const BalanceKind = enum {
     group,
+    grid,
     scroll,
     overlay,
     virtual_list,
@@ -1165,6 +1244,7 @@ pub const BalanceKind = enum {
     pub fn pushName(self: BalanceKind) []const u8 {
         return switch (self) {
             .group => "push_group",
+            .grid => "push_grid",
             .scroll => "push_scroll",
             .overlay => "push_overlay",
             .virtual_list => "push_virtual_list",
@@ -1175,6 +1255,7 @@ pub const BalanceKind = enum {
     pub fn popName(self: BalanceKind) []const u8 {
         return switch (self) {
             .group => "pop_group",
+            .grid => "pop_grid",
             .scroll => "pop_scroll",
             .overlay => "pop_overlay",
             .virtual_list => "pop_virtual_list",
@@ -1233,6 +1314,7 @@ pub const MAX_BALANCE_DEPTH = 64;
 fn pushKindOf(c: anytype) ?BalanceKind {
     return switch (c) {
         .push_group => .group,
+        .push_grid => .grid,
         .push_scroll => .scroll,
         .push_overlay => .overlay,
         .push_virtual_list => .virtual_list,
@@ -1244,6 +1326,7 @@ fn pushKindOf(c: anytype) ?BalanceKind {
 fn popKindOf(c: anytype) ?BalanceKind {
     return switch (c) {
         .pop_group => .group,
+        .pop_grid => .grid,
         .pop_scroll => .scroll,
         .pop_overlay => .overlay,
         .pop_virtual_list => .virtual_list,
@@ -1423,6 +1506,16 @@ pub fn CmdBuffer(comptime Msg: type) type {
 
         pub fn popGroup(self: *Self) void {
             self.cmds.append(self.backing, .pop_group) catch oom();
+        }
+
+        /// Open a grid: the cmds up to `popGrid()` fill its cells row by row
+        /// (one direct child per cell; a nested group makes a multi-widget cell).
+        pub fn pushGrid(self: *Self, style: GridStyle) void {
+            self.cmds.append(self.backing, self.box(.push_grid, style)) catch oom();
+        }
+
+        pub fn popGrid(self: *Self) void {
+            self.cmds.append(self.backing, .pop_grid) catch oom();
         }
 
         /// Invisible flex filler: an empty zero-padding group with the given

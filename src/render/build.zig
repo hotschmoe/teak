@@ -501,7 +501,11 @@ fn buildLayer(
                     }
                 }
             },
-            .pop_group, .push_virtual_list, .pop_virtual_list => {},
+            .push_grid => |grd| if (visible) {
+                if (grd.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+                if (grd.border) |bc| emitBorder(verts, alloc, rect, grd.border_width, bc, cur_clip);
+            },
+            .pop_group, .pop_grid, .push_virtual_list, .pop_virtual_list => {},
             .text => |txt| {
                 if (!visible) continue;
                 if (txt.wrap == .none) {
@@ -983,6 +987,35 @@ test "buildVertices emits one bg quad per button and one TextDraw per label/text
     // 1 button bg = 1 quad * 6 verts. Text and label go to text_draws.
     try testing.expectEqual(@as(usize, 6), verts.items.len);
     try testing.expectEqual(@as(usize, 2), text_draws.items.len); // "hello" + "+"
+}
+
+test "buildVertices: a grid with bg emits one fill quad before its cells" {
+    const testing = std.testing;
+    const Msg = union(enum) { a };
+    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
+    defer cb.deinit();
+
+    cb.pushGroup(.{});
+    cb.pushGrid(.{ .columns = 2, .bg = .{ 0.5, 0.5, 0.5, 1 } });
+    cb.text("k");
+    cb.button(.a, "v");
+    cb.popGrid();
+    cb.popGroup();
+
+    var rects: [8]Rect = undefined;
+    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
+
+    var verts: std.ArrayList(Vertex) = .empty;
+    defer verts.deinit(testing.allocator);
+    var text_draws = newTextDraws(testing.allocator);
+    defer text_draws.deinit(testing.allocator);
+    var image_draws: std.ArrayList(ImageDraw) = .empty;
+    defer image_draws.deinit(testing.allocator);
+    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
+    // Grid bg + button bg = 2 quads; the grid's comes first.
+    try testing.expectEqual(@as(usize, 12), verts.items.len);
+    try testing.expectEqual(rects[1].x, verts.items[0].x);
+    try testing.expectEqual(rects[1].y, verts.items[0].y);
 }
 
 test "buildVertices: an underlined button label adds one thin quad under that glyph" {

@@ -64,7 +64,9 @@ fn interactiveLeaf(c: anytype) ?Leaf(@TypeOf(c).MsgT) {
         // Containers and decorative leaves: clicks pass through. Listed
         // explicitly (no `else`) so a new Cmd variant must be classified here.
         .push_group,
+        .push_grid,
         .pop_group,
+        .pop_grid,
         .push_scroll,
         .pop_scroll,
         .push_overlay,
@@ -172,7 +174,7 @@ fn hitTestLayer(
                 overlay_depth -= 1;
                 clip.pop();
             },
-            .push_group, .pop_group, .push_virtual_list, .pop_virtual_list => {},
+            .push_group, .push_grid, .pop_group, .pop_grid, .push_virtual_list, .pop_virtual_list => {},
             .text, .rich_text, .image, .divider, .button, .text_input, .text_area, .checkbox, .radio, .slider, .canvas, .scene3d => if (visible_to_layer) {
                 if (interactiveLeaf(c)) |leaf| {
                     if (rectContains(rects[i], mouse_x, mouse_y) and rectContains(cur_clip, mouse_x, mouse_y))
@@ -285,7 +287,7 @@ fn wheelTargetLayer(cmds: anytype, rects: []const Rect, x: f32, y: f32, layer: L
             .canvas, .scene3d, .text_area => if (visible and inside) {
                 if (pointerSurface(cmds, i)) |t| best = .{ .canvas = t };
             },
-            .push_group, .pop_group, .push_virtual_list, .pop_virtual_list => {},
+            .push_group, .push_grid, .pop_group, .pop_grid, .push_virtual_list, .pop_virtual_list => {},
             .text, .rich_text, .image, .divider, .button, .text_input, .checkbox, .radio, .slider => {},
         }
     }

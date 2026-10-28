@@ -133,6 +133,12 @@ pub const Cmd = cmd.Cmd;
 pub const CmdBuffer = cmd.CmdBuffer;
 /// Layout and look of a `push_group` container.
 pub const GroupStyle = cmd.GroupStyle;
+/// Layout and look of a `push_grid` container (children fill columns row by row).
+pub const GridStyle = cmd.GridStyle;
+/// Width rule of one grid column: `auto`, `fixed` px or an `fr` share.
+pub const GridTrack = cmd.GridTrack;
+/// Most columns a grid lays out (`GridStyle.columnCount` clamps to it).
+pub const MAX_GRID_COLUMNS = cmd.MAX_GRID_COLUMNS;
 /// Layout and scroll offsets of a `push_scroll` region.
 pub const ScrollStyle = cmd.ScrollStyle;
 /// Placement and look of a `push_overlay` (second z-layer).

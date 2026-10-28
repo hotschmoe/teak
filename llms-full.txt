@@ -222,7 +222,7 @@ Emitters (all `catch unreachable` on arena OOM):
   `textInputSelected(focus_msg, content, cursor, ?selection_anchor, TextInputStyle)`
 - `checkbox(msg, checked, label)`, `radio(msg, selected, label)`, `slider(grab_msg, value)`
 - `spacer(flex)` — invisible flex filler (empty zero-padding group)
-- containers: `pushGroup(GroupStyle)`/`popGroup()`, `pushScroll(ScrollStyle)`/`popScroll()`,
+- containers: `pushGroup(GroupStyle)`/`popGroup()`, `pushGrid(GridStyle)`/`popGrid()`, `pushScroll(ScrollStyle)`/`popScroll()`,
   `pushOverlay(OverlayStyle(Msg))`/`popOverlay()`, `pushVirtualList(VirtualListStyle)`/`popVirtualList()`,
   `pushFormRow(FormRowOpts)`/`popFormRow()`
 - `scene3d(SceneCmd(Msg))` — 3D mesh leaf (see "3D scenes" below).
@@ -241,6 +241,15 @@ GroupStyle = struct { direction: Direction = .vertical, padding: f32 = 8,
                       justify: Justify = .start,           // leftover main-axis space when no child has flex
                       bg: ?[4]f32 = null,
                       border: ?[4]f32 = null, border_width: f32 = 1 }   // border drawn INSIDE the rect
+GridStyle = struct { columns: u16 = 0,                    // 0 = tracks.len; clamped to MAX_GRID_COLUMNS (32)
+                     tracks: []const GridTrack = &.{},    // per column; missing ones are .{ .fr = 1 }
+                     col_gap, row_gap: f32 = 8, padding: f32 = 8, pad_x, pad_y: ?f32 = null,
+                     flex: f32 = 0, width, height, min_width, min_height: f32 = 0,
+                     align_x, align_y: Align = .start,    // placement inside the cell; .stretch fills it
+                     a11y: A11yHint = .{}, bg, border: ?[4]f32 = null, border_width: f32 = 1 }
+                     // one direct child per cell, row-major; row height = tallest cell; flex ignored in cells
+GridTrack = union(enum) { auto, fixed: f32, fr: f32 }    // auto = widest child; fr = share of the rest, >= content
+// cb.pushGrid(.{ .tracks = &.{ .auto, .{ .fr = 1 } }, .align_y = .center }); key/value pairs...; cb.popGrid();
 ScrollStyle = struct { direction = .vertical, padding, gap, flex, width, height,
                        align_cross: Align = .start,
                        scroll_x, scroll_y: f32 = 0,
@@ -313,9 +322,9 @@ Cmd-buffer balance validation (catches unbalanced push/pop):
 ```zig
 validateBalance(cmds) ?BalanceError            // pure O(n); null when balanced
 formatBalanceError(err: BalanceError, buf: []u8) []const u8   // one actionable line
-BalanceKind = enum { group, scroll, overlay, virtual_list }
+BalanceKind = enum { group, grid, scroll, overlay, virtual_list }
 BalanceError = struct { tag, open_kind, open_index, close_kind, close_index }
-MAX_BALANCE_DEPTH = 32                          // mirrors LayoutEngine's fixed stack
+MAX_BALANCE_DEPTH = 64                          // mirrors the layout passes' fixed stacks
 ```
 
 ### Charts (`teak.chart` → core/chart.zig)
@@ -1320,6 +1329,20 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, a11y, bg, border, border_width, drag_id, drop_id, radius, gradient, soft_shadow`
   - `pub fn padX(self: GroupStyle) f32`
   - `pub fn padY(self: GroupStyle) f32`
+> Layout and look of a `push_grid` container (children fill columns row by row).
+- `teak.GridStyle` = `cmd.GridStyle`
+  - fields: `columns, tracks, col_gap, row_gap, padding, pad_x, pad_y, flex, width, height, min_width, min_height, align_x, align_y, a11y, bg, border, border_width`
+  - `pub fn padX(self: GridStyle) f32`
+  - `pub fn padY(self: GridStyle) f32`
+  > Column count actually laid out (at least 1, at most `MAX_GRID_COLUMNS`).
+  - `pub fn columnCount(self: GridStyle) usize`
+  > Width rule of column `c`.
+  - `pub fn track(self: GridStyle, c: usize) GridTrack`
+> Width rule of one grid column: `auto`, `fixed` px or an `fr` share.
+- `teak.GridTrack` = `cmd.GridTrack`
+  - fields: `auto, fixed, fr`
+> Most columns a grid lays out (`GridStyle.columnCount` clamps to it).
+- `teak.MAX_GRID_COLUMNS`: `pub const MAX_GRID_COLUMNS = cmd.MAX_GRID_COLUMNS`
 > Layout and scroll offsets of a `push_scroll` region.
 - `teak.ScrollStyle` = `cmd.ScrollStyle`
   - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, a11y, id`
@@ -1350,7 +1373,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `label, units, validation, gap, validation_gap`
 > The four container kinds that `validateBalance` pairs up.
 - `teak.BalanceKind` = `cmd.BalanceKind`
-  - fields: `group, scroll, overlay, virtual_list`
+  - fields: `group, grid, scroll, overlay, virtual_list`
   > Name of the opening cmd, e.g. `"push_group"`.
   - `pub fn pushName(self: BalanceKind) []const u8`
   > Name of the closing cmd, e.g. `"pop_group"`.
@@ -2055,6 +2078,24 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, a11y, bg, border, border_width, drag_id, drop_id, radius, gradient, soft_shadow`
   - `pub fn padX(self: GroupStyle) f32`
   - `pub fn padY(self: GroupStyle) f32`
+> Most columns a grid lays out. `GridStyle.columnCount` clamps to it so the
+> layout passes can keep per-column widths in a fixed array (HARDLINE hatch 3:
+> no allocation, bounded scratch).
+- `pub const MAX_GRID_COLUMNS = 32`
+> Width rule for one grid column.
+- `union GridTrack`
+  - fields: `auto, fixed, fr`
+> Layout and look of a `push_grid` container: children (in buffer order,
+> one per cell, any leaf or container) fill `columnCount()` columns row by
+> row. Row height = the tallest child in the row; column width per track.
+- `struct GridStyle`
+  - fields: `columns, tracks, col_gap, row_gap, padding, pad_x, pad_y, flex, width, height, min_width, min_height, align_x, align_y, a11y, bg, border, border_width`
+  - `pub fn padX(self: GridStyle) f32`
+  - `pub fn padY(self: GridStyle) f32`
+  > Column count actually laid out (at least 1, at most `MAX_GRID_COLUMNS`).
+  - `pub fn columnCount(self: GridStyle) usize`
+  > Width rule of column `c`.
+  - `pub fn track(self: GridStyle, c: usize) GridTrack`
 - `struct TextCmd`
   - fields: `content, font, color, wrap, max_lines, text_align`
 - `struct ButtonStyle`
@@ -2192,13 +2233,13 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `pub fn RadioCmd(comptime Msg: type) type`
 - `pub fn SliderCmd(comptime Msg: type) type`
 - `pub fn Cmd(comptime Msg: type) type`
-> The four container kinds that bracket a region of the flat buffer.
+> The container kinds that bracket a region of the flat buffer.
 > `pushFormRow` / `popFormRow` are sugar over `push_group` / `pop_group`
 > (they emit exactly those Cmds), so a form row shows up here as
 > `.group` — no separate kind, matching what the buffer actually
 > records.
 - `enum BalanceKind`
-  - fields: `group, scroll, overlay, virtual_list`
+  - fields: `group, grid, scroll, overlay, virtual_list`
   > Name of the opening cmd, e.g. `"push_group"`.
   - `pub fn pushName(self: BalanceKind) []const u8`
   > Name of the closing cmd, e.g. `"pop_group"`.

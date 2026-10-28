@@ -24,7 +24,7 @@ pub const Rect = struct { x, y, w, h: f32, ... };
 
 Two O(n) linear passes over `[]Cmd` (two more when the frame has wrapped text or shrinkable nodes, see [Wrapped text and shrink](#wrapped-text-and-shrink)):
 
-1. **Measure** (bottom-up, via explicit `FixedStack<GroupContext, 32>`). Each command writes its intrinsic outer size to `rects[i]`. Containers (`push_group` / `push_scroll` / `push_overlay` / `push_virtual_list`) also record `fixed_main`, `flex_total`, `child_count` so the position pass doesn't rescan children. A group's or scroll's `width` / `height` replaces the measured size; `min_width` / `min_height` floor it.
+1. **Measure** (bottom-up, via explicit `FixedStack<GroupContext, 32>`). Each command writes its intrinsic outer size to `rects[i]`. Containers (`push_group` / `push_grid` / `push_scroll` / `push_overlay` / `push_virtual_list`) also record `fixed_main`, `flex_total`, `child_count` so the position pass doesn't rescan children. A group's or scroll's `width` / `height` replaces the measured size; `min_width` / `min_height` floor it.
 2. **Position** (top-down; pass 4 when wrapping is present). Root `push_group` gets stretched to `(window_w, window_h)`. A container is sized while it is placed in its parent (flex growth, stretch), so its final rect is known before its own children are placed.
 
 No tree allocation. The `FixedStack` is the only stack-based storage, capped at depth 32.
@@ -81,6 +81,38 @@ cb.popGroup();
 
 `src/layout/sizing_test.zig` snapshots exactly this shape at 1440x900 (header 40, status 24, columns 360 / flex / 320), plus nested stretch, fixed table columns, `space_between`, min sizes and scroll overflow.
 
+### Grid
+
+**Status**: `pub` in `src/teak.zig` as `GridStyle`, `GridTrack`, `MAX_GRID_COLUMNS`; emitters `cb.pushGrid(GridStyle)` / `cb.popGrid()` (Cmd pair `push_grid` / `pop_grid`).
+**Tests**: `src/layout/grid_test.zig`.
+
+A grid puts its direct children, in buffer order, into a fixed number of columns, row by row. Each direct child (any leaf, or a group / scroll / grid for a multi-widget cell) takes exactly one cell. Overlays inside a grid take no cell.
+
+```zig
+// Key / value property panel: keys in an auto column, values take the rest.
+cb.pushGrid(.{ .tracks = &.{ .auto, .{ .fr = 1 } }, .col_gap = 16, .row_gap = 6, .align_y = .center });
+cb.textMuted("Width");  cb.textInput(.focus_width, m.width.content(), m.width.cursor());
+cb.textMuted("Material"); cb.text(m.material);
+cb.popGrid();
+
+// Toolbar of equal buttons: missing tracks default to `.{ .fr = 1 }`.
+cb.pushGrid(.{ .columns = 3, .padding = 0, .align_x = .stretch });
+cb.button(.open, "Open"); cb.button(.save, "Save"); cb.button(.close, "Close");
+cb.popGrid();
+```
+
+- **Columns.** `columns` (0 = `tracks.len`, clamped to `MAX_GRID_COLUMNS` = 32). Column `c` follows `tracks[c]`, or `.{ .fr = 1 }` past the end of `tracks`:
+  - `.auto`: the widest child in the column.
+  - `.{ .fixed = px }`: exactly `px`.
+  - `.{ .fr = w }`: a share `w / sum(w)` of the inner width left after fixed and auto columns and the `col_gap`s, never below the column's widest child (CSS `minmax(auto, Nfr)`): a column whose share is too small keeps its content width and the other fr columns share what remains. In the wrap passes the floor of an fr column is its children's min-content, so wrapped text wraps to the column.
+- **Rows.** As tall as the tallest cell in the row; `row_gap` between rows. Rows never grow to fill a taller grid (no row tracks).
+- **Measured size.** Columns at their content (fixed: `px`) plus gaps and padding; rows as above. `width` / `height` fix the outer size, `min_width` / `min_height` floor it, `flex` grows it in its parent like a group; a stretching parent sets its width. fr columns share whatever width the grid ends up with.
+- **Cells.** `align_x` / `align_y` place each child in its cell (`.start` default, `.center`, `.end`, `.stretch` = fill the cell; a group / scroll with a fixed size on that axis keeps it). As in a vertical group, `text_input`, `slider` and `divider` fill the cell width under `.start` too; single-line controls never stretch vertically. `flex` on a cell's child is ignored.
+- **Look.** `bg`, `border`, `border_width` and `padding` / `pad_x` / `pad_y` as on `GroupStyle`; `a11y` hint (the a11y tree reports a grid as a `group` node, `table` semantics if you set them).
+- **Snapshot.** `grid (x,y,w,h) cols=N [bg] [border]`.
+
+**How it fits the passes (HARDLINE hatch 3).** Nothing is retained and nothing allocates. The measure pass sizes a grid at its `pop_grid` by one scan over its direct children (hopping their subtrees through `Rect.end`), keeping per-column maxima in a fixed `[MAX_GRID_COLUMNS]f32` and a single running row. The position pass resolves the column widths when it opens the grid (one more scan) and, at the first cell of each row, reads that row's height from the next `columns` children; a small fixed grid stack parallel to the cursor stack holds the column offsets. Every cmd is therefore visited a bounded number of extra times and each pass stays O(n). Passes 2-3 (wrap / shrink) settle cell widths and re-measure the grid the same way.
+
 ### Rect fields
 
 - `x, y, w, h` — final layout (valid after both passes).
@@ -112,7 +144,7 @@ Text is measured through the Host's `TextMeasurer` (real glyph metrics). `teak.m
 
 ## Non-goals / known limits
 
-- **No constraint solver / CSS Grid.** Groups are horizontal or vertical flex only. A constraint-based pass would swap `positionPass` — the interface supports that, but no such pass exists today. See [`docs/archive/init_convo/ui-framework-refinement.md`](../archive/init_convo/ui-framework-refinement.md) §3 for the design sketch.
+- **No constraint solver / full CSS Grid.** Groups are horizontal or vertical flex; [`push_grid`](#grid) adds fixed-column grids (no spans, no row tracks, no named areas, no auto-placement beyond row-major). A constraint-based pass would swap `positionPass` — the interface supports that, but no such pass exists today. See [`docs/archive/init_convo/ui-framework-refinement.md`](../archive/init_convo/ui-framework-refinement.md) §3 for the design sketch.
 - **No intrinsic aspect ratios.** A child can't say "keep me 16:9".
 - **No max constraints.** Groups have `min_width` / `min_height` but no maximum. Shrinking is opt-in (`shrink > 0`); groups never shrink by default.
 - **Wrapping is `text` only.** `rich_text` stays single-line; no bidi / hyphenation (see text-engine.md section 6.6).
@@ -169,14 +201,14 @@ cb.popOverlay();
 **Source**: `src/core/cmd.zig`
 **Tests**: colocated in `src/core/cmd.zig` — balanced → `null`; each imbalance kind with its index; nested/crossed cases; form-row cases; depth overflow; formatter output.
 
-Every `push_*` Cmd (`push_group` / `push_scroll` / `push_overlay` / `push_virtual_list`) must be closed by the matching `pop_*`. A missing pop, a stray pop, or a **crossed pair** (`push_group … pop_overlay`) is otherwise a silent bug: the layout `FixedStack` only `assert`s on overflow/underflow, and a *balanced-but-crossed* buffer doesn't even trip that — it just produces wrong rects. `validateBalance` turns the whole class into a named, immediate error.
+Every `push_*` Cmd (`push_group` / `push_grid` / `push_scroll` / `push_overlay` / `push_virtual_list`) must be closed by the matching `pop_*`. A missing pop, a stray pop, or a **crossed pair** (`push_group … pop_overlay`) is otherwise a silent bug: the layout `FixedStack` only `assert`s on overflow/underflow, and a *balanced-but-crossed* buffer doesn't even trip that — it just produces wrong rects. `validateBalance` turns the whole class into a named, immediate error.
 
 ```zig
 pub fn validateBalance(cmds: anytype) ?BalanceError;         // null == balanced
 pub fn formatBalanceError(err: BalanceError, buf: []u8) []const u8;
 ```
 
-- **Pure, O(n), zero allocation.** Walks the flat `[]Cmd` once against a fixed 32-deep stack (mirrors the layout `FixedStack`). `cmds` is any `[]const Cmd(Msg)` — only Msg-independent tags are read, so it takes `anytype` the way the layout passes do.
+- **Pure, O(n), zero allocation.** Walks the flat `[]Cmd` once against a fixed `MAX_BALANCE_DEPTH`-deep stack (mirrors the layout `FixedStack`). `cmds` is any `[]const Cmd(Msg)` — only Msg-independent tags are read, so it takes `anytype` the way the layout passes do.
 - **Reports the first fault only**, as a small POD `BalanceError { tag, open_kind, open_index, close_kind, close_index }`:
   - `unclosed_push` — a `push_*` with no matching pop (`open_*` name it; the innermost still-open push is reported).
   - `stray_pop` — a `pop_*` with nothing open (`close_*` name it).
