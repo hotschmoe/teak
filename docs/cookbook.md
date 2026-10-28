@@ -32,6 +32,7 @@ change yields.
 | Call an HTTP API, open / save a file, remember a setting | [13. Effects: HTTP, files, storage](#13-effects-http-files-storage) |
 | Drive my app from an LLM agent (click, type, screenshot, replay) | [15. Drive your app from an LLM agent](#15-drive-your-app-from-an-llm-agent) |
 | Edit multi-line text (wrap, scroll, select, undo, IME) | [23. Add a multi-line TextArea](#23-add-a-multi-line-textarea) |
+| Line up a form / property panel, or a row of equal buttons | [24. Grid: property panel and equal toolbar](#24-grid-property-panel-and-equal-toolbar) |
 
 The mechanical spine underneath every app recipe: **1.** field on `Model`
 · **2.** variant on `Msg` · **3.** arm in `update` · **4.** `cb.*` calls in
@@ -1351,3 +1352,41 @@ Seed or replace the text with `m.notes.set("...")`; read it with
 **Also:** a second area (a chat box) is another `Model` field, `Msg` variant
 and `update` arm; `examples/notes` has two. Full reference:
 [features/text-area.md](features/text-area.md).
+
+---
+
+## 24. Grid: property panel and equal toolbar
+
+A grid puts its direct children into columns, row by row, one child per cell.
+Keys go in an `auto` column (as wide as the widest key), values take the rest
+(`fr`); every value starts at the same x without any fixed label width.
+
+```zig
+cb.pushGrid(.{ .tracks = &.{ .auto, .{ .fr = 1 } }, .col_gap = 16, .row_gap = 6, .align_y = .center });
+cb.textMuted("Name");
+cb.textInput(.focus_name, m.name.content(), m.name.cursor()); // fills the value column
+cb.textMuted("Size");
+cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 6 }); // a multi-widget cell
+cb.button(.smaller, "-");
+cb.text(fmt(cb, "{d}", .{m.size}));
+cb.button(.bigger, "+");
+cb.popGroup();
+cb.popGrid();
+
+// Equal-width buttons: `columns` with no `tracks` = that many `fr = 1` columns.
+cb.pushGrid(.{ .columns = 3, .padding = 0, .col_gap = 8, .align_x = .stretch });
+cb.button(.open, "Open");
+cb.button(.save, "Save as...");
+cb.button(.close, "Close");
+cb.popGrid();
+```
+
+Tracks: `.auto`, `.{ .fixed = px }`, `.{ .fr = weight }` (never narrower than
+its content). Put the grid in a stretching parent (or give it `width` /
+`flex`) so the fr columns have room to share. Live example: the "Grid
+(property panel)" card on the gallery's Layout page. Reference:
+[features/layout.md#grid](features/layout.md#grid).
+
+**Common mistake:** emitting two cmds for one cell (a label and a widget side
+by side): each direct child takes its own cell, so the rows shift. Wrap a
+multi-widget cell in a `pushGroup` / `popGroup`.

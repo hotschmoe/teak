@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Layout: grid container (`push_grid` / `pop_grid`)
+
+- `cb.pushGrid(teak.GridStyle{ ... })` / `cb.popGrid()`: direct children fill
+  a fixed number of columns row by row, one per cell (a nested group makes a
+  multi-widget cell). Per-column `teak.GridTrack`: `.auto` (widest child),
+  `.{ .fixed = px }`, `.{ .fr = w }` (share of the leftover, floored at
+  content). Rows are as tall as their tallest cell; `col_gap` / `row_gap`,
+  padding, `align_x` / `align_y` (`.stretch` fills the cell), `width` /
+  `height` / `min_*` / `flex`, `bg` / `border`, `a11y`. Up to
+  `teak.MAX_GRID_COLUMNS` (32) columns. For property panels, forms,
+  inspector key/value tables and toolbars of equal buttons.
+- Every pass handles it: layout (measure, wrap passes, position, all still
+  O(n) with fixed scratch), hit-test, focus, render (`bg` / `border`),
+  snapshot (`grid (x,y,w,h) cols=N`), a11y (a `group` node), scroll extent,
+  virtual-list row extents, `validateBalance` (`BalanceKind.grid`).
+- `examples/gallery` Layout page: a "Grid (property panel)" card. The gallery
+  `shot` step now builds on every OS with a native backend (it was Linux only).
+- `layout/virtual_rows.zig`'s child walk is now exhaustive over Cmd tags.
+
 ### Web: `WebWgpuOptions.bridge_js` (#136)
 
 - `teak.linkWebWgpu(b, exe, .{ .bridge_js = b.path("web/bridge.js") })`

@@ -139,6 +139,20 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, a11y, bg, border, border_width, drag_id, drop_id, radius, gradient, soft_shadow`
   - `pub fn padX(self: GroupStyle) f32`
   - `pub fn padY(self: GroupStyle) f32`
+> Layout and look of a `push_grid` container (children fill columns row by row).
+- `teak.GridStyle` = `cmd.GridStyle`
+  - fields: `columns, tracks, col_gap, row_gap, padding, pad_x, pad_y, flex, width, height, min_width, min_height, align_x, align_y, a11y, bg, border, border_width`
+  - `pub fn padX(self: GridStyle) f32`
+  - `pub fn padY(self: GridStyle) f32`
+  > Column count actually laid out (at least 1, at most `MAX_GRID_COLUMNS`).
+  - `pub fn columnCount(self: GridStyle) usize`
+  > Width rule of column `c`.
+  - `pub fn track(self: GridStyle, c: usize) GridTrack`
+> Width rule of one grid column: `auto`, `fixed` px or an `fr` share.
+- `teak.GridTrack` = `cmd.GridTrack`
+  - fields: `auto, fixed, fr`
+> Most columns a grid lays out (`GridStyle.columnCount` clamps to it).
+- `teak.MAX_GRID_COLUMNS`: `pub const MAX_GRID_COLUMNS = cmd.MAX_GRID_COLUMNS`
 > Layout and scroll offsets of a `push_scroll` region.
 - `teak.ScrollStyle` = `cmd.ScrollStyle`
   - fields: `direction, padding, gap, flex, shrink, width, height, align_cross, scroll_x, scroll_y, a11y, id`
@@ -169,7 +183,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `label, units, validation, gap, validation_gap`
 > The four container kinds that `validateBalance` pairs up.
 - `teak.BalanceKind` = `cmd.BalanceKind`
-  - fields: `group, scroll, overlay, virtual_list`
+  - fields: `group, grid, scroll, overlay, virtual_list`
   > Name of the opening cmd, e.g. `"push_group"`.
   - `pub fn pushName(self: BalanceKind) []const u8`
   > Name of the closing cmd, e.g. `"pop_group"`.
@@ -868,6 +882,24 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `direction, padding, pad_x, pad_y, gap, flex, shrink, width, height, min_width, min_height, align_cross, justify, a11y, bg, border, border_width, drag_id, drop_id, radius, gradient, soft_shadow`
   - `pub fn padX(self: GroupStyle) f32`
   - `pub fn padY(self: GroupStyle) f32`
+> Most columns a grid lays out. `GridStyle.columnCount` clamps to it so the
+> layout passes can keep per-column widths in a fixed array (HARDLINE hatch 3:
+> no allocation, bounded scratch).
+- `pub const MAX_GRID_COLUMNS = 32`
+> Width rule for one grid column.
+- `union GridTrack`
+  - fields: `auto, fixed, fr`
+> Layout and look of a `push_grid` container: children (in buffer order,
+> one per cell, any leaf or container) fill `columnCount()` columns row by
+> row. Row height = the tallest child in the row; column width per track.
+- `struct GridStyle`
+  - fields: `columns, tracks, col_gap, row_gap, padding, pad_x, pad_y, flex, width, height, min_width, min_height, align_x, align_y, a11y, bg, border, border_width`
+  - `pub fn padX(self: GridStyle) f32`
+  - `pub fn padY(self: GridStyle) f32`
+  > Column count actually laid out (at least 1, at most `MAX_GRID_COLUMNS`).
+  - `pub fn columnCount(self: GridStyle) usize`
+  > Width rule of column `c`.
+  - `pub fn track(self: GridStyle, c: usize) GridTrack`
 - `struct TextCmd`
   - fields: `content, font, color, wrap, max_lines, text_align`
 - `struct ButtonStyle`
@@ -1005,13 +1037,13 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `pub fn RadioCmd(comptime Msg: type) type`
 - `pub fn SliderCmd(comptime Msg: type) type`
 - `pub fn Cmd(comptime Msg: type) type`
-> The four container kinds that bracket a region of the flat buffer.
+> The container kinds that bracket a region of the flat buffer.
 > `pushFormRow` / `popFormRow` are sugar over `push_group` / `pop_group`
 > (they emit exactly those Cmds), so a form row shows up here as
 > `.group` — no separate kind, matching what the buffer actually
 > records.
 - `enum BalanceKind`
-  - fields: `group, scroll, overlay, virtual_list`
+  - fields: `group, grid, scroll, overlay, virtual_list`
   > Name of the opening cmd, e.g. `"push_group"`.
   - `pub fn pushName(self: BalanceKind) []const u8`
   > Name of the closing cmd, e.g. `"pop_group"`.

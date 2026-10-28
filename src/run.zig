@@ -1819,8 +1819,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             while (i > 0) {
                 i -= 1;
                 switch (cmds[i]) {
-                    .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => depth += 1,
-                    .push_group, .push_overlay, .push_virtual_list => depth -= 1,
+                    .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => depth += 1,
+                    .push_group, .push_grid, .push_overlay, .push_virtual_list => depth -= 1,
                     .push_scroll => |sc| {
                         if (depth == 0 and sc.id != 0) {
                             found = i;

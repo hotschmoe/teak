@@ -20,15 +20,15 @@ pub fn rowExtents(cmds: anytype, rects: []const Rect, index: usize, out: []f32) 
     var i = index + 1;
     while (i < cmds.len and depth > 0) : (i += 1) {
         switch (cmds[i]) {
-            .push_group, .push_virtual_list, .push_scroll, .push_overlay => {
+            .push_group, .push_grid, .push_virtual_list, .push_scroll, .push_overlay => {
                 if (depth == 1 and n < out.len and cmds[i] != .push_overlay) {
                     out[n] = if (vertical) rects[i].h else rects[i].w;
                     n += 1;
                 }
                 depth += 1;
             },
-            .pop_group, .pop_virtual_list, .pop_scroll, .pop_overlay => depth -= 1,
-            else => if (depth == 1 and n < out.len) {
+            .pop_group, .pop_grid, .pop_virtual_list, .pop_scroll, .pop_overlay => depth -= 1,
+            .text, .rich_text, .image, .divider, .button, .text_input, .text_area, .checkbox, .radio, .slider, .canvas, .scene3d => if (depth == 1 and n < out.len) {
                 out[n] = if (vertical) rects[i].h else rects[i].w;
                 n += 1;
             },

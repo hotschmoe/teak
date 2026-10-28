@@ -44,10 +44,14 @@ const states = [_]State{
 pub fn main(init: std.process.Init) !void {
     var path: []const u8 = "gallery.png";
     var want: []const u8 = states[0].name;
-    var it = init.minimal.args.iterate();
-    _ = it.next();
-    while (it.next()) |a| {
-        if (std.mem.eql(u8, a, "--state")) want = it.next() orelse return error.MissingState else path = a;
+    // `toSlice` (not `iterate`) so the shot also builds on Windows.
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--state")) {
+            i += 1;
+            want = if (i < args.len) args[i] else return error.MissingState;
+        } else path = args[i];
     }
     for (states) |st| if (std.mem.eql(u8, st.name, want)) {
         try teak.headless.shot(App, Host, Gpu, init.gpa, path, .{ .width = 1280, .height = 800, .steps = st.steps });

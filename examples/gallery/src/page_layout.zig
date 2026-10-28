@@ -25,6 +25,30 @@ fn tabSelect(i: usize) Msg {
     return .{ .tabs = .{ .select = i } };
 }
 
+/// A grid card: a key / value property table (an auto column for the keys,
+/// the rest for the values) and a toolbar of equal-width buttons.
+fn propertyPanel(m: *const Model, cb: anytype) void {
+    ui.card(cb, "Grid (property panel)", 0, 0);
+    cb.pushGrid(.{ .tracks = &.{ .auto, .{ .fr = 1 } }, .padding = 0, .col_gap = 16, .row_gap = 6, .align_y = .center });
+    const sel = @min(m.tabs.selected, tab_labels.len - 1);
+    cb.textMuted("Selected tab");
+    cb.text(tab_labels[sel]);
+    cb.textMuted("Split ratio");
+    cb.text(ui.fmt(cb, "{d:.2}", .{m.split.ratio}));
+    cb.textMuted("Panes");
+    cb.text(ui.fmt(cb, "{d:.0} px | {d:.0} px", .{ W.split.paneA(&m.split, split_opts), W.split.paneB(&m.split, split_opts) }));
+    cb.textMuted("Volume");
+    cb.text(ui.fmt(cb, "{d:.0}%", .{m.volume * 100}));
+    cb.textMuted("Wi-Fi");
+    W.toggle.view(cb, Msg{ .toggle_wifi = {} }, m.wifi, if (m.wifi) "On" else "Off");
+    cb.popGrid();
+    cb.textMuted("Three fr columns, one button per tab:");
+    cb.pushGrid(.{ .columns = 3, .padding = 0, .col_gap = 8, .align_x = .stretch });
+    for (tab_labels, 0..) |label, i| cb.button(tabSelect(i), label);
+    cb.popGrid();
+    ui.endCard(cb);
+}
+
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 14, .align_cross = .start });
 
@@ -81,6 +105,7 @@ pub fn view(m: *const Model, cb: anytype) void {
     W.split.end(cb);
     cb.textMuted(ui.fmt(cb, "ratio {d:.2} - kept in the Model", .{m.split.ratio}));
     ui.endCard(cb);
+    propertyPanel(m, cb);
     cb.popGroup();
 
     cb.popGroup();

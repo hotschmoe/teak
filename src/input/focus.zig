@@ -15,7 +15,9 @@ fn isFocusable(c: anytype) bool {
         .text_input => |t| !t.disabled,
         .text_area => |t| !t.disabled,
         .push_group,
+        .push_grid,
         .pop_group,
+        .pop_grid,
         .push_scroll,
         .pop_scroll,
         .push_overlay,
@@ -180,8 +182,8 @@ pub fn rovingTarget(cmds: anytype, idx: usize, delta: i32) ?usize {
     while (i > 0) {
         i -= 1;
         switch (cmds[i]) {
-            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => depth += 1,
-            .push_group, .push_scroll, .push_overlay, .push_virtual_list => {
+            .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => depth += 1,
+            .push_group, .push_grid, .push_scroll, .push_overlay, .push_virtual_list => {
                 if (depth == 0) break;
                 depth -= 1;
             },
@@ -197,8 +199,8 @@ pub fn rovingTarget(cmds: anytype, idx: usize, delta: i32) ?usize {
     i = lo;
     while (i < cmds.len and n < members.len) : (i += 1) {
         switch (cmds[i]) {
-            .push_group, .push_scroll, .push_overlay, .push_virtual_list => depth += 1,
-            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => {
+            .push_group, .push_grid, .push_scroll, .push_overlay, .push_virtual_list => depth += 1,
+            .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => {
                 if (depth == 0) break;
                 depth -= 1;
             },
@@ -234,8 +236,8 @@ pub fn groupNeighbor(cmds: anytype, idx: usize, forward: bool) ?usize {
     while (i > 0) {
         i -= 1;
         switch (cmds[i]) {
-            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => depth += 1,
-            .push_group, .push_scroll, .push_overlay, .push_virtual_list => {
+            .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => depth += 1,
+            .push_group, .push_grid, .push_scroll, .push_overlay, .push_virtual_list => {
                 if (depth == 0) break;
                 depth -= 1;
             },
@@ -250,8 +252,8 @@ pub fn groupNeighbor(cmds: anytype, idx: usize, forward: bool) ?usize {
     i = lo;
     while (i < cmds.len and n < members.len) : (i += 1) {
         switch (cmds[i]) {
-            .push_group, .push_scroll, .push_overlay, .push_virtual_list => depth += 1,
-            .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list => {
+            .push_group, .push_grid, .push_scroll, .push_overlay, .push_virtual_list => depth += 1,
+            .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => {
                 if (depth == 0) break;
                 depth -= 1;
             },
@@ -294,7 +296,9 @@ pub fn activationMsg(c: anytype) ?@TypeOf(c).MsgT {
         .slider => |s| s.grab_msg,
         .canvas => |cv| cv.msg,
         .push_group,
+        .push_grid,
         .pop_group,
+        .pop_grid,
         .push_scroll,
         .pop_scroll,
         .push_overlay,
