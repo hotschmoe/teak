@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Web: touch input (#134)
+
+- The wasm host maps zunk's touch points to the pointer: one finger is a
+  left-button press / drag / release, two fingers scroll (wheel) or pinch
+  (ctrl+wheel about their midpoint), the same events a trackpad sends, so
+  canvases and lists work on touch screens with no app change.
+  `teak.TouchMapper` holds the mapping (unit-tested natively).
+
 ### Selectable static text: read-only `TextArea`
 
 - `TextArea(cap).Model.read_only`: selection, motion and copy work; typing,

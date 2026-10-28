@@ -472,6 +472,8 @@ pub const expectSnapshot = snapshot.expectSnapshot;
 pub const InputState = host.InputState;
 /// Event accumulator turning native events into an `InputState`.
 pub const InputQueue = input_queue.InputQueue;
+/// Touch points -> pointer (one finger) and wheel / ctrl+wheel pinch (two), for touch-only hosts.
+pub const TouchMapper = input_queue.TouchMapper;
 /// Navigation keys a Host may deliver.
 pub const NavKey = input_queue.NavKey;
 /// The one Shift/Ctrl policy: map a key plus modifiers to a `SpecialKey`.
