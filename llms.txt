@@ -974,6 +974,7 @@ InputState = struct { mouse_x, mouse_y: f32,
 InputQueue          // per-window accumulator shared by event-driven hosts: beginFrame(), pointerMoved(x,y),
                     //   buttonDown/buttonUp(Button), wheel(dx,dy), pushNav(NavKey), pushKey(SpecialKey),
                     //   pushCodepoint(u21), pushText(utf8), pushUtf16Unit(u16), finish(resized,w,h) InputState
+TouchMapper         // step(*InputQueue, pts: []const [2]f32) bool: 1 finger = left drag, 2 = wheel scroll / ctrl+wheel pinch (web host)
 NavKey = enum { backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, a, c, x, v, y, z }
 resolveKey(NavKey, Modifiers) ?SpecialKey   // the one Shift/Ctrl policy every host shares (plain letters -> null)
 input_queue         // module: platform/input_queue.zig

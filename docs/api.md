@@ -740,6 +740,12 @@ Signatures and `///` doc comments of every public declaration reachable from
   > Build this frame's `InputState` and clear the per-frame edges and
   > wheel accumulators. Text/key slices alias the queue; see `beginFrame`.
   - `pub fn finish(self: *InputQueue, resized: bool, width: u32, height: u32) host.InputState`
+> Touch points -> pointer (one finger) and wheel / ctrl+wheel pinch (two), for touch-only hosts.
+- `teak.TouchMapper` = `input_queue.TouchMapper`
+  - fields: `count, mid, dist, pinching`
+  > Feed this frame's touch points (window px). Returns true while touch
+  > owns the pointer (the host should not apply mouse state on top).
+  - `pub fn step(self: *TouchMapper, q: *InputQueue, pts: []const [2]f32) bool`
 > Navigation keys a Host may deliver.
 - `teak.NavKey` = `input_queue.NavKey`
   - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, menu, a, c, x, v, y, z`
@@ -2708,6 +2714,18 @@ Shared per-window input accumulator for event-driven Hosts (Win32, X11).
   > Build this frame's `InputState` and clear the per-frame edges and
   > wheel accumulators. Text/key slices alias the queue; see `beginFrame`.
   - `pub fn finish(self: *InputQueue, resized: bool, width: u32, height: u32) host.InputState`
+> Touch -> pointer for hosts that only see touch points (the web canvas
+> suppresses the browser's synthesized mouse events). One finger is the
+> left button: down, drag, up. Two fingers are a trackpad: moving them
+> together scrolls (wheel dx / dy), spreading or pinching them is a
+> ctrl+wheel zoom about their midpoint, the same events a trackpad pinch
+> produces, so apps need no touch-specific code. More fingers are ignored.
+> Plain data; the host keeps one per window and steps it once per frame.
+- `struct TouchMapper`
+  - fields: `count, mid, dist, pinching`
+  > Feed this frame's touch points (window px). Returns true while touch
+  > owns the pointer (the host should not apply mouse state on top).
+  - `pub fn step(self: *TouchMapper, q: *InputQueue, pts: []const [2]f32) bool`
 
 ### `teak.gpu` (`src/gpu/context.zig`)
 

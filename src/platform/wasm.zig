@@ -411,6 +411,9 @@ pub const Host = struct {
     fx_next: usize = 0,
     fx_claimed: u32 = 0,
     fx_polled: bool = false,
+    /// Touch -> pointer / pinch mapping (zunk reports touches; the canvas
+    /// suppresses the browser's synthesized mouse events).
+    touch: teak.TouchMapper = .{},
     /// IME composition mirror (`zunk.web.ime`): the live preedit, valid until the
     /// next `pollInputs`. Commits go to the input queue as typed text.
     ime_active: bool = false,
@@ -459,6 +462,17 @@ pub const Host = struct {
         q.pressed = buttonEdges(zinput.isMouseButtonPressed);
         q.released = buttonEdges(zinput.isMouseButtonReleased);
         q.wheel(mouse.wheel_x, mouse.wheel);
+        {
+            // Touch points are client coordinates; teak's web canvas fills
+            // the page, so they match the canvas' CSS pixels.
+            var pts: [2][2]f32 = undefined;
+            const tn = @min(zinput.getTouchCount(), 2);
+            for (0..tn) |i| {
+                const tp = zinput.getTouch(@intCast(i)).?;
+                pts[i] = .{ tp.x, tp.y };
+            }
+            if (self.touch.step(q, pts[0..tn]) and self.touch.pinching) q.mods.ctrl = true;
+        }
 
         // Cmd (meta) acts as Ctrl for the chord keys (Cmd+V pastes on macOS);
         // the reported `mods` keep the real state.
