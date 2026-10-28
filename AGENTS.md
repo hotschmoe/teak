@@ -158,6 +158,7 @@ new variants). Worked example: [`docs/cookbook.md`](docs/cookbook.md) recipe 12.
 src/                                          -- the library, consumable as a Zig module
   control.zig                                 -- Agent control channel + input record/replay, driven from Runtime.frame
   dev.zig                                     -- Hot reload for dev builds (native, Linux): the App compiled as a shared library behind a stable
+  frame_stats.zig                             -- Frame timing and perf counters for the run loop: FrameStats, the percentile summary, and the
   headless_run.zig                            -- Tool API for headless runs: script input, run frames, grab pixels, write a PNG
   input_record.zig                            -- Input record / replay file format (TEAK_RECORD / TEAK_REPLAY)
   resources.zig                               -- run-loop resource table (key -> Gpu handle), stageDraws

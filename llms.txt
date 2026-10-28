@@ -165,6 +165,11 @@ pub const RunOptions = struct {
     replay_path: ?[]const u8 = null,     // replay a recording (headless Host); TEAK_REPLAY env wins
     inspect: bool = false,               // show the dev inspector panel; TEAK_INSPECT=1 env
     inspect_hotkey: bool = (Debug build),// F12 toggles the inspector (the key is consumed)
+    idle_skip: bool = true,              // event-driven idle: a frame where nothing happened does no work
+    continuous: bool = false,            // benchmark: no idle skip AND no frame-diff skip; TEAK_CONTINUOUS=1 env wins
+    stats_path: ?[]const u8 = null,      // per-frame FrameStats CSV + exit summary; TEAK_FRAME_STATS env wins
+    exit_after_frames: u64 = 0,          // run returns after N frame() calls (0 = never); TEAK_EXIT_AFTER_FRAMES env wins
+    hud: bool = false,                   // frame-time overlay drawn after the view (no Msgs, clicks fall through); TEAK_HUD=1
 };
 pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: u32 };
 ```
@@ -1025,9 +1030,20 @@ Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
     //   Runtime.init(gpa, *Host, *Gpu, RunOptions) !Runtime   (keep it in one place; don't move it)
     //   rt.frame() !void   // ONE iteration: poll, route, subs, view, layout, render
     //   rt.deinit()
-    // run == init + `while (!host.shouldClose()) try rt.frame()` + deinit.
+    //   rt.lastFrameStats() FrameStats   // timing of the last frame() (loop clock; never seen by update/view)
+    //   rt.exitRequested() bool          // exit_after_frames reached
+    // run == init + `while (!host.shouldClose() and !rt.exitRequested()) try rt.frame()` + deinit.
 RunOptions          // see "The App contract" above
 SecondaryWindowSpec // see above
+FrameStats = struct { index: u64, frame_ms, work_ms, update_ms, view_ms, layout_ms, build_ms, gpu_ms: f32,
+                      cmds: u32, vertices: u32, quiet, presented, rebuilt: bool }
+    // frame_ms = present-to-present (0 when not presented / first present); build_ms = buildFrame + uploads
+    // (0 when the frame diff skipped); gpu_ms = Gpu.renderFrame (submit + present). Native: high-res clock;
+    // wasm: Host.nowMs (whole ms). CSV sink (TEAK_FRAME_STATS) compiles out on wasm.
+FrameStatsSummary = struct { count: usize, mean_ms, min_ms, p50_ms, p95_ms, p99_ms, max_ms: f32 }
+summarizeFrameMs(samples: []f32) FrameStatsSummary   // sorts in place; nearest-rank percentiles
+// Bench: TEAK_CONTINUOUS=1 TEAK_FRAME_STATS=frames.csv TEAK_EXIT_AFTER_FRAMES=600 zig build ui
+//   -> frames.csv (one row per frame) + frames.csv.summary.txt (and stderr) with p50/p95/p99/max.
 ```
 
 ## Recipes

@@ -120,6 +120,8 @@ pub const headless = @import("headless_run.zig");
 pub const dev = @import("dev.zig");
 /// Agent control channel + input record/replay (docs/features/agent-driver.md).
 pub const control = @import("control.zig");
+/// Frame timing and perf counters (`FrameStats`, summary, CSV sink); docs/features/run.md.
+const frame_stats = @import("frame_stats.zig");
 /// Input record/replay file format.
 pub const input_record = @import("input_record.zig");
 
@@ -498,6 +500,12 @@ pub const RunOptions = runtime.RunOptions;
 pub const deprecatedHooks = runtime.deprecatedHooks;
 /// A second top-level window the app wants open this frame.
 pub const SecondaryWindowSpec = runtime.SecondaryWindowSpec;
+/// Per-frame timing + counters of the run loop (`Runtime.lastFrameStats`, `TEAK_FRAME_STATS`).
+pub const FrameStats = frame_stats.FrameStats;
+/// `frame_ms` distribution (count, mean, min, p50, p95, p99, max) from `summarizeFrameMs`.
+pub const FrameStatsSummary = frame_stats.Summary;
+/// Summarize `frame_ms` samples (sorts them in place; nearest-rank percentiles).
+pub const summarizeFrameMs = frame_stats.summarize;
 
 /// Font family selector (monospace or sans).
 pub const FontFamily = text.FontFamily;
