@@ -76,6 +76,8 @@ pub const inspector = @import("core/inspector.zig");
 pub const snapshot = @import("core/snapshot.zig");
 /// Pure line-chart primitive builder for canvases.
 pub const chart = @import("core/chart.zig");
+/// SVG icons: a pure SVG-subset rasterizer to RGBA pixels (for image resources).
+pub const svg = @import("core/svg.zig");
 /// Fixed-column monospace tables built from text cmds.
 pub const table = @import("core/table.zig");
 /// Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.

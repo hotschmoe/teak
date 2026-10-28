@@ -79,6 +79,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.snapshot`: module `src/core/snapshot.zig`; see below
 > Pure line-chart primitive builder for canvases.
 - `teak.chart`: module `src/core/chart.zig`; see below
+> SVG icons: a pure SVG-subset rasterizer to RGBA pixels (for image resources).
+- `teak.svg`: module `src/core/svg.zig`; see below
 > Fixed-column monospace tables built from text cmds.
 - `teak.table`: module `src/core/table.zig`; see below
 > Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
@@ -1803,6 +1805,22 @@ teak.chart — pure line-chart primitive builder.
 > no line to draw). An empty `series` with `grid_lines <= 1` returns an
 > empty slice.
 - `pub fn lineChartPrimitives( arena: std.mem.Allocator, series: []const f32, opts: LineChartOpts, ) []const CanvasPrimitive`
+
+### `teak.svg` (`src/core/svg.zig`)
+
+SVG icons: a small, pure SVG subset rasterized on the CPU into RGBA pixels
+that the app hands to the GPU as an image resource (HARDLINE §2 hatch 8).
+
+- `struct Options`
+  - fields: `color`
+- `pub const Error = error{ OutOfMemory, InvalidSvg }`
+> Rasterize `source` to a `width` x `height` RGBA8 image (straight alpha,
+> row-major, 4 bytes per pixel) written into `out` (len >= width*height*4).
+> The viewBox is scaled uniformly and centred (`preserveAspectRatio`
+> xMidYMid meet). `scratch` holds the flattened paths while drawing.
+- `pub fn rasterizeInto(scratch: Allocator, source: []const u8, width: u32, height: u32, out: []u8, opts: Options) Error!void`
+> `rasterizeInto` with a freshly allocated pixel buffer (caller frees).
+- `pub fn rasterize(gpa: Allocator, source: []const u8, width: u32, height: u32, opts: Options) Error![]u8`
 
 ### `teak.table` (`src/core/table.zig`)
 

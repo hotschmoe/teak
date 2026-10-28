@@ -10,6 +10,7 @@
 //!
 //! Input (one `pointerMsg` hook): drag pans, the wheel zooms about the cursor,
 //! the canvas reports its size (`layout`) so the first frame can fit the frame.
+//! The toolbar icons are SVG, rasterized once by `teak.svg` (see `Icons`).
 
 const std = @import("std");
 const teak = @import("teak");
@@ -99,8 +100,43 @@ pub const Geometry = struct {
     }
 };
 
+/// Toolbar icons: SVG source rasterized once (`teak.svg`) into Model-owned
+/// pixels and handed to the GPU as image resources. Drawn white and tinted
+/// in `view`, so they follow the theme.
+pub const Icons = struct {
+    pub const PX = 40; // rasterized size (drawn at 20 logical px: crisp at 2x)
+    pub const sources = [_][]const u8{
+        // fit: four corner brackets
+        \\<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        \\<path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5"/></svg>
+        ,
+        // antialias: a ring crossed by a diagonal
+        \\<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        \\<circle cx="12" cy="12" r="8"/><path d="M6.5 17.5l11-11"/></svg>
+        ,
+        // braces: a bay with both diagonals
+        \\<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
+        \\<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 3l18 18M21 3L3 21"/></svg>
+        ,
+    };
+    pixels: [sources.len][PX * PX * 4]u8 = undefined,
+    list: [sources.len]teak.Resource = undefined,
+
+    pub fn build(self: *Icons, a: std.mem.Allocator) void {
+        for (sources, 0..) |src, i| {
+            teak.svg.rasterizeInto(a, src, PX, PX, &self.pixels[i], .{ .color = .{ 1, 1, 1, 1 } }) catch @memset(&self.pixels[i], 0);
+            self.list[i] = .{ .image = .{ .key = @intCast(i + 1), .rev = 1, .width = PX, .height = PX, .rgba = &self.pixels[i] } };
+        }
+    }
+};
+
+pub fn resources(m: *const Model) []const teak.Resource {
+    return if (m.icons) |ic| &ic.list else &.{};
+}
+
 pub const Model = struct {
     geo: *const Geometry,
+    icons: ?*const Icons = null,
     view_w: f32 = 0,
     view_h: f32 = 0,
     /// World (m, y up) -> canvas px. Null until the canvas reports its size.
@@ -112,7 +148,9 @@ pub const Model = struct {
         const a = std.heap.page_allocator;
         const g = a.create(Geometry) catch @panic("oom");
         g.* = Geometry.build(a) catch @panic("oom");
-        return .{ .geo = g };
+        const ic = a.create(Icons) catch @panic("oom");
+        ic.build(a);
+        return .{ .geo = g, .icons = ic };
     }
 };
 
@@ -165,9 +203,13 @@ pub fn view(m: *const Model, cb: anytype) void {
     const g = m.geo;
     cb.pushGroup(.{ .direction = .vertical, .padding = 10, .gap = 8, .flex = 1, .align_cross = .stretch });
 
-    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8 });
+    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .align_cross = .center });
+    const tint = cb.theme.palette.fg;
+    cb.image(1, .{ .width = 20, .height = 20, .tint = tint });
     cb.button(.fit, "Fit");
+    cb.image(2, .{ .width = 20, .height = 20, .tint = tint });
     cb.button(.toggle_aa, if (m.antialias) "Antialias: on" else "Antialias: off");
+    cb.image(3, .{ .width = 20, .height = 20, .tint = tint });
     cb.button(.toggle_braces, if (m.show_braces) "Braces: on" else "Braces: off");
     const scale = if (m.xf) |xf| xf.sx else 0;
     cb.text(std.fmt.allocPrint(arena, "{d} members, {d} nodes, {d:.1} px/m", .{ g.memberCount(), g.nodes.len, scale }) catch "");
