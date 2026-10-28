@@ -6,3 +6,7 @@ tools/node_modules
 .x11_test/
 tools/qa/out/
 tools/qa/zig-pkg/
+
+# Built binaries never belong in the tree.
+*.exe
+*.pdb
