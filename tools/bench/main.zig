@@ -4,7 +4,9 @@
 //! ITERS runs: view (emit cmds), layout, hit-test, render-build and the
 //! frame-diff `cmdsEqual`; then a text-heavy case that measures real text
 //! through `teak-text` (stb_truetype shaper). Output is one stable,
-//! fixed-width table (stderr) in milliseconds so runs diff cleanly:
+//! fixed-width table (stderr) in milliseconds so runs diff cleanly. The
+//! `canvas` case lowers N antialiased canvas segments plus N/4 node circles
+//! through a canvas transform (render = CPU tessellation; GPU time excluded):
 //!
 //!   case    rows     cmds      view    layout       hit    render    cmdsEq
 //!
@@ -49,6 +51,42 @@ fn buildProse(cb: *CB, n: usize) void {
     cb.pushScroll(.{ .id = 1, .flex = 1 });
     for (0..n) |_| cb.text(line);
     cb.popScroll();
+}
+
+// World-space canvas geometry, built once in `main` (the vector-canvas case
+// models a structural frame: segments + node dots behind a pan / zoom
+// transform, so `view` only hands the slices over).
+var canvas_segs: []const [4]f32 = &.{};
+var canvas_nodes: []const teak.CanvasPrimitive = &.{};
+
+fn buildCanvasGeometry(gpa: std.mem.Allocator, n_segs: usize) !void {
+    const segs = try gpa.alloc([4]f32, n_segs);
+    const cols: usize = 400;
+    for (segs, 0..) |*sg, i| {
+        const x: f32 = @floatFromInt(i % cols);
+        const y: f32 = @floatFromInt(i / cols);
+        sg.* = if (i % 2 == 0) .{ x * 3, y * 3, x * 3 + 3, y * 3 } else .{ x * 3, y * 3, x * 3, y * 3 + 3 };
+    }
+    const nodes = try gpa.alloc(teak.CanvasPrimitive, n_segs / 4);
+    for (nodes, 0..) |*nd, i| {
+        const x: f32 = @floatFromInt(i % cols);
+        const y: f32 = @floatFromInt(i / cols);
+        nd.* = .{ .circle = .{ .x = x * 3, .y = y * 3, .radius = 2, .screen_radius = true } };
+    }
+    canvas_segs = segs;
+    canvas_nodes = nodes;
+}
+
+/// `n` = how many of the segments to draw; a quarter as many node dots.
+fn buildCanvas(cb: *CB, n: usize) void {
+    const a = cb.arena.allocator();
+    const nodes = canvas_nodes[0..@min(n / 4, canvas_nodes.len)];
+    const prims = a.alloc(teak.CanvasPrimitive, 1 + nodes.len) catch @panic("oom");
+    prims[0] = .{ .lines = .{ .segs = canvas_segs[0..@min(n, canvas_segs.len)], .thickness = 1.5, .key = 1 } };
+    @memcpy(prims[1..], nodes);
+    cb.pushGroup(.{ .padding = 0 });
+    defer cb.popGroup();
+    cb.canvas(.{ .width = 1260, .height = 780, .transform = .{ .sx = 1.05, .sy = 1.05, .tx = 4, .ty = 4 }, .antialias = true }, prims);
 }
 
 const Measurer = struct {
@@ -125,6 +163,12 @@ pub fn main() !void {
     std.debug.print("teak bench ({d} iters, ms/frame)\n", .{ITERS});
     std.debug.print("{s:<6} {s:>7} {s:>8} {s:>9} {s:>9} {s:>9} {s:>9} {s:>9}\n", .{ "case", "rows", "cmds", "view", "layout", "hit", "render", "cmdsEq" });
     for (SIZES) |n| printRow("rows", try run(gpa, n, buildRows, teak.monoMeasurer()));
+
+    // Vector canvas: N antialiased segments + N/4 SDF node dots, all on screen.
+    try buildCanvasGeometry(gpa, 80_000);
+    defer gpa.free(canvas_segs);
+    defer gpa.free(canvas_nodes);
+    for ([_]usize{ 20_000, 80_000 }) |n| printRow("canvas", try run(gpa, n, buildCanvas, teak.monoMeasurer()));
 
     if (text.faceFor(.sans, .regular) != null) {
         for ([_]usize{ 200, 2_000 }) |n| printRow("prose", try run(gpa, n, buildProse, Measurer.get()));

@@ -1,4 +1,5 @@
-// Solid quads, plus signed-distance rounded rects (per-corner radii, inside
+// Solid quads, antialiased canvas edges (color.a <= -1.5, see
+// src/render/vertex.zig `aaVertex`), plus signed-distance rounded rects (per-corner radii, inside
 // border stroke, gradient fill, soft drop shadow) in the same stream so
 // painter's order holds. Plain solids have color.a >= 0 and return their
 // vertex colour untouched. An SDF quad is tagged color.a = -1; its `r` is the
@@ -31,7 +32,15 @@ fn vs_main(
         (pos.x / uniforms.screen_size.x) * 2.0 - 1.0,
         1.0 - (pos.y / uniforms.screen_size.y) * 2.0,
     );
-    return VertexOutput(vec4f(clip, 0.0, 1.0), color, uv, select(-1.0, color.r, color.a < -0.5));
+    // Mode, flat per primitive: >= 0 SDF header index (a == -1), -1 plain
+    // solid (a >= 0), -2 antialiased edge (a <= -1.5, alpha = -2 - a).
+    var mode = -1.0;
+    if (color.a < -1.5) {
+        mode = -2.0;
+    } else if (color.a < -0.5) {
+        mode = color.r;
+    }
+    return VertexOutput(vec4f(clip, 0.0, 1.0), color, uv, mode);
 }
 
 // Record float `k` of the header starting at vertex `h` (8 floats per
@@ -66,6 +75,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     // Derivatives before any branch (uniform control flow): logical pixels
     // per device pixel, so antialiasing is one device pixel at any DPR.
     let fw = max(max(fwidth(in.uv.x), fwidth(in.uv.y)), 1e-4);
+    // Antialiased-edge coordinates: uv is normalised so the shape's edge is
+    // at |uv.x| = 1 across and |uv.y| = 1 along; the screen-space gradient
+    // turns that into a distance in device pixels.
+    let gx = max(length(vec2f(dpdx(in.uv.x), dpdy(in.uv.x))), 1e-6);
+    let gy = max(length(vec2f(dpdx(in.uv.y), dpdy(in.uv.y))), 1e-6);
+    if (in.sdf < -1.5) {
+        let cov = clamp((1.0 - abs(in.uv.x)) / gx + 0.5, 0.0, 1.0) * clamp((1.0 - abs(in.uv.y)) / gy + 0.5, 0.0, 1.0);
+        return vec4f(in.color.rgb, (-2.0 - in.color.a) * cov);
+    }
     if (in.sdf < 0.0) {
         return in.color;
     }

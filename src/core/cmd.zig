@@ -618,6 +618,53 @@ pub const CanvasPrimitive = union(enum) {
     /// Drawn above the canvas' solid primitives, clipped to the canvas. Set
     /// `font.scalable` for labels that zoom with the canvas.
     text: Text,
+    /// A circle: filled, stroked or both (see `Circle`).
+    circle: Circle,
+    /// A circular arc, stroked (see `Arc`).
+    arc: Arc,
+    /// A closed polygon: filled (any simple polygon, either winding),
+    /// stroked, or both (see `Polygon`).
+    polygon: Polygon,
+
+    /// Center (`x`, `y`) and `radius` in canvas-local units (so they follow
+    /// `CanvasStyle.transform`), unless `screen_radius`: then the radius is
+    /// in screen px and the circle keeps its size at every zoom (node dots).
+    /// `stroke` is centred on the radius, `thickness` screen px wide.
+    pub const Circle = struct {
+        x: f32,
+        y: f32,
+        radius: f32,
+        fill: ?[4]f32 = .{ 0.85, 0.85, 0.9, 1.0 },
+        stroke: ?[4]f32 = null,
+        thickness: f32 = 1,
+        screen_radius: bool = false,
+    };
+    /// Arc of the circle (`x`, `y`, `radius`) from angle `start` through
+    /// `sweep` (radians, canvas-local: 0 = +x, positive turns from +x
+    /// toward +y, i.e. clockwise on screen with the identity transform;
+    /// |sweep| >= 2*pi draws the full circle). `radius` / `screen_radius`
+    /// as `Circle`; `thickness` in screen px.
+    pub const Arc = struct {
+        x: f32,
+        y: f32,
+        radius: f32,
+        start: f32 = 0,
+        sweep: f32 = std.math.pi,
+        color: [4]f32 = .{ 0.85, 0.85, 0.9, 1.0 },
+        thickness: f32 = 1,
+        screen_radius: bool = false,
+    };
+    /// Closed polygon through `points` (>= 3; the last point joins the
+    /// first). The fill is ear-clipped, so any simple polygon works, convex
+    /// or not; a self-intersecting outline still fills, but not by any
+    /// particular rule (split it at the crossings for exact results).
+    /// `stroke` draws the closed outline, `thickness` screen px.
+    pub const Polygon = struct {
+        points: []const CanvasPoint,
+        fill: ?[4]f32 = .{ 0.3, 0.7, 1.0, 0.4 },
+        stroke: ?[4]f32 = null,
+        thickness: f32 = 1,
+    };
 
     pub const Polyline = struct {
         points: []const CanvasPoint,
@@ -714,6 +761,13 @@ pub const CanvasPrimitive = union(enum) {
             .hline => |x| std.meta.eql(x, b.hline),
             .vline => |x| std.meta.eql(x, b.vline),
             .marker => |x| std.meta.eql(x, b.marker),
+            .circle => |x| std.meta.eql(x, b.circle),
+            .arc => |x| std.meta.eql(x, b.arc),
+            .polygon => |p| blk: {
+                const o = b.polygon;
+                if (!std.meta.eql(p.fill, o.fill) or !std.meta.eql(p.stroke, o.stroke) or p.thickness != o.thickness) break :blk false;
+                break :blk std.mem.eql(u8, std.mem.sliceAsBytes(p.points), std.mem.sliceAsBytes(o.points));
+            },
             .text => |t| blk: {
                 const o = b.text;
                 break :blk t.x == o.x and t.y == o.y and std.meta.eql(t.font, o.font) and
@@ -740,6 +794,72 @@ pub const CanvasStyle = struct {
     flex: f32 = 0,
     /// Optional solid background fill drawn before the primitives.
     bg: ?[4]f32 = null,
+    /// Maps primitive coordinates to canvas-local px at lowering time (see
+    /// `CanvasTransform`). Keep world-space geometry in the Model, built
+    /// once, and pan / zoom by changing only this: the view no longer
+    /// rebuilds the primitives, and off-canvas geometry is culled.
+    transform: CanvasTransform = .{},
+    /// Antialiased edges (coverage computed per pixel in the solid-quad
+    /// shader) for polyline, lines, circle, arc and polygon. Off keeps the
+    /// historical hard-edged quads, pixel for pixel. 3D plane layers ignore
+    /// it (they always draw hard edges).
+    antialias: bool = false,
+};
+
+/// Affine map from primitive coordinates ("world") to canvas-local px:
+/// `local = (world.x * sx + tx, world.y * sy + ty)`. A negative `sy` gives
+/// a y-up world. Positions and geometric extents (rect size, circle radius,
+/// polygon points) are transformed; stroke `thickness`, `marker.size`,
+/// `screen_radius` circles and text size stay in screen px. Pure data with
+/// helpers for the usual pan / zoom maths in `update`.
+pub const CanvasTransform = struct {
+    sx: f32 = 1,
+    sy: f32 = 1,
+    tx: f32 = 0,
+    ty: f32 = 0,
+
+    pub fn isIdentity(t: CanvasTransform) bool {
+        return t.sx == 1 and t.sy == 1 and t.tx == 0 and t.ty == 0;
+    }
+
+    /// World point -> canvas-local px.
+    pub fn apply(t: CanvasTransform, p: CanvasPoint) CanvasPoint {
+        return .{ .x = p.x * t.sx + t.tx, .y = p.y * t.sy + t.ty };
+    }
+
+    /// Canvas-local px (e.g. `PointerEvent` local coords) -> world point.
+    pub fn invert(t: CanvasTransform, p: CanvasPoint) CanvasPoint {
+        return .{ .x = (p.x - t.tx) / t.sx, .y = (p.y - t.ty) / t.sy };
+    }
+
+    /// Move by (`dx`, `dy`) canvas px (a drag delta).
+    pub fn pan(t: CanvasTransform, dx: f32, dy: f32) CanvasTransform {
+        return .{ .sx = t.sx, .sy = t.sy, .tx = t.tx + dx, .ty = t.ty + dy };
+    }
+
+    /// Scale by `factor` about the canvas-local point (`px`, `py`), which
+    /// stays fixed on screen (zoom at the cursor).
+    pub fn zoomAt(t: CanvasTransform, px: f32, py: f32, factor: f32) CanvasTransform {
+        return .{
+            .sx = t.sx * factor,
+            .sy = t.sy * factor,
+            .tx = px - (px - t.tx) * factor,
+            .ty = py - (py - t.ty) * factor,
+        };
+    }
+
+    /// Uniform scale that fits the world box [x0,x1]x[y0,y1] into a
+    /// `w` x `h` canvas with `margin` px on every side, centred; `y_up`
+    /// flips y so larger world y is higher on screen.
+    pub fn fit(x0: f32, y0: f32, x1: f32, y1: f32, w: f32, h: f32, margin: f32, y_up: bool) CanvasTransform {
+        const bw = @max(x1 - x0, 1e-9);
+        const bh = @max(y1 - y0, 1e-9);
+        const s = @max(@min((w - 2 * margin) / bw, (h - 2 * margin) / bh), 1e-9);
+        const cx = (x0 + x1) * 0.5;
+        const cy = (y0 + y1) * 0.5;
+        const sy = if (y_up) -s else s;
+        return .{ .sx = s, .sy = sy, .tx = w * 0.5 - cx * s, .ty = h * 0.5 - cy * sy };
+    }
 };
 
 pub fn CanvasCmd(comptime Msg: type) type {

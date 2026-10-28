@@ -278,10 +278,20 @@ SliderStyle = struct { track_bg, track_fill, thumb: [4]f32, track_height = 6,
                        thumb_size = 16, flex: f32 = 1, min_width: f32 = 120 }
 SliderCmd(Msg) = struct { grab_msg, value: f32 = 0, style }   // app computes value from mouse+rect
 DividerStyle = struct { thickness: f32 = 1, color: [4]f32 }
-CanvasStyle = struct { width = 200, height = 120, flex: f32 = 0, bg: ?[4]f32 = null }
+CanvasStyle = struct { width = 200, height = 120, flex: f32 = 0, bg: ?[4]f32 = null,
+                       transform: CanvasTransform = .{}, antialias: bool = false }
+CanvasTransform = struct { sx = 1, sy = 1, tx = 0, ty = 0 }   // local px = world * s + t; sy < 0 => y up
+    // apply / invert (pointer px -> world) / pan(dx,dy) / zoomAt(px,py,factor) / fit(x0,y0,x1,y1,w,h,margin,y_up)
+    // positions + extents (rect size, world radius, polygon points) transform; thickness, marker.size,
+    // screen_radius circles and text size stay screen px. Keep world geometry in the Model, built once:
+    // pan/zoom then changes only `transform`, and off-canvas geometry is culled while lowering.
+    // antialias: per-pixel coverage for polyline/lines/circle/arc/polygon (off = historical hard quads).
 CanvasCmd(Msg) = struct { style, primitives: []const CanvasPrimitive, msg: ?Msg, label,
                           pointer: bool = false, id: u32 = 0 }   // pointer+id => interactive (canvasMsg)
-CanvasPrimitive = union(enum) { polyline, filled_rect, hline, vline, marker,
+CanvasPrimitive = union(enum) { polyline, filled_rect, hline, vline, marker, text,
+    circle: struct { x, y, radius, fill: ?[4]f32, stroke: ?[4]f32 = null, thickness = 1, screen_radius = false },
+    arc: struct { x, y, radius, start = 0, sweep = pi /*radians, 0 = +x, toward +y*/, color, thickness, screen_radius },
+    polygon: struct { points: []const CanvasPoint /*closed, any simple polygon*/, fill: ?[4]f32, stroke: ?[4]f32 = null, thickness },
     triangles: struct { verts: []const TriVertex /*x,y,r,g,b,a*/, key: u64 = 0 },       // per-vertex RGBA triangle list
     lines: struct { segs: []const [4]f32, color, thickness, key: u64 = 0 } }            // canvas-local px
 // triangles/lines: CPU-clipped to canvas+scroll clip; `key` = content revision for the frame diff

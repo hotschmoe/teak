@@ -21,6 +21,25 @@
 - The inspector's view / layout / render timings now come from the same
   record; `control.stamp` / `control.msBetween` are removed.
 
+### Canvas: circles, arcs, polygons, a world transform, antialiasing (#125)
+
+- New `CanvasPrimitive` variants: `circle` (fill and / or stroke, world or
+  `screen_radius`), `arc` (stroked), `polygon` (closed; ear-clipped fill for
+  any simple polygon, optional stroke).
+- `CanvasStyle.transform: CanvasTransform` maps primitive coordinates to
+  canvas px at lowering time (`apply`, `invert`, `pan`, `zoomAt`, `fit`; a
+  negative `sy` gives a y-up world). Geometry can live in the Model, built
+  once; pan / zoom changes only the transform, and geometry off the canvas is
+  culled while lowering.
+- `CanvasStyle.antialias`: per-pixel coverage for polyline, lines, circle, arc
+  and polygon edges in the solid-quad shader (a new `a <= -1.5` vertex mode);
+  circles in the 2D pass are one SDF quad. Off (the default) keeps the old
+  hard-edged quads pixel for pixel.
+- Snapshot lines show `xf=(sx,sy,tx,ty)` and `aa` on canvases that use them.
+- `examples/vector_canvas` (80 100 members, 20 301 nodes, supports, moment
+  diagrams) and a `canvas` case in `zig build bench` (80k AA segments + 20k
+  circles lower in about 1.8 ms on a desktop x64 CPU, ReleaseFast).
+
 ## 0.1.0 — 2026-10-09
 
 First release. Zig 0.17.0. See docs/SESSION-2026-10.md for the full account of this cycle.

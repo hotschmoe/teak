@@ -193,9 +193,11 @@ pub const SliderStyle = cmd.SliderStyle;
 pub const DividerStyle = cmd.DividerStyle;
 /// A canvas leaf holding pure-data draw primitives.
 pub const CanvasCmd = cmd.CanvasCmd;
-/// Intrinsic size, background and flex of a canvas.
+/// Intrinsic size, background, flex, world transform and antialiasing of a canvas.
 pub const CanvasStyle = cmd.CanvasStyle;
-/// One draw op inside a canvas (polyline, rect, lines, triangles, ...).
+/// World -> canvas-local px map of a canvas (scale + offset; pan / zoom helpers).
+pub const CanvasTransform = cmd.CanvasTransform;
+/// One draw op inside a canvas (polyline, rect, circle, arc, polygon, lines, triangles, ...).
 pub const CanvasPrimitive = cmd.CanvasPrimitive;
 /// A point in canvas-local logical pixels.
 pub const CanvasPoint = cmd.CanvasPoint;
