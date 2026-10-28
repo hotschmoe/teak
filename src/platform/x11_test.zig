@@ -473,3 +473,39 @@ test "idle CPU probe: an idle window with a blinking caret, idle_skip off vs on"
     });
     try std.testing.expect(on.cpu_ms * 5 < off.cpu_ms);
 }
+
+test "secondary window: opens, reports its size, routes pointer input, closes" {
+    if (getenv("DISPLAY") == null) return error.SkipZigTest;
+    var host = try Host.init("teak x11 secondary test", 200, 120);
+    defer host.deinit();
+    const id = host.openSecondaryWindow("second", 160, 90) orelse return error.NoSecondary;
+    try std.testing.expect(id >= 1);
+    try std.testing.expect(host.secondaryWindowHandle(id) != null);
+    // First poll: the initial size, flagged as a resize so the Gpu sizes its surface.
+    var spins: usize = 0;
+    var st = host.pollSecondaryInputs(id) orelse return error.NoState;
+    try std.testing.expect(st.resized);
+    try std.testing.expectEqual(@as(u32, 160), st.width);
+    // A click in the secondary window reaches ITS queue, not the primary's.
+    const sw = host.secondaries[id - 1].?.window;
+    if (system("command -v xdotool >/dev/null 2>&1") == 0) {
+        while (spins < 200) : (spins += 1) {
+            _ = host.pollInputs();
+            std.Io.sleep(std.Options.debug_io, .fromMilliseconds(5), .awake) catch {};
+        }
+        try sh("xdotool mousemove --window {d} 20 30 click 1", .{sw});
+        var got = false;
+        spins = 0;
+        while (spins < 400 and !got) : (spins += 1) {
+            const prim = host.pollInputs();
+            try std.testing.expect(!prim.mouse_down);
+            st = host.pollSecondaryInputs(id) orelse return error.NoState;
+            if (st.mouse_down or st.mouse_up) got = true;
+            std.Io.sleep(std.Options.debug_io, .fromMilliseconds(5), .awake) catch {};
+        }
+        try std.testing.expect(got);
+    }
+    host.closeSecondaryWindow(id);
+    try std.testing.expect(host.pollSecondaryInputs(id) == null);
+    try std.testing.expect(host.secondaryWindowHandle(id) == null);
+}
