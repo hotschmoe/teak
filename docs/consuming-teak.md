@@ -197,8 +197,16 @@ and in `build.zig` (after the native block; `teak.linkWebWgpu` registers the
             .optimize = .ReleaseFast,
         }),
     });
-    teak.linkWebWgpu(b, web_exe, .{}); // .{ .fonts = ..., .strip = true } are the options
+    teak.linkWebWgpu(b, web_exe, .{}); // .{ .fonts = ..., .strip = true, .bridge_js = b.path("web/bridge.js") } are the options
 ```
+
+**Your own JS on the web.** `.bridge_js = b.path("web/bridge.js")` appends that
+file to zunk's generated `app.js` (zunk `--bridge-dep`), after teak's and zunk's
+own glue, so it can provide extra `env` imports your wasm declares
+(`extern "env" fn my_fn(...)`) or call your wasm exports from JS. Without the
+option, zunk still finds a `bridge.js` or `js/bridge.js` at the build root.
+(zunk's build report may still list such an import as an unresolved stub; the
+bridge's definition wins at load time.)
 
 **Headless screenshot / tests** (no display; needs a Vulkan device and a TTF).
 `build.zig`:

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Web: `WebWgpuOptions.bridge_js` (#136)
+
+- `teak.linkWebWgpu(b, exe, .{ .bridge_js = b.path("web/bridge.js") })`
+  forwards the app's own JS glue to zunk (`--bridge-dep`), from any path.
+
 ### Frame timing and perf counters (#127)
 
 - `teak.FrameStats`: every `Runtime.frame()` records `frame_ms`
