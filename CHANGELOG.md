@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### X11: secondary windows (#150, part)
+
+- `openSecondaryWindow` / `pollSecondaryInputs` / `closeSecondaryWindow` /
+  `secondaryWindowHandle` work on X11 (4 slots): events are routed by window
+  from the primary pump into a per-window queue (pointer, wheel, resize,
+  expose, the window manager's close button); keyboard input stays with the
+  primary window. The Linux host forwards the handle for the Gpu surface.
+
 ### Linux: synchronous file dialogs
 
 - `Host.openFileDialog` / `saveFileDialog` on X11 and Wayland run the same

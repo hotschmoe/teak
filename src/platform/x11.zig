@@ -202,8 +202,18 @@ const XPropertyEvent = extern struct {
 /// event struct (extern-union semantics). `pad` guarantees the union is
 /// at least as large as the real XEvent (24 longs = 192 bytes on 64-bit)
 /// so `XNextEvent` never writes past it.
+/// The header every X event starts with (`XAnyEvent`): which window it is for.
+const XAnyEvent = extern struct {
+    type: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: ?*Display,
+    window: Window,
+};
+
 pub const XEvent = extern union {
     kind: c_int,
+    xany: XAnyEvent,
     xkey: XKeyEvent,
     xbutton: XButtonEvent,
     xmotion: XMotionEvent,
@@ -554,6 +564,23 @@ pub const NativeHandle = struct {
     window: u64,
 };
 
+/// Secondary top-level windows (`openSecondaryWindow`): ids are slot + 1.
+pub const MAX_SECONDARY_WINDOWS = 4;
+
+/// One secondary window: its own input accumulator, fed by the primary
+/// `pollInputs` pump (events are routed by window), drained by
+/// `pollSecondaryInputs`. Pointer, wheel, resize, expose and the window
+/// manager's close button; keyboard input stays with the primary window.
+const SecondaryWindow = struct {
+    window: Window,
+    queue: InputQueue = .{},
+    /// Logical size.
+    width: u32,
+    height: u32,
+    resized: bool = true,
+    closed: bool = false,
+};
+
 pub const Host = struct {
     lib: std.DynLib,
     x: Xlib,
@@ -564,6 +591,7 @@ pub const Host = struct {
     effects: *native_effects.Service,
     /// The last synchronous file dialog's path (`openFileDialog`).
     dialog_buf: [4096]u8 = undefined,
+    secondaries: [MAX_SECONDARY_WINDOWS]?SecondaryWindow = @splat(null),
 
     width: u32,
     height: u32,
@@ -709,6 +737,10 @@ pub const Host = struct {
         if (self.xim) |im| _ = self.x.XCloseIM(im);
         gpa.destroy(self.ime);
         self.effects.destroy();
+        for (&self.secondaries) |*s| if (s.*) |sw| {
+            _ = self.x.XDestroyWindow(self.display, sw.window);
+            s.* = null;
+        };
         _ = self.x.XDestroyWindow(self.display, self.window);
         _ = self.x.XCloseDisplay(self.display);
         // libXcursor hooks display close: unload it only after the display.
@@ -731,6 +763,12 @@ pub const Host = struct {
             // Input methods get first refusal on every event (key events they
             // consume for composition never reach the switch below).
             if (self.x.XFilterEvent(&ev, None) != 0) continue;
+            if (ev.xany.window != self.window) {
+                if (self.secondaryFor(ev.xany.window)) |sw| {
+                    self.secondaryEvent(sw, &ev);
+                    continue;
+                }
+            }
             switch (ev.kind) {
                 MotionNotify => {
                     q.mods = modsFromState(ev.xmotion.state);
@@ -1473,20 +1511,117 @@ pub const Host = struct {
         return if (s.len == 0) null else s;
     }
 
-    pub fn openSecondaryWindow(_: *Host, _: []const u8, _: u32, _: u32) ?u32 {
+    /// Open another top-level window on the same display (`w` x `h`
+    /// logical px, the primary's scale). Returns its id (1-based) or null
+    /// when all `MAX_SECONDARY_WINDOWS` slots are taken. Its events are
+    /// pumped by the primary `pollInputs` and read with `pollSecondaryInputs`.
+    pub fn openSecondaryWindow(self: *Host, title: []const u8, w: u32, h: u32) ?u32 {
+        const slot = for (&self.secondaries, 0..) |*s, i| {
+            if (s.* == null) break i;
+        } else return null;
+        const screen = self.x.XDefaultScreen(self.display);
+        const root = self.x.XRootWindow(self.display, screen);
+        const win = self.x.XCreateSimpleWindow(self.display, root, 0, 0, physicalOf(w, self.scale), physicalOf(h, self.scale), 0, 0, 0);
+        if (win == 0) return null;
+        setWindowTitle(&self.x, self.display, win, title);
+        var wm_delete = self.atoms.wm_delete;
+        _ = self.x.XSetWMProtocols(self.display, win, &wm_delete, 1);
+        _ = self.x.XSelectInput(self.display, win, ButtonPressMask | ButtonReleaseMask | PointerMotionMask | StructureNotifyMask | ExposureMask);
+        _ = self.x.XMapWindow(self.display, win);
+        _ = self.x.XFlush(self.display);
+        self.secondaries[slot] = .{ .window = win, .width = w, .height = h };
+        return @intCast(slot + 1);
+    }
+
+    fn secondaryFor(self: *Host, win: Window) ?*SecondaryWindow {
+        for (&self.secondaries) |*s| {
+            if (s.*) |*sw| if (sw.window == win) return sw;
+        }
         return null;
     }
 
-    /// Secondary windows are not yet wired on X11 — the primary surface
-    /// is all this host exposes. The secondary id space stays empty.
-    pub fn pollSecondaryInputs(_: *Host, _: u32) ?InputState {
-        return null;
+    /// One event for a secondary window, into its own queue.
+    fn secondaryEvent(self: *Host, sw: *SecondaryWindow, ev: *const XEvent) void {
+        const q = &sw.queue;
+        switch (ev.kind) {
+            MotionNotify => {
+                q.mods = modsFromState(ev.xmotion.state);
+                q.pointerMoved(self.logical(ev.xmotion.x), self.logical(ev.xmotion.y));
+            },
+            ButtonPress, ButtonRelease => {
+                const down = ev.kind == ButtonPress;
+                q.mods = modsFromState(ev.xbutton.state);
+                q.pointerMoved(self.logical(ev.xbutton.x), self.logical(ev.xbutton.y));
+                const b: ?teak.Button = switch (ev.xbutton.button) {
+                    1 => .left,
+                    2 => .middle,
+                    3 => .right,
+                    else => null,
+                };
+                if (b) |btn| {
+                    if (down) q.buttonDown(btn) else q.buttonUp(btn);
+                } else if (down) switch (ev.xbutton.button) {
+                    4 => q.wheel(0, -WHEEL_PIXELS_PER_NOTCH),
+                    5 => q.wheel(0, WHEEL_PIXELS_PER_NOTCH),
+                    6 => q.wheel(-WHEEL_PIXELS_PER_NOTCH, 0),
+                    7 => q.wheel(WHEEL_PIXELS_PER_NOTCH, 0),
+                    else => {},
+                };
+            },
+            ConfigureNotify => {
+                const cw = ev.xconfigure.width;
+                const ch = ev.xconfigure.height;
+                if (cw > 0 and ch > 0) {
+                    const uw = logicalOf(@intCast(cw), self.scale);
+                    const uh = logicalOf(@intCast(ch), self.scale);
+                    if (uw != sw.width or uh != sw.height) {
+                        sw.width = uw;
+                        sw.height = uh;
+                        sw.resized = true;
+                    }
+                }
+            },
+            Expose => if (ev.xexpose.count == 0) {
+                sw.resized = true;
+            },
+            ClientMessage => {
+                const m = &ev.xclient;
+                if (m.message_type == self.atoms.wm_protocols and m.data.l[0] == @as(c_long, @bitCast(self.atoms.wm_delete))) sw.closed = true;
+            },
+            else => {},
+        }
     }
 
-    pub fn closeSecondaryWindow(_: *Host, _: u32) void {}
+    /// This frame's input for secondary window `id`, or null when the id is
+    /// unknown or the user closed the window (the run loop then tells the
+    /// app and calls `closeSecondaryWindow`). Call after `pollInputs`.
+    pub fn pollSecondaryInputs(self: *Host, id: u32) ?InputState {
+        if (id == 0 or id > MAX_SECONDARY_WINDOWS) return null;
+        if (self.secondaries[id - 1] == null) return null;
+        const s = &self.secondaries[id - 1].?;
+        if (s.closed) return null;
+        const resized = s.resized;
+        s.resized = false;
+        const state = s.queue.finish(resized, s.width, s.height);
+        s.queue.beginFrame();
+        return state;
+    }
 
-    pub fn secondaryWindowHandle(_: *const Host, _: u32) ?NativeHandle {
-        return null;
+    /// Destroy secondary window `id` and free its slot (no-op when unknown).
+    pub fn closeSecondaryWindow(self: *Host, id: u32) void {
+        if (id == 0 or id > MAX_SECONDARY_WINDOWS) return;
+        if (self.secondaries[id - 1]) |sw| {
+            _ = self.x.XDestroyWindow(self.display, sw.window);
+            _ = self.x.XFlush(self.display);
+            self.secondaries[id - 1] = null;
+        }
+    }
+
+    /// The native handle of secondary window `id`, for `Gpu.openSecondarySurface`.
+    pub fn secondaryWindowHandle(self: *const Host, id: u32) ?NativeHandle {
+        if (id == 0 or id > MAX_SECONDARY_WINDOWS) return null;
+        const sw = self.secondaries[id - 1] orelse return null;
+        return .{ .display = @ptrCast(self.display), .window = @intCast(sw.window) };
     }
 
     /// Async file-dialog surface. Like the blocking `openFileDialog`
