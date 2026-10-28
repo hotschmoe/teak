@@ -49,7 +49,6 @@ tests; names the gaps.
 | Widgets: disabled / NumericField / Dropdown / setTitle | [widgets.md](widgets.md) |
 | Canvas: charts & custom 2D drawing | [canvas.md](canvas.md) |
 | SVG icons (CPU rasterizer to image resources) | [svg.md](svg.md) |
-| SVG icons (CPU rasterizer -> image resources) | [svg.md](svg.md) |
 | 3D scenes + declarative resources | [scene3d.md](scene3d.md) |
 | Fixed-column monospace tables (`teak.table`) | [tables.md](tables.md) |
 | Comptime component composition | [components.md](components.md) |
