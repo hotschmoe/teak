@@ -310,6 +310,7 @@ examples/                                     -- each its own build.zig; consume
   tables/                                     -- Tables at scale: a 100 000-row sortable / resizable / selectable table, a variable-height list
   todo/                                       -- dynamic-content stress: N rows from Model.items, Msg-with-index, scroll-clipped list
   tree/                                       -- recursive view emission with expand/collapse over a flat pre-order node array
+  vector_canvas/                              -- Vector canvas: a structural-frame-sized drawing (about 80 000 members,
   viewport/                                   -- Viewport example: a pan / zoom canvas and a scrollable list with a scrollbar — the two
 
 shaders/

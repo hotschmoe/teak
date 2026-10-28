@@ -1,0 +1,14 @@
+.{
+    .name = .vector_canvas,
+    .version = "0.0.0",
+    .fingerprint = 0x3f6fa76533c84aae, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .teak = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

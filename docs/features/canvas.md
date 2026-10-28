@@ -1,6 +1,6 @@
 # Canvas — charts & custom 2D drawing
 
-**Status**: `pub` in `src/teak.zig` (`CanvasCmd`, `CanvasStyle`,
+**Status**: `pub` in `src/teak.zig` (`CanvasCmd`, `CanvasStyle`, `CanvasTransform`,
 `CanvasPrimitive`, `CanvasPoint`, `canvasLocalPoint`, `lineChartPrimitives`,
 `LineChartOpts`, `emitQuadCorners`, `CanvasEvent`, `CanvasEventKind`, `Buttons`,
 `Modifiers`, `Button`)
@@ -27,8 +27,10 @@ canvas: CanvasCmd(Msg)   // added to the Cmd(Msg) union
 pub const CanvasStyle = struct {
     width: f32 = 200,
     height: f32 = 120,
-    flex: f32 = 0,          // sibling-distribution weight (image convention)
+    flex: f32 = 0,          // main-axis growth weight (fills a stretch parent with width/height 0)
     bg: ?[4]f32 = null,     // optional fill drawn before the primitives
+    transform: CanvasTransform = .{},  // world -> canvas px at lowering (see "World transform")
+    antialias: bool = false,           // per-pixel edge coverage (see "Antialiasing")
 };
 
 pub fn CanvasCmd(comptime Msg: type) type {
@@ -59,6 +61,10 @@ pub const CanvasPrimitive = union(enum) {
     marker:      struct { x, y: f32, size: f32, color: [4]f32 },    // centered square
     triangles:   struct { verts: []const TriVertex, key: u64 = 0 }, // pre-tessellated, per-vertex RGBA
     lines:       struct { segs: []const [4]f32, color: [4]f32, thickness: f32, key: u64 = 0 },
+    text:        struct { x, y: f32, content: []const u8, font: FontSpec, color: [4]f32 },
+    circle:      struct { x, y, radius: f32, fill: ?[4]f32, stroke: ?[4]f32 = null, thickness = 1, screen_radius = false },
+    arc:         struct { x, y, radius, start = 0, sweep = pi: f32, color, thickness, screen_radius = false },
+    polygon:     struct { points: []const CanvasPoint, fill: ?[4]f32, stroke: ?[4]f32 = null, thickness = 1 },
 };
 pub const TriVertex = struct { x, y, r, g, b, a: f32 };   // CanvasPrimitive.TriVertex
 ```
@@ -95,6 +101,71 @@ primitive:
   whenever the batch changes.** `key = 0` means "no revision supplied":
   the diff compares the bytes (still a fast `memcmp`).
 
+#### Circles, arcs, polygons
+
+- **`circle`**: fill, stroke (centred on the radius, `thickness` px), or
+  both. `radius` is in world units (it follows the transform) unless
+  `screen_radius`, which keeps a fixed pixel size at every zoom (node dots,
+  handles). In the 2D pass a round circle is ONE SDF quad (12 vertices, exact
+  antialiasing at any size, whatever `antialias` says); under a non-uniform
+  transform (an ellipse) and in 3D plane layers it is tessellated with a
+  quarter-pixel chord error.
+- **`arc`**: a stroked arc from angle `start` through `sweep` radians, world
+  orientation: 0 = +x, positive sweep turns toward +y (clockwise on screen with
+  the identity transform, counter-clockwise under a y-up transform).
+  A sweep of 2*pi or more draws the closed circle.
+- **`polygon`**: a closed ring (the last point joins the first). The fill is
+  ear-clipped, so any simple polygon works, convex or concave, either
+  winding; a self-intersecting ring still fills (fan fallback) but not by any
+  particular rule, so split it at the crossings (a moment diagram that changes
+  sign: one polygon per lobe). `stroke` outlines the ring with joined
+  segments. Polygons wholly outside the clip cost one bounds scan.
+
+### World transform
+
+`CanvasStyle.transform` (`teak.CanvasTransform{ sx, sy, tx, ty }`) maps every
+primitive coordinate to canvas-local px while lowering:
+`local = (x * sx + tx, y * sy + ty)`. A negative `sy` gives a y-up world.
+Positions and geometric extents transform (rect size, world circle radius,
+polygon and polyline points, triangle vertices, text positions); stroke
+`thickness`, `marker.size`, `screen_radius` circles and text size stay in
+screen px, so lines keep their weight at every zoom.
+
+This is the efficient way to draw large static geometry: build it ONCE in
+world units into Model-owned slices, hand the same slices to the canvas each
+frame, and pan / zoom by changing only the transform. `view` does no
+per-primitive work, the batch `key`s keep the frame diff cheap, and segments,
+circles and polygons that fall outside the canvas are culled while lowering.
+Helpers for `update`:
+
+```zig
+m.xf = teak.CanvasTransform.fit(x0, y0, x1, y1, view_w, view_h, 12, true); // fit a y-up world box
+m.xf = m.xf.pan(ev.dx, ev.dy);                                          // drag
+m.xf = m.xf.zoomAt(ev.x, ev.y, @exp(-ev.dy * 0.0015));                  // wheel, about the cursor
+const world = m.xf.invert(.{ .x = ev.x, .y = ev.y });                   // pick
+```
+
+`examples/vector_canvas` draws an 80 100-member frame (20 301 node circles,
+supports, moment-diagram polygons, release arcs) this way. `zig build bench`
+has a `canvas` row: lowering 80k antialiased segments + 20k circles, all on
+screen, takes about 1.8 ms of CPU (ReleaseFast, desktop x64); zoomed in, the
+culled frame is cheaper. Every changed frame still re-lowers the whole
+canvas on the CPU (there is no GPU-side retained vertex buffer yet).
+
+### Antialiasing
+
+`CanvasStyle.antialias = true` draws polyline, lines, circle, arc and polygon
+edges with per-pixel coverage: each stroke segment is one quad whose `u`/`v`
+carry the normalised distance to its edges, and the solid-quad shader
+(`shaders/quad.wgsl`, vertex mode `a <= -1.5`, alpha = `-2 - a`) turns the
+screen-space gradient of that distance into coverage, one device pixel wide at
+any DPI. Fills get a one-pixel outer fringe per edge (no double blending of
+translucent fills). Strokes thinner than a pixel draw one pixel wide at
+proportionally lower alpha. With antialiasing, polylines join their segments
+(ends extended into the turn), so thick polylines no longer notch at corners.
+Off keeps the historical hard-edged quads pixel for pixel. 3D plane layers
+(`scene_layers`) ignore the flag: their shader has no coverage mode.
+
 ### Emitters
 
 ```zig
@@ -106,9 +177,10 @@ cb.canvasInteractive(style, primitives, id, label);  // pointer surface (pan / z
 
 ### Per-pass behavior
 
-- **Layout**: fixed-size leaf sized from `style.width`/`height`. `flex`
-  contributes to sibling distribution but the canvas keeps its declared
-  box (identical convention to the `image` widget).
+- **Layout**: leaf sized from `style.width`/`height`; `flex` grows it along
+  the parent's main axis and a `.stretch` parent stretches it across, so
+  `.{ .width = 0, .height = 0, .flex = 1 }` in a stretch column fills the
+  remaining space (the `layout` pointer event reports the size).
 - **Render**: axis-aligned prims (`filled_rect`/`hline`/`vline`/`marker`)
   are plain quads via the shared `emit`. Polyline segments are arbitrary
   angle, so each is drawn as a 4-corner rotated quad via
@@ -122,7 +194,7 @@ cb.canvasInteractive(style, primitives, id, label);  // pointer surface (pan / z
   click into canvas-local coordinates (mirrors `sliderValueAt`) so the app
   turns the point into its own data-space `Msg`.
 - **a11y**: emits an `A11yNode` with `role = .canvas` and the `label`.
-- **snapshot**: one line — `canvas (x,y,w,h) prims=N [id=N] [pointer] "label"` (a batch counts as one primitive).
+- **snapshot**: one line — `canvas (x,y,w,h) prims=N [xf=(sx,sy,tx,ty)] [aa] [id=N] [pointer] "label"` (a batch counts as one primitive).
 
 ## The chart helper
 
@@ -212,11 +284,14 @@ if (teak.canvasLocalPoint(rects[hit.index], mouse_x, mouse_y)) |p| {
 
 - **No text inside the canvas.** Compose regular `text` cmds around it for
   axis labels / titles.
-- **No curves, no fills-under-line, no per-point styling** in the built-in
-  primitives. Polylines are straight segments; markers are squares (the
-  quad pipeline has no circle). Anything else: tessellate it yourself into
-  `triangles` / `lines`.
+- **No Bezier curves, no per-point styling** in the built-in primitives.
+  Polylines are straight segments; circles and arcs are the only curves.
+  Anything else: tessellate it yourself into `triangles` / `lines` /
+  `polygon`.
 - **No disabled state.** Drag / zoom live in the app: `canvasMsg` delivers
   the pointer stream, the app keeps the transform in its Model.
-- Polyline joins are unmitred (each segment is an independent quad); thick
-  lines show small gaps/overlaps at sharp corners.
+- Without `antialias`, polyline joins are unmitred (each segment is an
+  independent quad); thick lines show small gaps/overlaps at sharp corners.
+  With it, joins are extended (square-capped at turns sharper than 90
+  degrees); translucent strokes darken slightly where segments overlap.
+- Lowering is CPU work every changed frame (see "World transform").

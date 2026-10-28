@@ -252,6 +252,9 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             try writer.writeAll("canvas ");
             try writeRect(writer, r);
             try writer.print(" prims={d}", .{cv.primitives.len});
+            const xf = cv.style.transform;
+            if (!xf.isIdentity()) try writer.print(" xf=({d:.3},{d:.3},{d:.1},{d:.1})", .{ xf.sx, xf.sy, xf.tx, xf.ty });
+            if (cv.style.antialias) try writer.writeAll(" aa");
             if (cv.id != 0) try writer.print(" id={d}", .{cv.id});
             if (cv.pointer) try writer.writeAll(" pointer");
             if (cv.label.len > 0) {
@@ -597,6 +600,22 @@ test "snapshot: interactive canvas and id-bearing scroll show id + pointer" {
         \\  canvas (0,0,200,100) prims=0 id=7 pointer "viewport"
         \\  scroll (0,100,200,50) vertical scroll_y=10 id=3
         \\    text (0,90,30,20) "row"
+        \\
+    );
+}
+
+test "snapshot: canvas shows a non-identity transform and antialiasing" {
+    const Msg = union(enum) { a };
+    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
+    defer cb.deinit();
+    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
+    cb.canvas(.{ .width = 200, .height = 100, .transform = .{ .sx = 2, .sy = -2, .tx = 10, .ty = 90 }, .antialias = true }, &.{});
+    cb.popGroup();
+    var rects: [4]Rect = undefined;
+    const rs = layoutInto(&rects, cb.cmds.items, 400, 300);
+    try expectSnapshot(cb.cmds.items, rs, .{},
+        \\group (0,0,400,300) vertical
+        \\  canvas (0,0,200,100) prims=0 xf=(2.000,-2.000,10.0,90.0) aa
         \\
     );
 }

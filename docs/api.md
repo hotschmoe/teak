@@ -223,12 +223,46 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `thickness, color`
 > A canvas leaf holding pure-data draw primitives.
 - `teak.CanvasCmd`: `pub const CanvasCmd = cmd.CanvasCmd`
-> Intrinsic size, background and flex of a canvas.
+> Intrinsic size, background, flex, world transform and antialiasing of a canvas.
 - `teak.CanvasStyle` = `cmd.CanvasStyle`
-  - fields: `width, height, flex, bg`
-> One draw op inside a canvas (polyline, rect, lines, triangles, ...).
+  - fields: `width, height, flex, bg, transform, antialias`
+> World -> canvas-local px map of a canvas (scale + offset; pan / zoom helpers).
+- `teak.CanvasTransform` = `cmd.CanvasTransform`
+  - fields: `sx, sy, tx, ty`
+  - `pub fn isIdentity(t: CanvasTransform) bool`
+  > World point -> canvas-local px.
+  - `pub fn apply(t: CanvasTransform, p: CanvasPoint) CanvasPoint`
+  > Canvas-local px (e.g. `PointerEvent` local coords) -> world point.
+  - `pub fn invert(t: CanvasTransform, p: CanvasPoint) CanvasPoint`
+  > Move by (`dx`, `dy`) canvas px (a drag delta).
+  - `pub fn pan(t: CanvasTransform, dx: f32, dy: f32) CanvasTransform`
+  > Scale by `factor` about the canvas-local point (`px`, `py`), which
+  > stays fixed on screen (zoom at the cursor).
+  - `pub fn zoomAt(t: CanvasTransform, px: f32, py: f32, factor: f32) CanvasTransform`
+  > Uniform scale that fits the world box [x0,x1]x[y0,y1] into a
+  > `w` x `h` canvas with `margin` px on every side, centred; `y_up`
+  > flips y so larger world y is higher on screen.
+  - `pub fn fit(x0: f32, y0: f32, x1: f32, y1: f32, w: f32, h: f32, margin: f32, y_up: bool) CanvasTransform`
+> One draw op inside a canvas (polyline, rect, circle, arc, polygon, lines, triangles, ...).
 - `teak.CanvasPrimitive` = `cmd.CanvasPrimitive`
-  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text, circle, arc, polygon`
+  > Center (`x`, `y`) and `radius` in canvas-local units (so they follow
+  > `CanvasStyle.transform`), unless `screen_radius`: then the radius is
+  > in screen px and the circle keeps its size at every zoom (node dots).
+  > `stroke` is centred on the radius, `thickness` screen px wide.
+  - `struct Circle`
+  > Arc of the circle (`x`, `y`, `radius`) from angle `start` through
+  > `sweep` (radians, canvas-local: 0 = +x, positive turns from +x
+  > toward +y, i.e. clockwise on screen with the identity transform;
+  > |sweep| >= 2*pi draws the full circle). `radius` / `screen_radius`
+  > as `Circle`; `thickness` in screen px.
+  - `struct Arc`
+  > Closed polygon through `points` (>= 3; the last point joins the
+  > first). The fill is ear-clipped, so any simple polygon works, convex
+  > or not; a self-intersecting outline still fills, but not by any
+  > particular rule (split it at the crossings for exact results).
+  > `stroke` draws the closed outline, `thickness` screen px.
+  - `struct Polygon`
   - `struct Polyline`
   - `struct FilledRect`
   - `struct HLine`
@@ -878,7 +912,24 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `x, y`
 > One 2D draw op inside a canvas. All coordinates are canvas-local.
 - `union CanvasPrimitive`
-  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text, circle, arc, polygon`
+  > Center (`x`, `y`) and `radius` in canvas-local units (so they follow
+  > `CanvasStyle.transform`), unless `screen_radius`: then the radius is
+  > in screen px and the circle keeps its size at every zoom (node dots).
+  > `stroke` is centred on the radius, `thickness` screen px wide.
+  - `struct Circle`
+  > Arc of the circle (`x`, `y`, `radius`) from angle `start` through
+  > `sweep` (radians, canvas-local: 0 = +x, positive turns from +x
+  > toward +y, i.e. clockwise on screen with the identity transform;
+  > |sweep| >= 2*pi draws the full circle). `radius` / `screen_radius`
+  > as `Circle`; `thickness` in screen px.
+  - `struct Arc`
+  > Closed polygon through `points` (>= 3; the last point joins the
+  > first). The fill is ear-clipped, so any simple polygon works, convex
+  > or not; a self-intersecting outline still fills, but not by any
+  > particular rule (split it at the crossings for exact results).
+  > `stroke` draws the closed outline, `thickness` screen px.
+  - `struct Polygon`
   - `struct Polyline`
   - `struct FilledRect`
   - `struct HLine`
@@ -907,7 +958,29 @@ Signatures and `///` doc comments of every public declaration reachable from
   > addresses every frame, so compare what they point at).
   - `pub fn eql(a: CanvasPrimitive, b: CanvasPrimitive) bool`
 - `struct CanvasStyle`
-  - fields: `width, height, flex, bg`
+  - fields: `width, height, flex, bg, transform, antialias`
+> Affine map from primitive coordinates ("world") to canvas-local px:
+> `local = (world.x * sx + tx, world.y * sy + ty)`. A negative `sy` gives
+> a y-up world. Positions and geometric extents (rect size, circle radius,
+> polygon points) are transformed; stroke `thickness`, `marker.size`,
+> `screen_radius` circles and text size stay in screen px. Pure data with
+> helpers for the usual pan / zoom maths in `update`.
+- `struct CanvasTransform`
+  - fields: `sx, sy, tx, ty`
+  - `pub fn isIdentity(t: CanvasTransform) bool`
+  > World point -> canvas-local px.
+  - `pub fn apply(t: CanvasTransform, p: CanvasPoint) CanvasPoint`
+  > Canvas-local px (e.g. `PointerEvent` local coords) -> world point.
+  - `pub fn invert(t: CanvasTransform, p: CanvasPoint) CanvasPoint`
+  > Move by (`dx`, `dy`) canvas px (a drag delta).
+  - `pub fn pan(t: CanvasTransform, dx: f32, dy: f32) CanvasTransform`
+  > Scale by `factor` about the canvas-local point (`px`, `py`), which
+  > stays fixed on screen (zoom at the cursor).
+  - `pub fn zoomAt(t: CanvasTransform, px: f32, py: f32, factor: f32) CanvasTransform`
+  > Uniform scale that fits the world box [x0,x1]x[y0,y1] into a
+  > `w` x `h` canvas with `margin` px on every side, centred; `y_up`
+  > flips y so larger world y is higher on screen.
+  - `pub fn fit(x0: f32, y0: f32, x1: f32, y1: f32, w: f32, h: f32, margin: f32, y_up: bool) CanvasTransform`
 - `pub fn CanvasCmd(comptime Msg: type) type`
 - `struct SceneStyle`
   - fields: `width, height, flex`

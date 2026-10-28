@@ -924,12 +924,16 @@ fn buildLayer(
                 const canvas_clip = clipRect(rect, cur_clip);
                 if (canvas_clip.w <= 0 or canvas_clip.h <= 0) continue;
                 if (cv.style.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
+                const xf = cv.style.transform;
+                const opts: canvas_tess.Opts = .{ .xf = xf, .aa = cv.style.antialias, .sdf_circles = true };
                 for (cv.primitives) |prim| {
                     if (prim == .text) {
                         const t = prim.text;
                         const m = measurer.measure(t.content, t.font);
-                        emitText(text_draws, alloc, t.content, t.font, t.color, .{ .x = rect.x + t.x, .y = rect.y + t.y, .w = m.width, .h = m.height }, canvas_clip);
-                    } else emitCanvasPrimitive(verts, alloc, rect, prim, canvas_clip);
+                        const tx = rect.x + t.x * xf.sx + xf.tx;
+                        const ty = rect.y + t.y * xf.sy + xf.ty;
+                        emitText(text_draws, alloc, t.content, t.font, t.color, .{ .x = tx, .y = ty, .w = m.width, .h = m.height }, canvas_clip);
+                    } else canvas_tess.emitCanvasPrimitiveOpts(verts, alloc, rect, prim, canvas_clip, opts);
                 }
             },
         }
@@ -941,6 +945,7 @@ fn buildLayer(
 // Chrome (border / shadow / hover / underline) tests live in their own file.
 test {
     _ = sdf;
+    _ = canvas_tess;
     _ = @import("chrome_test.zig");
 }
 

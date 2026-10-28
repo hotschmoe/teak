@@ -140,6 +140,7 @@ examples/counter_greeter/  proto-2 demo; composed Components + focus routing
 examples/todo/             dynamic-list demo; N rows, Msg-with-index, scroll
 examples/tree/             recursive tree with expand/collapse over flat Model
 examples/chrome/           engineering-workstation chrome: cards, tables, bracket tabs, custom Theme
+examples/vector_canvas/    80k-member frame on one canvas: transform pan/zoom, antialiased lines, circles, arcs, polygons
 examples/viewport/         pan/zoom interactive canvas + scroll list with scrollbar
 examples/scene3d/          depth-tested 3D scene: meshes, camera, declarative resources, headless shot
 examples/kerf_viewer/      Kerf mesh.json 3D viewer: Orbit camera, CPU pick, parts panel (scene3d path)
