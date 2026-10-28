@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0 (2026-10-27)
+
+All changes are additions; exhaustive switches over `CanvasPrimitive` (`circle`/`arc`/`polygon`), `DataTable.Msg` (`resort`) and `Cmd` (`push_grid`/`pop_grid`) need the new arms.
+
 ### X11: secondary windows (#150, part)
 
 - `openSecondaryWindow` / `pollSecondaryInputs` / `closeSecondaryWindow` /
