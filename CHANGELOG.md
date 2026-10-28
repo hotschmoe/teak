@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Widgets: drag value
+
+- `teak.widgets.drag_value.DragValue(cfg)`: change a number by dragging
+  across it (Shift fine, Ctrl coarse), arrow / page / home / end keys and the
+  wheel; one focusable canvas, no new Cmd. docs/features/widgets.md.
+
 ### Windows: native apps link with Zig's self-hosted backend (#154)
 
 - `use_llvm = false` Debug builds of a `linkNativeWgpu` / `linkHeadless` exe

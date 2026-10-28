@@ -370,6 +370,20 @@ app calls from its own `update` arm (`Spinner.step(&m.qty, .up)`). `keyStep` map
 text is empty or invalid), rounds to `precision` (no `0.30000000000000004`), clamps to `[min, max]` and rewrites the
 text; the `-` / `+` buttons disable at the limits.
 
+**drag_value.** `DragValue(.{ .min, .max, .speed, .step, .precision })` is the egui `DragValue` / ImGui `DragFloat`
+idiom: press on the box and drag horizontally, `speed` per pixel (Shift x0.1, Ctrl x10). It is one focusable
+interactive canvas (resize-ew cursor), so input arrives through `pointerMsg` as `CanvasEvent`s; route the box's id to
+`DragValue.eventMsg(c)`. Left / Right / Up / Down step, Page Up / Page Down step ten times, Home / End jump to the
+limits (keys reach the focused canvas as `.key` events, or map them with `keyMsg`). The Model keeps the unrounded drag
+accumulator, so slow drags at a coarse `precision` still move; values are rounded and clamped on every change.
+
+```zig
+const Load = teak.widgets.drag_value.DragValue(.{ .min = 0, .max = 500, .speed = 0.5, .precision = 1 });
+// update:     .load => |e| Load.update(&m.load, e)
+// view:       Load.view(&m.load, cb, .{ .focus = .focus_load }, .{ .id = LOAD_ID, .label = "kN" });
+// pointerMsg: if (ev.asCanvas()) |c| if (c.id == LOAD_ID) return if (Load.eventMsg(c)) |e| .{ .load = e } else null;
+```
+
 **date_field.** An ISO text field (`YYYY-MM-DD`) plus a calendar popover: a modal overlay with a month header (`<<` `<`
 `>` `>>`), weekday headings (Monday first), a 6 x 7 grid of day buttons (other-month days muted, today outlined,
 selected inverted, the keyboard cursor in a heavy border) and Today / Clear. The date maths (`widgets.date`: days from
