@@ -15,6 +15,7 @@
 //! ```
 
 const std = @import("std");
+const oom = @import("../oom.zig").oom;
 const cmd = @import("../cmd.zig");
 const component = @import("../component.zig");
 
@@ -62,7 +63,7 @@ pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
 pub fn bar(cb: anytype, value: f32, style: Style) void {
     const v = std.math.clamp(if (std.math.isNan(value)) 0 else value, 0, 1);
     const pct: u32 = @intFromFloat(@round(v * 100));
-    emit(cb, style, 0, v * (style.width - 2), cb.arena.allocator().dupe(u8, pctLabel(cb, pct)) catch unreachable);
+    emit(cb, style, 0, v * (style.width - 2), cb.arena.allocator().dupe(u8, pctLabel(cb, pct)) catch oom());
 }
 
 /// Indeterminate bar: the block's position follows `phase` (0 .. PERIOD).
@@ -77,12 +78,12 @@ pub fn indeterminate(cb: anytype, phase: u16, style: Style) void {
 }
 
 fn pctLabel(cb: anytype, pct: u32) []const u8 {
-    return std.fmt.allocPrint(cb.arena.allocator(), "{d}%", .{pct}) catch unreachable;
+    return std.fmt.allocPrint(cb.arena.allocator(), "{d}%", .{pct}) catch oom();
 }
 
 fn emit(cb: anytype, style: Style, fill_x: f32, fill_w: f32, label: []const u8) void {
     const pal = cb.theme.palette;
-    const prims = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 3) catch unreachable;
+    const prims = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 3) catch oom();
     prims[0] = .{ .filled_rect = .{ .x = 0, .y = 0, .w = style.width, .h = style.height, .color = style.border_color orelse pal.border } };
     prims[1] = .{ .filled_rect = .{ .x = 1, .y = 1, .w = style.width - 2, .h = style.height - 2, .color = style.track_color orelse pal.bg_sunken } };
     prims[2] = .{ .filled_rect = .{ .x = 1 + fill_x, .y = 1, .w = fill_w, .h = style.height - 2, .color = style.fill_color orelse pal.accent } };

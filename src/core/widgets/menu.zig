@@ -57,6 +57,7 @@
 //! and `panel_w` together if you change the font.
 
 const std = @import("std");
+const oom = @import("../oom.zig").oom;
 const cmd = @import("../cmd.zig");
 const component = @import("../component.zig");
 const keys = @import("../../input/keys.zig");
@@ -144,9 +145,9 @@ pub fn displayLabel(cb: anytype, label: []const u8) []const u8 {
     while (i < label.len) : (i += 1) {
         if (label[i] == '&' and i + 1 < label.len) {
             i += 1;
-            out.append(cb.arena.allocator(), label[i]) catch unreachable;
+            out.append(cb.arena.allocator(), label[i]) catch oom();
         } else {
-            out.append(cb.arena.allocator(), label[i]) catch unreachable; // plain char, or a trailing '&'
+            out.append(cb.arena.allocator(), label[i]) catch oom(); // plain char, or a trailing '&'
         }
     }
     return out.items;
@@ -389,11 +390,11 @@ pub fn Nav(comptime Action: type) type {
             const lead: []const u8 = if (it.checked) "* " else "  ";
             var out: std.ArrayList(u8) = .empty;
             const a = cb.arena.allocator();
-            out.appendSlice(a, lead) catch unreachable;
-            out.appendSlice(a, shown) catch unreachable;
+            out.appendSlice(a, lead) catch oom();
+            out.appendSlice(a, shown) catch oom();
             const used = lead.len + shown.len + tail.len;
-            out.appendNTimes(a, ' ', if (used < o.cols) o.cols - used else 1) catch unreachable;
-            out.appendSlice(a, tail) catch unreachable;
+            out.appendNTimes(a, ' ', if (used < o.cols) o.cols - used else 1) catch oom();
+            out.appendSlice(a, tail) catch oom();
             return out.items;
         }
 
