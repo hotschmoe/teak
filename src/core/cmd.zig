@@ -1495,6 +1495,16 @@ pub fn CmdBuffer(comptime Msg: type) type {
             } }) catch oom();
         }
 
+        /// Small text in the theme's warning color — non-fatal cautions
+        /// (the sibling of `textDanger`).
+        pub fn textWarning(self: *Self, content: []const u8) void {
+            self.cmds.append(self.backing, .{ .text = .{
+                .content = content,
+                .font = self.theme.typography.small,
+                .color = self.theme.warning_color,
+            } }) catch oom();
+        }
+
         /// Monospace text in body color — column data, code, numerics.
         pub fn textMono(self: *Self, content: []const u8) void {
             self.cmds.append(self.backing, .{ .text = .{

@@ -214,7 +214,7 @@ into a local is a use-after-return.
 emitters), `.arena` (per-frame allocator), `.cmds`. Methods:
 `init(backing)`, `deinit()`, `reset()`, `setTheme(t) Theme`.
 Emitters (all `catch unreachable` on arena OOM):
-- text: `text(s)`, `heading(s)`, `textMuted(s)`, `textDanger(s)`, `textMono(s)`,
+- text: `text(s)`, `heading(s)`, `textMuted(s)`, `textDanger(s)`, `textWarning(s)`, `textMono(s)`,
   `textStyled(s, font, color)`, `mixedText(parts: []const MixedPart)`
 - `divider()`, `dividerStyled(DividerStyle)`
 - `button(msg, label)`, `buttonStyled(msg, label, ButtonStyle)`, `buttonDisabled(msg, label)`, `buttonStyledDisabled(msg, label, ButtonStyle)`, `buttonStyledUnderlined(msg, label, ButtonStyle, at: ?usize)` (one underlined ASCII char: a mnemonic hint; `ButtonCmd.underline: ?u16`)
@@ -426,7 +426,7 @@ Frame time is a Msg (HARDLINE: no wall clock in view). See docs/features/animati
 
 ### Theme (`teak.theme` → core/theme.zig)
 ```zig
-Theme = struct { palette, text_color, heading_color, muted_color, danger_color, panel_bg: [4]f32,  // required
+Theme = struct { palette, text_color, heading_color, muted_color, danger_color, (warning_color defaulted), panel_bg: [4]f32,  // required
                  typography, button, text_input, checkbox, radio, slider, divider, card: GroupStyle,
                  field: TextInputStyle (underline);   // all default to their struct defaults
                  // a fully custom Theme is a plain literal; see docs/features/ergonomic-helpers.md
@@ -438,7 +438,7 @@ ThemeTokens = struct { radius_sm, radius_md, radius_lg, border_width: f32, space
                        elevation: [4]?Shadow /*steps 0..3*/; pub fn radii(Size) Radii; pub fn shadowAt(level: u2) ?Shadow }
                        // default = retro (square, no soft shadows); theme.modern_tokens = rounded + soft elevations
 Palette = struct { bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted,
-                   accent, danger, border: [4]f32 }
+                   accent, danger, border: [4]f32 , warning = amber /*defaulted*/ }
 Typography = struct { body, heading, mono, small: FontSpec }
 dark_palette: Palette      // built-in dark
 light_palette: Palette     // built-in light
