@@ -1,6 +1,7 @@
 //! Helpers shared by the widget components (internal).
 
 const std = @import("std");
+const oom = @import("../oom.zig").oom;
 
 /// A full-window, fully transparent modal overlay whose only job is to catch
 /// clicks outside a popup (menu, context menu, tooltip-free popovers): the
@@ -25,12 +26,12 @@ pub fn scrim(cb: anytype, close: anytype, window_w: f32, window_h: f32) void {
 
 /// Copy `bytes` into the frame arena (for strings a view builds on the fly).
 pub fn frameStr(cb: anytype, bytes: []const u8) []const u8 {
-    return cb.arena.allocator().dupe(u8, bytes) catch unreachable;
+    return cb.arena.allocator().dupe(u8, bytes) catch oom();
 }
 
 /// `fmt` into the frame arena.
 pub fn frameFmt(cb: anytype, comptime fmt: []const u8, args: anytype) []const u8 {
-    return std.fmt.allocPrint(cb.arena.allocator(), fmt, args) catch unreachable;
+    return std.fmt.allocPrint(cb.arena.allocator(), fmt, args) catch oom();
 }
 
 /// Mix `a` toward `b` by `t` (0..1), per channel; alpha follows `a`.

@@ -12,6 +12,7 @@
 //! the quad renderer to learn about corner radii.
 
 const std = @import("std");
+const oom = @import("../oom.zig").oom;
 const cmd = @import("../cmd.zig");
 
 pub const Style = struct {
@@ -45,7 +46,7 @@ pub fn viewStyled(cb: anytype, msg: anytype, on: bool, label: []const u8, style:
     const k = h - 2 * style.inset;
     const kx = if (on) w - style.inset - k else style.inset;
 
-    const prims = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 3) catch unreachable;
+    const prims = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 3) catch oom();
     prims[0] = .{ .filled_rect = .{ .x = 0, .y = 0, .w = w, .h = h, .color = border } };
     prims[1] = .{ .filled_rect = .{ .x = 1, .y = 1, .w = w - 2, .h = h - 2, .color = track } };
     prims[2] = .{ .filled_rect = .{ .x = kx, .y = style.inset, .w = k, .h = k, .color = knob } };
