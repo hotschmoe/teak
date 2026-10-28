@@ -1115,8 +1115,9 @@ const Rows = struct {                       // the app's data, passed per call: 
 };
 // Model:   table: *Table.Model      (allocate it: ~1 MB of permutation arrays)   init: table.setRows(n); table.setColumns(&cols)
 // update:  .table => |t| Table.update(m.table, t, Rows{ .items = m.items })
-// hooks:   scrollMsg/scrollLayoutMsg (wheel + viewport), canvasMsg (column grips), modsMsg (shift/ctrl clicks),
-//          keySpecialMsg (Table.keyMsg), animationMsg + subscribe (smooth scrolling)
+// hooks:   pointerMsg: ev.asScroll() -> .{ .table = .{ .wheel = s.dy } } for TABLE_ID, ev.asCanvas() -> Table.gripMsg(c, GRIP_BASE)
+//          (column grips); scrollLayoutMsg (viewport), modsMsg (shift/ctrl clicks), keySpecialMsg (Table.keyMsg),
+//          animationMsg + subscribe (smooth scrolling). One pointer hook: the old scrollMsg / canvasMsg are deprecated.
 // view:    Table.view(m.table, cb, &cols, Rows{ ... }, msgs, .{ .id = TABLE_ID, .grip_base = GRIP_BASE });
 ```
 

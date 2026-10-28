@@ -337,7 +337,100 @@ fn setButton(set: *Buttons, b: Button, value: bool) void {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
+/// Touch -> pointer for hosts that only see touch points (the web canvas
+/// suppresses the browser's synthesized mouse events). One finger is the
+/// left button: down, drag, up. Two fingers are a trackpad: moving them
+/// together scrolls (wheel dx / dy), spreading or pinching them is a
+/// ctrl+wheel zoom about their midpoint, the same events a trackpad pinch
+/// produces, so apps need no touch-specific code. More fingers are ignored.
+/// Plain data; the host keeps one per window and steps it once per frame.
+pub const TouchMapper = struct {
+    /// Fingers seen last frame (0, 1 or 2; more counts as 2).
+    count: u8 = 0,
+    /// Last midpoint and finger distance (two-finger mode).
+    mid: [2]f32 = .{ 0, 0 },
+    dist: f32 = 0,
+    /// Whether this frame's wheel is a pinch (the host sets mods.ctrl).
+    pinching: bool = false,
+
+    /// Feed this frame's touch points (window px). Returns true while touch
+    /// owns the pointer (the host should not apply mouse state on top).
+    pub fn step(self: *TouchMapper, q: *InputQueue, pts: []const [2]f32) bool {
+        const n: u8 = @intCast(@min(pts.len, 2));
+        const prev = self.count;
+        self.count = n;
+        self.pinching = false;
+        if (n == 0) {
+            if (prev == 1) q.buttonUp(.left);
+            return prev != 0;
+        }
+        if (n == 1) {
+            q.pointerMoved(pts[0][0], pts[0][1]);
+            if (prev != 1) q.buttonDown(.left) else q.buttons.left = true; // held: hosts may reset buttons from the mouse each frame
+            return true;
+        }
+        // Two fingers: end any one-finger drag first.
+        if (prev == 1) q.buttonUp(.left);
+        const mx = (pts[0][0] + pts[1][0]) * 0.5;
+        const my = (pts[0][1] + pts[1][1]) * 0.5;
+        const dx = pts[1][0] - pts[0][0];
+        const dy = pts[1][1] - pts[0][1];
+        const d = @sqrt(dx * dx + dy * dy);
+        q.pointerMoved(mx, my);
+        if (prev == 2) {
+            const spread = d - self.dist;
+            if (@abs(spread) > 0.5) {
+                // Spread = zoom in = negative wheel (same sign as a pinch-out).
+                q.wheel(0, -spread * 2);
+                self.pinching = true;
+            } else {
+                q.wheel(self.mid[0] - mx, self.mid[1] - my);
+            }
+        }
+        self.mid = .{ mx, my };
+        self.dist = d;
+        return true;
+    }
+};
+
 const testing = std.testing;
+
+test "TouchMapper: one finger drags with the left button; two pinch and scroll" {
+    var q: InputQueue = .{};
+    var t: TouchMapper = .{};
+    q.beginFrame();
+    try testing.expect(t.step(&q, &.{.{ 10, 20 }}));
+    try testing.expect(q.pressed.left and q.buttons.left);
+    try testing.expectEqual(@as(f32, 10), q.mouse_x);
+    _ = q.finish(false, 400, 300);
+    q.beginFrame();
+    _ = t.step(&q, &.{.{ 15, 25 }});
+    try testing.expect(!q.pressed.left and q.buttons.left);
+    _ = q.finish(false, 400, 300);
+    q.beginFrame();
+    try testing.expect(t.step(&q, &.{}));
+    try testing.expect(q.released.left and !q.buttons.left);
+    _ = q.finish(false, 400, 300);
+    q.beginFrame();
+    try testing.expect(!t.step(&q, &.{})); // idle: mouse keeps the pointer
+
+    // Two fingers 100 px apart, then 140 px: a pinch-out (negative wheel, pinching).
+    _ = q.finish(false, 400, 300);
+    q.beginFrame();
+    _ = t.step(&q, &.{ .{ 100, 100 }, .{ 200, 100 } });
+    try testing.expectEqual(@as(f32, 150), q.mouse_x);
+    _ = q.finish(false, 400, 300);
+    q.beginFrame();
+    _ = t.step(&q, &.{ .{ 80, 100 }, .{ 220, 100 } });
+    try testing.expect(t.pinching);
+    try testing.expect(q.wheel_dy < 0);
+    // Same spread, moved up 10 px: a scroll (content follows the fingers).
+    _ = q.finish(false, 400, 300);
+    q.beginFrame();
+    _ = t.step(&q, &.{ .{ 80, 90 }, .{ 220, 90 } });
+    try testing.expect(!t.pinching);
+    try testing.expectEqual(@as(f32, 10), q.wheel_dy);
+}
 
 test "resolveKey applies the Shift / Ctrl policy" {
     const none: Modifiers = .{};

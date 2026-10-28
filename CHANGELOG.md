@@ -21,6 +21,36 @@
   `shot` step now builds on every OS with a native backend (it was Linux only).
 - `layout/virtual_rows.zig`'s child walk is now exhaustive over Cmd tags.
 
+### Web: touch input (#134)
+
+- The wasm host maps zunk's touch points to the pointer: one finger is a
+  left-button press / drag / release, two fingers scroll (wheel) or pinch
+  (ctrl+wheel about their midpoint), the same events a trackpad sends, so
+  canvases and lists work on touch screens with no app change.
+  `teak.TouchMapper` holds the mapping (unit-tested natively).
+
+### Selectable static text: read-only `TextArea`
+
+- `TextArea(cap).Model.read_only`: selection, motion and copy work; typing,
+  paste, Enter and text-changing keys are ignored in `update`.
+  `TextArea(cap).staticStyle(base)` draws it like a label (no box, border or
+  caret). docs/features/text-area.md.
+
+### Theme: a warning colour (#143)
+
+- `Palette.warning` (set in all four built-in palettes), `Theme.warning_color`
+  and `cb.textWarning(text)`, the sibling of `danger` / `textDanger`. Both
+  fields are defaulted, so hand-built palettes and themes still compile.
+
+### SVG icons: `teak.svg`
+
+- `teak.svg.rasterize` / `rasterizeInto`: a pure CPU rasterizer for the SVG
+  icon subset (all path commands, rect / circle / ellipse / line / polyline /
+  polygon, fill + stroke with caps, joins and fill rules, opacity,
+  transforms, `style`, `currentColor`) into RGBA8 pixels for an image
+  resource. `examples/vector_canvas` draws its toolbar icons with it.
+  docs/features/svg.md.
+
 ### Web: `WebWgpuOptions.bridge_js` (#136)
 
 - `teak.linkWebWgpu(b, exe, .{ .bridge_js = b.path("web/bridge.js") })`

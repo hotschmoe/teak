@@ -193,6 +193,7 @@ src/                                          -- the library, consumable as a Zi
     scroller.zig                              -- Scroll position with smooth wheel and kinetic (fling) motion, as plain data
     snapshot.zig                              -- teak.snapshot — LLM-readable serialization of a rendered frame
     sub.zig                                   -- Subscriptions — declarative timers / external-event listeners
+    svg.zig                                   -- SVG icons: a small, pure SVG subset rasterized on the CPU into RGBA pixels
     surface.zig                               -- Surface decoration data shared by the style structs: per-corner radii, soft drop shadows and
     table.zig                                 -- Fixed-column monospace tables, as pure helpers
     text.zig                                  -- Text measurement and rasterization types

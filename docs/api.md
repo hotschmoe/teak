@@ -79,6 +79,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.snapshot`: module `src/core/snapshot.zig`; see below
 > Pure line-chart primitive builder for canvases.
 - `teak.chart`: module `src/core/chart.zig`; see below
+> SVG icons: a pure SVG-subset rasterizer to RGBA pixels (for image resources).
+- `teak.svg`: module `src/core/svg.zig`; see below
 > Fixed-column monospace tables built from text cmds.
 - `teak.table`: module `src/core/table.zig`; see below
 > Pointer, button, modifier and canvas-event types shared by Host, run loop and hit-test.
@@ -593,7 +595,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.runSubs`: `pub const runSubs = sub.runSubs`
 > Bundled palette, typography and per-widget styles for the theme-aware emitters.
 - `teak.Theme` = `theme.Theme`
-  - fields: `palette, typography, text_color, heading_color, muted_color, danger_color, panel_bg, tokens, button, button_primary, text_input, checkbox, radio, slider, divider, card, field`
+  - fields: `palette, typography, text_color, heading_color, muted_color, danger_color, warning_color, panel_bg, tokens, button, button_primary, text_input, checkbox, radio, slider, divider, card, field`
   > Build a Theme by deriving widget styles from a palette. Apps
   > that want a custom brand palette call this and then optionally
   > tweak individual style fields.
@@ -603,7 +605,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - `pub fn fromPaletteTokens(p: Palette, t: Tokens) Theme`
 > Semantic color set of a theme.
 - `teak.Palette` = `theme.Palette`
-  - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border`
+  - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border, warning`
 > Radii, border width, spacing and shadow elevations of a theme.
 - `teak.ThemeTokens` = `theme.Tokens`
   - fields: `radius_sm, radius_md, radius_lg, border_width, focus_ring_width, space, elevation`
@@ -752,6 +754,12 @@ Signatures and `///` doc comments of every public declaration reachable from
   > Build this frame's `InputState` and clear the per-frame edges and
   > wheel accumulators. Text/key slices alias the queue; see `beginFrame`.
   - `pub fn finish(self: *InputQueue, resized: bool, width: u32, height: u32) host.InputState`
+> Touch points -> pointer (one finger) and wheel / ctrl+wheel pinch (two), for touch-only hosts.
+- `teak.TouchMapper` = `input_queue.TouchMapper`
+  - fields: `count, mid, dist, pinching`
+  > Feed this frame's touch points (window px). Returns true while touch
+  > owns the pointer (the host should not apply mouse state on top).
+  - `pub fn step(self: *TouchMapper, q: *InputQueue, pts: []const [2]f32) bool`
 > Navigation keys a Host may deliver.
 - `teak.NavKey` = `input_queue.NavKey`
   - fields: `backspace, delete, left, right, up, down, home, end, page_up, page_down, enter, tab, escape, f12, f10, menu, a, c, x, v, y, z`
@@ -1533,7 +1541,7 @@ Theme: bundled style + typography defaults consulted by un-styled
 convenience emitters.
 
 - `struct Palette`
-  - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border`
+  - fields: `bg, bg_panel, bg_sunken, bg_raised, bg_hover, bg_press, fg, fg_muted, accent, danger, border, warning`
 - `struct Typography`
   - fields: `body, heading, mono, small`
 > Shape and depth vocabulary next to the palette's colours: corner radii,
@@ -1555,7 +1563,7 @@ convenience emitters.
 > default; the widget styles and typography fall back to their own
 > struct defaults, so a custom theme need only override what it cares about.
 - `struct Theme`
-  - fields: `palette, typography, text_color, heading_color, muted_color, danger_color, panel_bg, tokens, button, button_primary, text_input, checkbox, radio, slider, divider, card, field`
+  - fields: `palette, typography, text_color, heading_color, muted_color, danger_color, warning_color, panel_bg, tokens, button, button_primary, text_input, checkbox, radio, slider, divider, card, field`
   > Build a Theme by deriving widget styles from a palette. Apps
   > that want a custom brand palette call this and then optionally
   > tweak individual style fields.
@@ -1835,6 +1843,22 @@ teak.chart — pure line-chart primitive builder.
 > no line to draw). An empty `series` with `grid_lines <= 1` returns an
 > empty slice.
 - `pub fn lineChartPrimitives( arena: std.mem.Allocator, series: []const f32, opts: LineChartOpts, ) []const CanvasPrimitive`
+
+### `teak.svg` (`src/core/svg.zig`)
+
+SVG icons: a small, pure SVG subset rasterized on the CPU into RGBA pixels
+that the app hands to the GPU as an image resource (HARDLINE §2 hatch 8).
+
+- `struct Options`
+  - fields: `color`
+- `pub const Error = error{ OutOfMemory, InvalidSvg }`
+> Rasterize `source` to a `width` x `height` RGBA8 image (straight alpha,
+> row-major, 4 bytes per pixel) written into `out` (len >= width*height*4).
+> The viewBox is scaled uniformly and centred (`preserveAspectRatio`
+> xMidYMid meet). `scratch` holds the flattened paths while drawing.
+- `pub fn rasterizeInto(scratch: Allocator, source: []const u8, width: u32, height: u32, out: []u8, opts: Options) Error!void`
+> `rasterizeInto` with a freshly allocated pixel buffer (caller frees).
+- `pub fn rasterize(gpa: Allocator, source: []const u8, width: u32, height: u32, opts: Options) Error![]u8`
 
 ### `teak.table` (`src/core/table.zig`)
 
@@ -2722,6 +2746,18 @@ Shared per-window input accumulator for event-driven Hosts (Win32, X11).
   > Build this frame's `InputState` and clear the per-frame edges and
   > wheel accumulators. Text/key slices alias the queue; see `beginFrame`.
   - `pub fn finish(self: *InputQueue, resized: bool, width: u32, height: u32) host.InputState`
+> Touch -> pointer for hosts that only see touch points (the web canvas
+> suppresses the browser's synthesized mouse events). One finger is the
+> left button: down, drag, up. Two fingers are a trackpad: moving them
+> together scrolls (wheel dx / dy), spreading or pinching them is a
+> ctrl+wheel zoom about their midpoint, the same events a trackpad pinch
+> produces, so apps need no touch-specific code. More fingers are ignored.
+> Plain data; the host keeps one per window and steps it once per frame.
+- `struct TouchMapper`
+  - fields: `count, mid, dist, pinching`
+  > Feed this frame's touch points (window px). Returns true while touch
+  > owns the pointer (the host should not apply mouse state on top).
+  - `pub fn step(self: *TouchMapper, q: *InputQueue, pts: []const [2]f32) bool`
 
 ### `teak.gpu` (`src/gpu/context.zig`)
 
