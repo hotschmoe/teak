@@ -85,7 +85,11 @@ pub fn build(b: *std.Build) void {
             }),
         });
         teak.linkHeadless(b, shot_exe, .{});
+        // Run the INSTALLED exe (zig-out/bin, beside wgpu_native.dll): on
+        // Windows the cached exe cannot find the DLL (exit code 53).
+        const install_shot = b.addInstallArtifact(shot_exe, .{});
         const shot_run = b.addRunArtifact(shot_exe);
+        shot_run.step.dependOn(&install_shot.step);
         shot_run.addPassthruArgs();
         const shot_step = b.step("shot", "Render a headless PNG screenshot: zig build shot -- out.png");
         shot_step.dependOn(&shot_run.step);
