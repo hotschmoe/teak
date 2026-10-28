@@ -139,6 +139,67 @@ pub fn shot(
     try writeFramePng(&gpu, gpa, path);
 }
 
+/// What an idle run did: of `frames` input-free frames after the script and
+/// the settle frames, how many did real work (`busy`: not the loop's quiet
+/// skip) and how many presented (caret blink redraws present but stay quiet).
+pub const IdleReport = struct {
+    frames: u32,
+    busy: u32,
+    presented: u32,
+    /// Index (0-based, within the idle window) of the first busy frame.
+    first_busy: ?u32 = null,
+    /// A busy frame came after a quiet one (something woke the loop up again).
+    rewoke: bool = false,
+    /// The last frame of the window was busy.
+    busy_at_end: bool = false,
+
+    /// The UI went quiet within the window and stayed quiet: a finite
+    /// transition (a sliding popover) passes, a never-ending animation or a
+    /// self-sustaining Msg does not.
+    pub fn settled(r: IdleReport) bool {
+        return !r.busy_at_end and !r.rewoke;
+    }
+};
+
+/// The idle gate (#141): play `o.steps`, settle, then run `frames` frames
+/// with no input and report how many still did work. A healthy UI goes
+/// quiet and stays quiet (`IdleReport.settled`); a busy tail or a re-wake is
+/// a Msg, sub or animation that keeps the loop awake (an indeterminate
+/// progress bar legitimately does). Uses the
+/// same Host / Gpu as `shot`; no PNG is written.
+pub fn idleCheck(
+    comptime App: type,
+    comptime Host: type,
+    comptime Gpu: type,
+    gpa: std.mem.Allocator,
+    o: ShotOptions,
+    frames: u32,
+) !IdleReport {
+    var host = try Host.init(gpa, o.width, o.height);
+    defer host.deinit();
+    for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = envScale(o.scale) });
+    defer gpu.deinit();
+    var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
+    defer rt.deinit();
+    try play(&rt, &host, o.steps);
+    for (0..o.settle) |_| try rt.frame();
+    var r: IdleReport = .{ .frames = frames, .busy = 0, .presented = 0 };
+    var seen_quiet = false;
+    for (0..frames) |i| {
+        try rt.frame();
+        const s = rt.lastFrameStats();
+        if (!s.quiet) {
+            if (r.first_busy == null) r.first_busy = @intCast(i);
+            r.busy += 1;
+            if (seen_quiet) r.rewoke = true;
+        } else seen_quiet = true;
+        if (s.presented) r.presented += 1;
+        if (i + 1 == frames) r.busy_at_end = !s.quiet;
+    }
+    return r;
+}
+
 /// `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
 /// headless run, so any example's `zig build shot` can be taken at 2x without
 /// code changes. Unset or invalid: `default`.
@@ -239,6 +300,7 @@ pub fn shotCli(
     var all_dir: ?[]const u8 = null;
     var opts_base = o;
     var prefix: []const u8 = "shot";
+    var idle_frames: ?u32 = null;
     // `toSlice` (not `iterate`, a compile error on Windows).
     var it: ArgIter = .{ .items = try init.minimal.args.toSlice(init.arena.allocator()) };
     while (it.next()) |a| {
@@ -250,6 +312,8 @@ pub fn shotCli(
             opts_base.scale = std.fmt.parseFloat(f32, it.next() orelse return error.MissingScale) catch return error.BadScale;
         } else if (std.mem.eql(u8, a, "--prefix")) {
             prefix = it.next() orelse return error.MissingPrefix;
+        } else if (std.mem.eql(u8, a, "--idle-check")) {
+            idle_frames = std.fmt.parseInt(u32, it.next() orelse return error.MissingIdleFrames, 10) catch return error.BadIdleFrames;
         } else if (std.mem.eql(u8, a, "--plain")) {
             want = "plain"; // alias of `--state plain`
         } else if (std.mem.eql(u8, a, "--state")) {
@@ -261,6 +325,21 @@ pub fn shotCli(
             try std.Io.File.stdout().writeStreamingAll(init.io, st.name);
             try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
         }
+        return;
+    }
+    if (idle_frames) |n| {
+        // `--idle-check N [--state s]`: the idle gate. Exit non-zero when a
+        // settled state keeps doing work.
+        var any_busy = false;
+        for (states) |st| {
+            if (!std.mem.eql(u8, want, "*") and !std.mem.eql(u8, st.name, want)) continue;
+            var opts = opts_base;
+            opts.steps = st.steps;
+            const r = try idleCheck(App, Host, Gpu, init.gpa, opts, n);
+            std.debug.print("idle {s}: {d}/{d} frames busy, {d} presented{s}\n", .{ st.name, r.busy, r.frames, r.presented, if (r.settled()) "" else " (NOT IDLE)" });
+            if (!r.settled()) any_busy = true;
+        }
+        if (any_busy) return error.NotIdle;
         return;
     }
     if (all_dir) |dir| {

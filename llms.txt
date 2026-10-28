@@ -1051,7 +1051,8 @@ headless.writeFramePng(gpu, gpa, path) !void;  pathArg(init, default) []const u8
 headless.encodePng(gpa, rgba, w, h) ![]u8      // deflate-compressed + per-row PNG filters, deterministic (tens of KB)
 headless.decodePng(gpa, png_bytes) !Image{width,height,rgba}   // 8-bit RGB/RGBA, any filter
 headless.shotCli(App, Host, Gpu, init, default_path, ShotOptions, states: []const ShotState{name, steps}) !void
-    // a whole shot_main.zig: `[out.png] [--state name] [--list]`; ShotOptions.fonts registers embedded TTFs
+    // a whole shot_main.zig: `[out.png] [--state name] [--list] [--idle-check N]`; ShotOptions.fonts registers embedded TTFs
+headless.idleCheck(App, Host, Gpu, gpa, ShotOptions, frames) !IdleReport{ frames, busy, presented, first_busy, rewoke, busy_at_end }  // idle gate: settled() = quiet by the end, no re-wake
 // Visual regression: `zig build vreg [-- --update | --web | --examples a,b | --state s | --tol N --budget N]`
 //   compares every example's states with test/golden/ (docs/features/visual-regression.md)
 // Host: pushMouseMove/Down/Up, pushWheel, pushChars, pushKey, setModifiers, close, injectEffectResult(EffectResult),
