@@ -72,3 +72,25 @@ editor and grouped by typing bursts.
 
 Not here: bidi / complex scripts (see [text.md](text.md) for what is supported and what is queued), spell-check, rich
 formatting inside the area (use `rich_text` for read-only styled text).
+
+## Selectable static text (read-only)
+
+For text the user should be able to select and copy but not edit (results,
+logs, error details, an About box), use a `TextArea` with
+`Model.read_only = true`:
+
+```zig
+const Detail = teak.TextArea(8192);
+// init:   m.detail.set(report_text); m.detail.read_only = true;
+// view:   Detail.viewWith(&m.detail, cb, .{ .focus = .focus_detail },
+//             .{ .id = 3, .height = 160, .style = Detail.staticStyle(cb.theme.text_input) });
+// hooks:  the same pointer / key wiring as an editable area; copy reads
+//         m.detail.selectionText(). Do not map cut or paste for it.
+```
+
+Pointer selection (drag, double / triple click, shift-click), arrow and word
+motion, Ctrl+A and copy work as usual; typing, paste, Enter and every key
+that would change the text are ignored in `update`, so no Msg can edit it.
+`staticStyle(base)` drops the box, border, focus border and caret so the
+area reads as a label (the selection highlight stays).
+

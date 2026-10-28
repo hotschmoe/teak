@@ -80,7 +80,7 @@ Legend as above. Competitor cells are terse by design.
 | Rich text / styled spans | ✓ `rich_text` + `RichTextSpan`, wrapped rich_text (#44), rich_zig adapter (`examples/counter_greeter`) | ✓ `LayoutJob` | partial (colour via markup hacks / `TextColored`) | ✓ `rich_text`, markdown widget | ✓ `StyledText`, `@markdown` (1.16) | ✓ |
 | Font fallback / emoji / CJK | partial: fallback chain (family weights, registered families, `registerFallbackFace`, system faces incl. CJK / emoji; #44, native); colour emoji via RGBA atlas pages (#71, web through canvas 2D; native has no colour glyph source yet); no bundled CJK face | partial (fallback chain; colour emoji limited) | partial (glyph ranges, merge fonts; 1.92 dynamic fonts) | ✓ system fallback | ✓ | ✓ |
 | Crisp scaling / dynamic size | ✓ glyph atlas keyed by physical size and subpixel bin (#14, #28, #45) plus scalable SDF text, crisp 0.5x to 8x without re-rasterizing (#66) | ✓ glyph atlas | ✓ 1.92 dynamic re-rasterization | ✓ | ✓ | ✓ |
-| Text selection (static text, copy) | partial: input selection only (`widgets.md`) | ✓ selectable labels | partial | partial | partial | ✓ `SelectableText` |
+| Text selection (static text, copy) | ✓ read-only `TextArea` (`Model.read_only`, `staticStyle`): pointer / keyboard selection and copy, no edits (`text-area.md`) | ✓ selectable labels | partial | partial | partial | ✓ `SelectableText` |
 
 ### 2.2 Rendering
 

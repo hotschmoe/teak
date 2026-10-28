@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Selectable static text: read-only `TextArea`
+
+- `TextArea(cap).Model.read_only`: selection, motion and copy work; typing,
+  paste, Enter and text-changing keys are ignored in `update`.
+  `TextArea(cap).staticStyle(base)` draws it like a label (no box, border or
+  caret). docs/features/text-area.md.
+
 ### Theme: a warning colour (#143)
 
 - `Palette.warning` (set in all four built-in palettes), `Theme.warning_color`
