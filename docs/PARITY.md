@@ -1,6 +1,6 @@
 # Feature parity: teak vs egui, Dear ImGui, iced, Slint, Flutter (tool-style apps)
 
-Date: 2026-10-08, teak column re-scored 2026-10-09 on `master` `dc3f441`. Companion to
+Date: 2026-10-08, teak column re-scored 2026-10-09 on `master` `dc3f441` and 2026-10-27 (session delta below). Companion to
 [`REVIEW-2026-10.md`](REVIEW-2026-10.md) (see §1, §3.8, §4).
 
 **Scope.** Teak's target is *tool-style apps*: engineering tools, dashboards, agent consoles. It is not
@@ -20,6 +20,20 @@ are a snapshot.
 
 Competitor versions checked: egui 0.35/0.36 (2026; 0.36.1 reported Aug 2026), Dear ImGui 1.92.x (1.92.9 notes),
 iced 0.14.0 (released 2025-12-07), Slint 1.16 (2026-04-16), Flutter (2026 roadmap post). Sources are listed at the end.
+
+---
+
+## Session delta (2026-10-27)
+
+Driven by the Frame2D bake-off (a 2D structural-frame analyzer built on teak) and the iced 0.14 tool-app gaps.
+
+1. **Canvas** (#125, PR #137): `circle`, `arc`, `polygon` primitives; a world transform (`CanvasTransform`: fit / pan / zoomAt / invert) so large static geometry lives in the Model and pan/zoom touches one field, with culling; per-pixel antialiasing (`CanvasStyle.antialias`). 80k AA segments + 20k circles lower in about 1.8 ms CPU; `examples/vector_canvas`.
+2. **Frame timing** (#127, PR #135): `FrameStats`, `TEAK_CONTINUOUS`, `TEAK_FRAME_STATS` CSV + percentile summary, `TEAK_EXIT_AFTER_FRAMES`, `TEAK_HUD`.
+3. **Layout**: grid container (`push_grid`, auto / fixed / fr columns; PR #149).
+4. **Graphics**: SVG icons (`teak.svg`, CPU rasterizer into image resources; PR #144); bar, scatter and area charts (PR #151).
+5. **Text**: selectable static text (read-only `TextArea`, PR #146); `Palette.warning` + `textWarning` (#143).
+6. **Web**: touch input (#134), app-owned `bridge.js` (`WebWgpuOptions.bridge_js`, #136).
+7. **Still open**: multi-window beyond Win32 (#150), GPU-retained canvas geometry, X11 AT-SPI / macOS AX, WebGL2 (deferred), the egoist-inspired directions (#139-#142).
 
 ---
 
@@ -52,13 +66,13 @@ Scored against `master` `dc3f441` (2026-10-09). Still open: #67 (Win32 live-wind
 | Text input | `Editor` (graphemes, undo, word / line motion), `TextField(cap)`, `NumericField`, `TextArea(cap)` multi-line, pointer editing, IME on X11 / Win32 / web / macOS | `core/{editor,text_field,text_area}.zig`, #20, #40, #21, #49 | Fixed byte capacity |
 | Widgets | button, checkbox, radio, slider, dropdown, combobox, numeric field + spinner, date field, color picker, toggle, progress, tabs, split, tooltip, toast, dialog, menu bar + context menu, DataTable, VarList, TreeList, kinetic Scroller; `examples/gallery` shows them in three looks | `src/core/widgets/*`, #26 #52 #56 #59 #75 #78 #81, `docs/features/widgets.md` | Docking not started; drag-value absent |
 | Lists/tables | virtual list (uniform + variable height), sortable / resizable / selectable `DataTable`, `TreeList`, type-to-search, fixed-col monospace `Table` | `tables-at-scale.md`, #56, #73 | |
-| Graphics | SDF rounded rects, borders, gradients, soft shadows, elevation tokens (modern preset); images (growable cache); canvas prims, chart helper; `scene3d` with camera, picking, instancing, grid, section cut, sprites | `render/sdf.zig`, `scene.md`, #48 #23 #16 #27 #41 | No SVG |
+| Graphics | SDF rounded rects, borders, gradients, soft shadows, elevation tokens (modern preset); images (growable cache); canvas prims incl. circle / arc / polygon, world transform, antialiasing; line / bar / scatter / area charts; SVG icons (`teak.svg`); `scene3d` with camera, picking, instancing, grid, section cut, sprites | `render/sdf.zig`, `render/canvas_tess.zig`, `core/svg.zig`, `scene.md`, #48 #23 #16 #27 #41 #125 | Canvas re-lowers on the CPU each changed frame; SVG subset (no gradients / text) |
 | Interaction | Whole-UI keyboard navigation with a themed focus ring (#93-#95); commands, chords and command palette (#60); drag and drop; key/char/special hooks; wheel + scroll regions; canvas pointer events; clipboard (text + image, Msg hooks #70); cursor shapes (#33); animation (`teak.anim`) | `focus.md`, `commands.md`, `drag-drop.md`, `run.md`, `animation.md` | Scrollbars only inside DataTable |
 | Side effects | `Sub` timers incl. animation frames; `effects`: http, download, open_file, clipboard text + image, storage, clock, query_param; file / image / text drop on web, X11, Win32, macOS | `core/{sub,effects}.zig`, `effects.md`, #21 #31 #57 #60 | Win32 paths verified by CI compile + unit tests only |
-| Multi-window | One secondary window + dialogs | `functional-gaps.md`, `host.md` | Win32 real; others limited |
+| Multi-window | One secondary window + dialogs | `functional-gaps.md`, `host.md` | Win32 real; X11 / Wayland / macOS return null, one secondary from `teak.run` (#150) |
 | A11y | Tree published on change with semantic hints and nesting, actions back as ordinary input, web nested-ARIA DOM mirror (zunk#26), Win32 UIA fragments + Invoke / Toggle / Value patterns, headless-Chromium probe in CI | `src/input/a11y.zig`, `docs/features/a11y.md`, #58 #64 #65 | No X11 AT-SPI (AccessKit assessed), no macOS AX; Win32 UIA not run locally |
 | Platforms | Win32+wgpu, X11+wgpu (libX11 dlopen), native Wayland (#47), macOS Cocoa + Metal (#54), web WebGPU (zunk), headless | `docs/features/host.md`, `src/platform/` | Web WebGL2 fallback evaluated only (#83); mobile / embedded out of scope |
-| Tooling | `TEAK_SNAPSHOT`, golden snapshots, visual-regression suite (#32), headless `zig build shot`, `zig build bench`, agent driver: control channel, record / replay, `teak-drive` CLI + MCP (#46), hot reload (#79), `llms.txt` (audit-enforced) + generated API reference (#80), cookbook, versioning (#38), CI matrix (#10) | `docs/features/{snapshot,headless,agent-driver,visual-regression,hot-reload}.md`, `docs/api.md`, `tools/` | Hot reload is native dev builds only |
+| Tooling | frame stats / continuous mode / HUD (`TEAK_FRAME_STATS`, #127), `TEAK_SNAPSHOT`, golden snapshots, visual-regression suite (#32), headless `zig build shot`, `zig build bench`, agent driver: control channel, record / replay, `teak-drive` CLI + MCP (#46), hot reload (#79), `llms.txt` (audit-enforced) + generated API reference (#80), cookbook, versioning (#38), CI matrix (#10) | `docs/features/{snapshot,headless,agent-driver,visual-regression,hot-reload}.md`, `docs/api.md`, `tools/` | Hot reload is native dev builds only |
 | Footprint | ~334 KB brotli full app at ReleaseSmall (Kerf bake-off; secondary); release wasm debug info stripped (-90%, #39) | `REVIEW-2026-10.md` §1 | wgpu-native for native builds |
 
 ---
@@ -235,7 +249,7 @@ HARDLINE assumed. This list overlaps and re-ranks REVIEW §3.8; where numbers di
 - When a gap in §3 lands, change its row's priority to "done (PR #)" rather than deleting it.
 - Competitor snapshot is dated Oct 2026. Cells marked `(est.)` or uncertain should be verified before external use.
 
-**Last scored (teak):** 2026-10-09 on `master dc3f441`; every PR the previous scoring called queued is merged except #67 (Win32 live-window CI) and #114 (CI green). Competitor columns are unchanged from 2026-10-08.
+**Last scored (teak):** 2026-10-27 on `master` after PR #152 (canvas, frame stats, grid, SVG, charts, selectable text, touch, bridge.js); earlier full scoring 2026-10-09 on `dc3f441`. Competitor columns are unchanged from 2026-10-08.
 
 ## 5. Sources (fetched this session)
 
