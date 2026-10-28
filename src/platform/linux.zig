@@ -169,8 +169,11 @@ pub const Host = struct {
         }
     }
 
-    pub fn secondaryWindowHandle(_: *const Host, _: u32) ?NativeHandle {
-        return null;
+    pub fn secondaryWindowHandle(self: *const Host, id: u32) ?NativeHandle {
+        return switch (self.impl) {
+            .x11 => |*h| if (h.secondaryWindowHandle(id)) |n| NativeHandle{ .x11 = n } else null,
+            .wayland => null, // no secondary windows on Wayland yet (#150)
+        };
     }
 
     pub fn setTitle(self: *Host, title: []const u8) void {
