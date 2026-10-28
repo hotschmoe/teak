@@ -1152,7 +1152,8 @@ if (teak.hasNativeBackend(target.result.os.tag)) {
     // ...addExecutable(src/ui_main.zig)...
     teak.linkNativeWgpu(b, ui, .{});     // Win32 (GDI) or X11 (stb_truetype) + wgpu, per OS
 }
-// web: teak.linkWebWgpu(b, exe, .{})    // wasm + WebGPU (zunk)
+// web: teak.linkWebWgpu(b, exe, .{})    // wasm + WebGPU (zunk); options: port, output_dir, fonts, strip,
+//      bridge_js: ?LazyPath (app JS glue, e.g. b.path("web/bridge.js"): extra env imports, JS->wasm calls)
 ```
 `ui_main.zig` imports `teak-platform-native` + `teak-gpu-native`, inits
 `Host`/`Gpu`, and calls `teak.run(App, gpa, &host, &gpu, .{})`.

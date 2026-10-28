@@ -981,6 +981,12 @@ pub const WebWgpuOptions = struct {
     /// ~90% of the shipped file: chrome 1.27 MB -> ~0.12 MB). Set false to
     /// keep symbols for wasm debugging / `wasm-objdump`.
     strip: bool = true,
+    /// The app's own JS glue, appended to zunk's generated bridge after the
+    /// dependency chunks (zunk `--bridge-dep`), so it can implement extra
+    /// `env` imports the app declares or call wasm exports from JS. Any
+    /// path, e.g. `b.path("web/bridge.js")`. Null: zunk still picks up a
+    /// `bridge.js` / `js/bridge.js` at the build root, as before.
+    bridge_js: ?std.Build.LazyPath = null,
 };
 
 /// The `teak-fonts` options module: the family registered for each slot ("" =
@@ -1147,6 +1153,7 @@ pub fn linkWebWgpu(
     gen_cmd.addArg("--output-dir");
     gen_cmd.addArg(opts.output_dir);
     addFontArgs(gen_cmd, opts.fonts);
+    addBridgeArg(gen_cmd, opts.bridge_js);
     gen_cmd.setCwd(b.path("."));
 
     const web_step = b.step("web", "Build wasm + dist/ via zunk");
@@ -1161,10 +1168,18 @@ pub fn linkWebWgpu(
     serve_cmd.addArg("--port");
     serve_cmd.addArg(b.fmt("{d}", .{opts.port}));
     addFontArgs(serve_cmd, opts.fonts);
+    addBridgeArg(serve_cmd, opts.bridge_js);
     serve_cmd.setCwd(b.path("."));
 
     const web_run = b.step("web-run", "Build and serve wasm on localhost");
     web_run.dependOn(&serve_cmd.step);
+}
+
+/// `--bridge-dep <file>` for the app's own bridge.js (`WebWgpuOptions.bridge_js`).
+fn addBridgeArg(cmd: *std.Build.Step.Run, bridge: ?std.Build.LazyPath) void {
+    const p = bridge orelse return;
+    cmd.addArg("--bridge-dep");
+    cmd.addFileArg(p);
 }
 
 /// Translate a C header into a Zig module (`@cImport` is gone in 0.17).
