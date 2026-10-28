@@ -313,6 +313,14 @@ pub const fitCell = table.fitCell;
 pub const LineChartOpts = chart.LineChartOpts;
 /// Build the canvas primitives for a line chart of a data series.
 pub const lineChartPrimitives = chart.lineChartPrimitives;
+/// Size, range, gap, colours and gridlines of a bar chart.
+pub const BarChartOpts = chart.BarChartOpts;
+/// Build the canvas primitives for a bar chart (bars from a baseline).
+pub const barChartPrimitives = chart.barChartPrimitives;
+/// Size, x / y ranges, dot radius and gridlines of a scatter plot.
+pub const ScatterOpts = chart.ScatterOpts;
+/// Build the canvas primitives for a scatter plot (antialiased dots).
+pub const scatterPrimitives = chart.scatterPrimitives;
 
 /// An axis-aligned rectangle in logical pixels.
 pub const Rect = layout.Rect;

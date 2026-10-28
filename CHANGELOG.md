@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Charts: bar, scatter and filled line
+
+- `teak.barChartPrimitives` / `BarChartOpts` (bars from a baseline,
+  negative colour), `teak.scatterPrimitives` / `ScatterOpts` (antialiasable
+  dots), `LineChartOpts.fill` (area under the line). Pure arena builders like
+  `lineChartPrimitives`.
+
 ### Layout: grid container (`push_grid` / `pop_grid`)
 
 - `cb.pushGrid(teak.GridStyle{ ... })` / `cb.popGrid()`: direct children fill

@@ -221,6 +221,25 @@ cb.canvasLabeled(.{ .width = 320, .height = 100, .bg = cb.theme.panel_bg },
 See `examples/counter_greeter/src/app.zig` (`statsView`) for a live
 count-history chart driven by plain Model state.
 
+### Bar, scatter and area charts
+
+Same shape, same rules (pure, arena-allocated, canvas-local px):
+
+```zig
+const bars = teak.barChartPrimitives(arena, values, .{ .width = 320, .height = 120, .min = -5, .max = 10,
+    .negative_color = cb.theme.palette.danger });
+const dots = teak.scatterPrimitives(arena, xs, ys, .{ .width = 320, .height = 120,
+    .x_min = 0, .x_max = 100, .y_min = 0, .y_max = 1, .radius = 2.5 });
+const area = teak.chart.lineChartPrimitives(arena, series, .{ .width = 320, .height = 120,
+    .min = 0, .max = 1, .fill = .{ 0.3, 0.7, 1.0, 0.25 } });
+```
+
+Bars grow from `baseline` (default 0, clamped into the range), so negative
+values hang below it. Scatter dots are `circle` primitives (one SDF quad
+each); points outside the ranges are skipped. `fill` adds a `polygon`
+under the line. Set `antialias = true` on the canvas for smooth line and
+polygon edges.
+
 ## Interactive canvases (pan / zoom / drag)
 
 `cb.canvasInteractive(style, prims, id, label)` marks a canvas as a pointer

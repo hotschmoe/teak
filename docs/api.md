@@ -463,9 +463,19 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.fitCell`: `pub const fitCell = table.fitCell`
 > Size, bounds and colors for `lineChartPrimitives`.
 - `teak.LineChartOpts` = `chart.LineChartOpts`
-  - fields: `width, height, min, max, padding, line_color, line_thickness, grid_color, grid_lines`
+  - fields: `width, height, min, max, padding, line_color, line_thickness, grid_color, grid_lines, fill`
 > Build the canvas primitives for a line chart of a data series.
 - `teak.lineChartPrimitives`: `pub const lineChartPrimitives = chart.lineChartPrimitives`
+> Size, range, gap, colours and gridlines of a bar chart.
+- `teak.BarChartOpts` = `chart.BarChartOpts`
+  - fields: `width, height, min, max, baseline, padding, gap, color, negative_color, grid_color, grid_lines, baseline_color`
+> Build the canvas primitives for a bar chart (bars from a baseline).
+- `teak.barChartPrimitives`: `pub const barChartPrimitives = chart.barChartPrimitives`
+> Size, x / y ranges, dot radius and gridlines of a scatter plot.
+- `teak.ScatterOpts` = `chart.ScatterOpts`
+  - fields: `width, height, x_min, x_max, y_min, y_max, padding, radius, color, grid_color, grid_lines`
+> Build the canvas primitives for a scatter plot (antialiased dots).
+- `teak.scatterPrimitives`: `pub const scatterPrimitives = chart.scatterPrimitives`
 > An axis-aligned rectangle in logical pixels.
 - `teak.Rect` = `layout.Rect`
   - fields: `x, y, w, h, fixed_main, flex_total, child_count, end`
@@ -1832,10 +1842,11 @@ teak.snapshot — LLM-readable serialization of a rendered frame.
 
 ### `teak.chart` (`src/core/chart.zig`)
 
-teak.chart — pure line-chart primitive builder.
+teak.chart — pure chart primitive builders: line (optionally filled),
+bar and scatter.
 
 - `struct LineChartOpts`
-  - fields: `width, height, min, max, padding, line_color, line_thickness, grid_color, grid_lines`
+  - fields: `width, height, min, max, padding, line_color, line_thickness, grid_color, grid_lines, fill`
 > Build the primitives for a line chart of `series`. Returns an
 > arena-allocated slice owned by the caller's per-frame arena. Ordering
 > is gridlines first, then the polyline, so the line paints on top.
@@ -1843,6 +1854,16 @@ teak.chart — pure line-chart primitive builder.
 > no line to draw). An empty `series` with `grid_lines <= 1` returns an
 > empty slice.
 - `pub fn lineChartPrimitives( arena: std.mem.Allocator, series: []const f32, opts: LineChartOpts, ) []const CanvasPrimitive`
+- `struct BarChartOpts`
+  - fields: `width, height, min, max, baseline, padding, gap, color, negative_color, grid_color, grid_lines, baseline_color`
+> Gridlines, one filled rect per value, then the baseline rule.
+> Arena-allocated; pure.
+- `pub fn barChartPrimitives(arena: std.mem.Allocator, values: []const f32, opts: BarChartOpts) []const CanvasPrimitive`
+- `struct ScatterOpts`
+  - fields: `width, height, x_min, x_max, y_min, y_max, padding, radius, color, grid_color, grid_lines`
+> Gridlines plus one antialiased circle per (xs[i], ys[i]) inside the
+> ranges (points outside are skipped, not clamped). Arena-allocated; pure.
+- `pub fn scatterPrimitives(arena: std.mem.Allocator, xs: []const f32, ys: []const f32, opts: ScatterOpts) []const CanvasPrimitive`
 
 ### `teak.svg` (`src/core/svg.zig`)
 
