@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Idle gate (#141, part 1)
+
+- `teak.headless.idleCheck(...)` and `--idle-check N [--state name|'*']` on
+  every `shotCli` binary: after a state settles, N input-free frames must go
+  quiet and stay quiet (a finite transition passes), else the run reports
+  the busy count and exits non-zero. The CI wiring (and the latency / memory / size gates) are still
+  open in #141.
+
 ### Widgets: drag value
 
 - `teak.widgets.drag_value.DragValue(cfg)`: change a number by dragging

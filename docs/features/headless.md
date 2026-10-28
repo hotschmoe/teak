@@ -73,7 +73,14 @@ writeFramePng(gpu, gpa, path) !void      // gpu.readFrame -> PNG
 writePng(gpa, path, rgba, w, h) !void
 encodePng(gpa, rgba, w, h) ![]u8         // dependency-free; deflate-compressed with per-row PNG filters, deterministic
 pathArg(init, default) []const u8        // argv[1] of main(init: std.process.Init)
+idleCheck(App, Host, Gpu, gpa, ShotOptions, frames) !IdleReport{ frames, busy, presented, first_busy, rewoke, busy_at_end }
 ```
+
+**Idle gate.** A settled UI must stop working: `idleCheck` plays a state's script, settles, then runs `frames`
+input-free frames and counts the ones that were not the loop's quiet skip (`FrameStats.quiet`). Every `shotCli`
+binary takes `--idle-check N [--state name | --state '*']`, prints `idle <state>: busy/N frames busy, P presented`
+and exits non-zero when a state is still busy at the end of the window or wakes up again after going quiet (a finite
+transition and a caret blink pass; an indeterminate progress bar or a never-ending animation fails, as it should). Example: `zig build shot -- --idle-check 120 --state '*'`.
 
 Prefer the lower-level pieces when you want to inspect state between steps:
 
