@@ -45,8 +45,9 @@ pub const Limits = struct {
 };
 
 /// Examples whose web build is not deterministic (wall-clock driven
-/// animation): they have native goldens (fake clock) but no web golden.
-pub const web_skip = [_][]const u8{"scene3d"};
+/// animation), or that have no web golden yet: native goldens only.
+/// vector_canvas: web golden pending (needs a SwiftShader capture).
+pub const web_skip = [_][]const u8{ "scene3d", "vector_canvas" };
 
 pub const Compare = struct {
     width: u32,
