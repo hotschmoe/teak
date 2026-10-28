@@ -84,4 +84,25 @@ pub fn build(b: *std.Build) void {
         const shot_step = b.step("shot", "Render a headless PNG screenshot: zig build shot -- out.png [--state name]");
         shot_step.dependOn(&shot_run.step);
     }
+
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+        .abi = .none,
+    });
+    const web_optimize: std.builtin.OptimizeMode = b.option(
+        std.builtin.OptimizeMode,
+        "web-optimize",
+        "Optimize mode for the wasm build (default: ReleaseFast)",
+    ) orelse .ReleaseFast;
+
+    const web_exe = b.addExecutable(.{
+        .name = "vector_canvas-web",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/web_main.zig"),
+            .target = wasm_target,
+            .optimize = web_optimize,
+        }),
+    });
+    teak.linkWebWgpu(b, web_exe, .{});
 }
