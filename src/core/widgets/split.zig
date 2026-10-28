@@ -24,6 +24,7 @@
 //! its `windowMsg` (the view cannot read layout).
 
 const std = @import("std");
+const oom = @import("../oom.zig").oom;
 const cmd = @import("../cmd.zig");
 const component = @import("../component.zig");
 const pointer = @import("../pointer.zig");
@@ -203,7 +204,7 @@ fn dividerImpl(model: *const Model, cb: anytype, o: Opts, comptime focusable: bo
     const w: f32 = if (horiz) o.divider else o.width;
     const h: f32 = if (horiz) o.height else o.divider;
     const col = if (model.dragging) pal.accent else pal.border;
-    const prims = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 2) catch unreachable;
+    const prims = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 2) catch oom();
     prims[0] = .{ .filled_rect = .{ .x = 0, .y = 0, .w = w, .h = h, .color = col } };
     // A short grip in the middle so the handle is discoverable.
     const grip = pal.fg_muted;

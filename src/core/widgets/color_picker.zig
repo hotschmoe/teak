@@ -21,6 +21,7 @@
 //! ```
 
 const std = @import("std");
+const oom = @import("../oom.zig").oom;
 const cmd = @import("../cmd.zig");
 const text_field = @import("../text_field.zig");
 const pointer = @import("../pointer.zig");
@@ -402,7 +403,7 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: Opts) void {
     // Right: preview, fields, swatches.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 6 });
     const cur = rgba(model);
-    const prev = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 2) catch unreachable;
+    const prev = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 2) catch oom();
     prev[0] = .{ .filled_rect = .{ .x = 0, .y = 0, .w = 96, .h = 36, .color = pal.border } };
     prev[1] = .{ .filled_rect = .{ .x = 1, .y = 1, .w = 94, .h = 34, .color = cur } };
     cb.canvasLabeled(.{ .width = 96, .height = 36 }, prev, "current colour");
