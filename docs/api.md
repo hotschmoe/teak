@@ -2874,6 +2874,22 @@ docs/features/headless.md.
 > script, capture the last frame to `path` as a PNG. `Host` is
 > `teak-platform-headless`'s `Host`, `Gpu` is `teak-gpu-headless`'s `Gpu`.
 - `pub fn shot( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, path: []const u8, o: ShotOptions, ) !void`
+> What an idle run did: of `frames` input-free frames after the script and
+> the settle frames, how many did real work (`busy`: not the loop's quiet
+> skip) and how many presented (caret blink redraws present but stay quiet).
+- `struct IdleReport`
+  - fields: `frames, busy, presented, first_busy, rewoke, busy_at_end`
+  > The UI went quiet within the window and stayed quiet: a finite
+  > transition (a sliding popover) passes, a never-ending animation or a
+  > self-sustaining Msg does not.
+  - `pub fn settled(r: IdleReport) bool`
+> The idle gate (#141): play `o.steps`, settle, then run `frames` frames
+> with no input and report how many still did work. A healthy UI goes
+> quiet and stays quiet (`IdleReport.settled`); a busy tail or a re-wake is
+> a Msg, sub or animation that keeps the loop awake (an indeterminate
+> progress bar legitimately does). Uses the
+> same Host / Gpu as `shot`; no PNG is written.
+- `pub fn idleCheck( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, o: ShotOptions, frames: u32, ) !IdleReport`
 > `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
 > headless run, so any example's `zig build shot` can be taken at 2x without
 > code changes. Unset or invalid: `default`.

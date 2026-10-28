@@ -1051,7 +1051,8 @@ headless.writeFramePng(gpu, gpa, path) !void;  pathArg(init, default) []const u8
 headless.encodePng(gpa, rgba, w, h) ![]u8      // deflate-compressed + per-row PNG filters, deterministic (tens of KB)
 headless.decodePng(gpa, png_bytes) !Image{width,height,rgba}   // 8-bit RGB/RGBA, any filter
 headless.shotCli(App, Host, Gpu, init, default_path, ShotOptions, states: []const ShotState{name, steps}) !void
-    // a whole shot_main.zig: `[out.png] [--state name] [--list]`; ShotOptions.fonts registers embedded TTFs
+    // a whole shot_main.zig: `[out.png] [--state name] [--list] [--idle-check N]`; ShotOptions.fonts registers embedded TTFs
+headless.idleCheck(App, Host, Gpu, gpa, ShotOptions, frames) !IdleReport{ frames, busy, presented, first_busy, rewoke, busy_at_end }  // idle gate: settled() = quiet by the end, no re-wake
 // Visual regression: `zig build vreg [-- --update | --web | --examples a,b | --state s | --tol N --budget N]`
 //   compares every example's states with test/golden/ (docs/features/visual-regression.md)
 // Host: pushMouseMove/Down/Up, pushWheel, pushChars, pushKey, setModifiers, close, injectEffectResult(EffectResult),
@@ -4071,6 +4072,22 @@ docs/features/headless.md.
 > script, capture the last frame to `path` as a PNG. `Host` is
 > `teak-platform-headless`'s `Host`, `Gpu` is `teak-gpu-headless`'s `Gpu`.
 - `pub fn shot( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, path: []const u8, o: ShotOptions, ) !void`
+> What an idle run did: of `frames` input-free frames after the script and
+> the settle frames, how many did real work (`busy`: not the loop's quiet
+> skip) and how many presented (caret blink redraws present but stay quiet).
+- `struct IdleReport`
+  - fields: `frames, busy, presented, first_busy, rewoke, busy_at_end`
+  > The UI went quiet within the window and stayed quiet: a finite
+  > transition (a sliding popover) passes, a never-ending animation or a
+  > self-sustaining Msg does not.
+  - `pub fn settled(r: IdleReport) bool`
+> The idle gate (#141): play `o.steps`, settle, then run `frames` frames
+> with no input and report how many still did work. A healthy UI goes
+> quiet and stays quiet (`IdleReport.settled`); a busy tail or a re-wake is
+> a Msg, sub or animation that keeps the loop awake (an indeterminate
+> progress bar legitimately does). Uses the
+> same Host / Gpu as `shot`; no PNG is written.
+- `pub fn idleCheck( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, o: ShotOptions, frames: u32, ) !IdleReport`
 > `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
 > headless run, so any example's `zig build shot` can be taken at 2x without
 > code changes. Unset or invalid: `default`.
