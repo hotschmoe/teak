@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### DataTable: re-sort after a data change (#153)
+
+- `DataTable(cfg).Model.resort(src)` and `Msg.resort` re-apply the current
+  `sort_col` / `sort_desc` (no cycling) after the row data changed; selection
+  and cursor stay on the same data rows, scroll is kept.
+
 ### Charts: bar, scatter and filled line
 
 - `teak.barChartPrimitives` / `BarChartOpts` (bars from a baseline,
