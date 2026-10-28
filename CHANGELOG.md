@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Linux: synchronous file dialogs
+
+- `Host.openFileDialog` / `saveFileDialog` on X11 and Wayland run the same
+  external picker as the `open_file` effect (`$TEAK_PICKER`, zenity,
+  kdialog), blocking like Win32's, instead of returning null.
+  `FileDialogFilter.pattern` (`"*.json;*.txt"`) becomes the picker filter.
+
 ### Idle gate (#141, part 1)
 
 - `teak.headless.idleCheck(...)` and `--idle-check N [--state name|'*']` on
