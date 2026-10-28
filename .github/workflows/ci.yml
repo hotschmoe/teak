@@ -94,6 +94,11 @@ jobs:
             (cd examples/$ex && zig build shot -- "$GITHUB_WORKSPACE/shots/$ex.png")
           done
           ls -l ../shots
+      - name: Idle gate (settled states must stop doing work, #141)
+        run: |
+          for ex in chrome vector_canvas; do
+            (cd examples/$ex && zig build shot -- --idle-check 120 --state '*')
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: native-shots
