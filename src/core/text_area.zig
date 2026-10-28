@@ -77,6 +77,12 @@ pub fn TextArea(comptime cap: usize) type {
             caret_x: f32 = 0,
             caret_y: f32 = 0,
             caret_h: f32 = 0,
+            /// Selectable static text: the pointer, arrows, Ctrl+A and the
+            /// app's copy still work; typing, paste, newline and every key
+            /// that would change the text (Backspace, Delete, undo / redo,
+            /// ...) are ignored. Set it once after `set(...)`. Pair with
+            /// `staticStyle` for text that looks like a label.
+            read_only: bool = false,
 
             pub fn content(self: *const @This()) []const u8 {
                 return self.ed.content();
@@ -93,6 +99,18 @@ pub fn TextArea(comptime cap: usize) type {
         };
 
         pub fn update(model: *Model, msg: Msg) void {
+            if (model.read_only) switch (msg) {
+                .char, .newline, .paste => return,
+                .key => |k| {
+                    // Keep caret / selection motion, refuse edits: apply the
+                    // key to a copy and keep it only if the text is unchanged.
+                    var trial = model.ed;
+                    _ = trial.applyKey(k);
+                    if (std.mem.eql(u8, trial.content(), model.ed.content())) model.ed = trial;
+                    return;
+                },
+                .focus, .event => {},
+            };
             switch (msg) {
                 .focus => {},
                 .char => |c| model.ed.typeByte(c),
@@ -169,6 +187,19 @@ pub fn TextArea(comptime cap: usize) type {
 
         // ── View ──────────────────────────────────────────────────
 
+        /// `base` with no box, border, focus border or caret: a read-only
+        /// area drawn like a label (selection highlight kept). Pass it as
+        /// `ViewOpts.style`; the area still clips and scrolls its text.
+        pub fn staticStyle(base: cmd.TextInputStyle) cmd.TextInputStyle {
+            var s = base;
+            const clear: [4]f32 = .{ 0, 0, 0, 0 };
+            s.bg = clear;
+            s.border = clear;
+            s.focus_border = clear;
+            s.cursor = clear;
+            return s;
+        }
+
         /// Canonical component view (composes through `Components`).
         pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
             viewWith(model, cb, msgs, .{});
@@ -226,6 +257,33 @@ test "typing, newline, editing keys" {
     try testing.expectEqualStrings("ab\nc", m.selectionText());
     try testing.expect(TA.keyMsg(.up) == null);
     try testing.expect(TA.keyMsg(.ctrl_c) == null);
+}
+
+test "read_only: selection and motion work, edits are refused" {
+    var m: TA.Model = .{};
+    m.set("alpha beta\ngamma");
+    m.read_only = true;
+    type_(&m, "zz");
+    TA.update(&m, TA.pasteMsg("pasted"));
+    TA.update(&m, TA.keyMsg(.enter).?);
+    TA.update(&m, TA.keyMsg(.backspace).?);
+    TA.update(&m, TA.keyMsg(.ctrl_backspace).?);
+    TA.update(&m, TA.keyMsg(.ctrl_z).?);
+    try testing.expectEqualStrings("alpha beta\ngamma", m.content());
+    // Ctrl+A, word motion and pointer selection still work.
+    TA.update(&m, TA.keyMsg(.ctrl_a).?);
+    try testing.expectEqualStrings("alpha beta\ngamma", m.selectionText());
+    TA.update(&m, TA.keyMsg(.ctrl_home).?);
+    TA.update(&m, TA.keyMsg(.ctrl_shift_right).?);
+    try testing.expect(m.selectionText().len > 0);
+    TA.update(&m, .{ .event = .{ .id = 1, .kind = .double_click, .index = 7 } });
+    try testing.expectEqualStrings("beta", m.selectionText());
+    // Delete with a selection would cut it: refused, selection kept.
+    TA.update(&m, TA.keyMsg(.delete).?);
+    try testing.expectEqualStrings("beta", m.selectionText());
+    const st = TA.staticStyle(.{});
+    try testing.expectEqual(@as(f32, 0), st.bg[3]);
+    try testing.expectEqual(@as(f32, 0), st.cursor[3]);
 }
 
 test "pointer events set caret, extend, select words and lines" {
