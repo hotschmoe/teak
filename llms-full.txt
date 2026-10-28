@@ -872,6 +872,10 @@ widgets.spinner.Spinner(cfg{capacity,min,max,step,big_step,precision,invalid_mes
   Model/Msg = NumericField's (drive with textFieldChar/Special); Step = enum{up,down,page_up,page_down};
   step(model, Step) (call from your update); setValue(model, f64); keyStep(key) ?Step; wheelStep(dy, shift) ?Step;
   value/isValid/content; viewWith(model, cb, .{ .focus, .up, .down } AppMsgs) draws [-] [field] [+]
+widgets.drag_value.DragValue(cfg{min,max,speed /*per px*/,step,precision}) type: drag horizontally to change a number
+  Model{ value: f64, raw: ?f64, dragging }; Msg{ begin, drag: f64, end, step: enum{up,down,page_up,page_down,home,end}, set: f64 };
+  update(model, msg); eventMsg(CanvasEvent) ?Msg /*route from pointerMsg by id; Shift x0.1, Ctrl x10*/; keyMsg(SpecialKey) ?Msg;
+  view(model, cb, .{ .focus = AppMsg }, ViewOpts{ id, label /*unit*/, width = 96, height = 26 }) // focusable canvas, ew cursor
 widgets.date: Date{year: i32, month 1..12, day}; isLeap, daysInMonth, valid, toDays/fromDays (days since 1970-01-01), weekday(Mon=0), addDays/addMonths(clamps)/addYears,
   fromUnixMs(unix_ms, utc_offset_min) Date, parseIso("YYYY-MM-DD") ?Date (strict), formatIso(d, buf); month_names, weekday_short
 widgets.date_field: Model{text, open, selected: ?Date, today: ?Date, cursor}; Msg{edit, toggle, close, pick: Date, go: Nav, commit, today, clear, set_today: Date, set: ?Date};
