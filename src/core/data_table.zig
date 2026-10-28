@@ -163,6 +163,16 @@ pub fn DataTable(comptime cfg: Config) type {
                 return n;
             }
 
+            /// Re-apply the current sort (`sort_col` / `sort_desc` unchanged)
+            /// after the row DATA changed but the row count did not, e.g. a
+            /// re-solve. Selection and cursor are keyed by data row, so they
+            /// stay on the same rows; the scroll position is kept. Cost: one
+            /// stable sort, so call it once per data change, not per frame.
+            /// No-op when unsorted. Same as `update(m, .resort, src)`.
+            pub fn resort(self: *Model, src: anytype) void {
+                applySort(self, src);
+            }
+
             /// Whether the scroller still needs frame time.
             pub fn animating(self: *const Model) bool {
                 return self.sc.animating();
@@ -190,6 +200,8 @@ pub fn DataTable(comptime cfg: Config) type {
             char: u8,
             /// Click outside / Escape-like: drop keyboard focus.
             blur,
+            /// Re-apply the current sort after the row data changed (see `Model.resort`).
+            resort,
         };
 
         /// Apply a message. `src` supplies `compare` for `.sort`; any `src` works otherwise.
@@ -214,6 +226,7 @@ pub fn DataTable(comptime cfg: Config) type {
                     m.focused = false;
                     m.search_len = 0;
                 },
+                .resort => applySort(m, src),
             }
         }
 
@@ -267,6 +280,12 @@ pub fn DataTable(comptime cfg: Config) type {
                 m.sort_col = col;
                 m.sort_desc = false;
             }
+            applySort(m, src);
+            if (m.cursorDisplay()) |d| reveal(m, d);
+        }
+
+        /// Rebuild `order` / `rank` for the current `sort_col` / `sort_desc`.
+        fn applySort(m: *Model, src: anytype) void {
             const n = m.n_rows;
             for (0..n) |i| m.order[i] = @intCast(i);
             if (m.sort_col) |c| {
@@ -283,7 +302,6 @@ pub fn DataTable(comptime cfg: Config) type {
                 std.sort.block(u32, m.order[0..n], Ctx{ .src = src, .col = c, .desc = m.sort_desc }, Ctx.less);
             }
             for (0..n) |i| m.rank[m.order[i]] = @intCast(i);
-            if (m.cursorDisplay()) |d| reveal(m, d);
         }
 
         fn clickRow(m: *Model, disp: u32) void {
@@ -610,6 +628,31 @@ test "sort: ascending, descending, off; stable on ties; selection follows the da
     try testing.expectEqual(@as(?u8, null), m.sort_col);
     T.update(&m, .{ .sort = 0 }, src_rows); // by name asc: a b c d e = rows 4 3 2 1 0
     try testing.expectEqualSlices(u32, &.{ 4, 3, 2, 1, 0 }, m.order[0..5]);
+}
+
+test "resort: re-applies the current sort after a data change, keeps direction and selection" {
+    var m: T.Model = undefined;
+    fresh(&m);
+    T.update(&m, .{ .row = 4 }, src_rows); // select data row 4
+    T.update(&m, .{ .sort = 1 }, src_rows);
+    T.update(&m, .{ .sort = 1 }, src_rows); // desc: 40,30,20,10,10
+    try testing.expectEqualSlices(u32, &.{ 4, 0, 2, 1, 3 }, m.order[0..5]);
+    // The data changes (row 4 drops to 5, row 2 rises to 50): same count.
+    const vals2 = [_]i32{ 30, 10, 50, 10, 5 };
+    const changed: TestRows = .{ .vals = &vals2, .names = &names };
+    m.resort(changed);
+    try testing.expectEqualSlices(u32, &.{ 2, 0, 1, 3, 4 }, m.order[0..5]);
+    try testing.expectEqual(@as(?u8, 1), m.sort_col);
+    try testing.expect(m.sort_desc);
+    try testing.expect(m.isSelected(4) and m.sel_count == 1);
+    try testing.expectEqual(@as(?u32, 4), m.cursorDisplay());
+    for (0..5) |d| try testing.expectEqual(@as(u32, @intCast(d)), m.rank[m.order[d]]);
+    // The Msg form does the same; unsorted is a no-op.
+    T.update(&m, .resort, src_rows);
+    try testing.expectEqualSlices(u32, &.{ 4, 0, 2, 1, 3 }, m.order[0..5]);
+    m.setRows(5);
+    T.update(&m, .resort, changed);
+    try testing.expectEqualSlices(u32, &.{ 0, 1, 2, 3, 4 }, m.order[0..5]);
 }
 
 test "selection: click, ctrl-toggle, shift-range" {

@@ -35,6 +35,8 @@ const Table = teak.DataTable(.{ .max_rows = 131_072, .max_cols = 8 });
 * **Sorting.** Click a header: ascending, descending, off. `order` (display to data row) and `rank` (inverse) are rebuilt by a
   *stable* block sort over `u32` indices, so equal rows keep data order in both directions and the app's rows never move.
   100 000 rows sort in a few tens of ms (one click, not per frame).
+  When the row *data* changes but the count does not (a re-solve), call `table.resort(src)` (or send `.resort`) once: it
+  re-applies the current column and direction without cycling them, and keeps selection, cursor and scroll.
 * **Selection** is a bitset by *data* row, so it survives sorting. Click selects, Ctrl-click toggles, Shift-click extends from the
   anchor (range in display order); Up/Down/PageUp/PageDown/Home/End move the cursor (Shift extends, Ctrl-A selects all, Escape clears) and
   scroll it into view. Modifier keys reach `update` through the new `modsMsg` hook (below), so a click Msg needs no payload.
