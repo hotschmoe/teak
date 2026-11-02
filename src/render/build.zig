@@ -29,6 +29,9 @@ const emitCanvasPrimitive = canvas_tess.emitCanvasPrimitive;
 const clipSegment = canvas_tess.clipSegment;
 const emitTriangles = canvas_tess.emitTriangles;
 pub const sdf = @import("sdf.zig");
+/// Retained canvas geometry: world-space tessellation the GPU draws
+/// with the canvas transform as a uniform (`shaders/canvas_geom.wgsl`).
+pub const canvas_geom = @import("canvas_geom.zig");
 
 /// Image draw record. Parallel to TextDraw — the GPU backend consumes
 /// these in `uploadImages` and emits 6 textured vertices per draw using

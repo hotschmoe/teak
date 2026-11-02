@@ -9,3 +9,4 @@ pub const image_wgsl = @embedFile("image.wgsl");
 pub const scene_wgsl = @embedFile("scene.wgsl");
 pub const scene_grid_wgsl = @embedFile("scene_grid.wgsl");
 pub const glyph_wgsl = @embedFile("glyph.wgsl");
+pub const canvas_geom_wgsl = @embedFile("canvas_geom.wgsl");

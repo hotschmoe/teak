@@ -30,8 +30,10 @@
 //! `vline`, `text`, and a nested `.geometry`. Joins are computed from the
 //! stored point directions, so they are exact for a uniform scale (including
 //! a y-flip) and only approximate when `|sx| != |sy|`. World arcs are
-//! tessellated at `arc_ref_px` pixels per world unit (chord error 0.25 px
-//! at that scale) so a later zoom does not re-run this.
+//! tessellated once at `arc_ref_px` pixels per world unit (chord error
+//! 0.25 px at that scale). A denser mesh sits closer to the true arc than
+//! the immediate path, which retessellates per frame, and that misses the
+//! vector-canvas goldens.
 
 const std = @import("std");
 const cmd = @import("../core/cmd.zig");
@@ -48,16 +50,20 @@ pub const kind_fringe: f32 = 3;
 pub const kind_marker: f32 = 4;
 pub const kind_screen_segment: f32 = 5;
 
-/// Pixels per world unit used to pick a world arc's chord count. Covers
-/// `vector_canvas`'s max zoom (400 px/m) on its small release arcs.
-pub const arc_ref_px: f32 = 512;
+/// Pixels per world unit used to pick a world arc's chord count. 44 matches
+/// the immediate tessellator on `vector_canvas`'s 0.35 m release arcs at the
+/// golden zoom (~43.7 px/m, chord error 0.25 px). Denser than that (the
+/// previous 512) draws a truer arc and fails those pictures. Past this
+/// scale the retained chords grow; the immediate path would retessellate.
+pub const arc_ref_px: f32 = 44;
 
 const max_arc_points: usize = 512;
 const quad_corners = [6]f32{ 0, 1, 2, 0, 2, 3 };
 
-/// One retained vertex. 20 floats, 80 bytes. Attribute groups for the
-/// shader, in order: (kind, corner), (ax, ay, bx, by), (cx, cy, dx, dy),
-/// rgba, srgba, (e0, e1).
+/// One retained vertex. 20 floats, 80 bytes. The shader binds these as
+/// ten `vec2` attributes (8-byte aligned): (kind, corner), (ax, ay),
+/// (bx, by), (cx, cy), (dx, dy), (r, g), (b, a), (sr, sg), (sb, sa),
+/// (e0, e1). `shaders/canvas_geom.wgsl` expands them.
 pub const GeomVertex = extern struct {
     kind: f32,
     corner: f32,
@@ -83,6 +89,39 @@ pub const GeomVertex = extern struct {
 
 comptime {
     if (@sizeOf(GeomVertex) != 80) @compileError("GeomVertex is the shader's 20-float vertex");
+}
+
+/// Bytes between per-draw uniforms. WebGPU's minimum uniform-buffer
+/// offset alignment; native uses it as a dynamic offset, web as the
+/// bind-group buffer offset.
+pub const draw_uniform_align: u32 = 256;
+
+/// Per-draw uniform (`shaders/canvas_geom.wgsl` `Draw`). `tx` / `ty`
+/// already include the canvas origin.
+pub const DrawUniform = extern struct {
+    sx: f32,
+    sy: f32,
+    tx: f32,
+    ty: f32,
+    clip_x: f32,
+    clip_y: f32,
+    clip_w: f32,
+    clip_h: f32,
+};
+
+/// Shared screen uniform (`Screen` in the shader): logical size and
+/// device pixels per logical pixel. The fragment clip test divides
+/// the framebuffer coordinate by `scale`.
+pub const ScreenUniform = extern struct {
+    screen_x: f32,
+    screen_y: f32,
+    scale: f32,
+    pad: f32 = 0,
+};
+
+comptime {
+    if (@sizeOf(DrawUniform) != 32) @compileError("DrawUniform is the shader's 32-byte draw uniform");
+    if (@sizeOf(ScreenUniform) != 16) @compileError("ScreenUniform is the shader's 16-byte screen uniform");
 }
 
 const List = std.ArrayList(GeomVertex);

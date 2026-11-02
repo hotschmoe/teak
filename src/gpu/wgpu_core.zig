@@ -91,9 +91,32 @@ const Sampled = struct {
 
 const ImageCache = GrowSlotTable(Sampled, IMAGE_MAX_SLOTS);
 
+/// Retained canvas-geometry buffers. One slot per uploaded resource;
+/// 0 stays the none handle. Empty tessellations are resident (null
+/// buffer, zero verts) so a rev is not retried.
+const GEOM_MAX_SLOTS: u32 = 1024;
+const GeomBuf = struct {
+    buf: c.WGPUBuffer,
+    count: u32,
+    fn release(self: GeomBuf) void {
+        if (self.buf) |b| c.wgpuBufferRelease(b);
+    }
+};
+const GeomCache = GrowSlotTable(GeomBuf, GEOM_MAX_SLOTS);
+
+/// One staged retained draw: a buffer range plus the dynamic-offset slot
+/// of its transform / clip uniform.
+const GeomStaged = struct {
+    buf: c.WGPUBuffer,
+    count: u32,
+    slot: u32,
+};
+
 const SHADER_CODE = @import("teak-shaders").quad_wgsl;
 const SHADER_GLYPH = @import("teak-shaders").glyph_wgsl;
 const SHADER_IMAGE = @import("teak-shaders").image_wgsl;
+const SHADER_CANVAS_GEOM = @import("teak-shaders").canvas_geom_wgsl;
+const canvas_geom = teak.render.canvas_geom;
 
 /// Mirror of `platform/win32.zig`'s MAX_SECONDARY_WINDOWS. We keep them
 /// in lock-step so the same id space covers both layers; the GPU side
@@ -194,6 +217,27 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         overlay_split: ?OverlaySplit,
         image_ov: usize,
         scene_ov: usize,
+        geom_ov: usize,
+
+        // ── Retained canvas geometry ───────────────────────────────
+        //
+        // Tessellated once in `uploadCanvasGeometry`. Each frame's draws
+        // carry a transform and a clip; the vertex shader applies them.
+        // The pipeline is created on first use so a shader problem does
+        // not stop apps that never retain geometry.
+        geom_pipeline: c.WGPURenderPipeline,
+        geom_bgl: c.WGPUBindGroupLayout,
+        /// Logical size + device scale. Rewritten with the solid uniform
+        /// in `writeScreenSize` (primary, secondary, and offscreen).
+        geom_screen_buf: c.WGPUBuffer,
+        /// Per-draw uniforms, 256-byte slots (`canvas_geom.draw_uniform_align`).
+        geom_uni_buf: c.WGPUBuffer,
+        geom_uni_size: u64,
+        /// One bind group; binding 1 has a dynamic offset into `geom_uni_buf`.
+        geom_bg: c.WGPUBindGroup,
+        geom_bg_buf: c.WGPUBuffer,
+        geoms: GeomCache,
+        geom_draws: std.ArrayList(GeomStaged),
 
         secondary_surfaces: [MAX_SECONDARY_SURFACES]SurfaceSlot,
 
@@ -381,6 +425,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             const raster = try Rasterizer.init(std.heap.page_allocator);
 
+            const geom_screen_buf = wgpu_c.createBuffer(device, "geom-screen", c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst, @sizeOf(canvas_geom.ScreenUniform)) orelse return error.UniformBufFailed;
+            errdefer c.wgpuBufferRelease(geom_screen_buf);
+
             const scale: f32 = if (options.scale > 0) options.scale else 1;
             var text = try text_stage.TextStage(Rasterizer).init(std.heap.page_allocator, raster, options.max_atlas_pages, scale);
             errdefer text.deinit();
@@ -491,6 +538,16 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .overlay_split = null,
                 .image_ov = 0,
                 .scene_ov = 0,
+                .geom_ov = 0,
+                .geom_pipeline = null,
+                .geom_bgl = null,
+                .geom_screen_buf = geom_screen_buf,
+                .geom_uni_buf = null,
+                .geom_uni_size = 0,
+                .geom_bg = null,
+                .geom_bg_buf = null,
+                .geoms = .{},
+                .geom_draws = .empty,
                 .secondary_surfaces = @splat(.{
                     .surface = null,
                     .width = 0,
@@ -512,6 +569,16 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             self.images.deinit(image_gpa);
             self.image_draws.deinit(image_gpa);
             self.image_verts.deinit(image_gpa);
+
+            var geoms_it = self.geoms.iterator();
+            while (geoms_it.next()) |e| e.release();
+            self.geoms.deinit(image_gpa);
+            self.geom_draws.deinit(image_gpa);
+            if (self.geom_bg) |g| c.wgpuBindGroupRelease(g);
+            if (self.geom_uni_buf) |b| c.wgpuBufferRelease(b);
+            c.wgpuBufferRelease(self.geom_screen_buf);
+            if (self.geom_pipeline) |p| c.wgpuRenderPipelineRelease(p);
+            if (self.geom_bgl) |l| c.wgpuBindGroupLayoutRelease(l);
             if (self.image_vert_buf) |ib| c.wgpuBufferRelease(ib);
             c.wgpuRenderPipelineRelease(self.image_pipeline);
 
@@ -624,6 +691,12 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             c.wgpuQueueWriteBuffer(self.queue, self.uniform_buf, 0, &logical, @sizeOf([2]f32));
             const glyph_u = [4]f32{ logical[0], logical[1], self.scale, 1.0 };
             c.wgpuQueueWriteBuffer(self.queue, self.glyph_uniform_buf, 0, &glyph_u, @sizeOf([4]f32));
+            const geom_screen = canvas_geom.ScreenUniform{
+                .screen_x = logical[0],
+                .screen_y = logical[1],
+                .scale = self.scale,
+            };
+            c.wgpuQueueWriteBuffer(self.queue, self.geom_screen_buf, 0, &geom_screen, @sizeOf(canvas_geom.ScreenUniform));
         }
 
         /// Grow `buf` to hold `verts` and write them. Shared by the solid,
@@ -790,10 +863,12 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const solid = overlay.Range.of(self.splitOf("verts", self.vert_count), self.vert_count);
             const imgs = overlay.Range.of(self.image_ov, self.image_draws.items.len);
             const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
+            const geoms = overlay.Range.of(self.geom_ov, self.geom_draws.items.len);
             inline for (.{ "base", "overlay" }) |layer| {
                 self.drawSolids(pass, @field(overlay.Range, layer)(solid));
                 drawQuads(pass, self.image_pipeline, self.image_vert_buf, @intCast(self.image_verts.items.len), self.image_draws.items, @field(overlay.Range, layer)(imgs));
                 drawQuads(pass, self.image_pipeline, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count], @field(overlay.Range, layer)(scns));
+                self.drawGeoms(pass, @field(overlay.Range, layer)(geoms));
                 self.drawGlyphs(pass, if (comptime std.mem.eql(u8, layer, "base")) 0 else 1);
             }
 
@@ -1200,26 +1275,176 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// Upload mesh geometry; the returned handle goes into
         /// `SceneDraw.mesh`. `MESH_HANDLE_NONE` on invalid data or a full
         /// table. See `wgpu_scene.Renderer.uploadMesh`.
-        /// Tessellate and retain canvas primitives. Returns 0 until the
-        /// canvas-geometry pipeline stores the buffer (a failed upload is
-        /// not retried until `rev` changes).
+        /// Tessellate `prims` in world space and upload the buffer. The
+        /// handle is non-zero even when the tessellation is empty (nothing
+        /// to draw, and the rev is not retried). 0 means the upload failed.
         pub fn uploadCanvasGeometry(self: *Self, prims: []const teak.CanvasPrimitive, antialias: bool) u32 {
-            _ = self;
-            _ = prims;
-            _ = antialias;
-            return 0;
+            const alloc = std.heap.page_allocator;
+            const verts = canvas_geom.tessellate(alloc, prims, antialias) catch return 0;
+            defer alloc.free(verts);
+            if (verts.len == 0) {
+                return self.geoms.insert(image_gpa, .{ .buf = null, .count = 0 }) orelse 0;
+            }
+            if (verts.len > std.math.maxInt(u32)) return 0;
+            const bytes: u64 = verts.len * @sizeOf(canvas_geom.GeomVertex);
+            const buf = wgpu_c.createBuffer(self.device, "canvas-geom", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, bytes) orelse return 0;
+            c.wgpuQueueWriteBuffer(self.queue, buf, 0, verts.ptr, bytes);
+            return self.geoms.insert(image_gpa, .{ .buf = buf, .count = @intCast(verts.len) }) orelse {
+                c.wgpuBufferRelease(buf);
+                std.debug.print("teak: canvas geometry cache full ({d}); upload dropped\n", .{GEOM_MAX_SLOTS});
+                return 0;
+            };
         }
 
         pub fn releaseCanvasGeometry(self: *Self, handle: u32) void {
-            _ = self;
-            _ = handle;
+            if (self.geoms.remove(image_gpa, handle)) |e| e.release();
         }
 
-        /// Stage this frame's retained canvas-geometry draws. No-op until
-        /// the pipeline consumes them.
+        /// Stage this frame's retained draws and write one uniform slot
+        /// each (transform + clip). The screen size lives in
+        /// `geom_screen_buf`, rewritten by `writeScreenSize`.
         pub fn uploadCanvasGeoms(self: *Self, draws: []const teak.CanvasGeomDraw) void {
-            _ = self;
-            _ = draws;
+            self.geom_draws.clearRetainingCapacity();
+            var mark: overlay.Marker = .{ .start = self.splitOf("geoms", draws.len) };
+            defer self.geom_ov = mark.finish(self.geom_draws.items.len);
+            if (draws.len == 0) return;
+
+            const slots: u64 = @as(u64, draws.len) * canvas_geom.draw_uniform_align;
+            const before = self.geom_uni_buf;
+            wgpu_c.ensureBuffer(self.device, "geom-uniforms", c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst, &self.geom_uni_buf, &self.geom_uni_size, slots);
+            if (self.geom_uni_buf == null) return;
+            if (self.geom_bg == null or self.geom_bg_buf != self.geom_uni_buf or before != self.geom_uni_buf) {
+                self.rebuildGeomBindGroup();
+            }
+
+            for (draws, 0..) |d, di| {
+                mark.visit(di, self.geom_draws.items.len);
+                const slot = self.geoms.get(d.handle) orelse continue;
+                if (slot.count == 0 or slot.buf == null) continue;
+                const index: u32 = @intCast(self.geom_draws.items.len);
+                self.geom_draws.append(image_gpa, .{ .buf = slot.buf, .count = slot.count, .slot = index }) catch break;
+                const u = canvas_geom.DrawUniform{
+                    .sx = d.sx,
+                    .sy = d.sy,
+                    .tx = d.tx,
+                    .ty = d.ty,
+                    .clip_x = d.clip_x,
+                    .clip_y = d.clip_y,
+                    .clip_w = d.clip_w,
+                    .clip_h = d.clip_h,
+                };
+                const off: u64 = @as(u64, index) * canvas_geom.draw_uniform_align;
+                c.wgpuQueueWriteBuffer(self.queue, self.geom_uni_buf, off, &u, @sizeOf(canvas_geom.DrawUniform));
+            }
+        }
+
+        fn rebuildGeomBindGroup(self: *Self) void {
+            if (self.geom_bgl == null) {
+                if (!self.ensureGeomPipeline()) return;
+            }
+            if (self.geom_bg) |old| c.wgpuBindGroupRelease(old);
+            self.geom_bg = null;
+            const uni = self.geom_uni_buf orelse return;
+            var entries = [_]c.WGPUBindGroupEntry{ std.mem.zeroes(c.WGPUBindGroupEntry), std.mem.zeroes(c.WGPUBindGroupEntry) };
+            entries[0].binding = 0;
+            entries[0].buffer = self.geom_screen_buf;
+            entries[0].size = @sizeOf(canvas_geom.ScreenUniform);
+            entries[1].binding = 1;
+            entries[1].buffer = uni;
+            entries[1].size = @sizeOf(canvas_geom.DrawUniform);
+            var desc = std.mem.zeroes(c.WGPUBindGroupDescriptor);
+            desc.label = wgpuStr("geom-bind-group");
+            desc.layout = self.geom_bgl;
+            desc.entryCount = entries.len;
+            desc.entries = &entries;
+            self.geom_bg = c.wgpuDeviceCreateBindGroup(self.device, &desc);
+            self.geom_bg_buf = uni;
+        }
+
+        fn ensureGeomPipeline(self: *Self) bool {
+            if (self.geom_pipeline != null) return true;
+            const built = self.createGeomPipeline() catch |err| {
+                std.log.warn("teak: canvas geometry pipeline: {s}", .{@errorName(err)});
+                return false;
+            };
+            self.geom_pipeline = built.pipeline;
+            self.geom_bgl = built.bgl;
+            return true;
+        }
+
+        fn createGeomPipeline(self: *Self) !struct { pipeline: c.WGPURenderPipeline, bgl: c.WGPUBindGroupLayout } {
+            const G = canvas_geom.GeomVertex;
+            const shader = try wgpu_c.createShader(self.device, "canvas-geom-shader", SHADER_CANVAS_GEOM);
+            defer c.wgpuShaderModuleRelease(shader);
+
+            var bgl_entries = [_]c.WGPUBindGroupLayoutEntry{ std.mem.zeroes(c.WGPUBindGroupLayoutEntry), std.mem.zeroes(c.WGPUBindGroupLayoutEntry) };
+            bgl_entries[0].binding = 0;
+            bgl_entries[0].visibility = c.WGPUShaderStage_Vertex | c.WGPUShaderStage_Fragment;
+            bgl_entries[0].buffer.type = c.WGPUBufferBindingType_Uniform;
+            bgl_entries[0].buffer.minBindingSize = @sizeOf(canvas_geom.ScreenUniform);
+            bgl_entries[1].binding = 1;
+            bgl_entries[1].visibility = c.WGPUShaderStage_Vertex | c.WGPUShaderStage_Fragment;
+            bgl_entries[1].buffer.type = c.WGPUBufferBindingType_Uniform;
+            bgl_entries[1].buffer.hasDynamicOffset = 1;
+            bgl_entries[1].buffer.minBindingSize = @sizeOf(canvas_geom.DrawUniform);
+
+            var bgl_desc = std.mem.zeroes(c.WGPUBindGroupLayoutDescriptor);
+            bgl_desc.label = wgpuStr("geom-bgl");
+            bgl_desc.entryCount = bgl_entries.len;
+            bgl_desc.entries = &bgl_entries;
+            const bgl = c.wgpuDeviceCreateBindGroupLayout(self.device, &bgl_desc) orelse return error.BglCreateFailed;
+            errdefer c.wgpuBindGroupLayoutRelease(bgl);
+
+            var pl_desc = std.mem.zeroes(c.WGPUPipelineLayoutDescriptor);
+            pl_desc.label = wgpuStr("geom-pipeline-layout");
+            pl_desc.bindGroupLayoutCount = 1;
+            pl_desc.bindGroupLayouts = &bgl;
+            const layout = c.wgpuDeviceCreatePipelineLayout(self.device, &pl_desc) orelse return error.PipelineLayoutFailed;
+            defer c.wgpuPipelineLayoutRelease(layout);
+
+            const attrs = [_]c.WGPUVertexAttribute{
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = 0, .shaderLocation = 0 },
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(G, "ax"), .shaderLocation = 1 },
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(G, "bx"), .shaderLocation = 2 },
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(G, "cx"), .shaderLocation = 3 },
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(G, "dx"), .shaderLocation = 4 },
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(G, "r"), .shaderLocation = 5 },
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(G, "b"), .shaderLocation = 6 },
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(G, "sr"), .shaderLocation = 7 },
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(G, "sb"), .shaderLocation = 8 },
+                .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(G, "e0"), .shaderLocation = 9 },
+            };
+            const vert_layout = [_]c.WGPUVertexBufferLayout{.{
+                .arrayStride = @sizeOf(G),
+                .stepMode = c.WGPUVertexStepMode_Vertex,
+                .attributeCount = attrs.len,
+                .attributes = &attrs,
+            }};
+            const pipeline = wgpu_c.createPipeline(self.device, .{
+                .label = "canvas-geom-pipeline",
+                .layout = layout,
+                .module = shader,
+                .vertex_buffers = &vert_layout,
+                .format = self.surf_format,
+                .samples = self.samples,
+            }) orelse return error.PipelineCreateFailed;
+            return .{ .pipeline = pipeline, .bgl = bgl };
+        }
+
+        fn drawGeoms(self: *Self, pass: c.WGPURenderPassEncoder, range: struct { usize, usize }) void {
+            const from, const to = range;
+            if (to <= from) return;
+            if (!self.ensureGeomPipeline()) return;
+            if (self.geom_bg == null or self.geom_bg_buf != self.geom_uni_buf) self.rebuildGeomBindGroup();
+            const bg = self.geom_bg orelse return;
+            c.wgpuRenderPassEncoderSetPipeline(pass, self.geom_pipeline);
+            for (self.geom_draws.items[from..to]) |rec| {
+                var off = [_]u32{rec.slot * canvas_geom.draw_uniform_align};
+                c.wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, 1, &off);
+                const bytes: u64 = @as(u64, rec.count) * @sizeOf(canvas_geom.GeomVertex);
+                c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, rec.buf, 0, bytes);
+                c.wgpuRenderPassEncoderDraw(pass, rec.count, 1, 0, 0);
+            }
         }
 
         pub fn uploadMesh(self: *Self, data: teak.MeshData) teak.MeshHandle {
