@@ -139,6 +139,10 @@ pub fn emitCanvasPrimitiveOpts(
             strokeWindowPath(verts, alloc, pts, full, ar.thickness, ar.color, o.aa, clip);
         },
         .polygon => |pg| emitPolygon(verts, alloc, canvas, pg, clip, o),
+        // Retained: `buildFrame` emits a draw record instead of tessellating.
+        // Plane layers have no coverage shader, so a geometry prim is a no-op
+        // there, same as text.
+        .geometry => {},
     }
 }
 

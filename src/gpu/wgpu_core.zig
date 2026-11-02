@@ -1200,6 +1200,28 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// Upload mesh geometry; the returned handle goes into
         /// `SceneDraw.mesh`. `MESH_HANDLE_NONE` on invalid data or a full
         /// table. See `wgpu_scene.Renderer.uploadMesh`.
+        /// Tessellate and retain canvas primitives. Returns 0 until the
+        /// canvas-geometry pipeline stores the buffer (a failed upload is
+        /// not retried until `rev` changes).
+        pub fn uploadCanvasGeometry(self: *Self, prims: []const teak.CanvasPrimitive, antialias: bool) u32 {
+            _ = self;
+            _ = prims;
+            _ = antialias;
+            return 0;
+        }
+
+        pub fn releaseCanvasGeometry(self: *Self, handle: u32) void {
+            _ = self;
+            _ = handle;
+        }
+
+        /// Stage this frame's retained canvas-geometry draws. No-op until
+        /// the pipeline consumes them.
+        pub fn uploadCanvasGeoms(self: *Self, draws: []const teak.CanvasGeomDraw) void {
+            _ = self;
+            _ = draws;
+        }
+
         pub fn uploadMesh(self: *Self, data: teak.MeshData) teak.MeshHandle {
             return self.scene.uploadMesh(data);
         }

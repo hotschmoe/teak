@@ -118,6 +118,10 @@ const LogProbeGpu = struct {
     }
     pub fn releaseImage(_: *LogProbeGpu, _: u32) void {}
     pub fn releaseMesh(_: *LogProbeGpu, _: u32) void {}
+    pub fn uploadCanvasGeometry(_: *LogProbeGpu, _: anytype, _: bool) u32 {
+        return 1;
+    }
+    pub fn releaseCanvasGeometry(_: *LogProbeGpu, _: u32) void {}
 };
 
 /// Overflows the resource table so its `std.log.warn` is compiled and run

@@ -758,6 +758,24 @@ pub const Gpu = struct {
         self.image_pipeline = uiPipeline(self.text_pl, zgpu.createShaderModule(SHADER_IMAGE), &layouts, self.samples);
     }
 
+    /// See `wgpu_core.Gpu.uploadCanvasGeometry`. The web pipeline fills this in.
+    pub fn uploadCanvasGeometry(self: *Gpu, prims: []const teak.CanvasPrimitive, antialias: bool) u32 {
+        _ = self;
+        _ = prims;
+        _ = antialias;
+        return 0;
+    }
+
+    pub fn releaseCanvasGeometry(self: *Gpu, handle: u32) void {
+        _ = self;
+        _ = handle;
+    }
+
+    pub fn uploadCanvasGeoms(self: *Gpu, draws: []const teak.CanvasGeomDraw) void {
+        _ = self;
+        _ = draws;
+    }
+
     pub fn uploadMesh(self: *Gpu, data: teak.MeshData) teak.MeshHandle {
         return self.sceneRenderer().uploadMesh(data);
     }

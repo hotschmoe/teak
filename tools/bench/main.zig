@@ -116,6 +116,8 @@ fn run(gpa: std.mem.Allocator, n: usize, comptime build: fn (*CB, usize) void, m
     defer si.deinit(gpa);
     var sp: std.ArrayList(teak.SceneSprite) = .empty;
     defer sp.deinit(gpa);
+    var geoms: std.ArrayList(teak.CanvasGeomDraw) = .empty;
+    defer geoms.deinit(gpa);
 
     var t_view: u64 = 0;
     var t_lay: u64 = 0;
@@ -134,7 +136,7 @@ fn run(gpa: std.mem.Allocator, n: usize, comptime build: fn (*CB, usize) void, m
         const c = nowNs();
         std.mem.doNotOptimizeAway(teak.hitTest(cb.cmds.items, rects.items, 600, 400));
         const d = nowNs();
-        _ = teak.buildFrame(&verts, &td, &im, &sc, &si, &sp, gpa, cb.cmds.items, rects.items, .{}, measurer);
+        _ = teak.buildFrame(&verts, &td, &im, &sc, &si, &sp, &geoms, gpa, cb.cmds.items, rects.items, .{}, measurer);
         const e = nowNs();
         std.mem.doNotOptimizeAway(teak.runtime.cmdsEqual(Msg, cb.cmds.items, prev.cmds.items));
         const f = nowNs();

@@ -273,6 +273,8 @@ pub const Resource = resources.Resource;
 pub const MeshResource = resources.MeshResource;
 /// A declared image resource.
 pub const ImageResource = resources.ImageResource;
+/// A declared canvas-geometry resource (primitives tessellated once, transformed on the GPU).
+pub const CanvasGeometryResource = resources.CanvasGeometryResource;
 
 /// Intrinsic size and flex of a `scene3d` leaf.
 pub const SceneStyle = cmd.SceneStyle;
@@ -445,6 +447,8 @@ pub const emitQuadCorners = vertex.emitQuadCorners;
 pub const buildVertices = render.buildVertices;
 /// An image draw record produced by the render pass.
 pub const ImageDraw = render.ImageDraw;
+/// One retained canvas-geometry draw (`handle` is the app key until `stageDraws`).
+pub const CanvasGeomDraw = render.CanvasGeomDraw;
 /// Render cmds + rects + transient state into vertices and draw records.
 pub const buildFrame = render.buildFrame;
 /// Vertex/draw-list offsets separating the base layer from the overlay layer.

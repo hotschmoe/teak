@@ -631,6 +631,9 @@ pub const CanvasPrimitive = union(enum) {
     /// A closed polygon: filled (any simple polygon, either winding),
     /// stroked, or both (see `Polygon`).
     polygon: Polygon,
+    /// A retained `.canvas_geometry` resource, drawn with this canvas's
+    /// transform and clip. The primitives live on the resource.
+    geometry: Geometry,
 
     /// Center (`x`, `y`) and `radius` in canvas-local units (so they follow
     /// `CanvasStyle.transform`), unless `screen_radius`: then the radius is
@@ -670,6 +673,10 @@ pub const CanvasPrimitive = union(enum) {
         fill: ?[4]f32 = .{ 0.3, 0.7, 1.0, 0.4 },
         stroke: ?[4]f32 = null,
         thickness: f32 = 1,
+    };
+    pub const Geometry = struct {
+        /// App key of a `.canvas_geometry` resource. 0 draws nothing.
+        key: u32,
     };
 
     pub const Polyline = struct {
@@ -779,6 +786,7 @@ pub const CanvasPrimitive = union(enum) {
                 break :blk t.x == o.x and t.y == o.y and std.meta.eql(t.font, o.font) and
                     std.meta.eql(t.color, o.color) and std.mem.eql(u8, t.content, o.content);
             },
+            .geometry => |g| g.key == b.geometry.key,
         };
     }
 

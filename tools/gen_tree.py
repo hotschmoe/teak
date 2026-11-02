@@ -18,7 +18,7 @@ OVERRIDE = {
     "core/dropdown.zig": "Dropdown(cap): closed button + auto-anchored overlay list (no new Cmd)",
     "core/transient.zig": "TransientState: hover/press/focus/IME/caret-phase (hatch 2)",
     "layout/engine.zig": "LayoutEngine: measure / widths / heights / position passes, ClipStack",
-    "render/build.zig": "[]Cmd + []Rect + TransientState -> vertices, text/image/scene draws",
+    "render/build.zig": "[]Cmd + []Rect + TransientState -> vertices, text/image/scene/geometry draws",
     "render/vertex.zig": "Vertex layout + quad emitters",
     "run.zig": "teak.run + Runtime(App, Host, Gpu): the canonical loop (one frame() per tick), App hooks, idle skip",
     "resources.zig": "run-loop resource table (key -> Gpu handle), stageDraws",
