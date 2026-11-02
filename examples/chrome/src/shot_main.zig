@@ -37,6 +37,8 @@ fn parseArgs(init: std.process.Init) Opts {
             o.stress = std.fmt.parseInt(usize, next orelse "640", 10) catch 640;
         } else if (std.mem.eql(u8, a, "--state") or std.mem.eql(u8, a, "--prefix") or std.mem.eql(u8, a, "--all")) {
             i += 1; // values read again by `shotCli`
+        } else if (std.mem.eql(u8, a, "--idle-check") or std.mem.eql(u8, a, "--idle-frames") or std.mem.eql(u8, a, "--latency-check") or std.mem.eql(u8, a, "--latency-state")) {
+            i += 1; // values read again by `shotCli`; don't swallow them as the PNG path
         } else if (std.mem.eql(u8, a, "--max-pages")) {
             i += 1;
             o.max_pages = std.fmt.parseInt(u8, next orelse "8", 10) catch 8;

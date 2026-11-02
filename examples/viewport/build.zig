@@ -49,6 +49,7 @@ pub fn build(b: *std.Build) void {
         teak.linkNativeWgpu(b, ui_exe, .{});
 
         const install_ui = b.addInstallArtifact(ui_exe, .{});
+        b.step("ui-install", "Build and install the native UI exe (no run)").dependOn(&install_ui.step);
         const ui_run = b.addRunArtifact(ui_exe);
         ui_run.step.dependOn(&install_ui.step);
         ui_run.addPassthruArgs();

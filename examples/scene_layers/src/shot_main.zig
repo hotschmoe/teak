@@ -7,6 +7,23 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const args = init.minimal.args.toSlice(init.arena.allocator()) catch &.{};
+    if (teak.headless.requestsGate(args)) {
+        // The default PNG below is one scripted shot. Measurement gets named
+        // states: `initial` is the resting frame, `row` is the same click.
+        return teak.headless.shotCli(App, Host, Gpu, init, "scene_layers.png", .{
+            .width = 1280,
+            .height = 800,
+            .run = .{ .clear_color = App.paper },
+        }, &.{
+            .{ .name = "initial", .steps = &.{.{ .frames = 4 }} },
+            .{ .name = "row", .steps = &.{
+                .{ .frames = 4 },
+                .{ .click = .{ 1100, 108 } },
+                .{ .frames = 2 },
+            } },
+        });
+    }
     const path = teak.headless.pathArg(init, "scene_layers.png");
     try teak.headless.shot(App, Host, Gpu, init.gpa, path, .{
         .width = 1280,

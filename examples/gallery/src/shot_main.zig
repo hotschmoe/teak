@@ -9,14 +9,13 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 
 const Step = teak.headless.Step;
-const State = struct { name: []const u8, steps: []const Step };
 
 const to_overlays: []const Step = &.{ .{ .frames = 2 }, .{ .click = .{ 88, 174 } }, .{ .frames = 2 } };
 
 const dark: Step = .{ .click = .{ 88, 720 } };
 const light: Step = .{ .click = .{ 88, 752 } };
 
-const states = [_]State{
+const states = [_]teak.headless.ShotState{
     .{ .name = "controls_dark", .steps = &.{ .{ .frames = 2 }, dark, .{ .move = .{ 900, 700 } }, .{ .frames = 2 } } },
     .{ .name = "data_light", .steps = &.{ .{ .frames = 2 }, light, .{ .click = .{ 88, 142 } }, .{ .move = .{ 900, 700 } }, .{ .frames = 2 } } },
     .{ .name = "overlays_dark_menu", .steps = &.{ .{ .frames = 2 }, dark, .{ .click = .{ 88, 174 } }, .{ .click = .{ 108, 14 } }, .{ .move = .{ 900, 700 } }, .{ .frames = 2 } } },
@@ -42,21 +41,10 @@ const states = [_]State{
 };
 
 pub fn main(init: std.process.Init) !void {
-    var path: []const u8 = "gallery.png";
-    var want: []const u8 = states[0].name;
-    // `toSlice` (not `iterate`) so the shot also builds on Windows.
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--state")) {
-            i += 1;
-            want = if (i < args.len) args[i] else return error.MissingState;
-        } else path = args[i];
-    }
-    for (states) |st| if (std.mem.eql(u8, st.name, want)) {
-        try teak.headless.shot(App, Host, Gpu, init.gpa, path, .{ .width = 1280, .height = 800, .steps = st.steps });
-        std.debug.print("wrote {s} (state {s})\n", .{ path, st.name });
-        return;
-    };
-    return error.UnknownState;
+    // `shotCli` parses `--state`, `--list`, `--all`, `--idle-check`, `--gates-json`.
+    // The first state (`controls_dark`) stays the default PNG.
+    try teak.headless.shotCli(App, Host, Gpu, init, "gallery.png", .{
+        .width = 1280,
+        .height = 800,
+    }, &states);
 }
