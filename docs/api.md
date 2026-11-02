@@ -2878,11 +2878,27 @@ docs/features/headless.md.
 > the settle frames, how many did real work (`busy`: not the loop's quiet
 > skip) and how many presented (caret blink redraws present but stay quiet).
 - `struct IdleReport`
-  - fields: `frames, busy, presented, first_busy, rewoke, busy_at_end`
+  - fields: `frames, busy, presented, blinks, first_busy, rewoke, busy_at_end, rss_bytes, committed_bytes, memory_source`
   > The UI went quiet within the window and stayed quiet: a finite
   > transition (a sliding popover) passes, a never-ending animation or a
   > self-sustaining Msg does not.
   - `pub fn settled(r: IdleReport) bool`
+  > No frame did work, and every present was a caret blink (zero presents
+  > when nothing is focused). Stricter than `settled`: a transition that
+  > finishes inside the window is settled but not fully quiet.
+  - `pub fn fullyQuiet(r: IdleReport) bool`
+> RSS and a committed-memory stand-in, in bytes.
+- `struct ProcessMemory`
+  - fields: `rss_bytes, committed_bytes, source`
+> Parse a `/proc/self/status` blob. `Committed_AS` is the committed figure
+> when the kernel prints it. Kernels that omit it fall back to
+> `RssAnon + VmSwap` (private pages, including ones swapped out). Kilobyte
+> fields are scaled to bytes.
+- `pub fn parseProcStatus(text: []const u8) ProcessMemory`
+> Read this process's status. Linux only; anywhere else the fields stay 0.
+> `gpa` is unused: procfs reports a size of 0, so `readFileAlloc` would
+> return an empty buffer. A streaming read ignores that size.
+- `pub fn readProcessMemory(gpa: std.mem.Allocator) ProcessMemory`
 > The idle gate (#141): play `o.steps`, settle, then run `frames` frames
 > with no input and report how many still did work. A healthy UI goes
 > quiet and stays quiet (`IdleReport.settled`); a busy tail or a re-wake is
@@ -2890,6 +2906,25 @@ docs/features/headless.md.
 > progress bar legitimately does). Uses the
 > same Host / Gpu as `shot`; no PNG is written.
 - `pub fn idleCheck( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, o: ShotOptions, frames: u32, ) !IdleReport`
+> One scripted click, measured in frames from the event that changed the
+> view to the frame that presented it. Budget 1 is the designed hit-test
+> latency: input is routed against the previous frame, so the Msg and the
+> new view land in the `frame()` that delivers the click.
+- `struct LatencyReport`
+  - fields: `frames, unstable, unchanged, x, y`
+  - `pub fn pass(r: LatencyReport, budget: u32) bool`
+> Move to `(x, y)`, wait until two consecutive frames hash the same, then
+> click. Press-activated controls (the down frame already presents a new
+> cmd buffer) report 1 and still release the button. Otherwise the release
+> is the changing event, and the frame that presents the new buffer is the
+> latency. `host` needs `pushMouseMove` / `pushMouseDown` / `pushMouseUp`.
+- `pub fn latencyAfterClick(rt: anytype, host: anytype, gpa: std.mem.Allocator, x: f32, y: f32) !LatencyReport`
+> Play `o.steps`, settle, then `latencyAfterClick`. Same Host / Gpu as
+> `idleCheck`; no PNG is written. A view that never sits still (a
+> `Sub.every` that rebuilds every frame) comes back `unstable`.
+- `pub fn latencyCheck( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, o: ShotOptions, x: f32, y: f32, ) !LatencyReport`
+> `"x,y"` as two floats.
+- `pub fn parsePair(s: []const u8) ?[2]f32`
 > `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
 > headless run, so any example's `zig build shot` can be taken at 2x without
 > code changes. Unset or invalid: `default`.
@@ -2907,6 +2942,11 @@ docs/features/headless.md.
 > A named, scripted app state for screenshots (`--state <name>`).
 - `struct ShotState`
   - fields: `name, steps, msaa`
+> True when `args` asks a shot binary for a measurement instead of a PNG:
+> `--gates-json`, `--idle-check`, `--latency-check`, or `--mem-check`.
+> Examples whose `main` is not `shotCli` (tables, scene_layers) branch on
+> this and leave their default PNG path alone.
+- `pub fn requestsGate(args: []const [:0]const u8) bool`
 > The whole `shot_main.zig` for an example: parses
 > `[out.png] [--state <name>] [--list] [--all <dir> --prefix <p>]` from argv, plays that state's
 > script (`o.steps` is ignored; the first of `states` is the default),
@@ -2914,6 +2954,9 @@ docs/features/headless.md.
 > stdout and exits. `--all <dir> --prefix <p>` renders every state to
 > `<dir>/<p>-<state>.actual.png` in one process and prints the names:
 > `tools/vreg` uses it so each example needs a single `zig build` call.
+> `--gates-json` prints one JSON object on stdout (idle, optional latency,
+> memory of the first state) and exits 0 when the run finished; the runner
+> applies the pass/fail policy. `--all` is unchanged.
 - `pub fn shotCli( comptime App: type, comptime Host: type, comptime Gpu: type, init: anytype, default_path: []const u8, o: ShotOptions, states: []const ShotState, ) !void`
 > Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). Each
 > scanline picks the PNG filter (none / sub / up / average / paeth) with

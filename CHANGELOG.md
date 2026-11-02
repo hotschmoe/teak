@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### CI gates (#141)
+
+- `teak.headless.latencyCheck` / `latencyAfterClick`: a scripted click must
+  be presented on the next frame (budget 1, the designed hit-test latency).
+  A view that never sits still is `unstable`; a click that changes nothing
+  is `unchanged`.
+- `IdleReport` now counts caret presents (`blinks`, `fullyQuiet`) and samples
+  RSS / committed bytes at the end of the idle window, while the offscreen
+  Gpu is still alive. `settled()` is unchanged. Committed bytes are
+  `Committed_AS` when the kernel prints it, otherwise `RssAnon + VmSwap`.
+- `zig build gates` runs idle, latency, memory and binary size for every
+  example and writes `zig-out/gates/ci-gates.json`. Budgets are
+  `tools/ci_gates_budgets.json` (fail above +10%). Wasm brotli (quality 11,
+  ReleaseSmall) is the portable number. Native exe size and RSS are per host
+  triple and GPU; a missing budget is recorded and does not fail. The native
+  exe is unstripped ReleaseSmall. `scene3d` is `expect_busy` because its
+  orbit subscribes every frame on purpose.
+- GitHub Actions job `ci-gates` (lavapipe + brotli). x86_64 native/RSS budgets
+  are unset until that runner's numbers are committed.
+- The gates runner calls a non-strict state idle when the window ends quiet.
+  A one-shot subscription that fires and finishes passes. A subscription
+  still firing at the end fails unless the state is `expect_busy` (gallery
+  toasts, and all of scene3d). `--idle-check` still requires `settled()`.
+
 ## 0.2.0 (2026-10-27)
 
 All changes are additions; exhaustive switches over `CanvasPrimitive` (`circle`/`arc`/`polygon`), `DataTable.Msg` (`resort`) and `Cmd` (`push_grid`/`pop_grid`) need the new arms.
