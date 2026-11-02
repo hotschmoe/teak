@@ -142,6 +142,23 @@ pub fn build(b: *std.Build) void {
     const audit_step = b.step("audit", "Run HARDLINE drift audit (greppable rules from HARDLINE §5)");
     audit_step.dependOn(&audit_run.step);
     audit_step.dependOn(wasm_step);
+
+    const gates_exe = b.addExecutable(.{
+        .name = "ci-gates",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/ci_gates.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const gates_run = b.addRunArtifact(gates_exe);
+    gates_run.setCwd(b.path("."));
+    gates_run.has_side_effects = true;
+    gates_run.stdio = .inherit;
+    gates_run.addArgs(&.{ "--zig", b.graph.zig_exe });
+    gates_run.addPassthruArgs();
+    b.step("gates", "Background gates: idle, latency, idle memory, binary size (JSON in zig-out/gates/)")
+        .dependOn(&gates_run.step);
 }
 
 fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {

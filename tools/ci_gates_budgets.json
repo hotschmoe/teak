@@ -1,0 +1,186 @@
+{
+  "schema": 1,
+  "alert_over_pct": 10,
+  "idle_frames": 125,
+  "latency_budget_frames": 1,
+  "notes": "125 frames * 16 ms = 2 s of the headless clock. strict_states must be fully quiet (no busy frame; presents only from a caret blink). Other states must be quiet at the end of the window: a one-shot Sub.at that fires and finishes still passes, a subscription still firing does not. The human --idle-check flag still requires settled() (quiet by the end and no re-wake). expect_busy records a state and does not fail; [\"*\"] exempts the example. scene3d subscribes every frame for the orbit and is exempt on purpose. gallery toasts and toast_sliding keep a tick subscription and are expect_busy. Latency budget is 1 frame (hit-test uses the previous frame). wasm_brotli_bytes is wasm32 ReleaseSmall, brotli quality 11, and is the portable budget. platforms.* native_exe_bytes, rss_bytes and committed_bytes are per host triple and GPU; 0 means unbudgeted and does not fail. The native exe is unstripped ReleaseSmall. committed_bytes is Committed_AS when the kernel prints it, else RssAnon+VmSwap. Fill a host triple with --update-budgets after a real run. x86_64 CI records native and RSS until that triple is filled in.",
+  "examples": {
+    "chrome": {
+      "strict_states": [
+        "initial",
+        "plain"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 47,
+        "y": 253
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "counter_greeter": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 70,
+        "y": 134
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "effects": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 60,
+        "y": 101
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "fonts": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": null,
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "gallery": {
+      "strict_states": [
+        "controls",
+        "controls_dark"
+      ],
+      "expect_busy": [
+        "toasts",
+        "toast_sliding"
+      ],
+      "latency": {
+        "state": "controls",
+        "x": 88,
+        "y": 110
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "kerf_viewer": {
+      "strict_states": [],
+      "expect_busy": [],
+      "latency": {
+        "state": "section_selected",
+        "x": 492,
+        "y": 92
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "notes": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 60,
+        "y": 765
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "scene3d": {
+      "strict_states": [],
+      "expect_busy": [
+        "*"
+      ],
+      "latency": null,
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "scene_layers": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 1100,
+        "y": 108
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "tables": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 140,
+        "y": 27
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "todo": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "three_items",
+        "x": 80,
+        "y": 171
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "tree": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 75,
+        "y": 117
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "vector_canvas": {
+      "strict_states": [
+        "fit"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "fit",
+        "x": 180,
+        "y": 24
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    },
+    "viewport": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "zoomed_panned",
+        "x": 620,
+        "y": 140
+      },
+      "wasm_brotli_bytes": 0,
+      "platforms": {}
+    }
+  }
+}
