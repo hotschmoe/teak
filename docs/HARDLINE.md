@@ -228,15 +228,18 @@ See `docs/features/effects.md`.
 
 An App may expose `pub fn resources(model: *const Model) []const Resource`
 (pure function of model). `Resource` is a data tagged union —
-`.mesh { key, rev, data: MeshData }` or `.image { key, rev, width, height,
-rgba }` — naming the GPU-resident assets the current Model needs. The run
-loop reconciles the GPU with that list every frame: it uploads a resource
-when its (kind, `key`) is new or its `rev` changed, and releases the ones
-that disappeared. `Cmd`s refer to resources by the app `key`
-(`ImageCmd.handle`, `SceneCmd.mesh`); the loop maps keys to backend
-handles right before the Gpu sees the draw records. It is the level-
-triggered sibling of `Sub` (hatch 6): the app *declares*, the runtime
-does the watching and the I/O-ish work.
+`.mesh { key, rev, data: MeshData }`, `.image { key, rev, width, height,
+rgba }` or `.canvas_geometry { key, rev, antialias, prims }` — naming the
+GPU-resident assets the current Model needs. Canvas geometry is this
+hatch, not a new one: `prims` is a slice of `CanvasPrimitive`, tessellated
+once in world space, and pan / zoom is a shader uniform rather than a
+re-upload. The run loop reconciles the GPU with that list every frame:
+it uploads a resource when its (kind, `key`) is new or its `rev` changed,
+and releases the ones that disappeared. `Cmd`s refer to resources by the
+app `key` (`ImageCmd.handle`, `SceneCmd.mesh`, `CanvasPrimitive.geometry`);
+the loop maps keys to backend handles right before the Gpu sees the draw
+records. It is the level-triggered sibling of `Sub` (hatch 6): the app
+*declares*, the runtime does the watching and the I/O-ish work.
 
 **Bounded by**:
 - `resources` is pure: no I/O, no allocation outside the frame arena (or
@@ -248,12 +251,21 @@ does the watching and the I/O-ish work.
   (`src/resources.zig`), is a fixed-capacity cache of GPU residency, and
   is safely losable (losing it re-uploads).
 - Upload / release go through the Gpu's optional scene/image extension
-  (hatch 4(d): `uploadMesh`, `releaseMesh`, `uploadImage`, `releaseImage`).
-  An App that declares `resources` with a Gpu lacking them fails to
-  compile; the loop never reaches past `validateGpu` + that extension.
+  (hatch 4(d): `uploadMesh`, `releaseMesh`, `uploadImage`, `releaseImage`)
+  plus `uploadCanvasGeometry` / `releaseCanvasGeometry` for
+  `.canvas_geometry`. An App that declares `resources` with a Gpu lacking
+  them fails to compile; the loop never reaches past `validateGpu` + that
+  extension. Per-frame retained draws go through `uploadCanvasGeoms` when
+  the Gpu declares it (`stageDraws`).
+- Painter's order is not a new z-level (hatch 5 stays two layers).
+  `OverlaySplit.geoms` splits retained draws the way `images` and `scenes`
+  split those lists. Within a layer they are drawn with the image and
+  scene composites, above that layer's immediate primitives (the canvas
+  background is a solid) and below its text.
 - No second mutation path: nothing is reported back through `Msg`. A
   failed upload leaves the key non-resident (its draws are skipped) and is
-  retried only when `rev` changes.
+  retried only when `rev` changes. `antialias` on a canvas-geometry
+  resource is baked into the buffer; changing it is a new `rev`.
 - Unique keys per kind (0 is reserved), at most 128 resident resources.
 
 ---

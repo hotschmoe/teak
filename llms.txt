@@ -301,6 +301,10 @@ CanvasPrimitive = union(enum) { polyline, filled_rect, hline, vline, marker, tex
     triangles: struct { verts: []const TriVertex /*x,y,r,g,b,a*/, key: u64 = 0 },       // per-vertex RGBA triangle list
     lines: struct { segs: []const [4]f32, color, thickness, key: u64 = 0 },             // canvas-local px
     geometry: struct { key: u32 } }   // retained CanvasGeometryResource; 0 draws nothing
+    // use it for large static world geometry (pan/zoom does not re-tessellate).
+    // hline/vline/text/nested geometry are skipped. antialias is baked (bump rev).
+    // within a layer: solids, images, scenes, retained geometry, text
+    // (OverlaySplit.geoms). Above that layer's immediate primitives, below its text.
 // triangles/lines: CPU-clipped to canvas+scroll clip; `key` = content revision for the frame diff
 // (same non-zero key+len => treated equal; 0 => bytes compared). Bump it when the batch changes.
 CanvasPoint = struct { x: f32, y: f32 }
@@ -676,7 +680,8 @@ stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw, data:
 ImageDraw = struct { rect_x, rect_y, rect_w, rect_h: f32, handle: TextureHandle,
                      tint: [4]f32, clip_x, clip_y, clip_w, clip_h: f32 }
 CanvasGeomDraw = struct { handle: u32 /*app key until stageDraws*/, sx, sy, tx, ty, clip_x, clip_y, clip_w, clip_h: f32 }
-                                      // tx/ty include the canvas origin. Drawn after scene composites, before text.
+                                      // tx/ty include the canvas origin. After scene composites, before text,
+                                      // above that layer's immediate primitives (canvas background is a solid).
 Vertex = extern struct { x, y, r, g, b, a, u, v: f32 }
 emitQuad(verts, alloc, rect: Rect, color: [4]f32) void
 emitQuadCorners(verts, alloc, c0, c1, c2, c3: [2]f32, color: [4]f32) void   // rotated quads

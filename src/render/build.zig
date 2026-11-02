@@ -29,8 +29,8 @@ const emitCanvasPrimitive = canvas_tess.emitCanvasPrimitive;
 const clipSegment = canvas_tess.clipSegment;
 const emitTriangles = canvas_tess.emitTriangles;
 pub const sdf = @import("sdf.zig");
-/// Retained canvas geometry: world-space tessellation the GPU draws
-/// with the canvas transform as a uniform (`shaders/canvas_geom.wgsl`).
+// World-space tessellation for `.canvas_geometry`. Not a `///` doc: gen_api
+// would attach it to the next declaration (`ImageDraw`).
 pub const canvas_geom = @import("canvas_geom.zig");
 
 /// Image draw record. Parallel to TextDraw — the GPU backend consumes
@@ -56,7 +56,8 @@ pub const ImageDraw = struct {
 /// produced. A Gpu that honours it draws base solids, images, scene
 /// composites, retained canvas geometry and text first, THEN the overlay's
 /// solids, images, composites, geometry and text, so an opaque overlay
-/// panel hides base-layer text and images beneath it. Within one layer the
+/// panel hides base-layer text, images and retained geometry beneath it.
+/// Within one layer the
 /// order is solids, images, scene composites, retained geometry, text:
 /// a retained draw sits above that layer's immediate canvas primitives.
 pub const OverlaySplit = struct {

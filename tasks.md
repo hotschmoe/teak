@@ -23,14 +23,13 @@ None. Every PR the October snapshot listed (#31 - #95) is merged, except #67
 | Issue | What |
 |---|---|
 | #150 | Multi-window: secondary windows on X11 / Wayland / macOS, more than one from `teak.run` |
-| #159 | Canvas: GPU-retained static geometry (transform in the shader) |
 | #139 - #142 | Directions from the egoist review: OS text engines, CPU raster / direct GPU backends, CI gates (idle, latency, memory, size), app shell |
 
 ### Open by area (not yet in a PR, or deliberately deferred)
 
 - **Platforms:** macOS host on master (#54; input/IME/Retina not yet exercised on a real Mac); web WebGL2 fallback **deferred by owner decision 2026-10-09** (`docs/features/web-fallback.md`); secondary windows are real on Win32 only (#150).
 - **Text:** subpixel LCD AA (none); bundled CJK face (none); native colour emoji (web only, #71).
-- **Graphics:** SVG icons via `teak.svg` (subset: no gradients / text / filters); grid layout has fixed columns only (no cell spans, no row tracks). Canvas antialiasing, circles / arcs / polygons and a world transform landed (#125); a GPU-retained canvas vertex buffer (re-lower nothing on pan) is the next step if CPU lowering shows up in profiles (#159).
+- **Graphics:** SVG icons via `teak.svg` (subset: no gradients / text / filters); grid layout has fixed columns only (no cell spans, no row tracks). Canvas antialiasing, circles / arcs / polygons, a world transform (#125) and GPU-retained static geometry (#159, `.canvas_geometry`, transform in the shader) have landed.
 - **Input / a11y:** X11 AT-SPI and macOS AX are not built (Win32 UIA and the web mirror are).
 - **Tooling:** hot reload is native (Linux) dev builds only; visual-regression goldens regenerate with `zig build vreg -- --update` (LOOK at every PNG); CI gates for idle / latency / memory / size are proposed in #141.
 - **QA findings left open** (`docs/qa-2026-10.md`, "Open"): `ButtonStyle.label_align` defaults to `.start` for hand-built styles; the tree example is noisy (two bordered buttons per row).

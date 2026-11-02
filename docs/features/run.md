@@ -100,7 +100,7 @@ table does not name.
 | `animationMsg` | `(*const Model, dt_ms: u32) ?Msg` | every frame while a `Sub.animation_frame` is listed | a Msg (see [animation.md](animation.md)) |
 | `effects` | `(*const Model) []const Effect` | every frame | effects to hand the Host once each (HARDLINE hatch 7) |
 | `effectMsg` | `(*const Model, EffectResult) ?Msg` | each effect result and each unsolicited drop / paste | a Msg |
-| `resources` | `(*const Model) []const Resource` | every frame | GPU meshes / images by (key, rev) (hatch 8) |
+| `resources` | `(*const Model) []const Resource` | every frame | GPU meshes, images and canvas geometry by (key, rev) (hatch 8) |
 | `secondaryWindow` | `(*const Model) ?SecondaryWindowSpec` | every frame | open / close the second window |
 | `secondaryView` | `(*const Model, *CmdBuffer(Msg)) void` | each frame the second window is open | its view (pure, same rules as `view`) |
 | `secondaryClosedMsg` | `(*const Model) ?Msg` | the user closed the second window from the OS | a Msg |
@@ -325,31 +325,40 @@ filesystem (wasm/freestanding) the sink compiles out. Depth:
    resolved from `focusedMsg` via `indexOfFocusMsg`.
 8. Push `windowTitle` to the host on change.
 9. Declarative resources (if the App declares `resources`): reconcile the
-   GPU with the listed meshes/images (upload on new key / changed `rev`,
-   release vanished keys); a change forces step 10 to re-stage.
+   GPU with the listed meshes, images and canvas geometries (upload on
+   new key / changed `rev`, release vanished keys); a change forces step
+   10 to re-stage.
 10. Frame diff (`cmdsEqual` + `rectsEqual` + transient compare, plus the
    blink tick and resource changes): skip `buildFrame` + uploads when
    nothing observable changed. Otherwise build the frame (solid quads,
-   text, image and `SceneDraw` records), remap resource keys to handles,
-   `uploadVertices` / `uploadText` / `uploadImages` and — when the Gpu has
-   the scene extension — `renderScenes`. Always `renderFrame`.
+   text, image, `SceneDraw` and retained-geometry records), remap
+   resource keys to handles, `uploadVertices` / `uploadText` /
+   `uploadImages`, `uploadCanvasGeoms` when the Gpu declares it, and —
+   when the Gpu has the scene extension — `renderScenes`. Always
+   `renderFrame`.
 
 ### Resources (optional hook)
 
 `pub fn resources(*const Model) []const Resource` — HARDLINE §2 hatch 8.
 `Resource = union(enum) { mesh: { key, rev, data: MeshData }, image:
-{ key, rev, width, height, rgba } }`. The loop keeps a fixed-capacity
+{ key, rev, width, height, rgba }, canvas_geometry: { key, rev, antialias, prims } }`.
+The loop keeps a fixed-capacity
 (1024; overflow logs a warning) table of what is resident (`src/resources.zig`): a new (kind, key)
 uploads, a changed `rev` re-uploads (old handle released first), a key that
 disappears is released, and everything is released at shutdown. `Cmd`s use
-the app key: `cb.image(key, ...)`, `cb.scene3d(.{ .mesh = key })`; the loop
-rewrites those to backend handles in the draw records it hands the Gpu (an
-unknown / failed key draws nothing for an image and just the clear colour
+the app key: `cb.image(key, ...)`, `cb.scene3d(.{ .mesh = key })`,
+`CanvasPrimitive.geometry{ .key }`; the loop rewrites those to backend
+handles in the draw records it hands the Gpu (an unknown / failed key
+draws nothing for an image or a retained buffer, and just the clear colour
 for a scene). Without the hook, `ImageCmd.handle` / `SceneCmd.mesh` are
 raw `Gpu` handles from `uploadImage` / `uploadMesh`, as before. The hook
-needs the Gpu scene extension (`uploadMesh`, `releaseMesh`,
-`renderScenes`, `releaseImage`); apps that do not declare it run on any
-conforming Gpu. See [scene3d.md](scene3d.md).
+needs `uploadMesh`, `releaseMesh`, `uploadImage`, `releaseImage`,
+`uploadCanvasGeometry` and `releaseCanvasGeometry` (the upload switch
+type-checks every kind). `renderScenes` and `uploadCanvasGeoms` are called
+when the Gpu declares them. Apps that do not declare `resources` run on
+any conforming Gpu. Canvas geometry — when to use it, and that retained
+draws sit with the image and scene composites above the canvas's immediate
+primitives — is in [canvas.md](canvas.md). Scenes: [scene3d.md](scene3d.md).
 
 `cmdsEqual` / `rectsEqual` are exposed from `run.zig` (they used to be
 duplicated in every example's `ui_main.zig`) and correctly diff the

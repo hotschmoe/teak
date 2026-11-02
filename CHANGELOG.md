@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Canvas: GPU-retained static geometry (#159)
+
+- A `.canvas_geometry` resource (hatch 8: `key`, `rev`, `antialias`,
+  `prims`) is tessellated once in world space and uploaded.
+  `CanvasPrimitive.geometry` `{ key }` draws it. Pan and zoom change only
+  `CanvasStyle.transform`; `shaders/canvas_geom.wgsl` applies it. Stroke
+  widths and `screen_radius` stay in screen pixels. `antialias` is baked
+  (toggling it is a new `rev`). `hline`, `vline`, `text` and a nested
+  `.geometry` are skipped. World arcs are chorded once at 44 px per world
+  unit.
+- Painter's order: `OverlaySplit.geoms` splits retained draws the way
+  `images` and `scenes` split those lists. Within a layer the pass draws
+  solids, images, scene composites, retained geometry, then text, so a
+  retained draw sits above that canvas's immediate primitives and below
+  the layer's text. Both the native and web backends draw it.
+- `examples/vector_canvas` keeps four retained buffers. On the fit view
+  (ReleaseFast, lavapipe, aarch64) steady `build_ms` went from about 24 ms
+  to about 0.3 ms. The four vector_canvas goldens match.
+
 ## 0.2.0 (2026-10-27)
 
 All changes are additions; exhaustive switches over `CanvasPrimitive` (`circle`/`arc`/`polygon`), `DataTable.Msg` (`resort`) and `Cmd` (`push_grid`/`pop_grid`) need the new arms.
