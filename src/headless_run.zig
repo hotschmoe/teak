@@ -18,8 +18,10 @@
 //! ```
 
 const std = @import("std");
+const builtin = @import("builtin");
 const pointer = @import("core/pointer.zig");
 const keys = @import("input/keys.zig");
+const snapshot = @import("core/snapshot.zig");
 const run_mod = @import("run.zig");
 
 /// One scripted step. Steps that only queue input (`move`, `down`, `up`,
@@ -142,12 +144,22 @@ pub const IdleReport = struct {
     frames: u32,
     busy: u32,
     presented: u32,
+    /// Quiet frames that still presented: the caret blink. The loop only
+    /// presents while quiet for that reason, so `presented == blinks` means
+    /// every present in the window was a caret.
+    blinks: u32 = 0,
     /// Index (0-based, within the idle window) of the first busy frame.
     first_busy: ?u32 = null,
     /// A busy frame came after a quiet one (something woke the loop up again).
     rewoke: bool = false,
     /// The last frame of the window was busy.
     busy_at_end: bool = false,
+    /// Process memory at the end of the window, read while the offscreen Gpu
+    /// is still alive. 0 when the OS does not expose it (not Linux).
+    rss_bytes: u64 = 0,
+    committed_bytes: u64 = 0,
+    /// Which status fields `committed_bytes` came from. Empty when unread.
+    memory_source: []const u8 = "",
 
     /// The UI went quiet within the window and stayed quiet: a finite
     /// transition (a sliding popover) passes, a never-ending animation or a
@@ -155,7 +167,75 @@ pub const IdleReport = struct {
     pub fn settled(r: IdleReport) bool {
         return !r.busy_at_end and !r.rewoke;
     }
+
+    /// No frame did work, and every present was a caret blink (zero presents
+    /// when nothing is focused). Stricter than `settled`: a transition that
+    /// finishes inside the window is settled but not fully quiet.
+    pub fn fullyQuiet(r: IdleReport) bool {
+        return r.busy == 0 and r.presented == r.blinks;
+    }
 };
+
+/// RSS and a committed-memory stand-in, in bytes.
+pub const ProcessMemory = struct {
+    rss_bytes: u64 = 0,
+    committed_bytes: u64 = 0,
+    /// `"VmRSS / Committed_AS"` when the kernel reports `Committed_AS`,
+    /// else `"VmRSS / RssAnon+VmSwap"` (private anonymous resident + swap).
+    /// Empty when `text` had no `VmRSS` line.
+    source: []const u8 = "",
+};
+
+/// Parse a `/proc/self/status` blob. `Committed_AS` is the committed figure
+/// when the kernel prints it. Kernels that omit it fall back to
+/// `RssAnon + VmSwap` (private pages, including ones swapped out). Kilobyte
+/// fields are scaled to bytes.
+pub fn parseProcStatus(text: []const u8) ProcessMemory {
+    const rss = statusKb(text, "VmRSS:");
+    if (statusKb(text, "Committed_AS:")) |c| {
+        return .{
+            .rss_bytes = (rss orelse 0) * 1024,
+            .committed_bytes = c * 1024,
+            .source = "VmRSS / Committed_AS",
+        };
+    }
+    if (rss == null and statusKb(text, "RssAnon:") == null) return .{};
+    const anon = statusKb(text, "RssAnon:") orelse 0;
+    const swap = statusKb(text, "VmSwap:") orelse 0;
+    return .{
+        .rss_bytes = (rss orelse 0) * 1024,
+        .committed_bytes = (anon + swap) * 1024,
+        .source = "VmRSS / RssAnon+VmSwap",
+    };
+}
+
+fn statusKb(text: []const u8, name: []const u8) ?u64 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, name)) continue;
+        const rest = std.mem.trim(u8, line[name.len..], " \t");
+        const end = std.mem.indexOfAny(u8, rest, " \t") orelse rest.len;
+        if (end == 0) return null;
+        return std.fmt.parseInt(u64, rest[0..end], 10) catch null;
+    }
+    return null;
+}
+
+/// Read this process's status. Linux only; anywhere else the fields stay 0.
+/// `gpa` is unused: procfs reports a size of 0, so `readFileAlloc` would
+/// return an empty buffer. A streaming read ignores that size.
+pub fn readProcessMemory(gpa: std.mem.Allocator) ProcessMemory {
+    _ = gpa;
+    if (comptime builtin.os.tag != .linux) return .{};
+    const io = std.Options.debug_io;
+    var file = std.Io.Dir.cwd().openFile(io, "/proc/self/status", .{}) catch return .{};
+    defer file.close(io);
+    var scratch: [16384]u8 = undefined;
+    var reader = file.readerStreaming(io, &.{});
+    const n = reader.interface.readSliceShort(&scratch) catch return .{};
+    if (n == 0) return .{};
+    return parseProcStatus(scratch[0..n]);
+}
 
 /// The idle gate (#141): play `o.steps`, settle, then run `frames` frames
 /// with no input and report how many still did work. A healthy UI goes
@@ -191,9 +271,127 @@ pub fn idleCheck(
             if (seen_quiet) r.rewoke = true;
         } else seen_quiet = true;
         if (s.presented) r.presented += 1;
+        if (s.quiet and s.presented) r.blinks += 1;
         if (i + 1 == frames) r.busy_at_end = !s.quiet;
     }
+    // Sample while the Gpu is still alive (the defers above run after return).
+    const mem = readProcessMemory(gpa);
+    r.rss_bytes = mem.rss_bytes;
+    r.committed_bytes = mem.committed_bytes;
+    r.memory_source = mem.source;
     return r;
+}
+
+/// One scripted click, measured in frames from the event that changed the
+/// view to the frame that presented it. Budget 1 is the designed hit-test
+/// latency: input is routed against the previous frame, so the Msg and the
+/// new view land in the `frame()` that delivers the click.
+pub const LatencyReport = struct {
+    /// Frames from the changing event to the present. 0 when `unstable` or
+    /// `unchanged` (no present of a new view).
+    frames: u32 = 0,
+    /// The view kept changing with no further input, so a click cannot be timed.
+    unstable: bool = false,
+    /// The click did not change the cmd buffer (miss, or a no-op control).
+    unchanged: bool = false,
+    x: f32 = 0,
+    y: f32 = 0,
+
+    pub fn pass(r: LatencyReport, budget: u32) bool {
+        return !r.unstable and !r.unchanged and r.frames == budget;
+    }
+};
+
+/// Hash of the observable cmd buffer (no transient header: hover, press and
+/// the caret phase do not count). Cmd bytes die when the frame arena resets,
+/// so this hashes a snapshot taken before the next `frame()`.
+fn cmdFingerprint(gpa: std.mem.Allocator, rt: anytype) !u64 {
+    const cur = rt.current;
+    var buf = try std.Io.Writer.Allocating.initCapacity(gpa, 4096);
+    defer buf.deinit();
+    try snapshot.write(&buf.writer, rt.bufs[cur].cmds.items, rt.rects[cur].items, .{});
+    return std.hash.Wyhash.hash(0, buf.written());
+}
+
+/// Move to `(x, y)`, wait until two consecutive frames hash the same, then
+/// click. Press-activated controls (the down frame already presents a new
+/// cmd buffer) report 1 and still release the button. Otherwise the release
+/// is the changing event, and the frame that presents the new buffer is the
+/// latency. `host` needs `pushMouseMove` / `pushMouseDown` / `pushMouseUp`.
+pub fn latencyAfterClick(rt: anytype, host: anytype, gpa: std.mem.Allocator, x: f32, y: f32) !LatencyReport {
+    var r: LatencyReport = .{ .x = x, .y = y };
+    host.pushMouseMove(x, y);
+    try rt.frame();
+    var prev = try cmdFingerprint(gpa, rt);
+    var stable = false;
+    for (0..4) |_| {
+        try rt.frame();
+        const h = try cmdFingerprint(gpa, rt);
+        if (h == prev) {
+            stable = true;
+            break;
+        }
+        prev = h;
+    }
+    if (!stable) {
+        r.unstable = true;
+        return r;
+    }
+    const base = prev;
+
+    host.pushMouseDown(.left);
+    try rt.frame();
+    const after_down = try cmdFingerprint(gpa, rt);
+    if (after_down != base and rt.lastFrameStats().presented) {
+        r.frames = 1;
+        host.pushMouseUp(.left);
+        try rt.frame();
+        return r;
+    }
+
+    host.pushMouseUp(.left);
+    for (0..8) |i| {
+        try rt.frame();
+        const h = try cmdFingerprint(gpa, rt);
+        if (h != base and rt.lastFrameStats().presented) {
+            r.frames = @intCast(i + 1);
+            return r;
+        }
+    }
+    r.unchanged = true;
+    return r;
+}
+
+/// Play `o.steps`, settle, then `latencyAfterClick`. Same Host / Gpu as
+/// `idleCheck`; no PNG is written. A view that never sits still (a
+/// `Sub.every` that rebuilds every frame) comes back `unstable`.
+pub fn latencyCheck(
+    comptime App: type,
+    comptime Host: type,
+    comptime Gpu: type,
+    gpa: std.mem.Allocator,
+    o: ShotOptions,
+    x: f32,
+    y: f32,
+) !LatencyReport {
+    var host = try Host.init(gpa, o.width, o.height);
+    defer host.deinit();
+    for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = envScale(o.scale) });
+    defer gpu.deinit();
+    var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
+    defer rt.deinit();
+    try play(&rt, &host, o.steps);
+    for (0..o.settle) |_| try rt.frame();
+    return latencyAfterClick(&rt, &host, gpa, x, y);
+}
+
+/// `"x,y"` as two floats.
+pub fn parsePair(s: []const u8) ?[2]f32 {
+    const c = std.mem.indexOfScalar(u8, s, ',') orelse return null;
+    const x = std.fmt.parseFloat(f32, s[0..c]) catch return null;
+    const y = std.fmt.parseFloat(f32, s[c + 1 ..]) catch return null;
+    return .{ x, y };
 }
 
 /// `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
@@ -271,6 +469,19 @@ pub const ShotState = struct {
     msaa: ?bool = null,
 };
 
+/// True when `args` asks a shot binary for a measurement instead of a PNG:
+/// `--gates-json`, `--idle-check`, `--latency-check`, or `--mem-check`.
+/// Examples whose `main` is not `shotCli` (tables, scene_layers) branch on
+/// this and leave their default PNG path alone.
+pub fn requestsGate(args: []const [:0]const u8) bool {
+    for (args) |a| {
+        if (std.mem.eql(u8, a, "--gates-json") or std.mem.eql(u8, a, "--idle-check") or
+            std.mem.eql(u8, a, "--latency-check") or std.mem.eql(u8, a, "--mem-check"))
+            return true;
+    }
+    return false;
+}
+
 /// The whole `shot_main.zig` for an example: parses
 /// `[out.png] [--state <name>] [--list] [--all <dir> --prefix <p>]` from argv, plays that state's
 /// script (`o.steps` is ignored; the first of `states` is the default),
@@ -278,6 +489,9 @@ pub const ShotState = struct {
 /// stdout and exits. `--all <dir> --prefix <p>` renders every state to
 /// `<dir>/<p>-<state>.actual.png` in one process and prints the names:
 /// `tools/vreg` uses it so each example needs a single `zig build` call.
+/// `--gates-json` prints one JSON object on stdout (idle, optional latency,
+/// memory of the first state) and exits 0 when the run finished; the runner
+/// applies the pass/fail policy. `--all` is unchanged.
 pub fn shotCli(
     comptime App: type,
     comptime Host: type,
@@ -295,6 +509,11 @@ pub fn shotCli(
     var opts_base = o;
     var prefix: []const u8 = "shot";
     var idle_frames: ?u32 = null;
+    var gates = false;
+    var gate_frames: u32 = 125;
+    var state_set = false;
+    var lat_xy: ?[2]f32 = null;
+    var lat_state: ?[]const u8 = null;
     // `toSlice` (not `iterate`, a compile error on Windows).
     var it: ArgIter = .{ .items = try init.minimal.args.toSlice(init.arena.allocator()) };
     while (it.next()) |a| {
@@ -308,10 +527,21 @@ pub fn shotCli(
             prefix = it.next() orelse return error.MissingPrefix;
         } else if (std.mem.eql(u8, a, "--idle-check")) {
             idle_frames = std.fmt.parseInt(u32, it.next() orelse return error.MissingIdleFrames, 10) catch return error.BadIdleFrames;
+        } else if (std.mem.eql(u8, a, "--gates-json") or std.mem.eql(u8, a, "--mem-check")) {
+            gates = true;
+        } else if (std.mem.eql(u8, a, "--idle-frames")) {
+            gate_frames = std.fmt.parseInt(u32, it.next() orelse return error.MissingIdleFrames, 10) catch return error.BadIdleFrames;
+        } else if (std.mem.eql(u8, a, "--latency-check")) {
+            lat_xy = parsePair(it.next() orelse return error.MissingLatency) orelse return error.BadLatency;
+            gates = true;
+        } else if (std.mem.eql(u8, a, "--latency-state")) {
+            lat_state = it.next() orelse return error.MissingStateName;
         } else if (std.mem.eql(u8, a, "--plain")) {
             want = "plain"; // alias of `--state plain`
+            state_set = true;
         } else if (std.mem.eql(u8, a, "--state")) {
             want = it.next() orelse return error.MissingStateName;
+            state_set = true;
         } else path = a;
     }
     if (list) {
@@ -319,6 +549,14 @@ pub fn shotCli(
             try std.Io.File.stdout().writeStreamingAll(init.io, st.name);
             try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
         }
+        return;
+    }
+    if (gates) {
+        // Measurement, not the human idle gate: stdout is one JSON object and
+        // the process exits 0 when the run finished. Policy (expect_busy,
+        // strict fully-quiet, the +10% budget) lives in tools/ci_gates.zig.
+        if (!state_set) want = "*";
+        try writeGatesJson(App, Host, Gpu, init, opts_base, states, want, gate_frames, lat_xy, lat_state);
         return;
     }
     if (idle_frames) |n| {
@@ -359,6 +597,94 @@ pub fn shotCli(
     for (states) |st| std.debug.print(" {s}", .{st.name});
     std.debug.print("\n", .{});
     return error.UnknownState;
+}
+
+const GateRow = struct {
+    name: []const u8,
+    r: IdleReport,
+};
+
+fn writeGatesJson(
+    comptime App: type,
+    comptime Host: type,
+    comptime Gpu: type,
+    init: anytype,
+    opts_base: ShotOptions,
+    states: []const ShotState,
+    want: []const u8,
+    gate_frames: u32,
+    lat_xy: ?[2]f32,
+    lat_state: ?[]const u8,
+) !void {
+    var rows: std.ArrayList(GateRow) = .empty;
+    defer rows.deinit(init.gpa);
+    var mem: ProcessMemory = .{};
+    for (states) |st| {
+        if (!std.mem.eql(u8, want, "*") and !std.mem.eql(u8, st.name, want)) continue;
+        var opts = opts_base;
+        opts.steps = st.steps;
+        if (st.msaa) |ms| opts.msaa = ms;
+        const r = try idleCheck(App, Host, Gpu, init.gpa, opts, gate_frames);
+        if (rows.items.len == 0) {
+            mem = .{ .rss_bytes = r.rss_bytes, .committed_bytes = r.committed_bytes, .source = r.memory_source };
+        }
+        try rows.append(init.gpa, .{ .name = st.name, .r = r });
+    }
+
+    var lat: ?LatencyReport = null;
+    var lat_name: []const u8 = "";
+    if (lat_xy) |xy| {
+        lat_name = lat_state orelse if (!std.mem.eql(u8, want, "*")) want else states[0].name;
+        var found = false;
+        for (states) |st| if (std.mem.eql(u8, st.name, lat_name)) {
+            var opts = opts_base;
+            opts.steps = st.steps;
+            if (st.msaa) |ms| opts.msaa = ms;
+            lat = try latencyCheck(App, Host, Gpu, init.gpa, opts, xy[0], xy[1]);
+            found = true;
+            break;
+        };
+        if (!found) return error.UnknownState;
+    }
+
+    var aw: std.Io.Writer.Allocating = .init(init.gpa);
+    defer aw.deinit();
+    const w = &aw.writer;
+    try w.print("{{\n  \"idle_frames\": {d},\n", .{gate_frames});
+    try w.print("  \"memory\": {{\"rss_bytes\": {d}, \"committed_bytes\": {d}, \"source\": ", .{ mem.rss_bytes, mem.committed_bytes });
+    try std.json.Stringify.encodeJsonString(mem.source, .{}, w);
+    try w.writeAll("},\n  \"states\": [\n");
+    for (rows.items, 0..) |row, i| {
+        const r = row.r;
+        try w.writeAll("    {\"name\": ");
+        try std.json.Stringify.encodeJsonString(row.name, .{}, w);
+        try w.print(", \"frames\": {d}, \"busy\": {d}, \"presented\": {d}, \"blinks\": {d}, \"settled\": {s}, \"fully_quiet\": {s}, \"rewoke\": {s}, \"busy_at_end\": {s}, \"first_busy\": ", .{
+            r.frames,
+            r.busy,
+            r.presented,
+            r.blinks,
+            if (r.settled()) "true" else "false",
+            if (r.fullyQuiet()) "true" else "false",
+            if (r.rewoke) "true" else "false",
+            if (r.busy_at_end) "true" else "false",
+        });
+        if (r.first_busy) |b| try w.print("{d}", .{b}) else try w.writeAll("null");
+        try w.writeAll(if (i + 1 == rows.items.len) "}\n" else "},\n");
+    }
+    try w.writeAll("  ],\n  \"latency\": ");
+    if (lat) |r| {
+        try w.print("{{\"frames\": {d}, \"unstable\": {s}, \"unchanged\": {s}, \"x\": {d}, \"y\": {d}, \"state\": ", .{
+            r.frames,
+            if (r.unstable) "true" else "false",
+            if (r.unchanged) "true" else "false",
+            r.x,
+            r.y,
+        });
+        try std.json.Stringify.encodeJsonString(lat_name, .{}, w);
+        try w.writeAll("}\n");
+    } else try w.writeAll("null\n");
+    try w.writeAll("}\n");
+    try std.Io.File.stdout().writeStreamingAll(init.io, aw.written());
 }
 
 /// Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). Each
