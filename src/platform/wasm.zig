@@ -131,50 +131,7 @@ const MAX_FILE_DIALOG_SLOTS: usize = 4;
 /// Allocator for transient request encodings (HTTP header text).
 const request_allocator = std.heap.wasm_allocator;
 
-// ── A11y DOM-mirror wire format (v2) ───────────────────────────────
-//
-// `publishA11yTree` ships the a11y snapshot (only when it changed: the run
-// loop diffs) to the JS side over two parallel buffers: a fixed-stride record
-// array (one record per node, parents before children) and a UTF-8 string
-// heap holding every label and value back-to-back. The zunk shim mirrors the
-// tree into a hidden, properly NESTED DOM subtree of ARIA elements, so
-// screen readers can navigate and operate canvas-rendered widgets, and
-// reports what the user does there back through `pollA11yActions`.
-//
-// Per-node record layout (little-endian; `extern struct`, 64 bytes):
-//
-//   offset  size  field
-//        0     4  cmd_index      u32  index into the source Cmd buffer (action target)
-//        4     4  role           u32  WIRE ROLE CODE (see `wireRole`, = zunk's table)
-//        8     4  label_offset   u32  byte offset into the string heap
-//       12     4  label_len      u32
-//       16    16  bounds x,y,w,h i32  rounded window-pixel rect
-//       32     4  state          f32  checkbox/radio 0/1, slider and progressbar [0, 1]
-//       36     4  flags          u32  see A11Y_FLAG_*
-//       40     4  value_offset   u32  editable text / value in the string heap
-//       44     4  value_len      u32
-//       48     4  sel_start      u32  selection inside the value (bytes)
-//       52     4  sel_end        u32
-//       56     4  parent         u32  record index of the enclosing node, 0xFFFFFFFF = root
-//       60     4  level          u32  heading level / tree depth, 0 = unspecified
-//
-// Wire role codes (ARIA names): 0 generic, 1 region, 2 text, 3 text (rich),
-// 4 button, 5 textbox, 6 checkbox, 7 radio, 8 slider, 9 separator, 10 img,
-// 11 dialog, 12 textbox (multiline), 13 combobox, 14 listbox, 15 option,
-// 16 menu, 17 menuitem, 18 tablist, 19 tab, 20 tree, 21 treeitem, 22 table,
-// 23 row, 24 cell, 25 progressbar, 26 status, 27 alert, 28 list, 29 listitem,
-// 30 toolbar, 31 heading, 32 menubar, 33 columnheader, 34 link.
-//
-// Fixed-size buffers (wasm-freestanding has no default heap; single-threaded;
-// JS reads them synchronously inside the extern call): 512 nodes x 64 bytes
-// = 32 KB of records, 32 KB string heap. Nodes past the cap and strings that
-// do not fit are dropped (the record stays, unlabeled).
-//
-// Actions come back the other way: `pollA11yActions` calls
-// `__zunk_poll_a11y_actions(recs, cap, strings, str_cap) -> count` once per
-// frame; each 16-byte record is `{kind u32, cmd_index u32, str_off u32,
-// str_len u32}` (kind = `a11y.ActionKind` order). The run loop turns them
-// into ordinary input.
+// The zunk accessibility wire contract is described in SRC.md.
 
 const MAX_A11Y_NODES: usize = 512;
 const A11Y_STRING_HEAP_BYTES: usize = 32 * 1024;
@@ -261,9 +218,7 @@ fn wireRole(n: A11yNode) u32 {
     };
 }
 
-// Module-scoped backing store for the two wire buffers. Single-host
-// wasm process — one publish-tree call at a time, single-threaded,
-// reused every frame. Zero per-frame allocation.
+// The single-threaded wasm Host reuses these buffers synchronously.
 var g_a11y_records: [MAX_A11Y_NODES * A11Y_RECORD_BYTES]u8 align(@alignOf(A11yRecord)) = undefined;
 var g_a11y_strings: [A11Y_STRING_HEAP_BYTES]u8 = undefined;
 
@@ -319,7 +274,6 @@ fn serializeA11yTree(nodes: []const A11yNode) struct { records_len: u32, strings
     return .{ .records_len = @intCast(count * A11Y_RECORD_BYTES), .strings_len = strings_used };
 }
 
-// ── A11y actions back from the page ────────────────────────────────
 
 const MAX_A11Y_ACTIONS: usize = 16;
 const A11Y_ACTION_BYTES: usize = 16;
@@ -449,9 +403,6 @@ pub const Host = struct {
             self.fx_polled = false;
         }
 
-        // Zunk reports held state AND per-frame press/release edges (a click
-        // that begins and ends inside one frame sets both), so there is no
-        // local edge derivation. Wheel is CSS pixels, positive = down/right.
         const mouse = zinput.getMouse();
         const mods = zinput.getModifiers();
         const q = &self.queue;
@@ -463,8 +414,6 @@ pub const Host = struct {
         q.released = buttonEdges(zinput.isMouseButtonReleased);
         q.wheel(mouse.wheel_x, mouse.wheel);
         {
-            // Touch points are client coordinates; teak's web canvas fills
-            // the page, so they match the canvas' CSS pixels.
             var pts: [2][2]f32 = undefined;
             const tn = @min(zinput.getTouchCount(), 2);
             for (0..tn) |i| {
@@ -474,8 +423,6 @@ pub const Host = struct {
             if (self.touch.step(q, pts[0..tn]) and self.touch.pinching) q.mods.ctrl = true;
         }
 
-        // Cmd (meta) acts as Ctrl for the chord keys (Cmd+V pastes on macOS);
-        // the reported `mods` keep the real state.
         const reported = q.mods;
         q.mods.ctrl = reported.ctrl or reported.meta;
         if (zinput.isKeyPressed(.alt)) q.altDown();
@@ -487,8 +434,6 @@ pub const Host = struct {
         }
         if (zinput.isKeyReleased(.alt)) q.altUp();
         q.mods = reported;
-        // Zunk delivers whole UTF-8 code points and no control codes or
-        // Ctrl/Cmd chords; `pushText` re-validates and drops anything else.
         q.pushText(zinput.getTypedChars());
         self.pollIme(q);
 
@@ -655,11 +600,6 @@ pub const Host = struct {
         return decodeA11yActions(count, out);
     }
 
-    // Browser file dialogs go through the showOpenFilePicker API which
-    // is async and gesture-gated — incompatible with the synchronous
-    // `openFileDialog` shape. The sync variants stay no-op; apps that
-    // need cross-platform file picking should use the async
-    // `requestFileDialog` / `pollFileDialogResult` pair below.
     pub fn openFileDialog(_: *Host, _: FileDialogFilter) FileDialogResult {
         return null;
     }
@@ -714,8 +654,7 @@ pub const Host = struct {
         self.file_dialog_slots[slot_idx].state = .pending;
         self.file_dialog_slots[slot_idx].path_len = 0;
         const id: u32 = @intCast(slot_idx + 1);
-        // Unconditional: a has-decl check on the private externs is always false for non-`pub`
-        // decls, which silently dropped every request (audit-enforced).
+        // Private externs cannot be discovered by a public has-decl check.
         {
             externs.__zunk_request_file_dialog(
                 id,
@@ -749,11 +688,6 @@ pub const Host = struct {
         slot.state = .resolved_ok;
     }
 
-    // ── Declarative effects (zunk.web.fx) ──────────────────────────
-    //
-    // `submit` starts the work and returns; results (and unsolicited pastes /
-    // drops) are fetched by `pollInputs` and handed out here. The completion
-    // slices stay valid until the next `pollInputs`.
 
     pub fn submit(_: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
@@ -894,7 +828,6 @@ comptime {
     teak.validateHost(Host);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 //
 // These tests exercise the pure serialization helper
 // (`serializeA11yTree`) without touching the JS bridge. Wired into

@@ -20,17 +20,9 @@ pub const Wrap = text_wrap.Wrap;
 const DEFAULT_FONT = text.DEFAULT_FONT;
 const TextureHandle = text.TextureHandle;
 
-// ── Shared (Msg-independent) types ─────────────────────────────────
 
 pub const Direction = enum { vertical, horizontal };
 
-// ── Accessibility semantics ────────────────────────────────────────
-//
-// Cmds already imply a role for their own kind (button, text_input, slider,
-// ...). Higher-level patterns built from groups and buttons (tabs, lists,
-// trees, tables, menus, dialogs, live status) carry an `A11yHint` so the
-// a11y tree (`input/a11y.zig`) and the platform mirrors (Win32 UIA, web DOM)
-// can expose them. Pure data; the default (`semantic = .none`) changes nothing.
 
 pub const A11ySemantic = enum {
     none,
@@ -431,18 +423,6 @@ pub const ScrollStyle = struct {
     id: u32 = 0,
 };
 
-// ── Overlay (HARDLINE §2 escape hatch 5) ───────────────────────────
-//
-// Absolute-positioned floating region. Content between push_overlay /
-// pop_overlay draws above non-overlay content and hit-tests before it.
-// Position is explicit (app fills .x/.y from prev-frame anchor or mouse
-// coords — same pattern as the slider). Width/height = 0 means measured
-// from children; >0 = forced size.
-//
-// Promoted to a Msg-generic type so `backdrop_msg` (a click-outside-to-
-// close hook) can carry a Msg without smuggling a function pointer
-// (HARDLINE §3). Existing call sites use anonymous struct literals
-// (`cb.pushOverlay(.{ .x = ... })`) so the type lift is transparent.
 
 pub fn OverlayStyle(comptime Msg: type) type {
     return struct {
@@ -538,12 +518,6 @@ pub fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
     };
 }
 
-// ── Image rendering (functional gap #2) ─────────────────────────────
-//
-// Carries a TextureHandle that the Gpu backend resolves to a real
-// resource (wgpu texture, WebGPU texture, ...). The app uploads the
-// image via the Gpu surface's `uploadImage` (returns a TextureHandle),
-// stashes the handle in Model, and emits `image` with it each frame.
 
 pub const ImageStyle = struct {
     /// Intrinsic size in pixels. The render pass scales the texture
@@ -568,14 +542,6 @@ pub const ImageCmd = struct {
     style: ImageStyle = .{},
 };
 
-// ── Virtual list (functional gap #6) ────────────────────────────────
-//
-// Container that *claims* `total_count * item_extent` of main-axis
-// space (for the scroll container to size correctly) but only contains
-// cmds for the visible window. The app computes visible_start /
-// visible_end from the parent scroll offset and only emits cmds for
-// rows in that range. push_virtual_list is intended to sit directly
-// inside a push_scroll.
 
 pub const VirtualListStyle = struct {
     direction: Direction = .vertical,
@@ -607,14 +573,6 @@ pub const VirtualListStyle = struct {
     id: u32 = 0,
 };
 
-// ── Rich text (functional gap #8) ───────────────────────────────────
-//
-// Mixed-style text: a base content string carved into runs by `spans`.
-// Each span colors / weights / sizes a contiguous byte range. Layout
-// measures by walking the spans (so font-size changes affect total
-// width). Render emits one TextDraw per visible span. The spans slice
-// lives in the per-frame arena — typically built by walking a rich_zig
-// `Text` value into `RichTextSpan`s.
 
 /// A styled byte range of a `rich_text` (defined in `text.zig` so `text_wrap`
 /// can measure runs without importing the Cmd types).
@@ -635,12 +593,6 @@ pub const RichTextCmd = struct {
     text_align: TextAlign = .start,
 };
 
-// ── Mixed-font text builder ────────────────────────────────────────
-//
-// Ergonomic constructor for RichTextCmd: an app declares a list of
-// styled parts and the framework computes byte offsets + spans in the
-// arena. Closes ergonomic gap 7 — mixing mono columns + sans labels in
-// one paragraph no longer requires hand-rolling spans.
 
 pub const MixedPart = struct {
     text: []const u8,
@@ -652,20 +604,6 @@ pub const MixedPart = struct {
     italic: bool = false,
 };
 
-// ── Canvas (charts + custom 2D drawing, consumer issue #3) ─────────
-//
-// A fixed-size leaf that draws a list of pure-data 2D primitives through
-// the EXISTING solid-quad pipeline — no shader / GPU-backend changes.
-// Axis-aligned prims are plain quads; polyline segments are emitted as
-// 4-corner quads (see render/vertex.zig `emitQuadCorners`). Coordinates
-// on every primitive are canvas-LOCAL logical pixels (f32), origin at the
-// canvas rect's top-left; the render pass translates them to window
-// space and clips to the canvas rect. No callbacks, no closures, no
-// text-in-canvas in v1 — apps compose regular `text` cmds around it.
-//
-// HARDLINE: `CanvasPrimitive` is a data tagged union (like `Cmd` itself);
-// it carries no function pointers. The `primitives` slice is built by
-// `view` into the per-frame arena (typically via `core/chart.zig`).
 
 /// A point in canvas-local logical pixels.
 pub const CanvasPoint = struct {
@@ -966,12 +904,6 @@ pub fn CanvasCmd(comptime Msg: type) type {
     };
 }
 
-// ── 3D scene (kerf: depth-tested mesh inside the UI) ────────────────
-//
-// A fixed-size leaf the Gpu fills with a rendered 3D scene (see
-// `core/scene.zig`, docs/features/scene3d.md). Like `image`, it is layout
-// + a draw record: the render pass emits a `SceneDraw`; the Gpu renders the
-// mesh offscreen and composites it at the leaf's rect.
 
 pub const SceneStyle = struct {
     /// Intrinsic size in logical pixels; the scene is rendered at exactly
@@ -1016,11 +948,6 @@ pub fn SceneCmd(comptime Msg: type) type {
     };
 }
 
-// ── Generic Cmd + CmdBuffer over Msg ───────────────────────────────
-//
-// Per proto 2 Option A: CmdBuffer is generic over the composed AppMsg.
-// Components emit commands using the composed Msg; this keeps routing
-// explicit rather than hiding it behind a per-component wrapper.
 
 /// Keyboard grouping of list-row buttons (see docs/features/focus.md).
 pub const Roving = enum {
@@ -1214,19 +1141,6 @@ pub fn Cmd(comptime Msg: type) type {
     };
 }
 
-// ── Cmd-buffer balance validation ──────────────────────────────────
-//
-// Every push_* Cmd (push_group / push_scroll / push_overlay /
-// push_virtual_list) must be closed by the matching pop_*. A missing
-// pop, a stray pop, or a *crossed* pair (push_group … pop_overlay) is
-// otherwise a silent bug: LayoutEngine's FixedStack only panics on
-// overflow/underflow, and a balanced-but-crossed buffer doesn't even
-// trip that — it just produces wrong rects. `validateBalance` walks the
-// flat buffer once and names the first imbalance so it surfaces as an
-// actionable message instead of a mystery layout glitch.
-//
-// Pure, O(n), zero allocation. Intended for debug builds / tests / the
-// host loop's per-frame guard (see docs/features/layout.md).
 
 /// The container kinds that bracket a region of the flat buffer.
 /// `pushFormRow` / `popFormRow` are sugar over `push_group` / `pop_group`
@@ -1408,12 +1322,6 @@ pub fn formatBalanceError(err: BalanceError, buf: []u8) []const u8 {
     } catch buf[0..0];
 }
 
-// ── Form row (ergonomic gap 4) ─────────────────────────────────────
-//
-// Composite [label, content, units] horizontal layout with an optional
-// validation message stacked below it. push/pop pair so the app can
-// emit any cmds it wants in the middle (text_input, slider, mixedText,
-// etc.) — the framework brackets the label + units + validation.
 
 pub const FormRowOpts = struct {
     /// Label to the left of the content (theme.text_color). Empty
@@ -1498,7 +1406,6 @@ pub fn CmdBuffer(comptime Msg: type) type {
             self.form_row_depth = 0;
         }
 
-        // ── Convenience emitters ───────────────────────────────────
 
         pub fn pushGroup(self: *Self, style: GroupStyle) void {
             self.cmds.append(self.backing, self.box(.push_group, style)) catch oom();
@@ -1816,7 +1723,6 @@ pub fn CmdBuffer(comptime Msg: type) type {
             })) catch oom();
         }
 
-        // ── Overlay / virtual list / image / rich text ─────────────
 
         pub fn pushOverlay(self: *Self, style: OverlayStyle(Msg)) void {
             self.cmds.append(self.backing, self.box(.push_overlay, style)) catch oom();
@@ -2012,17 +1918,13 @@ pub fn CmdBuffer(comptime Msg: type) type {
         ///     horizontal: [label] [content] [units]
         ///     [validation]
         pub fn pushFormRow(self: *Self, opts: FormRowOpts) void {
-            // Cap of 8 in-flight form rows; deeper nesting is a bug, not
-            // a growth trigger. Assert mirrors the layout stacks: loud
-            // crash in Debug/ReleaseSafe, zero cost in ReleaseFast.
+            // Form-row nesting is bounded at eight.
             if (self.form_row_depth >= self.form_row_stack.len) @panic("teak: pushFormRow nested deeper than 8 (form_row_stack capacity)");
-            // Outer vertical (content row + validation message).
             self.cmds.append(self.backing, self.box(.push_group, .{
                 .direction = .vertical,
                 .padding = 0,
                 .gap = opts.validation_gap,
             })) catch oom();
-            // Inner horizontal (label + content + units).
             self.cmds.append(self.backing, self.box(.push_group, .{
                 .direction = .horizontal,
                 .padding = 0,
@@ -2112,7 +2014,6 @@ pub fn CmdBuffer(comptime Msg: type) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

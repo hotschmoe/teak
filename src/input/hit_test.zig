@@ -6,10 +6,6 @@ const Rect = layout.Rect;
 const ClipStack = layout.ClipStack;
 const clipRect = layout.clipRect;
 
-// ── Hit-Test ───────────────────────────────────────────────────────
-//
-// Generic over the Cmd slice type. The Msg is recovered from the slice's
-// element type via its `MsgT` decl, so callers just pass `cb.cmds.items`.
 
 pub fn HitResult(comptime Msg: type) type {
     return struct {
@@ -49,20 +45,15 @@ fn Leaf(comptime Msg: type) type {
 /// a non-interactive cmd.
 fn interactiveLeaf(c: anytype) ?Leaf(@TypeOf(c).MsgT) {
     return switch (c) {
-        // Disabled buttons/inputs are non-interactive.
         .button => |b| if (b.disabled) null else .{ .msg = b.msg },
         .text_input => |t| if (t.disabled) null else .{ .msg = t.focus_msg },
         .text_area => |t| if (t.disabled) null else .{ .msg = t.focus_msg },
         .checkbox => |cb| .{ .msg = cb.msg },
         .radio => |r| .{ .msg = r.msg },
         .slider => |s| .{ .msg = s.grab_msg },
-        // A canvas is interactive with a click Msg, a pointer surface, or
-        // both; otherwise it is a decorative leaf that clicks pass through.
         .canvas => |cv| if (cv.msg != null or cv.pointer) .{ .msg = cv.msg } else null,
-        // Same rule for a 3D scene.
         .scene3d => |sc| if (sc.msg != null or sc.pointer) .{ .msg = sc.msg } else null,
-        // Containers and decorative leaves: clicks pass through. Listed
-        // explicitly (no `else`) so a new Cmd variant must be classified here.
+        // Exhaustive classification requires new command variants to be handled.
         .push_group,
         .push_grid,
         .pop_group,
@@ -98,11 +89,7 @@ pub fn hitTest(
     mouse_x: f32,
     mouse_y: f32,
 ) ?HitResult(CmdMsg(@TypeOf(cmds))) {
-    // Overlay layer first (it wins): a hit there short-circuits. A
-    // modal overlay containing the mouse but with no interactive leaf
-    // returns a "consumed, no Msg" result that *also* short-circuits —
-    // the base layer must NOT receive clicks landing on a modal's dim
-    // backdrop, regardless of `backdrop_msg`.
+    // Modal overlay clicks must not fall through to the base layer.
     if (hitTestLayer(cmds, rects, mouse_x, mouse_y, .overlay)) |h| return h;
     return hitTestLayer(cmds, rects, mouse_x, mouse_y, .base);
 }
@@ -134,11 +121,6 @@ fn hitTestLayer(
     var overlay_depth: u32 = 0;
     var best: ?HitResult(Msg) = null;
 
-    // Track the innermost modal overlay containing the mouse during
-    // the .overlay pass so we can synthesize a "consumed" hit if no
-    // interactive leaf claimed the click. Painter's-order applies: a
-    // later modal overlay overrides an earlier one if both contain
-    // the point.
     var modal_index: ?usize = null;
     var modal_msg: ?Msg = null;
 
@@ -154,14 +136,8 @@ fn hitTestLayer(
             .pop_scroll => clip.pop(),
             .push_overlay => |ov| {
                 overlay_depth += 1;
-                // Overlay is its own clip so contents are bounded by
-                // the overlay rect (e.g. menu items past the menu's
-                // height shouldn't hit-test).
                 clip.push(clipRect(rects[i], cur_clip));
-                // Note a modal overlay containing the mouse so we can
-                // claim the click below even if no leaf catches it.
-                // Honor the parent clip too — a modal nested under a
-                // scrolled-away parent shouldn't claim.
+                // A modal outside its parent clip must not claim the click.
                 if (layer == .overlay and ov.modal and
                     rectContains(rects[i], mouse_x, mouse_y) and
                     rectContains(cur_clip, mouse_x, mouse_y))
@@ -184,14 +160,10 @@ fn hitTestLayer(
         }
     }
     if (best) |h| return h;
-    // No leaf claimed the click. If a modal overlay contained the
-    // mouse, consume the click on its behalf so base-layer widgets
-    // underneath don't accidentally fire.
     if (modal_index) |idx| return .{ .index = idx, .msg = modal_msg };
     return null;
 }
 
-// ── Pointer / wheel targets ────────────────────────────────────────
 
 /// The pointer canvas (`CanvasCmd.pointer`) under the cursor.
 pub const PointerTarget = struct {
@@ -432,7 +404,6 @@ pub fn sliderDrag(
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 
@@ -447,20 +418,12 @@ pub fn sliderDrag(
 
 
 
-// ── Modal overlay (click-outside-to-close, no fallthrough) ─────────
 
 
 
 
-// Regression for the press/release host gate: `hoverTest` must claim
-// the modal-backdrop area so `press_target` arms on the overlay's cmd
-// index. Otherwise the host's `hover_under_mouse == press_target`
-// check fails on mouseup and `hitTest` is never invoked — making the
-// modal-fallback path in `hitTest` dead code at runtime even though
-// its unit tests pass.
 
 
-// ── Pointer canvas + wheel target tests ────────────────────────────
 
 fn testLayout(rects: []Rect, cb: anytype, w: f32, h: f32) []const Rect {
     layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, w, h, text_mod.monoMeasurer());

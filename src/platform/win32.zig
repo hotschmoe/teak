@@ -28,7 +28,6 @@ pub const FileDialogResult = teak.FileDialogResult;
 pub const FileDialogPoll = teak.FileDialogPoll;
 pub const FileDialogFilter = teak.FileDialogFilter;
 
-// ── Win32 types + constants ────────────────────────────────────────
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 const BOOL = c_int;
@@ -148,8 +147,7 @@ extern "user32" fn TranslateMessage(*const MSG) callconv(WINAPI) BOOL;
 extern "user32" fn DispatchMessageW(*const MSG) callconv(WINAPI) LRESULT;
 extern "user32" fn DefWindowProcW(HANDLE, UINT, WPARAM, LPARAM) callconv(WINAPI) LRESULT;
 extern "user32" fn PostQuitMessage(c_int) callconv(WINAPI) void;
-// The name is a MAKEINTRESOURCE integer (often odd), not a real pointer, so it
-// must not claim `u16` alignment.
+// MAKEINTRESOURCE values can be odd and must not claim `u16` alignment.
 extern "user32" fn LoadCursorW(?HANDLE, ?*align(1) const anyopaque) callconv(WINAPI) ?HANDLE;
 extern "user32" fn GetKeyState(c_int) callconv(WINAPI) i16;
 extern "user32" fn SetCapture(HANDLE) callconv(WINAPI) ?HANDLE;
@@ -165,7 +163,6 @@ extern "kernel32" fn GetModuleHandleW(?LPCWSTR) callconv(WINAPI) ?HANDLE;
 /// Standard screen DPI Windows treats as the 1.0 baseline.
 const USER_DEFAULT_SCREEN_DPI: f32 = 96;
 
-// Clipboard externs.
 extern "user32" fn OpenClipboard(?HANDLE) callconv(WINAPI) BOOL;
 extern "user32" fn CloseClipboard() callconv(WINAPI) BOOL;
 extern "user32" fn EmptyClipboard() callconv(WINAPI) BOOL;
@@ -179,9 +176,6 @@ extern "kernel32" fn GlobalSize(HANDLE) callconv(WINAPI) usize;
 const CF_UNICODETEXT: UINT = 13;
 const GMEM_MOVEABLE: UINT = 0x0002;
 
-// Common file dialog — OPENFILENAMEW (W version, the only one supported
-// since Vista). Lots of fields; we use the minimum required for a
-// "pick one file" dialog.
 const OPENFILENAMEW = extern struct {
     lStructSize: DWORD = @sizeOf(OPENFILENAMEW),
     hwndOwner: ?HANDLE = null,
@@ -216,8 +210,6 @@ const OFN_EXPLORER: DWORD = 0x00080000;
 extern "comdlg32" fn GetOpenFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
 extern "comdlg32" fn GetSaveFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
 
-// Per-monitor DPI awareness (v2): Windows stops bitmap-stretching the window
-// and reports physical pixels; the Host converts to logical units itself.
 extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(WINAPI) BOOL;
 extern "user32" fn GetDpiForSystem() callconv(WINAPI) UINT;
 extern "user32" fn SetWindowPos(HANDLE, ?HANDLE, c_int, c_int, c_int, c_int, UINT) callconv(WINAPI) BOOL;
@@ -240,7 +232,6 @@ fn dpiScale(dpi: u32) f32 {
     return if (dpi == 0) 1.0 else @as(f32, @floatFromInt(dpi)) / USER_DEFAULT_SCREEN_DPI;
 }
 
-// Drag-and-drop of files from Explorer (WM_DROPFILES).
 const WM_DROPFILES: UINT = 0x0233;
 extern "shell32" fn DragAcceptFiles(HANDLE, BOOL) callconv(WINAPI) void;
 extern "shell32" fn DragQueryFileW(HANDLE, UINT, ?[*]u16, UINT) callconv(WINAPI) UINT;
@@ -267,14 +258,6 @@ fn queueDroppedFiles(hdrop: HANDLE) void {
     }
 }
 
-// ── OLE drag-and-drop (IDropTarget) and image paste ────────────────
-//
-// `RegisterDragDrop` replaces `WM_DROPFILES` for the window and delivers
-// whatever the source offers through an `IDataObject`: files (CF_HDROP,
-// queued like WM_DROPFILES), images (registered "PNG", else CF_DIB) and
-// text (CF_UNICODETEXT). Images become the same `Drop{kind = .image}` the web
-// host produces (PNG <= 1568 px + RGBA thumbnail), text `Drop{kind = .text}`.
-// The DIB / PNG / thumbnail conversions are pure and live in `win32_data.zig`.
 
 const POINTL = extern struct { x: c_long, y: c_long };
 
@@ -585,18 +568,6 @@ const FileDialogSlot = struct {
     path_len: usize = 0,
 };
 
-// ── IME externs (imm32) ───────────────────────────────────────────
-//
-// Imm* APIs surface the IME composition string to the application. The
-// system delivers WM_IME_STARTCOMPOSITION, WM_IME_COMPOSITION (one or
-// more times as the user edits the pre-commit string), and
-// WM_IME_ENDCOMPOSITION. On commit, the system additionally posts
-// WM_CHAR for each committed codepoint — which means we don't need to
-// route committed text ourselves, just the pre-commit display.
-//
-// ImmGetCompositionStringW with GCS_COMPSTR returns the UTF-16 bytes of
-// the in-flight string; with GCS_CURSORPOS returns the caret offset
-// (in UTF-16 code units) inside it.
 const HIMC = *anyopaque;
 const WM_IME_STARTCOMPOSITION: UINT = 0x010D;
 const WM_IME_ENDCOMPOSITION: UINT = 0x010E;
@@ -621,19 +592,7 @@ const VK_X: WPARAM = 0x58;
 const VK_Y: WPARAM = 0x59;
 const VK_Z: WPARAM = 0x5A;
 
-// ── UIA (uiautomationcore.dll) ─────────────────────────────────────
-//
-// UI Automation bridge: per-frame `publishA11yTree` snapshots the
-// flat A11yNode tree into module-scoped storage, and Narrator /
-// Inspect.exe walk it via three published interfaces on the singleton
-// root (Simple + Fragment + FragmentRoot) plus one Fragment provider
-// per node (see `NodeProvider` below). All access is serialized by
-// `g_a11y_lock` because UIA queries arrive on its own worker thread.
-//
-// HARDLINE: this is a Host §4(d) surface extension — same hatch
-// clipboard / file dialogs / a11y-publishing already use. No platform
-// types leak above the Host boundary; `publishA11yTree`'s public shape
-// is unchanged.
+// Host accessibility boundary: HARDLINE §2 hatch 4.
 
 const HRESULT = c_long;
 const ULONG = c_ulong;
@@ -706,7 +665,6 @@ const UIA_E_ELEMENTNOTAVAILABLE: HRESULT = @bitCast(@as(u32, 0x80040201));
 const ToggleState_Off: c_int = 0;
 const ToggleState_On: c_int = 1;
 
-// Provider option bits (only ServerSideProvider matters for us).
 const ProviderOptions_ServerSideProvider: c_int = 0x01;
 
 /// Marker sentinel UIA expects as the first element of a runtime ID
@@ -714,14 +672,12 @@ const ProviderOptions_ServerSideProvider: c_int = 0x01;
 /// element is our caller-defined id (we use the node's cmd_index).
 const UiaAppendRuntimeId: c_int = 3;
 
-// UIA property + control type constants we need.
 const UIA_ControlTypePropertyId: c_long = 30003;
 const UIA_NamePropertyId: c_long = 30005;
 const UIA_IsKeyboardFocusablePropertyId: c_long = 30009;
 const UIA_HasKeyboardFocusPropertyId: c_long = 30008;
 const UIA_BoundingRectanglePropertyId: c_long = 30001;
 
-// Control types: just the ones our roles map to.
 const UIA_WindowControlTypeId: c_long = 50032;
 const UIA_GroupControlTypeId: c_long = 50026;
 const UIA_TextControlTypeId: c_long = 50020;
@@ -751,16 +707,13 @@ const UIA_DataItemControlTypeId: c_long = 50029;
 const UIA_HeaderItemControlTypeId: c_long = 50035;
 const UIA_TableControlTypeId: c_long = 50036;
 
-// Event ids
 const UIA_StructureChangedEventId: c_long = 20002;
 const StructureChangeType_ChildrenInvalidated: c_int = 4;
 
 const UiaRootObjectId: LPARAM = -25;
 const WM_GETOBJECT: UINT = 0x003D;
 
-// VARIANT — *minimum* shape for the few types we return. Real VARIANT
-// is much larger; this layout is the truncated form UIA tolerates when
-// we only ever set vt = VT_I4, VT_BSTR, or VT_BOOL.
+// This truncated VARIANT layout is valid only for the returned types.
 const VT_EMPTY: u16 = 0;
 const VT_I4: u16 = 3;
 const VT_BSTR: u16 = 8;
@@ -773,7 +726,6 @@ const VARIANT = extern struct {
     wReserved1: u16 = 0,
     wReserved2: u16 = 0,
     wReserved3: u16 = 0,
-    // 8-byte payload union. Use raw bytes; cast per vt.
     payload: [16]u8 = @splat(0),
 };
 
@@ -840,18 +792,6 @@ extern "kernel32" fn DeleteCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) v
 extern "kernel32" fn EnterCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) void;
 extern "kernel32" fn LeaveCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) void;
 
-// ── COM vtable layout for the three interfaces we publish ─────────
-//
-// Each vtable's "this" parameter is typed as `*VtblPtr` — i.e. a
-// pointer to the field inside the owning struct that holds the vtable
-// pointer. UIA passes us a pointer to the interface (which IS a
-// pointer to the vtable-pointer), so we can recover the owning
-// RootProvider / NodeProvider via `@fieldParentPtr` on the field name
-// that matches the vtable we're inside.
-//
-// Distinct typed pointers per vtable mean QueryInterface returns the
-// right `this` for each interface, and the method bodies don't have
-// to discriminate at runtime.
 
 const SimpleThis = *const IRawElementProviderSimple_Vtbl;
 const FragmentThis = *const IRawElementProviderFragment_Vtbl;
@@ -952,7 +892,6 @@ const NodeProvider = extern struct {
     index: u32,
 };
 
-// ── RootProvider vtable methods (Simple) ───────────────────────────
 
 fn rpQueryInterface(this: *SimpleThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *RootProvider = @fieldParentPtr("vtbl_simple", this);

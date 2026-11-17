@@ -3,44 +3,7 @@ const cmd = @import("cmd.zig");
 const component = @import("component.zig");
 const keys = @import("../input/keys.zig");
 
-// ── Dropdown / Select ────────────────────────────────────────────────
-//
-// A select widget built ENTIRELY from existing primitives — there is no
-// new Cmd variant. The closed state is a single `button`; the open list
-// is the same modal-overlay pattern the help dialog uses (pushOverlay +
-// modal + backdrop_msg, an inner vertical pushGroup, one button per
-// option, popGroup, popOverlay). modal+backdrop_msg gives
-// click-outside-to-close for free via the hit-test pass.
-//
-// Motivation (consumer issue #2): radio rows stop scaling past ~10
-// options, and apps need many pickers (species lists, rebar sizes, steel
-// sections, code editions, exposure categories). A dropdown collapses an
-// arbitrarily long option set to one row when closed.
-//
-// HARDLINE shape:
-//   • The Dropdown owns ONLY transient-free state: `open` + `selected`
-//     (an index). All state lives in the composed Model, per §1.
-//   • The OPTION LABELS are owned by the app, not the component. They are
-//     passed to `viewWith` at call time — exactly how counter_greeter
-//     hands a custom msgs struct to greeter.view. The component never
-//     stores a slice it didn't allocate.
-//   • Cmds carry DATA, never fn-pointers (§3). The `selectMsg` below is a
-//     comptime *parameter* to a view helper — it builds a Msg *value* that
-//     is stored on the button Cmd. The function itself is never a field on
-//     any Cmd, so the data-only invariant holds.
-//
-// Two view entry points:
-//   • `view(model, cb, msgs)` — the canonical 3-arg signature the
-//     `validateComponent` contract + the generated composed view require.
-//     With no options slice available it can only draw the CLOSED button
-//     (labelled PLACEHOLDER). It exists so a Dropdown composes through
-//     `Components(.{...})` like any other component.
-//   • `viewWith(model, cb, options, msgs, opts)` — the RICHER view the app
-//     calls EXPLICITLY (the generated path passes only 3 args and has no
-//     slot for `options`/`opts`). This is what apps actually use; it draws
-//     the closed button labelled with the real selection and, when open,
-//     the overlay list. Same hand-call pattern counter_greeter uses to
-//     drive greeter.view with a bespoke msgs struct.
+// Model ownership and command constraints: HARDLINE §1 and §3; see SRC.md.
 
 /// Height of a single open-list option row, in pixels. Matches
 /// `LayoutEngine.BUTTON_HEIGHT` (the option buttons are plain buttons, so
@@ -345,10 +308,7 @@ pub fn Dropdown(comptime cap: usize) type {
                     .height = viewport_h,
                     .modal = true,
                     .backdrop_msg = msgs.close,
-                    // Fill the whole viewport rect so the scrolled list is
-                    // opaque — otherwise a click landing in the (transparent)
-                    // dead zone right of a short row would fall through to the
-                    // modal backdrop and close instead of select.
+                    // The opaque viewport prevents clicks falling through to the backdrop.
                     .backdrop = cb.theme.panel_bg,
                     .padding = 0,
                     .gap = 0,
@@ -365,9 +325,6 @@ pub fn Dropdown(comptime cap: usize) type {
                 cb.popScroll();
                 cb.popOverlay();
             } else {
-                // Non-scrolling list: the modal-overlay pattern (see help
-                // dialog in counter_greeter). modal + backdrop_msg =>
-                // click-outside closes.
                 cb.pushOverlay(.{
                     .x = opts.list_x,
                     .y = opts.list_y,
@@ -380,10 +337,7 @@ pub fn Dropdown(comptime cap: usize) type {
                     .padding = 0,
                     .gap = 0,
                 });
-                // Zero padding/gap on the panel so each option row can span
-                // the full list width — a click anywhere across a row (not
-                // just over the label text) lands on the option button, never
-                // on the modal backdrop behind it.
+                // Full-width rows keep clicks on options rather than the backdrop.
                 cb.pushGroup(.{
                     .direction = .vertical,
                     .bg = cb.theme.panel_bg,
@@ -409,8 +363,6 @@ pub fn Dropdown(comptime cap: usize) type {
             row_width: f32,
         ) void {
             for (options, 0..) |opt, i| {
-                // Force every row to the full list width so the whole row is
-                // a clickable target (see `ButtonStyle.min_width`).
                 var style = cb.theme.button;
                 style.min_width = row_width;
                 // Scroll math counts ITEM_HEIGHT rows whatever the theme's button height is.
@@ -425,12 +377,10 @@ pub fn Dropdown(comptime cap: usize) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 
 
-// A tiny AppMsg used to exercise the explicit view + selectMsg convention.
 const TestApp = struct {
     pub const Msg = union(enum) {
         toggle,
@@ -453,7 +403,6 @@ const test_options = [_][]const u8{ "Alpha", "Beta", "Gamma", "Delta" };
 
 
 
-// ── Scrolling open list ─────────────────────────────────────────────
 
 const layout = @import("../layout/engine.zig");
 const hit_test = @import("../input/hit_test.zig");

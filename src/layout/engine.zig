@@ -8,7 +8,6 @@ const Align = cmd.Align;
 const Justify = cmd.Justify;
 const TextMeasurer = text.TextMeasurer;
 
-// ── Types ──────────────────────────────────────────────────────────
 
 pub const Rect = struct {
     x: f32 = 0,
@@ -16,10 +15,6 @@ pub const Rect = struct {
     w: f32 = 0,
     h: f32 = 0,
 
-    // Meaningful only for container entries (push_group / push_scroll /
-    // push_overlay / push_virtual_list) after the measure pass. Carried
-    // into the position pass so flex / justify distribution has the totals
-    // without rescanning children.
     fixed_main: f32 = 0,
     flex_total: f32 = 0,
     child_count: u32 = 0,
@@ -214,10 +209,7 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
 
         const Self = @This();
 
-        // push / pop / top check the capacity and non-empty bounds with an
-        // unconditional `@panic` (every optimize mode): overflow, underflow
-        // and read-empty are programmer errors — the passes call
-        // `assertPushable` / `assertPoppable` first to name the cmd index.
+        // Bounds failures panic in every optimization mode.
 
         fn push(self: *Self, item: T) void {
             if (self.len >= capacity) @panic("teak layout: container stack overflow");
@@ -238,19 +230,7 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
     };
 }
 
-// ── Layout Engine ──────────────────────────────────────────────────
-//
-// Two O(n) passes over a flat []Cmd (four when the frame has wrapped text or
-// `shrink > 0` nodes: widths resolve top-down, heights re-measure bottom-up). Works for any Cmd(Msg) since we
-// only read Msg-independent fields (styles, labels, content).
-//
-// Sizing model (details in docs/features/layout.md):
-//   - measure: every node gets an intrinsic outer size; a group/scroll
-//     `width`/`height` replaces it, `min_width`/`min_height` floor it.
-//   - position: a container's final size is known before its children are
-//     placed. Main axis: flex children split the leftover (on top of their
-//     own size); with no flex children `justify` distributes it. Cross axis:
-//     `align_cross` places each child, `.stretch` sizes it to the inner extent.
+// Layout sizing and pass invariants: docs/features/layout.md and SRC.md.
 
 pub const LayoutEngine = struct {
     const TEXT_HEIGHT: f32 = 20;
@@ -596,16 +576,6 @@ pub const LayoutEngine = struct {
         return needs_wrap;
     }
 
-    // ── Passes 2-3: wrapped text and flex shrink (docs/features/layout.md) ──
-    //
-    // Only run when pass 1 saw wrapped `text` or a `shrink > 0` container.
-    // Pass 2 walks forward over containers and, for each, settles its direct
-    // children's WIDTHS (flex growth, shrink down to min-content, cross-axis
-    // stretch, wrapped-text width) -- exactly the width decisions the position
-    // pass would make later, made early so heights can depend on them. Pass 3
-    // re-measures HEIGHTS bottom-up (wrapped text height = its line count)
-    // and refreshes the container accumulators the position pass reads.
-    // After both, the position pass finds no width left to distribute.
 
     /// A direct child as the width passes see it.
     const Kid = struct {

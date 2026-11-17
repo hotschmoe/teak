@@ -183,7 +183,6 @@ fn emitWrapped(
         if (!line.ellipsized and bidi_text.mayBeRtl(piece)) {
             var sc: bidi_text.Scratch = .{};
             if (bidi_text.layoutLine(txt.content, line.start, line.end, txt.font, measurer, std.math.inf(f32), &sc)) |lay| {
-                // A right-to-left paragraph starts at the right edge.
                 const bx = switch (txt.text_align) {
                     .start => if (lay.para_rtl) rect.x + rect.w - line.width else rect.x,
                     else => x,
@@ -193,8 +192,6 @@ fn emitWrapped(
             }
         }
         if (line.ellipsized) {
-            // Two draws, no allocation: the kept text, then a static "…"
-            // right after it (the run loop's allocator is the long-lived gpa).
             const ew = measurer.measure(text_wrap.ELLIPSIS, txt.font).width;
             const kept_w = line.width - ew;
             emitText(text_draws, alloc, piece, txt.font, txt.color, .{ .x = x, .y = y, .w = kept_w, .h = lh }, clip);
@@ -319,7 +316,6 @@ fn emitTextArea(
             const b = @min(sel_hi, @as(usize, line.hang));
             const x0 = if (a > line.start) measurer.measure(ta.content[line.start..a], ta.font).width else 0;
             var x1 = if (b > line.start) measurer.measure(ta.content[line.start..b], ta.font).width else x0;
-            // A selection that runs past the line end shows a newline stub.
             if (sel_hi > line.hang) x1 += lh * 0.3;
             if (x1 > x0) emit(verts, alloc, .{ .x = ox + x0, .y = y, .w = x1 - x0, .h = lh }, st.selection_bg, clip);
         }
@@ -444,8 +440,6 @@ fn buildLayer(
             .base => !in_overlay,
             .overlay => in_overlay,
         };
-        // Keyboard focus ring: a frame just OUTSIDE the widget, drawn before it
-        // (nothing of the widget covers it). One look in retro and modern.
         if (visible and transient.nav_index != null and transient.nav_index.? == i) {
             const w = transient.ring_width;
             const outer = Rect{ .x = rect.x - w, .y = rect.y - w, .w = rect.w + 2 * w, .h = rect.h + 2 * w };
@@ -461,8 +455,6 @@ fn buildLayer(
         switch (c) {
             .push_overlay => |ov| {
                 overlay_depth += 1;
-                // Only the overlay layer draws the backdrop + clips to
-                // the overlay rect.
                 if (layer == .overlay) {
                     if (ov.shadow) |sh| {
                         const shadow_rect = Rect{ .x = rect.x + ov.shadow_offset[0], .y = rect.y + ov.shadow_offset[1], .w = rect.w, .h = rect.h };
@@ -474,13 +466,7 @@ fn buildLayer(
                     }
                     clip.push(clipRect(rect, cur_clip));
                 } else {
-                    // Base-layer must still push a clip so the
-                    // overlay's children are correctly skipped from
-                    // base-layer accumulation — but a no-effect clip
-                    // (the existing cur_clip) is wrong because then
-                    // contents would draw. We push a zero rect so
-                    // anything inside is clipped away (defensive — the
-                    // `visible` gate already drops them).
+                    // A zero clip defensively suppresses overlay children in the base pass.
                     clip.push(.{ .x = -1e9, .y = -1e9, .w = 0, .h = 0 });
                 }
             },
@@ -491,9 +477,6 @@ fn buildLayer(
             .push_scroll => clip.push(clipRect(rect, cur_clip)),
             .pop_scroll => clip.pop(),
             .push_group => |grp| {
-                // Optional panel/card fill. Drawn BEFORE children so they
-                // paint on top. Layout already gives us the group's full
-                // (padded) rect; no inset.
                 if (visible) {
                     if (!emitSurface(verts, alloc, rect, grp.radius, grp.bg, grp.gradient, grp.border, grp.border_width, grp.soft_shadow, cur_clip)) {
                         if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
@@ -532,8 +515,6 @@ fn buildLayer(
                     emitRichWrapped(text_draws, alloc, rt, rect, cur_clip, measurer);
                     continue;
                 }
-                // Walk spans + uncovered ranges, emitting one TextDraw
-                // per run. Maintains an x cursor along the rect.
                 var x_cursor = rect.x;
                 var byte_cursor: u32 = 0;
                 for (rt.spans) |sp| {
@@ -565,8 +546,6 @@ fn buildLayer(
                 if (!visible) continue;
                 if (rect.w <= 0 or rect.h <= 0) continue;
                 if (img.handle == TEXTURE_HANDLE_NONE) {
-                    // No texture loaded yet — draw a tinted placeholder
-                    // so the app sees where the image would go.
                     emit(verts, alloc, rect, img.style.tint, cur_clip);
                 } else {
                     image_draws.append(alloc, .{
@@ -623,8 +602,6 @@ fn buildLayer(
             },
             .button => |btn| {
                 if (!visible) continue;
-                // Disabled buttons show no hover/press feedback: a flat
-                // greyed-out bg + greyed label, skipping the color ladder.
                 var bg = btn.style.disabled_bg;
                 var fg = btn.style.disabled_fg;
                 var label_dy: f32 = 0;
@@ -645,9 +622,6 @@ fn buildLayer(
                         fg = btn.style.fg;
                     }
                 }
-                // Rounded / gradient / shadowed buttons are one SDF quad; the
-                // gradient is the idle look, a raised shadow is dropped while
-                // pressed or disabled.
                 const raised = idle or (!btn.disabled and (if (transient.hover_index) |hi| hi == i else false));
                 const sdf_drawn = emitSurface(verts, alloc, rect, btn.style.radius, bg, if (idle) btn.style.gradient else null, btn.style.border, btn.style.border_width, if (raised) btn.style.soft_shadow else null, cur_clip);
                 if (!sdf_drawn) {
@@ -698,8 +672,6 @@ fn buildLayer(
             },
             .text_input => |ti| {
                 if (!visible) continue;
-                // Disabled inputs are non-interactive: flat greyed border +
-                // bg + text, skipping focus border, selection, and cursor.
                 const focused = !ti.disabled and (if (transient.focus_index) |fi| fi == i else false);
                 const border_color = if (ti.disabled)
                     ti.style.disabled_border
@@ -708,8 +680,6 @@ fn buildLayer(
                 else
                     ti.style.border;
 
-                // Boxed: border-colored rect with the bg inset inside it.
-                // Underline: no box, just a rule along the bottom edge.
                 const underline = ti.style.variant == .underline;
                 const pad_x = if (underline) UNDERLINE_PADDING_X else INPUT_TEXT_PADDING;
                 const pad_y = if (underline) UNDERLINE_PADDING_Y else INPUT_TEXT_PADDING;
@@ -727,8 +697,6 @@ fn buildLayer(
                     }
                 }
 
-                // Selection highlight before the text so text draws on top.
-                // Disabled inputs never draw selection.
                 var ti_scratch: bidi_text.Scratch = .{};
                 const ti_lay: ?bidi_text.Layout = if (bidi_text.mayBeRtl(ti.content) and std.mem.indexOfScalar(u8, ti.content, '\n') == null)
                     bidi_text.layoutLine(ti.content, 0, ti.content.len, ti.font, measurer, std.math.inf(f32), &ti_scratch)
@@ -774,12 +742,6 @@ fn buildLayer(
                     }
                 }
 
-                // IME composition: when the focused input has an active
-                // pre-commit string, draw it inline at the caret with an
-                // underline indicator. The composition lives in
-                // TransientState (mirror of Host.imeState()) and never
-                // enters Model — commit fires WM_CHAR which flows through
-                // the normal text-input update path.
                 const ime_drawn = focused and transient.ime_active and transient.ime_text.len > 0;
                 if (ime_drawn) {
                     const prefix_w = if (ti_lay) |l| l.caretX(ti.cursor) else measurer.prefixWidth(ti.content, ti.font, ti.cursor);
@@ -801,11 +763,6 @@ fn buildLayer(
                     emit(verts, alloc, underline_rect, ti.style.cursor, cur_clip);
                 }
 
-                // Blinking cursor when focused (phase from the run loop's
-                // Host-clock `blink_on`, default 500 ms on / 500 ms off).
-                // While IME composition is active the caret moves to the
-                // end of the composition string so the user sees where
-                // the next codepoint will commit.
                 if (focused and transient.blink_on) {
                     const base_prefix = if (ti_lay) |l| l.caretX(ti.cursor) else measurer.prefixWidth(ti.content, ti.font, ti.cursor);
                     const ime_offset = if (ime_drawn)
