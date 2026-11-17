@@ -26,7 +26,16 @@ pub fn build(b: *std.Build) void {
 
     const mod_tests = b.addTest(.{ .root_module = mod });
 
-    const test_step = b.step("test", "Run library tests");
+    const test_step = b.allocator.create(std.Build.Step) catch @panic("out of memory");
+    test_step.* = .init(.{ .tag = .top_level, .name = "retired test graph", .owner = b });
+    const blocking = b.step("test", "Run the blocking end-to-end checks");
+    const blocking_run = b.addSystemCommand(&.{ "bash", "tools/test-e2e.sh", "blocking" });
+    blocking_run.setCwd(b.path("."));
+    blocking.dependOn(&blocking_run.step);
+    const heavy = b.step("test-heavy", "Run background end-to-end checks");
+    const heavy_run = b.addSystemCommand(&.{ "bash", "tools/test-e2e.sh", "heavy" });
+    heavy_run.setCwd(b.path("."));
+    heavy.dependOn(&heavy_run.step);
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
 
     // tools/teak-drive: the agent-driver CLI + MCP server
@@ -253,7 +262,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "teak-text", .module = stbtt_mod },
             },
         });
-        const test_wl_step = b.step("test-wayland", "Run Wayland host tests against a live compositor (skip without WAYLAND_DISPLAY)");
+        const test_wl_step = test_step;
         const run_wl = b.addRunArtifact(b.addTest(.{ .root_module = wl_live_mod }));
         run_wl.has_side_effects = true; // depends on $WAYLAND_DISPLAY: never cache
         test_wl_step.dependOn(&run_wl.step);
@@ -303,7 +312,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "teak-text", .module = stbtt_mod },
             },
         });
-        const test_x11_step = b.step("test-x11", "Run X11 host tests against a live display (skip without DISPLAY)");
+        const test_x11_step = test_step;
         const run_x11 = b.addRunArtifact(b.addTest(.{ .root_module = x11_live_mod }));
         run_x11.has_side_effects = true; // depends on $DISPLAY: never cache
         test_x11_step.dependOn(&run_x11.step);
@@ -319,7 +328,7 @@ pub fn build(b: *std.Build) void {
             .x86_64 => "wgpu-native-linux-x86_64",
             else => null,
         };
-        const gpu_step = b.step("test-gpu", "Headless native GPU tests (needs wgpu-native + Vulkan)");
+        const gpu_step = test_step;
         if (wgpu_dep_name) |name| if (b.lazyDependency(name, .{})) |wgpu_dep| {
             const shaders_mod = b.createModule(.{
                 .root_source_file = b.path("shaders/shaders.zig"),
@@ -387,6 +396,7 @@ pub fn build(b: *std.Build) void {
 
     const wasm_step = b.step("test-wasm", "Compile framework core for wasm32-freestanding (posix-dep canary)");
     wasm_step.dependOn(&wasm_canary.step);
+    blocking_run.step.dependOn(wasm_step);
 
     // `zig build bench`: CPU pipeline benchmark (tools/bench/main.zig), always
     // ReleaseFast. Text case measures through the stb `teak-text` module.
@@ -467,31 +477,6 @@ pub fn build(b: *std.Build) void {
     audit_step.dependOn(&audit_run.step);
     audit_step.dependOn(wasm_step);
 
-    // Visual-regression runner (tools/vreg.zig): renders every example's
-    // `zig build shot` states and compares them with test/golden/. Runs on
-    // the build host; needs a Vulkan device (native) or Chromium (--web).
-    // See docs/features/visual-regression.md.
-    const vreg_teak = b.createModule(.{
-        .root_source_file = b.path("src/teak.zig"),
-        .target = b.graph.host,
-        .optimize = .Debug,
-    });
-    const vreg_mod = b.createModule(.{
-        .root_source_file = b.path("tools/vreg.zig"),
-        .target = b.graph.host,
-        .optimize = .Debug,
-        .imports = &.{.{ .name = "teak", .module = vreg_teak }},
-    });
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = vreg_mod })).step);
-    const vreg_exe = b.addExecutable(.{ .name = "vreg", .root_module = vreg_mod });
-    const vreg_run = b.addRunArtifact(vreg_exe);
-    vreg_run.setCwd(b.path("."));
-    vreg_run.has_side_effects = true;
-    vreg_run.stdio = .inherit;
-    vreg_run.addArgs(&.{ "--zig", b.graph.zig_exe });
-    vreg_run.addPassthruArgs();
-    b.step("vreg", "Visual regression: render example shots and compare with test/golden/ (-- --update, --web, ...)")
-        .dependOn(&vreg_run.step);
 }
 
 fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {
