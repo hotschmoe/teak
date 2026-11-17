@@ -1,8 +1,5 @@
 #!/bin/bash
-# Regenerate docs/images/showcase/ (see docs/showcase.md). Run after the last merges:
-#   tools/showcase.sh [tmp-dir]
-# Needs: zig, a Vulkan device (native shots), chromium + `cd tools && npm ci` (web shots,
-# WEBSHOT_ANGLE=vulkan on hosts that need it), python3 with Pillow. Takes a few minutes.
+# Regenerate docs/images/showcase/; see SRC.md.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=${1:-/tmp/showcase}
@@ -12,7 +9,6 @@ for e in gallery kerf_viewer scene_layers notes tables chrome todo; do
   "$ROOT/tools/qa/out/bin/qa-$e" "$TMP/native" --scale 1
 done
 "$ROOT/tools/qa/out/bin/qa-kerf_viewer" "$TMP/native" --scale 2 --state section_hover
-# complex scripts through HarfBuzz (optional: needs the Noto faces, see docs/features/harfbuzz.md)
 FONTS=${NOTES_SCRIPT_FONTS:-$HOME/.cache/teak-test-fonts}
 if [ -f "$FONTS/NotoNaskhArabic-Regular.ttf" ]; then
   (cd "$ROOT/examples/notes" && NOTES_SCRIPT_FONTS="$FONTS" zig build shot -Dharfbuzz=true -- "$TMP/native/notes-scripts@1x.png" --state scripts)

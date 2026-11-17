@@ -12,13 +12,11 @@ pub fn build(b: *std.Build) void {
     };
     const optimize = b.standardOptimizeOption(.{});
 
-    // Shape complex scripts (Arabic, Hebrew, Indic) with HarfBuzz: off by default.
     const harfbuzz = b.option(bool, "harfbuzz", "Shape complex scripts with HarfBuzz (native)") orelse false;
 
     const teak_dep = b.dependency("teak", .{ .target = target, .optimize = optimize });
     const teak_mod = teak_dep.module("teak");
 
-    // --- CLI ---
 
     const exe = b.addExecutable(.{
         .name = "notes",
@@ -39,16 +37,11 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
 
-    // --- Tests ---
 
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
     const test_step = b.step("test", "Run notes tests");
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
-    // --- Native UI (wgpu native: Win32 / X11) ---
-    //
-    // Gated on `hasNativeBackend` so non-native targets still configure
-    // `run`/`test`/`web`; `linkNativeWgpu` picks the backend per OS.
 
     if (teak.hasNativeBackend(target.result.os.tag)) {
         const ui_exe = b.addExecutable(.{
@@ -70,9 +63,6 @@ pub fn build(b: *std.Build) void {
         ui_step.dependOn(&ui_run.step);
     }
 
-    // --- Headless screenshot (no display; needs a Vulkan device) ---
-    //
-    //   zig build shot -- out.png
 
     if (target.result.os.tag == .linux) {
         const shot_exe = b.addExecutable(.{
@@ -90,7 +80,6 @@ pub fn build(b: *std.Build) void {
         shot_step.dependOn(&shot_run.step);
     }
 
-    // --- Web (wasm + zunk) ---
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,

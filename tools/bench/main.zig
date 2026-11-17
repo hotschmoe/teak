@@ -24,7 +24,6 @@ const ITERS = 20;
 const SIZES = [_]usize{ 100, 1_000, 10_000, 50_000 };
 
 fn nowNs() u64 {
-    // Portable monotonic clock (std.os.linux is Linux-only).
     return @intCast(std.Io.Clock.awake.now(std.Options.debug_io).nanoseconds);
 }
 
@@ -53,9 +52,6 @@ fn buildProse(cb: *CB, n: usize) void {
     cb.popScroll();
 }
 
-// World-space canvas geometry, built once in `main` (the vector-canvas case
-// models a structural frame: segments + node dots behind a pan / zoom
-// transform, so `view` only hands the slices over).
 var canvas_segs: []const [4]f32 = &.{};
 var canvas_nodes: []const teak.CanvasPrimitive = &.{};
 
@@ -164,7 +160,6 @@ pub fn main() !void {
     std.debug.print("{s:<6} {s:>7} {s:>8} {s:>9} {s:>9} {s:>9} {s:>9} {s:>9}\n", .{ "case", "rows", "cmds", "view", "layout", "hit", "render", "cmdsEq" });
     for (SIZES) |n| printRow("rows", try run(gpa, n, buildRows, teak.monoMeasurer()));
 
-    // Vector canvas: N antialiased segments + N/4 SDF node dots, all on screen.
     try buildCanvasGeometry(gpa, 80_000);
     defer gpa.free(canvas_segs);
     defer gpa.free(canvas_nodes);

@@ -8,7 +8,6 @@ const theme = @import("theme.zig");
 
 const W = teak.widgets;
 
-// ── Widget instances ───────────────────────────────────────────────
 
 pub const Action = enum {
     reset,
@@ -77,7 +76,6 @@ pub const list_row_h: f32 = 22;
 pub const list_h: f32 = 200;
 
 pub const Msg = union(enum) {
-    // shell
     go: Page,
     look: Look,
     window: [2]f32,
@@ -91,7 +89,6 @@ pub const Msg = union(enum) {
     dialog_cancel,
     demo: u8,
     toast_push: struct { kind: W.toast.Kind, sticky: bool = false },
-    // controls
     clicked,
     check_a,
     check_b,
@@ -101,7 +98,6 @@ pub const Msg = union(enum) {
     toggle_dark_hint,
     slider_grab: SliderId,
     slider_set: struct { id: SliderId, v: f32 },
-    // inputs
     focus_set: Field,
     /// Tab left the text fields for another widget: nothing has text focus.
     blur,
@@ -114,7 +110,6 @@ pub const Msg = union(enum) {
     drop: Drop.Msg,
     combo: Combo.Msg,
     area: Area.Msg,
-    // data
     tree_toggle: u8,
     row_pick: u8,
     list_scroll_by: f32,
@@ -123,14 +118,12 @@ pub const Msg = union(enum) {
     note_extent: [2]f32,
     chart_run,
     chart_tick,
-    // layout
     tabs: Tabs.Msg,
     split: Split.Msg,
     progress: Progress.Msg,
     job_start,
     job_tick,
     job_cancel,
-    // scene
     scene_orbit,
     scene_tick,
     scene_zoom: f32,
@@ -152,7 +145,6 @@ pub const Model = struct {
     toasts: Toasts.Model = .{},
     tip: Tooltip.Model = .{},
 
-    // controls
     check_a: bool = true,
     check_b: bool = false,
     radio: u8 = 1,
@@ -162,7 +154,6 @@ pub const Model = struct {
     volume: f32 = 0.35,
     mix: f32 = 0.7,
 
-    // inputs
     focus: ?Field = null,
     name: NameField.Model = .{},
     search: NameField.Model = .{},
@@ -171,7 +162,6 @@ pub const Model = struct {
     combo: Combo.Model = .{},
     area: Area.Model = .{},
 
-    // data
     tree_open: [tree_len]bool = .{ true, true, false, false, true, false, false, false, true, false, false, false, false, false },
     row_sel: u8 = 1,
     list_scroll: f32 = 0,
@@ -184,14 +174,12 @@ pub const Model = struct {
     chart_t: u32 = 0,
     series: [series_len]f32 = initialSeries(),
 
-    // layout
     tabs: Tabs.Model = .{},
     split: Split.Model = .{ .ratio = 0.42 },
     progress: Progress.Model = .{ .phase = 18 },
     job: f32 = 0,
     job_running: bool = false,
 
-    // scene
     azimuth: f32 = 0.6,
     distance: f32 = 8.5,
     orbiting: bool = false,
@@ -214,7 +202,6 @@ pub fn sample(t: u32) f32 {
     return 0.5 + 0.32 * @sin(x * 0.21) + 0.12 * @sin(x * 0.67 + 1.3);
 }
 
-// ── Update ─────────────────────────────────────────────────────────
 
 pub fn update(m: *Model, msg: Msg) void {
     switch (msg) {
@@ -387,7 +374,6 @@ pub fn reset(m: *Model) void {
     refreshSubs(m);
 }
 
-// ── Subscriptions ──────────────────────────────────────────────────
 
 fn refreshSubs(m: *Model) void {
     var n: usize = 0;

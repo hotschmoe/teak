@@ -1,14 +1,5 @@
 #!/usr/bin/env node
-// rAF cost of a web example under scrolling: serve a zunk `dist/`, load it in headless Chromium,
-// wrap requestAnimationFrame so every frame callback (wasm update + view + layout + render + the
-// WebGPU command encoding, i.e. everything the page does per frame on the main thread) is timed, drive
-// the mouse wheel over the page, and report per-frame JS time. Software (SwiftShader) WebGPU does the
-// actual rasterization off the main thread, so this measures the app's own cost, not the GPU.
-//
-//   cd tools && npm ci
-//   node tools/web-frame-bench.mjs <dist-dir> [--wheel X,Y] [--frames 240] [--delta 120] [--shot out.png]
-//        [--click X,Y] [--keys ArrowDown,...] [--width 1100 --height 700] [--chrome PATH]
-// Env: WEBSHOT_ANGLE=vulkan on hosts whose SwiftShader needs it (see webshot.mjs).
+// Frame-time benchmark for web examples; see SRC.md.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -58,7 +49,6 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width, height });
   page.on('pageerror', (e) => { problems.push(`pageerror: ${e.message || e}`); console.log(`[pageerror] ${e.stack || e}`); });
-  // Time every requestAnimationFrame callback.
   await page.evaluateOnNewDocument(() => {
     const raf = window.requestAnimationFrame.bind(window);
     window.__frameMs = [];

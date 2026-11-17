@@ -218,9 +218,6 @@ pub const Renderer = struct {
             .attributeCount = mesh_attrs.len,
             .attributes = &mesh_attrs,
         }};
-        // Per-item instance stream (`scene_pass.Packed`): drawn per instance for
-        // triangles; bound with stride 0 for lines so every segment of one
-        // item reads the same record.
         const inst_attrs = [_]c.WGPUVertexAttribute{
             .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 0, .shaderLocation = 4 },
             .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 16, .shaderLocation = 5 },
@@ -234,7 +231,6 @@ pub const Renderer = struct {
             .attributeCount = inst_attrs.len,
             .attributes = &inst_attrs,
         } };
-        // One instance = one segment = a pair of LineVertex.
         const seg_stride = 2 * @sizeOf(LineVertex);
         const line_attrs = [_]c.WGPUVertexAttribute{
             .{ .format = c.WGPUVertexFormat_Float32x3, .offset = @offsetOf(LineVertex, "pos"), .shaderLocation = 0 },
@@ -291,7 +287,6 @@ pub const Renderer = struct {
             .samples = samples,
         }) orelse return error.PipelineCreateFailed;
 
-        // Grid: fullscreen triangle, its own uniform block.
         const grid_shader = try wgpu_c.createShader(device, "scene-grid-shader", scene_grid_wgsl);
         defer c.wgpuShaderModuleRelease(grid_shader);
         var grid_entry = std.mem.zeroes(c.WGPUBindGroupLayoutEntry);
@@ -322,7 +317,6 @@ pub const Renderer = struct {
             .samples = samples,
         }) orelse return error.PipelineCreateFailed;
 
-        // Cap pipelines: both draw into the same depth+stencil attachment.
         var stencil_ds = wgpu_c.depthState(depth_format, false, c.WGPUCompareFunction_Always);
         stencil_ds.stencilFront = .{ .compare = c.WGPUCompareFunction_Always, .failOp = c.WGPUStencilOperation_Keep, .depthFailOp = c.WGPUStencilOperation_Keep, .passOp = c.WGPUStencilOperation_Invert };
         stencil_ds.stencilBack = stencil_ds.stencilFront;
@@ -346,7 +340,6 @@ pub const Renderer = struct {
         cap_ds.stencilBack = cap_ds.stencilFront;
         cap_ds.stencilReadMask = 0xFFFFFFFF;
         cap_ds.stencilWriteMask = 0xFFFFFFFF;
-        // A cap vertex is a position and a colour: the `LineVertex` layout.
         const cap_attrs = [_]c.WGPUVertexAttribute{
             .{ .format = c.WGPUVertexFormat_Float32x3, .offset = @offsetOf(LineVertex, "pos"), .shaderLocation = 0 },
             .{ .format = c.WGPUVertexFormat_Float32x4, .offset = @offsetOf(LineVertex, "color"), .shaderLocation = 1 },
@@ -370,7 +363,6 @@ pub const Renderer = struct {
             .samples = samples,
         }) orelse return error.PipelineCreateFailed;
 
-        // Plane layers and sprites.
         const layer_inst_attrs = [_]c.WGPUVertexAttribute{
             .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 0, .shaderLocation = 4 },
             .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 16, .shaderLocation = 5 },
@@ -526,7 +518,6 @@ pub const Renderer = struct {
         c.wgpuBindGroupLayoutRelease(self.bgl);
     }
 
-    // ── Meshes ─────────────────────────────────────────────────────
 
     /// Copy `data` into GPU buffers. Returns `MESH_HANDLE_NONE` when the
     /// data is invalid, the table is full, or the device refuses.
@@ -761,7 +752,6 @@ pub const Renderer = struct {
         return t.inst_buf != null;
     }
 
-    // ── Targets ────────────────────────────────────────────────────
 
     pub fn target(self: *const Renderer, index: usize) ?*const Target {
         return if (self.targets[index]) |*t| t else null;
@@ -907,7 +897,6 @@ pub const Renderer = struct {
         if (inst_bytes > 0 and self.ensureInstBuf(t, inst_bytes)) {
             c.wgpuQueueWriteBuffer(self.queue, t.inst_buf, 0, self.plan.insts.items.ptr, inst_bytes);
             c.wgpuRenderPassEncoderSetBindGroup(pass, 0, t.bind_group, 0, null);
-            // Triangles: one instanced draw per run of items sharing a mesh.
             c.wgpuRenderPassEncoderSetPipeline(pass, self.mesh_pipeline);
             for (self.plan.runs.items) |run| {
                 const m = self.meshes.get(run.mesh) orelse continue;
@@ -917,7 +906,6 @@ pub const Renderer = struct {
                 c.wgpuRenderPassEncoderSetIndexBuffer(pass, m.index_buf, c.WGPUIndexFormat_Uint32, 0, c.WGPU_WHOLE_SIZE);
                 c.wgpuRenderPassEncoderDrawIndexed(pass, m.index_count, run.count, 0, 0, run.first);
             }
-            // Section caps: per item, stencil parity then the cap quad (which clears it).
             for (self.cap_quads.items) |cd| {
                 const run_mesh = self.meshOfInstance(cd.inst) orelse continue;
                 c.wgpuRenderPassEncoderSetPipeline(pass, self.stencil_pipeline);
@@ -930,7 +918,6 @@ pub const Renderer = struct {
                 c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, t.cap_buf, cd.first_vertex * @sizeOf(LineVertex), 6 * @sizeOf(LineVertex));
                 c.wgpuRenderPassEncoderDraw(pass, 6, 1, 0, 0);
             }
-            // Feature edges: one draw per item (its transform is bound at stride 0).
             c.wgpuRenderPassEncoderSetPipeline(pass, self.line_pipeline);
             for (self.plan.runs.items) |run| {
                 const m = self.meshes.get(run.mesh) orelse continue;
@@ -946,7 +933,6 @@ pub const Renderer = struct {
 
         self.drawLayers(pass, t, draw, images);
 
-        // Cut outline: exact plane x mesh segments, in their own pass-wide line style.
         if (cut_geo.outline_verts > 0) {
             c.wgpuRenderPassEncoderSetPipeline(pass, self.line_pipeline);
             c.wgpuRenderPassEncoderSetBindGroup(pass, 0, t.outline_bg, 0, null);
@@ -955,7 +941,6 @@ pub const Renderer = struct {
             c.wgpuRenderPassEncoderDraw(pass, 6, cut_geo.outline_verts / 2, 0, 0);
         }
 
-        // Grid: depth-tested against everything drawn above, blended over it.
         if (draw.grid) |grid| if (scene_pass.gridUniform(draw, grid, size.w, size.h, scale)) |gu| {
             c.wgpuQueueWriteBuffer(self.queue, t.grid_buf, 0, &gu, @sizeOf(scene_pass.GridUniform));
             c.wgpuRenderPassEncoderSetPipeline(pass, self.grid_pipeline);
@@ -963,7 +948,6 @@ pub const Renderer = struct {
             c.wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
         };
 
-        // Gizmo: axis triad in a corner sub-viewport, always on top.
         if (draw.gizmo) |gz| {
             const r = scene_pass.gizmoRect(gz, size.w, size.h, scale);
             const lines = scene_pass.gizmoLines(draw.camera.view_proj, gz);

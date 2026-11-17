@@ -55,7 +55,6 @@ pub fn main(init: std.process.Init) !void {
         App.update(&rt.model, .{ .table = .{ .sort = 4 } });
         App.update(&rt.model, .{ .table = .{ .sort = 4 } }); // price, descending
     }
-    // Land somewhere deep so the shot shows virtualization, not the top.
     const sc = switch (o.tab) {
         .table => &rt.model.table.sc,
         .list => &rt.model.list.sc,

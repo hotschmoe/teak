@@ -1,0 +1,188 @@
+# Source notes
+
+## src/core/pointer.zig
+
+Canvas coordinates are local logical pixels, except layout events, which carry the window-space origin and size. Pointer capture retains move and release events until the last held button is released. A drag target of zero means no target.
+
+## src/text/shaper.zig
+
+Fallback searches registered families, then the app chain and system last-resort list. For right-to-left shaping, an output-full result consumes the unresumable source tail; callers must size the output for the run. Kerning finalizes a base glyph when the next base is known. Default-ignorable code points draw nothing. Available precomposed glyphs take precedence over combining marks; otherwise marks have zero advance and missing marks are dropped.
+
+## src/gpu/wgpu_c.zig
+
+Native requests complete during `wgpuInstanceProcessEvents`, with callbacks storing their result through `userdata1`. The device requests adapter limits rather than defaults because software adapters may not support the defaults. `TEAK_GPU_FALLBACK=1` selects a software adapter.
+
+## src/text/hb_shaper.zig
+
+Bidirectional RTL runs remain RTL regardless of guessed script, and RTL run groups are emitted in reverse order. Tracking is disabled for joining scripts. When a run exceeds the output buffer, it is split at a code point boundary so shaping can resume.
+
+## src/gpu/web_scene.zig
+
+Triangle runs read one packed record per instance; line segments use stride zero so they share their item's record. Each section cap uses stencil parity followed by a cap quad that clears the stencil. The grid is depth-tested and the gizmo is always on top.
+
+## src/gpu/web.zig
+
+The image cache grows to 65,536 live images and falls back to a tinted placeholder when full. Scene targets render offscreen and their composite bind groups are rebuilt when targets change. Overlay staging separates base and overlay records: each layer draws solids, images, scene composites, then text, so opaque overlays cover base text. This order matches the native GPU core.
+
+The zunk atlas uses a downward y-axis from the baseline; glyph pixel (0,0) is at `(pen + bearing_x, baseline - bearing_y)`. The solid vertex buffer is also bound read-only in the fragment stage for SDF records.
+
+## src/gpu/wgpu_core.zig
+
+Image handles are slot indices plus one; zero is the sentinel. Scene bind groups are rebuilt when the offscreen target generation changes. Secondary windows share the device, queue, pipelines and caches; rendering rewrites the screen-size uniform for each surface. The swapchain format is fixed to BGRA8Unorm, so a backend that does not support it must query surface capabilities before selecting a format.
+
+Native resource release order is bind groups, views, textures, then vertex buffers. A presented frame texture must be released before reconfiguring the surface; holding it prevents DX12 swapchain resize. The screen-size uniform must be rewritten even for the primary window after a secondary window is rendered.
+
+The solid vertex buffer is bound in the fragment stage for SDF records. The glyph sampler uses nearest magnification to avoid re-blurring rasterized antialiasing and linear minification. Each layer draws solids, images, scene composites and then text; the overlay follows the base so it covers base text. Scene targets use device resolution and are composited 1:1.
+
+## src/gpu/wgpu_scene.zig
+
+Triangle runs read packed records per instance, while lines use stride zero so every segment shares its item's record. Section caps use stencil parity and a cap quad that clears the stencil. The grid is depth-tested and the gizmo is always on top.
+
+
+## examples/counter_greeter/build.zig
+
+The ARM64 feature override compensates for Zig's missing Windows i8mm detection. The native UI step exists only when Teak has a backend for the selected target; web and CLI builds do not require it.
+
+## examples/todo/build.zig
+
+The native UI and headless driver are enabled only for supported targets. The Linux development loader swaps rebuilt `libapp.so` while retaining compatible model state; see `docs/features/hot-reload.md`.
+
+## examples/chrome/build.zig
+
+The web `-Dstress=N` option substitutes the glyph-atlas stress app with N monospace text runs for the normal Chrome example.
+
+## tools/bench/main.zig
+
+The vector-canvas benchmark builds world-space frame geometry once; its view reuses the segments and node dots under a pan and zoom transform.
+
+## tools/gen_api.zig
+
+The API generator excludes module aliases nested inside modules and emits only names and kinds for nested public types and constants. Public Zig doc comments supply the generated reference and are retained.
+
+## tools/gen_unicode.zig
+
+Line-break and bidirectional classes apply Unicode file defaults before explicit entries. East Asian wide and fullwidth values set bit 7. Paired brackets pack as `cp | pair << 21 | is_close << 42` in code-point order.
+
+## tools/audit.zig
+
+The static-variable check uses column-zero declarations to distinguish module state from indented locals. Public exports are checked against `llms.txt` by substring, deliberately allowing wording to vary. Generated API docs are checked against `tools/gen_api.zig`; module trees must list non-test source files.
+
+## tools/win32_live/driver.zig
+
+A synthetic Alt tap and shared input queue allow the background driver to take foreground; topmost ordering avoids runner setup windows. A black screen capture falls back to the compositor's window pixels. The drag source offers only its real COM interfaces: claiming IMarshal corrupts cross-process drag. OLE requires actual relative mouse events, and a synthetic button press would capture input in the app instead of its drag loop.
+
+Cross-process `DoDragDrop` can block inside OLE on CI runners before reaching the app's drop target. The drag scenario is opt-in through `TEAK_LIVE_DRAG=1` and has a watchdog.
+
+## tools/showcase.sh
+
+Showcase generation requires Zig, Vulkan, Chromium, the tools npm dependencies and Pillow; the HarfBuzz shot additionally needs Noto script fonts. `WEBSHOT_ANGLE=vulkan` selects Vulkan where needed; see `docs/showcase.md`.
+
+## tools/showcase.py
+
+`SHOWCASE_MAC` and `SHOWCASE_WIN` supply screenshots from other hosts. The HiDPI crop uses device pixels without resampling.
+
+## tools/release.sh
+
+`tools/release.sh VERSION` changes the version in `build.zig.zon`, commits, tags and pushes it. The release workflow requires the tag to match the manifest version.
+
+## tools/web-frame-bench.mjs
+
+The benchmark times main-thread animation callbacks while scrolling a headless web example. SwiftShader rasterization runs off-thread, so its result excludes GPU cost. Install the tools npm dependencies and pass the distribution directory; `WEBSHOT_ANGLE=vulkan` selects Vulkan where needed.
+
+## tools/web-startup.mjs
+
+The startup profile reports medians from navigation, resource timing and zunk performance marks. Baseline and candidate distributions are sampled alternately with a fresh browser per run. `first-cb` measures the end of the first animation callback without requiring marks, so older builds remain comparable.
+
+## tools/web-ime-test.mjs
+
+The Chromium acceptance driver exercises focused, preedit, committed and canceled IME composition states through DevTools. It checks the hidden field's focus, page errors and pixel differences, allowing for caret blinking. It takes a distribution directory, output prefix and `--click X,Y`; exit codes are 0 for success, 1 for a failed check and 2 for usage.
+
+## tools/webshot.mjs
+
+The smoke check serves a web distribution in headless Chromium and rejects page errors or a blank canvas. Chromium is selected by `--chrome`, then `CHROME_PATH`, then PATH. Some Mali hosts need `WEBSHOT_ANGLE=vulkan`. Exit codes are 0 for success, 1 for a failed check and 2 for usage.
+
+## tools/qa/web.mjs
+
+The visual QA web driver extends the web smoke check with query parameters, scripted actions and device scale factor options.
+
+## tools/a11yprobe.mjs
+
+The probe exercises the browser accessibility tree and DOM mirror for the todo and notes examples; `dump` prints the tree without assertions. It exits with 0 for success, 1 for a failed check or page error, and 2 for usage. See `docs/features/a11y.md`.
+
+## tools/qa/web.py
+
+`web.py [example|all] [out-dir]` drives each selected web distribution through `tools/qa/web.mjs` at 1x and 2x device scale.
+
+## tools/hot_reload_check.sh
+
+The Linux hot-reload check rewrites the todo example and compares state, layout and screenshots across rebuilds. Its cleanup runs `git checkout` on that source file, so it can discard local edits and must not be run in a dirty worktree.
+
+## tools/qa/run.sh
+
+`tools/qa/run.sh [out-dir]` renders native and web examples at 1x and 2x. It needs Zig, Vulkan, Chromium and the tools npm dependencies; some hosts need `WEBSHOT_ANGLE=vulkan`. The default output directory is `/tmp/qa`.
+
+## shaders/image.wgsl
+
+The image tint arrives through the vertex stream; white is passthrough and tint alpha controls opacity.
+
+## shaders/scene_grid.wgsl
+
+The fullscreen grid intersects a world plane and writes depth so geometry can occlude it. Grid levels fade as cells become too small, and the grid dissolves before the far plane.
+
+## shaders/scene.wgsl
+
+Per-item placement uses `scene_pass.Packed` (80 bytes); normals use the linear transform and are normalized after interpolation. Plane layer depth bias orders coplanar sheets. Screen-space sprites retain pixel size; other sprites use billboard, axis-locked or fixed planes. Section caps invert stencil for kept faces and clear it while drawing the cap where parity is odd. Lines use one instance per segment, stride zero for the item transform, and extend half a width at each end to avoid gaps.
+
+## shaders/glyph.wgsl
+
+Each glyph instance uses raw 32-bit attributes shared by native and web. Positions are device pixels, while the screen uniform is logical size, so clip-space division uses `screen * scale`. Flag bits 0–1 select coverage, distance field or RGBA; bits 16–31 encode quad scale in 1/256 units. Coverage uses exact pixel-aligned fetches; distance fields use bilinear sampling and a derivative-sized edge transition. Colour glyphs use their own RGB and instance alpha.
+
+## shaders/quad.wgsl
+
+Solids, antialiased canvas edges and SDF quads share a stream to preserve painter order. Vertex alpha selects solid (`>= 0`), SDF (`-1`) or antialiased edge (`<= -1.5`, with opacity `-2 - a`); the SDF vertex's red field indexes a six-vertex header containing the 36-float record defined in `src/render/sdf.zig`. UVs are pixel offsets from the rect centre. Radii are ordered bottom-right, top-right, bottom-left, top-left with y increasing downward. Derivatives size antialiasing to a device pixel; gradients and shadows use dither to reduce 8-bit banding.
+
+## examples/gallery/src/page_data.zig
+
+The tree uses one Tab stop at its first row. Arrow keys move focus between rows, and Enter or Space toggles a folder.
+
+## examples/chrome/src/shot_main.zig
+
+Screenshot states advance 40 frames to settle the quick-keys popover; its mid-slide state uses deterministic 16 ms frames. Clear colour follows the selected theme. Stress labels are formatted before timing to exclude allocation.
+
+## examples/kerf_viewer/src/shot_main.zig
+
+Scripted window positions target the 1280×800 showcase layout.
+
+## examples/kerf_viewer/src/draw/tess.zig
+
+End ramps are emitted only for lines at least two pixels wide; hard ends on thinner text and hatch strokes avoid extra geometry. In screen coordinates, fill is left of travel for both positively oriented outer loops and negatively oriented holes, so numeric right is outward.
+
+## src/core/cmd.zig
+
+Accessibility hints let composite patterns built from primitive commands expose roles and state to platform mirrors; the default semantic hint leaves the primitive role unchanged. Overlays draw above and hit-test before base content; zero dimensions are measured from children, and an optional backdrop message carries click-outside handling without function pointers. Virtual lists claim total scroll extent while emitting only the visible window and are intended inside a scroll region. Rich-text spans refer to contiguous byte ranges in per-frame data. Canvas coordinates are local logical pixels; the renderer translates and clips them, while primitives remain plain data allocated for the frame. Scene commands produce offscreen-rendered draw records that are composited into the leaf rectangle. Command-buffer balance validation checks matching push/pop kinds as well as depth, because crossed pairs can otherwise silently produce incorrect layout. Form-row nesting is limited to eight in-flight rows.
+
+## src/layout/engine.zig
+
+Layout uses bottom-up measurement and top-down positioning; frames with wrapped text or shrinkable nodes also resolve widths top-down and remeasure heights bottom-up. Container accumulators carry child totals between passes, avoiding rescans. Flex consumes main-axis leftover before justification, and cross-axis stretch uses the container's inner extent. Overlays do not contribute to parent measurement. Virtual lists claim their full logical extent even when only a visible window is emitted. A flex scroll starts with zero main-axis size unless explicitly sized so overflow remains possible. Layout stack overflow, underflow and empty reads panic in every optimization mode; the passes attach the command index when checking bounds. See `docs/features/layout.md`.
+
+## src/render/build.zig
+
+Base rendering pushes a zero clip for overlay children, defensively suppressing them until the overlay pass. A group's panel and text-selection highlights are emitted before their contents so painter order places content on top. Missing image handles render tinted placeholders. Disabled controls omit interaction feedback, focus, selection and caret. IME preedit comes from `TransientState`, draws inline with an underline, and is committed through the normal text-input message path; the caret moves to the end of the preedit. Canvas primitives use the intersection of their own rect and enclosing scroll or overlay clip.
+
+## src/core/dropdown.zig
+
+Dropdown state is app-owned model data (`open` and selected index); option labels remain app-owned. The component emits existing button and modal-overlay primitives, with messages as data and the selection constructor supplied only at compile time. The three-argument component view has no option slice and shows the placeholder; applications use `viewWith` to supply labels. Open-list panels and rows fill the viewport width so clicks beside short labels select the row instead of falling through to the modal backdrop. See HARDLINE §1 and §3.
+
+## src/platform/win32.zig
+
+Integer `MAKEINTRESOURCE` identifiers may be odd and must not be represented as aligned UTF-16 pointers. Per-monitor DPI awareness makes Windows report physical pixels; the Host converts them to logical units. OLE `RegisterDragDrop` receives files, images and Unicode text from `IDataObject`; image conversions live in `win32_data.zig` and produce PNG data limited to 1,568 pixels plus an RGBA thumbnail. IME preedit is read through Imm APIs in UTF-16 units, while committed characters arrive through `WM_CHAR`. UI Automation queries run on a worker thread and share the published tree under `g_a11y_lock`; interface vtable pointers identify their owning provider. The truncated VARIANT layout is used only for the integer, BSTR and boolean values the bridge returns. These platform-owned surfaces remain behind the Host boundary; see HARDLINE §2 and §3.
+
+## src/platform/wasm.zig
+
+The accessibility mirror sends parents-first, little-endian 64-byte records and a UTF-8 heap synchronously to the zunk DOM shim. Record offsets are: command index 0, role 4, label offset/length 8/12, integer x/y/w/h 16–31, numeric state 32, flags 36, value offset/length 40/44, selection start/end 48/52, parent index 56 (`0xffffffff` for root), and heading/tree level 60. Role codes are defined by `wireRole` and must match zunk. The single-threaded Host reuses fixed buffers of 512 records and 32 KiB of strings; overflow nodes or strings are dropped, with oversized strings leaving an unlabeled record. Actions return in 16-byte records containing kind, command index, string offset and string length; the run loop turns them into input.
+
+Zunk supplies both held input state and per-frame edges, including both edges for a click contained in one frame; wheel units are CSS pixels and positive means down/right. Touch client coordinates match canvas CSS coordinates because the canvas fills the page. Meta acts as Ctrl for chords but remains Meta in reported modifiers. Text arrives as whole UTF-8 code points and is revalidated. Browser file dialogs are asynchronous and gesture-gated, so the synchronous Host variants cannot provide them. Effect result slices remain valid until the next `pollInputs`.
+
+## src/input/hit_test.zig
+
+Overlay hits take precedence over the base layer. A modal overlay containing the pointer consumes the click even when no interactive leaf or backdrop message claims it; nested modals respect the parent clip, and later overlays win in painter order. Hover must claim the modal backdrop too: the Host compares the press target with the release hover before dispatching the hit, so omitting the backdrop there prevents click-outside handling. Decorative canvas and scene leaves pass clicks through unless they expose a click message or pointer surface. Disabled controls are non-interactive. Command-tag switches are exhaustive so new variants require classification.

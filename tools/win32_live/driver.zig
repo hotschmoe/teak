@@ -166,7 +166,6 @@ fn sleepMs(ms: u32) void {
     Sleep(ms);
 }
 
-// ── Snapshot (the GUI as data) ─────────────────────────────────────
 
 var snap_path: []const u8 = "";
 
@@ -226,7 +225,6 @@ fn findWidget(snap: []const u8, kind: []const u8, label: []const u8) ?Rect {
     return null;
 }
 
-// ── Window + input ─────────────────────────────────────────────────
 
 var hwnd: HANDLE = undefined;
 /// False when the runner would not give us the foreground: input is then
@@ -240,19 +238,15 @@ fn scale() f32 {
 
 fn focusWindow() void {
     _ = ShowWindow(hwnd, 9); // SW_RESTORE
-    // A background process may not take the foreground: a synthetic ALT tap
-    // lifts that restriction.
     var alt = [_]INPUT{
         .{ .type = 1, .u = .{ .ki = .{ .wVk = 0x12, .wScan = 0, .dwFlags = 0, .time = 0, .dwExtraInfo = 0 } } },
         .{ .type = 1, .u = .{ .ki = .{ .wVk = 0x12, .wScan = 0, .dwFlags = KEYEVENTF_KEYUP, .time = 0, .dwExtraInfo = 0 } } },
     };
     _ = SendInput(2, &alt, @sizeOf(INPUT));
-    // Topmost first: some runner images keep a full-screen setup page open.
     _ = SetWindowPos(hwnd, @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     _ = SetForegroundWindow(hwnd);
     sleepMs(300);
     if (GetForegroundWindow() != hwnd) {
-        // Share the app thread's input queue, which lets us take the foreground.
         const app_thread = GetWindowThreadProcessId(hwnd, null);
         const me = GetCurrentThreadId();
         _ = AttachThreadInput(me, app_thread, 1);
@@ -339,7 +333,6 @@ fn typeText(text: []const u8) void {
     sleepMs(200);
 }
 
-// ── Clipboard ──────────────────────────────────────────────────────
 
 fn clipboardSet(text: []const u8) bool {
     var wide: [512]u16 = undefined;
@@ -371,7 +364,6 @@ fn clipboardGet(buf: []u8) ?[]const u8 {
     return buf[0..len];
 }
 
-// ── Capture ────────────────────────────────────────────────────────
 
 fn capture(name: []const u8) void {
     var rc: RECT = undefined;
@@ -395,12 +387,9 @@ fn capture(name: []const u8) void {
     const px = gpa_.alloc(u8, @as(usize, @intCast(cw)) * @as(usize, @intCast(ch)) * 4) catch return;
     defer gpa_.free(px);
 
-    // Screen grab first (what a user sees); PrintWindow if it came out black.
     _ = BitBlt(mem, 0, 0, cw, ch, screen, o.x, o.y, SRCCOPY | CAPTUREBLT);
     _ = GetDIBits(mem, bmp, 0, @intCast(ch), px.ptr, &hdr, 0);
     var method: []const u8 = "BitBlt";
-    // Without the foreground another window may cover ours on screen:
-    // ask the compositor for the window's own pixels instead.
     if (allBlack(px) or !foreground) {
         _ = PrintWindow(hwnd, mem, 2); // PW_RENDERFULLCONTENT
         _ = GetDIBits(mem, bmp, 0, @intCast(ch), px.ptr, &hdr, 0);
@@ -427,7 +416,6 @@ fn allBlack(px: []const u8) bool {
     return true;
 }
 
-// ── Drag and drop: an IDataObject offering one CF_HDROP file ───────
 
 const DataObject = extern struct {
     vtbl: *const extern struct {
@@ -495,9 +483,6 @@ fn isIid(iid: *const anyopaque, ids: []const u32) bool {
     }
     return false;
 }
-// COM probes for IMarshal and friends while marshalling a drag source across
-// processes: answering "yes" to those corrupts the drag, so only the real
-// interfaces (IUnknown 0, IDataObject 0x10e, IDropSource 0x121) are offered.
 fn doQI(this: *DataObject, iid: *const anyopaque, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const g: *const GUID = @ptrCast(@alignCast(iid));
     log("data QI {x}", .{g.d1});
@@ -576,7 +561,6 @@ fn dsQuery(_: *DropSource, escape: BOOL, _: DWORD) callconv(WINAPI) HRESULT {
     if (escape != 0) return 0x00040101; // DRAGDROP_S_CANCEL
     drag_polls += 1;
     if (drag_polls <= 3 or drag_polls % 10 == 0) log("QueryContinueDrag #{d}", .{drag_polls});
-    // Hover over the target for a moment, then drop.
     return if (drag_polls > 12 or GetTickCount64() > drag_deadline) DRAGDROP_S_DROP else 0;
 }
 fn dsFeedback(_: *DropSource, _: DWORD) callconv(WINAPI) HRESULT {
@@ -596,8 +580,6 @@ fn nudge(lx: f32, ly: f32) void {
     while (drag_running.load(.acquire)) {
         _ = lx;
         _ = ly;
-        // A real relative mouse move input event (SetCursorPos alone does not
-        // wake OLE's capture loop).
         const dx: c_long = if (flip) 3 else -3;
         const in = [_]INPUT{.{ .type = 0, .u = .{ .mi = .{ .dx = dx, .dy = 0, .mouseData = 0, .dwFlags = 1, .time = 0, .dwExtraInfo = 0 } } }};
         _ = SendInput(1, &in, @sizeOf(INPUT));
@@ -625,8 +607,6 @@ fn dragFile(path: []const u8, over_lx: f32, over_ly: f32) bool {
     drop_path_w[drop_path_len] = 0;
     drag_polls = 0;
     moveTo(over_lx, over_ly);
-    // No synthetic button press: the app window would capture the mouse and
-    // OLE's drag loop (which listens on the dragging thread) never sees moves.
     drag_deadline = GetTickCount64() + 1500;
     drag_running.store(true, .release);
     const nudger = std.Thread.spawn(.{}, nudge, .{ over_lx, over_ly }) catch null;
@@ -642,7 +622,6 @@ fn dragFile(path: []const u8, over_lx: f32, over_ly: f32) bool {
     return finished and drag_effect == 1;
 }
 
-// ── Process ────────────────────────────────────────────────────────
 
 fn launch(exe: []const u8) ?HANDLE {
     var cmd: [1024:0]u16 = undefined;
@@ -669,7 +648,6 @@ fn waitWindow(timeout_ms: u32) bool {
     return false;
 }
 
-// ── Scenarios ──────────────────────────────────────────────────────
 
 fn windowSize(snap: []const u8) ?[2]u32 {
     const i = std.mem.indexOf(u8, snap, "window=") orelse return null;
@@ -703,13 +681,11 @@ fn chromeScenario() void {
     defer gpa_.free(snap0);
     capture("chrome-1-start");
 
-    // Click a button: "< PREV" selects the previous part.
     if (findWidget(snap0, "button", "< PREV")) |r| {
         clickCenter(r);
         check(waitChange(snap0, 5000), "clicking '< PREV' changes the GUI");
     } else check(false, "found the '< PREV' button in the snapshot");
 
-    // Type into the NAME field: click it, then type.
     const snap1 = readSnapshot() orelse return;
     defer gpa_.free(snap1);
     if (std.mem.indexOf(u8, snap1, "text_input")) |_| {
@@ -731,7 +707,6 @@ fn chromeScenario() void {
         typeText("-LIVE");
         check(waitSnap("-LIVE", 5000), "typed text reaches the focused text field");
     }
-    // Synthetic IME messages must not disturb the app.
     _ = PostMessageW(hwnd, WM_IME_STARTCOMPOSITION, 0, 0);
     _ = PostMessageW(hwnd, WM_IME_ENDCOMPOSITION, 0, 0);
     sleepMs(300);
@@ -748,7 +723,6 @@ fn effectsScenario() void {
     defer gpa_.free(snap0);
     capture("effects-1-start");
 
-    // Clock effect (OS clock + UTC offset through the shared service).
     if (findWidget(snap0, "button", "Clock")) |r| {
         clickCenter(r);
         check(waitSnap("UTC, offset", 6000), "Clock effect answers");
@@ -758,7 +732,6 @@ fn effectsScenario() void {
         }
     } else check(false, "found the Clock button");
 
-    // Storage round trip under %APPDATA%\teak\<app>.
     if (readSnapshot()) |s| {
         defer gpa_.free(s);
         if (findWidget(s, "button", "Storage save")) |r| clickCenter(r);
@@ -768,14 +741,12 @@ fn effectsScenario() void {
         defer gpa_.free(s);
         if (findWidget(s, "button", "Storage load")) |r| clickCenter(r);
     }
-    // "saved #1" shows in the save row and, once loaded from disk, again in the load row.
     sleepMs(800);
     if (readSnapshot()) |s| {
         defer gpa_.free(s);
         check(std.mem.count(u8, s, "saved #1") >= 2, "storage save then load round-trips through %APPDATA%");
     } else check(false, "snapshot readable after storage load");
 
-    // Clipboard write effect -> the real clipboard.
     _ = clipboardSet("before");
     if (readSnapshot()) |s| {
         defer gpa_.free(s);
@@ -786,25 +757,15 @@ fn effectsScenario() void {
     check(if (clipboardGet(&buf)) |t| std.mem.eql(u8, t, "teak effects clipboard test") else false, "write_clipboard effect reaches the Windows clipboard");
 
     if (foreground) {
-        // Ctrl+V reads the Windows clipboard through Clipboard.read.
         _ = clipboardSet("hello from the driver");
         chord('V');
         check(waitSnap("Ctrl+V via Clipboard.read: hello from the driver", 5000), "Ctrl+V pastes the clipboard text");
-        // Ctrl+C writes the clipboard.
         chord('C');
         sleepMs(300);
         check(if (clipboardGet(&buf)) |t| std.mem.eql(u8, t, "teak effects Ctrl+C") else false, "Ctrl+C writes the Windows clipboard");
     }
 
-    // Drag-drop a file through the OLE IDropTarget.
     //
-    // KNOWN GAP (documented, not failing): on the CI runners a cross-process
-    // `DoDragDrop` from this driver blocks inside OLE before the app's
-    // IDropTarget is ever called (the app registers fine: RegisterDragDrop =
-    // S_OK), so the OLE drop path is covered by the compile checks and the
-    // pure-data unit tests (win32_data.zig), not by this live run. The
-    // harness is kept; set TEAK_LIVE_DRAG=1 to attempt it (it is bounded by
-    // a 20 s guard and a watchdog) when investigating.
     if (envFlag("TEAK_LIVE_DRAG")) {
         var drop_buf: [512]u8 = undefined;
         const drop_file = std.fmt.bufPrint(&drop_buf, "{s}\\dropped.txt", .{out_dir}) catch return;

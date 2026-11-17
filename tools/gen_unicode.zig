@@ -83,7 +83,6 @@ fn lbFromName(name: []const u8) !Lb {
         .{ "IS", .no_before }, .{ "SY", .no_before }, .{ "NS", .no_before }, .{ "CJ", .no_before },
         .{ "QU", .qu },        .{ "NU", .nu },        .{ "ID", .id },        .{ "EB", .id },
         .{ "EM", .id },        .{ "H2", .id },        .{ "H3", .id },
-        // Everything below is "alphabetic-like": no break between two of them.
                .{ "AL", .other },
         .{ "HL", .other },     .{ "AI", .other },     .{ "SA", .other },     .{ "SG", .other },
         .{ "XX", .other },     .{ "CB", .other },     .{ "PR", .other },     .{ "PO", .other },
@@ -134,21 +133,18 @@ pub fn main(init: std.process.Init) !void {
     const flat_l = try gpa.alloc(u8, MAX_CP);
     @memset(flat_l, 0);
 
-    // ── Grapheme_Cluster_Break ──
     const gbp = try readFile(gpa, io, dir, "GraphemeBreakProperty.txt");
     for (try parseRanges(gpa, gbp, false)) |r| {
         const g = try gcbFromName(r.value);
         var c = r.lo;
         while (c <= r.hi) : (c += 1) flat_g[c] = (flat_g[c] & 0xF0) | @backingInt(g);
     }
-    // ── Extended_Pictographic ──
     const emoji = try readFile(gpa, io, dir, "emoji-data.txt");
     for (try parseRanges(gpa, emoji, false)) |r| {
         if (!std.mem.eql(u8, r.value, "Extended_Pictographic")) continue;
         var c = r.lo;
         while (c <= r.hi) : (c += 1) flat_g[c] |= 0x10;
     }
-    // ── InCB ──
     const dcp = try readFile(gpa, io, dir, "DerivedCoreProperties.txt");
     for (try parseRanges(gpa, dcp, true)) |r| {
         const v: u8 = if (std.mem.eql(u8, r.value, "Consonant")) 1 else if (std.mem.eql(u8, r.value, "Linker")) 2 else if (std.mem.eql(u8, r.value, "Extend")) 3 else return error.UnknownInCB;
@@ -156,7 +152,6 @@ pub fn main(init: std.process.Init) !void {
         while (c <= r.hi) : (c += 1) flat_g[c] = (flat_g[c] & 0x9F) | (v << 5);
     }
 
-    // ── Line_Break (defaults from the LineBreak.txt header, then explicit entries) ──
     const id_default = [_][2]u32{
         .{ 0x3400, 0x4DBF },   .{ 0x4E00, 0x9FFF },   .{ 0xF900, 0xFAFF },   .{ 0x20000, 0x2FFFD },
         .{ 0x30000, 0x3FFFD }, .{ 0x1F000, 0x1FAFF }, .{ 0x1FC00, 0x1FFFD },
@@ -171,7 +166,6 @@ pub fn main(init: std.process.Init) !void {
         var c = r.lo;
         while (c <= r.hi) : (c += 1) flat_l[c] = (flat_l[c] & 0x80) | @backingInt(l);
     }
-    // ── East Asian Width: W / F set bit 7 ──
     const wide_default = [_][2]u32{
         .{ 0x3400, 0x4DBF }, .{ 0x4E00, 0x9FFF }, .{ 0xF900, 0xFAFF }, .{ 0x20000, 0x2FFFD }, .{ 0x30000, 0x3FFFD },
     };
@@ -186,7 +180,6 @@ pub fn main(init: std.process.Init) !void {
         while (c <= r.hi) : (c += 1) flat_l[c] = if (wide) flat_l[c] | 0x80 else flat_l[c] & 0x7F;
     }
 
-    // ── Bidi_Class: defaults from the @missing lines of DerivedBidiClass.txt, then explicit entries ──
     const flat_b = try gpa.alloc(u8, MAX_CP);
     @memset(flat_b, 0);
     const bidi_defaults = [_]struct { u32, u32, []const u8 }{
@@ -208,7 +201,6 @@ pub fn main(init: std.process.Init) !void {
         var c = r.lo;
         while (c <= r.hi) : (c += 1) flat_b[c] = v;
     }
-    // ── Bidi_Paired_Bracket(_Type): `cp | pair << 21 | is_close << 42`, sorted by cp ──
     var brackets: std.ArrayList(u64) = .empty;
     const bb = try readFile(gpa, io, dir, "BidiBrackets.txt");
     var bl = std.mem.splitScalar(u8, bb, '\n');

@@ -1,16 +1,5 @@
 #!/usr/bin/env node
-// Web smoke test: serve a zunk `dist/`, load it in headless Chromium with
-// software (SwiftShader) WebGPU, assert no page errors and a non-blank canvas,
-// and write a screenshot.
-//
-//   cd tools && npm ci
-//   node tools/webshot.mjs <dist-dir> <out.png> [--wait-ms 3000] [--width 1280 --height 800]
-//        [--min-colors 8] [--chrome /path/to/chrome]
-//
-// Chrome is found via --chrome, $CHROME_PATH, then google-chrome / chromium on
-// PATH. WEBSHOT_ANGLE=vulkan is needed on hosts with a (Mali) GPU driver whose
-// Vulkan lacks swapchain support in ANGLE-swiftshader; CI uses the default.
-// Exit: 0 ok, 1 check failed, 2 usage.
+// Web smoke test; see SRC.md.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -96,7 +85,6 @@ try {
   console.log(`[shot] wrote ${out} (${canvas ? 'canvas element' : 'full page, no <canvas>'})`);
   if (!canvas && !argv.includes('--page-shot')) problems.push('no <canvas> element on page');
 
-  // Decode the PNG in a scratch page and measure pixel variance there.
   const scratch = await browser.newPage();
   const stats = await scratch.evaluate(async (b64) => {
     const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));

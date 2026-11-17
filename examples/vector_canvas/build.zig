@@ -38,8 +38,6 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run vector_canvas tests");
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
-    // Native UI gated on `hasNativeBackend` so non-native targets still
-    // configure `run`/`test`/`web`; `linkNativeWgpu` picks Win32 / X11.
     if (teak.hasNativeBackend(target.result.os.tag)) {
         const ui_exe = b.addExecutable(.{
             .name = "vector_canvas-ui",
@@ -61,9 +59,6 @@ pub fn build(b: *std.Build) void {
         ui_step.dependOn(&ui_run.step);
     }
 
-    // --- Headless screenshot (no display; needs a Vulkan device) ---
-    //
-    //   zig build shot -- out.png [--state <name>]   (-- --list prints the states)
 
     if (teak.hasNativeBackend(target.result.os.tag)) {
         const shot_exe = b.addExecutable(.{
@@ -75,7 +70,6 @@ pub fn build(b: *std.Build) void {
             }),
         });
         teak.linkHeadless(b, shot_exe, .{});
-        // Installed beside the wgpu-native runtime library (zig-out/bin).
         const install_shot = b.addInstallArtifact(shot_exe, .{});
         b.getInstallStep().dependOn(&install_shot.step);
         const shot_run = b.addRunArtifact(shot_exe);

@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end hot-reload check on examples/todo (headless backend, Linux):
-#   v1 build -> add todos over the control channel -> rebuild with a changed
-#   title colour -> the loader swaps libapp.so in -> same todos, same layout,
-#   different pixels -> rebuild with a changed Model type -> state reset (said so).
-# Usage: tools/hot_reload_check.sh   (needs `zig` on PATH; builds teak-drive)
+# Hot-reload check; see SRC.md before running.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 EX=$ROOT/examples/todo
@@ -37,7 +33,6 @@ waitnote() {
   echo "FAIL: loader never said '$1'"; cat "$LOG"; exit 1
 }
 
-# v2: a colour-only change.
 sed -i 's|cb.text("Todo");|cb.textStyled("Todo", teak.DEFAULT_FONT, .{ 1.0, 0.45, 0.2, 1.0 });|' "$APP"
 zig build dev -Dbackend=headless >/dev/null
 waitnote "Model kept"
@@ -49,7 +44,6 @@ diff "$OUT/snap1.txt" "$OUT/snap2.txt" >/dev/null || { echo "FAIL: layout change
 cmp -s "$OUT/p1.png" "$OUT/p2.png" && { echo "FAIL: pixels identical, the new colour is not live"; exit 1; }
 echo "ok: colour change live, 3 todos kept (checked item preserved)"
 
-# v3: the Model type changes -> reset, announced.
 sed -i 's|input_focused: bool = false,|input_focused: bool = false,\n    hr_probe: u8 = 0,|' "$APP"
 zig build dev -Dbackend=headless >/dev/null
 waitnote "state reset"

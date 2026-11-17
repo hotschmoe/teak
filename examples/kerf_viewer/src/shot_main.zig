@@ -12,7 +12,6 @@ const App = @import("app.zig");
 
 const Step = teak.headless.Step;
 
-// Window positions at 1280x800 (see the checked-in shots for the layout).
 const tab_section: [2]f32 = .{ 415, 66 };
 const tab_iso: [2]f32 = .{ 491, 66 };
 const tab_3d: [2]f32 = .{ 547, 66 };
@@ -87,7 +86,6 @@ const states = [_]teak.headless.ShotState{
 };
 
 pub fn main(init: std.process.Init) !void {
-    // `shotCli` parses `--state`, `--list`, `--all`, `--scale` from argv.
     try teak.headless.shotCli(App, Host, Gpu, init, "kerf_viewer.png", .{
         .width = 1280,
         .height = 800,

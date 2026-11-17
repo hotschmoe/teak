@@ -52,12 +52,10 @@ pub fn view(m: *const Model, cb: anytype) void {
     const pal = cb.theme.palette;
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 14, .align_cross = .start });
 
-    // Column 1: table + tree.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 360, .align_cross = .stretch });
     ui.card(cb, "Table (fixed-column monospace)", 0, 0);
     cb.pushGroup(.{ .padding = 1, .gap = 0, .border = pal.border, .align_cross = .stretch });
-    // The header must use the row font's size (bold is fine: monospace advances match),
-    // or its columns drift away from the cells below.
+    // Header and row font sizes must match to keep columns aligned.
     var head_font = cb.theme.typography.mono;
     head_font.weight = .bold;
     parts_table.header(cb, .{ .font = head_font, .color = pal.bg, .bg = pal.fg });
@@ -85,7 +83,6 @@ pub fn view(m: *const Model, cb: anytype) void {
     ui.endCard(cb);
     cb.popGroup();
 
-    // Column 2: virtual list.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 300, .align_cross = .stretch });
     ui.card(cb, "Virtual list (10,000 rows)", 0, 0);
     virtualList(m, cb);
@@ -93,7 +90,6 @@ pub fn view(m: *const Model, cb: anytype) void {
     ui.endCard(cb);
     cb.popGroup();
 
-    // Column 3: chart.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 380, .align_cross = .stretch });
     ui.card(cb, "Line chart (canvas)", 0, 0);
     const prims = teak.chart.lineChartPrimitives(cb.arena.allocator(), &m.series, .{
@@ -139,8 +135,6 @@ const notes = [_][]const u8{
 fn tree(m: *const Model, cb: anytype) void {
     const pal = cb.theme.palette;
     var hide_below: ?u8 = null; // depth of the collapsed ancestor we are inside
-    // The tree is one Tab stop (its first row); arrows move the keyboard focus between rows,
-    // Enter / Space toggle a folder.
     var first_row = true;
     for (nodes, 0..) |node, i| {
         if (hide_below) |d| {

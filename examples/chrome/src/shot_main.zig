@@ -63,13 +63,10 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("wrote {s} ({d} frames into the slide-in)\n", .{ o.path, n });
         return;
     }
-    // `shotCli` re-parses argv (`--state`, `--list`, `--all`, `--scale`, `--plain`).
-    // Every state ends with 40 frames so the QUICK KEYS popover has settled.
     try teak.headless.shotCli(App, Host, Gpu, init, "chrome.png", .{
         .width = 1280,
         .height = 800,
         .scale = o.scale,
-        // No fixed clear colour: it follows the theme (retro paper / modern).
     }, &.{
         .{
             .name = "edited",
@@ -85,7 +82,6 @@ pub fn main(init: std.process.Init) !void {
             },
         },
         .{ .name = "initial", .steps = &.{.{ .frames = 40 }} },
-        // The modern look (rounded, shadowed); `m` flips the theme.
         .{
             .name = "modern",
             .steps = &.{
@@ -96,9 +92,7 @@ pub fn main(init: std.process.Init) !void {
                 .{ .frames = 1 },
             },
         },
-        // The first-load state without MSAA: matches the web build pixel for pixel.
         .{ .name = "plain", .steps = &.{.{ .frames = 40 }}, .msaa = false },
-        // Mid-slide of the popover's re-open animation (deterministic: 16 ms per frame).
         .{ .name = "popover_sliding", .steps = &comptime slide_steps(6) },
     });
 }
@@ -133,7 +127,7 @@ fn stress(init: std.process.Init, o: Opts) !void {
     rt.model.cols = cols;
     rt.model.rows = rows;
     rt.model.size_px = size_px;
-    // Format the labels once so the frame time is the framework's, not `allocPrint`'s.
+    // Format labels once so measurement excludes allocation.
     const labels = try gpa.alloc([]const u8, rows * cols);
     defer gpa.free(labels);
     var arena = std.heap.ArenaAllocator.init(gpa);

@@ -1,8 +1,4 @@
 #!/bin/bash
-# Visual QA sweep: every example, native (headless wgpu) and web (headless Chromium), 1x and 2x.
-#   tools/qa/run.sh [out-dir]          # default /tmp/qa
-# Needs: zig, a Vulkan device (lavapipe works), `cd tools && npm ci`, chromium (CHROME_PATH),
-# WEBSHOT_ANGLE=vulkan on hosts whose driver ANGLE-swiftshader cannot use. Then LOOK at the PNGs.
 set -e
 OUT=${1:-/tmp/qa}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)

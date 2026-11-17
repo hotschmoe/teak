@@ -4,8 +4,7 @@ const teak = @import("teak");
 pub fn build(b: *std.Build) void {
     const target = blk: {
         var t = b.standardTargetOptions(.{});
-        // Zig's native CPU detection on Windows ARM64 misses i8mm (FEAT_I8MM).
-        // The Snapdragon X Elite (Oryon) supports it -- enable for native aarch64 builds.
+        // Zig's Windows ARM64 CPU detection misses i8mm.
         if (t.result.cpu.arch == .aarch64) {
             t.query.cpu_features_add.addFeature(@backingInt(std.Target.aarch64.Feature.i8mm));
             t.result.cpu.features.addFeature(@backingInt(std.Target.aarch64.Feature.i8mm));
@@ -20,7 +19,6 @@ pub fn build(b: *std.Build) void {
     const rich_zig_dep = b.dependency("rich_zig", .{ .target = target, .optimize = optimize });
     const rich_zig_mod = rich_zig_dep.module("rich_zig");
 
-    // --- CLI executable (run) ---
 
     const exe = b.addExecutable(.{
         .name = "counter_greeter",
@@ -42,20 +40,12 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
 
-    // --- Tests ---
 
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
 
     const test_step = b.step("test", "Run example tests");
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
-    // --- wgpu UI executable ---
-    //
-    // One helper call wires teak + platform + gpu modules, links
-    // wgpu-native, and installs the GPU runtime lib alongside the binary.
-    // `linkNativeWgpu` dispatches on target OS (Win32 / X11), so the `ui`
-    // step exists only where teak ships a native backend — keeping
-    // `zig build run/test/web` configurable on every target.
 
     if (teak.hasNativeBackend(target.result.os.tag)) {
         const ui_exe = b.addExecutable(.{
@@ -79,9 +69,6 @@ pub fn build(b: *std.Build) void {
         ui_step.dependOn(&ui_run.step);
     }
 
-    // --- Headless screenshot (no display; needs a Vulkan device) ---
-    //
-    //   zig build shot -- out.png [--state <name>]   (-- --list prints the states)
 
     if (target.result.os.tag == .linux) {
         const shot_exe = b.addExecutable(.{
@@ -100,10 +87,6 @@ pub fn build(b: *std.Build) void {
         shot_step.dependOn(&shot_run.step);
     }
 
-    // --- web executable (wasm + zunk) ---
-    //
-    // `teak.linkWebWgpu` registers the `web` and `web-run` steps; zunk's
-    // CLI generates dist/index.html + app.js + app.wasm.
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
@@ -127,9 +110,6 @@ pub fn build(b: *std.Build) void {
     });
     teak.linkWebWgpu(b, web_exe, .{});
 
-    // rich_zig adapter for wasm: same rich_zig source compiled for
-    // wasm. The adapter uses only the Text + markup parser path, so
-    // pure-Zig std + WebAssembly is sufficient.
     const rich_zig_dep_wasm = b.dependency("rich_zig", .{ .target = wasm_target, .optimize = web_optimize });
     const rich_zig_mod_wasm = rich_zig_dep_wasm.module("rich_zig");
     web_exe.root_module.addImport("rich_zig", rich_zig_mod_wasm);
