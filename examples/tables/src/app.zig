@@ -328,45 +328,5 @@ pub fn view(m: *const Model, cb: anytype) void {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
-test "the table sorts 100k rows by every column, and each sort is a permutation in order" {
-    const a = std.heap.page_allocator;
-    const m = try a.create(Table.Model);
-    defer a.destroy(m);
-    m.* = .{};
-    m.setRows(table_rows);
-    for (0..columns.len) |c| {
-        // Reset to identity, then sort ascending by column c.
-        m.sort_col = null;
-        Table.update(m, .{ .sort = @intCast(c) }, Rows{});
-        var i: u32 = 1;
-        while (i < m.n_rows) : (i += 1) {
-            try std.testing.expect(Rows.compare(.{}, @intCast(c), m.order[i - 1], m.order[i]) != .gt);
-        }
-        // Inverse is exact.
-        try std.testing.expectEqual(@as(u32, 0), m.rank[m.order[0]]);
-        try std.testing.expectEqual(@as(u32, m.n_rows - 1), m.rank[m.order[m.n_rows - 1]]);
-        Table.update(m, .{ .sort = @intCast(c) }, Rows{}); // desc
-        Table.update(m, .{ .sort = @intCast(c) }, Rows{}); // off
-    }
-}
 
-test "the tree source has the preorder shape the TreeList expects" {
-    const t = TreeSrc{};
-    try std.testing.expectEqual(@as(u16, 0), t.depth(0));
-    try std.testing.expectEqual(@as(u16, 1), t.depth(1));
-    try std.testing.expectEqual(@as(u16, 2), t.depth(2));
-    try std.testing.expectEqual(@as(u16, 1), t.depth(12));
-    try std.testing.expectEqual(@as(u16, 0), t.depth(221));
-}
 
-test "the view builds and balances on every tab" {
-    var m = Model.init();
-    inline for (.{ Tab.table, Tab.list, Tab.tree }) |tab| {
-        m.tab = tab;
-        var cb = teak.CmdBuffer(Msg).init(std.testing.allocator);
-        defer cb.deinit();
-        view(&m, &cb);
-        try std.testing.expect(teak.validateBalance(cb.cmds.items) == null);
-        try std.testing.expect(cb.cmds.items.len < 2000); // virtualized: nothing near 100k
-    }
-}

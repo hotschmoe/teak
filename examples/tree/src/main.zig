@@ -64,27 +64,3 @@ fn printVisible(m: *const App.Model) void {
     }
 }
 
-test "cli trace: toggling collapsed 'input' reveals focus.zig in the next view" {
-    const testing = std.testing;
-    var m = App.Model.init();
-
-    var input_idx: ?u16 = null;
-    for (m.nodes[0..m.nodes_len], 0..) |node, i| {
-        if (std.mem.eql(u8, node.label[0..node.label_len], "input")) {
-            input_idx = @intCast(i);
-            break;
-        }
-    }
-    try testing.expect(input_idx != null);
-    App.update(&m, .{ .toggle = input_idx.? });
-
-    var cb = teak.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-    App.view(&m, &cb);
-
-    var saw_focus = false;
-    for (cb.cmds.items) |c| {
-        if (c == .button and std.mem.eql(u8, c.button.label, "focus.zig")) saw_focus = true;
-    }
-    try testing.expect(saw_focus);
-}

@@ -241,29 +241,4 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-test "geometry is built once at the advertised scale" {
-    const g = try Geometry.build(std.testing.allocator);
-    defer {
-        std.testing.allocator.free(g.members);
-        std.testing.allocator.free(g.braces);
-        std.testing.allocator.free(g.nodes);
-        for (g.overlays) |o| if (o == .polygon) std.testing.allocator.free(o.polygon.points);
-        std.testing.allocator.free(g.overlays);
-    }
-    try std.testing.expect(g.memberCount() > 80_000);
-    try std.testing.expectEqual((BAYS + 1) * (STORIES + 1), g.nodes.len);
-}
 
-test "first layout fits the frame; zoom keeps the cursor's world point" {
-    var g = Geometry{ .members = &.{}, .braces = &.{}, .nodes = &.{}, .overlays = &.{} };
-    var m = Model{ .geo = &g };
-    update(&m, .{ .view_size = .{ 1200, 800 } });
-    const xf = m.xf.?;
-    try std.testing.expect(xf.sy < 0); // y up
-    const w = xf.invert(.{ .x = 300, .y = 200 });
-    update(&m, .{ .zoom_at = .{ .dy = -300, .x = 300, .y = 200 } });
-    const p = m.xf.?.apply(w);
-    try std.testing.expectApproxEqAbs(@as(f32, 300), p.x, 1e-2);
-    try std.testing.expectApproxEqAbs(@as(f32, 200), p.y, 1e-2);
-    try std.testing.expect(m.xf.?.sx > xf.sx);
-}

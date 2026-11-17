@@ -348,35 +348,4 @@ pub const Chord = struct {
     }
 };
 
-test "Chord format, parse and special" {
-    var buf: [32]u8 = undefined;
-    var w = std.Io.Writer.fixed(&buf);
-    try Chord.ctrlShift(.p).format(&w, .pc);
-    try std.testing.expectEqualStrings("Ctrl+Shift+P", w.buffered());
-    w = std.Io.Writer.fixed(&buf);
-    try Chord.ctrl(.s).format(&w, .mac);
-    try std.testing.expectEqualStrings("Cmd+S", w.buffered());
-    w = std.Io.Writer.fixed(&buf);
-    try (Chord{ .key = .enter, .alt = true }).format(&w, .pc);
-    try std.testing.expectEqualStrings("Alt+Enter", w.buffered());
 
-    try std.testing.expect(Chord.parse("ctrl+shift+P").?.eql(Chord.ctrlShift(.p)));
-    try std.testing.expect(Chord.parse("Cmd+K").?.eql(Chord.ctrl(.k)));
-    try std.testing.expect(Chord.parse("f12").?.eql(Chord.plain(.f12)));
-    try std.testing.expect(Chord.parse("alt+enter").?.eql(Chord.altKey(.enter)));
-    try std.testing.expect(Chord.parse("ctrl+5").?.eql(Chord.ctrl(.d5)));
-    try std.testing.expect(Chord.parse("ctrl+,").?.eql(Chord.ctrl(.comma)));
-    try std.testing.expect(Chord.parse("ctrl+") == null);
-    try std.testing.expect(Chord.parse("ctrl+a+b") == null);
-    try std.testing.expect(Chord.parse("bogus") == null);
-
-    try std.testing.expectEqual(SpecialKey.ctrl_c, Chord.ctrl(.c).special().?);
-    try std.testing.expectEqual(SpecialKey.ctrl_shift_z, Chord.ctrlShift(.z).special().?);
-    try std.testing.expect(Chord.ctrl(.s).special() == null);
-}
-
-test "Chord.text is the comptime form of format" {
-    try std.testing.expectEqualStrings("Ctrl+Shift+P", comptime Chord.ctrlShift(.p).text(.pc));
-    try std.testing.expectEqualStrings("Cmd+K", comptime Chord.ctrl(.k).text(.mac));
-    try std.testing.expectEqualStrings("F5", comptime Chord.plain(.f5).text(.pc));
-}

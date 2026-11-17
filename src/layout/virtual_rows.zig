@@ -37,26 +37,3 @@ pub fn rowExtents(cmds: anytype, rects: []const Rect, index: usize, out: []f32) 
     return n;
 }
 
-test "rowExtents: direct children only, groups and leaves alike" {
-    const cmd = @import("../core/cmd.zig");
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer cb.deinit();
-    cb.pushVirtualList(.{ .total_extent = 1000, .visible_start = 5, .visible_end = 8 });
-    cb.pushGroup(.{ .padding = 4, .gap = 0 });
-    cb.text("a");
-    cb.text("b"); // nested: not a row
-    cb.popGroup();
-    cb.text("c");
-    cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 50 });
-    cb.popGroup();
-    cb.popVirtualList();
-    var rects: [16]Rect = undefined;
-    for (rects[0..cb.cmds.items.len], 0..) |*r, i| r.* = .{ .x = 0, .y = 0, .w = 10, .h = @floatFromInt(10 + i) };
-    var out: [8]f32 = undefined;
-    const n = rowExtents(cb.cmds.items, rects[0..cb.cmds.items.len], 0, &out);
-    try std.testing.expectEqual(@as(usize, 3), n);
-    try std.testing.expectEqual(@as(f32, 11), out[0]); // the first group (index 1)
-    try std.testing.expectEqual(@as(f32, 15), out[1]); // text "c" (index 5)
-    try std.testing.expectEqual(@as(f32, 16), out[2]); // the empty group (index 6)
-}

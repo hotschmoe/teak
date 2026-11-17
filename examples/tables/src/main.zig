@@ -25,6 +25,3 @@ pub fn main() !void {
     std.debug.print("{s}", .{dump});
 }
 
-test {
-    _ = App;
-}

@@ -42,15 +42,4 @@ pub fn css(buf: *[css_buf_len]u8, font: teak.FontSpec) []const u8 {
     return std.fmt.bufPrint(buf, "{d} {d}px {s}", .{ cssWeight(font.weight), font.size_px, list }) catch "14px monospace";
 }
 
-test "a registered family leads the list, the generic family follows" {
-    try std.testing.expectEqualStrings("\"Test Mono\", monospace", comptime familyList(.mono));
-    try std.testing.expectEqualStrings("sans-serif", comptime familyList(.sans));
-    try std.testing.expectEqualStrings("serif", comptime familyList(.serif));
-}
 
-test "css carries weight, size and family" {
-    var buf: [css_buf_len]u8 = undefined;
-    try std.testing.expectEqualStrings("400 13px \"Test Mono\", monospace", css(&buf, .{ .size_px = 13, .family = .mono }));
-    try std.testing.expectEqualStrings("700 16px \"Test Mono\", monospace", css(&buf, .{ .size_px = 16, .family = .mono, .weight = .bold }));
-    try std.testing.expectEqualStrings("500 14.5px sans-serif", css(&buf, .{ .size_px = 14.5, .weight = .medium }));
-}

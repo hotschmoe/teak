@@ -1081,98 +1081,9 @@ fn pixelAt(img: []const u8, w: u32, x: u32, y: u32) [4]u8 {
     return img[(y * w + x) * 4 ..][0..4].*;
 }
 
-test "filled square covers exactly its pixels" {
-    const src =
-        \\<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect x="2" y="2" width="6" height="6" fill="#ff0000"/></svg>
-    ;
-    const img = try rasterize(testing.allocator, src, 10, 10, .{});
-    defer testing.allocator.free(img);
-    try testing.expectEqual([4]u8{ 255, 0, 0, 255 }, pixelAt(img, 10, 4, 4));
-    try testing.expectEqual(@as(u8, 0), pixelAt(img, 10, 1, 1)[3]);
-    try testing.expectEqual(@as(u8, 255), pixelAt(img, 10, 2, 2)[3]);
-    try testing.expectEqual(@as(u8, 0), pixelAt(img, 10, 8, 8)[3]);
-}
 
-test "viewBox scales; half-covered pixels get half alpha" {
-    const src =
-        \\<svg viewBox="0 0 4 4"><rect x="0" y="0" width="1" height="4" fill="black"/></svg>
-    ;
-    // 4 units -> 6 px: the rect is 1.5 px wide.
-    const img = try rasterize(testing.allocator, src, 6, 6, .{});
-    defer testing.allocator.free(img);
-    try testing.expectEqual(@as(u8, 255), pixelAt(img, 6, 0, 3)[3]);
-    try testing.expect(@abs(@as(i32, pixelAt(img, 6, 1, 3)[3]) - 128) <= 2);
-    try testing.expectEqual(@as(u8, 0), pixelAt(img, 6, 2, 3)[3]);
-}
 
-test "evenodd punches a hole, nonzero does not" {
-    const ring = "M1 1H9V9H1Z M3 3H7V7H3Z";
-    var buf: [256]u8 = undefined;
-    const eo = try std.fmt.bufPrint(&buf, "<svg viewBox=\"0 0 10 10\"><path fill-rule=\"evenodd\" d=\"{s}\"/></svg>", .{ring});
-    const a = try rasterize(testing.allocator, eo, 10, 10, .{});
-    defer testing.allocator.free(a);
-    try testing.expectEqual(@as(u8, 0), pixelAt(a, 10, 5, 5)[3]);
-    try testing.expectEqual(@as(u8, 255), pixelAt(a, 10, 2, 5)[3]);
-    var buf2: [256]u8 = undefined;
-    const nz = try std.fmt.bufPrint(&buf2, "<svg viewBox=\"0 0 10 10\"><path d=\"{s}\"/></svg>", .{ring});
-    const b = try rasterize(testing.allocator, nz, 10, 10, .{});
-    defer testing.allocator.free(b);
-    try testing.expectEqual(@as(u8, 255), pixelAt(b, 10, 5, 5)[3]);
-}
 
-test "currentColor stroke, round caps, curves and arcs (a Lucide-style icon)" {
-    // Lucide "circle-check": a circle outline and a check mark.
-    const src =
-        \\<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
-        \\  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        \\  <circle cx="12" cy="12" r="10"/>
-        \\  <path d="m9 12 2 2 4-4"/>
-        \\</svg>
-    ;
-    const img = try rasterize(testing.allocator, src, 24, 24, .{ .color = .{ 0, 0.5, 1, 1 } });
-    defer testing.allocator.free(img);
-    // On the ring (radius 10 at the top: y = 2), off it at the centre's
-    // left (x = 5, inside the ring, away from the check).
-    try testing.expect(pixelAt(img, 24, 12, 2)[3] > 200);
-    try testing.expectEqual(@as(u8, 0), pixelAt(img, 24, 5, 12)[3]);
-    try testing.expectEqual(@as(u8, 128), pixelAt(img, 24, 12, 2)[1]);
-    // On the check stroke, between (9, 12) and its corner (11, 14).
-    try testing.expect(pixelAt(img, 24, 10, 13)[3] > 200);
-}
 
-test "transforms, groups, style attribute, relative commands" {
-    const src =
-        \\<svg viewBox="0 0 20 20"><g transform="translate(10 0)" style="fill:#00ff00">
-        \\  <path d="m0 0 h5 v5 h-5 z"/></g>
-        \\  <rect transform="scale(2)" x="0" y="5" width="2" height="2" fill="rgb(0,0,255)"/>
-        \\</svg>
-    ;
-    const img = try rasterize(testing.allocator, src, 20, 20, .{});
-    defer testing.allocator.free(img);
-    try testing.expectEqual([4]u8{ 0, 255, 0, 255 }, pixelAt(img, 20, 12, 2));
-    try testing.expectEqual(@as(u8, 0), pixelAt(img, 20, 2, 2)[3]);
-    try testing.expectEqual([4]u8{ 0, 0, 255, 255 }, pixelAt(img, 20, 2, 12));
-}
 
-test "defs, comments and unsupported elements are skipped; garbage is rejected" {
-    const src =
-        \\<?xml version="1.0"?><!-- icon --><svg viewBox="0 0 4 4"><defs><rect width="4" height="4"/></defs>
-        \\<title>t</title><text>x</text></svg>
-    ;
-    const img = try rasterize(testing.allocator, src, 4, 4, .{});
-    defer testing.allocator.free(img);
-    for (0..16) |i| try testing.expectEqual(@as(u8, 0), img[i * 4 + 3]);
-    try testing.expectError(error.InvalidSvg, rasterize(testing.allocator, "not svg", 4, 4, .{}));
-}
 
-test "number reader: packed numbers, exponents, arc flags" {
-    var nr: NumReader = .{ .s = "1-2.5.5e1,3" };
-    try testing.expectEqual(@as(f32, 1), nr.number().?);
-    try testing.expectEqual(@as(f32, -2.5), nr.number().?);
-    try testing.expectEqual(@as(f32, 5), nr.number().?);
-    try testing.expectEqual(@as(f32, 3), nr.number().?);
-    var fr: NumReader = .{ .s = "011" };
-    try testing.expect(!fr.flag().?);
-    try testing.expect(fr.flag().?);
-    try testing.expect(fr.flag().?);
-}

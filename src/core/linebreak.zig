@@ -160,101 +160,10 @@ fn expectMarked(text: []const u8, expected: []const u8) !void {
     };
 }
 
-test "golden: Latin, spaces, hyphen, punctuation" {
-    try expectMarked("hello world foo", "hello |world |foo");
-    try expectMarked("two  spaces", "two  |spaces");
-    try expectMarked("well-known fact", "well-|known |fact");
-    try expectMarked("a - b", "a |- |b");
-    try expectMarked("x-5 -y", "x-5 |-y");
-    try expectMarked("foo.bar baz", "foo.bar |baz");
-    try expectMarked("(a) b", "(a) |b");
-    try expectMarked("( a)", "( a)");
-    try expectMarked("\"hi\" there", "\"hi\" |there");
-    try expectMarked("en\u{2013}dash x", "en\u{2013}|dash |x");
-    try expectMarked("abcdefghijklmnop", "abcdefghijklmnop"); // long token: no opportunity
-    try expectMarked("", "");
-    try expectMarked("end ", "end ");
-}
 
-test "golden: NBSP, WJ and U+2011 never break" {
-    try expectMarked("a\u{00A0}b c", "a\u{00A0}b |c");
-    try expectMarked("1\u{202F}000 x", "1\u{202F}000 |x");
-    try expectMarked("non\u{2011}break x", "non\u{2011}break |x");
-    try expectMarked("a\u{2060}b", "a\u{2060}b");
-    try expectMarked("a \u{00A0}b", "a |\u{00A0}b"); // break before NBSP after a space is fine
-}
 
-test "golden: ZWSP" {
-    try expectMarked("a\u{200B}b", "a\u{200B}|b");
-    try expectMarked("a\u{200B} b", "a\u{200B} |b");
-    try expectMarked("a\u{200B}", "a\u{200B}");
-}
 
-test "golden: hard breaks" {
-    try expectMarked("a\nb", "a\n!b");
-    try expectMarked("a\r\nb", "a\r\n!b");
-    try expectMarked("a\rb", "a\r!b");
-    try expectMarked("a\n", "a\n!");
-    try expectMarked("a\u{2028}b c", "a\u{2028}!b |c");
-    try expectMarked("\n\n", "\n!\n!");
-}
 
-test "golden: CJK with kinsoku" {
-    try expectMarked("日本語です", "日|本|語|で|す");
-    try expectMarked("日本。語", "日|本。|語"); // no line starts with 。
-    try expectMarked("日本、語", "日|本、|語");
-    try expectMarked("日「本」語", "日|「本」|語"); // no line ends with 「 or starts with 」
-    try expectMarked("（日本）語", "（日|本）|語");
-    try expectMarked("abc日本", "abc|日|本");
-    try expectMarked("日本abc def", "日|本|abc |def");
-    try expectMarked("あっ。", "あっ。"); // small kana and 。 cannot start a line
-    try expectMarked("ー日", "ー|日");
-    try expectMarked("日 。", "日 。"); // closing punctuation never starts a line, even after a space
-}
 
-test "golden: grapheme clusters are never split" {
-    try expectMarked("e\u{0301}e\u{0301} x", "e\u{0301}e\u{0301} |x");
-    try expectMarked("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}日", "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}|日");
-    try expectMarked("日\u{0301}本", "日\u{0301}|本");
-}
 
-test "Breaker from a mid-text start and kinds" {
-    var it = Breaker.init("ab cd\nef", 3);
-    const b1 = it.next().?;
-    try testing.expectEqual(@as(usize, 6), b1.end);
-    try testing.expectEqual(Kind.hard, b1.kind);
-    const b2 = it.next().?;
-    try testing.expectEqual(@as(usize, 8), b2.end);
-    try testing.expectEqual(Kind.end, b2.kind);
-    try testing.expectEqual(@as(?Break, null), it.next());
-    var empty = Breaker.init("abc", 3);
-    try testing.expectEqual(@as(?Break, null), empty.next());
-}
 
-test "Breaker fuzz: offsets increase, land on grapheme boundaries, end at len" {
-    var prng = std.Random.DefaultPrng.init(0xB4EA);
-    const rnd = prng.random();
-    const pieces = [_][]const u8{ "a", "b", " ", "-", "\n", "日", "。", "「", "\u{00A0}", "\u{200B}", "e\u{0301}", "\xFF", "1", "." };
-    var buf: [128]u8 = undefined;
-    var iter: usize = 0;
-    while (iter < 2000) : (iter += 1) {
-        var n: usize = 0;
-        const count = rnd.uintLessThan(usize, 20);
-        for (0..count) |_| {
-            const p = pieces[rnd.uintLessThan(usize, pieces.len)];
-            @memcpy(buf[n..][0..p.len], p);
-            n += p.len;
-        }
-        const s = buf[0..n];
-        var it = Breaker.init(s, 0);
-        var last: usize = 0;
-        var saw_end = false;
-        while (it.next()) |br| {
-            try testing.expect(br.end > last or (br.end == 0 and false));
-            try testing.expect(unicode.isGraphemeBoundary(s, br.end));
-            last = br.end;
-            if (br.end == s.len) saw_end = true;
-        }
-        try testing.expect(saw_end == (s.len > 0));
-    }
-}

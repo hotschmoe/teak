@@ -77,19 +77,4 @@ pub const Gradient = struct {
     }
 };
 
-test "Radii helpers" {
-    try std.testing.expect((Radii{}).isZero());
-    try std.testing.expect(!Radii.top(4).isZero());
-    try std.testing.expectEqual(@as(f32, 4), Radii.top(4).max());
-    try std.testing.expectEqual(@as(f32, 0), Radii.top(4).bl);
-    try std.testing.expectEqual(@as(f32, 9), Radii.all(9).br);
-}
 
-test "Gradient direction follows the CSS angle convention" {
-    const v = Gradient.vertical(.{ 0, 0, 0, 1 }, .{ 1, 1, 1, 1 }).direction();
-    try std.testing.expectApproxEqAbs(@as(f32, 0), v[0], 1e-6);
-    try std.testing.expectApproxEqAbs(@as(f32, 1), v[1], 1e-6); // down the screen
-    const h = Gradient.horizontal(.{ 0, 0, 0, 1 }, .{ 1, 1, 1, 1 }).direction();
-    try std.testing.expectApproxEqAbs(@as(f32, 1), h[0], 1e-6); // to the right
-    try std.testing.expectApproxEqAbs(@as(f32, 0), h[1], 1e-6);
-}

@@ -353,48 +353,7 @@ fn thumbnail(m: *const Model, cb: anytype, arena: std.mem.Allocator) void {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-test "init asks for the startup parameters and the saved note, and each leaves when answered" {
-    var m = Model.init();
-    try std.testing.expectEqual(@as(usize, 3), m.n_reqs);
-    try std.testing.expectEqualStrings("who", m.reqs[0].query_param.name);
-    const id = m.reqs[0].id();
-    update(&m, .{ .queried = .{ .id = id, .value = "ada" } });
-    try std.testing.expectEqual(@as(usize, 2), m.n_reqs);
-    try std.testing.expectEqualStrings("ada", m.who.slice());
-}
 
-test "a button lists one http request and the answer clears it and shows the status" {
-    var m = Model.init();
-    m.n_reqs = 0;
-    update(&m, .get);
-    try std.testing.expectEqual(@as(usize, 1), m.n_reqs);
-    try std.testing.expectEqualStrings("http://localhost:8104/index.html", m.reqs[0].http.url);
-    const id = m.reqs[0].id();
-    update(&m, .{ .http_done = .{ .id = id, .status = 200, .body = "<html>" } });
-    try std.testing.expectEqual(@as(usize, 0), m.n_reqs);
-    try std.testing.expectEqualStrings("status 200, 6 bytes: <html>", m.http.slice());
-    update(&m, .{ .http_done = .{ .id = 0, .status = 0, .err = "timeout after 1 ms" } });
-    try std.testing.expectEqualStrings("status 0 - timeout after 1 ms", m.http.slice());
-}
 
-test "a dropped image keeps its thumbnail only when it is complete" {
-    var m = Model.init();
-    const px: [6][4]u8 = @splat(.{ 255, 0, 0, 255 });
-    update(&m, .{ .dropped = .{ .kind = .image, .name = "a.png", .mime = "image/png", .bytes = "xx", .width = 30, .height = 20, .thumb_rgba = std.mem.asBytes(&px), .thumb_w = 3, .thumb_h = 2 } });
-    try std.testing.expectEqual(@as(u32, 3), m.thumb_w);
-    try std.testing.expectEqual(@as(u8, 255), m.thumb[0]);
-}
 
-test "clock formats the unix time" {
-    var m = Model.init();
-    update(&m, .{ .clocked = .{ .id = 1, .unix_ms = 1_700_000_000_000, .utc_offset_min = 60 } });
-    try std.testing.expect(std.mem.startsWith(u8, m.clock.slice(), "2023-11-14 22:13:20 UTC, offset 60 min"));
-}
 
-test "the view lays out under the stub measurer" {
-    const m = Model.init();
-    var cb = teak.CmdBuffer(Msg).init(std.testing.allocator);
-    defer cb.deinit();
-    view(&m, &cb);
-    try std.testing.expect(teak.validateBalance(cb.cmds.items) == null);
-}

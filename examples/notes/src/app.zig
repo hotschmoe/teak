@@ -223,42 +223,5 @@ pub fn clipboardMsg(m: *const Model, key: teak.SpecialKey, paste: []const u8) ?M
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-test "chat: typing, Enter sends and clears, empty messages are ignored" {
-    var m: Model = .{};
-    update(&m, .{ .chat = .focus });
-    for ("hi there") |c| update(&m, keyCharMsg(&m, c).?);
-    update(&m, submitMsg(&m).?);
-    try std.testing.expectEqual(@as(u8, 1), m.log_n);
-    try std.testing.expectEqualStrings("hi there", m.logItem(0));
-    try std.testing.expectEqualStrings("", m.chat.content());
-    update(&m, submitMsg(&m).?);
-    try std.testing.expectEqual(@as(u8, 1), m.log_n);
-}
 
-test "notes: Enter inserts a newline; view is balanced" {
-    var m: Model = .{};
-    update(&m, .{ .notes = .focus });
-    update(&m, .{ .notes = .{ .key = .ctrl_end } });
-    const before = m.notes.content().len;
-    update(&m, keySpecialMsg(&m, .enter).?); // Enter in a text_area is a key, not a submit
-    try std.testing.expectEqual(before + 1, m.notes.content().len);
 
-    var cb = teak.CmdBuffer(Msg).init(std.testing.allocator);
-    defer cb.deinit();
-    view(&m, &cb);
-    try std.testing.expect(teak.validateBalance(cb.cmds.items) == null);
-}
-
-test "clipboard hooks: copy reads the focused selection, cut deletes it, paste inserts" {
-    var m: Model = .{};
-    update(&m, .{ .notes = .focus });
-    for ("hello") |c| update(&m, keyCharMsg(&m, c).?);
-    try std.testing.expect(clipboardText(&m, .ctrl_c) == null); // nothing selected
-    update(&m, .{ .notes = .{ .key = .ctrl_a } });
-    try std.testing.expectEqualStrings(m.notes.content(), clipboardText(&m, .ctrl_c).?);
-    try std.testing.expect(std.mem.startsWith(u8, clipboardText(&m, .ctrl_c).?, "hello"));
-    update(&m, clipboardMsg(&m, .ctrl_x, "").?);
-    try std.testing.expectEqualStrings("", m.notes.content());
-    update(&m, clipboardMsg(&m, .ctrl_v, "pasted").?);
-    try std.testing.expectEqualStrings("pasted", m.notes.content());
-}

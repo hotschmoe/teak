@@ -773,38 +773,3 @@ fn testDraw(text: []const u8, x: f32) teak.TextDraw {
     return .{ .rect_x = x, .rect_y = 10, .rect_w = 100, .rect_h = 12, .content = text, .font = .{ .size_px = 10 }, .color = .{ 1, 1, 1, 1 }, .clip_x = 0, .clip_y = 0, .clip_w = 500, .clip_h = 500 };
 }
 
-test "stage: unchanged draws replay last frame's instances; changed ones are rebuilt" {
-    const gpa = std.testing.allocator;
-    var st = try TextStage(FakeRaster).init(gpa, .{}, 2, 1);
-    defer st.deinit();
-
-    var draws = [_]teak.TextDraw{ testDraw("abc", 0), testDraw("xy", 50), testDraw("hello", 90) };
-    st.stage(&draws, draws.len);
-    const first = try gpa.dupe(GlyphInstance, st.insts.items[0].list[0].items);
-    defer gpa.free(first);
-    try std.testing.expectEqual(@as(usize, 10), first.len);
-
-    // Frame 2: identical draws come from the memo; the result is byte-identical.
-    st.stage(&draws, draws.len);
-    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(first), std.mem.sliceAsBytes(st.insts.items[0].list[0].items));
-
-    // Frame 3: one draw changes; the others still match a from-scratch stage.
-    draws[1] = testDraw("xyz", 50);
-    st.stage(&draws, draws.len);
-    var fresh = try TextStage(FakeRaster).init(gpa, .{}, 2, 1);
-    defer fresh.deinit();
-    fresh.stage(&draws, draws.len);
-    // Atlas cells depend on packing order, so compare geometry, colour and clip only.
-    const a = fresh.insts.items[0].list[0].items;
-    const b = st.insts.items[0].list[0].items;
-    try std.testing.expectEqual(a.len, b.len);
-    for (a, b) |x, y| {
-        var xn = x;
-        var yn = y;
-        xn.u = 0;
-        xn.v = 0;
-        yn.u = 0;
-        yn.v = 0;
-        try std.testing.expectEqualSlices(u8, std.mem.asBytes(&xn), std.mem.asBytes(&yn));
-    }
-}

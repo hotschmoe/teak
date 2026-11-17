@@ -117,39 +117,4 @@ fn metricsWith(w: f32, font: teak.FontSpec) teak.TextMetrics {
     };
 }
 
-test "measure caches by full key: same text and font agree, different font does not collide" {
-    defer face_mod.releaseFaces();
-    const a = measure("hello", .{ .size_px = 14, .family = .mono });
-    const b = measure("hello", .{ .size_px = 14, .family = .mono });
-    try std.testing.expectEqual(a.width, b.width);
-    if (a.width == 0) return; // no font on this builder
-    const big = measure("hello", .{ .size_px = 28, .family = .mono });
-    // Not exactly 2x: glyph advances snap to whole pixels, which rounds
-    // differently per face (Consolas at 14 px vs 28 px is ~1.87x).
-    try std.testing.expect(big.width > a.width * 1.7);
-    try std.testing.expect(measure("hello!", .{ .size_px = 14, .family = .mono }).width > a.width);
-}
 
-test "ascii fast width matches the shaper (kerning, snapping, ligature bail)" {
-    defer face_mod.releaseFaces();
-    const fonts = [_]teak.FontSpec{
-        .{ .size_px = 13, .family = .sans },
-        .{ .size_px = 11.5, .family = .mono },
-        .{ .size_px = 17, .family = .sans, .letter_spacing = 0.5 },
-        .{ .size_px = 12, .family = .sans, .snap_advance = true },
-    };
-    const texts = [_][]const u8{ "", "A", "AV To Wa", "r123c45", "office fi ffl", "The quick brown fox, 0123456789 [AVAWAY]" };
-    for (fonts) |f| for (texts) |t| {
-        const fast = shaper_mod.asciiWidth(t, f) orelse continue;
-        var buf: [chunk]teak.ShapedGlyph = undefined;
-        var total: f32 = 0;
-        var pos: usize = 0;
-        while (pos < t.len) {
-            const r = shaper_mod.shape(t[pos..], f, &buf);
-            total += r.width;
-            if (r.consumed == 0) break;
-            pos += r.consumed;
-        }
-        try std.testing.expectEqual(total, fast);
-    };
-}

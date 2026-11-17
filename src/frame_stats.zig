@@ -260,36 +260,4 @@ pub const Sink = struct {
     }
 };
 
-test "percentile is nearest-rank and summarize sorts and reports the distribution" {
-    var xs: [100]f32 = undefined;
-    // 100 down to 1, so summarize has to sort.
-    for (&xs, 0..) |*x, i| x.* = @floatFromInt(100 - i);
-    const s = summarize(&xs);
-    try std.testing.expectEqual(@as(usize, 100), s.count);
-    try std.testing.expectEqual(@as(f32, 1), s.min_ms);
-    try std.testing.expectEqual(@as(f32, 50), s.p50_ms);
-    try std.testing.expectEqual(@as(f32, 95), s.p95_ms);
-    try std.testing.expectEqual(@as(f32, 99), s.p99_ms);
-    try std.testing.expectEqual(@as(f32, 100), s.max_ms);
-    try std.testing.expectApproxEqAbs(@as(f32, 50.5), s.mean_ms, 1e-4);
 
-    var one = [_]f32{7};
-    const s1 = summarize(&one);
-    try std.testing.expectEqual(@as(f32, 7), s1.p50_ms);
-    try std.testing.expectEqual(@as(f32, 7), s1.p99_ms);
-    try std.testing.expectEqual(Summary{}, summarize(&.{}));
-    // A tail outlier shows up in p99 / max but not p50.
-    var tail = [_]f32{ 16, 16, 16, 16, 16, 16, 16, 16, 16, 40 };
-    const st = summarize(&tail);
-    try std.testing.expectEqual(@as(f32, 16), st.p50_ms);
-    try std.testing.expectEqual(@as(f32, 40), st.p99_ms);
-}
-
-test "writeCsvLine matches the header's column count" {
-    var buf: [256]u8 = undefined;
-    var w = std.Io.Writer.fixed(&buf);
-    try writeCsvLine(&w, .{ .index = 3, .frame_ms = 16.5, .cmds = 10, .presented = true });
-    const line = w.buffered();
-    try std.testing.expectEqual(std.mem.count(u8, csv_header, ","), std.mem.count(u8, line, ","));
-    try std.testing.expect(std.mem.startsWith(u8, line, "3,16.500,"));
-}

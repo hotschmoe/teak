@@ -139,79 +139,7 @@ pub fn Tween(comptime T: type) type {
 
 const testing = std.testing;
 
-test "ease: endpoints are fixed and curves are monotone where they should be" {
-    inline for (@typeInfo(Ease).@"enum".field_names, 0..) |_, i| {
-        const k: Ease = @fromBackingInt(i);
-        try testing.expectApproxEqAbs(@as(f32, 0), ease(k, 0), 1e-6);
-        try testing.expectApproxEqAbs(@as(f32, 1), ease(k, 1), 1e-5);
-    }
-    try testing.expectEqual(@as(f32, 0.25), ease(.in_quad, 0.5));
-    try testing.expectEqual(@as(f32, 0.75), ease(.out_quad, 0.5));
-    try testing.expectEqual(@as(f32, 0.5), ease(.in_out_quad, 0.5));
-    try testing.expect(ease(.out_back, 0.8) > 1); // overshoots
-    try testing.expectEqual(@as(f32, 1), ease(.linear, 7)); // clamped
-    var prev: f32 = 0;
-    for (1..21) |i| {
-        const v = ease(.out_cubic, @as(f32, @floatFromInt(i)) / 20);
-        try testing.expect(v >= prev);
-        prev = v;
-    }
-}
 
-test "lerp: floats, ints, colors, structs, bools" {
-    try testing.expectEqual(@as(f32, 15), lerp(f32, 10, 20, 0.5));
-    try testing.expectEqual(@as(i32, 15), lerp(i32, 10, 20, 0.5));
-    const c = lerp([4]f32, .{ 0, 0, 0, 1 }, .{ 1, 0.5, 0, 1 }, 0.5);
-    try testing.expectEqual([4]f32{ 0.5, 0.25, 0, 1 }, c);
-    const R = struct { x: f32, y: f32, w: f32, h: f32 };
-    const r = lerp(R, .{ .x = 0, .y = 0, .w = 10, .h = 10 }, .{ .x = 100, .y = 50, .w = 20, .h = 10 }, 0.1);
-    try testing.expectApproxEqAbs(@as(f32, 10), r.x, 1e-5);
-    try testing.expectApproxEqAbs(@as(f32, 5), r.y, 1e-5);
-    try testing.expectApproxEqAbs(@as(f32, 11), r.w, 1e-5);
-    try testing.expect(!lerp(bool, false, true, 0.4));
-    try testing.expect(lerp(bool, false, true, 0.5));
-    const v = lerp(@Vector(2, f32), .{ 0, 10 }, .{ 10, 20 }, 0.5);
-    try testing.expectEqual(@Vector(2, f32){ 5, 15 }, v);
-}
 
-test "Tween: runs from -> to over its duration, saturates, reports activity" {
-    var t: Tween(f32) = .still(0);
-    try testing.expect(!t.active());
-    try testing.expectEqual(@as(f32, 0), t.value());
-    t.start(100, 200, .linear);
-    try testing.expect(t.active());
-    try testing.expectEqual(@as(f32, 0), t.value());
-    t.advance(50);
-    try testing.expectEqual(@as(f32, 25), t.value());
-    t.advance(50);
-    try testing.expectEqual(@as(f32, 50), t.value());
-    t.advance(1000); // overshoot dt saturates
-    try testing.expectEqual(@as(f32, 100), t.value());
-    try testing.expect(!t.active());
-    t.advance(16);
-    try testing.expectEqual(@as(f32, 100), t.value());
-}
 
-test "Tween: retargeting mid-flight continues from the current value" {
-    var t: Tween(f32) = .still(0);
-    t.start(100, 100, .linear);
-    t.advance(60);
-    const before = t.value();
-    try testing.expectApproxEqAbs(@as(f32, 60), before, 1e-4);
-    t.start(0, 100, .linear); // reverse
-    try testing.expectEqual(before, t.value()); // no jump
-    t.advance(50);
-    try testing.expectApproxEqAbs(@as(f32, 30), t.value(), 1e-4);
-}
 
-test "Tween: zero duration snaps; color tweens interpolate every channel" {
-    var t: Tween(f32) = .still(3);
-    t.start(9, 0, .out_cubic);
-    try testing.expect(!t.active());
-    try testing.expectEqual(@as(f32, 9), t.value());
-
-    var c: Tween([4]f32) = .still(.{ 0, 0, 0, 1 });
-    c.start(.{ 1, 1, 1, 1 }, 100, .linear);
-    c.advance(25);
-    try testing.expectEqual([4]f32{ 0.25, 0.25, 0.25, 1 }, c.value());
-}

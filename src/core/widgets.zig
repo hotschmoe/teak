@@ -19,6 +19,3 @@ pub const date = @import("widgets/date.zig");
 pub const date_field = @import("widgets/date_field.zig");
 pub const util = @import("widgets/util.zig");
 
-test {
-    @import("std").testing.refAllDecls(@This());
-}

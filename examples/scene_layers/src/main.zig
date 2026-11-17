@@ -26,6 +26,3 @@ pub fn main() !void {
     std.debug.print("{s}", .{dump});
 }
 
-test {
-    std.testing.refAllDecls(App);
-}

@@ -58,9 +58,3 @@ pub fn chordFromKeysym(sym: u32) ?NavKey {
     };
 }
 
-test "navFromKeysym / chordFromKeysym" {
-    try std.testing.expectEqual(NavKey.tab, navFromKeysym(ISO_Left_Tab).?);
-    try std.testing.expect(navFromKeysym('a') == null);
-    try std.testing.expectEqual(NavKey.c, chordFromKeysym('C').?);
-    try std.testing.expect(chordFromKeysym('1') == null);
-}

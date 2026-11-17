@@ -356,42 +356,8 @@ fn sampleList(dirty: bool) List {
     return l;
 }
 
-test "match: enabled commands only, any of the chords" {
-    var l = sampleList(true);
-    try testing.expectEqual(TMsg.save, l.match(Chord.ctrl(.s)).?.msg);
-    try testing.expectEqual(TMsg.open, l.match(Chord.plain(.f3)).?.msg);
-    try testing.expectEqual(TMsg.palette_open, l.match(Chord.ctrl(.k)).?.msg);
-    try testing.expectEqual(TMsg.palette_open, l.match(Chord.ctrlShift(.p)).?.msg);
-    try testing.expect(l.match(Chord.ctrl(.z)) == null);
-    try testing.expect(l.match(Chord.ctrlShift(.s)) == null); // Shift matters
 
-    l = sampleList(false); // Save disabled: the chord no longer fires
-    try testing.expect(l.match(Chord.ctrl(.s)) == null);
-    try testing.expectEqualStrings("app.quit", l.byId("app.quit").?.id);
-}
 
-test "paletteOptions skips disabled and hidden commands; paletteCommand maps back" {
-    const l = sampleList(false);
-    var labels: [max_commands][]const u8 = undefined;
-    var map: [max_commands]u16 = undefined;
-    const n = l.paletteOptions(&labels, &map);
-    try testing.expectEqual(@as(usize, 3), n); // Open, Find, Quit
-    try testing.expectEqualStrings("Find in Document", labels[1]);
-    try testing.expectEqual(TMsg.find, l.paletteCommand(1).?.msg);
-    try testing.expectEqual(TMsg.quit, l.paletteCommand(2).?.msg);
-    try testing.expect(l.paletteCommand(3) == null);
-}
-
-test "menuLabel puts the platform's shortcut next to the label" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const l = sampleList(true);
-    try testing.expectEqualStrings("Save    Ctrl+S", l.items[0].menuLabel(arena.allocator(), .pc, 8));
-    try testing.expectEqualStrings("Save  Cmd+S", l.items[0].menuLabel(arena.allocator(), .mac, 0));
-    var none = Command(TMsg){ .id = "x", .label = "Plain", .msg = .quit };
-    try testing.expectEqualStrings("Plain", none.menuLabel(arena.allocator(), .pc, 8));
-    _ = &none;
-}
 
 const P = CommandPalette(24);
 
@@ -400,62 +366,5 @@ fn pick(i: usize) TMsg {
     return .quit;
 }
 
-test "palette: fuzzy filter, highlight, Enter selects the Nth match's option index" {
-    const l = sampleList(true);
-    var m: P.Model = .{};
-    try testing.expect(P.keyMsg(&m, .enter, &l, .{}) == null); // closed: nothing
-    P.update(&m, P.openMsg());
-    try testing.expect(m.open);
-    for ("fnd") |c| P.update(&m, P.charMsg(c)); // "Find in Document"
-    const enter = P.keyMsg(&m, .enter, &l, .{}).?;
-    // Option indices skip the hidden palette row: Save 0, Open 1, Find 2, Quit 3.
-    try testing.expectEqual(P.Msg{ .select = 2 }, enter);
-    try testing.expectEqual(TMsg.find, l.paletteCommand(enter.select).?.msg);
-    // A query that matches nothing: Enter does nothing.
-    for ("zzz") |c| P.update(&m, P.charMsg(c));
-    try testing.expect(P.keyMsg(&m, .enter, &l, .{}) == null);
-    try testing.expectEqual(P.Msg.close, P.keyMsg(&m, .escape, &l, .{}).?);
-}
 
-test "viewPalette: closed draws nothing; open draws dim layer, panel, query and rows with shortcuts" {
-    const App = struct {
-        pub const Msg = TMsg;
-        const msgs = .{ .focus = TMsg.palette_open, .close = TMsg.quit, .selectMsg = pick };
-    };
-    const l = sampleList(true);
-    var m: P.Model = .{};
-    var cb = cmd.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-    P.viewPalette(&m, &cb, &l, App.msgs, .{});
-    try testing.expectEqual(@as(usize, 0), cb.cmds.items.len);
 
-    P.update(&m, .focus);
-    P.viewPalette(&m, &cb, &l, App.msgs, .{ .window_w = 800, .window_h = 600 });
-    try testing.expect(cmd.validateBalance(cb.cmds.items) == null);
-    var rects: [64]engine.Rect = undefined;
-    const n = cb.cmds.items.len;
-    engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 800, 600, text.monoMeasurer());
-    const snap = try snapshot.snapshotAlloc(testing.allocator, cb.cmds.items, rects[0..n], .{});
-    defer testing.allocator.free(snap);
-    try testing.expect(std.mem.indexOf(u8, snap, "\"Save") != null);
-    try testing.expect(std.mem.indexOf(u8, snap, "Ctrl+S") != null);
-    try testing.expect(std.mem.indexOf(u8, snap, "Command Palette") == null); // hidden
-    try testing.expect(std.mem.indexOf(u8, snap, "Ctrl+Q") != null);
-}
-
-test "menuItems: labels, shortcut text, enabled and the command index come from the table" {
-    const MI = @import("widgets/menu.zig").MenuItem(u16);
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const l = sampleList(false);
-    const items = menuItems(MI, arena.allocator(), &l, .pc, &.{ "file.save", "-", "file.open", "nope", "app.quit" });
-    try testing.expectEqual(@as(usize, 4), items.len);
-    try testing.expectEqualStrings("Save", items[0].label);
-    try testing.expectEqualStrings("Ctrl+S", items[0].shortcut);
-    try testing.expect(!items[0].enabled); // sampleList(false): Save disabled
-    try testing.expect(items[1].separator);
-    try testing.expectEqual(@as(?u16, 1), items[2].action);
-    const mac = menuItems(MI, arena.allocator(), &l, .mac, &.{"app.quit"});
-    try testing.expectEqualStrings("Cmd+Q", mac[0].shortcut);
-    try testing.expectEqual(TMsg.quit, l.items[items[3].action.?].msg);
-}

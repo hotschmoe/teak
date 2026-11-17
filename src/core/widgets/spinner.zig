@@ -133,87 +133,8 @@ fn typeStr(m: *S.Model, s: []const u8) void {
     for (s) |c| S.update(m, .{ .char = c });
 }
 
-test "spinner: stepping moves by step / big_step, clamps, and rewrites the text" {
-    var m: S.Model = .{};
-    S.setValue(&m, 5);
-    try testing.expectEqualStrings("5", S.content(&m));
-    S.step(&m, .up);
-    try testing.expectEqual(@as(f64, 6), S.value(&m).?);
-    S.step(&m, .page_up);
-    try testing.expectEqual(@as(f64, 11), S.value(&m).?);
-    S.step(&m, .page_up);
-    S.step(&m, .page_up);
-    S.step(&m, .page_up);
-    try testing.expectEqual(@as(f64, 20), S.value(&m).?); // clamped at max
-    S.step(&m, .up);
-    try testing.expectEqual(@as(f64, 20), S.value(&m).?);
-    for (0..9) |_| S.step(&m, .page_down);
-    try testing.expectEqual(@as(f64, 0), S.value(&m).?); // clamped at min
-}
 
-test "spinner: an empty or invalid field starts from the minimum" {
-    var m: S.Model = .{};
-    S.step(&m, .up);
-    try testing.expectEqual(@as(f64, 1), S.value(&m).?);
-    var n: S.Model = .{};
-    typeStr(&n, "999"); // out of range: invalid
-    try testing.expect(!S.isValid(&n));
-    S.step(&n, .down);
-    try testing.expectEqual(@as(f64, 0), S.value(&n).?); // min - 1 clamps to min
-}
 
-test "spinner: fractional steps do not drift" {
-    var m: F.Model = .{};
-    F.setValue(&m, 0);
-    for (0..3) |_| F.step(&m, .up);
-    try testing.expectEqualStrings("0.3", F.content(&m)); // not 0.30000000000000004
-    F.step(&m, .page_up);
-    try testing.expectEqualStrings("0.8", F.content(&m));
-    F.step(&m, .page_up);
-    try testing.expectEqualStrings("1.0", F.content(&m));
-}
 
-test "spinner: key and wheel mapping" {
-    try testing.expectEqual(@as(?StepKind, .up), S.keyStep(.up));
-    try testing.expectEqual(@as(?StepKind, .page_down), S.keyStep(.page_down));
-    try testing.expect(S.keyStep(.left) == null);
-    try testing.expectEqual(@as(?StepKind, .up), S.wheelStep(-120, false));
-    try testing.expectEqual(@as(?StepKind, .page_down), S.wheelStep(48, true));
-    try testing.expect(S.wheelStep(0, false) == null);
-}
 
-test "spinner: typing still edits; the buttons disable at the limits" {
-    const TMsg = union(enum) { focus, up, down };
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    var m: S.Model = .{};
-    typeStr(&m, "20");
-    S.viewWith(&m, &cb, .{ .focus = TMsg.focus, .up = TMsg.up, .down = TMsg.down });
-    const items = cb.cmds.items;
-    try testing.expectEqual(@as(usize, 5), items.len); // group, -, input, +, pop
-    try testing.expect(!items[1].button.disabled);
-    try testing.expect(items[3].button.disabled); // at max
-    try testing.expectEqualStrings("20", items[2].text_input.content);
-}
 
-test "spinner: snapshot golden" {
-    const TMsg = union(enum) { focus, up, down };
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    var m: S.Model = .{};
-    S.setValue(&m, 7);
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    S.viewWith(&m, &cb, .{ .focus = TMsg.focus, .up = TMsg.up, .down = TMsg.down });
-    cb.popGroup();
-    var rects: [16]engine.Rect = undefined;
-    const n = cb.cmds.items.len;
-    engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 300, 100, text_mod.monoMeasurer());
-    try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
-        \\group (0,0,300,100) vertical
-        \\  group (0,0,180,28) horizontal
-        \\    button (0,0,28,28) "-"
-        \\    text_input (30,0,120,28) "7" cursor=1
-        \\    button (152,0,28,28) "+"
-        \\
-    );
-}

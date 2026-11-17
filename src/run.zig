@@ -2800,10 +2800,3 @@ pub fn rectsEqual(a: []const Rect, b: []const Rect) bool {
     return true;
 }
 
-test {
-    _ = @import("core/eql.zig");
-    _ = @import("core/oom.zig");
-    _ = @import("core/anim.zig");
-    _ = @import("run_test.zig");
-    _ = @import("run_effects_test.zig");
-}

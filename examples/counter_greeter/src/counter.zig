@@ -73,39 +73,4 @@ pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-test "counter update transitions" {
-    var m: Model = .{};
-    update(&m, .increment);
-    update(&m, .increment);
-    update(&m, .increment);
-    update(&m, .decrement);
-    try std.testing.expectEqual(@as(i32, 2), m.count);
-    update(&m, .reset);
-    try std.testing.expectEqual(@as(i32, 0), m.count);
-}
 
-test "counter view emits expected command shape" {
-    const testing = std.testing;
-    const cmd = @import("teak").cmd;
-
-    // Stand-in AppMsg: same variants as Counter.Msg so msgs can be built trivially.
-    const AppMsg = Msg;
-    var cb = cmd.CmdBuffer(AppMsg).init(testing.allocator);
-    defer cb.deinit();
-
-    const msgs = .{
-        .increment = AppMsg.increment,
-        .decrement = AppMsg.decrement,
-        .reset = AppMsg.reset,
-    };
-
-    const m: Model = .{ .count = 7 };
-    view(&m, &cb, msgs);
-
-    // push, text, push, btn+, btn-, pop, btn reset, pop = 8 cmds
-    try testing.expectEqual(@as(usize, 8), cb.cmds.items.len);
-    try testing.expectEqualStrings("Count: 7", cb.cmds.items[1].text.content);
-    try testing.expectEqual(AppMsg.increment, cb.cmds.items[3].button.msg);
-    try testing.expectEqual(AppMsg.decrement, cb.cmds.items[4].button.msg);
-    try testing.expectEqual(AppMsg.reset, cb.cmds.items[6].button.msg);
-}

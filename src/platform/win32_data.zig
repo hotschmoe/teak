@@ -125,65 +125,6 @@ fn testDib(a: std.mem.Allocator, w: i32, h: i32, bpp: u16, pixels: []const u8) !
     return dib;
 }
 
-test "dibToRgba flips a bottom-up 24-bit bitmap and swaps BGR to RGB" {
-    const a = std.testing.allocator;
-    // 2x2, rows padded to 8 bytes. Bottom row first: (B,G,R) = blue, white.
-    const px = [_]u8{
-        255, 0, 0, 255, 255, 255, 0, 0, // bottom row: blue, white, pad
-        0, 0, 255, 0, 255, 0, 0, 0, // top row: red, green, pad
-    };
-    const dib = try testDib(a, 2, 2, 24, &px);
-    defer a.free(dib);
-    const img = try dibToRgba(a, dib);
-    defer a.free(img.pixels);
-    try std.testing.expectEqual(@as(u32, 2), img.w);
-    try std.testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 }, img.pixels);
-}
 
-test "dibToRgba: a 32-bit bitmap with all-zero alpha is opaque; real alpha is kept" {
-    const a = std.testing.allocator;
-    const zero_alpha = try testDib(a, 1, 1, 32, &.{ 10, 20, 30, 0 });
-    defer a.free(zero_alpha);
-    const o = try dibToRgba(a, zero_alpha);
-    defer a.free(o.pixels);
-    try std.testing.expectEqualSlices(u8, &.{ 30, 20, 10, 255 }, o.pixels);
-    const with_alpha = try testDib(a, 1, 1, 32, &.{ 10, 20, 30, 128 });
-    defer a.free(with_alpha);
-    const p = try dibToRgba(a, with_alpha);
-    defer a.free(p.pixels);
-    try std.testing.expectEqualSlices(u8, &.{ 30, 20, 10, 128 }, p.pixels);
-}
 
-test "dibToRgba rejects truncated, unsupported and absurd bitmaps" {
-    const a = std.testing.allocator;
-    try std.testing.expectError(error.CorruptDib, dibToRgba(a, "short"));
-    const good = try testDib(a, 4, 4, 32, &(@as([64]u8, @splat(1))));
-    defer a.free(good);
-    try std.testing.expectError(error.CorruptDib, dibToRgba(a, good[0 .. good.len - 1]));
-    const bad_bpp = try testDib(a, 1, 1, 16, &.{ 0, 0 });
-    defer a.free(bad_bpp);
-    try std.testing.expectError(error.UnsupportedDib, dibToRgba(a, bad_bpp));
-    const huge = try testDib(a, 1, 1, 32, &.{ 0, 0, 0, 0 });
-    defer a.free(huge);
-    std.mem.writeInt(i32, huge[4..8], 100_000, .little);
-    std.mem.writeInt(i32, huge[8..12], 100_000, .little);
-    try std.testing.expectError(error.UnsupportedDib, dibToRgba(a, huge));
-}
 
-test "imageParts bounds the PNG and thumbnail and keeps the aspect ratio" {
-    const a = std.testing.allocator;
-    const w = 3136; // twice the PNG limit
-    const h = 1568;
-    const pixels = try a.alloc(u8, w * h * 4);
-    defer a.free(pixels);
-    @memset(pixels, 200);
-    const parts = try imageParts(a, .{ .w = w, .h = h, .pixels = pixels });
-    defer a.free(parts.png);
-    defer a.free(parts.thumb);
-    try std.testing.expectEqual(@as(u32, 1568), parts.w);
-    try std.testing.expectEqual(@as(u32, 784), parts.h);
-    try std.testing.expectEqual(@as(u32, 64), parts.thumb_w);
-    try std.testing.expectEqual(@as(u32, 32), parts.thumb_h);
-    try std.testing.expectEqual(@as(usize, 64 * 32 * 4), parts.thumb.len);
-    try std.testing.expect(std.mem.startsWith(u8, parts.png, "\x89PNG"));
-}

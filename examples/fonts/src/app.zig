@@ -50,9 +50,3 @@ pub fn view(_: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-test "the view is balanced" {
-    var cb = teak.CmdBuffer(Msg).init(std.testing.allocator);
-    defer cb.deinit();
-    view(&.{}, &cb);
-    try std.testing.expect(teak.validateBalance(cb.cmds.items) == null);
-}

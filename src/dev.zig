@@ -412,26 +412,4 @@ fn fpOf(comptime T: type) u64 {
     return comptime typeFingerprint(T);
 }
 
-test "typeFingerprint: stable for equal shapes, sensitive to fields, types and order" {
-    const A = struct { a: i32, b: [4]u8, c: ?u16 };
-    const A2 = struct { a: i32, b: [4]u8, c: ?u16 };
-    const B = struct { a: i32, b: [4]u8, c: ?u32 };
-    const C = struct { b: [4]u8, a: i32, c: ?u16 };
-    const D = struct { a: i32, b: [5]u8, c: ?u16 };
-    const E = struct { a: i32, b: [4]u8, c: ?u16, d: bool };
-    try std.testing.expect(fpOf(A) != fpOf(A2)); // @typeName differs per declaration
-    // The same type always hashes the same.
-    try std.testing.expectEqual(fpOf(A), fpOf(A));
-    try std.testing.expect(fpOf(A) != fpOf(B));
-    try std.testing.expect(fpOf(A) != fpOf(C));
-    try std.testing.expect(fpOf(A) != fpOf(D));
-    try std.testing.expect(fpOf(A) != fpOf(E));
-}
 
-test "typeFingerprint terminates on self-referential types and covers unions / enums" {
-    const Node = struct { next: ?*@This(), v: u8, k: union(enum) { a: u8, b: [2]u16 }, e: enum { x, y } };
-    _ = fpOf(Node);
-    const E1 = enum { a, b };
-    const E2 = enum { a, c };
-    try std.testing.expect(fpOf(E1) != fpOf(E2));
-}

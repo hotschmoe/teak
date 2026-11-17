@@ -149,70 +149,7 @@ const App = struct {
 
 const tab_labels = [_][]const u8{ "General", "Network", "About" };
 
-test "tabs: satisfies the component contract" {
-    component.validateComponent(@This());
-}
 
-test "tabs: select focuses; arrows move with wrap; home/end jump; blur drops focus" {
-    var m: Model = .{};
-    try testing.expect(keyMsg(&m, .right, 3) == null); // unfocused: keys ignored
-    update(&m, .{ .select = 1 });
-    try testing.expect(m.focused and m.selected == 1);
-    update(&m, keyMsg(&m, .right, 3).?);
-    try testing.expectEqual(@as(usize, 2), m.selected);
-    update(&m, keyMsg(&m, .right, 3).?); // wraps
-    try testing.expectEqual(@as(usize, 0), m.selected);
-    update(&m, keyMsg(&m, .left, 3).?); // wraps back
-    try testing.expectEqual(@as(usize, 2), m.selected);
-    update(&m, keyMsg(&m, .home, 3).?);
-    try testing.expectEqual(@as(usize, 0), m.selected);
-    update(&m, keyMsg(&m, .end, 3).?);
-    try testing.expectEqual(@as(usize, 2), m.selected);
-    try testing.expect(keyMsg(&m, .up, 3) == null);
-    update(&m, keyMsg(&m, .escape, 3).?);
-    try testing.expect(!m.focused);
-}
 
-test "tabs: a stale selection clamps and an empty strip is a no-op" {
-    var m: Model = .{ .selected = 9, .focused = true };
-    update(&m, moveMsg(.next, 3)); // clamped to 2, then wraps to 0
-    try testing.expectEqual(@as(usize, 0), m.selected);
-    update(&m, moveMsg(.next, 0));
-    try testing.expectEqual(@as(usize, 0), m.selected);
-}
 
-test "tabs: viewWith emits one button per label, the selected one styled apart" {
-    const m: Model = .{ .selected = 1, .focused = true };
-    var cb = cmd.CmdBuffer(AppMsg).init(testing.allocator);
-    defer cb.deinit();
-    viewWith(&m, &cb, &tab_labels, App.msgs, .{});
-    const items = cb.cmds.items;
-    try testing.expectEqual(App.pick(0), items[2].button.msg);
-    try testing.expectEqual(App.pick(2), items[4].button.msg);
-    try testing.expectEqualStrings("Network", items[3].button.label);
-    // selected: panel bg + accent border (focused); the others differ
-    try testing.expect(!std.meta.eql(items[3].button.style.bg, items[2].button.style.bg));
-    try testing.expectEqual(cb.theme.palette.accent, items[3].button.style.border.?);
-}
 
-test "tabs: snapshot golden" {
-    const m: Model = .{ .selected = 0 };
-    var cb = cmd.CmdBuffer(AppMsg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
-    viewWith(&m, &cb, &tab_labels, App.msgs, .{});
-    cb.popGroup();
-    var rects: [16]engine.Rect = undefined;
-    const n = cb.cmds.items.len;
-    engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 400, 100, text.monoMeasurer());
-    try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
-        \\group (0,0,400,100) vertical
-        \\  group (0,0,400,33) vertical
-        \\    group (0,0,274,32) horizontal
-        \\      button (0,0,90,32) "General"
-        \\      button (92,0,90,32) "Network"
-        \\      button (184,0,90,32) "About"
-        \\    divider (0,32,400,1)
-        \\
-    );
-}

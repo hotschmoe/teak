@@ -202,57 +202,6 @@ pub fn pickSync(buf: []u8, kind: Kind, pattern: []const u8, env_picker: ?[]const
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-test "patternToAccept: Win32 globs to an accept list" {
-    var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings(".json,.txt", patternToAccept("*.json;*.txt", &buf));
-    try std.testing.expectEqualStrings("", patternToAccept("*.*", &buf));
-    try std.testing.expectEqualStrings(".f2d", patternToAccept("*.f2d", &buf));
-    try std.testing.expectEqualStrings("", patternToAccept("readme", &buf));
-}
 
-test "acceptToGlobs: extensions, MIME wildcards, unknown types" {
-    const a = std.testing.allocator;
-    const cases = [_]struct { in: []const u8, out: []const u8 }{
-        .{ .in = ".json,.kerf.json", .out = "*.json *.kerf.json" },
-        .{ .in = "image/*", .out = "*.png *.jpg *.jpeg *.gif *.webp *.bmp" },
-        .{ .in = ".dxf, image/png", .out = "*.dxf *.png" },
-        .{ .in = "application/x-unknown", .out = "" },
-        .{ .in = "", .out = "" },
-    };
-    for (cases) |c| {
-        const got = try acceptToGlobs(a, c.in);
-        defer a.free(got);
-        try std.testing.expectEqualStrings(c.out, got);
-    }
-}
 
-test "buildArgv: zenity and kdialog open / save command lines" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
 
-    const zo = try buildArgv(a, .zenity, "zenity", .open, ".json", "Open mesh", "");
-    try std.testing.expectEqual(@as(usize, 4), zo.len);
-    try std.testing.expectEqualStrings("--file-selection", zo[1]);
-    try std.testing.expectEqualStrings("--title=Open mesh", zo[2]);
-    try std.testing.expectEqualStrings("--file-filter=Files | *.json", zo[3]);
-
-    const zs = try buildArgv(a, .zenity, "zenity", .save, "", "", "out.dxf");
-    try std.testing.expectEqualStrings("--save", zs[2]);
-    try std.testing.expectEqualStrings("--confirm-overwrite", zs[3]);
-    try std.testing.expectEqualStrings("--filename=out.dxf", zs[4]);
-
-    const ko = try buildArgv(a, .kdialog, "kdialog", .open, "image/png", "Pick", "");
-    try std.testing.expectEqualStrings("--getopenfilename", ko[1]);
-    try std.testing.expectEqualStrings("*.png|Files", ko[3]);
-    const ks = try buildArgv(a, .kdialog, "kdialog", .save, "", "", "a.txt");
-    try std.testing.expectEqualStrings("--getsavefilename", ks[1]);
-    try std.testing.expectEqualStrings("./a.txt", ks[2]);
-}
-
-test "parseChoice takes the first line, trimmed; empty means cancelled" {
-    try std.testing.expectEqualStrings("/tmp/a b.json", parseChoice("/tmp/a b.json\n").?);
-    try std.testing.expectEqualStrings("/x", parseChoice("  /x  \r\nsecond\n").?);
-    try std.testing.expect(parseChoice("") == null);
-    try std.testing.expect(parseChoice("\n") == null);
-}

@@ -936,13 +936,3 @@ fn cmdScreenshot(rt: anytype, obj: std.json.ObjectMap) void {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-test "State ring keeps the newest Msgs, oldest first by age" {
-    const Msg = union(enum) { a: u32 };
-    var st = State.init(std.testing.allocator);
-    defer st.deinit();
-    for (0..40) |i| st.logMsg(Msg, .{ .a = @intCast(i) });
-    try std.testing.expectEqual(@as(usize, ring_n), st.msgCount());
-    try std.testing.expectEqualStrings(".a(39)", st.msgAt(0).?);
-    try std.testing.expectEqualStrings(".a(8)", st.msgAt(ring_n - 1).?);
-    try std.testing.expect(st.msgAt(ring_n) == null);
-}

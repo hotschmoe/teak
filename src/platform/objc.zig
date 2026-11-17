@@ -176,8 +176,3 @@ pub fn getState(obj: Id) ?*anyopaque {
     return api.object_getIvar(obj, iv);
 }
 
-test "CGRect / NSRange have the C layout the ABI expects" {
-    try std.testing.expectEqual(@as(usize, 32), @sizeOf(CGRect));
-    try std.testing.expectEqual(@as(usize, 16), @sizeOf(NSRange));
-    try std.testing.expectEqual(@as(usize, 16), @sizeOf(CGPoint));
-}

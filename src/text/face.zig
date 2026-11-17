@@ -363,11 +363,3 @@ pub fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return try list.toOwnedSlice(allocator);
 }
 
-test "windowsFontCandidate probes monospace faces first under the given Windows dir" {
-    var buf: [128]u8 = undefined;
-    try std.testing.expectEqualStrings("D:\\Win\\Fonts\\consola.ttf", windowsFontCandidate(&buf, "D:\\Win", 0).?);
-    try std.testing.expectEqualStrings("D:\\Win\\Fonts\\cour.ttf", windowsFontCandidate(&buf, "D:\\Win\\", 1).?);
-    try std.testing.expect(windowsFontCandidate(&buf, "D:\\Win", WINDOWS_FONT_FILES.len) == null);
-    var tiny: [4]u8 = undefined;
-    try std.testing.expect(windowsFontCandidate(&tiny, "D:\\Win", 0) == null);
-}

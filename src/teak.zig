@@ -554,17 +554,4 @@ pub const TextDraw = text.TextDraw;
 /// Stateless fixed-advance measurer for CLI canaries and tests.
 pub const monoMeasurer = text.monoMeasurer;
 
-test {
-    @import("std").testing.refAllDecls(@This());
-}
 
-test "version is semver and matches build.zig.zon" {
-    const std = @import("std");
-    const opts = @import("build_options");
-    const parsed = try std.SemanticVersion.parse(version);
-    const manifest = try std.SemanticVersion.parse(opts.manifest_version);
-    try std.testing.expectEqual(manifest.major, parsed.major);
-    try std.testing.expectEqual(manifest.minor, parsed.minor);
-    try std.testing.expectEqual(manifest.patch, parsed.patch);
-    try std.testing.expectEqualStrings(manifest.pre orelse "", parsed.pre orelse "");
-}

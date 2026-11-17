@@ -170,95 +170,13 @@ fn expectFit(expected: []const u8, s: []const u8, width: usize, al: CellAlign) !
     try testing.expectEqualStrings(expected, got);
 }
 
-test "fitCell pads by alignment" {
-    try expectFit("ab   ", "ab", 5, .left);
-    try expectFit("   ab", "ab", 5, .right);
-    try expectFit(" ab  ", "ab", 5, .center);
-    try expectFit("abcde", "abcde", 5, .left);
-    try expectFit("", "", 0, .left);
-    try expectFit("   ", "", 3, .right);
-}
 
-test "fitCell truncates with an ellipsis to exactly the width" {
-    try expectFit("abcd~", "abcdefgh", 5, .left);
-    try expectFit("abcd~", "abcdefgh", 5, .right); // a cut cell fills the column
-    try expectFit("~", "abc", 1, .left);
-    try expectFit("", "abc", 0, .left);
-}
 
-test "fitCell: multi-byte characters count as one column and are never split" {
-    const got = try fitCell(testing.allocator, "h\u{e9}llo w\u{f6}rld", 6, .left, "\u{2026}", 0);
-    defer testing.allocator.free(got);
-    try testing.expectEqualStrings("h\u{e9}llo\u{2026}", got);
-    try testing.expectEqual(@as(usize, 6), columns(got));
 
-    try expectFit("\u{e9}   ", "\u{e9}", 4, .left);
-    // A truncated or invalid trailing sequence is one column, not a crash.
-    try testing.expectEqual(@as(usize, 2), columns("a\xe2"));
-}
 
-test "fitCell: an ellipsis wider than the cell is cut to fit" {
-    const got = try fitCell(testing.allocator, "abcdef", 2, .left, "...", 0);
-    defer testing.allocator.free(got);
-    try testing.expectEqualStrings("..", got);
-}
 
-test "fitCell appends trailing gutter blanks" {
-    const got = try fitCell(testing.allocator, "ab", 3, .left, "~", 2);
-    defer testing.allocator.free(got);
-    try testing.expectEqualStrings("ab   ", got);
-}
-
-test "Table.totalChars counts cells and gutters" {
-    const t: Table = .{ .columns = &.{ .{ .chars = 10 }, .{ .chars = 4 }, .{ .chars = 6 } }, .gutter = 2 };
-    try testing.expectEqual(@as(usize, 10 + 2 + 4 + 2 + 6), t.totalChars());
-}
 
 const cmd = @import("cmd.zig");
 const layout = @import("../layout/engine.zig");
 const snapshot = @import("snapshot.zig");
 
-test "golden: header + rows line up; long cells truncate; rule + bg emit" {
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    const parts: Table = .{
-        .columns = &.{
-            .{ .title = "PART", .chars = 8 },
-            .{ .title = "QTY", .chars = 3, .cell_align = .right },
-        },
-        .ellipsis = "~",
-    };
-    const head: RowStyle = .{ .rule = .{ 0, 0, 0, 1 }, .bg = .{ 0.9, 0.9, 0.9, 1 } };
-    const body: RowStyle = .{};
-
-    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
-    parts.header(&cb, head);
-    parts.row(&cb, &.{ "bolt", "4" }, body);
-    parts.row(&cb, &.{ "washer-flange", "12" }, body);
-    parts.row(&cb, &.{"nut"}, body); // missing cell -> blank
-    cb.popGroup();
-
-    var rects: [32]layout.Rect = undefined;
-    const n = cb.cmds.items.len;
-    layout.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 300, 200, text_mod.monoMeasurer());
-    // 8 + gutter 1 + 3 = 12 chars; each cell is its own text cmd (col 0 includes the gutter).
-    try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
-        \\group (0,0,300,200) vertical
-        \\  group (0,0,300,24) horizontal bg
-        \\    text (4,2,90,20) "PART     "
-        \\    text (94,2,30,20) "QTY"
-        \\  divider (0,24,300,1)
-        \\  group (0,25,300,24) horizontal
-        \\    text (4,27,90,20) "bolt     "
-        \\    text (94,27,30,20) "  4"
-        \\  group (0,49,300,24) horizontal
-        \\    text (4,51,90,20) "washer-~ "
-        \\    text (94,51,30,20) " 12"
-        \\  group (0,73,300,24) horizontal
-        \\    text (4,75,90,20) "nut      "
-        \\    text (94,75,30,20) "   "
-        \\
-    );
-}

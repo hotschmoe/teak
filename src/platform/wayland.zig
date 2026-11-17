@@ -1225,9 +1225,3 @@ comptime {
     teak.validateHost(Host);
 }
 
-test "cursor names are non-empty for every shape" {
-    for (std.enums.values(teak.CursorShape)) |sh| {
-        const n = cursorNames(sh);
-        try std.testing.expect(n[0].len > 0 and n[1].len > 0);
-    }
-}

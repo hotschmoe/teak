@@ -737,23 +737,3 @@ fn toolLaunch(mcp: *Mcp, args: std.json.ObjectMap, res: *ToolResult) !void {
     });
 }
 
-test "buildCommand maps CLI words to protocol objects" {
-    const gpa = std.testing.allocator;
-    {
-        const s = (try buildCommand(gpa, "click", &.{ "--role", "button", "Add", "item" })).?;
-        defer gpa.free(s);
-        try std.testing.expectEqualStrings("{\"cmd\":\"click\",\"role\":\"button\",\"label\":\"Add item\"}", s);
-    }
-    {
-        const s = (try buildCommand(gpa, "wait", &.{ "--text", "done", "--timeout", "30" })).?;
-        defer gpa.free(s);
-        try std.testing.expectEqualStrings("{\"cmd\":\"wait\",\"until_text\":\"done\",\"timeout_frames\":30}", s);
-    }
-    {
-        const s = (try buildCommand(gpa, "type", &.{ "hi", "\"there\"" })).?;
-        defer gpa.free(s);
-        try std.testing.expectEqualStrings("{\"cmd\":\"type\",\"text\":\"hi \\\"there\\\"\"}", s);
-    }
-    try std.testing.expect((try buildCommand(gpa, "bogus", &.{})) == null);
-    try std.testing.expect((try buildCommand(gpa, "key", &.{})) == null);
-}

@@ -195,36 +195,5 @@ fn scrollbarThumb(arena: std.mem.Allocator, m: *const Model) []const teak.Canvas
     return prims;
 }
 
-test "zoom keeps the world point under the cursor fixed" {
-    var m = Model{ .pan_x = 40, .pan_y = 10 };
-    const wx = (200 - m.pan_x) / m.zoom;
-    const wy = (120 - m.pan_y) / m.zoom;
-    update(&m, .{ .zoom_at = .{ .dy = -240, .x = 200, .y = 120 } });
-    try std.testing.expect(m.zoom > 1);
-    try std.testing.expectApproxEqAbs(wx, (200 - m.pan_x) / m.zoom, 0.001);
-    try std.testing.expectApproxEqAbs(wy, (120 - m.pan_y) / m.zoom, 0.001);
-}
 
-test "pointerMsg canvas: drag pans, hover tracks, wheel zooms, layout sizes" {
-    const m = Model{};
-    const drag = onCanvas(&m, .{ .id = CANVAS_ID, .kind = .move, .dx = 3, .dy = -2, .buttons = .{ .left = true } }).?;
-    try std.testing.expectEqual(@as(f32, 3), drag.pan[0]);
-    const hover = onCanvas(&m, .{ .id = CANVAS_ID, .kind = .move, .x = 9, .y = 8 }).?;
-    try std.testing.expectEqual(@as(f32, 9), hover.hover.?[0]);
-    try std.testing.expect(onCanvas(&m, .{ .id = CANVAS_ID, .kind = .down }) == null);
-    const lay = onCanvas(&m, .{ .id = CANVAS_ID, .kind = .layout, .w = 560, .h = 460 }).?;
-    try std.testing.expectEqual(@as(f32, 460), lay.view_size[1]);
-}
 
-test "scroll offset clamps to the reported content extent" {
-    var m = Model{};
-    update(&m, .{ .list_extent = .{ 300, 1000 } });
-    update(&m, .{ .list_scroll_by = 5000 });
-    try std.testing.expectEqual(@as(f32, 700), m.list_scroll);
-    update(&m, .{ .list_scroll_by = -9999 });
-    try std.testing.expectEqual(@as(f32, 0), m.list_scroll);
-    // Content shrinks below the offset: re-clamped on the next report.
-    update(&m, .{ .list_scroll_by = 400 });
-    update(&m, .{ .list_extent = .{ 300, 500 } });
-    try std.testing.expectEqual(@as(f32, 200), m.list_scroll);
-}

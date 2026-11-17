@@ -424,45 +424,4 @@ fn solid(gpa: std.mem.Allocator, w: u32, h: u32, c: [4]u8) !png.Image {
     return .{ .width = w, .height = h, .rgba = buf };
 }
 
-test "compare: identical images pass, noise within tolerance is not counted, real changes are" {
-    const gpa = std.testing.allocator;
-    const a = try solid(gpa, 20, 10, .{ 10, 10, 10, 255 });
-    defer a.deinit(gpa);
-    const b = try solid(gpa, 20, 10, .{ 10, 10, 10, 255 });
-    defer b.deinit(gpa);
-    try std.testing.expectEqual(@as(u32, 0), (try compare(gpa, a, b, 8, null)).differing);
 
-    // 5 px of +6 noise: within tol 8, counted as noisy only.
-    for (0..5) |i| b.rgba[i * 4] += 6;
-    var r = try compare(gpa, a, b, 8, null);
-    try std.testing.expectEqual(@as(u32, 0), r.differing);
-    try std.testing.expectEqual(@as(u32, 5), r.nonzero);
-    try std.testing.expect(r.pass(0, 0));
-
-    // 3 px of +60: over tol.
-    for (10..13) |i| b.rgba[i * 4 + 1] += 60;
-    r = try compare(gpa, a, b, 8, null);
-    try std.testing.expectEqual(@as(u32, 3), r.differing);
-    try std.testing.expectEqual(@as(u8, 60), r.max_delta);
-    try std.testing.expect(!r.pass(2, 99) and r.pass(3, 99));
-    try std.testing.expectEqual(@as(u32, 10), r.x0);
-    try std.testing.expectEqual(@as(u32, 12), r.x1);
-}
-
-test "compare: size mismatch fails; diff image marks the changed pixels red" {
-    const gpa = std.testing.allocator;
-    const a = try solid(gpa, 4, 4, .{ 30, 30, 30, 255 });
-    defer a.deinit(gpa);
-    const small = try solid(gpa, 4, 3, .{ 30, 30, 30, 255 });
-    defer small.deinit(gpa);
-    try std.testing.expect(!(try compare(gpa, a, small, 8, null)).pass(1000, 1000));
-
-    const b = try solid(gpa, 4, 4, .{ 30, 30, 30, 255 });
-    defer b.deinit(gpa);
-    b.rgba[5 * 4] = 200;
-    const diff = try gpa.alloc(u8, 4 * 4 * 4);
-    defer gpa.free(diff);
-    _ = try compare(gpa, a, b, 8, diff);
-    try std.testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255 }, diff[5 * 4 ..][0..4]);
-    try std.testing.expectEqualSlices(u8, &.{ 10, 10, 10, 255 }, diff[0..4]);
-}

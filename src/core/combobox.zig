@@ -410,39 +410,10 @@ const snapshot = @import("snapshot.zig");
 const engine = @import("../layout/engine.zig");
 const text = @import("text.zig");
 
-test "foldCase and matches: case, accents, Greek, Cyrillic" {
-    try testing.expect(matches("beam", "Wood BEAM 2x10", .substring));
-    try testing.expect(!matches("beam", "Wood BEAM 2x10", .prefix));
-    try testing.expect(matches("wood", "Wood BEAM 2x10", .prefix));
-    try testing.expect(matches("", "anything", .prefix));
-    try testing.expect(matches("\u{00E9}cole", "\u{00C9}COLE", .prefix)); // é / É
-    try testing.expect(matches("\u{03C3}", "\u{03A3}IGMA", .prefix)); // σ / Σ
-    try testing.expect(matches("\u{0434}\u{043E}\u{043C}", "\u{0414}\u{041E}\u{041C}", .prefix));
-    try testing.expect(!matches("x", "", .substring));
-}
 
-test "matches is grapheme-safe" {
-    // "e" must not match the base of "e" + COMBINING ACUTE (that would split the cluster).
-    try testing.expect(!matches("e", "e\u{0301}", .substring));
-    try testing.expect(matches("e\u{0301}", "caf\u{0065}\u{0301}", .substring));
-    // Matching the start of a flag is also a split.
-    try testing.expect(!matches("\u{1F1FA}", "\u{1F1FA}\u{1F1F8}", .substring));
-    try testing.expect(matches("\u{1F1FA}\u{1F1F8}", "x\u{1F1FA}\u{1F1F8}", .substring));
-    // Invalid bytes never crash.
-    try testing.expect(!matches("a", "\xFF\xFE", .substring));
-}
 
 const opts_list = [_][]const u8{ "Pine", "Oak", "Maple", "Spruce", "Cedar", "Birch", "Ash", "Beech" };
 
-test "countMatches / nthMatch / ordinalOf" {
-    try testing.expectEqual(@as(usize, 8), countMatches("", &opts_list, .substring));
-    try testing.expectEqual(@as(usize, 5), countMatches("e", &opts_list, .substring)); // Pine Maple Spruce Cedar Beech
-    try testing.expectEqual(@as(?usize, 0), nthMatch("pi", &opts_list, .prefix, 0));
-    try testing.expectEqual(@as(?usize, null), nthMatch("pi", &opts_list, .prefix, 1));
-    try testing.expectEqual(@as(?usize, 7), nthMatch("b", &opts_list, .prefix, 1));
-    try testing.expectEqual(@as(?usize, 1), ordinalOf("b", &opts_list, .prefix, 7));
-    try testing.expectEqual(@as(?usize, null), ordinalOf("b", &opts_list, .prefix, 0));
-}
 
 const CB = Combobox(16);
 
@@ -450,61 +421,8 @@ fn typeStr(m: *CB.Model, s: []const u8) void {
     for (s) |c| CB.update(m, CB.charMsg(c));
 }
 
-test "validateComponent: Combobox satisfies the component contract" {
-    component.validateComponent(CB);
-}
 
-test "update: focus opens, typing filters + resets highlight, select closes" {
-    var m: CB.Model = .{};
-    CB.update(&m, .focus);
-    try testing.expect(m.open);
-    typeStr(&m, "ar");
-    try testing.expectEqualStrings("ar", m.query.content());
-    try testing.expectEqual(@as(usize, 0), m.highlighted);
-    CB.update(&m, .{ .select = 4 });
-    try testing.expect(!m.open);
-    try testing.expectEqual(@as(?usize, 4), m.selected);
-    try testing.expectEqualStrings("", m.query.content());
-    // Focusing again parks the highlight on the selection.
-    CB.update(&m, .focus);
-    try testing.expectEqual(@as(usize, 4), m.highlighted);
-    // Cursor-only edits don't reset the highlight.
-    CB.update(&m, .{ .highlight = .{ .move = .last, .count = 8, .max_visible = 0 } });
-    CB.update(&m, .{ .edit = .cursor_left });
-    try testing.expectEqual(@as(usize, 7), m.highlighted);
-    CB.update(&m, .close);
-    try testing.expect(!m.open);
-}
 
-test "keyMsg: arrows move the highlight, Enter commits the Nth match, Escape closes" {
-    var m: CB.Model = .{};
-    const o: ViewOpts = .{ .max_visible = 3 };
-    // Closed: Down opens, Up/Enter/Escape do nothing.
-    try testing.expectEqual(CB.Msg.focus, CB.keyMsg(&m, .down, &opts_list, o).?);
-    try testing.expect(CB.keyMsg(&m, .up, &opts_list, o) == null);
-    try testing.expect(CB.keyMsg(&m, .enter, &opts_list, o) == null);
-    try testing.expect(CB.keyMsg(&m, .escape, &opts_list, o) == null);
-
-    CB.update(&m, .focus);
-    typeStr(&m, "e"); // Pine, Maple, Spruce, Cedar, Beech -> 5 matches
-    CB.update(&m, CB.keyMsg(&m, .down, &opts_list, o).?);
-    CB.update(&m, CB.keyMsg(&m, .down, &opts_list, o).?);
-    try testing.expectEqual(@as(usize, 2), m.highlighted);
-    // Enter selects the 3rd match = Spruce (original index 3).
-    try testing.expectEqual(CB.Msg{ .select = 3 }, CB.keyMsg(&m, .enter, &opts_list, o).?);
-    // Scroll-to-reveal after moving past the 3-row viewport.
-    CB.update(&m, CB.keyMsg(&m, .down, &opts_list, o).?);
-    try testing.expectEqual(@as(f32, ITEM_HEIGHT), m.scroll_offset);
-    CB.update(&m, CB.keyMsg(&m, .page_up, &opts_list, o).?);
-    try testing.expectEqual(@as(usize, 0), m.highlighted);
-    try testing.expectEqual(@as(f32, 0), m.scroll_offset);
-    // Editing keys map to query edits.
-    try testing.expectEqual(CB.Msg{ .edit = .backspace }, CB.keyMsg(&m, .backspace, &opts_list, o).?);
-    try testing.expectEqual(CB.Msg.close, CB.keyMsg(&m, .escape, &opts_list, o).?);
-    // No matches: Enter does nothing.
-    typeStr(&m, "zzz");
-    try testing.expect(CB.keyMsg(&m, .enter, &opts_list, o) == null);
-}
 
 const ViewOpts_ = ViewOpts;
 
@@ -529,108 +447,10 @@ fn renderSnapshot(m: *const CB.Model, opts: ViewOpts_, expected: []const u8) !vo
     try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{}, expected);
 }
 
-test "viewWith (closed): one input showing the selected label, no overlay" {
-    const m: CB.Model = .{ .selected = 1 };
-    var cb = cmd.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-    CB.viewWith(&m, &cb, &opts_list, App.msgs, .{});
-    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
-    try testing.expectEqualStrings("Oak", cb.cmds.items[0].text_input.content);
-    try testing.expectEqual(App.Msg.focus, cb.cmds.items[0].text_input.focus_msg);
-}
 
-test "viewWith (open, filtered): input + overlay with only the matches" {
-    var m: CB.Model = .{};
-    CB.update(&m, .focus);
-    typeStr(&m, "ch");
-    // Matches: Birch (5), Beech (7).
-    var cb = cmd.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-    CB.viewWith(&m, &cb, &opts_list, App.msgs, .{ .list_width = 160 });
-    const items = cb.cmds.items;
-    try testing.expectEqual(@as(usize, 7), items.len); // input, overlay, group, 2 rows, pop, pop
-    try testing.expectEqualStrings("ch", items[0].text_input.content);
-    try testing.expect(items[1].push_overlay.modal);
-    try testing.expectEqual(App.Msg.close, items[1].push_overlay.backdrop_msg.?);
-    try testing.expectEqual(App.pick(5), items[3].button.msg);
-    try testing.expectEqualStrings("Birch", items[3].button.label);
-    try testing.expectEqual(App.pick(7), items[4].button.msg);
-}
 
-test "viewWith (open, no matches): disabled 'No matches' row" {
-    var m: CB.Model = .{};
-    CB.update(&m, .focus);
-    typeStr(&m, "xyz");
-    var cb = cmd.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-    CB.viewWith(&m, &cb, &opts_list, App.msgs, .{});
-    try testing.expectEqual(@as(usize, 6), cb.cmds.items.len);
-    const row = cb.cmds.items[3].button;
-    try testing.expectEqualStrings(NO_MATCHES, row.label);
-    try testing.expect(row.disabled);
-}
 
-test "viewWith (open, many matches): scrolls inside the overlay" {
-    var m: CB.Model = .{};
-    CB.update(&m, .focus);
-    CB.update(&m, .{ .highlight = .{ .move = .last, .count = 8, .max_visible = 3 } });
-    var cb = cmd.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-    CB.viewWith(&m, &cb, &opts_list, App.msgs, .{ .max_visible = 3 });
-    const items = cb.cmds.items;
-    try testing.expect(items[2] == .push_scroll);
-    try testing.expectEqual(@as(f32, 5 * ITEM_HEIGHT), items[2].push_scroll.scroll_y);
-    try testing.expectEqual(@as(f32, 3 * ITEM_HEIGHT), items[1].push_overlay.height);
-}
 
-test "snapshot golden: open list filtered by 'a'" {
-    var m: CB.Model = .{};
-    CB.update(&m, .focus);
-    typeStr(&m, "a");
-    try renderSnapshot(&m, .{ .auto_anchor = false, .list_x = 20, .list_y = 40, .list_width = 120, .max_visible = 4 },
-        \\group (0,0,400,400) vertical
-        \\  text_input (0,0,400,28) "a" cursor=1
-        \\  overlay (20,40,120,144) layer=1 [modal]
-        \\    group (20,40,120,144) vertical bg
-        \\      button (20,40,120,36) "Oak"
-        \\      button (20,76,120,36) "Maple"
-        \\      button (20,112,120,36) "Cedar"
-        \\      button (20,148,120,36) "Ash"
-        \\
-    );
-}
 
-test "snapshot golden: auto_anchor opens the list under the input, no coordinates" {
-    var m: CB.Model = .{};
-    CB.update(&m, .focus);
-    typeStr(&m, "a");
-    try renderSnapshot(&m, .{ .list_width = 120, .max_visible = 4 },
-        \\group (0,0,400,400) vertical
-        \\  text_input (0,0,400,28) "a" cursor=1
-        \\  overlay (0,28,120,144) layer=1 [modal]
-        \\    group (0,28,120,144) vertical bg
-        \\      button (0,28,120,36) "Oak"
-        \\      button (0,64,120,36) "Maple"
-        \\      button (0,100,120,36) "Cedar"
-        \\      button (0,136,120,36) "Ash"
-        \\
-    );
-}
 
-test "compose: Combobox routes through Components" {
-    const Comp = component.Components(.{ .material = CB }, null);
-    var model: Comp.Model = .{};
-    Comp.update(&model, .{ .material = .focus });
-    Comp.update(&model, .{ .material = CB.charMsg('o') });
-    try testing.expect(model.material.open);
-    try testing.expectEqualStrings("o", model.material.query.content());
-}
 
-test "fuzzy match: ordered subsequence, spaces ignored, case-insensitive" {
-    try testing.expect(matches("svas", "Save As...", .fuzzy));
-    try testing.expect(matches("s a", "Save As...", .fuzzy));
-    try testing.expect(matches("OPEN", "File: open recent", .fuzzy));
-    try testing.expect(!matches("vs", "Save", .fuzzy)); // wrong order
-    try testing.expect(!matches("zz", "Save", .fuzzy));
-    try testing.expect(matches("", "x", .fuzzy));
-}

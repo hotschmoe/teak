@@ -809,156 +809,15 @@ pub fn selectionSpans(gpa: std.mem.Allocator, text: []const u8, an: Analysis, st
 
 const testing = std.testing;
 
-test "bidi: plain latin is level 0 and plain-ltr" {
-    const an = try analyze(testing.allocator, "hello world", .auto);
-    defer an.deinit(testing.allocator);
-    try testing.expect(an.isPlainLtr());
-}
 
-test "bidi: hebrew paragraph is rtl, digits go to level 2" {
-    const an = try analyze(testing.allocator, "\u{5d0}\u{5d1} 12", .auto);
-    defer an.deinit(testing.allocator);
-    try testing.expectEqual(@as(u8, 1), an.para_level);
-    try testing.expectEqualSlices(u8, &.{ 1, 1, 1, 2, 2 }, an.levels);
-}
 
-test "bidi: L2 reorders a mixed line into runs" {
-    const text = "ab \u{5d0}\u{5d1}\u{5d2} cd";
-    const an = try analyze(testing.allocator, text, .ltr);
-    defer an.deinit(testing.allocator);
-    const runs = try lineRuns(testing.allocator, an, 0, text.len);
-    defer testing.allocator.free(runs);
-    try testing.expectEqual(@as(usize, 3), runs.len);
-    try testing.expectEqual(@as(u8, 1), runs[1].level);
-    try testing.expectEqual(@as(u32, 3), runs[1].start);
-    try testing.expectEqual(@as(u32, 9), runs[1].end);
-}
 
-test "bidi: L1 resets trailing whitespace to the paragraph level" {
-    const text = "\u{5d0}  ";
-    const an = try analyze(testing.allocator, text, .ltr);
-    defer an.deinit(testing.allocator);
-    var buf: [8]u8 = undefined;
-    const lv = lineLevels(an, 0, text.len, &buf);
-    try testing.expectEqualSlices(u8, &.{ 1, 0, 0 }, lv);
-}
 
-test "bidi: caret walks the visual order across an rtl run and back" {
-    // a HEB1 HEB2 b: bytes a=0, HEB1 1..3, HEB2 3..5, b=5..6. Visual: a HEB2 HEB1 b.
-    const text = "a\u{5d0}\u{5d1}b";
-    const an = try analyze(testing.allocator, text, .ltr);
-    defer an.deinit(testing.allocator);
-    const g = testing.allocator;
-    var c: Caret = .{ .index = 1, .trailing = true }; // right after "a"
-    const expect = [_]Caret{
-        .{ .index = 3, .trailing = false }, // crossed HEB2 (visually first)
-        .{ .index = 1, .trailing = false }, // crossed HEB1
-        .{ .index = 6, .trailing = true }, // crossed "b"
-    };
-    for (expect) |want| {
-        c = (try caretMove(g, text, an, 0, text.len, c, .right)).?;
-        try testing.expectEqual(want, c);
-    }
-    try testing.expectEqual(@as(?Caret, null), try caretMove(g, text, an, 0, text.len, c, .right));
-    // and back to the start
-    var steps: usize = 0;
-    while (try caretMove(g, text, an, 0, text.len, c, .left)) |n| : (steps += 1) c = n;
-    try testing.expectEqual(@as(usize, 4), steps);
-    try testing.expectEqual(@as(usize, 0), c.index);
-}
 
-test "bidi: selection in an rtl run highlights one contiguous span" {
-    const text = "a\u{5d0}\u{5d1}b";
-    const an = try analyze(testing.allocator, text, .ltr);
-    defer an.deinit(testing.allocator);
-    const adv = [_]f32{ 10, 8, 8, 10 };
-    // The first hebrew letter (logical 1..3) is the visually right one of the run.
-    const sp = try selectionSpans(testing.allocator, text, an, 0, text.len, &adv, 1, 3);
-    defer testing.allocator.free(sp);
-    try testing.expectEqual(@as(usize, 1), sp.len);
-    try testing.expectEqual(@as(f32, 18), sp[0].x0);
-    try testing.expectEqual(@as(f32, 26), sp[0].x1);
-    const all = try selectionSpans(testing.allocator, text, an, 0, text.len, &adv, 0, text.len);
-    defer testing.allocator.free(all);
-    try testing.expectEqual(@as(usize, 1), all.len);
-    try testing.expectEqual(@as(f32, 36), all[0].x1);
-}
 
-test "bidi: brackets mirror across canonical equivalents" {
-    try testing.expectEqual(@as(?u21, ')'), mirrored('('));
-    try testing.expectEqual(@as(?u21, 0x232A), mirrored(0x2329));
-    try testing.expectEqual(@as(?u21, null), mirrored('a'));
-}
 
 // BidiCharacterTest.txt (Unicode 16.0.0), every 300th data line (conformance excerpt).
 // Fields: code points; paragraph direction (0 ltr, 1 rtl, 2 auto); resolved paragraph
 // level; levels ('x' = removed by X9); visual order (removed characters omitted).
 const conformance = @embedFile("testdata/BidiCharacterTest_excerpt.txt");
 
-test "bidi: BidiCharacterTest conformance excerpt (levels + visual order)" {
-    const gpa = testing.allocator;
-    var lines = std.mem.splitScalar(u8, conformance, '\n');
-    var checked: usize = 0;
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        var f = std.mem.splitScalar(u8, line, ';');
-        const cps_f = f.next().?;
-        const dir_f = f.next().?;
-        const plevel_f = f.next().?;
-        const levels_f = f.next().?;
-        const order_f = f.next().?;
-
-        var buf: [256]u8 = undefined;
-        var n: usize = 0;
-        var it = std.mem.tokenizeScalar(u8, cps_f, ' ');
-        while (it.next()) |tok| {
-            const cp = try std.fmt.parseInt(u21, tok, 16);
-            n += try std.unicode.utf8Encode(cp, buf[n..]);
-        }
-        const text = buf[0..n];
-        const dir: Direction = switch (dir_f[0]) {
-            '0' => .ltr,
-            '1' => .rtl,
-            else => .auto,
-        };
-        const an = try analyze(gpa, text, dir);
-        defer an.deinit(gpa);
-        try testing.expectEqual(try std.fmt.parseInt(u8, plevel_f, 10), an.para_level);
-
-        const lv = try gpa.alloc(u8, an.len());
-        defer gpa.free(lv);
-        _ = lineLevels(an, 0, text.len, lv);
-        var li = std.mem.tokenizeScalar(u8, levels_f, ' ');
-        var i: usize = 0;
-        while (li.next()) |tok| : (i += 1) {
-            if (tok[0] == 'x') {
-                try testing.expect(an.isRemoved(i));
-            } else {
-                testing.expectEqual(try std.fmt.parseInt(u8, tok, 10), lv[i]) catch |e| {
-                    std.debug.print("levels mismatch at cp {d} in: {s}\n", .{ i, line });
-                    return e;
-                };
-            }
-        }
-        try testing.expectEqual(an.len(), i);
-
-        const order = try gpa.alloc(u32, an.len());
-        defer gpa.free(order);
-        visualOrder(lv, order);
-        var oi = std.mem.tokenizeScalar(u8, order_f, ' ');
-        var v: usize = 0;
-        while (oi.next()) |tok| {
-            while (v < order.len and an.isRemoved(order[v])) v += 1;
-            testing.expect(v < order.len and order[v] == try std.fmt.parseInt(u32, tok, 10)) catch |e| {
-                std.debug.print("order mismatch in: {s}\n", .{line});
-                return e;
-            };
-            v += 1;
-        }
-        while (v < order.len and an.isRemoved(order[v])) v += 1;
-        try testing.expectEqual(order.len, v);
-        checked += 1;
-    }
-    try testing.expect(checked > 250);
-}

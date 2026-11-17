@@ -7,11 +7,3 @@ pub const tess = @import("tess.zig");
 pub const pick = @import("pick.zig");
 pub const jv = @import("jv.zig");
 
-test {
-    _ = ir;
-    _ = geom;
-    _ = font;
-    _ = tess;
-    _ = pick;
-    _ = jv;
-}

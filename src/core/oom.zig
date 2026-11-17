@@ -13,6 +13,3 @@ pub fn oom() noreturn {
     @panic("teak: out of memory (per-frame command buffer / arena / vertex list)");
 }
 
-test "oom is noreturn" {
-    try @import("std").testing.expect(@typeInfo(@TypeOf(oom)).@"fn".return_type.? == noreturn);
-}

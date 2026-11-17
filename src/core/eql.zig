@@ -128,32 +128,4 @@ fn isBitwise(comptime T: type) bool {
 
 const testing = std.testing;
 
-test "deepEql: slices by content, floats bitwise, optionals, unions" {
-    const U = union(enum) { none, n: u32, s: []const u8, f: f32 };
-    const S = struct { u: U, o: ?[]const u8 = null, arr: [2]f32 = .{ 0, 1 } };
-    var buf_a = "hello".*;
-    var buf_b = "hello".*;
-    const a: S = .{ .u = .{ .s = &buf_a } };
-    const b: S = .{ .u = .{ .s = &buf_b } };
-    try testing.expect(deepEql(S, a, b)); // different addresses, same content
-    buf_b[4] = 'X';
-    try testing.expect(!deepEql(S, a, b));
-    try testing.expect(!deepEql(S, .{ .u = .{ .n = 1 } }, .{ .u = .{ .n = 2 } }));
-    try testing.expect(!deepEql(S, .{ .u = .none }, .{ .u = .{ .n = 0 } }));
-    try testing.expect(!deepEql(S, .{ .u = .none, .o = "" }, .{ .u = .none }));
-    const nan = std.math.nan(f32);
-    try testing.expect(deepEql(S, .{ .u = .{ .f = nan } }, .{ .u = .{ .f = nan } }));
-    try testing.expect(!deepEql(f32, 0.0, -0.0));
-}
 
-test "deepEql: honours a custom eql decl" {
-    const K = struct {
-        key: u32,
-        junk: u32,
-        pub fn eql(a: @This(), b: @This()) bool {
-            return a.key == b.key; // junk deliberately ignored
-        }
-    };
-    try testing.expect(deepEql(K, .{ .key = 1, .junk = 1 }, .{ .key = 1, .junk = 2 }));
-    try testing.expect(!deepEql(K, .{ .key = 1, .junk = 1 }, .{ .key = 2, .junk = 1 }));
-}

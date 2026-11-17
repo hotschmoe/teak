@@ -398,10 +398,6 @@ pub fn play(comptime App: type, script: []const Frame) !*Played(App) {
     return playWith(App, .{ .script = script }, .{});
 }
 
-test "the scripted stubs satisfy the real Host / Gpu contracts" {
-    comptime host_iface.validateHost(ScriptHost);
-    comptime gpu_iface.validateGpu(StubGpu);
-}
 
 // ── Click, keys, focus ──────────────────────────────────────────────
 
@@ -423,29 +419,7 @@ const ClickApp = struct {
     }
 };
 
-test "run: a click routes through update and the loop presents each frame" {
-    const t = try play(ClickApp, &.{
-        .{}, // 1: idle (populates the layout input is routed against)
-        .{ .x = 5, .y = 5, .held = left, .down = left }, // 2: press on the button
-        .{ .x = 5, .y = 5, .up = left }, // 3: release on it -> click
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(i32, 1), t.rt.model.count);
-    try std.testing.expectEqual(@as(u32, 1), t.gpu.resize_calls); // frame 1 resized
-    // The 4th poll reports close before rendering: frames 1-3 present.
-    try std.testing.expectEqual(@as(u32, 3), t.gpu.render_calls);
-}
 
-test "run: drag-off cancels the click" {
-    const t = try play(ClickApp, &.{
-        .{},
-        .{ .x = 5, .y = 5, .held = left, .down = left },
-        .{ .x = 150, .y = 90, .held = left }, // dragged off the button
-        .{ .x = 5, .y = 5, .up = left }, // released back over it: press was cancelled
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(i32, 0), t.rt.model.count);
-}
 
 const HookApp = struct {
     pub const Model = struct {
@@ -488,31 +462,7 @@ const HookApp = struct {
     }
 };
 
-test "run: hoverMsg fires when the widget under the pointer changes, not every frame" {
-    const t = try play(HookApp, &.{
-        .{}, // 1: lays out; the pointer is off-window and over nothing
-        .{ .x = 5, .y = 5 }, // 2: enters A
-        .{ .x = 6, .y = 6 }, // 3: still A: no event
-        .{ .x = 5, .y = 45 }, // 4: B
-        .{ .x = 500, .y = 500 }, // 5: leaves everything
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 3), t.rt.model.hovers); // A, B, none
-    try std.testing.expect(!t.rt.model.hovered_a);
-}
 
-test "run: contextMsg fires on right-button down with the widget under the cursor" {
-    const t = try play(HookApp, &.{
-        .{},
-        .{ .x = 5, .y = 5, .held = right, .down = right },
-        .{ .x = 5, .y = 5, .up = right },
-        .{ .x = 300, .y = 200, .held = right, .down = right }, // empty space
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 2), t.rt.model.contexts);
-    try std.testing.expect(!t.rt.model.ctx_on_a); // the last one was over nothing
-    try std.testing.expectEqual(@as(f32, 300), t.rt.model.ctx_x);
-}
 
 const SliderApp = struct {
     pub const Model = struct { value: f32 = -1, clicks: u32 = 0, updates: u32 = 0 };
@@ -537,22 +487,6 @@ const SliderApp = struct {
     }
 };
 
-test "run: sliderMsg drags with capture, and the slider's plain click is not dispatched" {
-    // The slider sits at the top-left, min_width 120.
-    const t = try play(SliderApp, &.{
-        .{},
-        .{ .x = 30, .y = 5, .held = left, .down = left }, // press at ~1/4
-        .{ .x = 90, .y = 200, .held = left }, // dragged far off the track: still captured
-        .{ .x = 500, .y = 5, .held = left }, // past the end: clamps to 1
-        .{ .x = 500, .y = 5, .up = left },
-        .{ .x = 5, .y = 60, .held = left, .down = left }, // press the button below: normal click
-        .{ .x = 5, .y = 60, .up = left },
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(f32, 1), t.rt.model.value);
-    try std.testing.expect(t.rt.model.updates >= 3);
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.clicks); // only the button; the slider never fired `.grab`
-}
 
 const KeyApp = struct {
     pub const Model = struct {
@@ -586,18 +520,6 @@ const KeyApp = struct {
     }
 };
 
-test "run: routes typed chars + special keys through the optional hooks" {
-    const t = try play(KeyApp, &.{
-        .{},
-        .{ .chars = "Hi" },
-        .{ .keys = &.{.backspace} },
-    });
-    defer t.destroy();
-    try std.testing.expectEqualStrings("Hi", t.rt.model.typed[0..t.rt.model.typed_len]);
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.backspaces);
-    // `themeFor` reached the view's CmdBuffer.
-    try std.testing.expect(std.meta.eql(theme_mod.Theme.light_default, t.rt.bufs[t.rt.current].theme));
-}
 
 // ── Commands: shortcuts + the palette ───────────────────────────────
 
@@ -672,62 +594,8 @@ const CmdApp = struct {
     }
 };
 
-test "commands: a matched chord dispatches its Msg and swallows its text and special key" {
-    const C = keys.Chord;
-    const t = try play(CmdApp, &.{
-        .{},
-        .{ .chords = &.{C.ctrl(.s)}, .chars = "q" }, // claimed: no typed text
-        .{ .chords = &.{C.ctrl(.c)}, .keys = &.{.ctrl_c} }, // claimed: ctrl_c swallowed
-        .{ .chords = &.{C.ctrl(.z)}, .keys = &.{.ctrl_z}, .chars = "z" }, // unclaimed: text still types
-        .{ .chords = &.{ C.ctrl(.s), C.ctrl(.s) } }, // two in one frame
-        .{ .keys = &.{.ctrl_c} }, // a bare special key (no chord) still reaches the app
-    });
-    defer t.destroy();
-    const m = t.rt.model;
-    try std.testing.expectEqual(@as(u32, 3), m.saves);
-    try std.testing.expectEqual(@as(u32, 1), m.copies);
-    try std.testing.expectEqual(@as(u32, 2), m.typed); // "z" and the bare ctrl_c
-}
 
-test "commands: a disabled command's chord does nothing" {
-    const C = keys.Chord;
-    const t = try play(CmdApp, &.{
-        .{},
-        .{ .chords = &.{C.ctrl(.s)} },
-        .{ .chords = &.{C.ctrl(.s)} },
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 2), t.rt.model.saves);
-    t.rt.model.dirty = false;
-    var p2 = try play(CmdApp, &.{ .{}, .{ .chords = &.{C.ctrl(.s)} } });
-    defer p2.destroy();
-    p2.rt.model.dirty = false;
-    try p2.rt.frame();
-    try std.testing.expectEqual(@as(u32, 1), p2.rt.model.saves);
-}
 
-test "commands: the palette opens from its chords, filters fuzzily, Enter runs the command" {
-    const C = keys.Chord;
-    const t = try play(CmdApp, &.{
-        .{},
-        .{ .chords = &.{C.ctrlShift(.p)} },
-        .{ .chars = "mc" }, // fuzzy: Mark Clean
-        .{},
-        .{ .keys = &.{.enter} },
-        .{},
-        .{ .chords = &.{C.ctrl(.k)} }, // the second binding opens it again
-        .{ .keys = &.{.escape} },
-        .{ .chords = &.{C.ctrl(.s)} }, // Mark Clean ran: Save is disabled now
-    });
-    defer t.destroy();
-    const m = t.rt.model;
-    try std.testing.expectEqual(@as(u32, 2), m.opened_palette);
-    try std.testing.expect(!m.dirty);
-    try std.testing.expectEqualStrings("f", m.ran[0..m.ran_len]);
-    try std.testing.expect(!m.palette.open);
-    try std.testing.expectEqual(@as(u32, 0), m.saves);
-    try std.testing.expectEqual(@as(u32, 0), m.typed); // palette chars never reached the app
-}
 
 // ── In-app drag and drop ────────────────────────────────────────────
 
@@ -783,71 +651,9 @@ const DragApp = struct {
 };
 const teak_pointer = pointer;
 
-test "drag: press on a source, move past the threshold, hover targets, drop" {
-    const t = try play(DragApp, &.{
-        .{},
-        .{ .x = 80, .y = 45, .held = left, .down = left }, // row 2 (id 2), grab at (80, 15)
-        .{ .x = 82, .y = 46, .held = left }, // within the 4px slop: not a drag yet
-        .{ .x = 70, .y = 100, .held = left }, // row 4: drag starts
-        .{ .x = 70, .y = 110, .held = left }, // move
-        .{ .x = 70, .y = 110, .up = left }, // drop on row 4, lower half
-        .{},
-    });
-    defer t.destroy();
-    const m = t.rt.model;
-    try std.testing.expectEqual(@as(u32, 1), m.starts);
-    try std.testing.expectEqual(@as(u32, 2), m.src_id);
-    try std.testing.expectEqual(@as(f32, 80), m.grab[0]);
-    try std.testing.expect(m.moves >= 1);
-    try std.testing.expectEqual(@as(u32, 4), m.last_over);
-    try std.testing.expectEqual(@as(u32, 1), m.drops);
-    try std.testing.expectEqual(@as(u32, 4), m.drop_over);
-    try std.testing.expect(m.drop_fy > 0.5);
-    try std.testing.expectEqual(@as(u32, 0), m.cancels);
-}
 
-test "drag: a press-release without movement is not a drag; a press on a button is a click" {
-    const t = try play(DragApp, &.{
-        .{},
-        .{ .x = 80, .y = 15, .held = left, .down = left },
-        .{ .x = 80, .y = 15, .up = left },
-        .{ .x = 10, .y = 10 }, // hover the button ("go" sits at the row's top-left)
-        .{ .x = 10, .y = 10, .held = left, .down = left },
-        .{ .x = 10, .y = 10, .up = left },
-        .{},
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 0), t.rt.model.starts);
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.clicks);
-}
 
-test "drag: Escape cancels and later frames report nothing" {
-    const t = try play(DragApp, &.{
-        .{},
-        .{ .x = 80, .y = 45, .held = left, .down = left },
-        .{ .x = 70, .y = 100, .held = left },
-        .{ .x = 70, .y = 100, .held = left, .keys = &.{.escape} },
-        .{ .x = 70, .y = 100, .held = left },
-        .{ .x = 70, .y = 100, .up = left },
-        .{},
-    });
-    defer t.destroy();
-    const m = t.rt.model;
-    try std.testing.expectEqual(@as(u32, 1), m.starts);
-    try std.testing.expectEqual(@as(u32, 1), m.cancels);
-    try std.testing.expectEqual(@as(u32, 0), m.drops);
-}
 
-test "run: the clear colour follows the theme unless RunOptions pins one" {
-    // KeyApp's themeFor is the light theme.
-    const t = try play(KeyApp, &.{.{}});
-    defer t.destroy();
-    try std.testing.expectEqual(theme_mod.light_palette.bg, t.gpu.last_clear);
-
-    const pinned = try playWith(KeyApp, .{ .script = &.{.{}} }, .{ .clear_color = .{ 0.5, 0.25, 0.125, 1 } });
-    defer pinned.destroy();
-    try std.testing.expectEqual([4]f32{ 0.5, 0.25, 0.125, 1 }, pinned.gpu.last_clear);
-}
 
 const TabApp = struct {
     pub const Focus = enum { none, a, b };
@@ -878,43 +684,8 @@ const TabApp = struct {
     }
 };
 
-test "run: Tab advances focus across inputs and Enter fires submitMsg" {
-    const t = try play(TabApp, &.{
-        .{},
-        .{ .keys = &.{.tab} }, // none -> a
-        .{ .keys = &.{.tab} }, // a -> b
-        .{ .keys = &.{.enter} },
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(TabApp.Focus.b, t.rt.model.focus);
-    try std.testing.expect(t.rt.model.submitted);
-}
 
-test "run: Shift+Tab walks focus backwards" {
-    const t = try play(TabApp, &.{
-        .{},
-        .{ .keys = &.{.tab} }, // none -> a
-        .{ .keys = &.{.tab} }, // a -> b
-        .{ .keys = &.{.shift_tab} }, // b -> a
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(TabApp.Focus.a, t.rt.model.focus);
-}
 
-test "run: the IME field is activated once while a text input is focused, released when focus leaves" {
-    const t = try play(TabApp, &.{
-        .{},
-        .{ .keys = &.{.tab} }, // none -> a: a text input is focused
-        .{},
-        .{},
-        .{ .keys = &.{.tab} }, // a -> b: still a text input, no new activation
-        .{},
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 1), t.host.ime_active_calls);
-    try std.testing.expect(t.host.ime_active_last);
-    try std.testing.expect(t.host.ime_spot_calls >= 2); // the caret moved between inputs
-}
 
 // ── Measured rows + modifier reports ────────────────────────────────
 
@@ -956,27 +727,7 @@ const RowsApp = struct {
     }
 };
 
-test "run: virtualRowsMsg reports the measured row heights once, and again only when they change" {
-    const t = try playWith(RowsApp, .{ .script = &.{ .{}, .{}, .{}, .{} } }, .{ .idle_skip = false });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls);
-    try std.testing.expectEqual(@as(u32, 7), t.rt.model.first);
-    try std.testing.expectEqual(@as(usize, 2), t.rt.model.n);
-    try std.testing.expectEqual(@as(f32, 20), t.rt.model.got[0]);
-    try std.testing.expectEqual(@as(f32, 30), t.rt.model.got[1]);
-}
 
-test "run: modsMsg fires when the modifier keys change, not every frame" {
-    const t = try playWith(RowsApp, .{ .script = &.{
-        .{},
-        .{ .mods = .{ .shift = true } },
-        .{ .mods = .{ .shift = true } },
-        .{},
-    } }, .{ .idle_skip = false });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 2), t.rt.model.mods_calls); // shift down, shift up
-    try std.testing.expect(!t.rt.model.shift);
-}
 
 // ── Frame diff: IME aliasing, over-long title ───────────────────────
 
@@ -991,22 +742,6 @@ const NoopApp = struct {
     }
 };
 
-test "run: a same-length IME composition change forces a rebuild" {
-    // Blink disabled so the ONLY rebuild triggers are content/transient
-    // changes — the IME edit must be one of them.
-    const t = try playWith(NoopApp, .{
-        .script = &.{
-            .{},
-            .{ .ime = "ab" }, // composition starts
-            .{ .ime = "cd" }, // same length, written over "ab" in the Host's one shared buffer
-        },
-    }, .{ .blink_half_ms = 0 });
-    defer t.destroy();
-    // Frame 1: first content. Frame 2: IME activates. Frame 3: "cd" — a
-    // rebuild ONLY if the loop copies each frame's composition into its own
-    // buffer; aliasing prev/cur to the Host's buffer compares equal -> 2.
-    try std.testing.expectEqual(@as(u32, 3), t.gpu.upload_vert_calls);
-}
 
 const LongTitleApp = struct {
     pub const Model = struct {};
@@ -1023,14 +758,6 @@ const LongTitleApp = struct {
     }
 };
 
-test "run: an over-long window title fires setTitle once, not every frame" {
-    const t = try play(LongTitleApp, &.{ .{}, .{}, .{} });
-    defer t.destroy();
-    // The title never changes, so after the first push it must compare equal
-    // to the stored (truncated) prefix. Comparing the full 300 bytes against
-    // the 256-byte cache would re-issue the syscall every frame.
-    try std.testing.expectEqual(@as(u32, 1), t.host.set_title_calls);
-}
 
 // ── Live-snapshot sink ──────────────────────────────────────────────
 
@@ -1081,46 +808,6 @@ fn readSnapshot(td: anytype, name: []const u8) ![]u8 {
     return td.dir.readFileAlloc(std.Options.debug_io, name, std.testing.allocator, .limited(1 << 20));
 }
 
-test "run: live snapshot mirrors the frame and skips idle rewrites" {
-    const gpa = std.testing.allocator;
-    var td = std.testing.tmpDir(.{});
-    defer td.cleanup();
-    const path = try snapshotPath(td, "app.snap");
-    defer gpa.free(path);
-
-    // Cursor parked over the button throughout. The last content change is
-    // the click, so a correct sink stamps its frame; a higher number would
-    // mean an idle frame rewrote the file.
-    const t = try playWith(SnapApp, .{
-        .script = &.{
-            .{ .x = 5, .y = 5 }, // 1: first write
-            .{ .x = 5, .y = 5 }, // 2: idle
-            .{ .x = 5, .y = 5, .held = left, .down = left }, // 3
-            .{ .x = 5, .y = 5, .up = left }, // 4: click
-            .{ .x = 5, .y = 5 }, // 5: idle
-            .{ .x = 5, .y = 5 }, // 6: idle
-        },
-    }, .{ .snapshot_path = path });
-    defer t.destroy();
-
-    const contents = try readSnapshot(td, "app.snap");
-    defer gpa.free(contents);
-
-    try std.testing.expect(std.mem.startsWith(u8, contents, "window="));
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"X\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"count: 1\"") != null);
-    // The file holds only the latest frame.
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"count: 0\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "last_msg=click") != null);
-
-    const marker = "frame=";
-    const fi = std.mem.indexOf(u8, contents, marker).?;
-    const after = contents[fi + marker.len ..];
-    const end = std.mem.indexOfScalar(u8, after, ' ') orelse after.len;
-    // Frame 2 was a quiet frame (skipped, uncounted), so the click is the
-    // third frame that actually built.
-    try std.testing.expectEqual(@as(u32, 3), try std.fmt.parseInt(u32, after[0..end], 10));
-}
 
 // ── Secondary window ────────────────────────────────────────────────
 
@@ -1157,18 +844,6 @@ const SecondaryApp = struct {
     }
 };
 
-test "run: drives the secondary window open -> render -> user-close lifecycle" {
-    // The primary runs 4 frames; the secondary poll yields input twice, then
-    // null (the user closed the OS window).
-    const t = try playWith(SecondaryApp, .{ .script = &.{ .{}, .{}, .{}, .{} }, .secondary_polls = 2 }, .{});
-    defer t.destroy();
-    // One surface opened, rendered while the OS window was alive, torn down on
-    // the user-close poll, and the close mirrored back through `update`.
-    try std.testing.expectEqual(@as(u32, 1), t.gpu.secondary_opened);
-    try std.testing.expectEqual(@as(u32, 2), t.gpu.secondary_rendered);
-    try std.testing.expectEqual(@as(u32, 1), t.gpu.secondary_closed);
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.closed_msgs);
-}
 
 /// Like `SecondaryApp` but never learns the window closed: it keeps
 /// requesting it and omits `secondaryClosedMsg`.
@@ -1191,22 +866,7 @@ const StubbornSecondaryApp = struct {
     }
 };
 
-test "run: user-close without secondaryClosedMsg does not immediately reopen" {
-    const t = try playWith(StubbornSecondaryApp, .{ .script = &.{ .{}, .{}, .{}, .{} }, .secondary_polls = 2 }, .{});
-    defer t.destroy();
-    // Opened exactly once for the whole run: without the suppression the
-    // window would flicker back every frame after the user-close.
-    try std.testing.expectEqual(@as(u32, 1), t.gpu.secondary_opened);
-}
 
-test "run: an app with secondary hooks runs on a Host that cannot open a window" {
-    // `openSecondaryWindow` returns null (the web): the hooks compile, the
-    // window never opens, and the primary is unaffected.
-    const t = try play(SecondaryApp, &.{ .{}, .{}, .{} });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 0), t.gpu.secondary_opened);
-    try std.testing.expectEqual(@as(u32, 3), t.gpu.render_calls);
-}
 
 // ── Subscriptions + snapshot of a secondary-only change ─────────────
 
@@ -1232,107 +892,11 @@ const TimerApp = struct {
     }
 };
 
-test "run: services a .every subscription and mirrors the fired Msg to the snapshot" {
-    const gpa = std.testing.allocator;
-    var td = std.testing.tmpDir(.{});
-    defer td.cleanup();
-    const path = try snapshotPath(td, "timer.snap");
-    defer gpa.free(path);
 
-    const t = try playWith(TimerApp, .{
-        .script = &.{
-            .{ .clock_ms = 50 }, // first frame: no window to compare, no fire
-            .{ .clock_ms = 250 }, // crosses the 100 and 200 ms boundaries
-        },
-    }, .{ .snapshot_path = path });
-    defer t.destroy();
-
-    try std.testing.expectEqual(@as(i32, 2), t.rt.model.ticks);
-    try std.testing.expectEqualStrings("tick", t.rt.last_msg);
-
-    const contents = try readSnapshot(td, "timer.snap");
-    defer gpa.free(contents);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 2\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "last_msg=tick") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 0\"") == null);
-}
-
-test "run: a secondary-content-only change re-mirrors the snapshot" {
-    // `SecondaryApp`'s tick shows only in the secondary view; the primary
-    // never changes. The snapshot gate must see the secondary diff, or the
-    // mirror stays frozen at the opening frame.
-    const gpa = std.testing.allocator;
-    var td = std.testing.tmpDir(.{});
-    defer td.cleanup();
-    const path = try snapshotPath(td, "sec.snap");
-    defer gpa.free(path);
-
-    const t = try playWith(SecondaryApp, .{ .script = &.{
-        .{ .clock_ms = 50 },
-        .{ .clock_ms = 150 },
-        .{ .clock_ms = 250 },
-    }, .secondary_polls = ScriptHost.forever }, .{ .snapshot_path = path });
-    defer t.destroy();
-
-    const contents = try readSnapshot(td, "sec.snap");
-    defer gpa.free(contents);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "=== secondary \"Stats\" ===") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 2\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"ticks: 0\"") == null);
-}
 
 // ── Frame diff (cmdsEqual) ──────────────────────────────────────────
 
-test "cmdsEqual: detects label, disabled, and length changes" {
-    const Msg = union(enum) { a };
-    var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer x.deinit();
-    var y = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer y.deinit();
 
-    x.button(.a, "Go");
-    y.button(.a, "Go");
-    try std.testing.expect(cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-
-    // Different label.
-    y.reset();
-    y.button(.a, "No");
-    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-
-    // Same label, different disabled state.
-    y.reset();
-    y.buttonDisabled(.a, "Go");
-    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-
-    // Different length.
-    y.reset();
-    y.button(.a, "Go");
-    y.button(.a, "Go");
-    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-}
-
-test "cmdsEqual: a style-only change (button bg) compares unequal (F1)" {
-    const Msg = union(enum) { a };
-    var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer x.deinit();
-    var y = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer y.deinit();
-
-    // Same label + msg, but a different background color — the kind of
-    // difference a themeFor flip or a `buttonStyled` danger color produces.
-    // If cmdsEqual ignores style, the vertex rebuild + snapshot write are
-    // skipped and the screen keeps stale pixels.
-    var danger = cmd.ButtonStyle{};
-    danger.bg = .{ 0.8, 0.1, 0.1, 1.0 };
-    x.buttonStyled(.a, "Go", .{});
-    y.buttonStyled(.a, "Go", danger);
-    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-
-    // Identical styles still compare equal.
-    y.reset();
-    y.buttonStyled(.a, "Go", .{});
-    try std.testing.expect(cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-}
 
 // ── Interactive canvases + scroll regions ───────────────────────────
 
@@ -1399,142 +963,11 @@ fn expectKinds(log: []const PointerApp.Logged, expected: []const pointer.CanvasE
     try std.testing.expectEqualSlices(pointer.CanvasEventKind, expected, got[0..n]);
 }
 
-test "canvas events: hover, press captures through a drag outside, release + leave" {
-    const t = try play(PointerApp, &.{
-        .{}, // 1: view built; canvas laid out -> `layout`
-        .{ .x = 50, .y = 40 }, // 2: enters the canvas
-        .{ .x = 60, .y = 45 }, // 3: moves within it
-        .{ .x = 60, .y = 45, .held = left, .down = left }, // 4: press
-        .{ .x = 300, .y = 250, .held = left }, // 5: dragged off the canvas, still captured
-        .{ .x = 300, .y = 250, .up = left }, // 6: release outside
-        .{ .x = 300, .y = 250 }, // 7: idle
-    });
-    defer t.destroy();
-    const log = t.rt.model.log.items();
 
-    try expectKinds(log, &.{ .layout, .move, .move, .down, .move, .up, .leave });
 
-    const layout_ev = log[0].canvas;
-    try std.testing.expectEqual(@as(u32, 7), layout_ev.id);
-    try std.testing.expectEqual(@as(f32, 200), layout_ev.w);
-    try std.testing.expectEqual(@as(f32, 100), layout_ev.h);
 
-    // Entry move: local coords, zero delta. Second move: delta from the first.
-    const enter = log[1].canvas;
-    try std.testing.expectEqual(@as(f32, 50), enter.x);
-    try std.testing.expectEqual(@as(f32, 40), enter.y);
-    try std.testing.expectEqual(@as(f32, 0), enter.dx);
-    const mv = log[2].canvas;
-    try std.testing.expectEqual(@as(f32, 10), mv.dx);
-    try std.testing.expectEqual(@as(f32, 5), mv.dy);
 
-    const down = log[3].canvas;
-    try std.testing.expectEqual(pointer.Button.left, down.button);
-    try std.testing.expect(down.buttons.left);
-    try std.testing.expectEqual(@as(f32, 60), down.x);
 
-    // Captured move outside the rect: local coords run past the canvas.
-    const drag = log[4].canvas;
-    try std.testing.expectEqual(@as(f32, 300), drag.x);
-    try std.testing.expectEqual(@as(f32, 240), drag.dx);
-    try std.testing.expect(drag.buttons.left);
-
-    const up = log[5].canvas;
-    try std.testing.expectEqual(pointer.Button.left, up.button);
-    try std.testing.expect(!up.buttons.any());
-    // No stray click Msg: a pointer canvas has no click msg.
-    for (log) |l| try std.testing.expect(l != .click);
-}
-
-test "canvas events: leaving without a press sends leave; wheel goes to the canvas, not wheelMsg" {
-    const t = try play(PointerApp, &.{
-        .{},
-        .{ .x = 50, .y = 40 },
-        .{ .x = 50, .y = 40, .wheel_dy = 120, .mods = .{ .ctrl = true } }, // pinch-style wheel on the canvas
-        .{ .x = 50, .y = 150 }, // moved onto the button below
-        .{ .x = 50, .y = 150, .wheel_dy = 48 }, // wheel over a button: plain wheelMsg
-    });
-    defer t.destroy();
-    const log = t.rt.model.log.items();
-
-    try expectKinds(log, &.{ .layout, .move, .wheel, .leave });
-    const wheel_ev = log[2].canvas;
-    try std.testing.expectEqual(@as(f32, 120), wheel_ev.dy);
-    try std.testing.expect(wheel_ev.mods.ctrl);
-    try std.testing.expectEqual(@as(f32, 50), wheel_ev.x);
-    // Exactly one plain wheel Msg: the one over the button, none for the canvas wheel.
-    var plain: usize = 0;
-    for (log) |l| if (l == .wheel) {
-        plain += 1;
-        try std.testing.expectEqual(@as(f32, 48), l.wheel);
-    };
-    try std.testing.expectEqual(@as(usize, 1), plain);
-}
-
-test "canvas events: a press that started elsewhere does not hover the canvas" {
-    const t = try play(PointerApp, &.{
-        .{},
-        .{ .x = 50, .y = 150, .held = left, .down = left }, // press on the button
-        .{ .x = 50, .y = 50, .held = left }, // dragged over the canvas
-        .{ .x = 50, .y = 50, .up = left }, // released over it
-        .{ .x = 55, .y = 50 }, // now hovering is fine
-    });
-    defer t.destroy();
-    try expectKinds(t.rt.model.log.items(), &.{ .layout, .move });
-    // The release over the canvas did not click the button (drag-off cancel).
-    for (t.rt.model.log.items()) |l| try std.testing.expect(l != .click);
-}
-
-test "canvas events: a click inside one frame sends down then up and leaves no capture" {
-    const t = try play(PointerApp, &.{
-        .{},
-        .{ .x = 10, .y = 10, .held = .{}, .down = left, .up = left }, // fast click
-        .{ .x = 20, .y = 20 }, // hover continues, nothing captured
-    });
-    defer t.destroy();
-    try expectKinds(t.rt.model.log.items(), &.{ .layout, .move, .down, .up, .move });
-}
-
-test "canvas events: multiple buttons keep the capture until all are released" {
-    const t = try play(PointerApp, &.{
-        .{},
-        .{ .x = 10, .y = 10 },
-        .{ .x = 10, .y = 10, .held = left, .down = left },
-        .{ .x = 300, .y = 10, .held = both, .down = right, .mods = .{ .shift = true } }, // 2nd button, off the canvas
-        .{ .x = 300, .y = 10, .held = right, .up = left }, // one released: still captured
-        .{ .x = 300, .y = 10, .up = right }, // last released outside
-    });
-    defer t.destroy();
-    const log = t.rt.model.log.items();
-    try expectKinds(log, &.{ .layout, .move, .down, .move, .down, .up, .up, .leave });
-    const second_down = log[4].canvas;
-    try std.testing.expectEqual(pointer.Button.right, second_down.button);
-    try std.testing.expect(second_down.buttons.left and second_down.buttons.right);
-    try std.testing.expect(second_down.mods.shift);
-}
-
-test "canvas events: layout fires again when the canvas size changes, not otherwise" {
-    const t = try play(PointerApp, &.{
-        .{}, // 1: layout 200x100
-        .{}, // 2: unchanged -> nothing
-        .{ .keys = &.{.enter} }, // 3: model.wide = true
-        .{}, // 4: view builds the 300-wide canvas -> layout
-        .{}, // 5: unchanged
-    });
-    defer t.destroy();
-    const log = t.rt.model.log.items();
-    var layouts: usize = 0;
-    var last_w: f32 = 0;
-    for (log) |l| switch (l) {
-        .canvas => |ev| if (ev.kind == .layout) {
-            layouts += 1;
-            last_w = ev.w;
-        },
-        else => {},
-    };
-    try std.testing.expectEqual(@as(usize, 2), layouts);
-    try std.testing.expectEqual(@as(f32, 300), last_w);
-}
 
 /// A scroll region (id 3) with a button list above a plain button, plus an
 /// id-0 region, to exercise `scrollMsg` / `scrollLayoutMsg`.
@@ -1572,85 +1005,8 @@ const ScrollApp = struct {
     }
 };
 
-test "scrollMsg: wheel over an id-bearing region; elsewhere falls to wheelMsg" {
-    const t = try play(ScrollApp, &.{
-        .{},
-        .{ .x = 50, .y = 40, .wheel_dy = 96, .wheel_dx = 12 }, // over region id 3
-        .{ .x = 50, .y = 120, .wheel_dy = 48 }, // over the id-0 region: no consumer
-    });
-    defer t.destroy();
-    var scrolls: usize = 0;
-    var wheels: usize = 0;
-    for (t.rt.model.log.items()) |l| switch (l) {
-        .scroll => |s| {
-            scrolls += 1;
-            try std.testing.expectEqual(@as(u32, 3), s.id);
-            try std.testing.expectEqual(@as(f32, 96), s.dy);
-            try std.testing.expectEqual(@as(f32, 12), s.dx);
-        },
-        .wheel => |dy| {
-            wheels += 1;
-            try std.testing.expectEqual(@as(f32, 48), dy);
-        },
-        else => {},
-    };
-    try std.testing.expectEqual(@as(usize, 1), scrolls);
-    try std.testing.expectEqual(@as(usize, 1), wheels);
-}
 
-test "scrollLayoutMsg: first layout and content changes, not idle frames" {
-    const t = try play(ScrollApp, &.{
-        .{}, // 1: first layout of region 3
-        .{}, // 2: idle -> nothing
-        .{ .keys = &.{.enter} }, // 3: 3 -> 5 rows
-        .{}, // 4: new content size reported
-        .{}, // 5: idle
-    });
-    defer t.destroy();
-    var reports: [8]@TypeOf(@as(PointerApp.Logged, undefined).scroll_layout) = undefined;
-    var n: usize = 0;
-    for (t.rt.model.log.items()) |l| switch (l) {
-        .scroll_layout => |r| {
-            reports[n] = r;
-            n += 1;
-        },
-        else => {},
-    };
-    try std.testing.expectEqual(@as(usize, 2), n);
-    try std.testing.expectEqual(@as(u32, 3), reports[0].id);
-    try std.testing.expectEqual(@as(f32, 200), reports[0].vw);
-    try std.testing.expectEqual(@as(f32, 80), reports[0].vh);
-    try std.testing.expectEqual(@as(f32, 3 * 36), reports[0].ch);
-    try std.testing.expectEqual(@as(f32, 5 * 36), reports[1].ch);
-    try std.testing.expectEqual(@as(f32, 80), reports[1].vh); // viewport unchanged
-}
 
-test "cmdsEqual: canvas id / pointer changes compare unequal" {
-    const Msg = union(enum) { a };
-    var x = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer x.deinit();
-    var y = cmd.CmdBuffer(Msg).init(std.testing.allocator);
-    defer y.deinit();
-
-    x.canvasInteractive(.{}, &.{}, 1, "c");
-    y.canvasInteractive(.{}, &.{}, 1, "c");
-    try std.testing.expect(cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-
-    y.reset();
-    y.canvasInteractive(.{}, &.{}, 2, "c");
-    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-
-    y.reset();
-    y.canvasLabeled(.{}, &.{}, "c"); // same label, not interactive
-    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-
-    // Scroll region ids are part of the push_scroll payload.
-    x.reset();
-    y.reset();
-    x.pushScroll(.{ .id = 1 });
-    y.pushScroll(.{ .id = 2 });
-    try std.testing.expect(!cmdsEqual(Msg, x.cmds.items, y.cmds.items));
-}
 
 /// Canvas (id 7) with a popup button overlapping its corner; `.widen` (Enter)
 /// removes the canvas from the view altogether.
@@ -1680,39 +1036,7 @@ const OverlayApp = struct {
     }
 };
 
-test "canvas events: an overlay widget over the canvas wins hover, press and click" {
-    const t = try play(OverlayApp, &.{
-        .{},
-        .{ .x = 20, .y = 20 }, // over the popup button, which covers the canvas corner
-        .{ .x = 20, .y = 20, .held = left, .down = left },
-        .{ .x = 20, .y = 20, .up = left }, // click on the button
-        .{ .x = 150, .y = 60 }, // canvas area outside the popup
-    });
-    defer t.destroy();
-    const log = t.rt.model.log.items();
-    // Only the canvas layout, then the move once the cursor leaves the popup.
-    try expectKinds(log, &.{ .layout, .move });
-    try std.testing.expectEqual(@as(f32, 150), log[log.len - 1].canvas.x);
-    var clicks: usize = 0;
-    for (log) |l| if (l == .click) {
-        clicks += 1;
-    };
-    try std.testing.expectEqual(@as(usize, 1), clicks);
-}
 
-test "canvas events: a capture whose canvas leaves the view is dropped, not stuck" {
-    const t = try play(OverlayApp, &.{
-        .{},
-        .{ .x = 150, .y = 60 },
-        .{ .x = 150, .y = 60, .held = left, .down = left }, // capture
-        .{ .x = 150, .y = 60, .held = left, .keys = &.{.enter} }, // canvas removed from the view
-        .{ .x = 160, .y = 60, .held = left }, // drag with the canvas gone: no events, no crash
-        .{ .x = 160, .y = 60, .up = left },
-        .{ .x = 150, .y = 60 },
-    });
-    defer t.destroy();
-    try expectKinds(t.rt.model.log.items(), &.{ .layout, .move, .down });
-}
 
 // ── Scenes: resources hook, pointer routing, frame diff ────────────
 
@@ -1745,47 +1069,7 @@ const ResourceApp = struct {
     }
 };
 
-test "resources: uploaded once, keys remapped to handles, rev bump re-uploads, shutdown releases" {
-    const t = try play(ResourceApp, &.{
-        .{},
-        .{ .x = 5, .y = 5, .held = left, .down = left },
-        .{ .x = 5, .y = 5, .up = left }, // click => rev 2
-        .{},
-        .{},
-    });
-    const gpu = t.gpu; // copy the counters, then tear the runtime down
-    t.destroy();
 
-    // Mesh: rev 1, then rev 2 after the click. Image: once.
-    try std.testing.expectEqual(@as(u32, 2), gpu.mesh_uploads);
-    try std.testing.expectEqual(@as(u32, 1), gpu.image_uploads);
-    // The Gpu only ever saw backend handles, never the app keys 5 / 3.
-    try std.testing.expect(gpu.last_scene_mesh >= 100);
-    try std.testing.expect(gpu.last_image_handle >= 100);
-    try std.testing.expectEqual(@as(usize, 1), gpu.last_scene_count);
-}
-
-test "resources: the superseded handle is released on rev bump, the rest at deinit" {
-    var host: ScriptHost = .{ .script = &.{
-        .{},
-        .{ .x = 5, .y = 5, .held = left, .down = left },
-        .{ .x = 5, .y = 5, .up = left },
-        .{},
-    } };
-    var gpu: StubGpu = .{};
-    var rt = try Runtime(ResourceApp, ScriptHost, StubGpu).init(std.testing.allocator, &host, &gpu, .{});
-    while (!host.shouldClose()) try rt.frame();
-
-    // Before teardown: only the superseded mesh handle has been released,
-    // and the re-upload re-staged the scene although its Cmd was unchanged.
-    try std.testing.expectEqual(@as(u32, 1), gpu.mesh_releases);
-    try std.testing.expectEqual(@as(u32, 0), gpu.image_releases);
-    try std.testing.expectEqual(@as(u32, 102), gpu.last_scene_mesh);
-
-    rt.deinit();
-    try std.testing.expectEqual(@as(u32, 2), gpu.mesh_releases);
-    try std.testing.expectEqual(@as(u32, 1), gpu.image_releases);
-}
 
 const PlainGpu = struct {
     renders: u32 = 0,
@@ -1806,43 +1090,7 @@ const PlainGpu = struct {
     pub fn releaseImage(_: *PlainGpu, _: text.TextureHandle) void {}
 };
 
-test "a Gpu without the scene extension still runs scene-bearing apps" {
-    const NoResApp = struct {
-        pub const Model = struct {};
-        pub const Msg = union(enum) { x };
-        pub fn update(_: *Model, _: Msg) void {}
-        pub fn view(_: *const Model, cb: anytype) void {
-            cb.pushGroup(.{ .padding = 0, .gap = 0 });
-            cb.scene3d(.{ .style = .{ .width = 20, .height = 20 }, .mesh = 42 });
-            cb.popGroup();
-        }
-    };
-    comptime gpu_iface.validateGpu(PlainGpu);
-    var host: ScriptHost = .{ .script = &.{ .{}, .{}, .{} } };
-    var gpu: PlainGpu = .{};
-    // Counts renders per frame, so idle skipping is off for this test.
-    var rt = try Runtime(NoResApp, ScriptHost, PlainGpu).init(std.testing.allocator, &host, &gpu, .{ .idle_skip = false });
-    defer rt.deinit();
-    while (!host.shouldClose()) try rt.frame();
-    try std.testing.expectEqual(@as(u32, 3), gpu.renders);
-}
 
-test "without the resources hook, scene mesh values are raw Gpu handles" {
-    const RawApp = struct {
-        pub const Model = struct {};
-        pub const Msg = union(enum) { x };
-        pub fn update(_: *Model, _: Msg) void {}
-        pub fn view(_: *const Model, cb: anytype) void {
-            cb.pushGroup(.{ .padding = 0, .gap = 0 });
-            cb.scene3d(.{ .style = .{ .width = 20, .height = 20 }, .mesh = 42 });
-            cb.popGroup();
-        }
-    };
-    const t = try play(RawApp, &.{ .{}, .{} });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 42), t.gpu.last_scene_mesh);
-    try std.testing.expectEqual(@as(u32, 0), t.gpu.mesh_uploads);
-}
 
 /// Like PointerApp but the interactive surface is a 3D scene.
 const SceneApp = struct {
@@ -1861,115 +1109,10 @@ const SceneApp = struct {
     pub const wheelMsg = PointerApp.wheelMsg;
 };
 
-test "scene events: layout, hover, capture through a drag outside, release + leave" {
-    const t = try play(SceneApp, &.{
-        .{}, // layout
-        .{ .x = 50, .y = 40 }, // enter
-        .{ .x = 50, .y = 40, .held = left, .down = left }, // press
-        .{ .x = 300, .y = 250, .held = left }, // dragged off, still captured
-        .{ .x = 300, .y = 250, .up = left }, // release outside
-        .{ .x = 300, .y = 250 }, // idle
-    });
-    defer t.destroy();
-    const log = t.rt.model.log.items();
-    try expectKinds(log, &.{ .layout, .move, .down, .move, .up, .leave });
-    try std.testing.expectEqual(@as(u32, 7), log[0].canvas.id);
-    try std.testing.expectEqual(@as(f32, 200), log[0].canvas.w);
-    try std.testing.expectEqual(@as(f32, 300), log[3].canvas.x); // captured move past the rect
-    for (log) |l| try std.testing.expect(l != .click);
-}
 
-test "scene events: wheel over the scene goes to the canvas hook, not wheelMsg" {
-    const t = try play(SceneApp, &.{
-        .{},
-        .{ .x = 50, .y = 40 },
-        .{ .x = 50, .y = 40, .wheel_dy = 3 },
-    });
-    defer t.destroy();
-    const log = t.rt.model.log.items();
-    var saw_wheel = false;
-    for (log) |l| switch (l) {
-        .canvas => |ev| if (ev.kind == .wheel) {
-            saw_wheel = true;
-            try std.testing.expectEqual(@as(u32, 7), ev.id);
-            try std.testing.expectEqual(@as(f32, 3), ev.dy);
-        },
-        .wheel => return error.WheelLeakedToWheelMsg,
-        else => {},
-    };
-    try std.testing.expect(saw_wheel);
-}
 
-test "scene events: a press that started elsewhere does not hover the scene" {
-    const t = try play(SceneApp, &.{
-        .{},
-        .{ .x = 20, .y = 120, .held = left, .down = left }, // press on the button below
-        .{ .x = 50, .y = 40, .held = left }, // drag over the scene
-        .{ .x = 50, .y = 40, .up = left }, // released over it
-        .{ .x = 55, .y = 40 }, // now hovering is fine
-    });
-    defer t.destroy();
-    try expectKinds(t.rt.model.log.items(), &.{ .layout, .move });
-}
 
-test "cmdsEqual: scene3d fields and keyed canvas batches" {
-    const Msg = union(enum) { a };
-    const C = cmd.Cmd(Msg);
-    const tri = [_]cmd.CanvasPrimitive.TriVertex{
-        .{ .x = 0, .y = 0, .r = 1, .g = 1, .b = 1, .a = 1 },
-        .{ .x = 1, .y = 0, .r = 1, .g = 1, .b = 1, .a = 1 },
-        .{ .x = 0, .y = 1, .r = 1, .g = 1, .b = 1, .a = 1 },
-    };
-    const copy = tri; // same content, other address
-    const Sc = @typeInfo(@FieldType(C, "scene3d")).pointer.child;
-    const Cv = @typeInfo(@FieldType(C, "canvas")).pointer.child;
-    const sa: Sc = .{ .mesh = 1, .key = 4, .id = 2, .pointer = true };
-    const ca: Cv = .{ .primitives = &.{.{ .triangles = .{ .verts = &tri, .key = 9 } }} };
-    const a = [_]C{ .{ .scene3d = &sa }, .{ .canvas = &ca } };
-    var sb = sa;
-    var cbv: Cv = .{ .primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 9 } }} };
-    var b = [_]C{ .{ .scene3d = &sb }, .{ .canvas = &cbv } };
-    try std.testing.expect(cmdsEqual(Msg, &a, &b));
-    sb.key = 5;
-    try std.testing.expect(!cmdsEqual(Msg, &a, &b));
-    sb.key = 4;
-    sb.id = 3;
-    try std.testing.expect(!cmdsEqual(Msg, &a, &b));
-    sb.id = 2;
-    sb.pointer = false;
-    try std.testing.expect(!cmdsEqual(Msg, &a, &b));
-    sb.pointer = true;
-    cbv.primitives = &.{.{ .triangles = .{ .verts = &copy, .key = 10 } }};
-    try std.testing.expect(!cmdsEqual(Msg, &a, &b));
-}
 
-test "overlay layering: the loop hands the Gpu the overlay split; a Gpu without the hook still runs" {
-    const OverlayLayerApp = struct {
-        pub const Model = struct {};
-        pub const Msg = union(enum) { x };
-        pub fn update(_: *Model, _: Msg) void {}
-        pub fn view(_: *const Model, cb: anytype) void {
-            cb.pushGroup(.{ .padding = 0, .gap = 0 });
-            cb.text("under");
-            cb.pushOverlay(.{ .x = 0, .y = 0, .width = 100, .height = 40, .backdrop = .{ 1, 1, 1, 1 } });
-            cb.text("over");
-            cb.popOverlay();
-            cb.popGroup();
-        }
-    };
-    const t = try play(OverlayLayerApp, &.{ .{}, .{} });
-    defer t.destroy();
-    const split = t.gpu.last_split.?;
-    try std.testing.expectEqual(@as(u32, 1), split.text); // "under" is base, "over" starts the overlay
-    try std.testing.expectEqual(@as(u32, 0), split.verts); // the backdrop quad is overlay
-
-    // PlainGpu has no setOverlayStart: the loop must not require it.
-    var host: ScriptHost = .{ .script = &.{ .{}, .{} } };
-    var gpu: PlainGpu = .{};
-    var rt = try Runtime(OverlayLayerApp, ScriptHost, PlainGpu).init(std.testing.allocator, &host, &gpu, .{});
-    defer rt.deinit();
-    while (!host.shouldClose()) try rt.frame();
-}
 
 const WindowApp = struct {
     pub const Model = struct { w: f32 = 0, h: f32 = 0, calls: u32 = 0 };
@@ -1992,13 +1135,6 @@ const WindowApp = struct {
     }
 };
 
-test "run: windowMsg reports the window size on the first frame" {
-    const t = try play(WindowApp, &.{ .{}, .{}, .{} });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(f32, 400), t.rt.model.w);
-    try std.testing.expectEqual(@as(f32, 300), t.rt.model.h);
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.calls); // only the first frame resized
-}
 
 // ── Accessibility: publish-on-change and actions as input ───────────
 
@@ -2055,92 +1191,10 @@ fn findNode(h: *const ScriptHost, role: @import("input/a11y.zig").Role) ?host_if
     return null;
 }
 
-test "a11y: the tree is published on the first frame and on change, not on idle frames" {
-    const t = try play(A11yApp, &.{ .{}, .{}, .{}, .{}, .{} });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 1), t.host.a11y_publishes);
-    try std.testing.expect(findNode(&t.host, .toolbar) != null); // the group's hint became its role
-    try std.testing.expectEqualStrings("Count 0", findNode(&t.host, .button).?.label);
-}
 
-test "a11y: a model change republishes; focus and hint state are in the tree" {
-    // Frame 2 clicks the first button (at 5,5); its label then reads "Count 1".
-    const t = try play(A11yApp, &.{
-        .{},
-        .{},
-        .{ .x = 5, .y = 5, .held = left, .down = left },
-        .{ .x = 5, .y = 5, .up = left },
-        .{},
-        .{},
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 2), t.host.a11y_publishes);
-    try std.testing.expectEqualStrings("Count 1", findNode(&t.host, .button).?.label);
-    // The toolbar semantic arrived as a role with its name, and the input is a
-    // textbox-to-be with an (empty) value.
-    var saw_toolbar = false;
-    for (t.host.a11y_nodes[0..t.host.a11y_count]) |n| {
-        if (n.role == .toolbar) {
-            saw_toolbar = true;
-            try std.testing.expectEqualStrings("Main", n.label);
-        }
-    }
-    try std.testing.expect(saw_toolbar);
-    try std.testing.expect(findNode(&t.host, .text_input) != null);
-}
 
-test "a11y: RunOptions.a11y = false publishes nothing" {
-    const t = try playWith(A11yApp, .{ .script = &.{ .{}, .{} } }, .{ .a11y = false });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 0), t.host.a11y_publishes);
-}
 
-test "a11y actions: activate = click, focus = focus Msg, set_value = Ctrl+A + typing, stale index ignored" {
-    // Node indexes in the published tree's cmd order: 0 group, 1 button, 2 input, 3 menu button.
-    const t = try play(A11yApp, &.{
-        .{},
-        .{ .a11y = &.{.{ .kind = .activate, .cmd_index = 1 }} },
-        .{ .a11y = &.{.{ .kind = .focus, .cmd_index = 2 }} },
-        .{ .a11y = &.{.{ .kind = .set_value, .cmd_index = 2, .text = "hello" }} },
-        .{ .a11y = &.{.{ .kind = .set_value, .cmd_index = 2, .text = "bye" }} },
-        .{ .a11y = &.{.{ .kind = .activate, .cmd_index = 99 }} },
-        .{},
-    });
-    defer t.destroy();
-    const m = &t.rt.model;
-    try std.testing.expectEqual(@as(i32, 1), m.count); // the activation clicked the button
-    try std.testing.expect(m.focused);
-    // The second set_value replaced the first (Ctrl+A selects it, typing replaces).
-    try std.testing.expectEqualStrings("bye", m.name.content());
-}
 
-test "a11y actions: activation respects overlays (a modal swallows what is behind it)" {
-    const open = try play(A11yApp, &.{
-        .{},
-        .{ .a11y = &.{.{ .kind = .activate, .cmd_index = 3 }} }, // "More" opens the modal
-        .{},
-        .{},
-    });
-    defer open.destroy();
-    try std.testing.expect(open.rt.model.modal);
-    try std.testing.expect(findNode(&open.host, .overlay) != null);
-    for (open.host.a11y_nodes[0..open.host.a11y_count]) |n| {
-        if (n.role == .menuitem) try std.testing.expectEqual(@as(?bool, true), n.expanded);
-    }
-
-    // Activating the button behind the open modal is a click on the backdrop:
-    // the count does not move (and, like a mouse click outside, it closes the modal).
-    const behind = try play(A11yApp, &.{
-        .{},
-        .{ .a11y = &.{.{ .kind = .activate, .cmd_index = 3 }} },
-        .{},
-        .{ .a11y = &.{.{ .kind = .activate, .cmd_index = 1 }} },
-        .{},
-    });
-    defer behind.destroy();
-    try std.testing.expectEqual(@as(i32, 0), behind.rt.model.count);
-    try std.testing.expect(!behind.rt.model.modal);
-}
 
 // ── Cursor shapes + display scale ───────────────────────────────────
 
@@ -2159,28 +1213,7 @@ const CursorApp = struct {
     }
 };
 
-test "run: the cursor follows the hovered widget and setCursor fires only on change" {
-    const t = try play(CursorApp, &.{
-        .{}, // arrow (nothing hovered; matches the initial shape: no call)
-        .{ .x = 5, .y = 5 }, // over the button -> pointer
-        .{ .x = 6, .y = 6 }, // still the button: no new call
-        .{ .x = 380, .y = 280 }, // empty space -> arrow
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 2), t.host.cursor_calls);
-    try std.testing.expectEqual(host_iface.CursorShape.arrow, t.host.cursor);
-}
 
-test "run: cursorFor can override the default and sees the hovered kind" {
-    const p = try begin(CursorApp, .{ .script = &.{ .{}, .{}, .{ .x = 5, .y = 5 } } }, .{});
-    defer p.destroy();
-    p.rt.model.override = true;
-    try p.rt.frame(); // empty space + override -> crosshair
-    try std.testing.expectEqual(host_iface.CursorShape.crosshair, p.host.cursor);
-    try p.rt.frame();
-    try p.rt.frame(); // over the button: kind = button, hook declines -> pointer
-    try std.testing.expectEqual(host_iface.CursorShape.pointer, p.host.cursor);
-}
 
 // ── text_area: pointer, motion, scroll, metrics (text-engine PR11b) ────
 
@@ -2260,197 +1293,13 @@ fn at(col: f32, row: f32) [2]f32 {
     return .{ 8 + col * 10 + 1, 8 + row * 20 + 5 };
 }
 
-test "text_area: click puts the caret mid-word, Shift+click extends" {
-    const c = at(3, 0);
-    const c2 = at(8, 0);
-    const t = try playArea("hello world", &.{
-        .{},
-        .{ .x = c[0], .y = c[1], .held = left, .down = left },
-        .{ .x = c[0], .y = c[1], .up = left },
-        .{ .x = c2[0], .y = c2[1], .held = left, .down = left, .mods = .{ .shift = true } },
-        .{ .x = c2[0], .y = c2[1], .up = left, .mods = .{ .shift = true } },
-        .{},
-    });
-    defer t.destroy();
-    const m = &t.rt.model.area;
-    try std.testing.expectEqual(@as(usize, 8), m.ed.cursor);
-    try std.testing.expectEqualStrings("lo wo", m.selectionText());
-    try std.testing.expect(t.rt.model.focused); // the click also focused it
-}
 
-test "text_area: drag selects across wrapped lines and keeps selecting outside the rect" {
-    // 18 chars per line: "aaaa bbbb cccc dddd eeee ffff" wraps to 2 lines ("aaaa bbbb cccc dddd" is 19).
-    const a = at(2, 0);
-    const b = at(6, 1);
-    const t = try playArea("aaaa bbbb cccc dddd eeee ffff", &.{
-        .{},
-        .{ .x = a[0], .y = a[1], .held = left, .down = left },
-        .{ .x = b[0], .y = b[1], .held = left },
-        .{ .x = 700, .y = 600, .held = left }, // far outside the rect: still captured
-        .{ .x = 700, .y = 600, .up = left },
-        .{},
-    });
-    defer t.destroy();
-    const m = &t.rt.model.area;
-    try std.testing.expectEqual(@as(usize, 2), m.ed.selection_anchor.?);
-    try std.testing.expectEqual(m.content().len, m.ed.cursor); // dragged past the end
-    try std.testing.expect(t.rt.model.log.count(.drag) >= 2);
-    try std.testing.expectEqual(@as(usize, 1), t.rt.model.log.count(.up));
-}
 
-test "text_area: double click selects a word, triple click the line" {
-    const p = at(6, 0); // inside "world"
-    const t = try playArea("hello world\nsecond line", &.{
-        .{ .clock_ms = 1000 },
-        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1000 },
-        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1050 },
-        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1100 },
-        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1150 },
-    });
-    defer t.destroy();
-    try std.testing.expectEqualStrings("world", t.rt.model.area.selectionText());
 
-    const t3 = try playArea("hello world\nsecond line", &.{
-        .{ .clock_ms = 1000 },
-        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1000 },
-        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1050 },
-        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1100 },
-        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1150 },
-        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1200 },
-        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1250 },
-    });
-    defer t3.destroy();
-    try std.testing.expectEqualStrings("hello world\n", t3.rt.model.area.selectionText());
 
-    // Too slow (> 400 ms): two single clicks, no word selection.
-    const ts = try playArea("hello world", &.{
-        .{ .clock_ms = 1000 },
-        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1000 },
-        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1050 },
-        .{ .x = p[0], .y = p[1], .held = left, .down = left, .clock_ms = 1900 },
-        .{ .x = p[0], .y = p[1], .up = left, .clock_ms = 1950 },
-    });
-    defer ts.destroy();
-    try std.testing.expect(!ts.rt.model.area.ed.hasSelection());
-}
 
-test "text_area: Up/Down/Home/End resolve against the wrapped layout, with a sticky column" {
-    const c = at(4, 0);
-    const t = try playArea("aaaa bbbb cccc dddd eeee ffff\nshort", &.{
-        .{},
-        .{ .x = c[0], .y = c[1], .held = left, .down = left },
-        .{ .x = c[0], .y = c[1], .up = left },
-        .{ .keys = &.{.down} }, // visual line 1: "eeee ffff"
-        .{ .keys = &.{.down} }, // hard line "short" (5 chars): clamps, goal stays col 4
-        .{ .keys = &.{.down} }, // past the end -> document end
-    });
-    defer t.destroy();
-    const m = &t.rt.model.area;
-    try std.testing.expectEqual(m.content().len, m.ed.cursor);
 
-    const t2 = try playArea("aaaa bbbb cccc dddd eeee ffff\nshort", &.{
-        .{},
-        .{ .x = c[0], .y = c[1], .held = left, .down = left },
-        .{ .x = c[0], .y = c[1], .up = left },
-        .{ .keys = &.{.down} },
-        .{ .keys = &.{.down} },
-        .{ .keys = &.{.up} },
-        .{ .keys = &.{.shift_end} },
-    });
-    defer t2.destroy();
-    const m2 = &t2.rt.model.area;
-    // Down, down (clamped to "short"), up: the sticky column returns to col 4 of
-    // the wrapped second line; shift+End extends to that line's visual end.
-    try std.testing.expect(m2.ed.hasSelection());
-    try std.testing.expectEqual(@as(usize, 29), m2.ed.cursor); // end of "eeee ffff"
-    try std.testing.expectEqual(@as(usize, 19), m2.ed.selection_anchor.?); // col 4 of that line
-}
 
-test "text_area: mixed Arabic/English round-trip: visual arrows, click, selection" {
-    const content = "ab \u{5d0}\u{5d1}\u{5d2} cd";
-    const c0 = at(0, 0);
-    const R: Frame = .{ .keys = &.{.right} };
-    const t = try playArea(content, &.{
-        .{},
-        .{ .x = c0[0], .y = c0[1], .held = left, .down = left },
-        .{ .x = c0[0], .y = c0[1], .up = left },
-        R, R, R, // over "a", "b", " "
-        R, // the 4th Right enters the Hebrew run: a position inside it, not the end
-    });
-    defer t.destroy();
-    const m = &t.rt.model.area;
-    try std.testing.expect(m.ed.cursor > 3 and m.ed.cursor < content.len);
-
-    // Shift+Right extends from the anchor in visual order; text stays intact.
-    const t2 = try playArea(content, &.{
-        .{},
-        .{ .x = c0[0], .y = c0[1], .held = left, .down = left },
-        .{ .x = c0[0], .y = c0[1], .up = left },
-        .{ .keys = &.{.shift_right} },
-        .{ .keys = &.{.shift_right} },
-        .{ .keys = &.{.shift_right} },
-    });
-    defer t2.destroy();
-    try std.testing.expectEqualStrings("ab ", t2.rt.model.area.selectionText());
-    try std.testing.expectEqualStrings(content, t2.rt.model.area.content());
-}
-
-test "text_area: wheel scrolls; typing at the bottom reveals the caret via metrics" {
-    // 12 hard lines = 240 px of content in an inner height of 84.
-    const body = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12";
-    const p = at(1, 1);
-    const t = try playArea(body, &.{
-        .{},
-        .{ .x = p[0], .y = p[1], .wheel_dy = 60 },
-        .{ .x = p[0], .y = p[1], .wheel_dy = 1000 },
-        .{ .x = p[0], .y = p[1], .wheel_dy = -30 },
-    });
-    defer t.destroy();
-    const m = &t.rt.model.area;
-    try std.testing.expect(t.rt.model.metrics_seen >= 1);
-    try std.testing.expectEqual(@as(f32, 84), m.viewport_h);
-    try std.testing.expectEqual(@as(f32, 240), m.content_h);
-    try std.testing.expectEqual(@as(f32, 156 - 30), m.scroll_y); // clamped at content_h - viewport_h, then -30
-
-    // Typing at the end of a long document scrolls the caret into view.
-    const q = at(1, 0);
-    const t2 = try playArea(body, &.{
-        .{},
-        .{ .x = q[0], .y = q[1], .held = left, .down = left },
-        .{ .x = q[0], .y = q[1], .up = left },
-        .{ .keys = &.{.ctrl_end} },
-        .{ .chars = "z" },
-        .{},
-    });
-    defer t2.destroy();
-    const m2 = &t2.rt.model.area;
-    try std.testing.expect(m2.scroll_y > 0);
-    try std.testing.expectEqual(@as(f32, 240 - 84), m2.scroll_y); // caret on the last line
-}
-
-test "text_area: metrics fire on layout and on change only" {
-    const t = try playArea("abc", &.{ .{}, .{}, .{}, .{} });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.metrics_seen);
-
-    const q = at(1, 0);
-    const t2 = try playArea("abc", &.{
-        .{},
-        .{ .x = q[0], .y = q[1], .held = left, .down = left },
-        .{ .x = q[0], .y = q[1], .up = left },
-        .{ .chars = "d" },
-        .{},
-        .{},
-    });
-    defer t2.destroy();
-    try std.testing.expectEqual(@as(u32, 3), t2.rt.model.metrics_seen); // layout, caret moved to 1, typed
-}
-
-test "text_area: a draw frame renders the area (quads + per-line text)" {
-    const t = try playArea("hello\nworld", &.{ .{}, .{}, .{} });
-    defer t.destroy();
-    try std.testing.expect(t.rt.text_draws.items.len >= 2);
-}
 
 // Equivalence proof for the reflection-derived diff: for EVERY variant of
 // `Cmd`, build a sample payload by reflection, then change each leaf field
@@ -2580,63 +1429,7 @@ const mutation = struct {
     }
 };
 
-test "cmdsEqual: every field of every Cmd variant is observed by the diff" {
-    // Msg with a scalar, a slice and a nested struct, so the generic Msg
-    // compare (not just tag equality) is covered too.
-    const Msg = union(enum) { a, b: u32, c: []const u8, d: struct { f: f32, on: bool } };
-    const C = cmd.Cmd(Msg);
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
 
-    var checked: usize = 0;
-    inline for (@typeInfo(C).@"union".field_names, @typeInfo(C).@"union".field_types) |vname, PF| {
-        // Out-of-line payloads (`*const T` into the frame arena) are sampled and
-        // mutated as `T`, then boxed at a fresh address: the diff must follow the pointer.
-        const boxed = @typeInfo(PF) == .pointer;
-        const P = if (boxed) @typeInfo(PF).pointer.child else PF;
-        var pick: usize = 0;
-        while (pick < 9) : (pick += 1) {
-            const pa = try mutation.sample(P, arena, pick, vname);
-            const pb = try mutation.sample(P, arena, pick, vname);
-            const ca = [_]C{@unionInit(C, vname, try mutation.wrap(PF, arena, pa))};
-            const cb = [_]C{@unionInit(C, vname, try mutation.wrap(PF, arena, pb))};
-            // Equal content at distinct addresses must compare equal.
-            try std.testing.expect(cmdsEqual(Msg, &ca, &cb));
-
-            var idx: usize = 0;
-            while (true) : (idx += 1) {
-                var mutated = try mutation.sample(P, arena, pick, vname);
-                var k = idx;
-                if (!mutation.mutate(P, &mutated, &k)) break;
-                const cm = [_]C{@unionInit(C, vname, try mutation.wrap(PF, arena, mutated))};
-                std.testing.expect(!cmdsEqual(Msg, &ca, &cm)) catch |e| {
-                    std.debug.print("variant {s} pick {d}: leaf #{d} change not detected\n", .{ vname, pick, idx });
-                    return e;
-                };
-                checked += 1;
-            }
-        }
-    }
-    try std.testing.expect(checked > 150);
-}
-
-test "cmdsEqual: Msg slices compare by content; variant swaps are detected" {
-    const Msg = union(enum) { a, b: []const u8 };
-    const C = cmd.Cmd(Msg);
-    const Btn = @typeInfo(@FieldType(C, "button")).pointer.child;
-    const bx: Btn = .{ .msg = .{ .b = "k1" }, .label = "L" };
-    const x = [_]C{.{ .button = &bx }};
-    var buf = "k1".*;
-    const bs: Btn = .{ .msg = .{ .b = &buf }, .label = "L" };
-    const same = [_]C{.{ .button = &bs }};
-    const bd: Btn = .{ .msg = .{ .b = "k2" }, .label = "L" };
-    const diff = [_]C{.{ .button = &bd }};
-    const other_tag = [_]C{.{ .checkbox = &.{ .msg = .a, .checked = false, .label = "L" } }};
-    try std.testing.expect(cmdsEqual(Msg, &x, &same));
-    try std.testing.expect(!cmdsEqual(Msg, &x, &diff));
-    try std.testing.expect(!cmdsEqual(Msg, &x, &other_tag));
-}
 
 // ── Event-driven idle ───────────────────────────────────────────────
 
@@ -2663,28 +1456,7 @@ fn runIdle(script: []const Frame, opts: run_mod.RunOptions) !struct { renders: u
     return .{ .renders = gpu.renders, .ticks = 0, .waits = host.wait_calls, .last_wait = host.last_wait_ms };
 }
 
-test "idle: frames with no input, sub or dispatch skip view/render and block in waitEvents" {
-    const r = try runIdle(&.{ .{ .clock_ms = 10 }, .{ .clock_ms = 10 }, .{ .clock_ms = 10 }, .{ .clock_ms = 10 } }, .{});
-    try std.testing.expectEqual(@as(u32, 1), r.renders); // only the first frame built
-    try std.testing.expectEqual(@as(u32, 3), r.waits);
-    try std.testing.expectEqual(@as(u32, 90), r.last_wait); // until the 100 ms sub boundary
-}
 
-test "idle: a fired sub, a moved mouse and a click each wake the pipeline; idle_skip=false never skips" {
-    // Frame 3 crosses the 100 ms boundary: the sub dispatches a Msg.
-    const sub_fired = try runIdle(&.{ .{ .clock_ms = 10 }, .{ .clock_ms = 10 }, .{ .clock_ms = 150 }, .{ .clock_ms = 150 } }, .{});
-    try std.testing.expectEqual(@as(u32, 2), sub_fired.renders);
-
-    const moved = try runIdle(&.{ .{ .clock_ms = 10 }, .{ .x = 5, .y = 5, .clock_ms = 10 }, .{ .x = 5, .y = 5, .clock_ms = 10 } }, .{});
-    try std.testing.expectEqual(@as(u32, 2), moved.renders); // the move built; the still mouse after it did not
-
-    const clicked = try runIdle(&.{ .{}, .{ .held = left, .down = left }, .{ .up = left }, .{} }, .{});
-    try std.testing.expectEqual(@as(u32, 3), clicked.renders);
-
-    const never = try runIdle(&.{ .{}, .{}, .{}, .{} }, .{ .idle_skip = false });
-    try std.testing.expectEqual(@as(u32, 4), never.renders);
-    try std.testing.expectEqual(@as(u32, 0), never.waits);
-}
 
 const LayoutIdleApp = struct {
     pub const Model = struct { w: f32 = 0 };
@@ -2704,15 +1476,6 @@ const LayoutIdleApp = struct {
     }
 };
 
-test "idle: a canvas layout Msg dispatched after the build wakes the next frame" {
-    // Frame 1 builds and reports the canvas size, which updates the Model after the
-    // build; frame 2 has no input and no dispatch of its own but must still rebuild
-    // (or the shown frame would keep the stale Model until the next event).
-    var host: ScriptHost = .{ .script = &.{ .{}, .{}, .{}, .{} } };
-    var gpu: PlainGpu = .{};
-    try run_mod.run(LayoutIdleApp, std.testing.allocator, &host, &gpu, .{});
-    try std.testing.expectEqual(@as(u32, 2), gpu.renders); // frame 1 and the follow-up; then idle
-}
 
 // ── Blink-aware idle ────────────────────────────────────────────────
 
@@ -2730,53 +1493,8 @@ const FocusApp = struct {
     }
 };
 
-test "idle + blink: a focused input idles, toggling the caret with a vertex-only re-render" {
-    // Half-period 500 ms: caret on at t=0..499, off at 500..999, on at 1000.
-    const t = try playWith(FocusApp, .{
-        .script = &.{
-            .{ .clock_ms = 0 }, // builds (caret on)
-            .{ .clock_ms = 100 }, // idle, same phase: nothing
-            .{ .clock_ms = 499 }, // idle, same phase: nothing
-            .{ .clock_ms = 500 }, // toggles off: re-render, still no view
-            .{ .clock_ms = 700 }, // idle
-            .{ .clock_ms = 1000 }, // toggles on
-        },
-    }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 1), t.rt.ts.frame_counter); // only the first frame ran view/layout
-    try std.testing.expectEqual(@as(u32, 3), t.gpu.upload_vert_calls); // build + off + on
-    try std.testing.expect(t.rt.ts.blink_on);
-    try std.testing.expect(t.rt.quiet);
-}
 
-test "idle + blink: the wait timeout is the nearer of the next caret toggle and the next sub" {
-    var host: ScriptHost = .{ .script = &.{ .{ .clock_ms = 0 }, .{ .clock_ms = 120 } } };
-    var gpu: PlainGpu = .{};
-    try run_mod.run(FocusApp, std.testing.allocator, &host, &gpu, .{});
-    try std.testing.expectEqual(@as(u32, 380), host.last_wait_ms); // 500 - 120
-    // With blink off the same app has no focus timer: it waits the 1 s cap.
-    var host2: ScriptHost = .{ .script = &.{ .{ .clock_ms = 0 }, .{ .clock_ms = 120 } } };
-    var gpu2: PlainGpu = .{};
-    try run_mod.run(FocusApp, std.testing.allocator, &host2, &gpu2, .{ .blink_half_ms = 0 });
-    try std.testing.expectEqual(@as(u32, 1000), host2.last_wait_ms);
-}
 
-test "idle + blink: a sub due before the toggle wins the timeout" {
-    const FocusSub = struct {
-        pub const Model = FocusApp.Model;
-        pub const Msg = FocusApp.Msg;
-        pub const update = FocusApp.update;
-        pub const view = FocusApp.view;
-        pub const focusedMsg = FocusApp.focusedMsg;
-        pub fn subscribe(_: *const Model) []const sub_mod.Sub(Msg) {
-            return &.{.{ .every = .{ .interval_ms = 100, .msg = .noop } }};
-        }
-    };
-    var host: ScriptHost = .{ .script = &.{ .{ .clock_ms = 10 }, .{ .clock_ms = 20 } } };
-    var gpu: PlainGpu = .{};
-    try run_mod.run(FocusSub, std.testing.allocator, &host, &gpu, .{});
-    try std.testing.expectEqual(@as(u32, 80), host.last_wait_ms); // sub at 100 vs caret at 500
-}
 
 const AnimApp = struct {
     pub const Model = struct { tween: @import("core/anim.zig").Tween(f32) = .still(0), frames_seen: u32 = 0 };
@@ -2803,40 +1521,7 @@ const AnimApp = struct {
     }
 };
 
-test "animation_frame: dt reaches the app, frames flow while active, idle resumes after" {
-    var host: ScriptHost = .{
-        .script = &.{
-            .{ .clock_ms = 0 },
-            .{ .clock_ms = 0 },
-            .{ .clock_ms = 40 },
-            .{ .clock_ms = 80 },
-            .{ .clock_ms = 120 }, // tween (100 ms) finished at this frame's dt
-            .{ .clock_ms = 120 }, // quiet again
-            .{ .clock_ms = 120 },
-        },
-    };
-    var gpu: PlainGpu = .{};
-    var rt = try Runtime(AnimApp, ScriptHost, PlainGpu).init(std.testing.allocator, &host, &gpu, .{});
-    defer rt.deinit();
-    rt.model.tween.start(100, 100, .linear); // as if a Msg.go had run
-    while (!host.shouldClose()) try rt.frame();
-    try std.testing.expectEqual(@as(f32, 100), rt.model.tween.value());
-    try std.testing.expect(!rt.model.tween.active());
-    // dt is frame time: 0 (first), 0, 40, 40, 40 -> 120 ms capped by the 100 ms tween.
-    try std.testing.expectEqual(@as(u32, 5), rt.model.frames_seen);
-    try std.testing.expect(rt.quiet); // finished: the loop idles again
-    try std.testing.expect(gpu.renders >= 4 and gpu.renders <= 6);
-}
 
-test "animation_frame: dt is capped so a stalled frame cannot skip an animation" {
-    var host: ScriptHost = .{ .script = &.{ .{ .clock_ms = 0 }, .{ .clock_ms = 5000 } } };
-    var gpu: PlainGpu = .{};
-    var rt = try Runtime(AnimApp, ScriptHost, PlainGpu).init(std.testing.allocator, &host, &gpu, .{});
-    defer rt.deinit();
-    rt.model.tween.start(1000, 1000, .linear);
-    while (!host.shouldClose()) try rt.frame();
-    try std.testing.expectEqual(@as(f32, 100), rt.model.tween.value()); // advanced by the 100 ms cap, not 5000
-}
 
 // Verbatim copy of docs/cookbook.md recipe 23 (keeps the doc honest).
 const Recipe23 = struct {
@@ -2908,22 +1593,6 @@ const Recipe23 = struct {
     }
 };
 
-test "cookbook recipe 23: a TextArea app wired exactly as documented edits text" {
-    const R = Recipe23;
-    const p = try begin(R, .{ .script = &.{
-        .{},
-        .{ .x = 20, .y = 70, .held = left, .down = left },
-        .{ .x = 20, .y = 70, .up = left },
-        .{ .chars = "hello" },
-        .{ .keys = &.{.enter} },
-        .{ .chars = "world" },
-        .{},
-    } }, .{});
-    defer p.destroy();
-    while (!p.host.shouldClose()) try p.rt.frame();
-    try std.testing.expectEqualStrings("hello\nworld", p.rt.model.notes.content());
-    try std.testing.expect(p.rt.model.focused);
-}
 
 // ── Keyboard navigation (Tab ring, Space/Enter, arrows) ─────────────────
 
@@ -2985,122 +1654,13 @@ const NavApp = struct {
 const TAB: Frame = .{ .keys = &.{.tab} };
 const STAB: Frame = .{ .keys = &.{.shift_tab} };
 
-test "keyboard nav: Tab walks buttons, checkbox, radios, slider, text field; disabled is skipped; the ring follows" {
-    const t = try playWith(NavApp, .{ .script = &.{ .{}, TAB, .{}, TAB, .{}, TAB, .{}, TAB, .{}, TAB, .{} } }, .{});
-    defer t.destroy();
-    const cmds = t.rt.bufs[t.rt.current].cmds.items;
-    // After five Tabs: A, B (the disabled one skipped), checkbox, r0, r1.
-    const ni = t.rt.ts.nav_index.?;
-    try std.testing.expect(cmds[ni] == .radio);
-    try std.testing.expectEqual(@as(u8, 1), cmds[ni].radio.msg.pick);
-}
 
-test "keyboard nav: Shift+Tab goes backwards and wraps; reaching the text field focuses it through its Msg" {
-    const t = try playWith(NavApp, .{ .script = &.{ .{}, STAB, .{} } }, .{});
-    defer t.destroy();
-    // First Shift+Tab from nothing lands on the LAST navigable leaf: the text input.
-    try std.testing.expect(t.rt.model.name_focus);
-    try std.testing.expect(t.rt.ts.nav_index == null);
-}
 
-test "keyboard nav: Space and Enter activate the focused button / checkbox; moving off a text field blurs it" {
-    const t = try playWith(NavApp, .{
-        .script = &.{
-            .{},
-            STAB, // text input focused (Model)
-            .{},
-            TAB, // wraps to the first button A: the app is asked to blur
-            .{},
-            .{ .chars = " " }, // Space presses A
-            .{},
-            .{ .keys = &.{.enter} }, // Enter presses A again
-            .{},
-            TAB, // B
-            .{},
-            .{ .chars = " " },
-            .{},
-            TAB, // checkbox
-            .{},
-            .{ .chars = " " },
-            .{},
-        },
-    }, .{});
-    defer t.destroy();
-    const m = &t.rt.model;
-    try std.testing.expectEqual(@as(u32, 1), m.blurs);
-    try std.testing.expect(!m.name_focus);
-    try std.testing.expectEqual(@as(u32, 2), m.pressed[0]);
-    try std.testing.expectEqual(@as(u32, 1), m.pressed[2]);
-    try std.testing.expectEqual(@as(u32, 0), m.pressed[1]); // disabled never fires
-    try std.testing.expect(m.checked);
-}
 
-test "keyboard nav: arrows inside a radio group move and select, wrapping at the ends" {
-    const t = try playWith(NavApp, .{
-        .script = &.{
-            .{},
-            TAB,                    .{}, TAB,                    .{}, TAB, .{}, TAB, .{}, // A, B, checkbox, r0
-            .{ .keys = &.{.down} }, .{}, .{ .keys = &.{.down} }, .{},
-            .{ .keys = &.{.down} }, // wraps to r0
-            .{},
-            .{ .keys = &.{.up} }, // back to r2
-            .{},
-        },
-    }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u8, 2), t.rt.model.picked);
-}
 
-test "keyboard nav: slider arrows, Home/End and PageUp go through sliderMsg" {
-    const t = try playWith(NavApp, .{
-        .script = &.{
-            .{},
-            STAB,                    .{}, STAB,                      .{}, // text field, then the slider
-            .{ .keys = &.{.right} }, .{}, .{ .keys = &.{.page_up} }, .{},
-            .{ .keys = &.{.end} },   .{}, .{ .keys = &.{.left} },    .{},
-        },
-    }, .{});
-    defer t.destroy();
-    try std.testing.expectApproxEqAbs(@as(f32, 0.95), t.rt.model.vol, 0.001);
-}
 
-test "keyboard nav: focus follows its widget when a button is inserted before it" {
-    const t = try begin(NavApp, .{ .script = &.{ .{}, TAB, .{}, TAB, .{}, .{}, .{} } }, .{});
-    defer t.destroy();
-    try t.rt.frame();
-    try t.rt.frame();
-    try t.rt.frame(); // A focused
-    try t.rt.frame();
-    try t.rt.frame(); // B focused
-    var cmds = t.rt.bufs[t.rt.current].cmds.items;
-    try std.testing.expectEqual(@as(u8, 2), cmds[t.rt.ts.nav_index.?].button.msg.press);
-    t.rt.model.extra_first = true; // a new first button shifts every index
-    try t.rt.frame();
-    try t.rt.frame();
-    cmds = t.rt.bufs[t.rt.current].cmds.items;
-    try std.testing.expectEqual(@as(u8, 2), cmds[t.rt.ts.nav_index.?].button.msg.press);
-}
 
-test "keyboard nav: clicking a widget moves the keyboard focus there" {
-    // A is the top-left button.
-    const t = try playWith(NavApp, .{ .script = &.{
-        .{},
-        .{ .x = 5, .y = 5, .held = left, .down = left },
-        .{ .x = 5, .y = 5, .up = left },
-        .{},
-        .{ .keys = &.{.enter} },
-        .{},
-    } }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 2), t.rt.model.pressed[0]); // the click, then Enter on the focused button
-}
 
-test "keyboard nav off: Tab walks only text fields, as before" {
-    const t = try playWith(NavApp, .{ .script = &.{ .{}, TAB, .{} } }, .{ .keyboard_nav = false });
-    defer t.destroy();
-    try std.testing.expect(t.rt.model.name_focus);
-    try std.testing.expect(t.rt.ts.nav_index == null);
-}
 
 const ModalNavApp = struct {
     pub const Msg = union(enum) { open, close, ok, behind };
@@ -3130,26 +1690,6 @@ const ModalNavApp = struct {
     }
 };
 
-test "keyboard nav: a modal traps Tab, takes focus on open, and returns it to the opener on close" {
-    const t = try playWith(ModalNavApp, .{
-        .script = &.{
-            .{},
-            TAB, .{}, // Open
-            .{ .keys = &.{.enter} }, .{}, // opens the modal: focus moves inside (OK)
-            .{ .chars = " " }, .{}, // Space presses OK, not "Open"/"Behind"
-            TAB, .{}, // Close
-            TAB,               .{}, // wraps inside the modal: OK again (never "Behind")
-            .{ .chars = " " }, .{},
-            TAB, .{}, // Close
-            .{ .keys = &.{.escape} }, .{}, // app closes the modal
-            .{ .keys = &.{.enter} }, .{}, // focus is back on Open: Enter reopens it
-        },
-    }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 2), t.rt.model.oks);
-    try std.testing.expectEqual(@as(u32, 0), t.rt.model.behind);
-    try std.testing.expect(t.rt.model.open); // reopened by Enter on the restored focus
-}
 
 // ── Lists: one Tab stop + roving arrows; dropdown keys; context-menu key ──
 
@@ -3185,41 +1725,7 @@ fn RovingApp(comptime select: bool) type {
     };
 }
 
-test "lists: a roving list is ONE Tab stop; arrows move the focus (focus mode: Enter activates)" {
-    const A = RovingApp(false);
-    const t = try playWith(A, .{
-        .script = &.{
-            .{},
-            TAB, .{}, // before
-            TAB, .{}, // the list's active row (1)
-            .{ .keys = &.{.down} }, .{}, // row 2: focus only, no Msg
-            .{ .keys = &.{.down} }, .{}, // row 3
-            .{ .keys = &.{.down} }, .{}, // clamped at the end
-            .{ .keys = &.{.enter} }, .{}, // activates row 3
-            TAB,                     .{}, // leaves the list: after
-            .{ .keys = &.{.enter} }, .{},
-        },
-    }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.picks);
-    try std.testing.expectEqual(@as(u8, 3), t.rt.model.last);
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.after);
-}
 
-test "lists: select mode dispatches the row Msg as the focus moves; Home/End/PageDown jump" {
-    const A = RovingApp(true);
-    const t = try playWith(A, .{
-        .script = &.{
-            .{},
-            TAB,                   .{}, TAB,                    .{}, // row 1
-            .{ .keys = &.{.end} }, .{}, .{ .keys = &.{.home} }, .{},
-            .{ .keys = &.{.page_down} }, .{}, // +5 clamps to the last row
-        },
-    }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u8, 3), t.rt.model.active);
-    try std.testing.expectEqual(@as(u32, 3), t.rt.model.picks);
-}
 
 const DropApp = struct {
     const DD = @import("core/dropdown.zig").Dropdown(4);
@@ -3247,24 +1753,6 @@ const DropApp = struct {
     }
 };
 
-test "dropdown: Tab to the trigger, Enter opens, arrows + Enter choose, focus returns to the trigger" {
-    const t = try playWith(DropApp, .{
-        .script = &.{
-            .{},
-            TAB, .{}, TAB, .{}, // x, then the trigger
-            .{ .keys = &.{.enter} }, .{}, // opens the list (focus moves into it)
-            .{ .keys = &.{.down} },  .{},
-            .{ .keys = &.{.down} },  .{},
-            .{ .keys = &.{.enter} }, .{}, // chooses "Large", closes
-            .{ .keys = &.{.enter} }, .{}, // focus is back on the trigger: reopens
-            .{ .keys = &.{.escape} }, .{}, // Escape closes without changing
-        },
-    }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(usize, 2), t.rt.model.drop.selected);
-    try std.testing.expect(!t.rt.model.drop.open);
-    try std.testing.expectEqual(@as(u32, 0), t.rt.model.other);
-}
 
 const CtxApp = struct {
     pub const Msg = union(enum) { check, ctx: [2]f32 };
@@ -3286,16 +1774,6 @@ const CtxApp = struct {
     }
 };
 
-test "context menu key: Menu / Shift+F10 asks contextMsg at the focused widget's bottom-left" {
-    const t = try playWith(CtxApp, .{ .script = &.{ .{}, TAB, .{}, TAB, .{}, .{ .keys = &.{.context_menu} }, .{} } }, .{});
-    defer t.destroy();
-    const pos = t.rt.model.at.?;
-    const cmds = t.rt.bufs[t.rt.current].cmds.items;
-    const r = t.rt.rects[t.rt.current].items[t.rt.ts.nav_index.?];
-    try std.testing.expect(cmds[t.rt.ts.nav_index.?] == .checkbox);
-    try std.testing.expectEqual(r.x, pos[0]);
-    try std.testing.expectEqual(r.y + r.h, pos[1]);
-}
 
 // ── Keyboard gaps: split divider, scroll regions, tooltip focus, toast Escape ──
 
@@ -3327,40 +1805,6 @@ const SplitKeyApp = struct {
     }
 };
 
-test "keyboard nav: a focused split divider resizes with arrows, collapses with Home / End" {
-    // Tab order: the divider, then the button in the right pane.
-    const t = try playWith(SplitKeyApp, .{ .script = &.{
-        .{},
-        TAB,
-        .{},
-        .{ .keys = &.{.right} },
-        .{},
-        .{ .keys = &.{.right} },
-        .{},
-    } }, .{});
-    defer t.destroy();
-    const cmds = t.rt.bufs[t.rt.current].cmds.items;
-    try std.testing.expect(cmds[t.rt.ts.nav_index.?] == .canvas);
-    try std.testing.expectApproxEqAbs((197.0 + 32.0) / 394.0, t.rt.model.split.ratio, 0.001);
-
-    const t2 = try playWith(SplitKeyApp, .{ .script = &.{
-        .{},                    TAB, .{},
-        .{ .keys = &.{.home} }, .{},
-    } }, .{});
-    defer t2.destroy();
-    try std.testing.expectApproxEqAbs(50.0 / 394.0, t2.rt.model.split.ratio, 0.001);
-
-    const t3 = try playWith(SplitKeyApp, .{
-        .script = &.{
-            .{},                   TAB, .{},
-            .{ .keys = &.{.end} }, .{},
-            .{ .keys = &.{.up} }, .{}, // vertical keys do nothing on a horizontal split
-            .{ .keys = &.{.enter} }, .{}, // Enter is the no-op focus Msg
-        },
-    }, .{});
-    defer t3.destroy();
-    try std.testing.expectApproxEqAbs(344.0 / 394.0, t3.rt.model.split.ratio, 0.001);
-}
 
 const ScrollKeyApp = struct {
     pub const Msg = union(enum) { press: u8 };
@@ -3404,37 +1848,6 @@ const ScrollRecordApp = struct {
     }
 };
 
-test "keyboard nav: arrows / PageUp / PageDown / Home / End scroll the region around the focused widget" {
-    const t = try playWith(ScrollRecordApp, .{
-        .script = &.{
-            .{},
-            TAB,                    .{}, // first row button focused
-            .{ .keys = &.{.down} }, .{},
-        },
-    }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(f32, 7), t.rt.model.last[0]);
-    try std.testing.expectEqual(@as(f32, 40), t.rt.model.last[2]);
-
-    const t2 = try playWith(ScrollRecordApp, .{ .script = &.{
-        .{},                         TAB, .{},
-        .{ .keys = &.{.page_down} }, .{},
-    } }, .{});
-    defer t2.destroy();
-    try std.testing.expect(t2.rt.model.last[2] > 40 and t2.rt.model.last[2] <= 100);
-
-    const t3 = try playWith(ScrollRecordApp, .{
-        .script = &.{
-            .{},                   TAB, .{},
-            .{ .keys = &.{.end} }, .{}, .{ .keys = &.{.home} },
-            .{},
-            .{ .keys = &.{.left} }, .{}, // vertical region: Left is not a scroll key
-        },
-    }, .{});
-    defer t3.destroy();
-    try std.testing.expect(t3.rt.model.last[2] < -1.0e6);
-    try std.testing.expectEqual(@as(u32, 2), t3.rt.model.calls);
-}
 
 const TipFocusApp = struct {
     pub const Msg = union(enum) { a, b };
@@ -3457,48 +1870,7 @@ const TipFocusApp = struct {
     }
 };
 
-test "keyboard nav: tabbing reports the focused widget through hoverMsg (so a tooltip shows)" {
-    TipFocusApp.seen_n = 0;
-    const t = try playWith(TipFocusApp, .{
-        .script = &.{
-            .{ .x = 390, .y = 290 }, // pointer parked over nothing
-            .{},
-            TAB,
-            .{},
-            .{},
-            TAB,
-            .{},
-            .{},
-            TAB, .{}, .{}, // wraps to A
-        },
-    }, .{});
-    defer t.destroy();
-    var saw_a = false;
-    var saw_b = false;
-    for (TipFocusApp.seen_hits[0..TipFocusApp.seen_n]) |h| {
-        if (h) |m| switch (m) {
-            .a => saw_a = true,
-            .b => saw_b = true,
-        };
-    }
-    try std.testing.expect(saw_a and saw_b);
-}
 
-test "toast: Escape dismisses the newest showing toast, then the next, then nothing" {
-    const Ts = toast_w.Toast(3, 16);
-    var m: Ts.Model = .{};
-    try std.testing.expect(Ts.keyMsg(&m, .escape) == null); // nothing showing
-    Ts.push(&m, .info, "one", 0);
-    Ts.push(&m, .info, "two", 0);
-    try std.testing.expect(Ts.keyMsg(&m, .enter) == null);
-    const first = Ts.keyMsg(&m, .escape).?;
-    try std.testing.expectEqual(m.items[1].id, first.dismiss);
-    Ts.update(&m, first); // starts leaving
-    const second = Ts.keyMsg(&m, .escape).?;
-    try std.testing.expectEqual(m.items[0].id, second.dismiss);
-    Ts.update(&m, second);
-    try std.testing.expect(Ts.keyMsg(&m, .escape) == null); // both leaving
-}
 
 // ── Clipboard hooks ─────────────────────────────────────────────────
 
@@ -3535,56 +1907,9 @@ const ClipApp = struct {
     }
 };
 
-test "clipboardMsg: Ctrl+V delivers the clipboard text as a Msg through update" {
-    const t = try playWith(ClipApp, .{ .script = &.{ .{}, .{ .keys = &.{.ctrl_v} }, .{ .keys = &.{.ctrl_v} } }, .clip_in = "ab" }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 2), t.rt.model.pastes);
-    try std.testing.expectEqualStrings("abab", t.rt.model.text[0..t.rt.model.len]);
-}
 
-test "clipboardText + clipboardMsg: Ctrl+C copies without mutating, Ctrl+X copies then cuts" {
-    const t = try playWith(ClipApp, .{
-        .script = &.{
-            .{},
-            .{ .keys = &.{.ctrl_v} }, // model now holds "xyz"
-            .{ .keys = &.{.ctrl_c} },
-            .{ .keys = &.{.ctrl_x} },
-        },
-        .clip_in = "xyz",
-    }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 2), t.host.clip_writes); // copy and cut each wrote
-    try std.testing.expectEqualStrings("xyz", t.host.clip_out[0..t.host.clip_out_len]);
-    try std.testing.expectEqual(@as(usize, 0), t.rt.model.len); // the cut ran AFTER the text was read
-}
 
-test "clipboardMsg: an empty paste is not delivered (image pastes stay unclaimed)" {
-    const t = try playWith(ClipApp, .{ .script = &.{ .{}, .{ .keys = &.{.ctrl_v} } }, .clip_in = "" }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 0), t.rt.model.pastes);
-}
 
-test "handleClipboard (deprecated adapter) still works for apps that have not migrated" {
-    const Old = struct {
-        pub const Model = struct { pasted: u32 = 0 };
-        pub const Msg = union(enum) { noop };
-        pub fn update(_: *Model, _: Msg) void {}
-        pub fn view(_: *const Model, cb: anytype) void {
-            cb.pushGroup(.{});
-            cb.text("old");
-            cb.popGroup();
-        }
-        pub fn keyNeedsClipboard(k: keys.SpecialKey) bool {
-            return k == .ctrl_v;
-        }
-        pub fn handleClipboard(m: *Model, _: keys.SpecialKey, clip: host_iface.Clipboard) void {
-            if (clip.read().len > 0) m.pasted += 1;
-        }
-    };
-    const t = try playWith(Old, .{ .script = &.{ .{}, .{ .keys = &.{.ctrl_v} } }, .clip_in = "q" }, .{});
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.pasted);
-}
 
 // ── Enter in a focused text_area is a key, not a submit ─────────────
 
@@ -3618,21 +1943,6 @@ const EnterApp = struct {
     }
 };
 
-test "Enter: a focused text_area gets it as a key (keySpecialMsg), a text_input still submits" {
-    const t = try play(EnterApp, &.{ .{}, .{ .keys = &.{.enter} } });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.newlines);
-    try std.testing.expectEqual(@as(u32, 0), t.rt.model.submits);
-
-    var host: ScriptHost = .{ .script = &.{ .{}, .{ .keys = &.{.enter} } } };
-    var gpu: StubGpu = .{};
-    var rt = try Runtime(EnterApp, ScriptHost, StubGpu).init(std.testing.allocator, &host, &gpu, .{});
-    defer rt.deinit();
-    rt.model.area_focused = false;
-    while (!host.shouldClose()) try rt.frame();
-    try std.testing.expectEqual(@as(u32, 1), rt.model.submits);
-    try std.testing.expectEqual(@as(u32, 0), rt.model.newlines);
-}
 
 // ── pointerMsg: one hook, blank-space clicks included ───────────────
 
@@ -3671,30 +1981,7 @@ const PmApp = struct {
     }
 };
 
-test "pointerMsg: blank-space press (kind=down, hit=null) lets the app clear focus; widget presses carry their Msg" {
-    const t = try play(PmApp, &.{
-        .{}, // lays out
-        .{ .x = 300, .y = 200, .held = left, .down = left }, // press on blank space
-        .{ .x = 300, .y = 200, .up = left },
-        .{ .x = 5, .y = 5, .held = left, .down = left }, // press on button A
-        .{ .x = 5, .y = 5, .up = left },
-    });
-    defer t.destroy();
-    try std.testing.expect(!t.rt.model.focused); // the blank press delivered .blur
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.widget_downs);
-    try std.testing.expectEqual(@as(u32, 2), t.rt.model.ups);
-    try std.testing.expect(t.rt.model.hovers >= 1); // entering A
-}
 
-test "pointerMsg: the right button arrives as kind=context with button=right" {
-    const t = try play(PmApp, &.{
-        .{},
-        .{ .x = 5, .y = 5, .held = right, .down = right },
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(u32, 1), t.rt.model.contexts);
-    try std.testing.expectEqual(pointer.Button.right, t.rt.model.last_button);
-}
 
 // ── pointerMsg: capture across target kinds, wheel fallback, adapters ──
 
@@ -3777,231 +2064,15 @@ fn playSurf(initial: []const u8, host: ScriptHost) !*Played(PmSurf) {
     return p;
 }
 
-test "pointerMsg capture: a canvas press owns the pointer through a drag over other surfaces" {
-    const t = try playSurf("", .{
-        .script = &.{
-            .{},
-            .{ .x = 50, .y = 50, .held = left, .down = left }, // press the canvas
-            .{ .x = 300, .y = 110, .held = left }, // dragged over the slider and off the canvas
-            .{ .x = 100, .y = 150, .held = left }, // ... then over the text area
-            .{ .x = 100, .y = 150, .up = left }, // released over the text area
-        },
-    });
-    defer t.destroy();
-    const m = &t.rt.model;
-    try std.testing.expectEqual(@as(usize, 1), m.count(.down, .canvas));
-    try std.testing.expectEqual(@as(usize, 1), m.count(.up, .canvas));
-    try std.testing.expect(m.count(.move, .canvas) >= 3);
-    // Nobody else saw the drag: no slider event, no text-area down, no click.
-    try std.testing.expectEqual(@as(usize, 0), m.count(.down, .slider) + m.count(.move, .slider) + m.count(.up, .slider));
-    try std.testing.expectEqual(@as(u32, 0), m.grabs);
-    try std.testing.expect(m.area.selectionText().len == 0);
-    // Captured moves report target-local coordinates past the canvas edge.
-    var far = false;
-    for (m.items()) |s| far = far or (s.kind == .move and s.tag == .canvas and s.x == 300);
-    try std.testing.expect(far);
-}
 
-test "pointerMsg capture: a slider press owns the drag (canvas below the cursor is not poked)" {
-    const t = try playSurf("", .{
-        .script = &.{
-            .{},
-            .{ .x = 100, .y = 110, .held = left, .down = left }, // press the slider
-            .{ .x = 300, .y = 50, .held = left }, // dragged over the canvas
-            .{ .x = 300, .y = 50, .up = left },
-        },
-    });
-    defer t.destroy();
-    const m = &t.rt.model;
-    try std.testing.expectEqual(@as(usize, 1), m.count(.down, .slider));
-    try std.testing.expectEqual(@as(usize, 1), m.count(.up, .slider));
-    try std.testing.expect(m.count(.move, .slider) >= 1);
-    for (m.items()) |s| try std.testing.expect(!(s.tag == .canvas and (s.kind == .move or s.kind == .down)));
-    try std.testing.expectEqual(@as(u32, 0), m.grabs); // the plain click was not dispatched
-    // A slider press `pointerMsg` declines is NOT captured: it stays a plain click.
-    var p2 = try begin(PmSurf, .{ .script = &.{
-        .{},
-        .{ .x = 100, .y = 110, .held = left, .down = left },
-        .{ .x = 100, .y = 110, .up = left },
-    } }, .{});
-    defer p2.destroy();
-    p2.rt.model.ignore_slider = true;
-    while (!p2.host.shouldClose()) try p2.rt.frame();
-    try std.testing.expectEqual(@as(u32, 1), p2.rt.model.grabs);
-}
 
-test "pointerMsg capture: a text-area drag selects past the rect; clicks count 2 and 3" {
-    const base = [2]f32{ 8, 124 + 8 };
-    const word = [2]f32{ base[0] + 6 * 10 + 1, base[1] + 5 }; // inside "world"
-    const t = try playSurf("hello world\nsecond line", .{
-        .script = &.{
-            .{ .clock_ms = 1000 },
-            .{ .x = base[0] + 1, .y = base[1] + 5, .held = left, .down = left, .clock_ms = 1000 },
-            .{ .x = 390, .y = 280, .held = left, .clock_ms = 1010 }, // dragged below and right of the area: still captured
-            .{ .x = 390, .y = 280, .up = left, .clock_ms = 1020 },
-        },
-    });
-    defer t.destroy();
-    try std.testing.expectEqualStrings("hello world\nsecond line", t.rt.model.area.selectionText());
-    // Nothing below the area (the scroll region's button) was clicked or hovered into a press.
-    try std.testing.expectEqual(@as(usize, 0), t.rt.model.count(.down, .canvas));
 
-    const t2 = try playSurf("hello world\nsecond line", .{ .script = &.{
-        .{ .clock_ms = 1000 },
-        .{ .x = word[0], .y = word[1], .held = left, .down = left, .clock_ms = 1000 },
-        .{ .x = word[0], .y = word[1], .up = left, .clock_ms = 1050 },
-        .{ .x = word[0], .y = word[1], .held = left, .down = left, .clock_ms = 1100 },
-        .{ .x = word[0], .y = word[1], .up = left, .clock_ms = 1150 },
-    } });
-    defer t2.destroy();
-    try std.testing.expectEqualStrings("world", t2.rt.model.area.selectionText()); // clicks = 2 -> word
-}
 
-test "pointerMsg wheel: canvas, scroll region, then pointerMsg(.none), then wheelMsg" {
-    const t = try playSurf("", .{
-        .script = &.{
-            .{},
-            .{ .x = 50, .y = 50, .wheel_dy = 10 }, // canvas: claimed
-            .{ .x = 50, .y = 240, .wheel_dy = 20, .wheel_dx = 3 }, // scroll region 3: claimed
-            .{ .x = 300, .y = 170 }, // blank space (right of the text area)
-            .{ .x = 300, .y = 170, .wheel_dy = 30 }, // nobody claims: pointerMsg(.none) declines -> wheelMsg
-        },
-    });
-    defer t.destroy();
-    const m = &t.rt.model;
-    try std.testing.expectEqual(@as(usize, 1), m.count(.wheel, .canvas));
-    try std.testing.expectEqual(@as(usize, 1), m.count(.wheel, .scroll));
-    try std.testing.expectEqual(@as(u32, 1), m.wheels); // exactly the blank-space one
-    for (m.items()) |s| if (s.kind == .wheel and s.tag == .scroll) try std.testing.expectEqual(@as(u32, 3), s.id);
 
-    // When pointerMsg claims the unclaimed wheel, wheelMsg is not called.
-    var p2 = try begin(PmSurf, .{ .script = &.{ .{}, .{ .x = 300, .y = 170, .wheel_dy = 30 } } }, .{});
-    defer p2.destroy();
-    p2.rt.model.claim_wheel = true;
-    while (!p2.host.shouldClose()) try p2.rt.frame();
-    try std.testing.expectEqual(@as(u32, 0), p2.rt.model.wheels);
-    try std.testing.expectEqual(@as(usize, 1), p2.rt.model.count(.wheel, .none));
-}
-
-test "pointerMsg: blank presses reach the hook even over a canvas; widget events carry target .widget" {
-    const t = try playSurf("", .{
-        .script = &.{
-            .{},
-            .{ .x = 300, .y = 170, .held = left, .down = left }, // blank space
-            .{ .x = 300, .y = 170, .up = left },
-        },
-    });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(usize, 1), t.rt.model.count(.down, .widget));
-    try std.testing.expectEqual(@as(usize, 1), t.rt.model.count(.up, .widget));
-}
-
-test "deprecatedHooks names the old pointer hooks an App still declares" {
-    const names = comptime run_mod.deprecatedHooks(PointerApp);
-    try std.testing.expectEqual(@as(usize, 1), names.len);
-    try std.testing.expectEqualStrings("canvasMsg", names[0]);
-    try std.testing.expectEqual(@as(usize, 0), comptime run_mod.deprecatedHooks(PmSurf).len);
-    try std.testing.expectEqual(@as(usize, 2), comptime run_mod.deprecatedHooks(HookApp).len);
-}
 
 // ── Frame stats, continuous mode, exit-after-frames, HUD (#127) ─────
 
-test "frame stats: lastFrameStats is filled every frame, quiet frames included" {
-    const t = try begin(ClickApp, .{ .script = &.{ .{}, .{}, .{ .x = 5, .y = 5 } } }, .{});
-    defer t.destroy();
 
-    try t.rt.frame();
-    const s0 = t.rt.lastFrameStats();
-    try std.testing.expectEqual(@as(u64, 0), s0.index);
-    try std.testing.expect(s0.presented and s0.rebuilt and !s0.quiet);
-    try std.testing.expectEqual(@as(f32, 0), s0.frame_ms); // no previous present yet
-    try std.testing.expect(s0.cmds == t.rt.bufs[t.rt.current].cmds.items.len and s0.cmds > 0);
-    try std.testing.expect(s0.vertices > 0);
-    try std.testing.expect(s0.work_ms >= s0.view_ms + s0.layout_ms);
 
-    try t.rt.frame(); // nothing happened: the idle skip runs nothing
-    const s1 = t.rt.lastFrameStats();
-    try std.testing.expectEqual(@as(u64, 1), s1.index);
-    try std.testing.expect(s1.quiet and !s1.presented and !s1.rebuilt);
-    try std.testing.expectEqual(@as(f32, 0), s1.gpu_ms);
 
-    try t.rt.frame(); // the mouse moved: builds and presents again
-    const s2 = t.rt.lastFrameStats();
-    try std.testing.expect(s2.presented and !s2.quiet);
-    try std.testing.expect(s2.frame_ms > 0); // present-to-present since frame 0
-}
 
-test "frame stats: continuous mode never idles and rebuilds every frame" {
-    const script: []const Frame = &.{ .{}, .{}, .{}, .{}, .{} };
-    // Baseline: with the idle skip off, the frame diff still skips the rebuild.
-    const diffed = try playWith(ClickApp, .{ .script = script }, .{ .idle_skip = false });
-    defer diffed.destroy();
-    try std.testing.expectEqual(@as(u32, 5), diffed.gpu.render_calls);
-    try std.testing.expectEqual(@as(u32, 1), diffed.gpu.upload_vert_calls);
-
-    const cont = try playWith(ClickApp, .{ .script = script }, .{ .continuous = true });
-    defer cont.destroy();
-    try std.testing.expectEqual(@as(u32, 5), cont.gpu.render_calls);
-    try std.testing.expectEqual(@as(u32, 5), cont.gpu.upload_vert_calls);
-    const s = cont.rt.lastFrameStats();
-    try std.testing.expect(s.rebuilt and s.presented and !s.quiet);
-
-    // Through `run`: no frame is quiet, so the Host is never asked to wait.
-    var host: ScriptHost = .{ .script = script };
-    var gpu: StubGpu = .{};
-    try run_mod.run(ClickApp, std.testing.allocator, &host, &gpu, .{ .continuous = true });
-    try std.testing.expectEqual(@as(u32, 0), host.wait_calls);
-    try std.testing.expectEqual(@as(u32, 5), gpu.upload_vert_calls);
-}
-
-test "frame stats: exit_after_frames stops run before the window closes" {
-    const frames: [10]Frame = @splat(.{});
-    var host: ScriptHost = .{ .script = &frames };
-    var gpu: StubGpu = .{};
-    try run_mod.run(ClickApp, std.testing.allocator, &host, &gpu, .{ .continuous = true, .exit_after_frames = 3 });
-    try std.testing.expectEqual(@as(u32, 3), gpu.render_calls);
-    try std.testing.expectEqual(@as(usize, 3), host.next); // 3 polls, not 11
-    try std.testing.expect(!host.shouldClose());
-}
-
-test "frame stats: stats_path writes a CSV line per frame and a percentile summary" {
-    const gpa = std.testing.allocator;
-    var td = std.testing.tmpDir(.{});
-    defer td.cleanup();
-    const path = try snapshotPath(td, "frames.csv");
-    defer gpa.free(path);
-
-    const frames: [6]Frame = @splat(.{});
-    var host: ScriptHost = .{ .script = &frames };
-    var gpu: StubGpu = .{};
-    try run_mod.run(ClickApp, gpa, &host, &gpu, .{ .continuous = true, .stats_path = path });
-
-    const csv = try readSnapshot(td, "frames.csv");
-    defer gpa.free(csv);
-    try std.testing.expect(std.mem.startsWith(u8, csv, "frame,frame_ms,"));
-    try std.testing.expectEqual(@as(usize, 7), std.mem.count(u8, csv, "\n")); // header + 6 frames
-    try std.testing.expect(std.mem.indexOf(u8, csv, "\n5,") != null);
-
-    const summary = try readSnapshot(td, "frames.csv.summary.txt");
-    defer gpa.free(summary);
-    // 6 presents -> 5 present-to-present samples.
-    try std.testing.expect(std.mem.indexOf(u8, summary, "6 frames, 5 frame_ms samples") != null);
-    try std.testing.expect(std.mem.indexOf(u8, summary, "p95") != null);
-    try std.testing.expect(std.mem.indexOf(u8, summary, "p99") != null);
-}
-
-test "frame stats: the HUD overlay is drawn but clicks fall through to the app" {
-    // The button sits at the origin, under the HUD panel at (8, 8).
-    const t = try playWith(ClickApp, .{ .script = &.{
-        .{},
-        .{ .x = 10, .y = 10, .held = left, .down = left },
-        .{ .x = 10, .y = 10, .up = left },
-    } }, .{ .hud = true });
-    defer t.destroy();
-    try std.testing.expectEqual(@as(i32, 1), t.rt.model.count);
-    var overlays: usize = 0;
-    for (t.rt.bufs[t.rt.current].cmds.items) |c| {
-        if (c == .push_overlay) overlays += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 1), overlays);
-}

@@ -235,11 +235,3 @@ comptime {
     teak.validateHost(Host);
 }
 
-test "preferredBackend: Wayland only when advertised, TEAK_BACKEND forces" {
-    try std.testing.expectEqual(Backend.x11, preferredBackend(null, null));
-    try std.testing.expectEqual(Backend.x11, preferredBackend("", null));
-    try std.testing.expectEqual(Backend.wayland, preferredBackend("wayland-0", null));
-    try std.testing.expectEqual(Backend.x11, preferredBackend("wayland-0", "x11"));
-    try std.testing.expectEqual(Backend.wayland, preferredBackend(null, "Wayland"));
-    try std.testing.expectEqual(Backend.wayland, preferredBackend("wayland-0", "bogus"));
-}

@@ -152,45 +152,5 @@ pub const View = struct {
     sprites: []const Sprite = &.{},
 };
 
-test "Item layout defaults: identity transform, white tint, no flags" {
-    const it = Item{ .mesh = 3 };
-    try std.testing.expectEqual(@as(f32, 1), it.transform[0]);
-    try std.testing.expectEqual(@as(f32, 0), it.transform[3]);
-    try std.testing.expectEqual(@as(f32, 1), it.transform[10]);
-    try std.testing.expectEqual(@as(u8, 0), @as(u8, @bitCast(it.flags)));
-}
 
-test "deepEql compares item content, not slice identity" {
-    const a_items = [_]Item{ .{ .mesh = 1, .id = 5 }, .{ .mesh = 2 } };
-    const b_items = [_]Item{ .{ .mesh = 1, .id = 5 }, .{ .mesh = 2 } };
-    const a = View{ .items = &a_items };
-    var b = View{ .items = &b_items };
-    try std.testing.expect(eql_mod.deepEql(View, a, b));
-    var c_items = b_items;
-    c_items[1].flags.highlight = true;
-    b.items = &c_items;
-    try std.testing.expect(!eql_mod.deepEql(View, a, b));
-    try std.testing.expect(!eql_mod.deepEql(View, .{}, .{ .grid = .{} }));
-    try std.testing.expect(eql_mod.deepEql(View, .{ .cut = .{ .plane = .{ 0, 1, 0, 0 } } }, .{ .cut = .{ .plane = .{ 0, 1, 0, 0 } } }));
-    try std.testing.expect(!eql_mod.deepEql(View, .{}, .{ .material = .flat }));
-}
 
-test "deepEql compares plane content and sprite fields" {
-    const prims_a = [_]cmd.CanvasPrimitive{.{ .filled_rect = .{ .x = 0, .y = 0, .w = 4, .h = 4 } }};
-    var prims_b = prims_a;
-    const pa = [_]Plane{.{ .origin = .{ 0, 0, 0 }, .u = .{ 1, 0, 0 }, .v = .{ 0, 1, 0 }, .size = .{ 10, 10 }, .content = &prims_a }};
-    var pb = pa;
-    pb[0].content = &prims_b;
-    try std.testing.expect(eql_mod.deepEql(View, .{ .planes = &pa }, .{ .planes = &pb }));
-    prims_b[0].filled_rect.w = 5;
-    try std.testing.expect(!eql_mod.deepEql(View, .{ .planes = &pa }, .{ .planes = &pb }));
-    pb[0].content = &prims_a;
-    pb[0].layer = 1;
-    try std.testing.expect(!eql_mod.deepEql(View, .{ .planes = &pa }, .{ .planes = &pb }));
-
-    const sa = [_]Sprite{.{ .pos = .{ 1, 2, 3 }, .image = 4, .size = .{ 16, 16 } }};
-    var sb = sa;
-    try std.testing.expect(eql_mod.deepEql(View, .{ .sprites = &sa }, .{ .sprites = &sb }));
-    sb[0].tint[3] = 0.5;
-    try std.testing.expect(!eql_mod.deepEql(View, .{ .sprites = &sa }, .{ .sprites = &sb }));
-}

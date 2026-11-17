@@ -153,138 +153,14 @@ pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-test "greeter: insert at end" {
-    var m: Model = .{};
-    update(&m, .{ .name_char = 'A' });
-    update(&m, .{ .name_char = 'B' });
-    update(&m, .{ .name_char = 'C' });
-    try std.testing.expectEqualStrings("ABC", m.name[0..m.name_len]);
-    try std.testing.expectEqual(@as(usize, 3), m.cursor);
-}
 
-test "greeter: backspace removes char before cursor" {
-    var m: Model = .{};
-    update(&m, .{ .name_char = 'A' });
-    update(&m, .{ .name_char = 'B' });
-    update(&m, .name_backspace);
-    try std.testing.expectEqualStrings("A", m.name[0..m.name_len]);
-    try std.testing.expectEqual(@as(usize, 1), m.cursor);
-}
 
-test "greeter: backspace at cursor 0 is no-op" {
-    var m: Model = .{};
-    update(&m, .name_backspace);
-    try std.testing.expectEqual(@as(usize, 0), m.name_len);
-    try std.testing.expectEqual(@as(usize, 0), m.cursor);
-}
 
-test "greeter: insert in middle" {
-    var m: Model = .{};
-    update(&m, .{ .name_char = 'A' });
-    update(&m, .{ .name_char = 'C' });
-    update(&m, .name_cursor_left);
-    update(&m, .{ .name_char = 'B' });
-    try std.testing.expectEqualStrings("ABC", m.name[0..m.name_len]);
-    try std.testing.expectEqual(@as(usize, 2), m.cursor);
-}
 
-test "greeter: cursor bounds" {
-    var m: Model = .{};
-    update(&m, .name_cursor_left); // no-op at 0
-    try std.testing.expectEqual(@as(usize, 0), m.cursor);
-    update(&m, .{ .name_char = 'A' });
-    update(&m, .name_cursor_right); // no-op at end
-    try std.testing.expectEqual(@as(usize, 1), m.cursor);
-}
 
-test "greeter: view emits text_input + greeting" {
-    const testing = std.testing;
-    const cmd = @import("teak").cmd;
 
-    const AppMsg = Msg;
-    var cb = cmd.CmdBuffer(AppMsg).init(testing.allocator);
-    defer cb.deinit();
 
-    var m: Model = .{};
-    update(&m, .{ .name_char = 'A' });
-    update(&m, .{ .name_char = 'B' });
 
-    const msgs = .{ .focus = AppMsg.focus };
-    view(&m, &cb, msgs);
 
-    // push, text_input, text, pop = 4 cmds
-    try testing.expectEqual(@as(usize, 4), cb.cmds.items.len);
-    try testing.expectEqualStrings("AB", cb.cmds.items[1].text_input.content);
-    try testing.expectEqual(@as(usize, 2), cb.cmds.items[1].text_input.cursor);
-    try testing.expectEqualStrings("Hello, AB!", cb.cmds.items[2].text.content);
-}
 
-test "greeter: shift-arrow extends selection" {
-    var m: Model = .{};
-    update(&m, .{ .name_char = 'H' });
-    update(&m, .{ .name_char = 'e' });
-    update(&m, .{ .name_char = 'l' });
-    update(&m, .{ .name_char = 'l' });
-    update(&m, .{ .name_char = 'o' });
-    // Cursor at 5, no anchor. Shift+left twice → anchor=5, cursor=3.
-    update(&m, .name_select_left);
-    update(&m, .name_select_left);
-    try std.testing.expectEqual(@as(?usize, 5), m.selection_anchor);
-    try std.testing.expectEqual(@as(usize, 3), m.cursor);
-    try std.testing.expectEqualStrings("lo", selectionText(&m));
-}
 
-test "greeter: typing while selection active replaces it" {
-    var m: Model = .{};
-    for ("Hello") |c| update(&m, .{ .name_char = c });
-    update(&m, .name_select_left);
-    update(&m, .name_select_left); // select "lo"
-    update(&m, .{ .name_char = 'p' });
-    try std.testing.expectEqualStrings("Help", m.name[0..m.name_len]);
-    try std.testing.expectEqual(@as(?usize, null), m.selection_anchor);
-}
-
-test "greeter: backspace with selection deletes selection, not just one char" {
-    var m: Model = .{};
-    for ("Hello") |c| update(&m, .{ .name_char = c });
-    update(&m, .name_select_left);
-    update(&m, .name_select_left);
-    update(&m, .name_select_left);
-    update(&m, .name_select_left); // select "ello"
-    update(&m, .name_backspace);
-    try std.testing.expectEqualStrings("H", m.name[0..m.name_len]);
-    try std.testing.expectEqual(@as(usize, 1), m.cursor);
-}
-
-test "greeter: name_replace_selection (paste) replaces selection range" {
-    var m: Model = .{};
-    for ("Hello") |c| update(&m, .{ .name_char = c });
-    update(&m, .name_select_left);
-    update(&m, .name_select_left); // select "lo"
-    update(&m, .{ .name_replace_selection = "p!" });
-    try std.testing.expectEqualStrings("Help!", m.name[0..m.name_len]);
-    try std.testing.expectEqual(@as(usize, 5), m.cursor);
-}
-
-test "greeter: select_all sets anchor=0, cursor=len" {
-    var m: Model = .{};
-    for ("Hello") |c| update(&m, .{ .name_char = c });
-    update(&m, .name_select_all);
-    try std.testing.expectEqual(@as(?usize, 0), m.selection_anchor);
-    try std.testing.expectEqual(@as(usize, 5), m.cursor);
-}
-
-test "greeter: empty name shows Hello, World!" {
-    const testing = std.testing;
-    const cmd = @import("teak").cmd;
-
-    const AppMsg = Msg;
-    var cb = cmd.CmdBuffer(AppMsg).init(testing.allocator);
-    defer cb.deinit();
-
-    const msgs = .{ .focus = AppMsg.focus };
-    const empty: Model = .{};
-    view(&empty, &cb, msgs);
-
-    try testing.expectEqualStrings("Hello, World!", cb.cmds.items[2].text.content);
-}

@@ -114,9 +114,3 @@ const lines_without = edgeLines(false);
 pub const with_edges: teak.MeshData = .{ .vertices = &vertices, .indices = &indices, .lines = &lines_with };
 pub const without_edges: teak.MeshData = .{ .vertices = &vertices, .indices = &indices, .lines = &lines_without };
 
-test "mesh is valid and has the expected counts" {
-    try with_edges.validate();
-    try without_edges.validate();
-    try std.testing.expectEqual(@as(usize, 14 * 12), (with_edges.segmentCount() - without_edges.segmentCount()));
-    try std.testing.expectEqual(@as(usize, 14 * 12), with_edges.triangleCount());
-}

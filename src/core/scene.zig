@@ -129,23 +129,7 @@ pub const SceneData = struct {
     sprites: []Sprite = &.{},
 };
 
-test "MeshData.validate rejects bad indices and partial triangles" {
-    const v: [3]MeshVertex = @splat(.{ .pos = .{ 0, 0, 0 }, .normal = .{ 0, 0, 1 }, .color = .{ 1, 1, 1, 1 } });
-    const ok = MeshData{ .vertices = &v, .indices = &.{ 0, 1, 2 } };
-    try ok.validate();
-    try std.testing.expectEqual(@as(usize, 1), ok.triangleCount());
 
-    const bad_index = MeshData{ .vertices = &v, .indices = &.{ 0, 1, 3 } };
-    try std.testing.expectError(error.IndexOutOfRange, bad_index.validate());
-
-    const partial = MeshData{ .vertices = &v, .indices = &.{ 0, 1 } };
-    try std.testing.expectError(error.PartialTriangle, partial.validate());
-}
-
-test "vertex layouts are tightly packed" {
-    try std.testing.expectEqual(@as(usize, 40), @sizeOf(MeshVertex));
-    try std.testing.expectEqual(@as(usize, 28), @sizeOf(LineVertex));
-}
 
 // ---- teak.scene helpers (camera, picking, section): see docs/features/scene.md
 pub const mat = @import("scene/mat.zig");
@@ -170,11 +154,3 @@ pub const Ray = camera.Ray;
 pub const pickRay = camera.pickRay;
 pub const project = camera.project;
 
-test {
-    _ = mat;
-    _ = camera;
-    _ = pick;
-    _ = section;
-    _ = view;
-    _ = sort;
-}

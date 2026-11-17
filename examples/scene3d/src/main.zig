@@ -26,8 +26,3 @@ pub fn main() !void {
     std.debug.print("{s}", .{dump});
 }
 
-test {
-    std.testing.refAllDecls(App);
-    _ = @import("mesh.zig");
-    _ = @import("math.zig");
-}

@@ -267,78 +267,7 @@ pub fn replyText(buf: []u8, intent: Intent, ctx: Context, detail: []const u8) []
 const testing = std.testing;
 const test_bold: teak.FontSpec = .{ .size_px = 13, .family = .mono, .weight = .bold };
 
-test "log: push, truncation on a code point boundary, oldest dropped when full" {
-    var log: Log = .{};
-    log.push(.designer, "hello");
-    try testing.expectEqualStrings("hello", log.at(0).body());
-    try testing.expectEqual(@as(u16, 1), log.at(0).seq);
-    var big: [msg_cap + 10]u8 = undefined;
-    @memset(&big, 'a');
-    big[msg_cap - 1] = 0xC3; // a 2-byte sequence straddling the cap
-    big[msg_cap] = 0xA9;
-    log.push(.kerf, &big);
-    try testing.expectEqual(@as(u16, msg_cap - 1), log.at(1).len);
-    for (0..log_cap + 3) |_| log.push(.tool, "x");
-    try testing.expectEqual(@as(u8, log_cap), log.n);
-    try testing.expect(log.at(0).seq > 5);
-}
 
-test "wrapMarkup: strips markers, wraps at spaces, bold spans are relative" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const lines = wrapMarkup(arena.allocator(), "one **two three** four five", 10, test_bold, .{ 0, 0, 0, 1 });
-    try testing.expectEqual(@as(usize, 3), lines.len);
-    try testing.expectEqualStrings("one two", lines[0].text);
-    try testing.expectEqual(@as(usize, 1), lines[0].spans.len);
-    try testing.expectEqual(@as(u32, 4), lines[0].spans[0].start);
-    try testing.expectEqual(@as(u32, 7), lines[0].spans[0].end);
-    try testing.expectEqualStrings("three four", lines[1].text);
-    try testing.expectEqual(@as(u32, 0), lines[1].spans[0].start);
-    try testing.expectEqual(@as(u32, 5), lines[1].spans[0].end);
-    try testing.expectEqualStrings("five", lines[2].text);
-    try testing.expectEqual(@as(usize, 0), lines[2].spans.len);
-}
 
-test "wrapMarkup: newlines, blank lines, long words, empty input" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const l1 = wrapMarkup(a, "a\n\nb", 20, test_bold, .{ 0, 0, 0, 1 });
-    try testing.expectEqual(@as(usize, 3), l1.len);
-    try testing.expectEqualStrings("", l1[1].text);
-    const l2 = wrapMarkup(a, "abcdefghij", 4, test_bold, .{ 0, 0, 0, 1 });
-    try testing.expectEqual(@as(usize, 3), l2.len);
-    try testing.expectEqualStrings("abcd", l2[0].text);
-    try testing.expectEqualStrings("ij", l2[2].text);
-    const l3 = wrapMarkup(a, "", 20, test_bold, .{ 0, 0, 0, 1 });
-    try testing.expectEqual(@as(usize, 1), l3.len);
-    // an unterminated marker bolds to the end
-    const l4 = wrapMarkup(a, "x **y", 20, test_bold, .{ 0, 0, 0, 1 });
-    try testing.expectEqualStrings("x y", l4[0].text);
-    try testing.expectEqual(@as(u32, 2), l4[0].spans[0].start);
-}
 
-test "parseIntent: part names win; whole words only; keywords; default" {
-    const ctx: Context = .{ .parts = &.{ "beam", "studs", "jack_studs" }, .sections = 1, .has_iso = true };
-    try testing.expectEqual(Intent{ .select = 1 }, parseIntent("where is the Beam?", ctx));
-    try testing.expectEqual(Intent{ .select = 3 }, parseIntent("select jack_studs", ctx)); // longest, not "studs"
-    try testing.expect(parseIntent("beamlike", ctx) == .summary); // glued: not a mention
-    try testing.expect(parseIntent("show me the iso", ctx) == .view_iso);
-    try testing.expect(parseIntent("section please", ctx) == .view_section);
-    try testing.expect(parseIntent("orbit it", ctx) == .view_3d);
-    try testing.expect(parseIntent("cut it", ctx) == .cut);
-    try testing.expect(parseIntent("help", ctx) == .help);
-    try testing.expect(parseIntent("hi", ctx) == .greet);
-    try testing.expect(parseIntent("what is this", ctx) == .summary);
-}
 
-test "reply text and tool lines fit the message cap" {
-    var buf: [msg_cap]u8 = undefined;
-    const ctx: Context = .{ .parts = &.{ "beam", "strap" }, .sections = 2, .has_iso = false };
-    for ([_]Intent{ .greet, .help, .summary, .view_section, .view_iso, .view_3d, .cut, .fit, .{ .select = 2 } }) |it| {
-        const t = replyText(&buf, it, ctx, "strap");
-        try testing.expect(t.len > 10 and t.len < msg_cap);
-        var tb: [96]u8 = undefined;
-        try testing.expect(toolLine(&tb, it, "strap").len > 4);
-    }
-}

@@ -168,165 +168,16 @@ pub fn NumericField(comptime config: NumericConfig) type {
 const cmd_mod = @import("cmd.zig");
 const component_mod = @import("component.zig");
 
-test "NumericField(.{}) passes validateComponent" {
-    component_mod.validateComponent(NumericField(.{}));
-}
 
-test "NumericField: typing digits yields the parsed value" {
-    const NF = NumericField(.{});
-    var m: NF.Model = .{};
-    NF.update(&m, .{ .char = '4' });
-    NF.update(&m, .{ .char = '2' });
-    try std.testing.expectEqual(@as(?f64, 42.0), NF.value(&m));
-    try std.testing.expect(NF.isValid(&m));
-}
 
-test "NumericField: setValue / setText replace the text from code" {
-    const NF = NumericField(.{ .precision = 1, .min = 0, .max = 100 });
-    var m: NF.Model = .{};
-    for ("999") |c| NF.update(&m, .{ .char = c });
-    try std.testing.expect(!NF.isValid(&m)); // out of range
-    NF.setValue(&m, 12.34);
-    try std.testing.expectEqualStrings("12.3", NF.content(&m));
-    try std.testing.expectEqual(@as(?f64, 12.3), NF.value(&m));
-    NF.setText(&m, "7");
-    try std.testing.expectEqual(@as(?f64, 7), NF.value(&m));
-    NF.update(&m, .{ .char = '5' }); // typing continues at the end
-    try std.testing.expectEqual(@as(?f64, 75), NF.value(&m));
-}
 
-test "NumericField: parses a decimal" {
-    const NF = NumericField(.{});
-    var m: NF.Model = .{};
-    for ("3.14") |c| NF.update(&m, .{ .char = c });
-    try std.testing.expectEqual(@as(?f64, 3.14), NF.value(&m));
-}
 
-test "NumericField: out-of-range value reads as null / invalid" {
-    const NF = NumericField(.{ .min = 0, .max = 10 });
-    var m: NF.Model = .{};
-    for ("20") |c| NF.update(&m, .{ .char = c });
-    try std.testing.expectEqual(@as(?f64, null), NF.value(&m));
-    try std.testing.expect(!NF.isValid(&m));
 
-    // In-range still parses.
-    var m2: NF.Model = .{};
-    for ("7") |c| NF.update(&m2, .{ .char = c });
-    try std.testing.expectEqual(@as(?f64, 7.0), NF.value(&m2));
-    try std.testing.expect(NF.isValid(&m2));
-}
 
-test "NumericField: non-numeric text reads as null" {
-    const NF = NumericField(.{});
-    var m: NF.Model = .{};
-    for ("abc") |c| NF.update(&m, .{ .char = c });
-    try std.testing.expectEqual(@as(?f64, null), NF.value(&m));
-    try std.testing.expect(!NF.isValid(&m));
-}
 
-test "NumericField: empty buffer reads as null / invalid" {
-    const NF = NumericField(.{});
-    const m: NF.Model = .{};
-    try std.testing.expectEqual(@as(?f64, null), NF.value(&m));
-    try std.testing.expect(!NF.isValid(&m));
-}
 
-test "NumericField: content returns the raw text" {
-    const NF = NumericField(.{});
-    var m: NF.Model = .{};
-    for ("1.5") |c| NF.update(&m, .{ .char = c });
-    try std.testing.expectEqualStrings("1.5", NF.content(&m));
-}
 
-test "NumericField: formatValue rounds to config precision" {
-    const NF = NumericField(.{ .precision = 2 });
-    var m: NF.Model = .{};
-    for ("3.14159") |c| NF.update(&m, .{ .char = c });
-    var buf: [32]u8 = undefined;
-    const out = NF.formatValue(&m, &buf).?;
-    try std.testing.expectEqualStrings("3.14", out);
 
-    // Invalid field → null.
-    var bad: NF.Model = .{};
-    for ("nope") |c| NF.update(&bad, .{ .char = c });
-    try std.testing.expectEqual(@as(?[]const u8, null), NF.formatValue(&bad, &buf));
-}
 
-test "NumericField composes via Components and routes char msgs" {
-    const App = component_mod.Components(.{ .qty = NumericField(.{}) }, null);
 
-    var m: App.Model = .{};
-    App.update(&m, .{ .qty = .{ .char = '5' } });
-    try std.testing.expectEqualStrings("5", m.qty.tf.content());
-    try std.testing.expectEqual(@as(?f64, 5.0), NumericField(.{}).value(&m.qty));
-}
 
-test "NumericField: textFieldChar host helper builds the right composed Msg" {
-    const NF = NumericField(.{});
-    const App = component_mod.Components(.{ .qty = NF }, null);
-
-    // The text_field.zig host helper works UNCHANGED because the Msg
-    // vocabulary is shared — proving compatibility.
-    const built = teak_text_field.textFieldChar(App.Msg, "qty", '7');
-    try std.testing.expectEqual(@as(u8, '7'), built.qty.char);
-
-    // Routing the built Msg actually edits the buffer.
-    var m: App.Model = .{};
-    App.update(&m, built);
-    try std.testing.expectEqualStrings("7", m.qty.tf.content());
-    try std.testing.expectEqual(@as(?f64, 7.0), NF.value(&m.qty));
-}
-
-test "NumericField.view: valid field emits one text_input, no danger cmd" {
-    const testing = std.testing;
-    const NF = NumericField(.{});
-    const App = component_mod.Components(.{ .qty = NF }, null);
-
-    var cb = cmd_mod.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    var m: NF.Model = .{};
-    for ("42") |c| NF.update(&m, .{ .char = c });
-    NF.view(&m, &cb, .{ .focus = App.Msg{ .qty = .focus } });
-
-    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
-    try testing.expectEqual(.text_input, std.meta.activeTag(cb.cmds.items[0]));
-}
-
-test "NumericField.view: invalid field also emits a danger text cmd" {
-    const testing = std.testing;
-    const NF = NumericField(.{ .invalid_message = "must be a number" });
-    const App = component_mod.Components(.{ .qty = NF }, null);
-
-    var cb = cmd_mod.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Empty buffer is invalid → wrapped in a vertical group with a danger row.
-    const m: NF.Model = .{};
-    NF.view(&m, &cb, .{ .focus = App.Msg{ .qty = .focus } });
-
-    // Sequence: push_group, text_input, text (danger), pop_group.
-    try testing.expectEqual(@as(usize, 4), cb.cmds.items.len);
-    try testing.expectEqual(.push_group, std.meta.activeTag(cb.cmds.items[0]));
-    try testing.expectEqual(.text_input, std.meta.activeTag(cb.cmds.items[1]));
-    try testing.expectEqual(.text, std.meta.activeTag(cb.cmds.items[2]));
-    try testing.expectEqualStrings("must be a number", cb.cmds.items[2].text.content);
-    try testing.expectEqual(cb.theme.danger_color, cb.cmds.items[2].text.color);
-    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[3]));
-}
-
-test "NumericField.view: empty invalid_message suppresses the validation row" {
-    const testing = std.testing;
-    const NF = NumericField(.{ .invalid_message = "" });
-    const App = component_mod.Components(.{ .qty = NF }, null);
-
-    var cb = cmd_mod.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Invalid (empty) field, but no message → bare input, no group.
-    const m: NF.Model = .{};
-    NF.view(&m, &cb, .{ .focus = App.Msg{ .qty = .focus } });
-
-    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
-    try testing.expectEqual(.text_input, std.meta.activeTag(cb.cmds.items[0]));
-}

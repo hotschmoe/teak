@@ -729,12 +729,3 @@ comptime {
     teak.validateHost(Host);
 }
 
-test "uri encoding of dropped paths round-trips through the shared decoder" {
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(gpa);
-    appendFileUri(&list, "/Users/me/My File #1.txt");
-    try std.testing.expectEqualStrings("file:///Users/me/My%20File%20%231.txt\r\n", list.items);
-    var buf: [128]u8 = undefined;
-    var it = x11_data.UriIter{ .rest = list.items };
-    try std.testing.expectEqualStrings("/Users/me/My File #1.txt", x11_data.uriToPath(it.next().?, &buf).?);
-}

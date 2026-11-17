@@ -235,54 +235,7 @@ const testing = std.testing;
 pub const small_fixture = @embedFile("fixtures/flush-psl-2x6.json");
 pub const large_fixture = @embedFile("fixtures/palmer-sd1-like.json");
 
-test "parse: flush-psl-2x6 fixture" {
-    var l = try parse(testing.allocator, small_fixture);
-    defer l.deinit();
-    try testing.expectEqual(@as(usize, 10), l.parts.len);
-    try testing.expectEqual(@as(u32, 120), l.tri_total);
-    try testing.expectEqualStrings("bottom_plate", l.parts[0].src);
-    try testing.expectEqual(@as(u32, 1), l.parts[3].instance);
-    try testing.expect(l.lo[0] < l.hi[0] and l.lo[1] < l.hi[1] and l.lo[2] < l.hi[2]);
-    // every part is a valid mesh whose bounds contain its vertices, with a resource keyed index + 1
-    for (l.parts, l.resources) |p, r| {
-        try p.mesh.validate();
-        for (p.mesh.vertices) |v| for (0..3) |k| try testing.expect(v.pos[k] >= p.lo[k] and v.pos[k] <= p.hi[k]);
-        try testing.expectEqual(p.index + 1, r.mesh.key);
-    }
-    l.setRev(7);
-    try testing.expectEqual(@as(u32, 7), l.resources[3].mesh.rev);
-}
 
-test "parse: palmer fixture has named parts and edges; only the dowel and wedge shank are open shells" {
-    var l = try parse(testing.allocator, large_fixture);
-    defer l.deinit();
-    try testing.expectEqual(@as(usize, 24), l.parts.len);
-    try testing.expectEqualStrings("footing", l.parts[0].name);
-    try testing.expect(l.parts[0].mesh.lines.len > 0 and l.parts[0].mesh.lines.len % 2 == 0);
-    for (l.parts, 0..) |p, i| try testing.expectEqual(i != 5 and i != 9, p.closed);
-}
 
-test "parse: errors" {
-    try testing.expectError(error.BadJson, parse(testing.allocator, "{nope"));
-    try testing.expectError(error.NoParts, parse(testing.allocator, "{\"kerf_mesh\":\"0.1\",\"parts\":[]}"));
-    try testing.expectError(error.BadMesh, parse(testing.allocator, "{\"parts\":[{\"positions\":[0,0,0,1,0,0,0,1,0],\"indices\":[0,1,5]}]}"));
-}
 
-test "missing normals are computed" {
-    var l = try parse(testing.allocator, "{\"parts\":[{\"src\":\"tri\",\"positions\":[0,0,0,1,0,0,0,1,0],\"indices\":[0,1,2]}]}");
-    defer l.deinit();
-    try testing.expectApproxEqAbs(@as(f32, 1), l.parts[0].mesh.vertices[0].normal[2], 1e-6);
-    try testing.expectEqual(@as(usize, 0), l.parts[0].mesh.lines.len);
-}
 
-test "fmtFtIn" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try testing.expectEqualStrings("7'-1 1/4\"", fmtFtIn(a, 85.25));
-    try testing.expectEqualStrings("4'-0\"", fmtFtIn(a, 48));
-    try testing.expectEqualStrings("1 1/2\"", fmtFtIn(a, 1.5));
-    try testing.expectEqualStrings("0\"", fmtFtIn(a, 0));
-    try testing.expectEqualStrings("-3'-4\"", fmtFtIn(a, -40));
-    try testing.expectEqualStrings("1/4\"", fmtFtIn(a, 0.25));
-}

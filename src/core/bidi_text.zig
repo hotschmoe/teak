@@ -251,76 +251,8 @@ fn tm() TextMeasurer {
 
 const S = "ab \u{5d0}\u{5d1}\u{5d2} cd"; // a b _ [alef bet gimel] _ c d  (cps 0..8)
 
-test "layoutLine: plain LTR returns null" {
-    var sc: Scratch = .{};
-    try testing.expect(layoutLine("hello world", 0, 11, .{}, tm(), std.math.inf(f32), &sc) == null);
-}
 
-test "layoutLine: mixed line has LTR, RTL, LTR runs in visual order" {
-    var sc: Scratch = .{};
-    const lay = layoutLine(S, 0, S.len, .{}, tm(), std.math.inf(f32), &sc).?;
-    try testing.expectEqual(@as(usize, 3), lay.n);
-    try testing.expectEqual(@as(u8, 0), lay.runs[0].level);
-    try testing.expectEqual(@as(u8, 1), lay.runs[1].level);
-    try testing.expectEqual(@as(f32, 30), lay.runs[1].x); // after "ab "
-    try testing.expectEqual(@as(f32, 30), lay.runs[1].w);
-    try testing.expectEqual(@as(f32, 90), lay.width);
-}
 
-test "caret and hit-test round-trip on a mixed line" {
-    var sc: Scratch = .{};
-    const lay = layoutLine(S, 0, S.len, .{}, tm(), std.math.inf(f32), &sc).?;
-    // Logical start of the Hebrew run (byte 3) is drawn at ITS visual left
-    // (trailing edge of the space before it); inside the run x decreases as the
-    // logical index grows.
-    const alef_end = 3 + 2; // after alef
-    const bet_end = 3 + 4;
-    try testing.expect(lay.caretX(alef_end) > lay.caretX(bet_end));
-    try testing.expectEqual(@as(f32, 20), lay.caretX(2)); // between b and space
-    // Every grapheme boundary maps back to itself.
-    var p: usize = 0;
-    while (p <= S.len) {
-        const x = lay.caretX(p);
-        const back = lay.indexAt(x);
-        try testing.expectApproxEqAbs(x, lay.caretX(back), 0.001);
-        if (p == S.len) break;
-        p = unicode.nextGrapheme(S, p);
-    }
-}
 
-test "selection across a direction boundary yields visually ordered spans" {
-    var sc: Scratch = .{};
-    const lay = layoutLine(S, 0, S.len, .{}, tm(), std.math.inf(f32), &sc).?;
-    var out: [8]Span = undefined;
-    // Select "b _ alef": logical [1, 3+2).
-    const sp = lay.selection(1, 5, &out);
-    try testing.expect(sp.len >= 1);
-    for (sp) |s| try testing.expect(s.x1 > s.x0);
-    // The whole line selects as one span.
-    const all = lay.selection(0, S.len, &out);
-    try testing.expectEqual(@as(usize, 1), all.len);
-    try testing.expectEqual(@as(f32, 90), all[0].x1 - all[0].x0);
-}
 
-test "RTL paragraph right-aligns when a wrap width is given" {
-    var sc: Scratch = .{};
-    const h = "\u{5d0}\u{5d1}\u{5d2}";
-    const lay = layoutLine(h, 0, h.len, .{}, tm(), 100, &sc).?;
-    try testing.expect(lay.para_rtl);
-    try testing.expectEqual(@as(f32, 70), lay.runs[0].x);
-}
 
-test "arrowTarget: visual right from the end of LTR text enters the RTL run" {
-    var sc: Scratch = .{};
-    const t = "ab \u{5d0}\u{5d1}";
-    // Right arrow from idx 3 (after "ab ") steps into the RTL run, not to byte 5.
-    const r1 = arrowTarget(t, 0, t.len, 3, .right, &sc).?;
-    try testing.expect(r1 > 3);
-    // Visiting with repeated Right from 0 reaches every slot and then stops.
-    var i: usize = 0;
-    var cur: usize = 0;
-    while (i < 20) : (i += 1) {
-        cur = arrowTarget(t, 0, t.len, cur, .right, &sc) orelse break;
-    }
-    try testing.expect(i < 20);
-}

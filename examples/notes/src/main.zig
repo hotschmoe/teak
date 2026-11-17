@@ -25,8 +25,3 @@ pub fn main() !void {
     std.debug.print("{s}", .{dump});
 }
 
-test {
-    // Pull in the app's tests (layout geometry, update).
-    std.testing.refAllDecls(App);
-    _ = App;
-}

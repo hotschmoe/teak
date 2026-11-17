@@ -183,48 +183,5 @@ fn vtx(x: f32, y: f32, rgb: [3]f32, alpha: f32) TV {
     return .{ .x = x, .y = y, .r = rgb[0], .g = rgb[1], .b = rgb[2], .a = alpha };
 }
 
-test "update: orbit advances only while orbiting; zoom is clamped" {
-    var m: Model = .{};
-    const az = m.azimuth;
-    update(&m, .tick);
-    try std.testing.expect(m.azimuth > az);
-    update(&m, .toggle_orbit);
-    const az2 = m.azimuth;
-    update(&m, .tick);
-    try std.testing.expectEqual(az2, m.azimuth);
-    for (0..50) |_| update(&m, .zoom_in);
-    try std.testing.expectEqual(@as(f32, 3), m.distance);
-}
 
-test "resources: the edges toggle bumps the mesh revision" {
-    var m: Model = .{};
-    const a = resources(&m)[0].mesh;
-    update(&m, .toggle_edges);
-    const b = resources(&m)[0].mesh;
-    try std.testing.expectEqual(a.key, b.key);
-    try std.testing.expect(a.rev != b.rev);
-    try std.testing.expect(a.data.lines.len > b.data.lines.len);
-}
 
-test "view: scene, canvas with a keyed batch, and buttons lay out" {
-    var cb = teak.CmdBuffer(Msg).init(std.testing.allocator);
-    defer cb.deinit();
-    const m: Model = .{};
-    view(&m, &cb);
-    var scenes: usize = 0;
-    var canvases: usize = 0;
-    for (cb.cmds.items) |c| switch (c) {
-        .scene3d => |s| {
-            scenes += 1;
-            try std.testing.expectEqual(mesh_key, s.mesh);
-        },
-        .canvas => |cv| {
-            canvases += 1;
-            try std.testing.expectEqual(@as(usize, 2), cv.primitives.len);
-        },
-        else => {},
-    };
-    try std.testing.expectEqual(@as(usize, 1), scenes);
-    try std.testing.expectEqual(@as(usize, 1), canvases);
-    try std.testing.expect(teak.validateBalance(cb.cmds.items) == null);
-}

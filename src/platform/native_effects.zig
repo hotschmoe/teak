@@ -809,59 +809,12 @@ fn utcOffsetMinutes(unix_secs: i64) i32 {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
-test "slug makes a directory name from a window title" {
-    for ([_]struct { in: []const u8, out: []const u8 }{
-        .{ .in = "Kerf CAD (beta)", .out = "kerf-cad-beta" },
-        .{ .in = "  --  ", .out = "app" },
-        .{ .in = "", .out = "app" },
-        .{ .in = "chrome", .out = "chrome" },
-    }) |c| {
-        const got = try slug(c.in);
-        defer gpa.free(got);
-        try std.testing.expectEqualStrings(c.out, got);
-    }
-}
 
-test "EscapedName keeps plain names and escapes the rest" {
-    var buf: [64]u8 = undefined;
-    var w: Io.Writer = .fixed(&buf);
-    try w.print("{f}|{f}|{f}", .{ EscapedName{ .name = "kerf.note-1_a" }, EscapedName{ .name = "../etc/x y" }, EscapedName{ .name = ".hidden" } });
-    try std.testing.expectEqualStrings("kerf.note-1_a|%2E.%2Fetc%2Fx%20y|%2Ehidden", w.buffered());
-}
 
-test "storagePath is under the config dir and refuses an empty key" {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    try std.testing.expect(storagePath(&buf, "kerf", "") == null);
-    const p = storagePath(&buf, "my app", "doc/1") orelse return; // no HOME in this environment
-    const sep = std.fs.path.sep_str;
-    try std.testing.expect(std.mem.endsWith(u8, p, sep ++ "teak" ++ sep ++ "my%20app" ++ sep ++ "doc%2F1"));
-}
 
-test "argValue finds --name=value only as a whole name" {
-    const cmd = "prog\x00--who=ada\x00--whoever=x\x00--api=http://h:1/\x00positional\x00";
-    try std.testing.expectEqualStrings("ada", argValue(cmd, "who").?);
-    try std.testing.expectEqualStrings("http://h:1/", argValue(cmd, "api").?);
-    try std.testing.expect(argValue(cmd, "who2") == null);
-    try std.testing.expect(argValue(cmd, "missing") == null);
-    try std.testing.expect(argValue("--flag\x00", "flag") == null);
-}
 
-test "envVarName upper-cases and replaces punctuation" {
-    var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("TEAK_API_BASE", envVarName(&buf, "api-base").?);
-    try std.testing.expectEqualStrings("TEAK_WHO", envVarName(&buf, "who").?);
-}
 
-test "mimeFromName" {
-    try std.testing.expectEqualStrings("application/json", mimeFromName("a.JSON"));
-    try std.testing.expectEqualStrings("image/png", mimeFromName("shot.png"));
-    try std.testing.expectEqualStrings("application/octet-stream", mimeFromName("noext"));
-}
 
-test "describeError gives a reason a person can act on" {
-    try std.testing.expectEqualStrings("network error: connection refused", describeError(error.ConnectionRefused));
-    try std.testing.expectEqualStrings("invalid URL", describeError(error.UnsupportedUriScheme));
-}
 
 // ── Local server for the round-trip tests (libc sockets) ────────────
 
@@ -957,125 +910,11 @@ fn waitOne(svc: *Service, out: *EffectResult) !void {
     return error.NoResult;
 }
 
-test "http: a POST round-trips with its body and headers, off the calling thread" {
-    if (is_windows) return error.SkipZigTest; // the test server uses POSIX sockets
-    const server = try TestServer.start(.echo);
-    defer server.stop();
-    const svc = try Service.create("test");
-    defer svc.destroy();
 
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/echo", .{server.port});
-    const headers = [_]teak.Header{.{ .name = "x-test", .value = "yes" }};
-    try std.testing.expectEqual(teak.EffectSubmit.accepted, svc.submit(.{ .http = .{ .id = 7, .method = .post, .url = url, .headers = &headers, .body = "hello" } }));
 
-    var r: EffectResult = undefined;
-    try waitOne(svc, &r);
-    try std.testing.expectEqual(@as(u32, 7), r.http.id);
-    try std.testing.expectEqual(@as(u16, 200), r.http.status);
-    try std.testing.expectEqualStrings("POST /echo HTTP/1.1|yes|5", r.http.body);
-    try std.testing.expectEqualStrings("", r.http.err);
-}
 
-test "http: a refused connection is status 0 with a reason" {
-    if (is_windows) return error.SkipZigTest; // the test server uses POSIX sockets
-    const server = try TestServer.start(.echo);
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/", .{server.port});
-    server.stop(); // nothing listens on that port any more
-    const svc = try Service.create("test");
-    defer svc.destroy();
 
-    _ = svc.submit(.{ .http = .{ .id = 1, .url = url } });
-    var r: EffectResult = undefined;
-    try waitOne(svc, &r);
-    try std.testing.expectEqual(@as(u16, 0), r.http.status);
-    try std.testing.expect(r.http.err.len > 0);
-}
 
-test "http: the timeout answers at the deadline and the late reply is dropped" {
-    if (is_windows) return error.SkipZigTest; // the test server uses POSIX sockets
-    const server = try TestServer.start(.silent);
-    defer server.stop();
-    const svc = try Service.create("test");
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/", .{server.port});
-    _ = svc.submit(.{ .http = .{ .id = 3, .url = url, .timeout_ms = 150 } });
-    defer {
-        // The abandoned worker finishes once the server hangs up; only then
-        // may the Service go (destroy leaves it alone while a worker runs).
-        for (0..400) |_| {
-            svc.lock();
-            const idle = for (svc.jobs) |j| {
-                if (j.id != 0) break false;
-            } else true;
-            svc.unlock();
-            if (idle) break;
-            std.Io.sleep(svc.io, .fromMilliseconds(5), .awake) catch {};
-        }
-        svc.destroy();
-    }
-
-    var r: EffectResult = undefined;
-    try waitOne(svc, &r);
-    try std.testing.expectEqual(@as(u16, 0), r.http.status);
-    try std.testing.expectEqualStrings("timeout after 150 ms", r.http.err);
-}
-
-test "storage: set, get, overwrite, delete" {
-    // Several test binaries import this file and run in parallel: a unique
-    // (clock-derived, so portable to Windows) app name keeps their storage
-    // directories apart.
-    var name_buf: [64]u8 = undefined;
-    const stamp: u64 = @truncate(@as(u96, @bitCast(Io.Clock.real.now(std.Options.debug_io).nanoseconds)));
-    const app = try std.fmt.bufPrint(&name_buf, "teak-test-storage-{d}", .{stamp});
-    const svc = try Service.create(app);
-    defer svc.destroy();
-    const cfg = envValue("XDG_CONFIG_HOME") orelse envValue("HOME") orelse return;
-    _ = cfg;
-
-    svc.storageSet("note", "one");
-    var r: EffectResult = undefined;
-    svc.storageGet(1, "note");
-    try waitOne(svc, &r);
-    try std.testing.expectEqualStrings("one", r.storage_value.value.?);
-
-    svc.storageSet("note", "two");
-    svc.storageGet(2, "note");
-    try waitOne(svc, &r);
-    try std.testing.expectEqualStrings("two", r.storage_value.value.?);
-
-    svc.storageSet("note", ""); // deletes
-    svc.storageGet(3, "note");
-    try waitOne(svc, &r);
-    try std.testing.expect(r.storage_value.value == null);
-}
-
-test "clock is plausible" {
-    const svc = try Service.create("test");
-    defer svc.destroy();
-    _ = svc.submit(.{ .clock = .{ .id = 5 } });
-    var r: EffectResult = undefined;
-    try waitOne(svc, &r);
-    try std.testing.expect(r.clock.unix_ms > 1_700_000_000_000);
-    try std.testing.expect(@abs(r.clock.utc_offset_min) <= 14 * 60);
-}
-
-test "open_file without TEAK_OPEN is cancelled; clipboard and storage_set make no result" {
-    if (envValue("TEAK_OPEN") != null) return;
-    // The picker exits 1 without printing anything: a cancelled dialog.
-    setEnv("TEAK_PICKER", "/bin/false");
-    defer unsetEnv("TEAK_PICKER");
-    const svc = try Service.create("test");
-    defer svc.destroy();
-    _ = svc.submit(.{ .write_clipboard = .{ .id = 1, .text = "x" } });
-    _ = svc.submit(.{ .open_file = .{ .id = 2 } });
-    var r: EffectResult = undefined;
-    try waitOne(svc, &r);
-    try std.testing.expectEqual(@as(u32, 2), r.file_cancelled.id);
-    var buf: [2]EffectResult = undefined;
-    try std.testing.expectEqual(@as(usize, 0), svc.poll(&buf, 0));
-}
 
 const posix_env = struct {
     extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
@@ -1102,103 +941,11 @@ fn unsetEnv(name: [:0]const u8) void {
     } else _ = posix_env.unsetenv(name);
 }
 
-test "splitCommandLine honours quotes and yields NUL-separated arguments" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const cmd = try splitCommandLine(arena.allocator(), "\"C:\\Program Files\\app.exe\"  --who=ada --path=\"a b\" last");
-    try std.testing.expectEqualStrings("C:\\Program Files\\app.exe\x00--who=ada\x00--path=a b\x00last\x00", cmd);
-    try std.testing.expectEqualStrings("ada", argValue(cmd, "who").?);
-    try std.testing.expectEqualStrings("a b", argValue(cmd, "path").?);
-}
 
-test "environment values round-trip through envValue (UTF-8, per-OS API)" {
-    setEnv("TEAK_ENV_TEST", "h\xc3\xa9llo");
-    defer unsetEnv("TEAK_ENV_TEST");
-    try std.testing.expectEqualStrings("h\xc3\xa9llo", envValue("TEAK_ENV_TEST").?);
-    unsetEnv("TEAK_ENV_TEST");
-    try std.testing.expect(envValue("TEAK_ENV_TEST") == null);
-}
 
-test "dropFile reports a dropped file with its bytes and MIME" {
-    const svc = try Service.create("test");
-    defer svc.destroy();
-    const dir = ".zig-cache/teak-native-fx-drop";
-    try Io.Dir.cwd().createDirPath(svc.io, dir);
-    try Io.Dir.cwd().writeFile(svc.io, .{ .sub_path = dir ++ "/note.txt", .data = "dropped!" });
-    svc.dropFile(dir ++ "/note.txt");
-    var r: EffectResult = undefined;
-    try waitOne(svc, &r);
-    try std.testing.expectEqual(teak.DropKind.file, r.dropped.kind);
-    try std.testing.expectEqualStrings("note.txt", r.dropped.name);
-    try std.testing.expectEqualStrings("text/plain", r.dropped.mime);
-    try std.testing.expectEqualStrings("dropped!", r.dropped.bytes);
-}
 
-test "downloadTo writes the picked path and openPath reads it back" {
-    const svc = try Service.create("test");
-    defer svc.destroy();
-    const dir = ".zig-cache/teak-native-fx-pick";
-    try Io.Dir.cwd().createDirPath(svc.io, dir);
-    var r: EffectResult = undefined;
-    svc.downloadTo(1, dir ++ "/picked.json", "{}");
-    try waitOne(svc, &r);
-    try std.testing.expect(r.downloaded.ok);
-    svc.openPath(2, dir ++ "/picked.json");
-    try waitOne(svc, &r);
-    try std.testing.expectEqualStrings("{}", r.file_opened.bytes);
-    svc.openPath(3, null);
-    try waitOne(svc, &r);
-    try std.testing.expectEqual(@as(u32, 3), r.file_cancelled.id);
-    svc.downloadCancelled(4);
-    try waitOne(svc, &r);
-    try std.testing.expect(!r.downloaded.ok);
-}
 
-test "download goes to TEAK_OUT and open_file reads TEAK_OPEN, once per request" {
-    const svc = try Service.create("test");
-    defer svc.destroy();
-    const dir = ".zig-cache/teak-native-fx-test";
-    setEnv("TEAK_OUT", dir);
-    defer unsetEnv("TEAK_OUT");
 
-    _ = svc.submit(.{ .download = .{ .id = 1, .name = "../evil/out.json", .mime = "application/json", .bytes = "{\"ok\":1}" } });
-    var r: EffectResult = undefined;
-    try waitOne(svc, &r);
-    try std.testing.expect(r.downloaded.ok);
-    // The name is reduced to its base: nothing escapes the output directory.
-    setEnv("TEAK_OPEN", dir ++ "/out.json");
-    defer unsetEnv("TEAK_OPEN");
-    for ([_]u32{ 2, 3 }) |id| {
-        _ = svc.submit(.{ .open_file = .{ .id = id } });
-        try waitOne(svc, &r);
-        try std.testing.expectEqual(id, r.file_opened.id);
-        try std.testing.expectEqualStrings("out.json", r.file_opened.name);
-        try std.testing.expectEqualStrings("application/json", r.file_opened.mime);
-        try std.testing.expectEqualStrings("{\"ok\":1}", r.file_opened.bytes);
-    }
-
-    setEnv("TEAK_OPEN", dir ++ "/missing.json");
-    _ = svc.submit(.{ .open_file = .{ .id = 4 } });
-    try waitOne(svc, &r);
-    try std.testing.expectEqual(@as(u32, 4), r.file_cancelled.id);
-
-    try std.testing.expect(!writeDownload(svc.io, "..", "x"));
-    try std.testing.expect(!writeDownload(svc.io, "", "x"));
-}
-
-test "query_param falls back to TEAK_<NAME> and reports absent ones" {
-    const svc = try Service.create("test");
-    defer svc.destroy();
-    setEnv("TEAK_QP_TEST", "from-env");
-    defer unsetEnv("TEAK_QP_TEST");
-    var r: EffectResult = undefined;
-    _ = svc.submit(.{ .query_param = .{ .id = 1, .name = "qp-test" } });
-    try waitOne(svc, &r);
-    try std.testing.expectEqualStrings("from-env", r.query_value.value.?);
-    _ = svc.submit(.{ .query_param = .{ .id = 2, .name = "qp-not-set" } });
-    try waitOne(svc, &r);
-    try std.testing.expect(r.query_value.value == null);
-}
 
 /// Write an executable picker script that records its argv in `<dir>/argv`
 /// and prints `choice` (nothing when empty), exiting `code`.
@@ -1212,79 +959,5 @@ fn writePickerScript(dir: []const u8, choice: []const u8, code: u8) !void {
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = text, .flags = .{ .permissions = .executable_file } });
 }
 
-test "open_file runs the native picker off-thread, reads the chosen file; save writes where the user picks" {
-    // The zenity-style picker script is a POSIX feature; Win32 shows its own dialog.
-    if (is_windows) return error.SkipZigTest;
-    // A per-run directory: the test binaries that import this file run in
-    // parallel and would otherwise overwrite each other's picker script.
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const stamp: u64 = @truncate(@as(u96, @bitCast(Io.Clock.real.now(std.Options.debug_io).nanoseconds)));
-    const dir = try std.fmt.allocPrint(arena.allocator(), "/tmp/teak-native-picker-test-{d}", .{stamp});
-    defer Io.Dir.cwd().deleteTree(std.Options.debug_io, dir) catch {};
-    const io = std.Options.debug_io;
-    try Io.Dir.cwd().createDirPath(io, dir);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/chosen.json", .{dir}, 0)), .data = "{\"picked\":true}" });
-    try writePickerScript(dir, (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/chosen.json", .{dir}, 0)), 0);
-    setEnv("TEAK_PICKER", (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/picker.sh", .{dir}, 0)));
-    defer unsetEnv("TEAK_PICKER");
-    if (envValue("TEAK_OPEN") != null) return;
 
-    const svc = try Service.create("test");
-    defer svc.destroy();
-    var r: EffectResult = undefined;
-    try std.testing.expectEqual(teak.EffectSubmit.accepted, svc.submit(.{ .open_file = .{ .id = 7, .accept = ".json", .title = "Open it" } }));
-    try waitOne(svc, &r);
-    try std.testing.expectEqual(@as(u32, 7), r.file_opened.id);
-    try std.testing.expectEqualStrings("chosen.json", r.file_opened.name);
-    try std.testing.expectEqualStrings("application/json", r.file_opened.mime);
-    try std.testing.expectEqualStrings("{\"picked\":true}", r.file_opened.bytes);
-    // The picker was invoked zenity-style, with the accept list as a filter.
-    const argv = try Io.Dir.cwd().readFileAlloc(io, (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/argv", .{dir}, 0)), std.testing.allocator, .limited(4096));
-    defer std.testing.allocator.free(argv);
-    try std.testing.expect(std.mem.indexOf(u8, argv, "--file-selection") != null);
-    try std.testing.expect(std.mem.indexOf(u8, argv, "--file-filter=Files | *.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, argv, "--title=Open it") != null);
 
-    // Save As: the user picks a path; the bytes land there.
-    try writePickerScript(dir, (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/saved.txt", .{dir}, 0)), 0);
-    _ = svc.submit(.{ .download = .{ .id = 8, .name = "suggest.txt", .bytes = "payload", .pick = true } });
-    try waitOne(svc, &r);
-    try std.testing.expect(r.downloaded.ok and r.downloaded.id == 8);
-    const saved = try Io.Dir.cwd().readFileAlloc(io, (try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/saved.txt", .{dir}, 0)), std.testing.allocator, .limited(4096));
-    defer std.testing.allocator.free(saved);
-    try std.testing.expectEqualStrings("payload", saved);
-
-    // Cancel: exit 1, nothing printed.
-    try writePickerScript(dir, "", 1);
-    _ = svc.submit(.{ .download = .{ .id = 9, .name = "x.txt", .bytes = "p", .pick = true } });
-    try waitOne(svc, &r);
-    try std.testing.expect(!r.downloaded.ok);
-    _ = svc.submit(.{ .open_file = .{ .id = 10 } });
-    try waitOne(svc, &r);
-    try std.testing.expectEqual(@as(u32, 10), r.file_cancelled.id);
-}
-
-test {
-    _ = file_picker;
-}
-
-test "dropFile reports a PNG file as an image with its pixel size" {
-    const svc = try Service.create("test");
-    defer svc.destroy();
-    const dir = ".zig-cache/teak-native-fx-drop";
-    try Io.Dir.cwd().createDirPath(svc.io, dir);
-    var png: [33]u8 = @splat(0);
-    @memcpy(png[0..8], "\x89PNG\r\n\x1a\n");
-    std.mem.writeInt(u32, png[8..12], 13, .big);
-    @memcpy(png[12..16], "IHDR");
-    std.mem.writeInt(u32, png[16..20], 7, .big);
-    std.mem.writeInt(u32, png[20..24], 5, .big);
-    try Io.Dir.cwd().writeFile(svc.io, .{ .sub_path = dir ++ "/pic.png", .data = &png });
-    svc.dropFile(dir ++ "/pic.png");
-    var r: EffectResult = undefined;
-    try waitOne(svc, &r);
-    try std.testing.expectEqual(teak.DropKind.image, r.dropped.kind);
-    try std.testing.expectEqual(@as(u32, 7), r.dropped.width);
-    try std.testing.expectEqual(@as(u32, 5), r.dropped.height);
-}

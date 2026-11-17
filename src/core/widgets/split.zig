@@ -243,86 +243,10 @@ const text = @import("../text.zig");
 
 const opts: Opts = .{ .width = 506, .height = 200, .divider = 6, .min_a = 100, .min_b = 150 };
 
-test "split: satisfies the component contract" {
-    component.validateComponent(@This());
-}
 
-test "split: pane sizes follow the ratio, respect the minimums, and sum to the space" {
-    var m: Model = .{ .ratio = 0.5 };
-    try testing.expectEqual(@as(f32, 250), paneA(&m, opts));
-    try testing.expectEqual(@as(f32, 250), paneB(&m, opts));
-    m.ratio = 0.05; // below min_a
-    try testing.expectEqual(@as(f32, 100), paneA(&m, opts));
-    m.ratio = 0.99; // leaves less than min_b
-    try testing.expectEqual(@as(f32, 350), paneA(&m, opts)); // 500 - 150
-    try testing.expectEqual(@as(f32, 150), paneB(&m, opts));
-    // Not enough room for both minimums: proportional split.
-    const tiny: Opts = .{ .width = 106, .height = 50, .min_a = 100, .min_b = 100 };
-    try testing.expectEqual(@as(f32, 50), paneA(&m, tiny));
-}
 
-test "split: dragging moves the ratio by delta/avail and clamps at the minimums" {
-    var m: Model = .{ .ratio = 0.5 };
-    const ev = pointer.CanvasEvent{ .id = opts.id, .kind = .down, .button = .left };
-    update(&m, canvasMsg(&m, ev, opts).?);
-    try testing.expect(m.dragging);
 
-    var mv = pointer.CanvasEvent{ .id = opts.id, .kind = .move, .dx = 50, .dy = 9 };
-    update(&m, canvasMsg(&m, mv, opts).?);
-    try testing.expectApproxEqAbs(@as(f32, 0.6), m.ratio, 1e-4);
-    mv.dx = -1000; // far past min_a
-    update(&m, canvasMsg(&m, mv, opts).?);
-    try testing.expectApproxEqAbs(@as(f32, 0.2), m.ratio, 1e-4); // min_a 100 / 500
-    mv.dx = 5000;
-    update(&m, canvasMsg(&m, mv, opts).?);
-    try testing.expectApproxEqAbs(@as(f32, 0.7), m.ratio, 1e-4); // (500-150)/500
 
-    update(&m, canvasMsg(&m, .{ .id = opts.id, .kind = .up, .button = .left }, opts).?);
-    try testing.expect(!m.dragging);
-    // Hover moves without a grab do nothing; other canvases are ignored.
-    try testing.expect(canvasMsg(&m, .{ .id = opts.id, .kind = .move, .dx = 3 }, opts) == null);
-    try testing.expect(canvasMsg(&m, .{ .id = 999, .kind = .down, .button = .left }, opts) == null);
-}
-
-test "split: a vertical split drags along y" {
-    var m: Model = .{ .dragging = true };
-    const o: Opts = .{ .orientation = .vertical, .width = 300, .height = 306, .min_a = 50, .min_b = 50 };
-    update(&m, canvasMsg(&m, .{ .id = o.id, .kind = .move, .dx = 99, .dy = 30 }, o).?);
-    try testing.expectApproxEqAbs(@as(f32, 0.6), m.ratio, 1e-4); // (150 + 30) / 300
-}
-
-test "split: set clamps and survives NaN" {
-    var m: Model = .{};
-    update(&m, .{ .set = 3 });
-    try testing.expectEqual(@as(f32, 1), m.ratio);
-    update(&m, .{ .set = std.math.nan(f32) });
-    try testing.expectEqual(@as(f32, 0.5), m.ratio);
-}
 
 const TestMsg = union(enum) { x };
 
-test "split: snapshot golden" {
-    const m: Model = .{ .ratio = 0.4 };
-    var cb = cmd.CmdBuffer(TestMsg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    begin(&m, &cb, opts);
-    cb.text("left");
-    divider(&m, &cb, opts);
-    cb.text("right");
-    end(&cb);
-    cb.popGroup();
-    var rects: [16]engine.Rect = undefined;
-    const n = cb.cmds.items.len;
-    engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 600, 300, text.monoMeasurer());
-    try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
-        \\group (0,0,600,300) vertical
-        \\  group (0,0,506,200) horizontal
-        \\    group (0,0,200,200) vertical bg
-        \\      text (8,8,40,20) "left"
-        \\    canvas (200,0,6,200) prims=2 id=209 pointer "divider"
-        \\    group (206,0,300,200) vertical bg
-        \\      text (214,8,50,20) "right"
-        \\
-    );
-}

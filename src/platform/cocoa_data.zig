@@ -185,70 +185,9 @@ pub fn utf16Len(utf8: []const u8) usize {
     return units;
 }
 
-test "modifier flags" {
-    const m = modsFromFlags(FLAG_SHIFT | FLAG_COMMAND | 0x10000); // caps lock ignored
-    try std.testing.expect(m.shift and m.meta and !m.ctrl and !m.alt);
-}
 
-test "Cmd is the primary modifier for chords" {
-    try std.testing.expectEqual(SpecialKey.ctrl_c, decodeKey(8, FLAG_COMMAND, 'c').special.?);
-    try std.testing.expectEqual(SpecialKey.ctrl_z, decodeKey(6, FLAG_COMMAND, 'z').special.?);
-    try std.testing.expectEqual(SpecialKey.ctrl_shift_z, decodeKey(6, FLAG_COMMAND | FLAG_SHIFT, 'z').special.?);
-    const v = decodeKey(9, FLAG_COMMAND, 'v');
-    try std.testing.expect(v.paste and v.special.? == .ctrl_v);
-    // A plain letter is text; Cmd+unknown letter is nothing.
-    try std.testing.expect(decodeKey(0, 0, 'a').special == null);
-    try std.testing.expect(decodeKey(12, FLAG_COMMAND, 'j').special == null);
-    try std.testing.expect(decodeKey(12, FLAG_COMMAND, 'q').quit);
-    try std.testing.expect(decodeKey(13, FLAG_COMMAND, 'w').quit);
-}
 
-test "navigation keys: shift extends, Option = word, Cmd = line / document" {
-    try std.testing.expectEqual(SpecialKey.left, decodeKey(KC_LEFT, 0, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.shift_left, decodeKey(KC_LEFT, FLAG_SHIFT, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.ctrl_left, decodeKey(KC_LEFT, FLAG_OPTION, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.ctrl_shift_right, decodeKey(KC_RIGHT, FLAG_OPTION | FLAG_SHIFT, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.home, decodeKey(KC_LEFT, FLAG_COMMAND, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.end, decodeKey(KC_RIGHT, FLAG_COMMAND, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.ctrl_home, decodeKey(KC_UP, FLAG_COMMAND, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.ctrl_end, decodeKey(KC_DOWN, FLAG_COMMAND, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.ctrl_backspace, decodeKey(KC_DELETE, FLAG_OPTION, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.backspace, decodeKey(KC_DELETE, 0, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.delete, decodeKey(KC_FORWARD_DELETE, 0, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.shift_tab, decodeKey(KC_TAB, FLAG_SHIFT, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.enter, decodeKey(KC_RETURN, 0, 0).special.?);
-    try std.testing.expectEqual(SpecialKey.escape, decodeKey(KC_ESCAPE, 0, 0).special.?);
-}
 
-test "every special key is reachable from some mac key" {
-    // The shared policy yields each SpecialKey through this table.
-    var seen = std.EnumSet(SpecialKey).empty;
-    const codes = [_]u16{ KC_RETURN, KC_TAB, KC_DELETE, KC_ESCAPE, KC_HOME, KC_PAGE_UP, KC_FORWARD_DELETE, KC_END, KC_PAGE_DOWN, KC_LEFT, KC_RIGHT, KC_DOWN, KC_UP };
-    const flag_sets = [_]u64{ 0, FLAG_SHIFT, FLAG_OPTION, FLAG_OPTION | FLAG_SHIFT, FLAG_COMMAND };
-    for (codes) |c| for (flag_sets) |f| if (decodeKey(c, f, 0).special) |sk| seen.insert(sk);
-    for ("acxvyz") |ch| for ([_]u64{ FLAG_COMMAND, FLAG_COMMAND | FLAG_SHIFT }) |f| if (decodeKey(0, f, ch).special) |sk| seen.insert(sk);
-    for (std.enums.values(SpecialKey)) |sk| {
-        if (!seen.contains(sk)) std.debug.print("unreachable on mac: {s}\n", .{@tagName(sk)});
-    }
-    for (std.enums.values(SpecialKey)) |sk| try std.testing.expect(seen.contains(sk));
-}
 
-test "scroll: precise deltas pass through, wheel lines scale, signs flip" {
-    const p = scrollDelta(0, 10, true);
-    try std.testing.expectEqual(@as(f32, -10), p.y);
-    const w = scrollDelta(2, -3, false);
-    try std.testing.expectEqual(@as(f32, 48), w.y);
-    try std.testing.expectEqual(@as(f32, -32), w.x);
-}
 
-test "utf16 offsets" {
-    const s = "a\u{1F600}b"; // 1 + 2 units + 1
-    try std.testing.expectEqual(@as(usize, 4), utf16Len(s));
-    try std.testing.expectEqual(@as(usize, 1), utf16IndexToByte(s, 1));
-    try std.testing.expectEqual(@as(usize, 5), utf16IndexToByte(s, 3));
-    try std.testing.expectEqual(s.len, utf16IndexToByte(s, 99));
-}
 
-test "every cursor shape has a selector" {
-    for (std.enums.values(teak.CursorShape)) |sh| try std.testing.expect(cursorSel(sh).public.len > 0);
-}

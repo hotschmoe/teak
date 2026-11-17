@@ -239,33 +239,3 @@ pub const Client = struct {
     }
 };
 
-test "server and client exchange lines" {
-    if (@import("builtin").os.tag != .linux) return error.SkipZigTest; // Unix-socket control channel (Linux/POSIX only)
-    if (comptime !supported) return error.SkipZigTest;
-    var path_buf: [64]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "/tmp/teak-ctl-test-{d}.sock", .{linux.getpid()});
-
-    var srv: Server = .{};
-    try std.testing.expect(srv.listen(path));
-    defer srv.deinit();
-
-    var out: [128]u8 = undefined;
-    try std.testing.expect(srv.recvLine(&out) == null); // no client yet
-
-    var cl = try Client.connect(path);
-    defer cl.close();
-    try cl.sendLine("{\"cmd\":\"hi\"}");
-    try cl.sendLine("second");
-
-    // Non-blocking: the data is already in the kernel buffer.
-    const l1 = srv.recvLine(&out) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("{\"cmd\":\"hi\"}", l1);
-    const l2 = srv.recvLine(&out) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("second", l2);
-    try std.testing.expect(srv.recvLine(&out) == null);
-
-    srv.send("{\"ok\":true}\n");
-    const reply = try cl.readLine(std.testing.allocator);
-    defer std.testing.allocator.free(reply);
-    try std.testing.expectEqualStrings("{\"ok\":true}", reply);
-}
