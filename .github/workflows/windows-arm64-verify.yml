@@ -8,9 +8,6 @@ name: Windows ARM64 native Zig
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/windows-arm64-verify.yml
 
 jobs:
   hello:

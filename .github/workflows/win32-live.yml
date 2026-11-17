@@ -6,21 +6,8 @@ name: Win32 live
 # TEAK_SNAPSHOT sink and the window is captured to PNG artifacts.
 
 on:
-  pull_request:
-    paths:
-      - "src/platform/win32*.zig"
-      - "src/platform/native_effects.zig"
-      - "src/gpu/**"
-      - "src/run.zig"
-      - "tools/win32_live/**"
-      - ".github/workflows/win32-live.yml"
-      - "examples/chrome/**"
-      - "examples/effects/**"
-  push:
-    branches: [master]
-    paths:
-      - "src/platform/win32*.zig"
-      - "tools/win32_live/**"
+  schedule:
+    - cron: '37 2 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -28,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZIG_VERSION: 0.17.0
+  ZIG_VERSION: 0.17.1
 
 jobs:
   live:

@@ -30,14 +30,14 @@ At a glance (verified against master `4f898c0`; the open list is [`tasks.md`](ta
 | **Rendering** | SDF rounded rects / borders / gradients / soft shadows, images, canvas + charts, `scene3d` (camera, picking, instancing, grid, section cuts, layers) | SVG, subpixel LCD AA |
 | **Widgets** | button, checkbox, radio, slider, dropdown, combobox, numeric + date field, toggle, progress, tabs, split, tooltip, toast, dialog, menus, `DataTable`, `VarList`, `TreeList` | colour picker, number spinner, whole-UI keyboard navigation |
 | **Loop** | event-driven idle, `Sub` timers, `teak.anim` tweens, declarative effects + GPU resources, `pointerMsg` | commands / shortcuts / drag and drop |
-| **Tooling** | `zig build audit` / `bench` / `shot` / `api`, `TEAK_SNAPSHOT`, golden snapshots, generated API reference | agent driver + MCP (#46), hot reload (#79), visual regression (#32), a11y publishing (#58) |
+| **Tooling** | `zig build audit` / `bench` / `shot` / `api`, `TEAK_SNAPSHOT`, generated API reference | agent driver + MCP (#46), hot reload (#79), a11y publishing (#58) |
 
 Examples: `chrome`, `counter_greeter`, `effects`, `fonts`, `gallery`, `kerf_viewer`, `notes`, `scene3d`, `scene_layers`, `tables`, `todo`, `tree`, `viewport`.
 
 - **Text rendering shipped.** Both backends rasterize glyph-accurate text into a texture atlas and draw via `uploadText` / `renderFrame`.
 - **Functional-gaps push landed** on `functional_gaps_yolo`: overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs surface, virtual list, a11y tree, rich text. See [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md).
 - **Declarative effects:** `effects` / `effectMsg` (HARDLINE hatch 7) — HTTP, downloads, file open, storage, clock, clipboard, query params, plus pasted / dropped images and files; see [`docs/features/effects.md`](docs/features/effects.md).
-- **Agent DX + consumer gaps landed:** `canvas` widget + line-chart helper, declarative subscriptions (`Sub` / `subscribe`, serviced by `teak.run`), golden snapshot tests + live `TEAK_SNAPSHOT` streaming, ComponentList stable-key per-item focus, Dropdown open-list scrolling, and the audit-enforced [`llms.txt`](llms.txt) + [`docs/cookbook.md`](docs/cookbook.md).
+- **Agent DX + consumer gaps landed:** `canvas` widget + line-chart helper, declarative subscriptions (`Sub` / `subscribe`, serviced by `teak.run`), live `TEAK_SNAPSHOT` streaming, ComponentList stable-key per-item focus, Dropdown open-list scrolling, and the audit-enforced [`llms.txt`](llms.txt) + [`docs/cookbook.md`](docs/cookbook.md).
 
 - **Kerf push (branch `kerf`)** — driven by a real CAD app ([kerf](https://github.com/hotschmoe/kerf) `apps/teak`): `Runtime` (one frame at a time, so the web shares `teak.run`), pointer/scroll routing (`canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `windowMsg`), a real layout model (fixed sizes, align/justify, spacer), chrome styling (borders, hover inversion, underline fields, hard shadows, font weight/tracking), `core/table`, canvas triangle/line batches, `scene3d` + declarative `resources()` (depth-tested meshes), MSAA, declarative **effects** (HTTP, files, storage, clock, clipboard, paste/drop; web + Linux), web/native font registration (IBM Plex Mono), overlay layering, and a **headless native screenshot path** (`zig build shot`).
 
@@ -47,7 +47,8 @@ Requires **Zig 0.17.0+**.
 
 ```sh
 # From repo root — library
-zig build test           # unit + integration tests
+zig build test -j4       # blocking end-to-end checks
+zig build test-heavy -j4 # background end-to-end checks
 zig build test-wasm      # wasm32-freestanding compile canary
 zig build audit          # HARDLINE drift audit (depends on test-wasm)
 
