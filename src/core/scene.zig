@@ -131,7 +131,7 @@ pub const SceneData = struct {
 
 
 
-// ---- teak.scene helpers (camera, picking, section): see docs/features/scene.md
+// Scene helpers: docs/features/scene.md.
 pub const mat = @import("scene/mat.zig");
 pub const camera = @import("scene/camera.zig");
 pub const pick = @import("scene/pick.zig");

@@ -354,7 +354,6 @@ pub fn items(ray: Ray, list: []const Item, meshes: []const MeshRef, opt: Options
     return best;
 }
 
-// ---------------------------------------------------------------- layers
 
 pub const PlaneHit = struct {
     id: u32,
@@ -456,7 +455,6 @@ pub fn sprites(cam: camera.Camera, w: f32, h: f32, x: f32, y: f32, list: []const
     return best;
 }
 
-// ---------------------------------------------------------------- gizmo
 
 pub const Corner = enum { top_left, top_right, bottom_left, bottom_right };
 
@@ -588,7 +586,6 @@ pub fn gizmoHit(orbit: camera.Orbit, l: GizmoLayout, w: f32, h: f32, x: f32, y: 
     return if (best) |b| b.axis else null;
 }
 
-// ---------------------------------------------------------------- tests
 
 const testing = std.testing;
 const approx = testing.expectApproxEqAbs;
@@ -628,7 +625,6 @@ fn approxEq(a: f32, b: f32) bool {
     return @abs(a - b) < 1e-3;
 }
 
-// ---- Kerf mesh fixture (a copy of engines/zig/tests/golden/*/mesh.json)
 
 const KerfPart = struct {
     positions: []const f32,

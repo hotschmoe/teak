@@ -237,7 +237,6 @@ pub fn isClosed(gpa: std.mem.Allocator, mesh: MeshData) std.mem.Allocator.Error!
     return true;
 }
 
-// ---------------------------------------------------------------- tests
 
 const testing = std.testing;
 const approx = testing.expectApproxEqAbs;

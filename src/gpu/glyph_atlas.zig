@@ -366,7 +366,6 @@ pub fn GlyphAtlasWith(comptime hashFn: fn (GlyphKey) u64) type {
     };
 }
 
-// ---------------------------------------------------------------- tests
 
 const testing = std.testing;
 

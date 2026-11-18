@@ -315,7 +315,6 @@ pub fn unprojectPx(cam: Camera, w: f32, h: f32, x: f32, y: f32, z: f32) ?Vec3 {
     return unproject(inv, 2 * x / w - 1, 1 - 2 * y / h, z);
 }
 
-// ---------------------------------------------------------------- tests
 
 const testing = std.testing;
 const approx = testing.expectApproxEqAbs;
