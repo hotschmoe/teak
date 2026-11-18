@@ -51,7 +51,6 @@ const failures = [];
 const check = (cond, msg) => { if (!cond) { failures.push(msg); console.log(`  FAIL ${msg}`); } else console.log(`  ok   ${msg}`); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Flatten the browser accessibility tree into [{role, name, value, focused, checked, level, ...}]. */
 async function tree(page) {
   const snap = await page.accessibility.snapshot({ interestingOnly: false });
   const out = [];
@@ -67,7 +66,6 @@ const dump = (nodes) => nodes.forEach((n) => {
   if (n.role === 'InlineTextBox') return;
   console.log(`${' '.repeat(n.depth * 2)}${n.role} "${n.name || ''}"${n.value !== undefined ? ` value=${JSON.stringify(n.value)}` : ''}${n.focused ? ' FOCUSED' : ''}${n.checked !== undefined ? ` checked=${n.checked}` : ''}${n.multiline ? ' multiline' : ''}`);
 });
-/** Poll until `pred(nodes)` is truthy (the app republishes a frame or two after an action). */
 async function until(page, pred, what, timeout = 6000) {
   const t0 = Date.now();
   let nodes;
