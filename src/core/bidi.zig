@@ -159,7 +159,6 @@ const NONE = std.math.maxInt(u32);
 
 /// Resolve the embedding levels of one paragraph of UTF-8 `text`.
 pub fn analyze(gpa: std.mem.Allocator, text: []const u8, dir: Direction) !Analysis {
-    // Decode.
     var n: usize = 0;
     {
         var p: usize = 0;
@@ -550,7 +549,6 @@ fn isNeutral(c: Class) bool {
     };
 }
 
-// ── Per-line steps ─────────────────────────────────────────────────
 
 /// L1 for the line `[start, end)` (byte offsets, e.g. `text_wrap.Line.start` and
 /// `.hang`): separators and trailing whitespace / isolate controls get the
@@ -652,7 +650,6 @@ pub fn lineRuns(gpa: std.mem.Allocator, an: Analysis, start: usize, end: usize) 
     return out.toOwnedSlice(gpa);
 }
 
-// ── Clusters on a line: caret and selection ────────────────────────
 
 /// Direction of an arrow key.
 pub const Arrow = enum { left, right };
@@ -805,7 +802,6 @@ pub fn selectionSpans(gpa: std.mem.Allocator, text: []const u8, an: Analysis, st
     return out.toOwnedSlice(gpa);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 
@@ -816,8 +812,5 @@ const testing = std.testing;
 
 
 
-// BidiCharacterTest.txt (Unicode 16.0.0), every 300th data line (conformance excerpt).
-// Fields: code points; paragraph direction (0 ltr, 1 rtl, 2 auto); resolved paragraph
-// level; levels ('x' = removed by X9); visual order (removed characters omitted).
 const conformance = @embedFile("testdata/BidiCharacterTest_excerpt.txt");
 

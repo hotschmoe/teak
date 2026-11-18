@@ -128,10 +128,6 @@ pub fn Dropdown(comptime cap: usize) type {
             switch (msg) {
                 .toggle => {
                     model.open = !model.open;
-                    // Opening parks the keyboard cursor on the current
-                    // selection. Reveal is deferred to the first keyboard
-                    // move (`.toggle` carries no viewport geometry); the
-                    // display clamp in `viewWith` keeps the offset valid.
                     if (model.open) model.highlighted = model.selected;
                 },
                 .close => model.open = false,
@@ -158,15 +154,11 @@ pub fn Dropdown(comptime cap: usize) type {
             }
         }
 
-        // ── Scroll helpers (pure) ──────────────────────────────────────
 
         /// New highlight index after `move`, clamped to `[0, count)`.
         fn moveIndex(cur: usize, move: Move, count: usize) usize {
             if (count == 0) return 0;
-            // Clamp a stale / out-of-range cursor into `[0, count)` before
-            // moving, so a shrunken option list can't leave `.prev` one past
-            // the (now smaller) end — which would blow `revealOffset` past
-            // `maxScroll`.
+            // Clamp stale cursors before movement so reveal stays in range.
             const c = @min(cur, count - 1);
             return switch (move) {
                 .prev => if (c == 0) 0 else c - 1,
@@ -274,8 +266,6 @@ pub fn Dropdown(comptime cap: usize) type {
             msgs: anytype,
             opts: DropdownViewOpts,
         ) void {
-            // Closed-state button: always present. Label is the selected
-            // option, guarded for empty / out-of-range slices.
             const label: []const u8 = if (model.selected < options.len)
                 options[model.selected]
             else
@@ -285,14 +275,6 @@ pub fn Dropdown(comptime cap: usize) type {
             if (!model.open) return;
 
             if (scrolls(options.len, opts)) {
-                // Scrolling list: the option buttons live inside a
-                // push_scroll nested in the modal overlay. push_scroll
-                // works unchanged inside push_overlay — layout gives the
-                // scroll a normal child cursor, and hit-test/render keep
-                // an independent clip stack intersected with the overlay
-                // clip, so rows past the viewport are clipped in both
-                // passes. No new mechanism, just the existing scroll +
-                // overlay hatches composed.
                 const viewport_h = @as(f32, @floatFromInt(opts.max_visible)) * ITEM_HEIGHT;
                 const scroll_y = std.math.clamp(
                     model.scroll_offset,

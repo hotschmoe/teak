@@ -175,6 +175,8 @@ Base rendering pushes a zero clip for overlay children, defensively suppressing 
 
 Dropdown state is app-owned model data (`open` and selected index); option labels remain app-owned. The component emits existing button and modal-overlay primitives, with messages as data and the selection constructor supplied only at compile time. The three-argument component view has no option slice and shows the placeholder; applications use `viewWith` to supply labels. Open-list panels and rows fill the viewport width so clicks beside short labels select the row instead of falling through to the modal backdrop. See HARDLINE §1 and §3.
 
+Opening sets the keyboard cursor to the selection; reveal waits for keyboard movement because the toggle message carries no viewport geometry. A stale cursor is clamped before movement so shrinking the option list cannot push the reveal offset beyond its maximum. Scrolling lists nest a scroll region inside the overlay; render and hit-test intersect both clips, and scroll calculations use `ITEM_HEIGHT` regardless of theme button height.
+
 ## src/platform/win32.zig
 
 Integer `MAKEINTRESOURCE` identifiers may be odd and must not be represented as aligned UTF-16 pointers. Per-monitor DPI awareness makes Windows report physical pixels; the Host converts them to logical units. OLE `RegisterDragDrop` receives files, images and Unicode text from `IDataObject`; image conversions live in `win32_data.zig` and produce PNG data limited to 1,568 pixels plus an RGBA thumbnail. IME preedit is read through Imm APIs in UTF-16 units, while committed characters arrive through `WM_CHAR`. UI Automation queries run on a worker thread and share the published tree under `g_a11y_lock`; interface vtable pointers identify their owning provider. The truncated VARIANT layout is used only for the integer, BSTR and boolean values the bridge returns. These platform-owned surfaces remain behind the Host boundary; see HARDLINE §2 and §3.
@@ -236,3 +238,11 @@ The view is layer-backed by a CAMetalLayer sized and scaled by AppKit. If a pres
 ## src/control.zig
 
 Commands are driven over frames: a click separates press and release because the runtime routes input against the previous frame's layout. Text is sent in 32-byte batches to stay within the 64-byte per-frame input queue. Selector offsets are relative to the node centre and allow interactions with specific regions of a widget.
+
+## src/input/keys.zig
+
+Shift-modified motion extends selection; Shift+Tab traverses focus backward. Plain Enter may submit, while Shift+Enter remains a newline key delivered to the app. Ctrl-modified motion and deletion operate by word or document boundary. F10 and a bare Alt tap request menu-bar activation; the Menu key and Shift+F10 request a context menu at the focused widget. The application decides whether to act on these requests.
+
+## src/gpu/text_stage.zig
+
+Colour glyphs use RGBA atlas pages and mode 2; their own colour is sampled instead of tinting coverage. Resolved atlas entries are reused across frames only while page generation and subpixel bin match. Fallback clusters use bin zero. The shaped-run cache uses open addressing and is cleared wholesale when its pools fill; without cross-frame caching a run is shaped into a pool reused by the next draw. SDF instance flags encode mode in bits 0–1 and quad scale in bits 16–31.

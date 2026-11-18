@@ -57,7 +57,6 @@ pub fn rasterize(gpa: Allocator, source: []const u8, width: u32, height: u32, op
     return out;
 }
 
-// ── Geometry ───────────────────────────────────────────────────────
 
 const Pt = [2]f32;
 
@@ -85,7 +84,6 @@ fn matScale(m: Mat) f32 {
     return @sqrt(@abs(m[0] * m[3] - m[1] * m[2]));
 }
 
-// ── Paint state ────────────────────────────────────────────────────
 
 const Paint = union(enum) { none, current, rgba: [4]f32 };
 const FillRule = enum { nonzero, evenodd };
@@ -279,7 +277,6 @@ const Renderer = struct {
         };
     }
 
-    // ── Filling ────────────────────────────────────────────────────
 
     fn fillCurrent(r: *Renderer, rule: FillRule, color: [4]f32, alpha: f32) Error!void {
         r.edges.clearRetainingCapacity();
@@ -337,7 +334,6 @@ const Renderer = struct {
                     wind += c.dir;
                     const now_in = inside(rule, wind);
                     if (!was_in and now_in) {
-                        // Span starts at c.x; find where it ends.
                         var w2 = wind;
                         var j = i + 1;
                         while (j < r.xs.items.len) : (j += 1) {
@@ -375,7 +371,6 @@ const Renderer = struct {
         }
     }
 
-    // ── Stroking ───────────────────────────────────────────────────
 
     fn strokeCurrent(r: *Renderer, width: f32, cap: Cap, join: Join, color: [4]f32, alpha: f32) Error!void {
         r.edges.clearRetainingCapacity();
@@ -478,7 +473,6 @@ const Renderer = struct {
         const d2 = norm(.{ q[0] - v[0], q[1] - v[1] }) orelse return;
         const crs = d1[0] * d2[1] - d1[1] * d2[0];
         if (@abs(crs) < 1e-6) return; // straight
-        // The outer side of the turn.
         const s: f32 = if (crs > 0) -1 else 1;
         const n1: Pt = .{ -d1[1] * hw * s, d1[0] * hw * s };
         const n2: Pt = .{ -d2[1] * hw * s, d2[0] * hw * s };
@@ -542,11 +536,9 @@ fn addSpan(d: []f32, x0: f32, x1: f32, w: f32) void {
         d[ia + 1] -= c;
         return;
     }
-    // First partial pixel.
     const fa = (@as(f32, @floatFromInt(ia + 1)) - x0) * w;
     d[ia] += fa;
     d[ia + 1] += w - fa;
-    // Full pixels ia+1 .. ib-1 carry w (started by the line above); end at ib.
     if (ib >= last) return;
     const fb = (x1 - @as(f32, @floatFromInt(ib))) * w;
     d[ib] += fb - w;
@@ -577,7 +569,6 @@ fn parseLength(v: ?[]const u8) ?f32 {
     return nr.number();
 }
 
-// ── Attributes / style ─────────────────────────────────────────────
 
 fn applyAttrs(st: *Style, tag: Tag) void {
     var it = tag.attrs();
@@ -692,7 +683,6 @@ fn parseTransform(v: []const u8) Mat {
     return m;
 }
 
-// ── Path building / flattening ─────────────────────────────────────
 
 const PathBuilder = struct {
     r: *Renderer,
@@ -975,7 +965,6 @@ fn parseNumber(s: []const u8) ?f32 {
     return nr.number();
 }
 
-// ── A tiny tag scanner (enough XML for icon files) ─────────────────
 
 const Tag = struct {
     name: []const u8,
@@ -1045,7 +1034,6 @@ const TagIter = struct {
                 it.i = e + 3;
                 continue;
             }
-            // Find the closing '>' outside quotes.
             var j = lt + 1;
             var q: u8 = 0;
             while (j < it.s.len) : (j += 1) {
@@ -1073,7 +1061,6 @@ const TagIter = struct {
     }
 };
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 
