@@ -32,7 +32,6 @@ fn inkTotal(rast: *text.StbttRasterizer, weight: teak.FontWeight) !u64 {
 
 
 
-// ── Shaper tests (tests/fonts: OFL subsets, see tests/fonts/README.md) ──
 
 const mono_sub = @embedFile("test-font-IBMPlexMonoSub-Regular");
 const prop = @embedFile("test-font-QuicksandSub-Regular");

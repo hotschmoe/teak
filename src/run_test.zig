@@ -28,7 +28,6 @@ const SecondaryWindowSpec = run_mod.SecondaryWindowSpec;
 const cmdsEqual = run_mod.cmdsEqual;
 const InputState = host_iface.InputState;
 
-// ── Scripted Host + counting Gpu ────────────────────────────────────
 
 /// One frame of scripted input.
 pub const Frame = struct {
@@ -399,7 +398,6 @@ pub fn play(comptime App: type, script: []const Frame) !*Played(App) {
 }
 
 
-// ── Click, keys, focus ──────────────────────────────────────────────
 
 const ClickApp = struct {
     pub const Model = struct { count: i32 = 0 };
@@ -521,7 +519,6 @@ const KeyApp = struct {
 };
 
 
-// ── Commands: shortcuts + the palette ───────────────────────────────
 
 const CmdApp = struct {
     const Palette = commands_mod.CommandPalette(16);
@@ -597,7 +594,6 @@ const CmdApp = struct {
 
 
 
-// ── In-app drag and drop ────────────────────────────────────────────
 
 const DragApp = struct {
     pub const Model = struct {
@@ -687,7 +683,6 @@ const TabApp = struct {
 
 
 
-// ── Measured rows + modifier reports ────────────────────────────────
 
 const RowsApp = struct {
     pub const Model = struct { got: [4]f32 = @splat(0), n: usize = 0, first: u32 = 99, calls: u32 = 0, shift: bool = false, mods_calls: u32 = 0 };
@@ -729,7 +724,6 @@ const RowsApp = struct {
 
 
 
-// ── Frame diff: IME aliasing, over-long title ───────────────────────
 
 const NoopApp = struct {
     pub const Model = struct {};
@@ -759,7 +753,6 @@ const LongTitleApp = struct {
 };
 
 
-// ── Live-snapshot sink ──────────────────────────────────────────────
 
 /// Button "X" over a live count label; the label changes on click so the
 /// snapshot diff is observable.
@@ -809,7 +802,6 @@ fn readSnapshot(td: anytype, name: []const u8) ![]u8 {
 }
 
 
-// ── Secondary window ────────────────────────────────────────────────
 
 const SecondaryApp = struct {
     pub const Model = struct { stats_open: bool = true, closed_msgs: u32 = 0, ticks: i32 = 0 };
@@ -868,7 +860,6 @@ const StubbornSecondaryApp = struct {
 
 
 
-// ── Subscriptions + snapshot of a secondary-only change ─────────────
 
 const TimerApp = struct {
     pub const Model = struct { ticks: i32 = 0 };
@@ -894,11 +885,9 @@ const TimerApp = struct {
 
 
 
-// ── Frame diff (cmdsEqual) ──────────────────────────────────────────
 
 
 
-// ── Interactive canvases + scroll regions ───────────────────────────
 
 /// Fixed-capacity Msg log the test Models keep, so assertions read the
 /// Model straight off the finished Runtime.
@@ -1038,7 +1027,6 @@ const OverlayApp = struct {
 
 
 
-// ── Scenes: resources hook, pointer routing, frame diff ────────────
 
 const pixel_rgba = [_]u8{ 255, 0, 0, 255 };
 
@@ -1136,7 +1124,6 @@ const WindowApp = struct {
 };
 
 
-// ── Accessibility: publish-on-change and actions as input ───────────
 
 const text_field_mod = @import("core/text_field.zig");
 
@@ -1196,7 +1183,6 @@ fn findNode(h: *const ScriptHost, role: @import("input/a11y.zig").Role) ?host_if
 
 
 
-// ── Cursor shapes + display scale ───────────────────────────────────
 
 const CursorApp = struct {
     pub const Model = struct { override: bool = false };
@@ -1215,7 +1201,6 @@ const CursorApp = struct {
 
 
 
-// ── text_area: pointer, motion, scroll, metrics (text-engine PR11b) ────
 
 const text_area_mod = @import("core/text_area.zig");
 
@@ -1431,7 +1416,6 @@ const mutation = struct {
 
 
 
-// ── Event-driven idle ───────────────────────────────────────────────
 
 const IdleApp = struct {
     pub const Model = struct { ticks: u32 = 0 };
@@ -1477,7 +1461,6 @@ const LayoutIdleApp = struct {
 };
 
 
-// ── Blink-aware idle ────────────────────────────────────────────────
 
 const FocusApp = struct {
     pub const Model = struct {};
@@ -1552,7 +1535,6 @@ const Recipe23 = struct {
         cb.popGroup();
     }
 
-    // ── Hooks teak.run looks for (all optional, by declaration) ──────────
 
     /// Pointer, wheel, resolved motion keys and layout metrics: one line per area.
     pub fn textMsg(_: *const Model, ev: teak.TextEvent) ?Msg {
@@ -1594,7 +1576,6 @@ const Recipe23 = struct {
 };
 
 
-// ── Keyboard navigation (Tab ring, Space/Enter, arrows) ─────────────────
 
 const NavApp = struct {
     pub const Msg = union(enum) { press: u8, check, pick: u8, vol: f32, grab_vol, focus_name, blur, noop };
@@ -1691,7 +1672,6 @@ const ModalNavApp = struct {
 };
 
 
-// ── Lists: one Tab stop + roving arrows; dropdown keys; context-menu key ──
 
 fn RovingApp(comptime select: bool) type {
     return struct {
@@ -1775,7 +1755,6 @@ const CtxApp = struct {
 };
 
 
-// ── Keyboard gaps: split divider, scroll regions, tooltip focus, toast Escape ──
 
 const split_w = @import("core/widgets/split.zig");
 const toast_w = @import("core/widgets/toast.zig");
@@ -1872,7 +1851,6 @@ const TipFocusApp = struct {
 
 
 
-// ── Clipboard hooks ─────────────────────────────────────────────────
 
 const ClipApp = struct {
     pub const Model = struct { text: [32]u8 = undefined, len: usize = 0, sel_len: usize = 0, pastes: u32 = 0 };
@@ -1911,7 +1889,6 @@ const ClipApp = struct {
 
 
 
-// ── Enter in a focused text_area is a key, not a submit ─────────────
 
 const EnterApp = struct {
     pub const Model = struct { area_focused: bool = true, submits: u32 = 0, newlines: u32 = 0 };
@@ -1944,7 +1921,6 @@ const EnterApp = struct {
 };
 
 
-// ── pointerMsg: one hook, blank-space clicks included ───────────────
 
 const PmApp = struct {
     pub const Model = struct { focused: bool = true, blank_downs: u32 = 0, widget_downs: u32 = 0, ups: u32 = 0, contexts: u32 = 0, hovers: u32 = 0, last_button: pointer.Button = .none };
@@ -1983,7 +1959,6 @@ const PmApp = struct {
 
 
 
-// ── pointerMsg: capture across target kinds, wheel fallback, adapters ──
 
 /// One app with every pointer surface (canvas 7, slider, text area 1, scroll
 /// region 3, a button), logging each `PointerEvent` it receives. Declares ONLY
@@ -2070,7 +2045,6 @@ fn playSurf(initial: []const u8, host: ScriptHost) !*Played(PmSurf) {
 
 
 
-// ── Frame stats, continuous mode, exit-after-frames, HUD (#127) ─────
 
 
 

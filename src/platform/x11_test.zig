@@ -110,7 +110,6 @@ fn elapsedMs(host: *const Host, since: u64) u64 {
 }
 
 
-// ── Idle CPU probe (opt-in: TEAK_IDLE_PROBE=1 zig build test-x11) ──────
 
 const ProbeGpu = struct {
     renders: u32 = 0,

@@ -229,7 +229,6 @@ fn scalable(d: teak.TextDraw, size: f32) teak.TextDraw {
 
 
 
-// ── SDF quads: rounded rects, borders, gradients, soft shadows ─────
 
 const sdf = teak.render.sdf;
 const full_clip = teak.Rect{ .x = 0, .y = 0, .w = px, .h = px };

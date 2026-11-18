@@ -8,7 +8,6 @@ const teak = @import("teak");
 const Host = @import("headless.zig").Host;
 const control_socket = @import("control_socket.zig");
 
-// ── The app under test: a miniature of examples/todo ───────────────
 
 const App = struct {
     pub const Item = struct { label: [32]u8 = @splat(0), len: u8 = 0, done: bool = false };
