@@ -228,7 +228,6 @@ pub fn fmtFtIn(arena: std.mem.Allocator, inches: f32) []const u8 {
     return std.fmt.allocPrint(arena, "{s}{d}{s}\"", .{ sign, whole, frac_s }) catch "?";
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 

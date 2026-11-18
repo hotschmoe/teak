@@ -94,7 +94,6 @@ fn edgeLines(comptime edges: bool) [(if (edges) boxes.len * 12 else 0) * 2 + gri
             }
         }
     }
-    // Ground grid at y = 0, centred under the wall (x 0..4.4, z -2..2).
     const grid = [4]f32{ 0.45, 0.47, 0.50, 0.55 };
     const extent: f32 = grid_half;
     var g: i32 = -grid_half;

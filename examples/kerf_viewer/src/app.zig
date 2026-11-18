@@ -657,7 +657,6 @@ pub const Msg = union(enum) {
     noop,
 };
 
-// ── update ─────────────────────────────────────────────────────────
 
 pub fn update(m: *Model, msg: Msg) void {
     step(m, msg);

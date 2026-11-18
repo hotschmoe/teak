@@ -20,7 +20,6 @@ pub fn main() !void {
     std.debug.print("initial visible:\n", .{});
     printVisible(&model);
 
-    // Find "input" (collapsed by default) and expand it.
     var input_idx: ?u16 = null;
     for (model.nodes[0..model.nodes_len], 0..) |node, i| {
         if (std.mem.eql(u8, node.label[0..node.label_len], "input")) {
@@ -34,7 +33,6 @@ pub fn main() !void {
         printVisible(&model);
     }
 
-    // Full layout pass to confirm the pipeline end-to-end.
     App.view(&model, &cb);
     var rects: [512]teak.Rect = undefined;
     const cmds = cb.cmds.items;
