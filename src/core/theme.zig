@@ -20,13 +20,6 @@ const FontSpec = text.FontSpec;
 const FontFamily = text.FontFamily;
 const FontWeight = text.FontWeight;
 
-// ── Palette ────────────────────────────────────────────────────────
-//
-// A small token vocabulary the per-widget styles compose against.
-// Apps that want a brand color set rebuild a Theme using these tokens
-// as a starting point; widget styles are derived from the palette
-// rather than hand-tuned per widget (preserving family resemblance
-// when switching dark/light).
 
 pub const Palette = struct {
     /// Window / scene background — what the empty window draws as.
@@ -59,7 +52,6 @@ pub const Palette = struct {
     warning: [4]f32 = .{ 0.92, 0.66, 0.20, 1.0 },
 };
 
-// ── Typography ─────────────────────────────────────────────────────
 
 pub const Typography = struct {
     /// Body text default. Used by `cb.text(...)` when no per-cmd font.
@@ -72,7 +64,6 @@ pub const Typography = struct {
     small: FontSpec = .{ .size_px = 12, .family = .sans },
 };
 
-// ── Tokens ─────────────────────────────────────────────────────────
 
 /// Shape and depth vocabulary next to the palette's colours: corner radii,
 /// stroke width, a spacing scale and shadow elevations. The retro look is
@@ -125,7 +116,6 @@ pub const modern_tokens: Tokens = .{
     },
 };
 
-// ── Theme ──────────────────────────────────────────────────────────
 
 /// Everything the un-styled emitters consult. A plain struct: build one
 /// with `fromPalette`, tweak a derived theme, or write a literal from
@@ -223,8 +213,6 @@ pub const Theme = struct {
                 .border = if (rounded) p.border else null,
                 .border_width = t.border_width,
                 .soft_shadow = t.shadowAt(1),
-                // flat and dimmed toward the window, in every palette (the
-                // struct defaults are dark-theme greys)
                 .disabled_bg = mix(p.bg_raised, p.bg, 0.55),
                 .disabled_fg = mix(p.fg_muted, p.bg, 0.4),
             },
@@ -315,7 +303,6 @@ fn lighten(c: [4]f32, amount: f32) [4]f32 {
     return .{ c[0] + (target - c[0]) * t, c[1] + (target - c[1]) * t, c[2] + (target - c[2]) * t, c[3] };
 }
 
-// ── Built-in palettes ──────────────────────────────────────────────
 
 pub const dark_palette: Palette = .{
     .bg = .{ 0.08, 0.08, 0.10, 1.0 },
@@ -377,7 +364,6 @@ pub const modern_dark_palette: Palette = .{
     .warning = .{ 0.960, 0.740, 0.330, 1.0 },
 };
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

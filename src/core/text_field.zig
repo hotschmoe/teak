@@ -27,15 +27,6 @@ const editor_mod = @import("editor.zig");
 
 const SpecialKey = keys.SpecialKey;
 
-// ── Component factory ───────────────────────────────────────────────
-//
-// `TextField(N)` returns a struct exposing Model/Msg/update/view.
-// `validateComponent(TextField(N))` passes; `Components()` happily
-// stitches it alongside hand-written components.
-//
-// Each capacity instantiates its own Msg type, but they share the same
-// shape — the dispatch helpers below use `@FieldType` so they work for
-// any capacity uniformly.
 
 pub fn TextField(comptime capacity: usize) type {
     return struct {
@@ -138,13 +129,6 @@ pub fn TextField(comptime capacity: usize) type {
     };
 }
 
-// ── Host-side key dispatch helpers ──────────────────────────────────
-//
-// These are comptime helpers that convert a SpecialKey / char into an
-// `AppMsg` for the focused TextField field — wrapping the local Msg
-// in the composed Msg using `@FieldType` + `@unionInit`. They work
-// for any AppMsg that contains a variant whose payload is a Msg-shaped
-// union (i.e. has `char: u8`, `backspace`, etc. variants).
 
 /// Build the AppMsg for a typed character into the named field.
 /// `field_name` is the field on the composed AppMsg (e.g. "search").
@@ -243,7 +227,6 @@ pub fn textFieldCopyText(model: anytype, key: SpecialKey) ?[]const u8 {
     return model.selectionText();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const cmd_mod = @import("cmd.zig");
 const component_mod = @import("component.zig");

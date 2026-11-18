@@ -246,3 +246,11 @@ Shift-modified motion extends selection; Shift+Tab traverses focus backward. Pla
 ## src/gpu/text_stage.zig
 
 Colour glyphs use RGBA atlas pages and mode 2; their own colour is sampled instead of tinting coverage. Resolved atlas entries are reused across frames only while page generation and subpixel bin match. Fallback clusters use bin zero. The shaped-run cache uses open addressing and is cleared wholesale when its pools fill; without cross-frame caching a run is shaped into a pool reused by the next draw. SDF instance flags encode mode in bits 0–1 and quad scale in bits 16–31.
+
+## src/core/text_field.zig
+
+Each `TextField(N)` capacity has a distinct message type with the same shape. Key-dispatch helpers use compile-time field types and union construction to wrap local messages in an application's composed message.
+
+## src/core/data_table.zig
+
+Sorting is stable for equal rows in either direction. The header stays fixed outside the body scroll region. The table exposes one Tab stop on the cursor row's first cell, or the first displayed row when needed; application key routing then moves the table cursor.

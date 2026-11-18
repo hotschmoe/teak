@@ -416,7 +416,6 @@ pub fn DataTable(comptime cfg: Config) type {
             return .{ .grip = .{ .col = @intCast(ev.id - grip_base), .dx = ev.dx } };
         }
 
-        // ── View ───────────────────────────────────────────────────
 
         pub const ViewOpts = struct {
             /// `ScrollStyle.id` of the body (wheel + layout reports). Non-zero.
@@ -466,7 +465,6 @@ pub fn DataTable(comptime cfg: Config) type {
 
             cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .flex = if (opts.height > 0) 0 else 1 });
 
-            // Header: sticky because it is not inside the scroll region.
             cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .height = opts.header_h, .bg = pal.bg_raised });
             for (cols, 0..) |col, i| {
                 const w = m.widths[i];
@@ -489,7 +487,6 @@ pub fn DataTable(comptime cfg: Config) type {
                 } else {
                     cb.textStyled(title, opts.font, pal.fg_muted);
                 }
-                // The resize grip: a thin interactive canvas on the column's right edge.
                 const prims = arena.alloc(cmd.CanvasPrimitive, 1) catch return;
                 prims[0] = .{ .vline = .{ .x = grip_w / 2, .color = pal.border, .thickness = 1 } };
                 cb.canvasInteractive(.{ .width = grip_w, .height = opts.header_h }, prims, opts.grip_base + @as(u32, @intCast(i)), "resize column");
@@ -498,7 +495,6 @@ pub fn DataTable(comptime cfg: Config) type {
             cb.popGroup();
             cb.dividerStyled(.{ .thickness = 1, .color = pal.border });
 
-            // Body.
             cb.pushScroll(.{
                 .direction = .vertical,
                 .padding = 0,
@@ -516,9 +512,6 @@ pub fn DataTable(comptime cfg: Config) type {
                 .visible_start = win.first,
                 .visible_end = win.end,
             });
-            // One Tab stop for the whole table: the cursor row's first cell (else the
-            // first shown row's). Clicking or Enter on it focuses the table; then the
-            // app's `keyMsg` wiring drives the cursor.
             var stop_disp = win.first;
             if (m.has_cursor) {
                 var d = win.first;
@@ -538,7 +531,6 @@ pub fn DataTable(comptime cfg: Config) type {
                     const w = m.widths[i];
                     var bs = cb.theme.button;
                     bs.bg = bg;
-                    // No per-cell hover: a lone lit cell reads as a bug; the row colours carry the state.
                     bs.hover_bg = bg;
                     bs.press_bg = bg;
                     bs.fg = pal.fg;
@@ -585,7 +577,6 @@ fn mix(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     return .{ a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1 };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const T = DataTable(.{ .max_rows = 256, .max_cols = 4 });

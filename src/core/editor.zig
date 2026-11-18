@@ -205,7 +205,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             doc_end,
         };
 
-        // ── Queries ───────────────────────────────────────────────
 
         pub fn content(self: *const Self) []const u8 {
             return self.buf[0..self.len];
@@ -232,7 +231,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             return self.selection();
         }
 
-        // ── Whole-buffer operations ───────────────────────────────
 
         /// Replace the whole content (truncated at capacity on a grapheme
         /// boundary), cursor at the end, history cleared.
@@ -277,7 +275,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             self.setSelection(r.start, r.end);
         }
 
-        // ── Motion ────────────────────────────────────────────────
 
         /// Move the cursor to `i` (snapped back to a grapheme boundary),
         /// extending the selection when `extend`.
@@ -375,7 +372,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             return true;
         }
 
-        // ── Editing ───────────────────────────────────────────────
 
         /// Insert text at the cursor, replacing the selection. Control
         /// characters are dropped; newline and tab become spaces unless
@@ -502,7 +498,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             return unicode.wordClass(unicode.firstCodepoint(t)) == .word;
         }
 
-        // ── Undo / redo ───────────────────────────────────────────
 
         /// Raw splice used by undo/redo (sizes always fit: they replay states
         /// that existed).
@@ -539,7 +534,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             return true;
         }
 
-        // ── Key dispatch ──────────────────────────────────────────
 
         /// Apply a layout-independent editing key. Returns false when the key
         /// is not handled here (Up/Down/PageUp/PageDown need layout -- use
@@ -576,7 +570,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             return true;
         }
 
-        // ── Display window (fields wider than their box) ─────────
 
         pub const Window = struct { start: usize, end: usize, cursor: usize, anchor: ?usize };
 
@@ -600,7 +593,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
     };
 }
 
-// ── Helpers ───────────────────────────────────────────────────────
 
 fn seqLen(lead: u8) usize {
     return if (lead >= 0xF0) 4 else if (lead >= 0xE0) 3 else 2;
@@ -694,13 +686,11 @@ fn filterInsert(multiline: bool, input: []const u8, max: usize, dest: ?[]u8) usi
     return out;
 }
 
-// ── Tests ─────────────────────────────────────────────────────────
 
 const testing = std.testing;
 
 const E = Editor(256, 512);
 
-// Ported from Kerf's apps/teak editor.zig.
 
 
 

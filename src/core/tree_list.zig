@@ -123,7 +123,6 @@ pub fn TreeList(comptime cap: usize) type {
                     m.setExpanded(node, !m.isExpanded(node));
                     // A collapsed ancestor may now hide the selection: move it up.
                     if (m.selected) |s| if (m.rowOf(s) == null) {
-                        // handled after rebuild below
                     };
                     m.rebuild(src);
                     if (m.selected) |s| if (m.rowOf(s) == null) {
@@ -308,18 +307,10 @@ fn mix(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     return .{ a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1 };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const Tr = TreeList(64);
 
-// root0
-//   a1
-//     a2
-//     b2
-//   c1
-// root1
-//   d1
 const depths = [_]u16{ 0, 1, 2, 2, 1, 0, 1 };
 const TestTree = struct {
     pub fn depth(_: TestTree, node: u32) u16 {
