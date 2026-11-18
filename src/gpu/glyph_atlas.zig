@@ -238,15 +238,12 @@ pub fn GlyphAtlasWith(comptime hashFn: fn (GlyphKey) u64) type {
         const Loc = struct { page: u8, x: u16, y: u16 };
 
         fn allocRect(self: *Self, pw: u32, ph: u32) InsertError!Loc {
-            // 1. any existing page with room (newest first: most likely to have space).
             if (self.tryExisting(pw, ph)) |loc| return loc;
-            // 2. open a new page.
             if (self.pages.items.len < self.max_pages) {
                 try self.pages.append(self.allocator, .{});
                 const idx: u8 = @intCast(self.pages.items.len - 1);
                 return tryPage(&self.pages.items[idx], idx, pw, ph) orelse error.GlyphTooLarge;
             }
-            // 3. reset the oldest page not used this frame.
             var victim: ?u8 = null;
             var oldest: u64 = std.math.maxInt(u64);
             for (self.pages.items, 0..) |p, i| {

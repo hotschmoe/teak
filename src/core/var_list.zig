@@ -78,7 +78,6 @@ pub fn VarList(comptime cap: usize) type {
             /// The row containing content y (clamped).
             pub fn rowAt(self: *const Model, y: f32) u32 {
                 if (self.n == 0) return 0;
-                // Largest i with prefix[i] <= y.
                 var lo: u32 = 0;
                 var hi: u32 = self.n; // exclusive
                 while (hi - lo > 1) {
@@ -160,7 +159,6 @@ pub fn VarList(comptime cap: usize) type {
                 }
             }
             if (!changed) return;
-            // Anchor: the row at the top of the viewport and the offset into it.
             const anchor = m.rowAt(m.sc.pos);
             const old_top = m.prefix[anchor];
             const into = m.sc.pos - old_top;

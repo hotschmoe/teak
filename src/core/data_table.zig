@@ -310,7 +310,6 @@ pub fn DataTable(comptime cfg: Config) type {
             m.focused = true;
             const row = m.order[disp];
             if (m.mods.shift and m.has_cursor) {
-                // Range from the anchor to the clicked row (Ctrl keeps the rest).
                 if (!m.mods.ctrl) m.clearSelection();
                 selectRange(m, m.rank[m.anchor], disp);
                 m.cursor = row;

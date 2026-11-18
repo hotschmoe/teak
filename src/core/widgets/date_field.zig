@@ -99,7 +99,6 @@ pub fn update(model: *Model, msg: Msg) void {
         },
         .set_today => |d| {
             model.today = d;
-            // An untouched field opens on today.
             if (model.selected == null and !model.open) model.cursor = d;
         },
         .set => |d| {

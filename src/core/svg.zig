@@ -390,7 +390,6 @@ const Renderer = struct {
                 const b = pl[(i + 1) % n];
                 try r.addQuad(a, b, hw);
             }
-            // Joins at interior vertices (and all of them for a closed ring).
             const first_join: usize = if (sub.closed) 0 else 1;
             const last_join: usize = if (sub.closed) n else n - 1;
             var k = first_join;

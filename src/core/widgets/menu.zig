@@ -336,7 +336,6 @@ pub fn Nav(comptime Action: type) type {
                         s.depth -= 1;
                         return .{ .state = s };
                     }
-                    // Back from a drop-down to the bar (still active).
                     var s = st;
                     s.open = false;
                     return .{ .state = s };
@@ -416,7 +415,6 @@ pub fn Nav(comptime Action: type) type {
                 const items = levelItems(root, st, bar, level);
                 if (items.len == 0) break;
                 const h = rowsHeight(items, o) + 2; // rows + the 1 px panel border
-                // Keep the panel on screen.
                 if (x + o.panel_w > o.window_w) x = @max(0, o.window_w - o.panel_w);
                 if (y + h > o.window_h) y = @max(0, o.window_h - h);
 
@@ -472,7 +470,6 @@ pub fn Nav(comptime Action: type) type {
                 cb.popGroup();
                 cb.popOverlay();
 
-                // Next level opens to the right of this one, level with the parent row.
                 const parent_row = st.sel[level];
                 y += rowOffset(items, parent_row, o); // the submenu's own first row lines up with the parent row (both panels inset 1 px)
                 x += o.panel_w;
@@ -570,7 +567,6 @@ pub fn MenuBar(comptime Action: type) type {
                 if (!it.enabled) {
                     cb.buttonStyledDisabled(msgs.menu(.close), label, style);
                 } else {
-                    // Clicking the open menu's entry closes it; any other opens that menu.
                     const same_open = st.open and st.hot == i;
                     const target: State = if (same_open) .{} else N.openTop(items, st, @intCast(i));
                     cb.buttonStyledUnderlined(msgs.menu(.{ .goto = target }), label, style, mnemonicIndex(it.label));
@@ -649,7 +645,6 @@ pub fn ContextMenu(comptime Action: type) type {
 
         pub fn keyMsg(model: *const Model, key: keys.SpecialKey, items: []const Item, msgs: anytype) ?@TypeOf(msgs.menu(Msg.close)) {
             var st = model.st;
-            // A freshly opened menu has no highlight yet; the first vertical key lands on the first row.
             if (st.open and st.sel[0] == 0 and (key == .down or key == .up) and items.len > 0 and !items[0].selectable()) {
                 st.sel[0] = firstSelectable(items) orelse 0;
             }

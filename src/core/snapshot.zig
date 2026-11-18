@@ -78,7 +78,6 @@ pub fn write(writer: anytype, cmds: anytype, rects: []const Rect, opts: Snapshot
 
     var depth: usize = 0;
     for (cmds, 0..) |c, i| {
-        // Closing cmds carry no rect worth showing — they only dedent.
         switch (c) {
             .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => {
                 if (depth > 0) depth -= 1;
@@ -181,7 +180,6 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
             if (t.text_align != .start) try writer.print(" align={s}", .{@tagName(t.text_align)});
         },
         .rich_text => |rt| {
-            // Flattened text = the full content string; spans index into it.
             try writer.writeAll("rich_text ");
             try writeRect(writer, r);
             try writer.writeByte(' ');
@@ -282,7 +280,6 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
                 try writeQuoted(writer, sc.label);
             }
         },
-        // Pop cmds are handled before writeCmd is ever called.
         .pop_group, .pop_grid, .pop_scroll, .pop_overlay, .pop_virtual_list => unreachable,
     }
 }

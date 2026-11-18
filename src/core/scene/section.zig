@@ -169,7 +169,6 @@ pub fn chain(gpa: std.mem.Allocator, segs: []const Segment) std.mem.Allocator.Er
     var loops: std.ArrayList(Loop) = .empty;
     errdefer loops.deinit(gpa);
 
-    // Heads first (starts nothing ends at), then the remaining cycles.
     for ([2]bool{ true, false }) |heads_pass| {
         for (0..n) |s0| {
             if (used[s0]) continue;
@@ -256,7 +255,6 @@ const cube_idx = [36]u32{
 const cube = MeshData{ .vertices = &cube_verts, .indices = &cube_idx };
 
 fn loopArea(pts: []const Vec3, axis: usize) f32 {
-    // shoelace in the plane orthogonal to `axis`
     const u = (axis + 1) % 3;
     const v = (axis + 2) % 3;
     var s: f32 = 0;

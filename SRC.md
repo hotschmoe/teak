@@ -350,3 +350,7 @@ The parsed text owns its plain buffer in the frame arena. It must not be deiniti
 ## examples/kerf_viewer/src/draw/pick.zig
 
 Picking considers text, fills, linework and interiors in that order. Linework chooses the nearest path with topmost ties; interiors choose the smallest enclosing region.
+
+## src/gpu/glyph_atlas.zig
+
+Allocation tries existing pages from newest to oldest, then opens a page, then resets the oldest page unused in the current frame. Dirty rectangles include padding to clear stale texels, and stale hash slots retain their probe chain.

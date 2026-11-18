@@ -244,7 +244,6 @@ pub fn faceById(id: u16) ?*const Font {
 /// any-registered last resort). Null only when no font exists at all.
 pub fn resolveFace(family: teak.FontFamily, weight: teak.FontWeight) ?struct { face: *const Font, id: u16 } {
     const f = faceFor(family, weight) orelse return null;
-    // faceFor returns a pointer into the registry; recover which slot.
     for (&registry.faces, 0..) |*row, fi| {
         for (row, 0..) |*slot, wi| {
             if (slot.*) |*p| {
@@ -311,7 +310,6 @@ fn readFontFileNone(_: std.mem.Allocator) ![]u8 {
 }
 
 fn readFontFileLibc(allocator: std.mem.Allocator) ![]u8 {
-    // libc getenv (this module always links libc for stb); non-allocating.
     if (std.c.getenv("TEAK_FONT")) |env_ptr| {
         const env_path = std.mem.span(env_ptr);
         if (env_path.len > 0) {
