@@ -109,7 +109,7 @@ Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no
 ```
 src/
 ├── teak.zig              public library root, re-exports
-├── run.zig               teak.run / Runtime — canonical host loop (tests: run_test.zig)
+├── run.zig               teak.run / Runtime — canonical host loop
 ├── control.zig           agent control channel + TEAK_RECORD/REPLAY, driven from run.zig
 ├── core/
 │   ├── cmd.zig           Cmd union, CmdBuffer, arena mgmt (incl. disabled, canvas, validateBalance)
