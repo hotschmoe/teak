@@ -19,7 +19,7 @@ jobs:
       - run: zig fmt --check src build.zig
       - run: zig build test -j4
   heavy:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
