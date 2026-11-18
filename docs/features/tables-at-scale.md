@@ -3,7 +3,7 @@
 **Status**: `teak.DataTable`, `teak.VarList`, `teak.TreeList`, `teak.Scroller` (all `pub` in `src/teak.zig`).
 **Source**: `src/core/{data_table,var_list,tree_list,scroller}.zig`, `src/layout/virtual_rows.zig`.
 **Example**: `examples/tables` (100 000-row table, 20 000-message variable-height list, 99 450-node tree).
-**Tests**: colocated; run-loop tests for the two new hooks in `src/run_test.zig`.
+**Checks**: the background gate runs the tables example.
 
 Review M2 asks for "a 100k-row table that scrolls at the display rate". The components below get there by the same
 rule everywhere: **a frame costs what is visible, not what exists.** Each one keeps only *view state* in the Model, takes the rows from a

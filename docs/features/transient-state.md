@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `TransientState`.
 **Source**: `src/core/transient.zig`
-**Tests**: none colocated; exercised end-to-end through `examples/counter_greeter` renders.
+**Checks**: the background gate drives a headless todo application.
 
 Escape hatch 2 in [HARDLINE §2](../HARDLINE.md#escape-hatch-2-transientstate-presentation-only-state).
 

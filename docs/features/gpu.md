@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `ClearColor`, `validateGpu`, `InitOptions` (via `teak.gpu`), plus the scene data types (see [scene3d.md](scene3d.md)).
 **Source**: `src/gpu/context.zig`; the wgpu pipeline is `src/gpu/wgpu_core.zig` (helpers in `wgpu_c.zig`, 3D in `wgpu_scene.zig`), bound to a concrete backend by `src/gpu/native.zig` (Windows) and `src/gpu/native_linux.zig` (Linux); the web backend is `src/gpu/web.zig` (+ `web_scene.zig`, on zunk.web.gpu). Shared, GPU-free pieces: `slot_table.zig`, `scene_common.zig`.
-**Tests**: `validateGpu` has colocated acceptance tests (and each backend runs it in a `comptime` block). `zig build test` covers the pure pieces (`slot_table`, `scene_common`, `render/vertex.zig`). `zig build test-gpu` renders on a surface-less Vulkan device and checks pixels (depth test, lighting, line quads, scene compositing + clip, MSAA edges, images); it skips when no Vulkan device opens. The web backend is verified by running an app in headless Chromium (`--webgpu`, SwiftShader).
+**Checks**: the background gate drives a real headless GPU application and a web application in Chromium.
 
 Sibling of the [Host interface](host.md). The only layer allowed to import wgpu-native or `zunk.web.gpu` — everything above (`render/`, `layout/`, `input/`, `core/`) compiles `wasm32-freestanding`-clean, enforced by `zig build test-wasm`.
 

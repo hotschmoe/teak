@@ -113,10 +113,6 @@ The probe exercises the browser accessibility tree and DOM mirror for the todo a
 
 `web.py [example|all] [out-dir]` drives each selected web distribution through `tools/qa/web.mjs` at 1x and 2x device scale.
 
-## tools/hot_reload_check.sh
-
-The Linux hot-reload check rewrites the todo example and compares state, layout and screenshots across rebuilds. Its cleanup runs `git checkout` on that source file, so it can discard local edits and must not be run in a dirty worktree.
-
 ## tools/qa/run.sh
 
 `tools/qa/run.sh [out-dir]` renders native and web examples at 1x and 2x. It needs Zig, Vulkan, Chromium and the tools npm dependencies; some hosts need `WEBSHOT_ANGLE=vulkan`. The default output directory is `/tmp/qa`.

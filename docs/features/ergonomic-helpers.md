@@ -2,9 +2,7 @@
 
 **Status**: all 7 `pub` in `src/teak.zig`.
 **Branch**: `functional_gaps_yolo`.
-**Tests**: distributed across `src/core/theme.zig`, `src/core/cmd.zig`,
-`src/input/hit_test.zig`, `src/core/text_field.zig`,
-`src/core/component_list.zig`, `src/core/debug_overlay.zig`.
+**Checks**: the blocking and background gates run the example programs.
 **HARDLINE additions**: none — every helper sits inside the existing
 invariants and §2 hatches.
 

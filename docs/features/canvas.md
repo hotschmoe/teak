@@ -9,7 +9,7 @@
 `src/render/{vertex,build}.zig`, `src/input/a11y.zig`,
 `src/core/snapshot.zig`, `src/run.zig` (`cmdsEqual` frame-diff arm),
 `src/platform/win32.zig` (UIA role map), `src/teak.zig` (re-exports)
-**Tests**: colocated `test` blocks in each of the above.
+**Checks**: the background gate runs the vector-canvas example.
 
 A `canvas` is a fixed-size leaf widget that draws a list of pure-data 2D
 primitives (gridlines, polylines, filled rects, markers) through the

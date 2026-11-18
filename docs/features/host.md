@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `InputState`, `InputQueue`, `NavKey`, `resolveKey`, `validateHost`, `SpecialKey`.
 **Source**: `src/platform/host.zig`; three backends — `src/platform/win32.zig` (Win32), `src/platform/x11.zig` (X11/Linux), `src/platform/wasm.zig` (web).
-**Tests**: `validateHost` has a colocated stub-acceptance test (and `x11.zig` runs its keysym→`SpecialKey` mapping unit test). Backend behavior is exercised through `examples/counter_greeter`.
+**Checks**: the background gate drives a real headless Host and a browser Host; Windows runs native live checks.
 
 Escape hatch 4 in [HARDLINE §2](../HARDLINE.md#escape-hatch-4-host-interface). Wires Teak to OS windowing and input — the only place outside `src/gpu/*` allowed to import platform-specific code.
 

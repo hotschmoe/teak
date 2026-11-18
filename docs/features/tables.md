@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `table` (namespace), `Table`, `TableColumn`, `TableRowStyle`, `CellAlign`, `fitCell`.
 **Source**: `src/core/table.zig`
-**Tests**: colocated: `fitCell` padding / truncation / UTF-8 / ellipsis edge cases and a golden snapshot of a header + body table.
+**Checks**: the background gate runs the tables example.
 
 With a monospace font, columns need no pixel math: pad every cell to its column's character width and the cells line up. `teak.table` is that, as pure helpers. No new Cmd variant, no state: a row is one horizontal `push_group` of `text` cmds, so layout, hit-test and render treat it like any other view output. (Scrollbars are not here: the app draws thin bars itself from the scroll metrics the host reports.)
 

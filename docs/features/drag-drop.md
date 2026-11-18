@@ -2,7 +2,7 @@
 
 **Status**: `pub` as `teak.DragEvent`, `teak.DragPhase`; new `GroupStyle.drag_id` / `drop_id`; App hook `dragMsg`.
 **Source**: `src/core/pointer.zig` (event types), `src/core/cmd.zig` (`GroupStyle`), `src/input/hit_test.zig` (`dragTargets`), `src/run.zig` (`routeDrag`).
-**Tests**: `src/run_test.zig` ("drag: ..."), `src/input/hit_test.zig`, `examples/todo` (reorder), `src/platform/headless_drive_test.zig` (agent `drag`).
+**Example**: `examples/todo` supports reordering.
 
 Reorder a list or drop an item on a target with the mouse, keeping all state in the Model.
 

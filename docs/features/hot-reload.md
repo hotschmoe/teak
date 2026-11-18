@@ -2,7 +2,7 @@
 
 **Status**: `teak.dev` (`Plugin`, `Loader`, `runLoader`, `typeFingerprint`). Linux; `examples/todo` is the reference (`zig build dev`).
 **Source**: `src/dev.zig`, `examples/todo/src/dev_lib_{native,headless}.zig`, `dev_main.zig`, `build.zig` (`dev` step).
-**Tests**: `src/dev.zig` (fingerprints), `tools/hot_reload_check.sh` (end to end: build v1, add todos over the control channel, swap in a recoloured build, then a Model-type change).
+**Checks**: neither gate currently exercises hot reload. A future background scenario should drive the real app from an isolated checkout.
 
 ## Use
 

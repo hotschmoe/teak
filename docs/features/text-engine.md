@@ -8,6 +8,11 @@ It replaces the "per-string texture" text path described in
 [#8](https://github.com/hotschmoe/teak/issues/8) (wrap + flex shrink), and the
 256-run defect in review §3.5.
 
+The implementation-plan acceptance lists below are historical. Current testing and comment rules are
+in `/home/hotschmoe/github/hotschmoe-setup/ENGINEERING.md`; they supersede the old unit-test and
+golden-snapshot requirements. Run `zig build test -j4` for the blocking gate and
+`zig build test-heavy -j4` for background checks.
+
 **Measurements** in this document were taken on the dev box (aarch64 Linux,
 Zig 0.16, `-O2`/`ReleaseFast`/`ReleaseSmall` as stated, DejaVuSansMono).
 Scratch sources are not committed; each number says how to re-measure it.

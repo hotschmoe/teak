@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `teak.headless` (tool API) and `teak.linkHeadless` (build helper, `build.zig`). Backends are import-only: `teak-platform-headless` (`src/platform/headless.zig`) and `teak-gpu-headless` (`src/gpu/native_headless.zig`).
 **Source**: `src/headless_run.zig`, `src/platform/headless.zig`, `src/gpu/native_headless.zig`, `Gpu.initOffscreen` / `readFrame` in `src/gpu/wgpu_core.zig`.
-**Tests**: `zig build test` (PNG encode/decode round-trip, `play` scripting, the Host's queue / clock / effects / text); `zig build test-gpu` (offscreen render + RGBA readback, resize).
+**Checks**: `zig build test-heavy -j4` drives the real headless todo application through its control socket.
 
 Run any teak App on the real native wgpu backend with **no display**, drive it with scripted mouse / keyboard / wheel input, and write the last frame as a PNG that an agent (or CI) can look at. It needs a Vulkan device (a real GPU driver works; wgpu-native cannot use Chromium's SwiftShader) and a TTF (DejaVuSansMono by default, `TEAK_FONT` overrides), nothing else.
 
@@ -130,7 +130,7 @@ Same App, same layout engine, same shaders, same MSAA path, so geometry, colours
 
 `teak.headless.shotCli` is a whole `shot_main.zig`: it parses `[out.png] [--state <name>] [--list]`
 and plays one of several named scripts (`ShotState{ .name, .steps }`; the first is the default).
-`--list` prints the state names on stdout, which `tools/vreg` uses to enumerate golden shots. Every
+`--list` prints the state names on stdout. Every
 example's `zig build shot` uses it. `ShotOptions.fonts` registers embedded TTFs on the Host (the
 fonts example). `decodePng` reads PNGs back (8-bit RGB/RGBA, any filter). See
 [visual-regression.md](visual-regression.md).
