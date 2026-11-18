@@ -298,3 +298,7 @@ Focused-divider arrow keys adjust by `key_step`; Home and End request the minimu
 ## src/core/widgets/tooltip.zig
 
 The tooltip prefers the widget's lower-left side, flipping above or right-aligned near the lower or right edge of the window.
+
+## build.zig
+
+Consumer helpers resolve lazy wgpu and zunk dependencies on Teak's builder, where the dependencies are declared. Host text measurement and GPU rasterization share the same stb module so metrics agree. X11 loads libX11 through `std.DynLib` and therefore needs libc's dlopen path; the executable itself must link libc. Wasm uses a libc shim for stb. Native GPU libraries are installed beside the executable and found through the platform runtime search path. The Windows ARM64 native-target workaround adds i8mm because Zig's detection misses it. Web applications with registered faces omit the built-in default; embedded faces are used for shaping while page font preloads do not block startup.
