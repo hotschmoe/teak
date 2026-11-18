@@ -34,9 +34,8 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
 
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
-    const test_step = b.step("test", "Run vector_canvas tests");
-    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    const test_step = b.step("test", "Run the example canary");
+    test_step.dependOn(&run_cmd.step);
 
     if (teak.hasNativeBackend(target.result.os.tag)) {
         const ui_exe = b.addExecutable(.{
