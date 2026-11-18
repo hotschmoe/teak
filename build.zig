@@ -142,7 +142,6 @@ pub fn build(b: *std.Build) void {
     const audit_step = b.step("audit", "Run HARDLINE drift audit (greppable rules from HARDLINE §5)");
     audit_step.dependOn(&audit_run.step);
     audit_step.dependOn(wasm_step);
-
 }
 
 fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {
@@ -154,7 +153,6 @@ fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {
     }
     return t;
 }
-
 
 pub const NativeWgpuOptions = struct {
     /// Shape complex scripts with HarfBuzz (lazy package, C++ build). Default

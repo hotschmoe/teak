@@ -518,7 +518,6 @@ pub const Renderer = struct {
         c.wgpuBindGroupLayoutRelease(self.bgl);
     }
 
-
     /// Copy `data` into GPU buffers. Returns `MESH_HANDLE_NONE` when the
     /// data is invalid, the table is full, or the device refuses.
     pub fn uploadMesh(self: *Renderer, data: MeshData) MeshHandle {
@@ -751,7 +750,6 @@ pub const Renderer = struct {
         t.inst_cap = if (t.inst_buf != null) cap else 0;
         return t.inst_buf != null;
     }
-
 
     pub fn target(self: *const Renderer, index: usize) ?*const Target {
         return if (self.targets[index]) |*t| t else null;

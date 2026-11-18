@@ -12,7 +12,6 @@ pub fn wgpuStr(s: []const u8) c.WGPUStringView {
     return .{ .data = s.ptr, .length = s.len };
 }
 
-
 fn adapterCallback(
     status: c.WGPURequestAdapterStatus,
     adapter: c.WGPUAdapter,
@@ -143,7 +142,6 @@ pub fn requestDevice(instance: c.WGPUInstance, surface: ?c.WGPUSurface) error{ A
 
     return .{ .adapter = adapter, .device = device, .queue = c.wgpuDeviceGetQueue(device) };
 }
-
 
 pub fn createShader(device: c.WGPUDevice, label: []const u8, wgsl: []const u8) error{ShaderCreateFailed}!c.WGPUShaderModule {
     var src = std.mem.zeroes(c.WGPUShaderSourceWGSL);
@@ -280,7 +278,6 @@ pub fn depthState(format: c.WGPUTextureFormat, write: bool, compare: c.WGPUCompa
     d.depthCompare = compare;
     return d;
 }
-
 
 fn mapCallback(
     status: c.WGPUMapAsyncStatus,

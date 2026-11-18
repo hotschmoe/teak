@@ -114,7 +114,7 @@ locate one widget; diff two snapshots to see exactly what a `Msg` changed.
 
 Use snapshots to inspect a running app. Automated checks should drive real
 programs and assert user-visible behavior rather than compare snapshots; see
-`/home/hotschmoe/github/hotschmoe-setup/ENGINEERING.md`.
+[ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md).
 
 To "see" the current GUI while iterating: lay the view out and print
 `snapshotAlloc` — the text tells you what's on screen and where.

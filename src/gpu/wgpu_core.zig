@@ -656,7 +656,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             self.writeVertsAs("vertex-buf", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_Storage, &self.vert_buf, &self.vert_buf_size, verts);
         }
 
-
         fn releaseMsaa(self: *Self) void {
             if (self.msaa_view) |v| c.wgpuTextureViewRelease(v);
             if (self.msaa_tex) |t| c.wgpuTextureRelease(t);
@@ -927,7 +926,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             self.configureSurface(slot.surface, slot.width, slot.height);
         }
 
-
         /// Per-frame text staging (call after `uploadVertices`, before
         /// `renderFrame`). `text_stage` shapes every `TextDraw`, packs glyphs the
         /// atlas has not seen (rasterized at the device pixel size with a
@@ -1071,7 +1069,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             }
         }
 
-
         /// Bind group for sampling `view` through the text/image pipelines:
         /// {screen-size uniform, texture, sampler}.
         fn textureBindGroup(self: *Self, label: []const u8, view: c.WGPUTextureView) c.WGPUBindGroup {
@@ -1199,7 +1196,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             self.writeVerts("image-vert-buf", &self.image_vert_buf, &self.image_vert_buf_size, self.image_verts.items);
         }
-
 
         /// Upload mesh geometry; the returned handle goes into
         /// `SceneDraw.mesh`. `MESH_HANDLE_NONE` on invalid data or a full

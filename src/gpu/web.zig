@@ -450,7 +450,6 @@ pub const Gpu = struct {
         writeVertsAs(zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.STORAGE, &self.vert_buf, &self.vert_buf_size, verts);
     }
 
-
     fn releaseMsaa(self: *Gpu) void {
         if (self.msaa) |m| {
             zgpu.release(m.view);
@@ -551,7 +550,6 @@ pub const Gpu = struct {
         }
     }
 
-
     /// Bind group for sampling `view` through the text/image pipelines:
     /// {screen-size uniform, texture, sampler}.
     fn textureBindGroup(self: *Gpu, view: zgpu.TextureView) zgpu.BindGroup {
@@ -566,7 +564,6 @@ pub const Gpu = struct {
         const view = zgpu.createTextureView(texture);
         return .{ .texture = texture, .view = view, .bind_group = self.textureBindGroup(view) };
     }
-
 
     /// Per-frame text staging (call after `uploadVertices`, before
     /// `renderFrame`): `text_stage` shapes and packs, this uploads the dirty
@@ -738,7 +735,6 @@ pub const Gpu = struct {
 
         writeVerts(&self.image_vert_buf, &self.image_vert_buf_size, self.image_verts.items);
     }
-
 
     /// Upload mesh geometry; the returned handle goes into
     /// `SceneDraw.mesh`. `MESH_HANDLE_NONE` on invalid data or a full

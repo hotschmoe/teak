@@ -34,7 +34,6 @@ const ShapeResult = teak.ShapeResult;
 const FontSpec = teak.FontSpec;
 const Font = face_mod.Font;
 
-
 const hb = struct {
     const Blob = opaque {};
     const Face = opaque {};
@@ -65,7 +64,6 @@ const hb = struct {
     extern fn hb_buffer_get_glyph_infos(b: *Buffer, length: ?*c_uint) [*]GlyphInfo;
     extern fn hb_buffer_get_glyph_positions(b: *Buffer, length: ?*c_uint) [*]GlyphPosition;
 };
-
 
 const max_faces = face_mod.fallback_face_id + 1;
 
@@ -114,7 +112,6 @@ pub fn deinit() void {
     buffer = null;
 }
 
-
 /// True when `cp` belongs to a script that needs more than cmap + kerning.
 fn isComplex(cp: u21) bool {
     return (cp >= 0x0590 and cp <= 0x109F) or // Hebrew .. Myanmar (Arabic, Syriac, Indic, Thai, Lao, Tibetan)
@@ -159,7 +156,6 @@ fn coveringFace(primary_id: u16, cp: u21) ?u16 {
     }
     return null;
 }
-
 
 const Run = struct { start: usize, len: usize, face_id: u16, rtl: bool = false };
 const max_runs = 48;

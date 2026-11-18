@@ -397,7 +397,6 @@ pub const Renderer = struct {
         zgpu.release(self.bgl);
     }
 
-
     /// Copy `data` into GPU buffers. Returns `MESH_HANDLE_NONE` when the
     /// data is invalid or the table is full.
     pub fn uploadMesh(self: *Renderer, data: MeshData) MeshHandle {
@@ -618,7 +617,6 @@ pub const Renderer = struct {
         t.inst_cap = cap;
         return buf;
     }
-
 
     pub fn target(self: *const Renderer, index: usize) ?*const Target {
         return if (self.targets[index]) |*t| t else null;

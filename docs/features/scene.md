@@ -1,7 +1,7 @@
 # `teak.scene` — Viewport3D and 2.5D layers
 
 The testing plans below are historical. The current testing policy in
-`/home/hotschmoe/github/hotschmoe-setup/ENGINEERING.md` supersedes unit tests,
+[ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md) supersedes unit tests,
 snapshot tests, and the former `test-gpu` command. Run `zig build test -j4`
 for blocking checks and `zig build test-heavy -j4` for background checks.
 

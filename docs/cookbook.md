@@ -1195,7 +1195,7 @@ An example can expose a `shot` step using `teak.linkHeadless` and `teak.headless
 Use the output for visual inspection. For automated coverage, exercise user-visible behavior through
 the real application and its input path; put extended scenarios in `zig build test-heavy -j4`.
 Do not commit golden images or compare rendered pixels against snapshots. The binding testing policy
-is `/home/hotschmoe/github/hotschmoe-setup/ENGINEERING.md`.
+is [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md).
 
 ---
 

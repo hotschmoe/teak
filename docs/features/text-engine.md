@@ -9,7 +9,7 @@ It replaces the "per-string texture" text path described in
 256-run defect in review §3.5.
 
 The implementation-plan acceptance lists below are historical. Current testing and comment rules are
-in `/home/hotschmoe/github/hotschmoe-setup/ENGINEERING.md`; they supersede the old unit-test and
+in [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md); they supersede the old unit-test and
 golden-snapshot requirements. Run `zig build test -j4` for the blocking gate and
 `zig build test-heavy -j4` for background checks.
 
