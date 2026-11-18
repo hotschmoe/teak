@@ -148,8 +148,7 @@ pub const Preedit = struct {
         const room = CAP - first;
         const take = @min(new.len, room);
         const keep_tail = @min(tail_len, room - take);
-        // Shift the tail first (it may move left or right), then drop the new
-        // characters into the gap.
+        // Shift the tail before writing the replacement to handle overlap.
         @memmove(self.cps[first + take ..][0..keep_tail], self.cps[end..][0..keep_tail]);
         @memcpy(self.cps[first..][0..take], new[0..take]);
         self.len = first + take + keep_tail;

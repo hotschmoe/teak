@@ -89,8 +89,7 @@ pub fn runSubs(
                 const last_tick = last_frame_ms / e.interval_ms;
                 const now_tick = now_ms / e.interval_ms;
                 if (now_tick > last_tick) {
-                    // Fire once per crossed boundary (typically 1; can
-                    // be more if the frame was slow).
+                    // A slow frame can cross multiple timer boundaries.
                     var i: u64 = 0;
                     while (i < (now_tick - last_tick)) : (i += 1) {
                         dispatch.call(e.msg);
@@ -102,7 +101,6 @@ pub fn runSubs(
                     dispatch.call(a.msg);
                 }
             },
-            // Serviced by the run loop (it needs the App's `animationMsg` hook).
             .animation_frame => {},
         }
     }

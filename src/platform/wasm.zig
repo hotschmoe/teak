@@ -829,12 +829,6 @@ comptime {
 }
 
 //
-// These tests exercise the pure serialization helper
-// (`serializeA11yTree`) without touching the JS bridge. Wired into
-// `zig build test` via the `platform-wasm` test target — the tests
-// reference only the helper, so zunk's `extern "env"` declarations
-// stay un-instantiated and the host-target compile links cleanly
-// without a wasm runtime.
 
 
 

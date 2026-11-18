@@ -98,8 +98,7 @@ pub fn decodeKey(code: u16, flags: u64, ch: u8) Decoded {
                     key = .end;
                     mods.ctrl = true;
                 },
-                // Cmd+Backspace: delete to line start isn't a SpecialKey;
-                // behave like Option+Backspace (a word).
+                // Cmd+Backspace falls back to word deletion.
                 .backspace, .delete => mods.ctrl = true,
                 else => {},
             }

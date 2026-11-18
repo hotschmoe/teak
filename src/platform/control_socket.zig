@@ -115,8 +115,7 @@ pub const Server = struct {
                 return out[0..n];
             }
             if (self.in_len == self.inbuf.len) {
-                // Over-long line with no newline yet: drop it and keep
-                // discarding until its end.
+                // Discard an overlong line through its newline.
                 self.in_len = 0;
                 self.discarding = true;
             }
@@ -224,8 +223,7 @@ pub const Client = struct {
             switch (linux.errno(rc)) {
                 .SUCCESS => {
                     if (rc == 0) return error.ConnectionClosed;
-                    // Replies are one line each and the server sends nothing
-                    // unsolicited, so a chunk holds at most that one line.
+                    // No unsolicited messages means at most one reply per chunk.
                     try out.appendSlice(gpa, chunk[0..rc]);
                     if (std.mem.indexOfScalar(u8, out.items, '\n')) |nl| {
                         out.shrinkRetainingCapacity(nl);

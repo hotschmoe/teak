@@ -298,8 +298,7 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
 /// or magnitudes past the i64 range, so guard both before converting.
 fn ri(v: f32) i64 {
     if (!std.math.isFinite(v)) return 0;
-    // 2^62 is exactly representable and keeps @round(clamped) safely inside
-    // the i64 range; real pixel coordinates never approach it.
+    // 2^62 is exactly representable and keeps rounded values within i64.
     const limit: f32 = 0x1p62;
     return @intFromFloat(@round(std.math.clamp(v, -limit, limit)));
 }

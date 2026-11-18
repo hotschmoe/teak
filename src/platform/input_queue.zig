@@ -85,8 +85,7 @@ pub const NavKey = enum {
     f10,
     /// The Menu / Apps key.
     menu,
-    // Letters that form editing chords. Plain letters are text, not keys:
-    // they resolve to `null` unless Ctrl is held.
+    // Plain letters are text; only Ctrl chords resolve to these keys.
     a,
     c,
     x,

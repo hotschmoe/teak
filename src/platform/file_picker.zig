@@ -128,9 +128,7 @@ pub fn pick(
         .{ .tool = .kdialog, .program = "kdialog" },
     };
     const n: usize = if (env_picker != null) 1 else candidates.len;
-    // Spawning needs an `Io` that can allocate (the process-wide debug `Io`
-    // cannot), and the child must inherit our environment (DISPLAY,
-    // WAYLAND_DISPLAY, DBUS_*, XDG_*: how the toolkit finds the desktop).
+    // The dialog process needs allocating Io and the desktop environment.
     var threaded: Io.Threaded = .init(a, .{
         .environ = if (std.Options.debug_threaded_io) |t| t.environ.process_environ else .empty,
     });

@@ -56,10 +56,7 @@ pub fn appendDebugOverlay(
     rects: []const Rect,
     opts: DebugOverlayOpts,
 ) void {
-    // Pre-format every line into the arena BEFORE mutating cb.cmds.
-    // Callers typically pass `cb.cmds.items` as the `cmds` slice; if we
-    // started emitting overlay cmds first, the ArrayList could realloc
-    // and invalidate the slice we're iterating.
+    // Appending commands first could invalidate the input slice.
     const arena_alloc = cb.arena.allocator();
     var lines: std.ArrayList([]const u8) = .empty;
 

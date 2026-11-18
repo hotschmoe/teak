@@ -58,9 +58,6 @@ pub const NumericConfig = struct {
 };
 
 //
-// `NumericField(config)` returns a struct exposing Model/Msg/update/view
-// (so `validateComponent` passes and `Components()` composes it) plus the
-// `value`/`isValid`/`content`/`formatValue` accessors.
 
 pub fn NumericField(comptime config: NumericConfig) type {
     return struct {

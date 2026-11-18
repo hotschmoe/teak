@@ -274,3 +274,19 @@ Hosts with native clipboards intercept clipboard effects before the shared servi
 ## src/core/unicode.zig
 
 Backward grapheme scanning can restart without prior context between adjacent ASCII bytes other than CR followed by LF. Kana and half-width kana count as letters even when their UAX #14 line-break class is NS or CJ.
+
+## src/core/debug_overlay.zig
+
+Overlay lines are formatted before commands are appended: callers can pass the command buffer's own slice, and appending first could reallocate it while it is being read.
+
+## src/core/numeric_field.zig
+
+`NumericField(config)` exposes the component Model, Msg, update and view plus value, validity, content and formatting accessors.
+
+## src/platform/control_socket.zig
+
+An overlong input line is discarded through its newline. Replies are single lines and the server sends no unsolicited messages, so a received chunk cannot contain another reply.
+
+## src/platform/file_picker.zig
+
+The dialog subprocess needs an allocating `Io` and inherits the environment, including display, session-bus and XDG variables needed by the desktop toolkit. Zenity and kdialog return status 1 for cancellation and 0 with the selected path on stdout.

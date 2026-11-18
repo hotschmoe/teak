@@ -34,8 +34,7 @@ pub fn deepEql(comptime T: type, a: T, b: T) bool {
         .@"struct" => |info| {
             if (info.layout == .@"packed") return a == b;
             if (@hasDecl(T, "eql")) return T.eql(a, b);
-            // Padding-free plain data (styles: floats, ints, bools, enums, arrays of
-            // them): bitwise equality IS memcmp, and one memcmp beats a field walk.
+            // Padding-free plain data can be compared bitwise.
             if (comptime isBitwise(T)) return std.mem.eql(u8, std.mem.asBytes(&a), std.mem.asBytes(&b));
             inline for (info.field_names, info.field_types) |name, F| {
                 if (!deepEql(F, @field(a, name), @field(b, name))) return false;
