@@ -11,7 +11,6 @@ const keysym = @import("../keysym.zig");
 const InputQueue = teak.InputQueue;
 const Modifiers = teak.Modifiers;
 
-// ── Pointer ────────────────────────────────────────────────────────
 
 pub const BTN_LEFT: u32 = 0x110;
 pub const BTN_RIGHT: u32 = 0x111;
@@ -57,7 +56,6 @@ pub const WheelAccum = struct {
     }
 };
 
-// ── Keyboard ───────────────────────────────────────────────────────
 
 pub const KeyResult = struct {
     /// The key repeats while held (nav keys and text; chords do not).
@@ -120,7 +118,6 @@ pub const Repeat = struct {
     }
 };
 
-// ── Data offers (clipboard / drag and drop) ────────────────────────
 
 /// What an offer advertises, accumulated from `wl_data_offer.offer` events.
 pub const OfferFlags = struct {
@@ -155,7 +152,6 @@ pub fn pickForPaste(f: OfferFlags) ?struct { pick: Pick, mime: [:0]const u8 } {
     return null;
 }
 
-// ── Scale ──────────────────────────────────────────────────────────
 
 pub const ScaleInputs = struct {
     /// `TEAK_SCALE` override.
@@ -191,7 +187,6 @@ pub fn bufferScale(scale: f32, viewporter: bool) i32 {
     return if (viewporter) 1 else @intFromFloat(@round(scale));
 }
 
-// ── tests ──────────────────────────────────────────────────────────
 
 
 

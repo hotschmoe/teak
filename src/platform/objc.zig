@@ -133,7 +133,6 @@ pub fn allocInit(class: Id) Id {
     return msg(Id, msg(Id, class, sel("alloc"), .{}), sel("init"), .{});
 }
 
-// ── NSString / NSArray helpers ─────────────────────────────────────
 
 /// A new autoreleased NSString from UTF-8 (`s` must be NUL-terminated).
 pub fn nsString(s: [*:0]const u8) Id {
@@ -148,7 +147,6 @@ pub fn utf8Of(str: Id) []const u8 {
     return std.mem.span(p);
 }
 
-// ── Class construction ─────────────────────────────────────────────
 
 pub const Method = struct { name: [*:0]const u8, imp: Imp, types: [*:0]const u8 };
 

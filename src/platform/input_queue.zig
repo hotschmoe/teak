@@ -335,7 +335,6 @@ fn setButton(set: *Buttons, b: Button, value: bool) void {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 /// Touch -> pointer for hosts that only see touch points (the web canvas
 /// suppresses the browser's synthesized mouse events). One finger is the

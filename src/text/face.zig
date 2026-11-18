@@ -175,7 +175,6 @@ const KernSlot = struct { used: bool, left: u16, right: u16, value: i32, face: u
 var kern_epoch: u64 = 0;
 var kern_cache: [8192]KernSlot = std.mem.zeroes([8192]KernSlot);
 
-// ── Face table ─────────────────────────────────────────────────────
 
 const family_count = std.enums.values(teak.FontFamily).len;
 const weight_count = std.enums.values(teak.FontWeight).len;

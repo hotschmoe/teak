@@ -166,7 +166,6 @@ pub fn stageDraws(
     if (comptime @hasDecl(@TypeOf(gpu.*), "renderScenes")) gpu.renderScenes(scenes, data);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const StubGpu = struct {
     next: u32 = 1,

@@ -200,7 +200,6 @@ pub fn pickSync(buf: []u8, kind: Kind, pattern: []const u8, env_picker: ?[]const
     return buf[0..chosen.len];
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

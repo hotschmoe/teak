@@ -108,7 +108,6 @@ pub const Host = struct {
         self.captured.deinit(self.gpa);
     }
 
-    // ── Scripting API ──────────────────────────────────────────────
 
     fn push(self: *Host, e: Event) void {
         if (self.event_count == MAX_EVENTS) return; // a script that outruns its frames: drop, not crash
@@ -191,7 +190,6 @@ pub const Host = struct {
         return self.title_buf[0..self.title_len];
     }
 
-    // ── Agent control channel (optional Host surface; src/control.zig) ──
 
     /// Start listening on the Unix socket `path`. False: unsupported OS or
     /// the socket could not be created.
@@ -224,7 +222,6 @@ pub const Host = struct {
         self.close();
     }
 
-    // ── validateHost surface ───────────────────────────────────────
 
     pub fn nativeHandle(_: *Host) void {}
 
@@ -342,7 +339,6 @@ pub const Host = struct {
         return 1.0;
     }
 
-    // ── Effects: capture + scripted answers ────────────────────────
 
     pub fn submit(self: *Host, e: Effect) EffectSubmit {
         const cap = self.capture(e) catch return .busy;
@@ -404,7 +400,6 @@ comptime {
     teak.validateHost(Host);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 fn testHost() !Host {
     return Host.init(std.testing.allocator, 640, 480) catch |e| switch (e) {

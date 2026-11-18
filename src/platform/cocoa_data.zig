@@ -134,7 +134,6 @@ pub fn scrollDelta(dx: f64, dy: f64, precise: bool) struct { x: f32, y: f32 } {
     return .{ .x = -@as(f32, @floatCast(dx)) * k, .y = -@as(f32, @floatCast(dy)) * k };
 }
 
-// ── NSCursor selectors ─────────────────────────────────────────────
 
 /// Class-method selector on NSCursor for a shape (all public API), plus a
 /// private-API selector tried first when non-empty (the diagonal resizes
@@ -158,7 +157,6 @@ pub fn cursorSel(shape: teak.CursorShape) CursorSel {
     };
 }
 
-// ── UTF-16 offsets (NSString indices) ──────────────────────────────
 
 /// Byte offset in `utf8` of UTF-16 code-unit index `idx` (clamped to the end
 /// of the text), as the input method counts marked-text positions.

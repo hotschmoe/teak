@@ -901,7 +901,6 @@ fn buildLayer(
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 // Chrome (border / shadow / hover / underline) tests live in their own file.
 
@@ -927,7 +926,6 @@ fn newTextDraws(alloc: std.mem.Allocator) std.ArrayList(TextDraw) {
 
 
 
-// ── Triangles / lines / scene draws ────────────────────────────────
 
 const TestFrame = struct {
     verts: std.ArrayList(Vertex) = .empty,

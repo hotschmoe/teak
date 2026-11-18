@@ -22,7 +22,6 @@ const pointer = @import("core/pointer.zig");
 const keys = @import("input/keys.zig");
 const run_mod = @import("run.zig");
 
-// ── Scripted steps ─────────────────────────────────────────────────
 
 /// One scripted step. Steps that only queue input (`move`, `down`, `up`,
 /// `wheel`, `chars`, `key`, `mods`) do not run a frame; `frames` and the
@@ -87,7 +86,6 @@ pub fn play(rt: anytype, host: anytype, steps: []const Step) !void {
     };
 }
 
-// ── One-call screenshot ────────────────────────────────────────────
 
 /// A face to register on the Host before the first frame (`Host.registerFont`).
 /// `bytes` must outlive the shot.
@@ -267,7 +265,6 @@ pub fn pathArg(init: anytype, default: []const u8) []const u8 {
     return if (args.len > 1) args[1] else default;
 }
 
-// ── Named states + the shot CLI ────────────────────────────────────
 
 /// A named, scripted app state for screenshots (`--state <name>`).
 pub const ShotState = struct {
@@ -369,7 +366,6 @@ pub fn shotCli(
     return error.UnknownState;
 }
 
-// ── PNG ────────────────────────────────────────────────────────────
 
 /// Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). Each
 /// scanline picks the PNG filter (none / sub / up / average / paeth) with
@@ -570,7 +566,6 @@ pub fn writeFramePng(gpu: anytype, gpa: std.mem.Allocator, path: []const u8) !vo
     try writePng(gpa, path, rgba, gpu.width, gpu.height);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

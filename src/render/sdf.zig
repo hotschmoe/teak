@@ -152,7 +152,6 @@ pub fn recordFloat(verts: []const Vertex, header: usize, k: usize) f32 {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 

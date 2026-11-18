@@ -96,7 +96,6 @@ pub fn clippedTexturedQuad(rect: Rect, clip: Rect, tint: [4]f32) ?[6]Vertex {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

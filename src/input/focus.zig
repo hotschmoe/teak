@@ -347,7 +347,6 @@ pub fn indexOfFocusMsg(cmds: anytype, msg: anytype) ?usize {
     return null;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const cmd_mod = @import("../core/cmd.zig");
 

@@ -77,7 +77,6 @@ pub fn scrollExtent(cmds: anytype, rects: []const Rect, index: usize) Extent {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const cmd_mod = @import("../core/cmd.zig");
 const text_mod = @import("../core/text.zig");
