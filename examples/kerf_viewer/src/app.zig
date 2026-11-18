@@ -35,7 +35,7 @@ const notes_id: u32 = 11;
 const chat_id: u32 = 12;
 const Orbit = scene.Orbit;
 
-// ── Palette (kerf/spec/DESIGN.md section 1) and theme ──────────────
+// Palette: kerf/spec/DESIGN.md §1.
 
 pub const paper: [4]f32 = .{ 0.949, 0.937, 0.902, 1 }; // #F2EFE6
 pub const paper2: [4]f32 = .{ 0.914, 0.898, 0.847, 1 }; // #E9E5D8
@@ -182,7 +182,6 @@ const row_button_on: teak.ButtonStyle = .{
     .h_padding = 6,
 };
 
-// ── Model ──────────────────────────────────────────────────────────
 
 pub const scene_id: u32 = 7;
 pub const list_id: u32 = 8;
@@ -477,7 +476,6 @@ pub const Model = struct {
         const next: u32 = if (id <= m.partCount()) id else 0;
         if (next == m.selected) return;
         m.selected = next;
-        // Keep the row visible in the panel.
         if (next != 0 and m.list_viewport > 0) {
             const top = @as(f32, @floatFromInt(next - 1)) * row_height;
             if (top < m.list_scroll) m.list_scroll = top;
@@ -829,7 +827,6 @@ const gizmo_view: teak.scene.Gizmo = .{
     .corner = .bottom_left,
     .size_px = 100,
     .margin_px = 10,
-    // X / Y / Z in Kerf's red, green and blue
     .colors = .{ .{ 0.784, 0.063, 0.180, 1 }, .{ 0.180, 0.490, 0.196, 1 }, .{ 0.114, 0.306, 0.620, 1 } },
 };
 
@@ -857,7 +854,6 @@ fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
             }
         },
         .up => if (ev.button == .left and m.drag_px < click_slop_px and !ev.mods.shift) {
-            // A click on a gizmo cap looks down that axis; anywhere else it picks a part.
             const axis = if (m.grid) gizmoHit(m, ev.x, ev.y, ev.w, ev.h) else null;
             if (axis) |a| {
                 m.cam.setPreset(a.preset(m.cam.up));
@@ -917,7 +913,6 @@ fn sheetEvent(m: *Model, ev: teak.CanvasEvent) void {
     }
 }
 
-// ── Host hooks ─────────────────────────────────────────────────────
 
 /// The one pointer hook: canvases (scene, sheet, cut slider), scroll wheels and text areas.
 pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
@@ -929,7 +924,6 @@ pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
 
 fn onCanvas(_: *const Model, ev: teak.CanvasEvent) ?Msg {
     if (ev.id == cut_slider_id) {
-        // Drag the thumb: press or move with the left button down.
         const dragging = ev.kind == .down or (ev.kind == .move and ev.buttons.left);
         return if (dragging and ev.w > 0) Msg{ .cut_set = ev.x / ev.w } else null;
     }
@@ -1055,8 +1049,6 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
             else => Msg{ .palette = pm },
         };
     }
-    // Escape leaves an editor; everything else edits (Up/Down/Home/End
-    // arrive as `pointerMsg` move events).
     switch (m.focus) {
         .notes => {
             if (key == .escape) return Msg.blur;
@@ -1064,8 +1056,6 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
         },
         .chat => {
             if (key == .escape) return Msg.blur;
-            // A focused text area gets Enter as a key (the runtime does not call
-            // `submitMsg` then): Enter sends, Shift+Enter (`Chat.keyMsg`) is a newline.
             if (key == .enter) return Msg.send;
             return if (Chat.keyMsg(key)) |n| Msg{ .chat = n } else null;
         },
@@ -1113,7 +1103,6 @@ pub fn windowTitle(_: *const Model) ?[]const u8 {
     return "Kerf workstation";
 }
 
-// ── Camera ─────────────────────────────────────────────────────────
 
 pub fn camera(m: *const Model) teak.Camera {
     const b: ?scene.Bounds = if (m.loaded) |l| l.bounds() else null;
@@ -1122,7 +1111,6 @@ pub fn camera(m: *const Model) teak.Camera {
     return cam;
 }
 
-// ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 0, .gap = 0, .bg = paper, .align_cross = .stretch });
@@ -1152,7 +1140,6 @@ pub fn view(m: *const Model, cb: anytype) void {
 fn header(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .horizontal, .pad_x = 12, .pad_y = 0, .gap = 12, .height = 40, .bg = ink, .align_cross = .center });
     cb.textStyled("KERF", plex_wordmark, paper);
-    // The three saw-kerf bars of the wordmark.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 3, .align_cross = .center });
     for (0..3) |_| {
         cb.pushGroup(.{ .padding = 0, .gap = 0, .width = 6, .height = 14, .bg = paper });
@@ -1169,19 +1156,17 @@ fn header(m: *const Model, cb: anytype) void {
     cb.buttonStyled(.open_file, "OPEN...", header_button);
     cb.buttonStyled(.{ .palette = .focus }, "CTRL+K", header_button);
     cb.popGroup();
-    // 2px rule under the header (DESIGN section 1).
+    // Header rule: kerf/spec/DESIGN.md §1.
     cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 2, .bg = ink });
     cb.popGroup();
 }
 
-// ── OPERATOR CONSOLE (chat) ────────────────────────────────────────
 
 fn console(m: *const Model, cb: anytype) void {
     const a = cb.arena.allocator();
     cb.pushGroup(.{ .width = 360, .padding = 12, .gap = 8, .bg = paper, .border = ink, .align_cross = .stretch });
     cb.textStyled("OPERATOR CONSOLE", plex_label, ink2);
 
-    // The message log: framed, scrolls, sticks to the newest message.
     cb.pushGroup(.{ .padding = 1, .gap = 0, .flex = 1, .border = ink, .bg = paper2, .align_cross = .stretch });
     cb.pushScroll(.{ .padding = 8, .gap = 8, .flex = 1, .align_cross = .stretch, .scroll_y = m.chat_scroll, .id = chat_scroll_id });
     if (m.log.n == 0) cb.textMuted("NO MESSAGES. TYPE BELOW.");
@@ -1194,7 +1179,6 @@ fn console(m: *const Model, cb: anytype) void {
     cb.popScroll();
     cb.popGroup();
 
-    // Input: multi-line TextArea; Enter sends, Shift+Enter is a newline.
     var st = cb.theme.text_input;
     st.bg = vellum;
     st.fg = ink;
@@ -1238,7 +1222,6 @@ fn messageCard(cb: anytype, msg: *const chat.Message) void {
     cb.popGroup();
 }
 
-// ── Center: tabs + viewport ────────────────────────────────────────
 
 fn centerColumn(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 12, .gap = 8, .flex = 1, .bg = paper2, .align_cross = .stretch });
@@ -1328,7 +1311,6 @@ fn sheetView(m: *const Model, cb: anytype) void {
 }
 
 fn presetRow(m: *const Model, cb: anytype) void {
-    // View-cube style presets as bracketed tabs, then projection / edges.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 4, .align_cross = .center });
     const presets = [_]struct { label: []const u8, p: Orbit.Preset }{
         .{ .label = "[FRONT]", .p = .front },
@@ -1350,7 +1332,6 @@ fn cutBar(m: *const Model, cb: anytype) void {
     cb.buttonStyled(.toggle_cut, if (m.cut_on) "[CUT ON]" else "[CUT OFF]", tab_button);
     const axes = [_][]const u8{ "[X]", "[Y]", "[Z]" };
     for (axes, 0..) |label, i| {
-        // the selected axis reads in bold ink; others are plain
         cb.buttonStyled(.{ .cut_axis = @intCast(i) }, label, if (m.cut_axis == i) tab_button_on else tab_button);
     }
     cb.buttonStyled(.cut_flip, if (m.cut_flip) "[FLIP *]" else "[FLIP]", tab_button);
@@ -1407,7 +1388,6 @@ fn partItems(m: *const Model, arena: std.mem.Allocator) []const teak.SceneItem {
             .tint = if (m.hovered == id and m.selected != id) .{ 1.18, 1.18, 1.18, 1 } else .{ 1, 1, 1, 1 },
             // open shells would streak under stencil parity: outline only
             .flags = .{ .highlight = m.selected == id, .no_edges = !m.edges, .no_cap = !p.closed },
-            // cap = manila (DESIGN) pulled toward the part's own colour
             .cap_color = kerf.mix(manila, p.color, 0.35),
         };
     }
@@ -1468,13 +1448,11 @@ fn gizmoLabels(m: *const Model, cb: anytype) void {
     }
 }
 
-// ── Right: parts, detail, notes ────────────────────────────────────
 
 fn rightColumn(m: *const Model, cb: anytype) void {
     const a = cb.arena.allocator();
     cb.pushGroup(.{ .width = 320, .padding = 12, .gap = 10, .bg = paper, .border = ink, .align_cross = .stretch });
 
-    // Parts table: header band + clickable rows, selection synced both ways.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .justify = .space_between });
     cb.textStyled("INSPECTOR", plex_label, ink2);
     cb.textMuted(std.fmt.allocPrint(a, "{d} PARTS", .{m.partCount()}) catch "");
@@ -1613,7 +1591,6 @@ fn statusBar(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const test_msr = teak.monoMeasurer();

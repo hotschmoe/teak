@@ -1,9 +1,6 @@
 const std = @import("std");
 
-// ── Counter Component ──────────────────────────────────────────────
-// Implements the component protocol (see src/core/component.zig): Model, Msg, update, view.
-// The msgs parameter carries AppMsg-typed values pre-wrapped by the
-// composition layer so this component stays ignorant of the composed shape.
+// Component protocol: src/core/component.zig.
 
 /// Rolling window of recent count values, for the Stats-window chart.
 pub const HISTORY_CAP = 32;
@@ -71,6 +68,5 @@ pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 

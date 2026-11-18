@@ -54,9 +54,7 @@ pub fn buildRichText(
     default_font: teak.FontSpec,
 ) !teak.RichTextCmd {
     const text = try rich.Text.fromMarkup(arena, markup);
-    // Note: `text` owns `plain` (owns_plain=true). We DON'T deinit it
-    // here — the caller's arena reset frees the allocation in bulk.
-    // If we deinit'd, the slices below would dangle.
+    // The frame arena owns the buffer borrowed by the emitted slices.
 
     const teak_spans = try arena.alloc(teak.RichTextSpan, text.spans.len);
     for (text.spans, 0..) |sp, i| {
@@ -79,7 +77,6 @@ pub fn buildRichText(
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

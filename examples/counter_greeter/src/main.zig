@@ -26,10 +26,8 @@ pub fn main() !void {
 
     printFrame(cmds, rects[0..cmds.len]);
 
-    // Simulated interaction trace: click "+", click "+", click text input, type "Hi", backspace.
     std.debug.print("\n── Simulated Interaction ──\n", .{});
 
-    // Locate widget rects.
     var plus_rect: ?teak.Rect = null;
     var input_rect: ?teak.Rect = null;
     for (cmds, 0..) |c, i| switch (c) {
@@ -69,7 +67,6 @@ pub fn main() !void {
     if (App.keySpecialMsg(&model, .backspace)) |m| App.update(&model, m);
     std.debug.print("backspace       -> greeter.name = \"{s}\"\n", .{model.greeter.name[0..model.greeter.name_len]});
 
-    // Rebuild to show the updated frame.
     cb.reset();
     App.view(&model, &cb);
     const cmds2 = cb.cmds.items;
@@ -110,9 +107,6 @@ fn printFrame(cmds: []const teak.Cmd(App.Msg), rects: []const teak.Rect) void {
                 r.w,
                 r.h,
             }),
-            // Other Cmd variants (checkbox, radio, slider, divider, scroll)
-            // aren't emitted by this app. The canary only prints what
-            // counter + greeter actually produce.
             else => {},
         }
     }

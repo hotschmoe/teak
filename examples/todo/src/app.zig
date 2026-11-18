@@ -13,13 +13,11 @@
 const std = @import("std");
 const teak = @import("teak");
 
-// ── Tunables ───────────────────────────────────────────────────────
 
 pub const MAX_ITEMS = 256;
 pub const MAX_LABEL = 64;
 pub const MAX_INPUT = MAX_LABEL;
 
-// ── Model ──────────────────────────────────────────────────────────
 
 pub const Item = struct {
     label: [MAX_LABEL]u8 = @splat(0),
@@ -59,21 +57,16 @@ pub const Drag = struct {
     after: bool = false,
 };
 
-// ── Msg ────────────────────────────────────────────────────────────
 
 pub const Msg = union(enum) {
-    // Add-input lifecycle.
     input_focus,
     input_char: u8,
     input_backspace,
     add_item,
 
-    // Per-row actions. The usize is the row index at the time of the
-    // click — translated from cmd index via the Model's items_len.
     toggle: usize,
     remove: usize,
 
-    // Bulk.
     clear_completed,
 
     /// Drag and drop reorder (mouse) ...
@@ -94,7 +87,6 @@ pub fn moveItem(m: *Model, from: usize, to: usize) void {
     m.items[to] = item;
 }
 
-// ── Update ─────────────────────────────────────────────────────────
 
 pub fn update(m: *Model, msg: Msg) void {
     switch (msg) {
@@ -138,8 +130,7 @@ pub fn update(m: *Model, msg: Msg) void {
 
         .remove => |i| {
             if (i >= m.items_len) return;
-            // Order-preserving shift; swap-remove would be cheaper but
-            // would reorder the list on every delete.
+            // Deletion must preserve item order.
             std.mem.copyForwards(Item, m.items[i .. m.items_len - 1], m.items[i + 1 .. m.items_len]);
             m.items_len -= 1;
         },
@@ -174,9 +165,7 @@ fn updateDrag(m: *Model, ev: teak.DragEvent) void {
             m.drag = null;
             if (ev.over == 0) return;
             const over: usize = ev.over - 1;
-            // Dropping on the lower half inserts after the target row.
             var to: usize = if (ev.over_fy >= 0.5) over + 1 else over;
-            // Removing the source first shifts later rows up by one.
             if (d.from < to) to -= 1;
             if (to >= m.items_len) to = m.items_len - 1;
             moveItem(m, d.from, to);
@@ -186,14 +175,12 @@ fn updateDrag(m: *Model, ev: teak.DragEvent) void {
     }
 }
 
-// ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .vertical, .padding = 20, .gap = 12, .align_cross = .stretch });
 
     cb.text("Todo");
 
-    // Add-item row: input stretches to fill, "Add" pinned to the right.
     cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 0 });
     cb.textInputA11y(.input_focus, m.input[0..m.input_len], m.input_len, "New item");
     cb.button(.add_item, "Add");
@@ -201,8 +188,6 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     cb.divider();
 
-    // The list. A scroll container so the UI stays bounded when items
-    // pile up. Height is fixed; width stretches via flex=1.
     cb.pushScroll(.{
         .direction = .vertical,
         .padding = 0,
@@ -230,9 +215,7 @@ pub fn view(m: *const Model, cb: anytype) void {
         });
         cb.text("::");
         cb.checkbox(.{ .toggle = i }, item.done, item.label[0..item.label_len]);
-        // Spacer claims the middle so the delete button pins right.
         cb.spacer(1);
-        // The visible label is "x"; screen readers hear "Remove <item>".
         const remove_name = std.fmt.allocPrint(cb.arena.allocator(), "Remove {s}", .{item.label[0..item.label_len]}) catch "Remove";
         cb.buttonA11y(.{ .remove = i }, "x", .{ .label = remove_name });
         cb.popGroup();
@@ -241,12 +224,9 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     cb.divider();
 
-    // Footer: item count + clear-completed button.
     cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 0 });
-    // The count is a polite live region: AT announces "3 items" as it changes.
     cb.pushGroup(.{ .direction = .horizontal, .gap = 0, .padding = 0, .a11y = .{ .semantic = .status, .live = .polite } });
-    // Allocate from the frame arena — a stack buffer's slice would escape
-    // into the cmd buffer and be clobbered before layout reads it.
+    // The label must outlive view until the frame is consumed.
     const count_str = std.fmt.allocPrint(cb.arena.allocator(), "{d} items", .{m.items_len}) catch "? items";
     cb.text(count_str);
     cb.popGroup();
@@ -256,7 +236,6 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     cb.popGroup();
 
-    // The drag ghost: the dragged row's label, following the pointer.
     if (m.drag) |d| {
         if (d.from < m.items_len) {
             cb.pushOverlay(.{
@@ -285,7 +264,6 @@ pub fn dragMsg(_: *const Model, ev: teak.DragEvent) ?Msg {
     return .{ .drag = ev };
 }
 
-// ── Key event translation (for host integration) ──────────────────
 
 pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
     if (!m.input_focused) return null;
@@ -317,7 +295,6 @@ pub fn debugState(m: *const Model, w: *std.Io.Writer) void {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

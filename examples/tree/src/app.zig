@@ -17,7 +17,6 @@
 const std = @import("std");
 const teak = @import("teak");
 
-// ── Tunables ───────────────────────────────────────────────────────
 
 pub const MAX_NODES = 128;
 pub const MAX_LABEL = 48;
@@ -31,7 +30,6 @@ pub const SCROLL_VIEWPORT_HEIGHT: f32 = 400;
 /// Pixel delta for an arrow-key step. Roughly one row.
 pub const SCROLL_LINE_PX: f32 = 24;
 
-// ── Model ──────────────────────────────────────────────────────────
 
 pub const Node = struct {
     label: [MAX_LABEL]u8 = @splat(0),
@@ -79,8 +77,6 @@ pub const Model = struct {
             node.is_leaf = true; // rewritten below
             self.nodes_len += 1;
         }
-        // Second pass: a node is a leaf unless some later node is
-        // deeper AND no intervening node has depth ≤ the candidate's.
         var i: u16 = 0;
         while (i < self.nodes_len) : (i += 1) {
             const d = self.nodes[i].depth;
@@ -91,7 +87,6 @@ pub const Model = struct {
     }
 };
 
-// ── Msg ────────────────────────────────────────────────────────────
 
 pub const Msg = union(enum) {
     toggle: u16, // node pre-order index
@@ -100,7 +95,6 @@ pub const Msg = union(enum) {
     scroll_by: f32,
 };
 
-// ── Update ─────────────────────────────────────────────────────────
 
 pub fn update(m: *Model, msg: Msg) void {
     switch (msg) {
@@ -112,16 +106,12 @@ pub fn update(m: *Model, msg: Msg) void {
             if (i < m.nodes_len) m.selected = i;
         },
         .scroll_by => |dy| {
-            // Best-effort clamp. Without `content_height` from layout
-            // we can only enforce >= 0; overscroll past the bottom is
-            // tolerated and self-corrects once the user scrolls back.
             const next = m.scroll_y + dy;
             m.scroll_y = if (next < 0) 0 else next;
         },
     }
 }
 
-// ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .vertical, .padding = 20, .gap = 12 });
@@ -138,13 +128,7 @@ pub fn view(m: *const Model, cb: anytype) void {
         .scroll_y = m.scroll_y,
     });
 
-    // Walk pre-order. `hide_below_depth` is the shallow-most collapsed
-    // ancestor's depth + 1; any later node at depth ≥ this is filtered
-    // out until we see a node at depth < this (we've exited the subtree).
-    // By-pointer iteration matters: emitRow stores `node.label[..]` in a
-    // Cmd, which outlives this frame's stack. Taking `node` by value
-    // would dangle the slice the moment the loop iteration ended
-    // (pitfall #1 in docs/pitfalls.md).
+    // Commands borrow labels from Model, so iteration must use pointers.
     var hide_below_depth: u8 = std.math.maxInt(u8);
     for (m.nodes[0..m.nodes_len], 0..) |*node, idx| {
         if (node.depth < hide_below_depth) hide_below_depth = std.math.maxInt(u8);
@@ -164,9 +148,6 @@ pub fn view(m: *const Model, cb: anytype) void {
 fn emitRow(cb: anytype, idx: u16, node: *const Node) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 6 });
 
-    // push_scroll with fixed width + no children acts as a spacer. No
-    // dedicated spacer primitive today; a fixed-dim scroll is the
-    // narrowest escape hatch.
     if (node.depth > 0) {
         cb.pushScroll(.{
             .direction = .horizontal,
@@ -185,7 +166,6 @@ fn emitRow(cb: anytype, idx: u16, node: *const Node) void {
     cb.popGroup();
 }
 
-// ── Sample tree ────────────────────────────────────────────────────
 
 const SampleEntry = struct { depth: u8, label: []const u8, expanded: bool = true };
 
@@ -219,8 +199,6 @@ const sample_tree = [_]SampleEntry{
     .{ .depth = 1, .label = "pitfalls.md" },
 };
 
-// Tree has no text input, but it does want arrow / page keys to drive
-// the scroll viewport.
 pub fn keyCharMsg(_: *const Model, _: u8) ?Msg {
     return null;
 }
@@ -244,7 +222,6 @@ pub fn wheelMsg(_: *const Model, wheel_dy: f32) ?Msg {
     return .{ .scroll_by = wheel_dy };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

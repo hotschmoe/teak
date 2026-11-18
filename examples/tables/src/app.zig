@@ -45,8 +45,7 @@ pub const Msg = union(enum) {
 
 pub const Model = struct {
     tab: Tab = .table,
-    // The big arrays live on the heap: the Runtime holding this Model sits on a
-    // (Windows: 1 MB) stack.
+    // Large arrays must not exhaust the Windows 1 MiB stack.
     table: *Table.Model,
     list: *List.Model,
     tree: *Tree.Model,
@@ -70,7 +69,6 @@ pub const Model = struct {
     }
 };
 
-// ── Data, computed from the row index ───────────────────────────────
 
 fn mixHash(x: u32) u32 {
     var h = x *% 0x9E3779B1;
@@ -175,7 +173,6 @@ const ListSrc = struct {
     }
 };
 
-// ── Update ──────────────────────────────────────────────────────────
 
 pub fn update(m: *Model, msg: Msg) void {
     switch (msg) {
@@ -194,7 +191,6 @@ pub fn update(m: *Model, msg: Msg) void {
     }
 }
 
-// ── Hooks ───────────────────────────────────────────────────────────
 
 /// The one pointer hook: scroll-region wheels and the column-grip canvases.
 pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
@@ -249,7 +245,6 @@ pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
 }
 
 pub fn animationMsg(_: *const Model, dt_ms: u32) ?Msg {
-    // One frame time feeds whichever scroller is moving; the others ignore a step at rest.
     return .{ .table = .{ .frame = dt_ms } };
 }
 
@@ -263,7 +258,6 @@ pub fn themeFor(_: *const Model) teak.Theme {
     return teak.Theme.dark_default;
 }
 
-// ── View ────────────────────────────────────────────────────────────
 
 const msgs = struct {
     pub fn sort(col: u8) Msg {
@@ -284,7 +278,6 @@ const tree_msgs = struct {
 };
 
 fn tabButton(cb: anytype, m: *const Model, tab: Tab, label: []const u8) void {
-    // The active tab is the primary button: its label colour is picked for contrast on the accent.
     var s = if (m.tab == tab) cb.theme.button_primary else cb.theme.button;
     s.min_width = 90;
     s.height = 30;
@@ -326,7 +319,6 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
 
 
 

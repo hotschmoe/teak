@@ -60,7 +60,6 @@ pub const Log = struct {
     }
 };
 
-// ── Markup + wrapping ─────────────────────────────────────────────
 
 /// One display line: stripped text and its bold spans (indices into `text`).
 pub const Line = struct {
@@ -94,7 +93,6 @@ pub fn wrapMarkup(a: std.mem.Allocator, text: []const u8, cols: usize, bold: tea
     var lines: std.ArrayList(Line) = .empty;
     var start: usize = 0;
     while (start <= p.len) {
-        // the hard line ends at the next newline (or the end)
         const nl = std.mem.indexOfScalarPos(u8, p, start, '\n') orelse p.len;
         var s = start;
         while (true) {
@@ -150,7 +148,6 @@ fn makeLine(a: std.mem.Allocator, p: []const u8, is_bold: []const bool, s: usize
     return .{ .text = p[s..e], .spans = spans.items };
 }
 
-// ── The scripted responder ────────────────────────────────────────
 
 pub const Intent = union(enum) {
     greet,
@@ -262,7 +259,6 @@ pub fn replyText(buf: []u8, intent: Intent, ctx: Context, detail: []const u8) []
     }) catch buf[0..0];
 }
 
-// ── Tests ─────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const test_bold: teak.FontSpec = .{ .size_px = 13, .family = .mono, .weight = .bold };

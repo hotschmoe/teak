@@ -287,7 +287,6 @@ pub fn parse(allocator: Allocator, json_bytes: []const u8) ParseError!Drawing {
     const sc = jv.getNum(obj, "scale") orelse 1;
     d.scale = if (sc > 0 and std.math.isFinite(sc)) sc else 1;
 
-    // pens (object; iteration order of std.json objects is insertion order = file order)
     if (jv.getObj(obj, "pens")) |po| {
         var pens: std.ArrayList(Pen) = .empty;
         var it = po.iterator();
@@ -436,7 +435,6 @@ pub fn parse(allocator: Allocator, json_bytes: []const u8) ParseError!Drawing {
         d.diagnostics = diags.items;
     }
 
-    // bounds
     var have_bounds = false;
     if (jv.getArr(obj, "bounds")) |ba| {
         if (ba.len >= 4) {
@@ -463,9 +461,6 @@ pub fn parse(allocator: Allocator, json_bytes: []const u8) ParseError!Drawing {
     return d;
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 

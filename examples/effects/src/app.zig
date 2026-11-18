@@ -81,7 +81,6 @@ pub const Model = struct {
         m.clip.set("-", .{});
         m.dropped.set("nothing dropped yet", .{});
         m.pasted.set("-", .{});
-        // Startup parameters and the saved note, asked for once.
         m.append(.{ .query_param = .{ .id = m.takeId(), .name = "who" } });
         m.append(.{ .query_param = .{ .id = m.takeId(), .name = "api" } });
         m.append(.{ .storage_get = .{ .id = m.takeId(), .key = key_note } });
@@ -145,7 +144,6 @@ pub const Model = struct {
 const json_headers = [_]teak.Header{.{ .name = "content-type", .value = "application/json" }};
 
 pub const Msg = union(enum) {
-    // Buttons.
     get,
     post,
     refuse,
@@ -156,7 +154,6 @@ pub const Msg = union(enum) {
     load,
     clock,
     copy,
-    // Answers.
     http_done: teak.HttpResult,
     downloaded: Downloaded,
     opened: FileOpened,
@@ -166,7 +163,6 @@ pub const Msg = union(enum) {
     clocked: Clock,
     dropped: teak.Drop,
     pasted: []const u8,
-    // Ctrl+C / Ctrl+V through the Host clipboard.
     clip_paste: []const u8,
     clip_copy,
 };
@@ -296,7 +292,6 @@ pub fn clipboardMsg(_: *const Model, key: teak.SpecialKey, paste: []const u8) ?M
     };
 }
 
-// ── View ───────────────────────────────────────────────────────────
 
 fn row(cb: anytype, msg: Msg, label: []const u8, result: []const u8) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 12, .align_cross = .center });
@@ -351,7 +346,6 @@ fn thumbnail(m: *const Model, cb: anytype, arena: std.mem.Allocator) void {
     cb.canvasLabeled(style, prims, "dropped image thumbnail");
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

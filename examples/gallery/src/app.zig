@@ -31,7 +31,6 @@ pub fn themeFor(m: *const Model) teak.Theme {
     return theme_mod.themeOf(m.look);
 }
 
-// ── Menus ──────────────────────────────────────────────────────────
 
 const Item = MB.Item;
 
@@ -118,7 +117,6 @@ fn wrapRun(a: model_mod.Action) Msg {
 pub const bar_msgs = .{ .menu = wrapMenu, .run = wrapRun };
 pub const ctx_msgs = .{ .menu = wrapCtx, .run = wrapRun };
 
-// ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
     const pal = cb.theme.palette;
@@ -143,7 +141,6 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
     cb.popGroup();
 
-    // Status line.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 4, .pad_x = 12, .gap = 16, .height = ui.status_h, .bg = pal.bg_panel, .border = pal.border, .align_cross = .center });
     cb.textMuted(if (m.last_action) |a| ui.fmt(cb, "last action: {s}", .{@tagName(a)}) else "ready");
     cb.spacer(1);
@@ -229,7 +226,6 @@ fn sidebar(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-// ── Hooks ──────────────────────────────────────────────────────────
 
 /// Frame time while a toast is sliding in or out.
 pub fn animationMsg(_: *const Model, dt_ms: u32) ?Msg {

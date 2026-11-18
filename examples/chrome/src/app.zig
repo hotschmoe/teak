@@ -11,7 +11,6 @@
 const std = @import("std");
 const teak = @import("teak");
 
-// ── Palette and theme ──────────────────────────────────────────────
 
 pub const ink: [4]f32 = .{ 0.10, 0.09, 0.08, 1 };
 pub const paper: [4]f32 = .{ 0.93, 0.91, 0.84, 1 };
@@ -116,7 +115,6 @@ const tab_button: teak.ButtonStyle = .{
     .h_padding = 8,
 };
 
-// ── Looks: retro (above) and modern ────────────────────────────────
 
 /// The modern theme: the stock `Theme.modern_light` (rounded, soft shadows,
 /// indigo accent) in the default sans typography.
@@ -141,12 +139,10 @@ const Look = struct {
     paper: [4]f32,
     muted: [4]f32,
     accent: [4]f32,
-    // header
     header_bg: [4]f32,
     header_fg: [4]f32,
     header_dim: [4]f32,
     header_button: teak.ButtonStyle,
-    // columns
     col_bg: [4]f32,
     col_border: ?[4]f32,
     col_pad: f32,
@@ -158,7 +154,6 @@ const Look = struct {
     tab: teak.ButtonStyle,
     tab_on: teak.ButtonStyle,
     tab_bar: bool,
-    // parts table
     table_box: teak.GroupStyle,
     table_head_bg: ?[4]f32,
     table_head_fg: [4]f32,
@@ -166,14 +161,12 @@ const Look = struct {
     table_sel_fg: [4]f32,
     table_rule: [4]f32,
     field: teak.TextInputStyle,
-    // status line and the drawing sheet
     status_bg: [4]f32,
     status_border: ?[4]f32,
     sheet: teak.GroupStyle,
     sheet_grid: [4]f32,
     sheet_line_w: f32,
     sheet_mark: [4]f32,
-    // popover
     pop: teak.OverlayStyle(Msg),
 };
 
@@ -215,8 +208,7 @@ const retro: Look = .{
     .sheet_line_w = 2,
     .sheet_mark = red,
     .pop = .{
-        // Overlaps the left column's parts table on purpose: the opaque
-        // backdrop must hide the table text beneath it.
+        // The backdrop deliberately covers table text beneath it.
         .x = 150,
         .y = 120,
         .width = 300,
@@ -302,7 +294,6 @@ fn lookFor(is_modern: bool) *const Look {
     return if (is_modern) &modern else &retro;
 }
 
-// ── Data ───────────────────────────────────────────────────────────
 
 const Part = struct { name: []const u8, qty: u32, len_mm: f32 };
 const parts = [_]Part{
@@ -340,7 +331,6 @@ const material_opts: teak.ComboboxViewOpts = .{
 
 const tab_names = [_][]const u8{ "PARTS", "NOTES", "DIFF" };
 
-// ── Model / Msg / update ───────────────────────────────────────────
 
 pub const MAX_NAME = 24;
 const default_name_text = "BASE-PLATE";
@@ -407,7 +397,6 @@ pub fn update(m: *Model, msg: Msg) void {
         },
         .toggle_help => {
             m.help_open = !m.help_open;
-            // Opening eases out over 400 ms; closing slides out faster.
             if (m.help_open) m.help_slide.start(1, 400, .out_cubic) else m.help_slide.start(0, 160, .in_cubic);
         },
         .toggle_style => m.modern = !m.modern,
@@ -426,11 +415,9 @@ fn materialSelect(i: usize) Msg {
     return .{ .material = .{ .select = i } };
 }
 
-// ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
     const l = lookFor(m.modern);
-    // Root: the window-sized sheet; every direct child fills its width.
     cb.pushGroup(.{ .padding = 0, .gap = 0, .bg = l.col_bg, .align_cross = .stretch });
     header(m, cb, l);
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .flex = 1, .align_cross = .stretch });
@@ -460,7 +447,6 @@ fn leftColumn(m: *const Model, cb: anytype, l: *const Look) void {
     cb.pushGroup(.{ .width = 360, .padding = l.col_pad, .gap = l.col_gap, .bg = l.col_bg, .border = l.col_border, .align_cross = .stretch });
     if (l.panel) |panel| cb.pushGroup(panel);
 
-    // Tabs: bracket tabs with an underline bar (retro) or pill tabs (modern).
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 4 });
     for (tab_names, 0..) |name, i| {
         const on = m.tab == i;
@@ -477,8 +463,7 @@ fn leftColumn(m: *const Model, cb: anytype, l: *const Look) void {
     }
     cb.popGroup();
 
-    // Parts table: header band, rule, rows; the selected row is highlighted.
-    // Retro padding 1 keeps the rows inside the 1px border (the border takes no layout space).
+    // Retro rows need padding because the border takes no layout space.
     cb.pushGroup(l.table_box);
     parts_table.header(cb, .{ .font = l.mono_bold, .color = l.table_head_fg, .bg = l.table_head_bg });
     for (parts, 0..) |p, i| {
@@ -502,7 +487,6 @@ fn leftColumn(m: *const Model, cb: anytype, l: *const Look) void {
     cb.buttonStyled(.{ .select_part = next }, "NEXT >", l.key);
     cb.popGroup();
 
-    // Typed-form fields: underline variant (focusable) and the material combobox.
     cb.textMuted("NAME");
     cb.textInputStyled(.focus_name, m.name[0..m.name_len], m.name_len, l.field);
     cb.textMuted("MATERIAL");
@@ -532,7 +516,6 @@ fn centerColumn(cb: anytype, l: *const Look) void {
     cb.textMuted("SCALE 1:2");
     cb.popGroup();
 
-    // Drafting sheet: a grid and a part outline, drawn as canvas primitives.
     const a = cb.arena.allocator();
     var prims: std.ArrayList(teak.CanvasPrimitive) = .empty;
     var g: f32 = 0;
@@ -549,7 +532,6 @@ fn centerColumn(cb: anytype, l: *const Look) void {
     prims.append(a, .{ .marker = .{ .x = 140, .y = 120, .size = 8, .color = l.sheet_mark } }) catch unreachable;
     prims.append(a, .{ .marker = .{ .x = 380, .y = 340, .size = 8, .color = l.sheet_mark } }) catch unreachable;
     if (l.modern) {
-        // Rounded sheet card with the drawing inside it (the canvas itself is a plain rect).
         cb.pushGroup(l.sheet);
         cb.canvasLabeled(.{ .width = 200, .height = 120, .flex = 1, .bg = null }, prims.items, "drawing sheet");
         cb.popGroup();
@@ -582,13 +564,9 @@ fn rightColumn(cb: anytype, l: *const Look) void {
     cb.pushGroup(cb.theme.card);
     cb.heading("NOTES");
     cb.divider();
-    // Wrapped paragraphs: they take the card's width, re-wrap when the window
-    // or the card changes, and grow the card's height with their line count.
     cb.paragraphStyled("1. BREAK ALL SHARP EDGES AND DEBURR HOLES; NO BURRS ABOVE 0.1 MM ON MATING FACES.", plex, muted, .{});
     cb.paragraphStyled("2. DIMENSIONS IN MM, TOLERANCES PER ISO 2768-M UNLESS NOTED.", plex, muted, .{});
     cb.paragraphStyled("3. FINISH: ANODIZE CLEAR, 10-15 MICRON; MASK THE BORE BEFORE COATING.", plex, muted, .{ .max_lines = 2 });
-    // A shrinking row: the tag keeps its width, the paragraph beside it gives
-    // way (and re-wraps) as the column narrows.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 8, .align_cross = .start });
     cb.buttonStyled(.noop, "REV C", l.key);
     cb.paragraphStyled("SUPERSEDES REV B; RE-INSPECT ALL FIRST-ARTICLE PARTS.", plex, ink, .{});
@@ -637,7 +615,6 @@ fn helpPopover(cb: anytype, l: *const Look, slide: f32) void {
     cb.popOverlay();
 }
 
-// ── Host integration ───────────────────────────────────────────────
 
 /// Ask for frame callbacks only while the popover is animating; once it
 /// settles the run loop goes idle again.
@@ -691,7 +668,6 @@ pub fn themeFor(m: *const Model) teak.Theme {
     return if (m.modern) modern_theme else theme;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const test_msr = teak.monoMeasurer();
 

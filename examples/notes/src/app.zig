@@ -74,7 +74,6 @@ pub fn update(m: *Model, msg: Msg) void {
             const text = std.mem.trim(u8, m.chat.content(), " \n\t");
             if (text.len == 0) return;
             if (m.log_n == LOG_CAP) {
-                // Drop the oldest.
                 for (1..LOG_CAP) |i| {
                     m.log[i - 1] = m.log[i];
                     m.log_len[i - 1] = m.log_len[i];
@@ -95,7 +94,6 @@ pub fn update(m: *Model, msg: Msg) void {
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 16, .gap = 16, .align_cross = .stretch });
 
-    // Left: the notes editor.
     cb.pushGroup(.{ .padding = 0, .gap = 8, .flex = 1, .align_cross = .stretch });
     cb.heading("NOTES");
     Notes.viewWith(&m.notes, cb, .{ .focus = Msg{ .notes = .focus } }, .{ .id = NOTES_ID, .flex = 1, .height = 200 });
@@ -104,13 +102,10 @@ pub fn view(m: *const Model, cb: anytype) void {
     if (m.scripts) scriptsLine(cb);
     cb.popGroup();
 
-    // Right: chat log + multi-line input.
     cb.pushGroup(.{ .width = 380, .padding = 0, .gap = 8, .align_cross = .stretch });
     cb.heading("CHAT");
     cb.pushGroup(.{ .padding = 10, .gap = 8, .flex = 1, .bg = cb.theme.palette.bg_sunken, .align_cross = .stretch });
     if (m.log_n == 0) cb.textMuted("No messages yet.");
-    // Each message is a wrapped rich paragraph: a bold, coloured sender then the
-    // text, breaking across the span boundary like any other text.
     const a = cb.arena.allocator();
     const bold = cb.theme.typography.heading;
     for (0..m.log_n) |i| {
@@ -143,7 +138,6 @@ fn scriptsLine(cb: anytype) void {
     cb.popGroup();
 }
 
-// ── Host integration ───────────────────────────────────────────────
 
 /// The one pointer hook: pointer, wheel and metrics for the text areas.
 pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
@@ -221,7 +215,6 @@ pub fn clipboardMsg(m: *const Model, key: teak.SpecialKey, paste: []const u8) ?M
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

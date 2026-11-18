@@ -104,7 +104,6 @@ pub const Docs2D = struct {
             }
         }
         try self.sheets.append(self.gpa, .{ .d = d });
-        // keep sheets ordered by view name so A, B, C ... line up in the picker
         std.mem.sort(Sheet, self.sheets.items, {}, lessByView);
         for (self.sheets.items, 0..) |*s, i| {
             if (std.mem.eql(u8, s.d.view, d.view)) return i;
@@ -137,7 +136,6 @@ pub const Docs2D = struct {
         return if (idx < self.sheets.items.len) &self.sheets.items[idx] else null;
     }
 
-    // ── Camera ────────────────────────────────────────────────────
 
     pub fn fit(self: *Docs2D, idx: usize) void {
         const s = self.sheet(idx) orelse return;
@@ -187,7 +185,6 @@ pub const Docs2D = struct {
         s.fitted = true;
     }
 
-    // ── Picking ───────────────────────────────────────────────────
 
     /// `src` of the topmost thing under canvas-local `(x, y)` (4 px tolerance).
     pub fn pickSrc(self: *Docs2D, idx: usize, x: f32, y: f32) ?[]const u8 {
@@ -210,7 +207,6 @@ pub const Docs2D = struct {
         return false;
     }
 
-    // ── Tessellation ──────────────────────────────────────────────
 
     /// Rebuild the triangle list for sheet `idx` with `selected` / `hovered`
     /// highlighted. A no-op when nothing changed since the last build.
@@ -262,7 +258,6 @@ pub const Docs2D = struct {
     }
 };
 
-// ── Mapping drawing `src` ids <-> mesh parts ──────────────────────────
 
 /// 1-based part id for a drawing `src` ("beam", "studs#1"), 0 when it names
 /// no part (notes, dimensions, titles). A bare id with several instances maps
@@ -295,7 +290,6 @@ pub fn srcOfPart(docs: *Docs2D, idx: usize, p: kerf.Part, buf: []u8) []const u8 
     return "";
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const flush_a = @embedFile("fixtures/flush-psl-2x6.A.json");

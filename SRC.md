@@ -302,3 +302,51 @@ The tooltip prefers the widget's lower-left side, flipping above or right-aligne
 ## build.zig
 
 Consumer helpers resolve lazy wgpu and zunk dependencies on Teak's builder, where the dependencies are declared. Host text measurement and GPU rasterization share the same stb module so metrics agree. X11 loads libX11 through `std.DynLib` and therefore needs libc's dlopen path; the executable itself must link libc. Wasm uses a libc shim for stb. Native GPU libraries are installed beside the executable and found through the platform runtime search path. The Windows ARM64 native-target workaround adds i8mm because Zig's detection misses it. Web applications with registered faces omit the built-in default; embedded faces are used for shaping while page font preloads do not block startup.
+
+## examples/counter_greeter/src/app.zig
+
+The composed application keeps focus in its app-level Model; the Host translates keyboard input into the focused component's messages. The greeter's focus click routes through app-level state rather than its component update. The help overlay is modal with a backdrop message and uses a fixed 900×500 backdrop; a real window-sized backdrop should use Host dimensions. Clipboard chords are serviced by the Host's clipboard path rather than ordinary key dispatch. The stats window is app intent consumed by the Host.
+
+## examples/todo/src/app.zig
+
+Row messages carry the current Model index. Deletion shifts items to preserve order; drag insertion accounts for the source removal shifting later indices. The count is a polite accessibility live region. Its text is allocated in the frame arena because a stack slice would outlive its buffer before layout.
+
+## examples/tree/src/app.zig
+
+Tree nodes are stored in preorder; a collapsed ancestor hides following deeper nodes until its subtree ends. View iterates by pointer because commands borrow label slices from Model storage. Without content height from layout, scroll state clamps only at zero and may temporarily overscroll the bottom. A fixed-size empty scroll is used as a spacer.
+
+## examples/kerf_viewer/src/app.zig
+
+A URL request already in flight owns the request state, so only plain queries are chained. In the focused chat text area, Enter sends and Shift+Enter inserts a newline. Gizmo-cap clicks select a camera axis; other viewport clicks pick a part. Open shells use outline-only section rendering to avoid stencil-parity streaks. See `kerf/spec/DESIGN.md` §1 for the palette and header treatment.
+
+## examples/chrome/src/app.zig
+
+The popover intentionally overlaps the parts table so its opaque backdrop exercises occlusion of underlying text. Retro table rows use one pixel of padding because borders do not take layout space. The popover opens over 400 ms and closes faster.
+
+## examples/vector_canvas/src/app.zig
+
+Moment diagrams use the parabola of a uniformly loaded simple span. When a diagram changes sign, zero crossings split it into one filled polygon per lobe. Drawing order is braces, members, overlays, then node dots; view reuses slices owned by the Model.
+
+## examples/scene_layers/src/app.zig
+
+Sheet frame vectors use world units per sheet unit; a factor of 0.8 displays a 120×80 page at 96×64 inches. See `kerf/spec/DESIGN.md` for the palette.
+
+## examples/tables/src/app.zig
+
+The large Model arrays are heap allocated because the Runtime may otherwise exceed the Windows 1 MiB stack. One frame-time message advances whichever scroller is moving.
+
+## examples/viewport/src/app.zig
+
+Zoom keeps the world point under the cursor fixed. Grid labels are world-space scalable text, so one distance-field glyph set serves zoom levels from 0.2× to 8× without rerasterizing.
+
+## examples/fonts/src/app.zig
+
+Unsupported script glyphs fall back to browser canvas text on web and the missing-glyph box on native. Web colour emoji use RGBA atlas pages; native currently lacks a colour-font strike decoder.
+
+## examples/counter_greeter/src/rich_zig_adapter.zig
+
+The parsed text owns its plain buffer in the frame arena. It must not be deinitialized before the emitted slices are consumed; arena reset frees it in bulk.
+
+## examples/kerf_viewer/src/draw/pick.zig
+
+Picking considers text, fills, linework and interiors in that order. Linework chooses the nearest path with topmost ties; interiors choose the smallest enclosing region.

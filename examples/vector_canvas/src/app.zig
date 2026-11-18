@@ -52,7 +52,6 @@ pub const Geometry = struct {
                 try nodes.append(a, .{ .circle = .{ .x = x, .y = y, .radius = 2.5, .screen_radius = true, .fill = .{ 0.95, 0.85, 0.55, 1 } } });
             }
         }
-        // Pinned supports along the base: a world-size triangle under each node.
         for (0..nx + 1) |i| {
             const x = @as(f32, @floatFromInt(i)) * BAY_W;
             const tri = try a.alloc(teak.CanvasPoint, 3);
@@ -61,10 +60,7 @@ pub const Geometry = struct {
             tri[2] = .{ .x = x + 0.8, .y = -1.2 };
             try over.append(a, .{ .polygon = .{ .points = tri, .fill = .{ 0.35, 0.75, 0.55, 0.9 }, .stroke = .{ 0.6, 0.95, 0.75, 1 }, .thickness = 1 } });
         }
-        // Moment diagrams on the roof beams: the parabola of a uniformly loaded
-        // simple span, drawn under the beam as a filled polygon (the beam line
-        // closes it) plus a stroke. A diagram that changes sign crosses the
-        // beam line: split it at the zero crossings into one polygon per lobe.
+        // Sign changes require separate filled lobes at zero crossings.
         const top = @as(f32, @floatFromInt(ny)) * STORY_H;
         const stations = 12;
         for (0..nx) |i| {
@@ -77,7 +73,6 @@ pub const Geometry = struct {
             }
             try over.append(a, .{ .polygon = .{ .points = pts, .fill = .{ 0.95, 0.35, 0.35, 0.35 }, .stroke = .{ 1, 0.45, 0.45, 1 }, .thickness = 1.5 } });
         }
-        // Moment releases on the first-floor beams: a small arc at each end.
         for (0..nx) |i| {
             const x0 = @as(f32, @floatFromInt(i)) * BAY_W;
             try over.append(a, .{ .arc = .{ .x = x0 + 0.5, .y = STORY_H, .radius = 0.35, .start = 0, .sweep = 2 * std.math.pi, .color = .{ 0.6, 0.8, 1, 1 }, .thickness = 1.25 } });
@@ -106,15 +101,12 @@ pub const Geometry = struct {
 pub const Icons = struct {
     pub const PX = 40; // rasterized size (drawn at 20 logical px: crisp at 2x)
     pub const sources = [_][]const u8{
-        // fit: four corner brackets
         \\<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         \\<path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5"/></svg>
         ,
-        // antialias: a ring crossed by a diagonal
         \\<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         \\<circle cx="12" cy="12" r="8"/><path d="M6.5 17.5l11-11"/></svg>
         ,
-        // braces: a bay with both diagonals
         \\<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
         \\<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 3l18 18M21 3L3 21"/></svg>
         ,
@@ -215,8 +207,7 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.text(std.fmt.allocPrint(arena, "{d} members, {d} nodes, {d:.1} px/m", .{ g.memberCount(), g.nodes.len, scale }) catch "");
     cb.popGroup();
 
-    // Painter's order: braces, members, overlays, node dots on top. The
-    // slices are the Model's; nothing here is per-primitive work.
+    // Preserve painter order; the Model owns the slices.
     var prims: [4]teak.CanvasPrimitive = undefined;
     var n: usize = 0;
     if (m.show_braces) {

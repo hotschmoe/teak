@@ -46,7 +46,6 @@ pub fn textContains(font: *const Font, t: ir.Text, px: f64, py: f64, tol: f64) b
     const sr = @sin(rad);
     const dx = px - t.x;
     const dy = py - t.y;
-    // into text-local frame (rotate by -rot)
     const lx = dx * cr + dy * sr;
     const ly = -dx * sr + dy * cr;
     const sc = t.h / font.cap_height;
@@ -81,7 +80,6 @@ fn isRegionPen(d: *const ir.Drawing, it: ir.Item) bool {
 pub fn pickHit(d: *const ir.Drawing, font: *const Font, x: f64, y: f64, tol: f64) ?Hit {
     const items = d.items;
 
-    // 1. text
     var i: usize = items.len;
     while (i > 0) {
         i -= 1;
@@ -91,7 +89,6 @@ pub fn pickHit(d: *const ir.Drawing, font: *const Font, x: f64, y: f64, tol: f64
         if (textContains(font, it.body.text, x, y, tol)) return .{ .src = it.src, .kind = .text, .item = i, .dist = 0 };
     }
 
-    // 2. fills
     i = items.len;
     while (i > 0) {
         i -= 1;
@@ -109,7 +106,6 @@ pub fn pickHit(d: *const ir.Drawing, font: *const Font, x: f64, y: f64, tol: f64
         if (best <= tol) return .{ .src = it.src, .kind = .fill, .item = i, .dist = best };
     }
 
-    // 3. linework: nearest path within tol, ties -> topmost
     var best_i: ?usize = null;
     var best_d: f64 = std.math.inf(f64);
     i = items.len;
@@ -127,7 +123,6 @@ pub fn pickHit(d: *const ir.Drawing, font: *const Font, x: f64, y: f64, tol: f64
     }
     if (best_i) |bi| return .{ .src = items[bi].src, .kind = .line, .item = bi, .dist = best_d };
 
-    // 4. interiors: smallest enclosing region
     var reg_i: ?usize = null;
     var reg_area: f64 = std.math.inf(f64);
     i = items.len;
@@ -178,7 +173,6 @@ pub fn bboxOfSrc(d: *const ir.Drawing, font: *const Font, src: []const u8) ?BBox
         switch (it.body) {
             .text => |t| bb.merge(font.textBBox(t.s, t.h, t.x, t.y, t.rot, t.halign, t.valign)),
             .hatch => |h| {
-                // loops only (lines lie inside them)
                 if (h.loops.len > 0) {
                     for (h.loops) |l| bb.merge(geom.bboxOfPath(l, true));
                 } else bb.merge(it.bbox);
@@ -214,9 +208,6 @@ pub fn textOrigin(d: *const ir.Drawing, src: []const u8) ?TextOrigin {
     return .{ .x = b.x, .y = b.y, .halign = b.halign, .valign = b.valign, .h = b.h, .rot = b.rot };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 

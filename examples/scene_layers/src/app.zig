@@ -17,7 +17,7 @@ const scene = teak.scene;
 const Orbit = scene.Orbit;
 const Vec3 = scene.mat.Vec3;
 
-// ── Palette (kerf/spec/DESIGN.md) ──────────────────────────────────
+// Palette: kerf/spec/DESIGN.md.
 
 pub const paper: [4]f32 = .{ 0.949, 0.937, 0.902, 1 };
 const paper2: [4]f32 = .{ 0.914, 0.898, 0.847, 1 };
@@ -53,7 +53,6 @@ const tab_button: teak.ButtonStyle = .{ .bg = clear, .hover_bg = paper2, .press_
 const row_button: teak.ButtonStyle = .{ .bg = clear, .hover_bg = paper2, .press_bg = paper2, .fg = ink, .label_align = .start, .height = 24, .min_width = 0, .h_padding = 6 };
 const row_button_on: teak.ButtonStyle = .{ .bg = ink, .hover_bg = ink, .press_bg = ink, .fg = paper, .label_align = .start, .height = 24, .min_width = 0, .h_padding = 6 };
 
-// ── Scene content ──────────────────────────────────────────────────
 
 pub const scene_id: u32 = 7;
 const mesh_key: u32 = 1;
@@ -78,13 +77,9 @@ const sheet_size = [2]f32{ 120, 80 };
 /// Frame of each sheet: origin is the top-left as seen from the front; `u`
 /// runs right, `v` runs down the page (the canvas y axis).
 fn sheetFrame(id: u32) struct { origin: Vec3, u: Vec3, v: Vec3 } {
-    // `u`/`v` are world units per sheet unit, so 0.8 draws the 120 x 80 page at 96 x 64 inches.
     return switch (id) {
-        // behind the structure, upright, facing +z
         1 => .{ .origin = .{ 0, 80, -30 }, .u = .{ 0.8, 0, 0 }, .v = .{ 0, -0.8, 0 } },
-        // beside it on the left, upright, turned about 30 degrees toward the iso camera
         2 => .{ .origin = .{ -76, 80, -4 }, .u = .{ 0.4, 0, 0.693 }, .v = .{ 0, -0.8, 0 } },
-        // a plan sheet leaning on the ground in front: page down = toward the viewer, raised at the back
         else => .{ .origin = .{ 0, 20, 62 }, .u = .{ 0.8, 0, 0 }, .v = .{ 0, -0.27, 0.75 } },
     };
 }
@@ -99,7 +94,6 @@ fn markerPos(id: u32) Vec3 {
     };
 }
 
-// ── Model / Msg / update ───────────────────────────────────────────
 
 pub const Model = struct {
     cam: Orbit = .{ .target = .{ 48, 40, 30 }, .dist = 270, .yaw = -0.62, .pitch = 0.42 },
@@ -186,7 +180,6 @@ pub fn camera(m: *const Model) teak.Camera {
     return m.cam.camera(m.vp[0], m.vp[1], .{ .lo = .{ -20, -10, -40 }, .hi = .{ 130, 100, 90 } });
 }
 
-// ── Picking (pure: ray / screen quad against the same data the view emits) ──
 
 /// Which layer is under viewport-local px `(x, y)`: markers first (they float
 /// in front), then the nearest sheet or the annotation layer. 0 = nothing.
@@ -201,7 +194,6 @@ fn pickAtImpl(m: *const Model, x: f32, y: f32, w: f32, h: f32) u32 {
     return 0;
 }
 
-// ── Layers as View data ────────────────────────────────────────────
 
 /// The planes without content (frames only): enough for picking.
 fn planeFrames(m: *const Model, buf: *[4]teak.ScenePlane) []const teak.ScenePlane {
@@ -219,7 +211,6 @@ fn planeFrames(m: *const Model, buf: *[4]teak.ScenePlane) []const teak.ScenePlan
 }
 
 fn annotationPlane(content: []const teak.CanvasPrimitive) teak.ScenePlane {
-    // A clear sheet standing in front of the structure, facing +z, y up the page.
     return .{ .origin = .{ -4, 86, 58 }, .u = .{ 0.85, 0, 0 }, .v = .{ 0, -0.85, 0 }, .size = .{ 116, 70 }, .content = content, .opacity = 0.85, .layer = 2, .id = 4 };
 }
 
@@ -269,7 +260,6 @@ fn hatch(a: std.mem.Allocator, prims: *Prims, x0: f32, y0: f32, x1: f32, y1: f32
     var segs: std.ArrayList([4]f32) = .empty;
     var d = x0 - (y1 - y0);
     while (d < x1) : (d += gap) {
-        // line y = (x - d) + y0, clipped to the rect
         var ax = d;
         var ay = y0;
         var bx = d + (y1 - y0);
@@ -303,14 +293,12 @@ fn sheetContent(a: std.mem.Allocator, id: u32, lit: bool, picked: bool) []const 
     const h = sheet_size[1];
     const frame_color = if (picked) blue else ink;
     rectOutline(a, &p, 3, 3, w - 3, h - 3, frame_color, if (picked) 2.4 else 1.5);
-    // title block
     p.append(a, .{ .filled_rect = .{ .x = 3, .y = h - 13, .w = w - 6, .h = 10, .color = if (lit) .{ 0.90, 0.93, 0.98, 1 } else .{ 0.93, 0.91, 0.84, 1 } } }) catch {};
     rectOutline(a, &p, 3, h - 13, w - 3, h - 3, frame_color, 1.1);
     for ([_]f32{ 40, 84 }) |x| {
         const pts = a.dupe(Pt, &.{ .{ .x = x, .y = h - 13 }, .{ .x = x, .y = h - 3 } }) catch continue;
         p.append(a, .{ .polyline = .{ .points = pts, .color = frame_color, .thickness = 1.0 } }) catch {};
     }
-    // faint blueprint grid
     var g: f32 = 10;
     while (g < w - 3) : (g += 10) {
         p.append(a, .{ .vline = .{ .x = g, .color = .{ 0.663, 0.757, 0.867, 0.28 }, .thickness = 0.8 } }) catch {};
@@ -372,7 +360,6 @@ fn annotationContent(a: std.mem.Allocator, lit: bool) []const teak.CanvasPrimiti
     return p.items;
 }
 
-// ── Resources: one mesh, two generated marker images ───────────────
 
 const marker_px = 48;
 
@@ -386,16 +373,13 @@ fn markerImage(comptime bubble: bool) [marker_px * marker_px * 4]u8 {
         const dx = @as(f32, @floatFromInt(xx)) - c;
         const dy = @as(f32, @floatFromInt(yy)) - c;
         const r = @sqrt(dx * dx + dy * dy);
-        // coverage with ~1px feather
         const outer = std.math.clamp(c - 1 - r + 0.5, 0, 1);
         var cov: f32 = outer;
         if (!bubble) {
             const inner = std.math.clamp(r - (c - 7) + 0.5, 0, 1);
             cov = outer * inner;
-            // a centre dot
             cov = @max(cov, std.math.clamp(3.5 - r + 0.5, 0, 1));
         } else {
-            // knock out a small cross so it reads as a callout bubble
             const bar = @min(@abs(dx), @abs(dy));
             if (@abs(dx) < c * 0.62 and @abs(dy) < c * 0.62 and bar < 2.2) cov *= 1 - std.math.clamp(2.2 - bar + 0.5, 0, 1);
         }
@@ -478,7 +462,6 @@ fn buildStructure() Structure {
             const tri = [6]u32{ 0, 1, 2, 0, 2, 3 };
             for (tri, 0..) |t, k| s.idx[bi * 36 + fi * 6 + k] = base + t;
         }
-        // 12 edges
         var e: usize = 0;
         for (0..8) |i| {
             for (0..3) |axis| {
@@ -501,7 +484,6 @@ fn buildStructure() Structure {
     return s;
 }
 
-// ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 0, .gap = 0, .bg = paper, .align_cross = .stretch });
@@ -676,7 +658,6 @@ fn statusBar(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 

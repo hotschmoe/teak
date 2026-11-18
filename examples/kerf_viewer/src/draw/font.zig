@@ -255,7 +255,6 @@ pub const Font = struct {
                     const s = self.strokes[si];
                     var pi = s.p0;
                     if (s.p1 - s.p0 == 1) {
-                        // single point stroke (dot): emit a degenerate 2-point polyline
                         const p = self.pts[pi];
                         const lx = pen_x + @as(f64, p.x) * sc;
                         const ly = base_y + @as(f64, p.y) * sc;
@@ -334,9 +333,6 @@ fn substitute(cp: u21) u21 {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 

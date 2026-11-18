@@ -92,9 +92,6 @@ pub const BBox = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Arcs
-// ---------------------------------------------------------------------------
 
 pub const Arc = struct {
     cx: f64,
@@ -185,9 +182,6 @@ pub fn appendFlattened(out: *std.ArrayList(Vec2), a: Allocator, pts: []const BPt
     if (!closed) try out.append(a, pts[n - 1].v());
 }
 
-// ---------------------------------------------------------------------------
-// Distances, bounds
-// ---------------------------------------------------------------------------
 
 pub fn distPointSeg(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) f64 {
     const dx = bx - ax;
@@ -249,9 +243,6 @@ pub fn bboxOfPath(pts: []const BPt, closed: bool) BBox {
     return bb;
 }
 
-// ---------------------------------------------------------------------------
-// Polygons
-// ---------------------------------------------------------------------------
 
 /// Signed shoelace area (positive = counter-clockwise in a y-up frame).
 pub fn polygonArea(pts: []const Vec2) f64 {
@@ -358,9 +349,6 @@ pub fn pointInLoopsEvenOdd(loops: []const []const BPt, x: f64, y: f64) bool {
     return inside;
 }
 
-// ---------------------------------------------------------------------------
-// Triangulation (ear clipping with hole bridging)
-// ---------------------------------------------------------------------------
 
 /// Triangles as a flat list: every 3 consecutive points form a triangle.
 pub const TriList = std.ArrayList(Vec2);
@@ -419,7 +407,6 @@ pub fn triangulate(a: Allocator, outer: []const Vec2, holes: []const []const Vec
     while (hi < hs.items.len) : (hi += 1) {
         const h = hs.items[hi];
         const hv = h.pts[h.start];
-        // candidate ring vertices by distance
         const idx = try ar.alloc(usize, ring.items.len);
         for (idx, 0..) |*q, i| q.* = i;
         const Ctx = struct { ring: []const Vec2, hv: Vec2 };
@@ -443,7 +430,6 @@ pub fn triangulate(a: Allocator, outer: []const Vec2, holes: []const []const Vec
             }
         }
         const vi = found orelse idx[0];
-        // Build merged ring: ring[0..=vi], hole from start around back to start, ring[vi] again, ring[vi+1..]
         var merged: std.ArrayList(Vec2) = .empty;
         try merged.appendSlice(ar, ring.items[0 .. vi + 1]);
         var k: usize = 0;
@@ -515,7 +501,6 @@ fn earClip(a: Allocator, ar: Allocator, ring: []const Vec2, out: *TriList) Alloc
         // drop duplicates / collinear spikes
         const ar2 = cross3(pa, pb, pc);
         if (veq(pa, pb) or veq(pb, pc) or ar2 == 0) {
-            // remove cur
             next[pv] = nx;
             prev[nx] = pv;
             alive[cur] = false;
@@ -590,9 +575,6 @@ fn earClip(a: Allocator, ar: Allocator, ring: []const Vec2, out: *TriList) Alloc
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 

@@ -1,9 +1,5 @@
 const std = @import("std");
 
-// ── Greeter Component ──────────────────────────────────────────────
-// Text input + live greeting. All widget state (buffer, length, cursor) is
-// explicit on Model — nothing hidden. The text_input command carries only a
-// focus_msg; per-key events arrive as component Msgs via the app dispatcher.
 
 pub const MAX_NAME: usize = 63;
 const BUFFER_LEN: usize = MAX_NAME + 1;
@@ -40,7 +36,6 @@ pub const Msg = union(enum) {
 pub fn update(model: *Model, msg: Msg) void {
     switch (msg) {
         .name_char => |c| {
-            // Replace any active selection before inserting.
             deleteSelection(model);
             if (model.name_len >= MAX_NAME) return;
             std.mem.copyBackwards(
@@ -84,7 +79,6 @@ pub fn update(model: *Model, msg: Msg) void {
         },
         .name_replace_selection => |bytes| {
             deleteSelection(model);
-            // Cap to remaining capacity.
             const room = MAX_NAME - model.name_len;
             const insert = bytes[0..@min(bytes.len, room)];
             if (insert.len == 0) return;
@@ -151,7 +145,6 @@ pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 
