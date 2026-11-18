@@ -51,9 +51,6 @@ const font_mod = @import("font.zig");
 const Font = font_mod.Font;
 const Vec2 = geom.Vec2;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 /// Straight (non-premultiplied) sRGB color, components 0..1.
 pub const Color = struct {
@@ -215,9 +212,6 @@ pub const Options = struct {
     page: bool = false,
 };
 
-// ---------------------------------------------------------------------------
-// Internals
-// ---------------------------------------------------------------------------
 
 const P = struct {
     x: f32,
@@ -277,7 +271,6 @@ pub const Tessellator = struct {
     gpa: Allocator,
     buf: TriBuf = .{},
 
-    // per-build context
     view: View = undefined,
     pal: Palette = Palette.live(),
     opt: Options = .{},
@@ -287,7 +280,6 @@ pub const Tessellator = struct {
     ppi: f32 = 1, // px per model inch
     cull: geom.BBox = geom.BBox.empty,
 
-    // scratch (reused between builds)
     sp: std.ArrayList(P) = .empty,
     sd: std.ArrayList(P) = .empty,
     sp2: std.ArrayList(P) = .empty,
@@ -370,7 +362,6 @@ pub const Tessellator = struct {
         }
     }
 
-    // ---- low-level emit ---------------------------------------------------
 
     fn tri(self: *Tessellator, a: Vert, b: Vert, c: Vert) Allocator.Error!void {
         try self.buf.verts.ensureUnusedCapacity(self.gpa, 3);
@@ -388,7 +379,6 @@ pub const Tessellator = struct {
         try self.quad(mk(x0, y0, c, a), mk(x1, y0, c, a), mk(x1, y1, c, a), mk(x0, y1, c, a));
     }
 
-    // ---- grid -------------------------------------------------------------
 
     fn drawGrid(self: *Tessellator) Allocator.Error!void {
         const v = self.view;
@@ -431,7 +421,6 @@ pub const Tessellator = struct {
         }
     }
 
-    // ---- generic helpers --------------------------------------------------
 
     fn penPx(self: *const Tessellator, it: ir.Item) f32 {
         const pen = self.drawing.penOf(it);
@@ -472,7 +461,6 @@ pub const Tessellator = struct {
         if (closed) out.appendAssumeCapacity(out.items[0]);
     }
 
-    // ---- items ------------------------------------------------------------
 
     fn drawItem(self: *Tessellator, it: ir.Item) Allocator.Error!void {
         const ink = self.pal.ink;
@@ -517,7 +505,6 @@ pub const Tessellator = struct {
         for (h.lines) |ln| {
             const a = self.toP(ln[0], ln[1]);
             const b = self.toP(ln[2], ln[3]);
-            // viewport cull (screen space)
             if ((a.x < -pad and b.x < -pad) or (a.y < -pad and b.y < -pad) or
                 (a.x > v.width + pad and b.x > v.width + pad) or
                 (a.y > v.height + pad and b.y > v.height + pad)) continue;
@@ -547,7 +534,6 @@ pub const Tessellator = struct {
         var c = col;
         c.a *= alpha;
         if (h_px < 2.5) {
-            // greek: one thin line at mid cap height
             const w = self.font.textWidth(t.s, t.h);
             const x0: f64 = switch (t.halign) {
                 .left => 0,
@@ -577,7 +563,7 @@ pub const Tessellator = struct {
             const line = self.polys.line(i);
             self.tp.clearRetainingCapacity();
             try self.tp.ensureTotalCapacity(self.gpa, line.len);
-            // radial decimation: drop vertices closer than 0.7 px to the previous kept one (keeps last)
+            // Radial decimation must keep the last vertex.
             var last: P = undefined;
             for (line, 0..) |q, k| {
                 const p = self.toP(q.x, q.y);
@@ -593,7 +579,6 @@ pub const Tessellator = struct {
         }
     }
 
-    // ---- selection / hover ------------------------------------------------
 
     /// Tint the cut region of `src`. Region sources, in order: hatch loops (loop 0 outer, rest holes);
     /// else closed cut/profile paths plus loops formed by chaining its open cut/profile paths end to end
@@ -617,7 +602,6 @@ pub const Tessellator = struct {
         }
         if (drew) return true;
 
-        // closed cut paths + chained open cut paths
         var arena = std.heap.ArenaAllocator.init(self.gpa);
         defer arena.deinit();
         const ar = arena.allocator();
@@ -690,7 +674,6 @@ pub const Tessellator = struct {
         }
     }
 
-    // ---- stroking ---------------------------------------------------------
 
     fn strokeStyled(self: *Tessellator, pts: []const P, closed: bool, W: f32, dash_mm: []const f64, col: Color) Allocator.Error!void {
         if (dash_mm.len >= 2) {
@@ -763,7 +746,6 @@ pub const Tessellator = struct {
     }
 
     fn dot(self: *Tessellator, p: P, prof: Profile, col: Color) Allocator.Error!void {
-        // small octagon fan; fringe ring when antialiased
         const steps = 8;
         const r_in = if (self.opt.antialias) prof.inner else prof.w;
         const r_out = prof.outer;
@@ -790,7 +772,6 @@ pub const Tessellator = struct {
     /// Stroke a polyline given in screen px. See module doc for join/cap rules.
     fn strokeP(self: *Tessellator, pts_in: []const P, closed_in: bool, W: f32, cap_in: Cap, col: Color) Allocator.Error!void {
         const prof = makeProfile(W, self.opt.antialias);
-        // dedupe
         self.sp.clearRetainingCapacity();
         try self.sp.ensureTotalCapacity(self.gpa, pts_in.len);
         for (pts_in) |p| {
@@ -827,7 +808,6 @@ pub const Tessellator = struct {
         const cap: Cap = if (cap_in == .auto) (if (prof.w >= round_cap_min_w * 0.5) .round else .square) else cap_in;
         const joint_cap: Cap = if (prof.w >= round_cap_min_w * 0.5) .round else .square;
 
-        // find breaks
         var first_break: ?usize = null;
         var any_break = false;
         if (closed) {
@@ -851,7 +831,6 @@ pub const Tessellator = struct {
             return self.emitRun(pts, dirs, closed, cap, cap, prof, col);
         }
 
-        // Rotate closed loops so they start at a break, then treat as open.
         var cp: []const P = pts;
         var cd: []const P = dirs;
         var ccap0 = cap;
@@ -872,7 +851,6 @@ pub const Tessellator = struct {
             ccap0 = joint_cap;
             ccap1 = joint_cap;
         }
-        // split at breaks
         const m = cp.len;
         var start: usize = 0;
         var i: usize = 1;
@@ -943,15 +921,12 @@ pub const Tessellator = struct {
 
     fn emitRunN(self: *Tessellator, comptime N: usize, pts: []const P, dirs: []const P, closed: bool, cap0: Cap, cap1: Cap, prof: Profile, col: Color) Allocator.Error!void {
         const n = pts.len;
-        // End ramps (feathered line ends) only for lines >= 2 px; thinner lines get hard ends,
-        // which is invisible at 1 px and saves 1/3 of the geometry of text and hatch strokes.
         const aa = self.opt.antialias and prof.w >= 1.0;
         var prev: [N]Vert = undefined;
         var cur: [N]Vert = undefined;
         try self.buf.verts.ensureUnusedCapacity(self.gpa, (n + 4) * 18 + 400); // rows + round-cap fans
 
         if (closed) {
-            // vertex i sits between dirs[i-1] and dirs[i]
             var i: usize = 0;
             while (i <= n) : (i += 1) {
                 const k = i % n;
@@ -964,7 +939,6 @@ pub const Tessellator = struct {
             return;
         }
 
-        // start cap
         {
             const d = dirs[0];
             const nm = leftN(d);
@@ -992,14 +966,12 @@ pub const Tessellator = struct {
                 },
             }
         }
-        // interior vertices
         var i: usize = 1;
         while (i + 1 < n) : (i += 1) {
             cur = row(N, pts[i], miterVec(dirs[i - 1], dirs[i]), 1, &prof, col);
             self.rowQuads(N, &prev, &cur);
             prev = cur;
         }
-        // end cap
         {
             const d = dirs[n - 2];
             const nm = leftN(d);
@@ -1034,7 +1006,6 @@ pub const Tessellator = struct {
         }
     }
 
-    // ---- solid fills ------------------------------------------------------
 
     fn beginLoops(self: *Tessellator) void {
         self.scr.clearRetainingCapacity();
@@ -1058,7 +1029,6 @@ pub const Tessellator = struct {
             }
             self.scr.appendAssumeCapacity(.{ .x = sxv, .y = syv });
         }
-        // drop closing duplicate
         if (self.scr.items.len - start > 1) {
             const f = self.scr.items[start];
             const l = self.scr.items[self.scr.items.len - 1];
@@ -1092,14 +1062,12 @@ pub const Tessellator = struct {
         }
         if (!valid) return;
 
-        // inset decision on the outer loop
         const r0 = self.loopRange(0);
         var bb = geom.BBox.empty;
         for (self.scr.items[r0.s..r0.e]) |q| bb.addPoint(q.x, q.y);
         const inset: f64 = if (aa and @min(bb.width(), bb.height()) > 4.0) 0.5 else 0.0;
         const out_dist: f64 = if (aa) (if (inset > 0) 0.5 else 1.0) else 0.0;
 
-        // rings
         self.ring_in.clearRetainingCapacity();
         self.ring_out.clearRetainingCapacity();
         try self.ring_in.ensureTotalCapacity(self.gpa, self.scr.items.len);
@@ -1111,7 +1079,6 @@ pub const Tessellator = struct {
             for (l, 0..) |v, i| {
                 const pp = l[(i + m - 1) % m];
                 const nn = l[(i + 1) % m];
-                // outward = right of travel for positive-area loops in these numbers: (dy, -dx)... derive by orientation
                 const d0 = unit2(v.x - pp.x, v.y - pp.y);
                 const d1 = unit2(nn.x - v.x, nn.y - v.y);
                 const n0 = Vec2{ .x = d0.y, .y = -d0.x };
@@ -1125,15 +1092,11 @@ pub const Tessellator = struct {
                     const ml = @sqrt(mv.x * mv.x + mv.y * mv.y);
                     if (ml > 2.5) mv = .{ .x = mv.x * 2.5 / ml, .y = mv.y * 2.5 / ml };
                 }
-                // For a positive-area loop in screen numbers (y down) the interior is on the LEFT of travel
-                // in the numeric frame, so numeric-right = outside. Holes (negative) have fill on the left too.
-                // => outward = numeric-right in both cases?  Interior(left) = +(-dy,dx); right = (dy,-dx).
                 self.ring_in.appendAssumeCapacity(.{ .x = v.x - mv.x * inset, .y = v.y - mv.y * inset });
                 self.ring_out.appendAssumeCapacity(.{ .x = v.x + mv.x * out_dist, .y = v.y + mv.y * out_dist });
             }
         }
 
-        // interior triangles
         self.tris.clearRetainingCapacity();
         const in0 = self.ring_in.items[r0.s..r0.e];
         if (nl == 1 and isConvex(in0)) {
@@ -1153,7 +1116,6 @@ pub const Tessellator = struct {
         try self.buf.verts.ensureUnusedCapacity(self.gpa, self.tris.items.len);
         for (self.tris.items) |q| self.buf.verts.appendAssumeCapacity(mk(@floatCast(q.x), @floatCast(q.y), col, col.a));
 
-        // fringe
         if (aa) {
             for (0..nl) |li| {
                 const r = self.loopRange(li);

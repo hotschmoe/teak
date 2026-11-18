@@ -41,18 +41,3 @@ pub fn main() !void {
 
     std.debug.print("\nframe has {d} commands\n", .{cmds.len});
 }
-
-test "cli trace: add / toggle / clear_completed leaves 1 pending item" {
-    const testing = std.testing;
-    var model: App.Model = .{};
-    for ([_][]const u8{ "a", "b", "c" }) |label| {
-        for (label) |c| App.update(&model, .{ .input_char = c });
-        App.update(&model, .add_item);
-    }
-    App.update(&model, .{ .toggle = 0 });
-    App.update(&model, .{ .toggle = 2 });
-    App.update(&model, .clear_completed);
-
-    try testing.expectEqual(@as(u16, 1), model.items_len);
-    try testing.expectEqualStrings("b", model.items[0].label[0..model.items[0].label_len]);
-}

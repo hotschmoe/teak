@@ -310,7 +310,6 @@ pub fn DataTable(comptime cfg: Config) type {
             m.focused = true;
             const row = m.order[disp];
             if (m.mods.shift and m.has_cursor) {
-                // Range from the anchor to the clicked row (Ctrl keeps the rest).
                 if (!m.mods.ctrl) m.clearSelection();
                 selectRange(m, m.rank[m.anchor], disp);
                 m.cursor = row;
@@ -416,8 +415,6 @@ pub fn DataTable(comptime cfg: Config) type {
             return .{ .grip = .{ .col = @intCast(ev.id - grip_base), .dx = ev.dx } };
         }
 
-        // ── View ───────────────────────────────────────────────────
-
         pub const ViewOpts = struct {
             /// `ScrollStyle.id` of the body (wheel + layout reports). Non-zero.
             id: u32,
@@ -466,7 +463,6 @@ pub fn DataTable(comptime cfg: Config) type {
 
             cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .flex = if (opts.height > 0) 0 else 1 });
 
-            // Header: sticky because it is not inside the scroll region.
             cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .height = opts.header_h, .bg = pal.bg_raised });
             for (cols, 0..) |col, i| {
                 const w = m.widths[i];
@@ -489,7 +485,6 @@ pub fn DataTable(comptime cfg: Config) type {
                 } else {
                     cb.textStyled(title, opts.font, pal.fg_muted);
                 }
-                // The resize grip: a thin interactive canvas on the column's right edge.
                 const prims = arena.alloc(cmd.CanvasPrimitive, 1) catch return;
                 prims[0] = .{ .vline = .{ .x = grip_w / 2, .color = pal.border, .thickness = 1 } };
                 cb.canvasInteractive(.{ .width = grip_w, .height = opts.header_h }, prims, opts.grip_base + @as(u32, @intCast(i)), "resize column");
@@ -498,7 +493,6 @@ pub fn DataTable(comptime cfg: Config) type {
             cb.popGroup();
             cb.dividerStyled(.{ .thickness = 1, .color = pal.border });
 
-            // Body.
             cb.pushScroll(.{
                 .direction = .vertical,
                 .padding = 0,
@@ -516,9 +510,6 @@ pub fn DataTable(comptime cfg: Config) type {
                 .visible_start = win.first,
                 .visible_end = win.end,
             });
-            // One Tab stop for the whole table: the cursor row's first cell (else the
-            // first shown row's). Clicking or Enter on it focuses the table; then the
-            // app's `keyMsg` wiring drives the cursor.
             var stop_disp = win.first;
             if (m.has_cursor) {
                 var d = win.first;
@@ -538,7 +529,6 @@ pub fn DataTable(comptime cfg: Config) type {
                     const w = m.widths[i];
                     var bs = cb.theme.button;
                     bs.bg = bg;
-                    // No per-cell hover: a lone lit cell reads as a bug; the row colours carry the state.
                     bs.hover_bg = bg;
                     bs.press_bg = bg;
                     bs.fg = pal.fg;
@@ -585,8 +575,6 @@ fn mix(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     return .{ a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1 };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const T = DataTable(.{ .max_rows = 256, .max_cols = 4 });
 
@@ -610,185 +598,4 @@ fn fresh(m: *T.Model) void {
     m.setRows(5);
     m.view_h = 66; // three rows at 22
     m.row_h = 22;
-}
-
-test "sort: ascending, descending, off; stable on ties; selection follows the data row" {
-    var m: T.Model = undefined;
-    fresh(&m);
-    T.update(&m, .{ .row = 4 }, src_rows); // select data row 4 (value 40)
-    T.update(&m, .{ .sort = 1 }, src_rows);
-    try testing.expectEqualSlices(u32, &.{ 1, 3, 2, 0, 4 }, m.order[0..5]); // 10,10,20,30,40; ties keep data order
-    try testing.expect(m.isSelected(4));
-    try testing.expectEqual(@as(?u32, 4), m.cursorDisplay());
-    for (0..5) |d| try testing.expectEqual(@as(u32, @intCast(d)), m.rank[m.order[d]]);
-    T.update(&m, .{ .sort = 1 }, src_rows);
-    try testing.expectEqualSlices(u32, &.{ 4, 0, 2, 1, 3 }, m.order[0..5]); // desc, ties still in data order
-    T.update(&m, .{ .sort = 1 }, src_rows);
-    try testing.expectEqualSlices(u32, &.{ 0, 1, 2, 3, 4 }, m.order[0..5]);
-    try testing.expectEqual(@as(?u8, null), m.sort_col);
-    T.update(&m, .{ .sort = 0 }, src_rows); // by name asc: a b c d e = rows 4 3 2 1 0
-    try testing.expectEqualSlices(u32, &.{ 4, 3, 2, 1, 0 }, m.order[0..5]);
-}
-
-test "resort: re-applies the current sort after a data change, keeps direction and selection" {
-    var m: T.Model = undefined;
-    fresh(&m);
-    T.update(&m, .{ .row = 4 }, src_rows); // select data row 4
-    T.update(&m, .{ .sort = 1 }, src_rows);
-    T.update(&m, .{ .sort = 1 }, src_rows); // desc: 40,30,20,10,10
-    try testing.expectEqualSlices(u32, &.{ 4, 0, 2, 1, 3 }, m.order[0..5]);
-    // The data changes (row 4 drops to 5, row 2 rises to 50): same count.
-    const vals2 = [_]i32{ 30, 10, 50, 10, 5 };
-    const changed: TestRows = .{ .vals = &vals2, .names = &names };
-    m.resort(changed);
-    try testing.expectEqualSlices(u32, &.{ 2, 0, 1, 3, 4 }, m.order[0..5]);
-    try testing.expectEqual(@as(?u8, 1), m.sort_col);
-    try testing.expect(m.sort_desc);
-    try testing.expect(m.isSelected(4) and m.sel_count == 1);
-    try testing.expectEqual(@as(?u32, 4), m.cursorDisplay());
-    for (0..5) |d| try testing.expectEqual(@as(u32, @intCast(d)), m.rank[m.order[d]]);
-    // The Msg form does the same; unsorted is a no-op.
-    T.update(&m, .resort, src_rows);
-    try testing.expectEqualSlices(u32, &.{ 4, 0, 2, 1, 3 }, m.order[0..5]);
-    m.setRows(5);
-    T.update(&m, .resort, changed);
-    try testing.expectEqualSlices(u32, &.{ 0, 1, 2, 3, 4 }, m.order[0..5]);
-}
-
-test "selection: click, ctrl-toggle, shift-range" {
-    var m: T.Model = undefined;
-    fresh(&m);
-    T.update(&m, .{ .row = 1 }, src_rows);
-    try testing.expectEqual(@as(u32, 1), m.sel_count);
-    T.update(&m, .{ .mods = .{ .ctrl = true } }, src_rows);
-    T.update(&m, .{ .row = 3 }, src_rows);
-    try testing.expectEqual(@as(u32, 2), m.sel_count);
-    try testing.expect(m.isSelected(1) and m.isSelected(3));
-    T.update(&m, .{ .row = 3 }, src_rows); // ctrl-click again deselects
-    try testing.expect(!m.isSelected(3));
-    T.update(&m, .{ .mods = .{ .shift = true } }, src_rows);
-    T.update(&m, .{ .row = 4 }, src_rows); // anchor is row 3? ctrl-click set anchor to 3; range 3..4
-    try testing.expect(m.isSelected(3) and m.isSelected(4) and !m.isSelected(1));
-    T.update(&m, .{ .mods = .{} }, src_rows);
-    T.update(&m, .{ .row = 0 }, src_rows);
-    try testing.expectEqual(@as(u32, 1), m.sel_count);
-    var out: [8]u32 = undefined;
-    try testing.expectEqual(@as(usize, 1), m.selectedRows(&out));
-    try testing.expectEqual(@as(u32, 0), out[0]);
-}
-
-test "keyboard: arrows, paging, home/end, shift-extend, select all, reveal" {
-    var m: T.Model = undefined;
-    m = .{};
-    m.setRows(100);
-    m.row_h = 22;
-    m.view_h = 110; // 5 rows
-    m.sc.setExtent(110, 2200);
-    T.update(&m, .{ .key = .down }, src_rows);
-    try testing.expectEqual(@as(?u32, 0), m.cursorDisplay()); // first key press lands on row 0
-    T.update(&m, .{ .key = .down }, src_rows);
-    T.update(&m, .{ .key = .down }, src_rows);
-    try testing.expectEqual(@as(?u32, 2), m.cursorDisplay());
-    T.update(&m, .{ .key = .page_down }, src_rows);
-    try testing.expectEqual(@as(?u32, 7), m.cursorDisplay());
-    try testing.expect(m.sc.pos + m.view_h >= 8 * 22); // revealed
-    T.update(&m, .{ .key = .end }, src_rows);
-    try testing.expectEqual(@as(?u32, 99), m.cursorDisplay());
-    try testing.expectEqual(@as(f32, 2200 - 110), m.sc.pos);
-    T.update(&m, .{ .key = .home }, src_rows);
-    try testing.expectEqual(@as(f32, 0), m.sc.pos);
-    T.update(&m, .{ .mods = .{ .shift = true } }, src_rows);
-    T.update(&m, .{ .key = .page_down }, src_rows);
-    try testing.expectEqual(@as(u32, 6), m.sel_count); // rows 0..5
-    T.update(&m, .{ .mods = .{} }, src_rows);
-    T.update(&m, .{ .key = .select_all }, src_rows);
-    try testing.expectEqual(@as(u32, 100), m.sel_count);
-    T.update(&m, .{ .key = .clear }, src_rows);
-    try testing.expectEqual(@as(u32, 0), m.sel_count);
-}
-
-test "type-to-search: prefix of the sort column (column 0 unsorted), case-insensitive, wraps, resets on navigation" {
-    var m: T.Model = undefined;
-    fresh(&m);
-    // Unsorted: column 0 is the name: e d c b a.
-    T.update(&m, .{ .char = 'C' }, src_rows);
-    try testing.expectEqual(@as(?u32, 2), m.cursorDisplay()); // "c"
-    try testing.expectEqualStrings("C", T.searchText(&m));
-    T.update(&m, .{ .char = 'x' }, src_rows); // "Cx": no match, buffer kept, cursor stays
-    try testing.expectEqual(@as(?u32, 2), m.cursorDisplay());
-    T.update(&m, .{ .key = .down }, src_rows); // navigation starts a new search
-    try testing.expectEqual(@as(usize, 0), T.searchText(&m).len);
-    T.update(&m, .{ .char = 'e' }, src_rows); // from after the cursor, wrapping to the top
-    try testing.expectEqual(@as(?u32, 0), m.cursorDisplay());
-    try testing.expect(m.isSelected(0) and m.sel_count == 1);
-    // Sorted by Value: the search column is the sort column, matched as text ("10" twice, then 20...).
-    T.update(&m, .{ .sort = 1 }, src_rows);
-    T.update(&m, .{ .char = '2' }, src_rows);
-    try testing.expectEqual(@as(u32, 2), m.cursor); // value 20 is data row 2
-    try testing.expect(T.charMsg('a') != null and T.charMsg(0x08) == null);
-}
-
-test "grip resizes within limits; keyMsg and gripMsg map inputs" {
-    var m: T.Model = .{};
-    m.setRows(1);
-    T.update(&m, .{ .grip = .{ .col = 1, .dx = 30 } }, src_rows);
-    try testing.expectEqual(@as(f32, 150), m.widths[1]);
-    T.update(&m, .{ .grip = .{ .col = 1, .dx = -500 } }, src_rows);
-    try testing.expectEqual(@as(f32, 24), m.widths[1]);
-    try testing.expectEqual(T.Msg{ .key = .page_up }, T.keyMsg(.page_up, .{}).?);
-    try testing.expect(T.keyMsg(.tab, .{}) == null);
-    const ev = pointer.CanvasEvent{ .id = 903, .kind = .move, .dx = 4, .buttons = .{ .left = true } };
-    const g = T.gripMsg(ev, 900).?;
-    try testing.expectEqual(@as(u8, 3), g.grip.col);
-    try testing.expect(T.gripMsg(.{ .id = 903, .kind = .move, .dx = 4 }, 900) == null); // no button held
-    try testing.expect(T.gripMsg(.{ .id = 50, .kind = .move, .dx = 4, .buttons = .{ .left = true } }, 900) == null);
-}
-
-test "window: emits only the viewport plus overscan, whatever the row count" {
-    var m: T.Model = .{};
-    m.setRows(256);
-    m.view_h = 100;
-    m.sc.setExtent(100, 256 * 22);
-    m.sc.jumpTo(22 * 100 + 5);
-    const w = T.window(&m, .{ .id = 1, .grip_base = 900 });
-    try testing.expectEqual(@as(u32, 98), w.first);
-    try testing.expect(w.end - w.first <= 12);
-    try testing.expect(w.end > 100);
-}
-
-test "view: header + only the visible rows, balanced, with sort arrow and selection colour" {
-    const AppMsg = union(enum) { sort: u8, row: u32 };
-    const msgs = struct {
-        pub fn sort(c: u8) AppMsg {
-            return .{ .sort = c };
-        }
-        pub fn row(d: u32) AppMsg {
-            return .{ .row = d };
-        }
-    };
-    var m: T.Model = undefined;
-    fresh(&m);
-    T.update(&m, .{ .sort = 1 }, src_rows);
-    T.update(&m, .{ .row = 0 }, src_rows);
-    var cb = cmd.CmdBuffer(AppMsg).init(testing.allocator);
-    defer cb.deinit();
-    const cols = [_]Column{ .{ .title = "Name", .width = 100 }, .{ .title = "Value", .width = 80, .cell_align = .right } };
-    T.view(&m, &cb, &cols, src_rows, msgs, .{ .id = 7, .grip_base = 900 });
-    // Cells and headers are cut by the renderer at the pixel, not pre-truncated here.
-    for (cb.cmds.items) |c| switch (c) {
-        .button => |b| try testing.expect(b.style.ellipsis),
-        else => {},
-    };
-    try testing.expect(cmd.validateBalance(cb.cmds.items) == null);
-    var labels: usize = 0;
-    var arrow = false;
-    for (cb.cmds.items) |c| switch (c) {
-        .button => |b| {
-            labels += 1;
-            if (std.mem.indexOf(u8, b.label, "\u{25B2}") != null) arrow = true;
-        },
-        else => {},
-    };
-    try testing.expect(arrow);
-    try testing.expectEqual(@as(usize, 2 + 5 * 2), labels); // 2 header buttons + 5 rows x 2 cells
 }

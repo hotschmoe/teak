@@ -3,7 +3,7 @@
 **Status**: All 8 features `pub` in `src/teak.zig` (or in example glue).
 **Branch**: `functional_gaps_yolo`
 **HARDLINE additions**: §2 escape hatches 5 (overlay layer) + 6 (subscriptions).
-**Tests**: distributed — each section names its test files.
+**Checks**: the blocking and background gates run example programs and drive the todo app.
 
 The pre-YOLO Teak prototype could only express a flat document of
 colored quads + monospaced glyphs. That covered the proof-of-architecture
@@ -22,9 +22,6 @@ extensions on the Host validator are bounded by §4(d).
 **Source**: `src/core/cmd.zig` (`OverlayStyle`, `push_overlay`,
 `pop_overlay`); layout/hit-test/render arms in
 `src/{layout,input,render}/`.
-**Tests**: `src/layout/engine.zig`, `src/input/hit_test.zig`,
-`src/render/build.zig`.
-
 `push_overlay` / `pop_overlay` delimit a region of the flat `[]Cmd`
 buffer that:
 
@@ -58,9 +55,6 @@ panel + close button. See `examples/counter_greeter/src/app.zig`.
 
 **Source**: `src/core/cmd.zig` (`ImageCmd`, `ImageStyle`);
 `src/render/build.zig` (`ImageDraw`); `src/gpu/{context,native,web}.zig`.
-**Tests**: validator covered by `src/gpu/context.zig`; render-side
-covered in `src/render/build.zig`.
-
 Two surface methods on the Gpu validator (HARDLINE §4(d) extension):
 
 ```zig
@@ -90,9 +84,6 @@ pending real zunk texture upload + a parallel image pipeline.
 `src/input/keys.zig` (new variants); `src/platform/host.zig`
 (`Clipboard`, `ImeState`); `src/platform/win32.zig` (real impl);
 `src/platform/wasm.zig` (stub).
-**Tests**: `examples/counter_greeter/src/greeter.zig`,
-`src/render/build.zig`.
-
 `TextInputCmd` gains `selection_anchor: ?usize`. When non-null and
 `!= cursor`, the renderer draws a selection highlight from
 `min(anchor, cursor)` to `max(anchor, cursor)`. Same byte semantics
@@ -127,8 +118,6 @@ a normal `name_replace_selection` Msg.
 
 **Source**: `src/core/sub.zig`.
 **Host surface**: `nowMs() u64` on validateHost (HARDLINE §4(d)).
-**Tests**: `src/core/sub.zig`.
-
 App declares:
 
 ```zig
@@ -201,8 +190,6 @@ Surface stays stable so callers compile cleanly.
 
 **Source**: `src/core/cmd.zig` (`VirtualListStyle`, `push_virtual_list`,
 `pop_virtual_list`); layout/hit-test arms in `src/{layout,input}/`.
-**Tests**: `src/layout/engine.zig`, `test/integration_test.zig`.
-
 Container that **claims** `total_count * item_extent` of main-axis
 space but only **contains** cmds for the visible window. The app
 computes the visible window from the parent scroll's offset and emits
@@ -220,8 +207,6 @@ regardless of total row count.
 **Source**: `src/input/a11y.zig`.
 **Host surface**: `publishA11yTree(nodes: []const A11yNode) void` on
 validateHost (HARDLINE §4(d)).
-**Tests**: `src/input/a11y.zig`, `test/integration_test.zig`.
-
 `buildA11yTree(arena, cmds, rects, focus_index) → []A11yNode` — pure
 function over `[]Cmd` + `[]Rect`. Each node carries `role`, `cmd_index`,
 `bounds`, `label`, `focused`, and a packed `state` (checkbox/radio: 0/1;
@@ -282,9 +267,6 @@ Both backends ship real `publishA11yTree` implementations:
 
 **Source**: `src/core/cmd.zig` (`RichTextCmd`, `RichTextSpan`);
 `examples/counter_greeter/src/rich_zig_adapter.zig`.
-**Tests**: `src/render/build.zig`,
-`examples/counter_greeter/src/rich_zig_adapter.zig`.
-
 `RichTextCmd` carries:
 
 - `content: []const u8` — full UTF-8 string.

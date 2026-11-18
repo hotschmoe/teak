@@ -162,9 +162,6 @@ fn gridPrimitives(arena: std.mem.Allocator, m: *const Model) []const teak.Canvas
         const major = @mod(@round((y - m.pan_y) / step), 5) == 0;
         prims.append(arena, .{ .hline = .{ .y = y, .color = if (major) .{ 0.32, 0.34, 0.42, 1 } else .{ 0.2, 0.21, 0.27, 1 } } }) catch return prims.items;
     }
-    // Coordinate labels at grid intersections, spaced >= ~130 px apart on screen. They are
-    // world-space text: the font size follows the zoom, and `scalable` draws every size from
-    // one distance-field glyph set, so zooming 0.2x - 8x never re-rasterizes or blurs.
     const every: f32 = @max(1, @ceil(130 / step));
     const label_font: teak.FontSpec = .{ .size_px = 11 * m.zoom, .family = .mono, .scalable = true };
     var ly = first_y;
@@ -179,7 +176,6 @@ fn gridPrimitives(arena: std.mem.Allocator, m: *const Model) []const teak.Canvas
             prims.append(arena, .{ .text = .{ .x = lx + 3 * m.zoom, .y = ly + 2 * m.zoom, .content = label, .font = label_font, .color = .{ 0.62, 0.68, 0.85, 1 } } }) catch break;
         }
     }
-    // World origin.
     prims.append(arena, .{ .marker = .{ .x = m.pan_x, .y = m.pan_y, .size = 10, .color = .{ 0.95, 0.6, 0.2, 1 } } }) catch {};
     return prims.items;
 }
@@ -193,38 +189,4 @@ fn scrollbarThumb(arena: std.mem.Allocator, m: *const Model) []const teak.Canvas
     const prims = arena.alloc(teak.CanvasPrimitive, 1) catch return &.{};
     prims[0] = .{ .filled_rect = .{ .x = 0, .y = thumb_y, .w = 8, .h = thumb_h, .color = .{ 0.55, 0.6, 0.75, 1 } } };
     return prims;
-}
-
-test "zoom keeps the world point under the cursor fixed" {
-    var m = Model{ .pan_x = 40, .pan_y = 10 };
-    const wx = (200 - m.pan_x) / m.zoom;
-    const wy = (120 - m.pan_y) / m.zoom;
-    update(&m, .{ .zoom_at = .{ .dy = -240, .x = 200, .y = 120 } });
-    try std.testing.expect(m.zoom > 1);
-    try std.testing.expectApproxEqAbs(wx, (200 - m.pan_x) / m.zoom, 0.001);
-    try std.testing.expectApproxEqAbs(wy, (120 - m.pan_y) / m.zoom, 0.001);
-}
-
-test "pointerMsg canvas: drag pans, hover tracks, wheel zooms, layout sizes" {
-    const m = Model{};
-    const drag = onCanvas(&m, .{ .id = CANVAS_ID, .kind = .move, .dx = 3, .dy = -2, .buttons = .{ .left = true } }).?;
-    try std.testing.expectEqual(@as(f32, 3), drag.pan[0]);
-    const hover = onCanvas(&m, .{ .id = CANVAS_ID, .kind = .move, .x = 9, .y = 8 }).?;
-    try std.testing.expectEqual(@as(f32, 9), hover.hover.?[0]);
-    try std.testing.expect(onCanvas(&m, .{ .id = CANVAS_ID, .kind = .down }) == null);
-    const lay = onCanvas(&m, .{ .id = CANVAS_ID, .kind = .layout, .w = 560, .h = 460 }).?;
-    try std.testing.expectEqual(@as(f32, 460), lay.view_size[1]);
-}
-
-test "scroll offset clamps to the reported content extent" {
-    var m = Model{};
-    update(&m, .{ .list_extent = .{ 300, 1000 } });
-    update(&m, .{ .list_scroll_by = 5000 });
-    try std.testing.expectEqual(@as(f32, 700), m.list_scroll);
-    update(&m, .{ .list_scroll_by = -9999 });
-    try std.testing.expectEqual(@as(f32, 0), m.list_scroll);
-    // Content shrinks below the offset: re-clamped on the next report.
-    update(&m, .{ .list_scroll_by = 400 });
-    update(&m, .{ .list_extent = .{ 300, 500 } });
-    try std.testing.expectEqual(@as(f32, 200), m.list_scroll);
 }

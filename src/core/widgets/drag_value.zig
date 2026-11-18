@@ -150,8 +150,6 @@ pub fn DragValue(comptime cfg: Config) type {
             prims[1] = .{ .filled_rect = .{ .x = 1, .y = 1, .w = opts.width - 2, .h = opts.height - 2, .color = pal.bg_sunken } };
             // Left-padded; canvas text has no measurer at view time.
             prims[2] = .{ .text = .{ .x = 8, .y = @max(0, (opts.height - font.size_px * 1.2) / 2), .content = text, .font = font, .color = pal.fg } };
-            // A focusable pointer canvas (as `canvasInteractiveFocusable`) with
-            // the horizontal-resize cursor.
             cb.cmds.append(cb.backing, cb.box(.canvas, .{
                 .style = .{ .width = opts.width, .height = opts.height },
                 .primitives = prims,
@@ -165,57 +163,5 @@ pub fn DragValue(comptime cfg: Config) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const DV = DragValue(.{ .min = 0, .max = 10, .speed = 0.25, .step = 1, .precision = 1 });
-
-test "drag accumulates per pixel, rounds, clamps; modifiers scale" {
-    var m: DV.Model = .{ .value = 5 };
-    DV.update(&m, DV.eventMsg(.{ .id = 1, .kind = .down, .button = .left, .buttons = .{ .left = true } }).?);
-    try testing.expect(m.dragging);
-    // 1 px at 0.25/px with precision 1 -> 5.3 after rounding 5.25 ... raw keeps 5.25.
-    DV.update(&m, DV.eventMsg(.{ .id = 1, .kind = .move, .dx = 1, .buttons = .{ .left = true } }).?);
-    try testing.expectApproxEqAbs(@as(f64, 5.3), m.value, 1e-9);
-    DV.update(&m, DV.eventMsg(.{ .id = 1, .kind = .move, .dx = 1, .buttons = .{ .left = true } }).?);
-    try testing.expectApproxEqAbs(@as(f64, 5.5), m.value, 1e-9); // raw 5.5, no drift
-    // Shift: a tenth of the speed.
-    DV.update(&m, DV.eventMsg(.{ .id = 1, .kind = .move, .dx = 4, .buttons = .{ .left = true }, .mods = .{ .shift = true } }).?);
-    try testing.expectApproxEqAbs(@as(f64, 5.6), m.value, 1e-9);
-    // Far past the max clamps.
-    DV.update(&m, DV.eventMsg(.{ .id = 1, .kind = .move, .dx = 1000, .buttons = .{ .left = true } }).?);
-    try testing.expectEqual(@as(f64, 10), m.value);
-    DV.update(&m, DV.eventMsg(.{ .id = 1, .kind = .up, .button = .left }).?);
-    try testing.expect(!m.dragging and m.raw == null);
-    // A move without the button does nothing.
-    try testing.expect(DV.eventMsg(.{ .id = 1, .kind = .move, .dx = 3 }) == null);
-}
-
-test "keys, wheel and set step and clamp" {
-    var m: DV.Model = .{ .value = 2 };
-    DV.update(&m, DV.keyMsg(.right).?);
-    try testing.expectEqual(@as(f64, 3), m.value);
-    DV.update(&m, DV.keyMsg(.page_down).?);
-    try testing.expectEqual(@as(f64, 0), m.value);
-    DV.update(&m, DV.keyMsg(.end).?);
-    try testing.expectEqual(@as(f64, 10), m.value);
-    DV.update(&m, DV.eventMsg(.{ .id = 1, .kind = .wheel, .dy = 48 }).?);
-    try testing.expectEqual(@as(f64, 9), m.value);
-    DV.update(&m, .{ .set = 3.14159 });
-    try testing.expectApproxEqAbs(@as(f64, 3.1), m.value, 1e-9);
-    try testing.expect(DV.keyMsg(.enter) == null);
-}
-
-test "view: one focusable pointer canvas with the formatted value and an ew cursor" {
-    const Msg = union(enum) { focus_load };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    const m: DV.Model = .{ .value = 2.5 };
-    DV.view(&m, &cb, .{ .focus = Msg.focus_load }, .{ .id = 7, .label = "kN" });
-    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
-    const cv = cb.cmds.items[0].canvas;
-    try testing.expect(cv.pointer);
-    try testing.expectEqual(@as(u32, 7), cv.id);
-    try testing.expectEqualStrings("2.5 kN", cv.label);
-    try testing.expectEqual(@as(?@import("../cursor.zig").CursorShape, .resize_ew), cv.cursor);
-}

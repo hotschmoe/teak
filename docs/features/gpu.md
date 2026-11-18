@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `ClearColor`, `validateGpu`, `InitOptions` (via `teak.gpu`), plus the scene data types (see [scene3d.md](scene3d.md)).
 **Source**: `src/gpu/context.zig`; the wgpu pipeline is `src/gpu/wgpu_core.zig` (helpers in `wgpu_c.zig`, 3D in `wgpu_scene.zig`), bound to a concrete backend by `src/gpu/native.zig` (Windows) and `src/gpu/native_linux.zig` (Linux); the web backend is `src/gpu/web.zig` (+ `web_scene.zig`, on zunk.web.gpu). Shared, GPU-free pieces: `slot_table.zig`, `scene_common.zig`.
-**Tests**: `validateGpu` has colocated acceptance tests (and each backend runs it in a `comptime` block). `zig build test` covers the pure pieces (`slot_table`, `scene_common`, `render/vertex.zig`). `zig build test-gpu` renders on a surface-less Vulkan device and checks pixels (depth test, lighting, line quads, scene compositing + clip, MSAA edges, images); it skips when no Vulkan device opens. The web backend is verified by running an app in headless Chromium (`--webgpu`, SwiftShader).
+**Checks**: the background gate drives a real headless GPU application and a web application in Chromium.
 
 Sibling of the [Host interface](host.md). The only layer allowed to import wgpu-native or `zunk.web.gpu` — everything above (`render/`, `layout/`, `input/`, `core/`) compiles `wasm32-freestanding`-clean, enforced by `zig build test-wasm`.
 
@@ -54,7 +54,7 @@ face (DejaVuSansMono by default; override with `TEAK_FONT`) and ignores
 2. `renderScenes` (optional extension) renders each 3D scene into an offscreen colour + depth (+4x MSAA) target of the scene's pixel size and stages one composite quad per scene. Native submits its own command buffer; web records into zunk's frame encoder, so the scene is complete before the main pass samples it.
 3. `renderFrame` / `renderToWindow`: the main pass draws, in this order, solid quads, images, scene composites, text. Scene composites reuse the image pipeline and the image clip rules (`render/vertex.zig: clippedTexturedQuad`), and are snapped to the device pixel grid so the target maps 1:1 onto screen pixels.
 
-**Overlay layering.** The render pass builds two layers (base z=0, overlay z=1; HARDLINE §2 hatch 5) into the same lists and `buildFrame` returns an `OverlaySplit` (how many vertices / text / image / scene draws the base layer produced). A Gpu with the optional `setOverlayStart(*Gpu, OverlaySplit)` extension (both backends; `teak.run` calls it before each frame's uploads) draws in this order: base solids, base images, base scene composites, base text, THEN overlay solids, images, composites, text. That is what lets an opaque popup (an overlay with an opaque backdrop) hide the base layer's text, images and scenes beneath it; drawing all text last would show base text through the panel. The staging loops translate the split from input-draw indices to staged-record indices (`gpu/overlay.zig`, `Marker`) because skipped draws shift them. Backends or loops without it draw by kind, as before. Tested natively by `zig build test-gpu` (opaque overlay vs base text and image, overlay text stays on top) and on web by the chrome example.
+**Overlay layering.** The render pass builds two layers (base z=0, overlay z=1; HARDLINE §2 hatch 5) into the same lists and `buildFrame` returns an `OverlaySplit` (how many vertices / text / image / scene draws the base layer produced). A Gpu with the optional `setOverlayStart(*Gpu, OverlaySplit)` extension (both backends; `teak.run` calls it before each frame's uploads) draws in this order: base solids, base images, base scene composites, base text, THEN overlay solids, images, composites, text. That is what lets an opaque popup (an overlay with an opaque backdrop) hide the base layer's text, images and scenes beneath it; drawing all text last would show base text through the panel. The staging loops translate the split from input-draw indices to staged-record indices (`gpu/overlay.zig`, `Marker`) because skipped draws shift them. Backends or loops without it draw by kind, as before.
 
 A scene slot is only re-rendered when its `scene_common.signature` (camera, clear colour, edge style, mesh version, target size) changes; a scene next to an animating widget costs nothing per frame.
 
@@ -120,9 +120,6 @@ Gpu 'MyGpu' is missing declaration 'uploadVertices'
 - **`init` signatures differ.** Native takes the Host's `nativeHandle()` (an HWND pair on Windows, a `Display*` + `Window` on Linux — duck-typed via `anytype`) and window dimensions; web takes an empty placeholder (canvas is implicit to zunk). Example builds bind them explicitly.
 - **Multi-window: Win32 only so far.** `renderToWindow(id)` works for both primary (id 0) and secondary windows on Win32 + native wgpu, with per-surface tables on both Host and Gpu layers. The shared uniform buffer holds the target window's dims and is rewritten at the start of every `renderToWindow` call so cross-window renders don't bleed each other's viewports. The Linux X11 backend currently exposes the primary surface only (secondary X11 windows are not yet wired). Wasm `openSecondaryWindow` returns null — no secondary surfaces on web.
 
-## Test coverage target
+## Checks
 
-- **Stub acceptance** (covered): `validateGpu` accepts a minimal conformant struct.
-- **Gap tests** (missing): one compile-fail test per missing decl.
-- **Vertex upload round-trip** (covered natively by `zig build test-gpu`: triangle edges, quads, scenes, images read back from an offscreen target). The web side now has zunk readback (`Readback`), but no automated pixel test yet; it is checked by screenshot.
-- **Cross-backend screenshot diff** (long-term): render the same scene on both backends and compare. Out of scope until the web GPU coverage gaps close.
+The background gate drives the headless todo application and its web version in Chromium.

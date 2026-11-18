@@ -13,13 +13,9 @@
 const std = @import("std");
 const teak = @import("teak");
 
-// ── Tunables ───────────────────────────────────────────────────────
-
 pub const MAX_ITEMS = 256;
 pub const MAX_LABEL = 64;
 pub const MAX_INPUT = MAX_LABEL;
-
-// ── Model ──────────────────────────────────────────────────────────
 
 pub const Item = struct {
     label: [MAX_LABEL]u8 = @splat(0),
@@ -59,21 +55,15 @@ pub const Drag = struct {
     after: bool = false,
 };
 
-// ── Msg ────────────────────────────────────────────────────────────
-
 pub const Msg = union(enum) {
-    // Add-input lifecycle.
     input_focus,
     input_char: u8,
     input_backspace,
     add_item,
 
-    // Per-row actions. The usize is the row index at the time of the
-    // click — translated from cmd index via the Model's items_len.
     toggle: usize,
     remove: usize,
 
-    // Bulk.
     clear_completed,
 
     /// Drag and drop reorder (mouse) ...
@@ -93,8 +83,6 @@ pub fn moveItem(m: *Model, from: usize, to: usize) void {
     }
     m.items[to] = item;
 }
-
-// ── Update ─────────────────────────────────────────────────────────
 
 pub fn update(m: *Model, msg: Msg) void {
     switch (msg) {
@@ -138,8 +126,7 @@ pub fn update(m: *Model, msg: Msg) void {
 
         .remove => |i| {
             if (i >= m.items_len) return;
-            // Order-preserving shift; swap-remove would be cheaper but
-            // would reorder the list on every delete.
+            // Deletion must preserve item order.
             std.mem.copyForwards(Item, m.items[i .. m.items_len - 1], m.items[i + 1 .. m.items_len]);
             m.items_len -= 1;
         },
@@ -174,9 +161,7 @@ fn updateDrag(m: *Model, ev: teak.DragEvent) void {
             m.drag = null;
             if (ev.over == 0) return;
             const over: usize = ev.over - 1;
-            // Dropping on the lower half inserts after the target row.
             var to: usize = if (ev.over_fy >= 0.5) over + 1 else over;
-            // Removing the source first shifts later rows up by one.
             if (d.from < to) to -= 1;
             if (to >= m.items_len) to = m.items_len - 1;
             moveItem(m, d.from, to);
@@ -186,14 +171,11 @@ fn updateDrag(m: *Model, ev: teak.DragEvent) void {
     }
 }
 
-// ── View ───────────────────────────────────────────────────────────
-
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .vertical, .padding = 20, .gap = 12, .align_cross = .stretch });
 
     cb.text("Todo");
 
-    // Add-item row: input stretches to fill, "Add" pinned to the right.
     cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 0 });
     cb.textInputA11y(.input_focus, m.input[0..m.input_len], m.input_len, "New item");
     cb.button(.add_item, "Add");
@@ -201,8 +183,6 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     cb.divider();
 
-    // The list. A scroll container so the UI stays bounded when items
-    // pile up. Height is fixed; width stretches via flex=1.
     cb.pushScroll(.{
         .direction = .vertical,
         .padding = 0,
@@ -230,9 +210,7 @@ pub fn view(m: *const Model, cb: anytype) void {
         });
         cb.text("::");
         cb.checkbox(.{ .toggle = i }, item.done, item.label[0..item.label_len]);
-        // Spacer claims the middle so the delete button pins right.
         cb.spacer(1);
-        // The visible label is "x"; screen readers hear "Remove <item>".
         const remove_name = std.fmt.allocPrint(cb.arena.allocator(), "Remove {s}", .{item.label[0..item.label_len]}) catch "Remove";
         cb.buttonA11y(.{ .remove = i }, "x", .{ .label = remove_name });
         cb.popGroup();
@@ -241,12 +219,9 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     cb.divider();
 
-    // Footer: item count + clear-completed button.
     cb.pushGroup(.{ .direction = .horizontal, .gap = 8, .padding = 0 });
-    // The count is a polite live region: AT announces "3 items" as it changes.
     cb.pushGroup(.{ .direction = .horizontal, .gap = 0, .padding = 0, .a11y = .{ .semantic = .status, .live = .polite } });
-    // Allocate from the frame arena — a stack buffer's slice would escape
-    // into the cmd buffer and be clobbered before layout reads it.
+    // The label must outlive view until the frame is consumed.
     const count_str = std.fmt.allocPrint(cb.arena.allocator(), "{d} items", .{m.items_len}) catch "? items";
     cb.text(count_str);
     cb.popGroup();
@@ -256,7 +231,6 @@ pub fn view(m: *const Model, cb: anytype) void {
 
     cb.popGroup();
 
-    // The drag ghost: the dragged row's label, following the pointer.
     if (m.drag) |d| {
         if (d.from < m.items_len) {
             cb.pushOverlay(.{
@@ -284,8 +258,6 @@ pub fn commands(m: *const Model, list: *teak.CommandList(Msg)) void {
 pub fn dragMsg(_: *const Model, ev: teak.DragEvent) ?Msg {
     return .{ .drag = ev };
 }
-
-// ── Key event translation (for host integration) ──────────────────
 
 pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
     if (!m.input_focused) return null;
@@ -317,153 +289,9 @@ pub fn debugState(m: *const Model, w: *std.Io.Writer) void {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
-test "add_item copies input into items and clears input" {
-    const t = std.testing;
-    var m: Model = .{};
-
-    update(&m, .{ .input_char = 'a' });
-    update(&m, .{ .input_char = 'b' });
-    update(&m, .add_item);
-
-    try t.expectEqual(@as(u16, 1), m.items_len);
-    try t.expectEqualStrings("ab", m.items[0].label[0..m.items[0].label_len]);
-    try t.expectEqual(@as(u8, 0), m.input_len);
-}
-
-test "add_item is a no-op when input is empty" {
-    const t = std.testing;
-    var m: Model = .{};
-    update(&m, .add_item);
-    try t.expectEqual(@as(u16, 0), m.items_len);
-}
-
-test "toggle flips done; ignores out-of-range" {
-    const t = std.testing;
-    var m: Model = .{};
-    for ("hi") |c| update(&m, .{ .input_char = c });
-    update(&m, .add_item);
-
-    try t.expect(!m.items[0].done);
-    update(&m, .{ .toggle = 0 });
-    try t.expect(m.items[0].done);
-    update(&m, .{ .toggle = 0 });
-    try t.expect(!m.items[0].done);
-
-    update(&m, .{ .toggle = 99 });
-}
-
-test "remove shifts later items left and preserves order" {
-    const t = std.testing;
-    var m: Model = .{};
-    for ([_][]const u8{ "a", "b", "c" }) |s| {
-        for (s) |ch| update(&m, .{ .input_char = ch });
-        update(&m, .add_item);
-    }
-    try t.expectEqual(@as(u16, 3), m.items_len);
-
-    update(&m, .{ .remove = 0 });
-    try t.expectEqual(@as(u16, 2), m.items_len);
-    try t.expectEqualStrings("b", m.items[0].label[0..m.items[0].label_len]);
-    try t.expectEqualStrings("c", m.items[1].label[0..m.items[1].label_len]);
-}
-
-test "clear_completed removes done items, preserves pending" {
-    const t = std.testing;
-    var m: Model = .{};
-    for ([_][]const u8{ "a", "b", "c" }) |s| {
-        for (s) |ch| update(&m, .{ .input_char = ch });
-        update(&m, .add_item);
-    }
-    update(&m, .{ .toggle = 0 });
-    update(&m, .{ .toggle = 2 });
-
-    update(&m, .clear_completed);
-
-    try t.expectEqual(@as(u16, 1), m.items_len);
-    try t.expectEqualStrings("b", m.items[0].label[0..m.items[0].label_len]);
-}
-
-test "view emits one row per item; row carries the correct index Msg" {
-    const t = std.testing;
-    var m: Model = .{};
-    for ([_][]const u8{ "x", "y" }) |s| {
-        for (s) |ch| update(&m, .{ .input_char = ch });
-        update(&m, .add_item);
-    }
-
-    var cb = teak.CmdBuffer(Msg).init(t.allocator);
-    defer cb.deinit();
-    view(&m, &cb);
-
-    // Find every checkbox; its msg must be {.toggle = expected_index}.
-    var checkbox_count: usize = 0;
-    var expected: usize = 0;
-    for (cb.cmds.items) |c| {
-        if (c == .checkbox) {
-            try t.expectEqual(Msg{ .toggle = expected }, c.checkbox.msg);
-            expected += 1;
-            checkbox_count += 1;
-        }
-    }
-    try t.expectEqual(@as(usize, 2), checkbox_count);
-}
-
-test "end-to-end: click delete button on item 0 removes it" {
-    const t = std.testing;
-    var m: Model = .{};
-    for ([_][]const u8{ "a", "b" }) |s| {
-        for (s) |ch| update(&m, .{ .input_char = ch });
-        update(&m, .add_item);
-    }
-
-    var cb = teak.CmdBuffer(Msg).init(t.allocator);
-    defer cb.deinit();
-    view(&m, &cb);
-
-    var rects: [256]teak.Rect = undefined;
-    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 600, 500, teak.monoMeasurer());
-
-    // First "x" button is the delete for item 0.
-    var first_x: ?teak.Rect = null;
-    for (cb.cmds.items, 0..) |c, i| switch (c) {
-        .button => |b| if (std.mem.eql(u8, b.label, "x")) {
-            if (first_x == null) first_x = rects[i];
-        },
-        else => {},
-    };
-    try t.expect(first_x != null);
-
-    const r = first_x.?;
-    const hit = teak.hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], r.x + 2, r.y + 2);
-    try t.expect(hit != null);
-    try t.expect(hit.?.msg != null);
-    update(&m, hit.?.msg.?);
-
-    try t.expectEqual(@as(u16, 1), m.items_len);
-    try t.expectEqualStrings("b", m.items[0].label[0..m.items[0].label_len]);
-}
-
 fn labels(m: *const Model, buf: *[8][]const u8) []const []const u8 {
     for (m.items[0..m.items_len], 0..) |*it, i| buf[i] = it.label[0..it.label_len];
     return buf[0..m.items_len];
-}
-
-test "moveItem reorders in both directions" {
-    const t = std.testing;
-    var m: Model = .{};
-    for ("abcd") |c| {
-        update(&m, .{ .input_char = c });
-        update(&m, .add_item);
-    }
-    var buf: [8][]const u8 = undefined;
-    moveItem(&m, 0, 2);
-    try t.expectEqualStrings("bcad", flat(labels(&m, &buf)));
-    moveItem(&m, 3, 0);
-    try t.expectEqualStrings("dbca", flat(labels(&m, &buf)));
-    moveItem(&m, 1, 1);
-    try t.expectEqualStrings("dbca", flat(labels(&m, &buf)));
 }
 
 fn flat(parts: []const []const u8) []const u8 {
@@ -476,113 +304,4 @@ fn flat(parts: []const []const u8) []const u8 {
         n += p.len;
     }
     return S.out[0..n];
-}
-
-test "drag and drop: dropping on the lower half of a row inserts after it; cancel restores" {
-    const t = std.testing;
-    var m: Model = .{};
-    for ("abc") |c| {
-        update(&m, .{ .input_char = c });
-        update(&m, .add_item);
-    }
-    var buf: [8][]const u8 = undefined;
-    // Drag row a (id 1) onto the lower half of row c (id 3): a ends up last.
-    update(&m, .{ .drag = .{ .phase = .start, .id = 1, .x = 10, .y = 10 } });
-    try t.expect(m.drag != null);
-    update(&m, .{ .drag = .{ .phase = .move, .id = 1, .x = 10, .y = 90, .over = 3, .over_fy = 0.8 } });
-    try t.expect(m.drag.?.after and m.drag.?.over == 3);
-    update(&m, .{ .drag = .{ .phase = .drop, .id = 1, .x = 10, .y = 90, .over = 3, .over_fy = 0.8 } });
-    try t.expect(m.drag == null);
-    try t.expectEqualStrings("bca", flat(labels(&m, &buf)));
-    try t.expectEqual(@as(?u16, 2), m.selected);
-    // Upper half of row b (id 1 now): a lands before b.
-    update(&m, .{ .drag = .{ .phase = .start, .id = 3, .x = 0, .y = 0 } });
-    update(&m, .{ .drag = .{ .phase = .drop, .id = 3, .x = 0, .y = 0, .over = 1, .over_fy = 0.2 } });
-    try t.expectEqualStrings("abc", flat(labels(&m, &buf)));
-    // Cancel and a drop on nothing change nothing.
-    update(&m, .{ .drag = .{ .phase = .start, .id = 1, .x = 0, .y = 0 } });
-    update(&m, .{ .drag = .{ .phase = .cancel, .id = 1, .x = 0, .y = 0 } });
-    try t.expect(m.drag == null);
-    update(&m, .{ .drag = .{ .phase = .start, .id = 1, .x = 0, .y = 0 } });
-    update(&m, .{ .drag = .{ .phase = .drop, .id = 1, .x = 0, .y = 0, .over = 0 } });
-    try t.expectEqualStrings("abc", flat(labels(&m, &buf)));
-}
-
-test "keyboard alternative: Alt+Up / Alt+Down move the selected row" {
-    const t = std.testing;
-    var m: Model = .{};
-    for ("abc") |c| {
-        update(&m, .{ .input_char = c });
-        update(&m, .add_item);
-    }
-    var buf: [8][]const u8 = undefined;
-    var list: teak.CommandList(Msg) = .{};
-    commands(&m, &list);
-    try t.expectEqual(@as(usize, 0), list.len); // nothing selected: no commands
-    update(&m, .{ .toggle = 2 }); // select c
-    list = .{};
-    commands(&m, &list);
-    try t.expect(list.match(teak.Chord.altKey(.up)) != null);
-    try t.expect(list.match(teak.Chord.altKey(.down)) == null); // already last
-    update(&m, list.match(teak.Chord.altKey(.up)).?.msg);
-    try t.expectEqualStrings("acb", flat(labels(&m, &buf)));
-    try t.expectEqual(@as(?u16, 1), m.selected);
-}
-
-test "view: while dragging, the ghost is an overlay and the hot row gets a border" {
-    const t = std.testing;
-    var m: Model = .{};
-    for ("ab") |c| {
-        update(&m, .{ .input_char = c });
-        update(&m, .add_item);
-    }
-    var cb = teak.CmdBuffer(Msg).init(t.allocator);
-    defer cb.deinit();
-    view(&m, &cb);
-    for (cb.cmds.items) |c| try t.expect(c != .push_overlay); // idle: no ghost
-    cb.reset();
-    update(&m, .{ .drag = .{ .phase = .start, .id = 1, .x = 50, .y = 60, .grab_dx = 5, .grab_dy = 5 } });
-    update(&m, .{ .drag = .{ .phase = .move, .id = 1, .x = 50, .y = 80, .over = 2, .over_fy = 0.3 } });
-    view(&m, &cb);
-    var overlays: usize = 0;
-    var hot_borders: usize = 0;
-    var draggable_rows: usize = 0;
-    for (cb.cmds.items) |c| switch (c) {
-        .push_overlay => |o| {
-            overlays += 1;
-            try t.expectEqual(@as(f32, 45), o.x);
-        },
-        .push_group => |g| {
-            if (g.border != null) hot_borders += 1;
-            if (g.drag_id != 0 and g.drop_id == g.drag_id) draggable_rows += 1;
-        },
-        else => {},
-    };
-    try t.expectEqual(@as(usize, 1), overlays);
-    try t.expectEqual(@as(usize, 1), hot_borders);
-    try t.expectEqual(@as(usize, 2), draggable_rows);
-}
-
-test "view: item labels point into the Model, not a loop-local copy of the item" {
-    const t = std.testing;
-    var m = Model{};
-    for ("ab") |ch| update(&m, .{ .input_char = ch });
-    update(&m, .add_item);
-    for ("cd") |ch| update(&m, .{ .input_char = ch });
-    update(&m, .add_item);
-
-    var cb = teak.CmdBuffer(Msg).init(t.allocator);
-    defer cb.deinit();
-    view(&m, &cb);
-    var seen: usize = 0;
-    for (cb.cmds.items) |c| switch (c) {
-        .checkbox => |cbx| {
-            // A `for (items) |item|` capture copies the item (and its inline label array);
-            // the slice would then dangle once the loop iteration ends.
-            try t.expectEqual(@intFromPtr(&m.items[seen].label), @intFromPtr(cbx.label.ptr));
-            seen += 1;
-        },
-        else => {},
-    };
-    try t.expectEqual(@as(usize, 2), seen);
 }

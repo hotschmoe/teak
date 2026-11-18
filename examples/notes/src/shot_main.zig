@@ -26,7 +26,6 @@ pub fn main(init: std.process.Init) !void {
             .name = "chat_and_selection",
             .steps = &.{
                 .{ .frames = 3 },
-                // Chat: send one message, leave a wrapped draft in the input.
                 .{ .click = .{ 1000, 700 } },
                 .{ .chars = "Ship it Friday, then we write the release notes together." },
                 .{ .frames = 1 },
@@ -36,13 +35,11 @@ pub fn main(init: std.process.Init) !void {
                 .{ .frames = 1 },
                 .{ .chars = " paragraphs on the web build?" },
                 .{ .frames = 2 },
-                // Notes: drag-select across several wrapped lines.
                 .{ .drag = .{ .{ 140, 126 }, .{ 560, 300 } } },
                 .{ .move = .{ 640, 700 } },
                 .{ .frames = 2 },
             },
         },
-        // With script faces present (see script_fonts.zig), the "Show scripts" line opened.
         .{ .name = "scripts", .steps = &.{
             .{ .frames = 3 },
             .{ .click = .{ 60, 765 } },

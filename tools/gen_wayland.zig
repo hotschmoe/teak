@@ -217,7 +217,6 @@ fn emit(w: *std.Io.Writer, ifaces: []const Iface) !void {
             try w.writeAll("};\n");
         }
 
-        // Requests.
         for (ifc.requests.items, 0..) |m, opcode| {
             var ret: ?Arg = null;
             var generic_new = false;
@@ -285,7 +284,6 @@ fn emit(w: *std.Io.Writer, ifaces: []const Iface) !void {
             try w.writeAll("}\n\n");
         }
 
-        // Listener.
         if (ifc.events.items.len > 0) {
             try w.print("pub const {s}_listener = extern struct {{\n", .{ifc.name});
             for (ifc.events.items) |m| {

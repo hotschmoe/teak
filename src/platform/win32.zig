@@ -28,8 +28,6 @@ pub const FileDialogResult = teak.FileDialogResult;
 pub const FileDialogPoll = teak.FileDialogPoll;
 pub const FileDialogFilter = teak.FileDialogFilter;
 
-// ── Win32 types + constants ────────────────────────────────────────
-
 const WINAPI = std.builtin.CallingConvention.winapi;
 const BOOL = c_int;
 const UINT = c_uint;
@@ -148,8 +146,7 @@ extern "user32" fn TranslateMessage(*const MSG) callconv(WINAPI) BOOL;
 extern "user32" fn DispatchMessageW(*const MSG) callconv(WINAPI) LRESULT;
 extern "user32" fn DefWindowProcW(HANDLE, UINT, WPARAM, LPARAM) callconv(WINAPI) LRESULT;
 extern "user32" fn PostQuitMessage(c_int) callconv(WINAPI) void;
-// The name is a MAKEINTRESOURCE integer (often odd), not a real pointer, so it
-// must not claim `u16` alignment.
+// MAKEINTRESOURCE values can be odd and must not claim `u16` alignment.
 extern "user32" fn LoadCursorW(?HANDLE, ?*align(1) const anyopaque) callconv(WINAPI) ?HANDLE;
 extern "user32" fn GetKeyState(c_int) callconv(WINAPI) i16;
 extern "user32" fn SetCapture(HANDLE) callconv(WINAPI) ?HANDLE;
@@ -165,7 +162,6 @@ extern "kernel32" fn GetModuleHandleW(?LPCWSTR) callconv(WINAPI) ?HANDLE;
 /// Standard screen DPI Windows treats as the 1.0 baseline.
 const USER_DEFAULT_SCREEN_DPI: f32 = 96;
 
-// Clipboard externs.
 extern "user32" fn OpenClipboard(?HANDLE) callconv(WINAPI) BOOL;
 extern "user32" fn CloseClipboard() callconv(WINAPI) BOOL;
 extern "user32" fn EmptyClipboard() callconv(WINAPI) BOOL;
@@ -179,9 +175,6 @@ extern "kernel32" fn GlobalSize(HANDLE) callconv(WINAPI) usize;
 const CF_UNICODETEXT: UINT = 13;
 const GMEM_MOVEABLE: UINT = 0x0002;
 
-// Common file dialog — OPENFILENAMEW (W version, the only one supported
-// since Vista). Lots of fields; we use the minimum required for a
-// "pick one file" dialog.
 const OPENFILENAMEW = extern struct {
     lStructSize: DWORD = @sizeOf(OPENFILENAMEW),
     hwndOwner: ?HANDLE = null,
@@ -216,8 +209,6 @@ const OFN_EXPLORER: DWORD = 0x00080000;
 extern "comdlg32" fn GetOpenFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
 extern "comdlg32" fn GetSaveFileNameW(*OPENFILENAMEW) callconv(WINAPI) BOOL;
 
-// Per-monitor DPI awareness (v2): Windows stops bitmap-stretching the window
-// and reports physical pixels; the Host converts to logical units itself.
 extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(WINAPI) BOOL;
 extern "user32" fn GetDpiForSystem() callconv(WINAPI) UINT;
 extern "user32" fn SetWindowPos(HANDLE, ?HANDLE, c_int, c_int, c_int, c_int, UINT) callconv(WINAPI) BOOL;
@@ -240,7 +231,6 @@ fn dpiScale(dpi: u32) f32 {
     return if (dpi == 0) 1.0 else @as(f32, @floatFromInt(dpi)) / USER_DEFAULT_SCREEN_DPI;
 }
 
-// Drag-and-drop of files from Explorer (WM_DROPFILES).
 const WM_DROPFILES: UINT = 0x0233;
 extern "shell32" fn DragAcceptFiles(HANDLE, BOOL) callconv(WINAPI) void;
 extern "shell32" fn DragQueryFileW(HANDLE, UINT, ?[*]u16, UINT) callconv(WINAPI) UINT;
@@ -266,15 +256,6 @@ fn queueDroppedFiles(hdrop: HANDLE) void {
         g_drop_count += 1;
     }
 }
-
-// ── OLE drag-and-drop (IDropTarget) and image paste ────────────────
-//
-// `RegisterDragDrop` replaces `WM_DROPFILES` for the window and delivers
-// whatever the source offers through an `IDataObject`: files (CF_HDROP,
-// queued like WM_DROPFILES), images (registered "PNG", else CF_DIB) and
-// text (CF_UNICODETEXT). Images become the same `Drop{kind = .image}` the web
-// host produces (PNG <= 1568 px + RGBA thumbnail), text `Drop{kind = .text}`.
-// The DIB / PNG / thumbnail conversions are pure and live in `win32_data.zig`.
 
 const POINTL = extern struct { x: c_long, y: c_long };
 
@@ -585,18 +566,6 @@ const FileDialogSlot = struct {
     path_len: usize = 0,
 };
 
-// ── IME externs (imm32) ───────────────────────────────────────────
-//
-// Imm* APIs surface the IME composition string to the application. The
-// system delivers WM_IME_STARTCOMPOSITION, WM_IME_COMPOSITION (one or
-// more times as the user edits the pre-commit string), and
-// WM_IME_ENDCOMPOSITION. On commit, the system additionally posts
-// WM_CHAR for each committed codepoint — which means we don't need to
-// route committed text ourselves, just the pre-commit display.
-//
-// ImmGetCompositionStringW with GCS_COMPSTR returns the UTF-16 bytes of
-// the in-flight string; with GCS_CURSORPOS returns the caret offset
-// (in UTF-16 code units) inside it.
 const HIMC = *anyopaque;
 const WM_IME_STARTCOMPOSITION: UINT = 0x010D;
 const WM_IME_ENDCOMPOSITION: UINT = 0x010E;
@@ -621,19 +590,7 @@ const VK_X: WPARAM = 0x58;
 const VK_Y: WPARAM = 0x59;
 const VK_Z: WPARAM = 0x5A;
 
-// ── UIA (uiautomationcore.dll) ─────────────────────────────────────
-//
-// UI Automation bridge: per-frame `publishA11yTree` snapshots the
-// flat A11yNode tree into module-scoped storage, and Narrator /
-// Inspect.exe walk it via three published interfaces on the singleton
-// root (Simple + Fragment + FragmentRoot) plus one Fragment provider
-// per node (see `NodeProvider` below). All access is serialized by
-// `g_a11y_lock` because UIA queries arrive on its own worker thread.
-//
-// HARDLINE: this is a Host §4(d) surface extension — same hatch
-// clipboard / file dialogs / a11y-publishing already use. No platform
-// types leak above the Host boundary; `publishA11yTree`'s public shape
-// is unchanged.
+// Host accessibility boundary: HARDLINE §2 hatch 4.
 
 const HRESULT = c_long;
 const ULONG = c_ulong;
@@ -706,7 +663,6 @@ const UIA_E_ELEMENTNOTAVAILABLE: HRESULT = @bitCast(@as(u32, 0x80040201));
 const ToggleState_Off: c_int = 0;
 const ToggleState_On: c_int = 1;
 
-// Provider option bits (only ServerSideProvider matters for us).
 const ProviderOptions_ServerSideProvider: c_int = 0x01;
 
 /// Marker sentinel UIA expects as the first element of a runtime ID
@@ -714,14 +670,12 @@ const ProviderOptions_ServerSideProvider: c_int = 0x01;
 /// element is our caller-defined id (we use the node's cmd_index).
 const UiaAppendRuntimeId: c_int = 3;
 
-// UIA property + control type constants we need.
 const UIA_ControlTypePropertyId: c_long = 30003;
 const UIA_NamePropertyId: c_long = 30005;
 const UIA_IsKeyboardFocusablePropertyId: c_long = 30009;
 const UIA_HasKeyboardFocusPropertyId: c_long = 30008;
 const UIA_BoundingRectanglePropertyId: c_long = 30001;
 
-// Control types: just the ones our roles map to.
 const UIA_WindowControlTypeId: c_long = 50032;
 const UIA_GroupControlTypeId: c_long = 50026;
 const UIA_TextControlTypeId: c_long = 50020;
@@ -751,16 +705,13 @@ const UIA_DataItemControlTypeId: c_long = 50029;
 const UIA_HeaderItemControlTypeId: c_long = 50035;
 const UIA_TableControlTypeId: c_long = 50036;
 
-// Event ids
 const UIA_StructureChangedEventId: c_long = 20002;
 const StructureChangeType_ChildrenInvalidated: c_int = 4;
 
 const UiaRootObjectId: LPARAM = -25;
 const WM_GETOBJECT: UINT = 0x003D;
 
-// VARIANT — *minimum* shape for the few types we return. Real VARIANT
-// is much larger; this layout is the truncated form UIA tolerates when
-// we only ever set vt = VT_I4, VT_BSTR, or VT_BOOL.
+// This truncated VARIANT layout is valid only for the returned types.
 const VT_EMPTY: u16 = 0;
 const VT_I4: u16 = 3;
 const VT_BSTR: u16 = 8;
@@ -773,7 +724,6 @@ const VARIANT = extern struct {
     wReserved1: u16 = 0,
     wReserved2: u16 = 0,
     wReserved3: u16 = 0,
-    // 8-byte payload union. Use raw bytes; cast per vt.
     payload: [16]u8 = @splat(0),
 };
 
@@ -840,19 +790,6 @@ extern "kernel32" fn DeleteCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) v
 extern "kernel32" fn EnterCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) void;
 extern "kernel32" fn LeaveCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) void;
 
-// ── COM vtable layout for the three interfaces we publish ─────────
-//
-// Each vtable's "this" parameter is typed as `*VtblPtr` — i.e. a
-// pointer to the field inside the owning struct that holds the vtable
-// pointer. UIA passes us a pointer to the interface (which IS a
-// pointer to the vtable-pointer), so we can recover the owning
-// RootProvider / NodeProvider via `@fieldParentPtr` on the field name
-// that matches the vtable we're inside.
-//
-// Distinct typed pointers per vtable mean QueryInterface returns the
-// right `this` for each interface, and the method bodies don't have
-// to discriminate at runtime.
-
 const SimpleThis = *const IRawElementProviderSimple_Vtbl;
 const FragmentThis = *const IRawElementProviderFragment_Vtbl;
 const FragmentRootThis = *const IRawElementProviderFragmentRoot_Vtbl;
@@ -896,11 +833,9 @@ const IValueProvider_Vtbl = extern struct {
 };
 
 const IRawElementProviderFragment_Vtbl = extern struct {
-    // IUnknown
     QueryInterface: *const fn (*FragmentThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
     AddRef: *const fn (*FragmentThis) callconv(WINAPI) ULONG,
     Release: *const fn (*FragmentThis) callconv(WINAPI) ULONG,
-    // IRawElementProviderFragment
     Navigate: *const fn (*FragmentThis, NavigateDirection, *?*anyopaque) callconv(WINAPI) HRESULT,
     GetRuntimeId: *const fn (*FragmentThis, *?*SAFEARRAY) callconv(WINAPI) HRESULT,
     get_BoundingRectangle: *const fn (*FragmentThis, *UiaRect) callconv(WINAPI) HRESULT,
@@ -910,11 +845,9 @@ const IRawElementProviderFragment_Vtbl = extern struct {
 };
 
 const IRawElementProviderFragmentRoot_Vtbl = extern struct {
-    // IUnknown
     QueryInterface: *const fn (*FragmentRootThis, *const GUID, *?*anyopaque) callconv(WINAPI) HRESULT,
     AddRef: *const fn (*FragmentRootThis) callconv(WINAPI) ULONG,
     Release: *const fn (*FragmentRootThis) callconv(WINAPI) ULONG,
-    // IRawElementProviderFragmentRoot
     ElementProviderFromPoint: *const fn (*FragmentRootThis, f64, f64, *?*anyopaque) callconv(WINAPI) HRESULT,
     GetFocus: *const fn (*FragmentRootThis, *?*anyopaque) callconv(WINAPI) HRESULT,
 };
@@ -952,16 +885,13 @@ const NodeProvider = extern struct {
     index: u32,
 };
 
-// ── RootProvider vtable methods (Simple) ───────────────────────────
-
 fn rpQueryInterface(this: *SimpleThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *RootProvider = @fieldParentPtr("vtbl_simple", this);
     return rootQueryInterface(self, iid, ppv);
 }
 
 fn rpAddRef(_: *SimpleThis) callconv(WINAPI) ULONG {
-    // Static singleton — module owns the lifetime, Win32 holds the
-    // pointer for the process lifetime.
+    // Win32 retains this singleton pointer for the process lifetime.
     return 1;
 }
 
@@ -975,7 +905,6 @@ fn rpGetProviderOptions(_: *SimpleThis, opts: *c_int) callconv(WINAPI) HRESULT {
 }
 
 fn rpGetPatternProvider(_: *SimpleThis, _: c_long, out: *?*anyopaque) callconv(WINAPI) HRESULT {
-    // No patterns implemented yet (Toggle/Value/Invoke are follow-up).
     out.* = null;
     return S_OK;
 }
@@ -1034,8 +963,6 @@ fn rootQueryInterface(self: *RootProvider, iid: *const GUID, ppv: *?*anyopaque) 
     return E_NOINTERFACE;
 }
 
-// ── RootProvider vtable methods (Fragment) ─────────────────────────
-
 fn rpfQueryInterface(this: *FragmentThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *RootProvider = @fieldParentPtr("vtbl_fragment", this);
     return rootQueryInterface(self, iid, ppv);
@@ -1050,8 +977,6 @@ fn rpfRelease(_: *FragmentThis) callconv(WINAPI) ULONG {
 }
 
 fn rpfNavigate(_: *FragmentThis, direction: NavigateDirection, out: *?*anyopaque) callconv(WINAPI) HRESULT {
-    // Root has no parent and no siblings; FirstChild / LastChild return
-    // the corresponding ends of the published tree.
     EnterCriticalSection(&g_a11y_lock);
     defer LeaveCriticalSection(&g_a11y_lock);
 
@@ -1072,9 +997,7 @@ fn rpfNavigate(_: *FragmentThis, direction: NavigateDirection, out: *?*anyopaque
 }
 
 fn rpfGetRuntimeId(_: *FragmentThis, out: *?*SAFEARRAY) callconv(WINAPI) HRESULT {
-    // The convention for the root's runtime id is just the
-    // UiaAppendRuntimeId marker followed by a 0 — the system fills in
-    // the host prefix.
+    // UIA supplies the runtime-id host prefix.
     return makeRuntimeIdArray(0, out);
 }
 
@@ -1082,8 +1005,6 @@ fn rpfGetBoundingRectangle(_: *FragmentThis, rect: *UiaRect) callconv(WINAPI) HR
     if (g_hwnd_for_uia) |hwnd| {
         var client: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
         _ = GetClientRect(hwnd, &client);
-        // GetClientRect always returns (0,0)-origin client coords,
-        // so screenOrigin() gives the same screen-space top-left.
         const origin = screenOrigin();
         rect.* = .{
             .left = @floatFromInt(origin.x),
@@ -1103,8 +1024,6 @@ fn rpfGetEmbeddedFragmentRoots(_: *FragmentThis, out: *?*SAFEARRAY) callconv(WIN
 }
 
 fn rpfSetFocus(_: *FragmentThis) callconv(WINAPI) HRESULT {
-    // No-op: focusing the root is meaningless for our model. Returning
-    // S_OK matches what most providers do.
     return S_OK;
 }
 
@@ -1113,8 +1032,6 @@ fn rpfGetFragmentRoot(this: *FragmentThis, out: *?*anyopaque) callconv(WINAPI) H
     out.* = @ptrCast(&self.vtbl_root);
     return S_OK;
 }
-
-// ── RootProvider vtable methods (FragmentRoot) ─────────────────────
 
 fn rprQueryInterface(this: *FragmentRootThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *RootProvider = @fieldParentPtr("vtbl_root", this);
@@ -1131,9 +1048,6 @@ fn rprRelease(_: *FragmentRootThis) callconv(WINAPI) ULONG {
 
 fn rprElementProviderFromPoint(this: *FragmentRootThis, x: f64, y: f64, out: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *RootProvider = @fieldParentPtr("vtbl_root", this);
-    // Translate from screen to client coords for comparison with the
-    // node bounds (which are window-coord). If we can't translate,
-    // fall back to self.
     const origin = screenOrigin();
     const cx: f32 = @floatCast(x - @as(f64, @floatFromInt(origin.x)));
     const cy: f32 = @floatCast(y - @as(f64, @floatFromInt(origin.y)));
@@ -1141,7 +1055,6 @@ fn rprElementProviderFromPoint(this: *FragmentRootThis, x: f64, y: f64, out: *?*
     EnterCriticalSection(&g_a11y_lock);
     defer LeaveCriticalSection(&g_a11y_lock);
 
-    // Walk back-to-front so the topmost hit wins (painter's order).
     var i: usize = g_published_count;
     while (i > 0) {
         i -= 1;
@@ -1171,8 +1084,6 @@ fn rprGetFocus(_: *FragmentRootThis, out: *?*anyopaque) callconv(WINAPI) HRESULT
     out.* = null;
     return S_OK;
 }
-
-// ── NodeProvider vtable methods (Simple) ───────────────────────────
 
 fn npQueryInterface(this: *SimpleThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *NodeProvider = @fieldParentPtr("vtbl_simple", this);
@@ -1227,10 +1138,6 @@ fn npGetPatternProvider(this: *SimpleThis, pattern_id: c_long, out: *?*anyopaque
     }
     return S_OK;
 }
-
-// ── Control patterns: requests go onto `g_action_queue`, drained by
-// `Host.pollA11yActions` on the run-loop thread, so they reach `update` as
-// ordinary input. The pattern methods run on UIA's worker thread.
 
 /// Queue `kind` for the published node `index` (lock held by the caller).
 fn queueAction(index: u32, kind: teak.A11yActionKind, payload: []const u8) HRESULT {
@@ -1329,13 +1236,10 @@ fn npGetPropertyValue(this: *SimpleThis, prop_id: c_long, var_out: *VARIANT) cal
 }
 
 fn npGetHostRawElementProvider(_: *SimpleThis, pp: *?*anyopaque) callconv(WINAPI) HRESULT {
-    // Only the root delegates to UiaHostProviderFromHwnd. Fragment
-    // children must return null per the UIA spec.
+    // UIA fragment children must not delegate to UiaHostProviderFromHwnd.
     pp.* = null;
     return S_OK;
 }
-
-// ── NodeProvider vtable methods (Fragment) ─────────────────────────
 
 fn npfQueryInterface(this: *FragmentThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *NodeProvider = @fieldParentPtr("vtbl_fragment", this);
@@ -1379,7 +1283,6 @@ fn npfNavigate(this: *FragmentThis, direction: NavigateDirection, out: *?*anyopa
             return S_OK;
         },
         .first_child, .last_child => {
-            // Flat tree — no nesting in MVP.
             out.* = null;
             return S_OK;
         },
@@ -1426,8 +1329,6 @@ fn npfGetEmbeddedFragmentRoots(_: *FragmentThis, out: *?*SAFEARRAY) callconv(WIN
 }
 
 fn npfSetFocus(_: *FragmentThis) callconv(WINAPI) HRESULT {
-    // No-op for the MVP. Routing this back into a Msg would require a
-    // new Host §4 hatch — out of scope here.
     return S_OK;
 }
 
@@ -1435,8 +1336,6 @@ fn npfGetFragmentRoot(_: *FragmentThis, out: *?*anyopaque) callconv(WINAPI) HRES
     out.* = @ptrCast(&g_root_provider.vtbl_root);
     return S_OK;
 }
-
-// ── Shared NodeProvider helpers ────────────────────────────────────
 
 /// Build the 2-element SAFEARRAY UIA expects from `GetRuntimeId` —
 /// `[UiaAppendRuntimeId, caller_id]`. `caller_id` is 0 for the root
@@ -1498,9 +1397,6 @@ fn controlTypeForRole(role: A11yRole) c_long {
         .slider => UIA_SliderControlTypeId,
         .divider => UIA_SeparatorControlTypeId,
         .image => UIA_ImageControlTypeId,
-        // A canvas (chart / plot) is a custom-drawn graphic announced by
-        // its label — Image is the closest UIA control type, matching
-        // `.image` above (its primitives aren't individually exposed).
         .canvas => UIA_ImageControlTypeId,
         .overlay => UIA_PaneControlTypeId,
         .list, .listbox => UIA_ListControlTypeId,
@@ -1573,9 +1469,6 @@ fn nodeGetPropertyValue(self: *NodeProvider, prop_id: c_long, var_out: *VARIANT)
             return S_OK;
         },
         UIA_NamePropertyId => {
-            // Convert UTF-8 label → UTF-16 on the stack; allocate the
-            // BSTR from the converted buffer. Labels capped at the
-            // heap slot length (see MAX_A11Y_LABEL_BYTES).
             var utf16_buf: [512]u16 = undefined;
             const utf16_len = std.unicode.utf8ToUtf16Le(&utf16_buf, node.label) catch 0;
             const clamped: usize = @min(utf16_len, utf16_buf.len - 1);
@@ -1697,23 +1590,6 @@ var g_window_title_w: [256]u16 = @splat(0);
 /// init / after deinit so the property getter can fail closed.
 var g_hwnd_for_uia: ?HANDLE = null;
 
-// ── Stable a11y tree storage ───────────────────────────────────────
-//
-// `publishA11yTree`'s `nodes` slice points into the caller's per-
-// frame arena — invalid after the next publish call AND unsafe for
-// UIA queries (which may arrive on any thread, asynchronously). We
-// snapshot into a fixed-size pair of buffers (node array + label
-// string heap) under a critical section so UIA can read at will.
-//
-// MAX_A11Y_NODES bounds the published tree; oversize trees truncate
-// silently. 256 nodes covers any realistic single-window app — large
-// lists should be virtualized (cmd `push_virtual_list`) which
-// collapses to one a11y node regardless of row count.
-//
-// MAX_A11Y_LABEL_BYTES is a flat string heap shared by all labels.
-// Per-label cap is 512 (the SysAllocString stack buffer in
-// `nodeGetPropertyValue`).
-
 const MAX_A11Y_NODES: usize = 256;
 const MAX_A11Y_LABEL_BYTES: usize = 8192;
 
@@ -1758,8 +1634,6 @@ fn initNodeProviderPool() void {
 var g_last_tree_len: usize = 0;
 var g_last_focus_index: ?u32 = null;
 
-// ── Module-scoped state (written by wndProc, drained by pollInputs) ──
-
 var g_running: bool = true;
 var g_width: u32 = 0;
 var g_height: u32 = 0;
@@ -1771,23 +1645,10 @@ var g_resized: bool = false;
 /// `WM_MOUSEWHEEL` reports the opposite, so `handleInputMessage` negates it.
 var g_input: InputQueue = .{};
 
-// IME composition mirror — populated from WM_IME_* messages and read by
-// `imeState()`. The UTF-8 buffer is 256 bytes (≈85 CJK glyphs); longer
-// compositions truncate cleanly. `g_ime_text_len == 0` plus
-// `g_ime_active == false` means "no composition", which is also the
-// default ImeState the renderer expects.
 var g_ime_active: bool = false;
 var g_ime_text: [256]u8 = undefined;
 var g_ime_text_len: usize = 0;
 var g_ime_cursor: usize = 0;
-
-// ── Secondary windows ──────────────────────────────────────────────
-//
-// Single shared message queue (one per thread) feeds both the primary
-// `wndProc` and `secondaryWndProc`; Win32 routes each message to the
-// hwnd's registered class proc, so the primary pollInputs loop pumps
-// secondary messages too. Each slot owns an independent input queue
-// drained by `pollSecondaryInputs`.
 
 pub const MAX_SECONDARY_WINDOWS: usize = 4;
 
@@ -1957,18 +1818,11 @@ fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: L
             if (q.buttons.any()) _ = SetCapture(hwnd) else _ = ReleaseCapture();
         },
         WM_MOUSEWHEEL, WM_MOUSEHWHEEL => {
-            // GET_WHEEL_DELTA_WPARAM: HIWORD of wparam, signed. Vertical:
-            // positive = wheel turned away from the user (content scrolls
-            // up), InputState wants positive = down, so negate. Horizontal:
-            // positive = tilted right, which already matches.
             const raw_delta: i16 = @bitCast(@as(u16, @truncate(wp >> 16)));
             const px = (@as(f32, @floatFromInt(raw_delta)) / WHEEL_DELTA) * WHEEL_PIXELS_PER_NOTCH;
             q.mods = currentMods();
             if (msg == WM_MOUSEWHEEL) q.wheel(0, -px) else q.wheel(px, 0);
         },
-        // WM_CHAR delivers UTF-16 code units, including control codes
-        // (backspace etc.) which the queue drops — special keys route
-        // through WM_KEYDOWN.
         WM_CHAR => q.pushUtf16Unit(@truncate(wp)),
         WM_KEYDOWN => {
             q.mods = currentMods();
@@ -1978,10 +1832,6 @@ fn handleInputMessage(q: *InputQueue, hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: L
                 if (nk == .v and q.mods.ctrl) g_paste_requested = true;
             }
         },
-        // Alt-modified keys and F10 arrive as "system" keys. Alt alone and F10
-        // are ours (menu-bar activation) and are swallowed so Windows does not
-        // open its own system menu; Alt+other still reaches DefWindowProc
-        // (Alt+F4, Alt+Space), after clearing the pending Alt tap.
         WM_SYSKEYDOWN => {
             q.mods = currentMods();
             if (wp == VK_ALT) {
@@ -2012,15 +1862,11 @@ fn utf16OffsetToUtf8(utf8: []const u8, utf16_off: usize) usize {
         const len = std.unicode.utf8ByteSequenceLength(utf8[byte_i]) catch return utf8.len;
         if (byte_i + len > utf8.len) return utf8.len;
         const cp = std.unicode.utf8Decode(utf8[byte_i..][0..len]) catch return utf8.len;
-        // BMP codepoints take one UTF-16 unit; astral plane takes two.
         u16_i += if (cp >= 0x10000) 2 else 1;
         byte_i += len;
     }
     return byte_i;
 }
-
-// IME mirror transitions, split out of `wndProc` so synthetic messages can
-// test them without an input method context.
 
 fn imeStart() void {
     g_ime_active = true;
@@ -2051,7 +1897,6 @@ fn imeSetComposition(utf16: []const u16, cursor_units: c_long) void {
 fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRESULT {
     switch (msg) {
         WM_SETCURSOR => {
-            // Only the client area is ours; borders keep the system cursor.
             if ((@as(usize, @bitCast(lp)) & 0xFFFF) == HTCLIENT) {
                 if (g_cursor) |c| {
                     _ = SetCursor(c);
@@ -2076,39 +1921,22 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             return 0;
         },
         WM_DPICHANGED => {
-            // New DPI in the low word of wParam; lParam is the window rect
-            // Windows suggests so the window keeps its logical size on the
-            // new monitor. Accepting it triggers WM_SIZE -> re-layout.
             g_scale = dpiScale(loword(@bitCast(wp)));
             const r: *const RECT = @ptrFromInt(@as(usize, @bitCast(lp)));
             _ = SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             g_resized = true;
             return 0;
         },
-        // An uncovered / invalidated area: the idle loop skips frames, so
-        // force the next one. DefWindowProc validates the region.
+        // Invalidated windows must redraw even when idle.
         WM_PAINT => {
             g_resized = true;
             return DefWindowProcW(hwnd, msg, wp, lp);
         },
         WM_IME_STARTCOMPOSITION => {
             imeStart();
-            // Returning 0 suppresses the default IME window so the
-            // composition is only rendered inline by teak. The caret
-            // still receives WM_CHAR on commit via the IME's normal
-            // result-string flow.
             return 0;
         },
         WM_IME_COMPOSITION => {
-            // GCS_RESULTSTR is delivered alongside the final
-            // WM_IME_COMPOSITION when the user commits. We let the
-            // system handle it (DefWindowProcW posts WM_CHAR per
-            // committed codepoint), but we also clear our pre-commit
-            // mirror so the renderer doesn't keep the stale composition
-            // up between commit and ENDCOMPOSITION.
-            // WM_IME_COMPOSITION's lParam is a bitfield of GCS_* flags in
-            // its low 32 bits. Truncate the platform-width isize/usize to
-            // a 32-bit DWORD; @truncate is the canonical Zig narrow-conversion.
             const flags: DWORD = @truncate(@as(usize, @bitCast(lp)));
             if ((flags & GCS_COMPSTR) != 0) {
                 const himc_opt = ImmGetContext(hwnd);
@@ -2126,11 +1954,9 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
                     imeSetComposition(utf16_buf[0..units], cur_units);
                 }
             } else if ((flags & GCS_COMPSTR) == 0 and (flags & GCS_RESULTSTR) != 0) {
-                // Commit-only message: drop the pre-commit mirror but
-                // stay active until WM_IME_ENDCOMPOSITION arrives.
                 imeClearText();
             }
-            // Pass through so the IME's commit -> WM_CHAR path still fires.
+            // DefWindowProc must receive the commit to post WM_CHAR.
             return DefWindowProcW(hwnd, msg, wp, lp);
         },
         WM_IME_ENDCOMPOSITION => {
@@ -2138,13 +1964,6 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
             return 0;
         },
         WM_GETOBJECT => {
-            // UIA root request — hand back our singleton provider. Any
-            // other object id (MSAA, etc.) falls through to DefWindowProc
-            // so the system can synthesize a default. UIA owns the AddRef
-            // contract here; our static AddRef-returns-1 is safe because
-            // the provider lives in module storage. We hand the Simple
-            // vtable slot — UIA's QueryInterface will pivot to the
-            // Fragment / FragmentRoot vtables on demand.
             if (lp == UiaRootObjectId) {
                 return UiaReturnRawElementProvider(hwnd, wp, lp, @ptrCast(&g_root_provider.vtbl_simple));
             }
@@ -2156,8 +1975,6 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
         },
     }
 }
-
-// ── Public types ───────────────────────────────────────────────────
 
 pub const NativeHandle = struct {
     hinstance: HANDLE,
@@ -2193,11 +2010,7 @@ pub const Host = struct {
     file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = @splat(.{}),
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
-        // Declare per-monitor v2 awareness before any window exists (a
-        // failure — Windows older than 10 1703, or awareness already set by
-        // a manifest — leaves the previous mode, which is fine). The
-        // `width`/`height` asked for are logical; the window is created at
-        // the system DPI's physical size and WM_SIZE converts back.
+        // DPI awareness must be set before creating windows.
         _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         g_scale = dpiScale(GetDpiForSystem());
         g_running = true;
@@ -2205,11 +2018,6 @@ pub const Host = struct {
         g_height = height;
         g_resized = true; // force initial surface configure on first pollInputs
 
-        // UIA tree storage is shared between the (single-threaded) Win32
-        // message loop and the UIA worker thread; serialize all access
-        // through a critical section. Initialize once per Host.init —
-        // safe to re-init across Host.init / deinit cycles because
-        // `deinit` deletes the section first.
         if (!g_a11y_lock_initialized) {
             InitializeCriticalSection(&g_a11y_lock);
             g_a11y_lock_initialized = true;
@@ -2218,7 +2026,6 @@ pub const Host = struct {
 
         const hinstance = GetModuleHandleW(null) orelse return error.GetModuleHandleFailed;
 
-        // UTF-16 literal class name — built at comptime.
         const class_name = std.unicode.utf8ToUtf16LeStringLiteral("TeakWindow");
         const wc = WNDCLASSEXW{
             .style = CS_HREDRAW | CS_VREDRAW,
@@ -2229,16 +2036,11 @@ pub const Host = struct {
         };
         if (RegisterClassExW(&wc) == 0) return error.RegisterClassFailed;
 
-        // Convert the caller's UTF-8 title to UTF-16 on the stack. 256
-        // code units is enough for any reasonable window title.
         var title_buf: [256]u16 = undefined;
         const title_len = try std.unicode.utf8ToUtf16Le(&title_buf, title);
         if (title_len >= title_buf.len) return error.TitleTooLong;
         title_buf[title_len] = 0;
 
-        // Mirror the title into module storage so UIA's
-        // GetPropertyValue(Name) can hand it to SysAllocString without
-        // touching the Host struct. Length-clamped + null-terminated.
         const title_clamped = @min(title_len, g_window_title_w.len - 1);
         @memcpy(g_window_title_w[0..title_clamped], title_buf[0..title_clamped]);
         g_window_title_w[title_clamped] = 0;
@@ -2264,9 +2066,6 @@ pub const Host = struct {
         errdefer effects.destroy();
         g_effects = effects;
 
-        // Capture the HWND so UIA's get_HostRawElementProvider can hand
-        // it to UiaHostProviderFromHwnd for any property we don't
-        // ourselves answer.
         g_hwnd_for_uia = hwnd;
 
         return .{
@@ -2282,16 +2081,10 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
-        // Disconnect any lingering UIA listeners (Narrator, Inspect)
-        // so they drop their references cleanly before we tear down
-        // the underlying window/DC. Return value is ignored — there's
-        // nothing actionable if it fails. Hand UIA the same Simple
-        // vtable slot we returned from WM_GETOBJECT.
         _ = UiaDisconnectProvider(@ptrCast(&g_root_provider.vtbl_simple));
         g_hwnd_for_uia = null;
 
-        // Tear down the critical section last (after Uia listeners
-        // have been disconnected, so no async query is in flight).
+        // Disconnect UIA listeners before deleting the critical section.
         if (g_a11y_lock_initialized) {
             DeleteCriticalSection(&g_a11y_lock);
             g_a11y_lock_initialized = false;
@@ -2301,14 +2094,10 @@ pub const Host = struct {
         g_effects = null;
         self.effects.destroy();
         text.releaseFaces();
-        // Win32 cleans up the window on process exit; explicit teardown
-        // would require tracking class registration state.
     }
 
     pub fn pollInputs(_: *Host) InputState {
-        // Queues reset before pumping; edges are latched until `finish`.
-        // They must survive across the pump so Host.init's initial
-        // resized=true flag (set before the first pump) is returned on frame 1.
+        // Latched edges must survive the pump, including the initial resize.
         g_input.beginFrame();
 
         var msg: MSG = undefined;
@@ -2349,8 +2138,6 @@ pub const Host = struct {
         _ = SetWindowTextW(self.hwnd, @ptrCast(&title_buf));
     }
 
-    // ── Declarative effects (docs/features/effects.md) ─────────────
-
     /// Start one effect. The file pickers, the clipboard and downloads are
     /// native Win32 UI and run here (blocking the frame while a dialog is
     /// up, like `openFileDialog`); everything else (HTTP on worker threads,
@@ -2381,8 +2168,6 @@ pub const Host = struct {
         var i: usize = 0;
         while (i < g_drop_count) : (i += 1) self.effects.dropFile(g_drops[i][0..g_drop_lens[i]]);
         g_drop_count = 0;
-        // A Ctrl+V the app's `handleClipboard` did not claim through
-        // `Clipboard.read` is a page-style paste: text or an image.
         if (g_paste_requested) {
             g_paste_requested = false;
             pasteUnclaimed();
@@ -2441,20 +2226,13 @@ pub const Host = struct {
     /// node Fragment providers (see `NodeProvider` near the COM
     /// vtables); Inspect.exe can also enumerate live properties.
     pub fn publishA11yTree(_: *Host, nodes: []const A11yNode) void {
-        // Snapshot the caller's per-frame slice into module-scoped
-        // storage so UIA can read it at any time on a worker thread.
-        // The label heap is a flat bump arena; on overflow we drop the
-        // overflowing label (empty string) rather than fail the publish.
         EnterCriticalSection(&g_a11y_lock);
 
         const cap = @min(nodes.len, MAX_A11Y_NODES);
         g_label_heap_used = 0;
         for (nodes[0..cap], 0..) |src, i| {
             var n = src;
-            // Copy the label into the heap and rewrite its slice to
-            // point at the stable copy. On heap exhaustion the label
-            // is dropped (slice cleared) so we never alias arena
-            // memory across frames.
+            // Published labels must not alias the per-frame arena.
             const remaining = MAX_A11Y_LABEL_BYTES - g_label_heap_used;
             const take = @min(n.label.len, remaining);
             if (take > 0) {
@@ -2464,7 +2242,6 @@ pub const Host = struct {
             } else {
                 n.label = &.{};
             }
-            // Same for the value (ValuePattern.get_Value reads it on UIA's thread).
             const vremaining = MAX_A11Y_LABEL_BYTES - g_label_heap_used;
             const vtake = @min(n.value.len, vremaining);
             if (vtake > 0) {
@@ -2480,9 +2257,6 @@ pub const Host = struct {
 
         LeaveCriticalSection(&g_a11y_lock);
 
-        // Coarse change detection: tree length + focused-cmd index is
-        // enough to catch every shape change the framework can produce
-        // in one frame without paying for a structural diff.
         var focus_idx: ?u32 = null;
         for (g_published_nodes_buf[0..g_published_count]) |n| {
             if (n.focused) {
@@ -2564,7 +2338,6 @@ pub const Host = struct {
     /// `gpu.openSecondarySurface(host.secondaryWindowHandle(id))` to
     /// bind a wgpu surface in lock-step.
     pub fn openSecondaryWindow(self: *Host, title: []const u8, w: u32, h: u32) ?u32 {
-        // Find first empty slot.
         var slot_idx: usize = MAX_SECONDARY_WINDOWS;
         for (g_secondaries, 0..) |s, i| {
             if (s == null) {
@@ -2574,7 +2347,6 @@ pub const Host = struct {
         }
         if (slot_idx == MAX_SECONDARY_WINDOWS) return null;
 
-        // Register the secondary class once per process.
         if (!g_secondary_class_registered) {
             const sec_class = std.unicode.utf8ToUtf16LeStringLiteral("TeakSecondaryWindow");
             const wc = WNDCLASSEXW{
@@ -2634,11 +2406,7 @@ pub const Host = struct {
         const sw: *SecondaryWindow = &slot_opt.*.?;
         if (sw.closed) return null;
 
-        // Messages for this window were already pumped by the primary
-        // `pollInputs`. Slices in the returned state alias `sw.input`: reset
-        // the queue lengths only AFTER building them, so the next frame's
-        // messages start at index 0 (valid until the next poll, as for the
-        // primary window).
+        // Returned slices alias the input queue until the next poll.
         const resized = sw.resized;
         sw.resized = false;
         const state = sw.input.finish(resized, sw.width, sw.height);
@@ -2653,9 +2421,6 @@ pub const Host = struct {
         if (window_id == 0 or window_id > MAX_SECONDARY_WINDOWS) return;
         const slot_idx: usize = @intCast(window_id - 1);
         if (g_secondaries[slot_idx]) |sw| {
-            // DestroyWindow posts WM_DESTROY; secondaryWndProc handles
-            // it (sets `closed`). We blank the slot here directly so
-            // the id can be reused immediately.
             _ = DestroyWindow(sw.hwnd);
             g_secondaries[slot_idx] = null;
         }
@@ -2683,7 +2448,6 @@ pub const Host = struct {
     }
 
     pub fn nowMs(_: *const Host) u64 {
-        // Monotonic milliseconds (clocks live behind `std.Io`).
         const now = std.Io.Clock.awake.now(std.Options.debug_io);
         return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms));
     }
@@ -2692,7 +2456,6 @@ pub const Host = struct {
     /// DPI. The process declares per-monitor v2 awareness in `init`, so
     /// this is the true monitor factor (1.0 at 96 DPI, 2.0 at 192).
     pub fn scaleFactor(self: *const Host) f32 {
-        // (per-monitor v2 is declared in `init`, so this is the real factor)
         const dpi = GetDpiForWindow(self.hwnd);
         if (dpi == 0) return 1.0; // pre-1607 or invalid HWND
         return @as(f32, @floatFromInt(dpi)) / USER_DEFAULT_SCREEN_DPI;
@@ -2730,13 +2493,10 @@ pub const Host = struct {
     fn runFileDialog(self: *Host, filter: FileDialogFilter, save: bool, initial_name: []const u8) FileDialogResult {
         var file_buf: [260]u16 = @splat(0);
         if (save and initial_name.len > 0) {
-            // Truncate to leave the terminating NUL; an unconvertible name
-            // just opens the dialog empty.
             _ = std.unicode.utf8ToUtf16Le(file_buf[0 .. file_buf.len - 1], initial_name) catch {};
         }
 
-        // OFN filter format: "Name\0pattern\0Name2\0pattern2\0\0" — a
-        // double-null-terminated alternating list. Build it on the stack.
+        // OFN filters alternate name and pattern and end in two NULs.
         var filter_buf: [512]u16 = undefined;
         var off: usize = 0;
         const name_len = std.unicode.utf8ToUtf16Le(filter_buf[off..], filter.name) catch return null;
@@ -2763,7 +2523,6 @@ pub const Host = struct {
         const ok = if (save) GetSaveFileNameW(&ofn) else GetOpenFileNameW(&ofn);
         if (ok == 0) return null;
 
-        // Find UTF-16 length (null-terminated by OFN).
         var u16_len: usize = 0;
         while (u16_len < file_buf.len and file_buf[u16_len] != 0) : (u16_len += 1) {}
 
@@ -2783,7 +2542,6 @@ pub const Host = struct {
         defer _ = GlobalUnlock(handle);
 
         const utf16_ptr: [*]const u16 = @ptrCast(@alignCast(ptr));
-        // Find UTF-16 null terminator.
         var utf16_len: usize = 0;
         while (utf16_ptr[utf16_len] != 0) : (utf16_len += 1) {
             if (utf16_len >= self.clipboard_buf.len) break;
@@ -2799,8 +2557,6 @@ pub const Host = struct {
         _ = self;
         if (t.len == 0) return;
 
-        // UTF-8 → UTF-16 conversion. Cap at 32K UTF-16 code units (~64KB)
-        // which is plenty for clipboard text.
         var utf16_buf: [32768]u16 = undefined;
         const utf16_len = std.unicode.utf8ToUtf16Le(&utf16_buf, t) catch return;
         if (utf16_len >= utf16_buf.len) return;
@@ -2824,191 +2580,4 @@ comptime {
     teak.validateHost(Host);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-//
-// Win32-only smoke tests. Wired into `zig build test` via the
-// `platform-win32` test target (Windows hosts only — see build.zig).
-// Each test gates on `builtin.os.tag == .windows` so a cross-compiled
-// run skips cleanly.
-
 const builtin = @import("builtin");
-
-test "uia per-node providers: publishA11yTree copies labels into the heap" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
-
-    // Initialize the same statics Host.init would set up. We don't
-    // create a window — none of the per-node vtable methods exercised
-    // here touch the HWND (BoundingRectangle does, but we don't call it).
-    if (!g_a11y_lock_initialized) {
-        InitializeCriticalSection(&g_a11y_lock);
-        g_a11y_lock_initialized = true;
-    }
-    initNodeProviderPool();
-
-    // Construct fake A11yNodes pointing at labels in an arena. Once
-    // publishA11yTree returns, the labels in g_published_nodes_buf
-    // must NOT alias these.
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const lbl_btn = try a.dupe(u8, "Save");
-    const lbl_input = try a.dupe(u8, "name");
-    const lbl_check = try a.dupe(u8, "agree");
-
-    const nodes = [_]A11yNode{
-        .{ .role = .button, .cmd_index = 1, .bounds = .{ .x = 0, .y = 0, .w = 80, .h = 30 }, .label = lbl_btn },
-        .{ .role = .text_input, .cmd_index = 2, .bounds = .{ .x = 0, .y = 40, .w = 200, .h = 30 }, .label = lbl_input, .focused = true },
-        .{ .role = .checkbox, .cmd_index = 3, .bounds = .{ .x = 0, .y = 80, .w = 100, .h = 20 }, .label = lbl_check, .state = 1 },
-    };
-
-    var dummy_host: Host = undefined;
-    dummy_host.publishA11yTree(&nodes);
-
-    try std.testing.expectEqual(@as(usize, 3), g_published_count);
-    // Labels should match by content but NOT by pointer (i.e. they
-    // were copied into the heap).
-    try std.testing.expectEqualStrings("Save", g_published_nodes_buf[0].label);
-    try std.testing.expectEqualStrings("name", g_published_nodes_buf[1].label);
-    try std.testing.expectEqualStrings("agree", g_published_nodes_buf[2].label);
-    try std.testing.expect(g_published_nodes_buf[0].label.ptr != lbl_btn.ptr);
-    try std.testing.expect(g_published_nodes_buf[1].label.ptr != lbl_input.ptr);
-    try std.testing.expect(g_published_nodes_buf[2].label.ptr != lbl_check.ptr);
-
-    // Root's Navigate(FirstChild) returns a non-null provider whose
-    // GetPropertyValue(ControlType) matches the first node's role.
-    var first_child: ?*anyopaque = null;
-    const fragment_this_ptr: *FragmentThis = @ptrCast(&g_root_provider.vtbl_fragment);
-    const nav_hr = g_root_provider_vtbl_fragment.Navigate(fragment_this_ptr, .first_child, &first_child);
-    try std.testing.expectEqual(S_OK, nav_hr);
-    try std.testing.expect(first_child != null);
-
-    // The returned pointer is the address of a NodeProvider's
-    // vtbl_fragment field — must be the first node in the pool.
-    const child_fragment_ptr: *FragmentThis = @ptrCast(@alignCast(first_child.?));
-    const child_node: *NodeProvider = @fieldParentPtr("vtbl_fragment", child_fragment_ptr);
-    try std.testing.expectEqual(@as(u32, 0), child_node.index);
-
-    // Read its ControlType via the Simple vtable.
-    const simple_this_ptr: *SimpleThis = @ptrCast(&child_node.vtbl_simple);
-    var v: VARIANT = .{ .vt = VT_EMPTY };
-    const prop_hr = g_node_provider_vtbl_simple.GetPropertyValue(simple_this_ptr, UIA_ControlTypePropertyId, &v);
-    try std.testing.expectEqual(S_OK, prop_hr);
-    try std.testing.expectEqual(VT_I4, v.vt);
-    var got_ct: c_long = 0;
-    @memcpy(std.mem.asBytes(&got_ct), v.payload[0..@sizeOf(c_long)]);
-    try std.testing.expectEqual(UIA_ButtonControlTypeId, got_ct);
-
-    // GetFocus on the root should pick out the focused text_input
-    // (node index 1).
-    var focused: ?*anyopaque = null;
-    const root_this_ptr: *FragmentRootThis = @ptrCast(&g_root_provider.vtbl_root);
-    const focus_hr = g_root_provider_vtbl_root.GetFocus(root_this_ptr, &focused);
-    try std.testing.expectEqual(S_OK, focus_hr);
-    try std.testing.expect(focused != null);
-    const focused_fragment_ptr: *FragmentThis = @ptrCast(@alignCast(focused.?));
-    const focused_node: *NodeProvider = @fieldParentPtr("vtbl_fragment", focused_fragment_ptr);
-    try std.testing.expectEqual(@as(u32, 1), focused_node.index);
-}
-
-test "DPI helpers: dpiScale and toLogical convert physical client pixels" {
-    const saved = g_scale;
-    defer g_scale = saved;
-    try std.testing.expectEqual(@as(f32, 1.0), dpiScale(0));
-    try std.testing.expectEqual(@as(f32, 1.5), dpiScale(144));
-    g_scale = dpiScale(192);
-    try std.testing.expectEqual(@as(u32, 640), toLogical(1280));
-    try std.testing.expectEqual(@as(u32, 1), toLogical(0));
-    g_scale = dpiScale(144);
-    try std.testing.expectEqual(@as(u32, 800), toLogical(1200));
-}
-
-test "dropped paths queue is bounded and starts empty" {
-    try std.testing.expectEqual(@as(usize, 0), g_drop_count);
-    try std.testing.expect(MAX_PENDING_DROPS > 0);
-}
-
-test "IME: start / composition / commit / end drive imeState like the other hosts" {
-    const host: *const Host = undefined; // imeState reads module state only
-    try std.testing.expect(!host.imeState().active);
-
-    // WM_IME_STARTCOMPOSITION through the real window procedure.
-    const fake_hwnd: HANDLE = @ptrFromInt(0x1000);
-    try std.testing.expectEqual(@as(LRESULT, 0), wndProc(fake_hwnd, WM_IME_STARTCOMPOSITION, 0, 0));
-    try std.testing.expect(host.imeState().active);
-    try std.testing.expectEqual(@as(usize, 0), host.imeState().text.len);
-
-    // Composition "nihon" + one multi-byte char; caret after the 2nd UTF-16 unit.
-    const comp = std.unicode.utf8ToUtf16LeStringLiteral("\u{65e5}\u{672c}go");
-    imeSetComposition(comp, 2);
-    var st = host.imeState();
-    try std.testing.expect(st.active);
-    try std.testing.expectEqualStrings("\u{65e5}\u{672c}go", st.text);
-    try std.testing.expectEqual(@as(usize, 6), st.cursor); // 2 units -> 6 UTF-8 bytes
-
-    // No caret reported: parked at the end.
-    imeSetComposition(comp, -1);
-    try std.testing.expectEqual(host.imeState().text.len, host.imeState().cursor);
-
-    // Commit-only clears the mirror but stays active; end deactivates.
-    imeClearText();
-    st = host.imeState();
-    try std.testing.expect(st.active);
-    try std.testing.expectEqual(@as(usize, 0), st.text.len);
-    try std.testing.expectEqual(@as(LRESULT, 0), wndProc(fake_hwnd, WM_IME_ENDCOMPOSITION, 0, 0));
-    try std.testing.expect(!host.imeState().active);
-}
-
-test "uia patterns: Invoke / Toggle / SetValue queue actions that pollA11yActions delivers" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
-    if (!g_a11y_lock_initialized) {
-        InitializeCriticalSection(&g_a11y_lock);
-        g_a11y_lock_initialized = true;
-    }
-    initNodeProviderPool();
-    const nodes = [_]A11yNode{
-        .{ .role = .button, .cmd_index = 3, .bounds = .{}, .label = "Save" },
-        .{ .role = .checkbox, .cmd_index = 5, .bounds = .{}, .label = "agree", .state = 1 },
-        .{ .role = .text_input, .cmd_index = 8, .bounds = .{}, .label = "name", .value = "bob" },
-        .{ .role = .button, .cmd_index = 9, .bounds = .{}, .label = "Off", .disabled = true },
-        .{ .role = .text, .cmd_index = 10, .bounds = .{}, .label = "plain" },
-    };
-    var host: Host = undefined;
-    host.publishA11yTree(&nodes);
-
-    // GetPatternProvider is role-gated.
-    var p: ?*anyopaque = null;
-    const s0: *SimpleThis = @ptrCast(&g_node_providers[0].vtbl_simple);
-    try std.testing.expectEqual(S_OK, g_node_provider_vtbl_simple.GetPatternProvider(s0, UIA_InvokePatternId, &p));
-    try std.testing.expect(p != null);
-    const inv: *InvokeThis = @ptrCast(@alignCast(p.?));
-    try std.testing.expectEqual(S_OK, g_invoke_vtbl.Invoke(inv));
-    p = null;
-    _ = g_node_provider_vtbl_simple.GetPatternProvider(s0, UIA_TogglePatternId, &p);
-    try std.testing.expect(p == null);
-
-    const tog: *ToggleThis = @ptrCast(&g_node_providers[1].vtbl_toggle);
-    var st: c_int = -1;
-    try std.testing.expectEqual(S_OK, g_toggle_vtbl.get_ToggleState(tog, &st));
-    try std.testing.expectEqual(ToggleState_On, st);
-    try std.testing.expectEqual(S_OK, g_toggle_vtbl.Toggle(tog));
-
-    const val: *ValueThis = @ptrCast(&g_node_providers[2].vtbl_value);
-    const w = std.unicode.utf8ToUtf16LeStringLiteral("alice");
-    try std.testing.expectEqual(S_OK, g_value_vtbl.SetValue(val, w));
-
-    // Disabled elements refuse; non-patterned roles do not hand out patterns.
-    const dis: *InvokeThis = @ptrCast(&g_node_providers[3].vtbl_invoke);
-    try std.testing.expectEqual(UIA_E_ELEMENTNOTENABLED, g_invoke_vtbl.Invoke(dis));
-
-    var out: [8]teak.A11yAction = undefined;
-    const n = host.pollA11yActions(&out);
-    try std.testing.expectEqual(@as(usize, 3), n);
-    try std.testing.expectEqual(teak.A11yActionKind.activate, out[0].kind);
-    try std.testing.expectEqual(@as(u32, 3), out[0].cmd_index);
-    try std.testing.expectEqual(@as(u32, 5), out[1].cmd_index);
-    try std.testing.expectEqual(teak.A11yActionKind.set_value, out[2].kind);
-    try std.testing.expectEqual(@as(u32, 8), out[2].cmd_index);
-    try std.testing.expectEqualStrings("alice", out[2].text);
-    try std.testing.expectEqual(@as(usize, 0), host.pollA11yActions(&out));
-}

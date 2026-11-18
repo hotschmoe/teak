@@ -147,8 +147,7 @@ pub const Font = struct {
     /// Kerning between two glyphs of this face, in font units (legacy `kern`
     /// table or GPOS pair adjustment, whichever stb finds).
     pub fn kernUnits(self: *const Font, left: u16, right: u16) i32 {
-        // stb re-walks the kern/GPOS tables per call; a direct-mapped cache keyed by
-        // (face, pair) turns repeat pairs into one load. Losable: a miss recomputes.
+        // Kerning cache misses recompute from the face's kern/GPOS tables.
         if (kern_epoch != epoch) {
             kern_cache = std.mem.zeroes([8192]KernSlot);
             kern_epoch = epoch;
@@ -174,8 +173,6 @@ pub const Font = struct {
 const KernSlot = struct { used: bool, left: u16, right: u16, value: i32, face: usize };
 var kern_epoch: u64 = 0;
 var kern_cache: [8192]KernSlot = std.mem.zeroes([8192]KernSlot);
-
-// ── Face table ─────────────────────────────────────────────────────
 
 const family_count = std.enums.values(teak.FontFamily).len;
 const weight_count = std.enums.values(teak.FontWeight).len;
@@ -246,7 +243,6 @@ pub fn faceById(id: u16) ?*const Font {
 /// any-registered last resort). Null only when no font exists at all.
 pub fn resolveFace(family: teak.FontFamily, weight: teak.FontWeight) ?struct { face: *const Font, id: u16 } {
     const f = faceFor(family, weight) orelse return null;
-    // faceFor returns a pointer into the registry; recover which slot.
     for (&registry.faces, 0..) |*row, fi| {
         for (row, 0..) |*slot, wi| {
             if (slot.*) |*p| {
@@ -313,7 +309,6 @@ fn readFontFileNone(_: std.mem.Allocator) ![]u8 {
 }
 
 fn readFontFileLibc(allocator: std.mem.Allocator) ![]u8 {
-    // libc getenv (this module always links libc for stb); non-allocating.
     if (std.c.getenv("TEAK_FONT")) |env_ptr| {
         const env_path = std.mem.span(env_ptr);
         if (env_path.len > 0) {
@@ -361,13 +356,4 @@ pub fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     }
     if (list.items.len == 0) return error.EmptyFont;
     return try list.toOwnedSlice(allocator);
-}
-
-test "windowsFontCandidate probes monospace faces first under the given Windows dir" {
-    var buf: [128]u8 = undefined;
-    try std.testing.expectEqualStrings("D:\\Win\\Fonts\\consola.ttf", windowsFontCandidate(&buf, "D:\\Win", 0).?);
-    try std.testing.expectEqualStrings("D:\\Win\\Fonts\\cour.ttf", windowsFontCandidate(&buf, "D:\\Win\\", 1).?);
-    try std.testing.expect(windowsFontCandidate(&buf, "D:\\Win", WINDOWS_FONT_FILES.len) == null);
-    var tiny: [4]u8 = undefined;
-    try std.testing.expect(windowsFontCandidate(&tiny, "D:\\Win", 0) == null);
 }

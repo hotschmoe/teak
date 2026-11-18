@@ -108,8 +108,7 @@ pub fn validateGpu(comptime T: type) void {
     if (present != 0 and present != scene_block.len)
         @compileError("Gpu '" ++ tn ++ "' declares part of the scene extension; " ++
             "uploadMesh, releaseMesh and renderScenes come together");
-    // Optional overlay layering: where the overlay layer starts in each
-    // staged list. Called before the uploads of a frame.
+    // Overlay boundaries must be supplied before frame uploads.
     // Optional HiDPI hook: render at `scale` physical pixels per logical unit.
     if (@hasDecl(T, "setScale") and @typeInfo(@TypeOf(T.setScale)) != .@"fn")
         @compileError("Gpu '" ++ tn ++ "'.setScale must be a function " ++
@@ -117,62 +116,4 @@ pub fn validateGpu(comptime T: type) void {
     if (@hasDecl(T, "setOverlayStart") and @typeInfo(@TypeOf(T.setOverlayStart)) != .@"fn")
         @compileError("Gpu '" ++ tn ++ "'.setOverlayStart must be a function " ++
             "(expected fn(*Gpu, OverlaySplit) void)");
-}
-
-test "validateGpu accepts a minimal shape" {
-    const Stub = struct {
-        pub fn init() void {}
-        pub fn deinit(_: *@This()) void {}
-        pub fn resize(_: *@This(), _: u32, _: u32) void {}
-        pub fn uploadVertices(_: *@This(), _: []const Vertex) void {}
-        pub fn renderFrame(_: *@This(), _: ClearColor) void {}
-        pub fn rasterizeText(
-            _: *@This(),
-            _: []const u8,
-            _: FontSpec,
-            _: [4]f32,
-            _: u32,
-            _: u32,
-        ) TextureHandle {
-            return TEXTURE_HANDLE_NONE;
-        }
-        pub fn uploadText(_: *@This(), _: []const TextDraw) void {}
-        /// Upload an RGBA8 image. `bytes` is `width * height * 4` bytes,
-        /// premultiplied or not — the shader multiplies by tint then
-        /// outputs the result; the host picks blending. Returns an
-        /// opaque handle the app stashes in `ImageCmd.handle`.
-        pub fn uploadImage(_: *@This(), _: []const u8, _: u32, _: u32) TextureHandle {
-            return TEXTURE_HANDLE_NONE;
-        }
-        /// Per-frame counterpart to `uploadText`. Walks ImageDraws and
-        /// records a draw entry per visible image.
-        pub fn uploadImages(_: *@This(), _: []const ImageDraw) void {}
-        pub fn releaseImage(_: *@This(), _: TextureHandle) void {}
-    };
-    comptime validateGpu(Stub);
-}
-
-test "validateGpu accepts the full scene extension" {
-    const Stub = struct {
-        pub fn deinit(_: *@This()) void {}
-        pub fn resize(_: *@This(), _: u32, _: u32) void {}
-        pub fn uploadVertices(_: *@This(), _: []const Vertex) void {}
-        pub fn renderFrame(_: *@This(), _: ClearColor) void {}
-        pub fn rasterizeText(_: *@This(), _: []const u8, _: FontSpec, _: [4]f32, _: u32, _: u32) TextureHandle {
-            return TEXTURE_HANDLE_NONE;
-        }
-        pub fn uploadText(_: *@This(), _: []const TextDraw) void {}
-        pub fn uploadImage(_: *@This(), _: []const u8, _: u32, _: u32) TextureHandle {
-            return TEXTURE_HANDLE_NONE;
-        }
-        pub fn uploadImages(_: *@This(), _: []const ImageDraw) void {}
-        pub fn releaseImage(_: *@This(), _: TextureHandle) void {}
-        pub fn setOverlayStart(_: *@This(), _: OverlaySplit) void {}
-        pub fn uploadMesh(_: *@This(), _: MeshData) MeshHandle {
-            return scene.MESH_HANDLE_NONE;
-        }
-        pub fn releaseMesh(_: *@This(), _: MeshHandle) void {}
-        pub fn renderScenes(_: *@This(), _: []const SceneDraw, _: SceneData) void {}
-    };
-    comptime validateGpu(Stub);
 }

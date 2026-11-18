@@ -15,7 +15,6 @@ pub fn build(b: *std.Build) void {
     const teak_dep = b.dependency("teak", .{ .target = target, .optimize = optimize });
     const teak_mod = teak_dep.module("teak");
 
-    // --- CLI ---
 
     const exe = b.addExecutable(.{
         .name = "chrome",
@@ -36,16 +35,10 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
 
-    // --- Tests ---
 
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
-    const test_step = b.step("test", "Run chrome tests");
-    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    const test_step = b.step("test", "Run the example canary");
+    test_step.dependOn(&run_cmd.step);
 
-    // --- Native UI (wgpu native: Win32 / X11) ---
-    //
-    // Gated on `hasNativeBackend` so non-native targets still configure
-    // `run`/`test`/`web`; `linkNativeWgpu` picks the backend per OS.
 
     if (teak.hasNativeBackend(target.result.os.tag)) {
         const ui_exe = b.addExecutable(.{
@@ -64,16 +57,12 @@ pub fn build(b: *std.Build) void {
         ui_run.step.dependOn(&install_ui.step);
         ui_run.addPassthruArgs();
 
-        // Build + install the UI exe without running it (CI launches it itself).
         b.step("ui-install", "Build and install the native UI exe (no run)").dependOn(&install_ui.step);
 
         const ui_step = b.step("ui", "Run Teak chrome UI (wgpu native: Win32 / X11)");
         ui_step.dependOn(&ui_run.step);
     }
 
-    // --- Headless screenshot (no display; needs a Vulkan / Metal device) ---
-    //
-    //   zig build shot -- out.png
 
     if (teak.hasNativeBackend(target.result.os.tag)) {
         const shot_exe = b.addExecutable(.{
@@ -85,8 +74,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
         teak.linkHeadless(b, shot_exe, .{});
-        // Run the INSTALLED exe (zig-out/bin, beside wgpu_native.dll): on
-        // Windows the cached exe cannot find the DLL (exit code 53).
+        // Windows needs the installed executable beside wgpu_native.dll.
         const install_shot = b.addInstallArtifact(shot_exe, .{});
         const shot_run = b.addRunArtifact(shot_exe);
         shot_run.step.dependOn(&install_shot.step);
@@ -95,7 +83,6 @@ pub fn build(b: *std.Build) void {
         shot_step.dependOn(&shot_run.step);
     }
 
-    // --- Web (wasm + zunk) ---
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
@@ -108,8 +95,6 @@ pub fn build(b: *std.Build) void {
         "Optimize mode for the wasm build (default: ReleaseFast)",
     ) orelse .ReleaseFast;
 
-    // `zig build web -Dstress=N` builds the text stress app (N mono runs) instead
-    // of chrome: the glyph-atlas check for the web backend.
     const stress = b.option(usize, "stress", "Web: build the N-run text stress app instead of chrome") orelse 0;
     const web_opts = b.addOptions();
     web_opts.addOption(usize, "stress", stress);

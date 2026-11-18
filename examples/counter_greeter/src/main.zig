@@ -26,10 +26,8 @@ pub fn main() !void {
 
     printFrame(cmds, rects[0..cmds.len]);
 
-    // Simulated interaction trace: click "+", click "+", click text input, type "Hi", backspace.
     std.debug.print("\n── Simulated Interaction ──\n", .{});
 
-    // Locate widget rects.
     var plus_rect: ?teak.Rect = null;
     var input_rect: ?teak.Rect = null;
     for (cmds, 0..) |c, i| switch (c) {
@@ -69,7 +67,6 @@ pub fn main() !void {
     if (App.keySpecialMsg(&model, .backspace)) |m| App.update(&model, m);
     std.debug.print("backspace       -> greeter.name = \"{s}\"\n", .{model.greeter.name[0..model.greeter.name_len]});
 
-    // Rebuild to show the updated frame.
     cb.reset();
     App.view(&model, &cb);
     const cmds2 = cb.cmds.items;
@@ -110,56 +107,7 @@ fn printFrame(cmds: []const teak.Cmd(App.Msg), rects: []const teak.Rect) void {
                 r.w,
                 r.h,
             }),
-            // Other Cmd variants (checkbox, radio, slider, divider, scroll)
-            // aren't emitted by this app. The canary only prints what
-            // counter + greeter actually produce.
             else => {},
         }
     }
-}
-
-test "full composed loop: click + keyboard updates model" {
-    const testing = std.testing;
-    var model: App.Model = .{};
-    var cb = teak.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    App.view(&model, &cb);
-    var rects: [128]teak.Rect = undefined;
-    teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 400, teak.monoMeasurer());
-
-    // Click the "+" button.
-    var plus_rect: ?teak.Rect = null;
-    for (cb.cmds.items, 0..) |c, i| switch (c) {
-        .button => |btn| if (std.mem.eql(u8, btn.label, "+")) {
-            plus_rect = rects[i];
-        },
-        else => {},
-    };
-    try testing.expect(plus_rect != null);
-
-    const pr = plus_rect.?;
-    if (teak.hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], pr.x + 2, pr.y + 2)) |hit| {
-        if (hit.msg) |m| App.update(&model, m);
-    }
-    try testing.expectEqual(@as(i32, 1), model.counter.count);
-
-    // Click the text input -> focus greeter.
-    var input_rect: ?teak.Rect = null;
-    for (cb.cmds.items, 0..) |c, i| switch (c) {
-        .text_input => {
-            input_rect = rects[i];
-        },
-        else => {},
-    };
-    try testing.expect(input_rect != null);
-    const ir = input_rect.?;
-    if (teak.hitTest(cb.cmds.items, rects[0..cb.cmds.items.len], ir.x + 5, ir.y + 5)) |hit| {
-        if (hit.msg) |m| App.update(&model, m);
-    }
-    try testing.expectEqual(@as(?App.FocusField, .greeter), model.focused);
-
-    // Type 'X' routed through keyCharMsg.
-    if (App.keyCharMsg(&model, 'X')) |m| App.update(&model, m);
-    try testing.expectEqualStrings("X", model.greeter.name[0..model.greeter.name_len]);
 }

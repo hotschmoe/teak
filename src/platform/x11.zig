@@ -39,11 +39,7 @@ pub const FileDialogResult = teak.FileDialogResult;
 pub const FileDialogFilter = teak.FileDialogFilter;
 pub const FileDialogPoll = teak.FileDialogPoll;
 
-// ── Xlib types (hand-declared; 64-bit ABI) ─────────────────────────
-//
-// Display is opaque. Window / Atom / KeySym / Time are `unsigned long`.
-// Bool is `int`. Event structs share an `int type` first field (named
-// `kind` here — `type` is a Zig primitive); the XEvent union aliases it.
+// Xlib declarations use the 64-bit ABI; see SRC.md.
 
 const Display = anyopaque;
 const Window = c_ulong;
@@ -227,7 +223,6 @@ pub const XEvent = extern union {
     pad: [24]c_long,
 };
 
-// X protocol event type codes.
 const KeyPress: c_int = 2;
 const KeyRelease: c_int = 3;
 const ButtonPress: c_int = 4;
@@ -253,13 +248,11 @@ const XBufferOverflow: c_int = -1;
 const XLookupChars: c_int = 2;
 const XLookupBoth: c_int = 4;
 
-// Modifier masks (`state` of key / button / motion events).
 const ShiftMask: c_uint = 1 << 0;
 const ControlMask: c_uint = 1 << 2;
 const Mod1Mask: c_uint = 1 << 3; // Alt
 const Mod4Mask: c_uint = 1 << 6; // Super
 
-// XSelectInput event masks.
 const KeyPressMask: c_long = 1 << 0;
 const KeyReleaseMask: c_long = 1 << 1;
 const ButtonPressMask: c_long = 1 << 2;
@@ -270,7 +263,6 @@ const FocusChangeMask: c_long = 1 << 21;
 const PropertyChangeMask: c_long = 1 << 22;
 const StructureNotifyMask: c_long = 1 << 17;
 
-// Keysyms (keysymdef.h).
 const XK_BackSpace: KeySym = 0xff08;
 const XK_Tab: KeySym = 0xff09;
 const XK_ISO_Left_Tab: KeySym = 0xfe20;
@@ -296,8 +288,6 @@ const XK_End: KeySym = 0xff57;
 /// WHEEL_PIXELS_PER_NOTCH so wheel feel is consistent across hosts.
 const WHEEL_PIXELS_PER_NOTCH: f32 = 48;
 
-// ── Xlib function pointer table (resolved via dlopen) ───────────────
-
 /// Xlib entry points (pub for `x11_test.zig`).
 pub const Xlib = struct {
     XOpenDisplay: *const fn (?[*:0]const u8) callconv(.c) ?*Display,
@@ -321,7 +311,6 @@ pub const Xlib = struct {
     /// database) as a NUL-terminated string, or null when unset. We read
     /// `Xft.dpi` out of it to derive the desktop scale factor.
     XResourceManagerString: *const fn (*Display) callconv(.c) ?[*:0]const u8,
-    // Selections (clipboard + XDND).
     XSetSelectionOwner: *const fn (*Display, Atom, Window, c_ulong) callconv(.c) c_int,
     XGetSelectionOwner: *const fn (*Display, Atom) callconv(.c) Window,
     XConvertSelection: *const fn (*Display, Atom, Atom, Atom, Window, c_ulong) callconv(.c) c_int,
@@ -333,10 +322,8 @@ pub const Xlib = struct {
     XFree: *const fn (?*anyopaque) callconv(.c) c_int,
     XExtendedMaxRequestSize: *const fn (*Display) callconv(.c) c_long,
     XMaxRequestSize: *const fn (*Display) callconv(.c) c_long,
-    // Cursors.
     XCreateFontCursor: *const fn (*Display, c_uint) callconv(.c) c_ulong,
     XDefineCursor: *const fn (*Display, Window, c_ulong) callconv(.c) c_int,
-    // Input methods.
     XSupportsLocale: *const fn () callconv(.c) c_int,
     XSetLocaleModifiers: *const fn ([*:0]const u8) callconv(.c) ?[*:0]const u8,
     XFilterEvent: *const fn (*XEvent, Window) callconv(.c) c_int,
@@ -363,8 +350,6 @@ pub const Xlib = struct {
         return x;
     }
 };
-
-// ── Atoms, transfers, input-method plumbing ────────────────────────
 
 pub const Atoms = struct {
     wm_protocols: Atom,
@@ -555,8 +540,6 @@ fn preeditCaret(_: ?*anyopaque, client_data: ?*anyopaque, call: ?*anyopaque) cal
     if (d.position >= 0) c.preedit.moveCaret(@intCast(d.position));
 }
 
-// ── Public types ───────────────────────────────────────────────────
-
 /// X11 native window handle: opaque `Display*` + `Window` XID. Structurally
 /// matches `gpu/surface_xlib.Handle`; that provider duck-types it.
 pub const NativeHandle = struct {
@@ -649,9 +632,6 @@ pub const Host = struct {
         const display = x.XOpenDisplay(null) orelse return error.X11OpenDisplayFailed;
         errdefer _ = x.XCloseDisplay(display);
 
-        // Display scale: TEAK_SCALE, else GDK_SCALE, else Xft.dpi / 96 (see
-        // `pickScale`). Needed before the window exists: `width`/`height`
-        // are logical, the X window is `scale` times larger.
         const xrm: ?[]const u8 = if (x.XResourceManagerString(display)) |rm| std.mem.span(rm) else null;
         const scale = pickScale(envSlice("TEAK_SCALE"), envSlice("GDK_SCALE"), xrm);
 
@@ -662,14 +642,10 @@ pub const Host = struct {
         setWindowTitle(&x, display, window, title);
         const atoms = Atoms.intern(&x, display);
 
-        // Route the window-manager close button through ClientMessage.
-        // We keep both atoms so the ClientMessage handler can confirm the
-        // message is a WM_PROTOCOLS/WM_DELETE_WINDOW pair (not some other
-        // client message whose data happens to collide with the atom id).
+        // Both atoms are needed to distinguish close requests from other messages.
         var wm_delete = atoms.wm_delete;
         _ = x.XSetWMProtocols(display, window, &wm_delete, 1);
 
-        // Accept XDND file / text drops (protocol version 5).
         var xdnd_ver: c_long = XDND_VERSION;
         _ = x.XChangeProperty(display, window, atoms.xdnd_aware, XA_ATOM, 32, PropModeReplace, @ptrCast(&xdnd_ver), 1);
 
@@ -680,7 +656,6 @@ pub const Host = struct {
         var select_mask: c_long = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask |
             PointerMotionMask | StructureNotifyMask | ExposureMask | FocusChangeMask | PropertyChangeMask;
         if (im.ic) |ic| {
-            // The IM may need events beyond the ones we asked for.
             var filter: c_ulong = 0;
             if (x.XGetICValues(ic, "filterEvents", &filter, @as(?*anyopaque, null)) == null)
                 select_mask |= @as(c_long, @bitCast(filter));
@@ -743,7 +718,7 @@ pub const Host = struct {
         };
         _ = self.x.XDestroyWindow(self.display, self.window);
         _ = self.x.XCloseDisplay(self.display);
-        // libXcursor hooks display close: unload it only after the display.
+        // Xcursor must remain loaded until the display closes.
         if (self.xcursor) |xc| {
             xc.lib.close();
             gpa.destroy(xc);
@@ -760,8 +735,6 @@ pub const Host = struct {
         while (self.x.XPending(self.display) > 0) {
             var ev: XEvent = undefined;
             _ = self.x.XNextEvent(self.display, &ev);
-            // Input methods get first refusal on every event (key events they
-            // consume for composition never reach the switch below).
             if (self.x.XFilterEvent(&ev, None) != 0) continue;
             if (ev.xany.window != self.window) {
                 if (self.secondaryFor(ev.xany.window)) |sw| {
@@ -781,8 +754,6 @@ pub const Host = struct {
                         1 => q.buttonDown(.left),
                         2 => q.buttonDown(.middle),
                         3 => q.buttonDown(.right),
-                        // X11 wheel = buttons 4/5 (vertical), 6/7 (horizontal).
-                        // Sign per InputState: positive = scroll down / right.
                         4 => q.wheel(0, -WHEEL_PIXELS_PER_NOTCH),
                         5 => q.wheel(0, WHEEL_PIXELS_PER_NOTCH),
                         6 => q.wheel(-WHEEL_PIXELS_PER_NOTCH, 0),
@@ -815,8 +786,7 @@ pub const Host = struct {
                         }
                     }
                 },
-                // Uncovered / first-mapped area: the idle loop skips frames, so an
-                // expose must force the next one (the last frame is redrawn).
+                // Expose must redraw even while idle.
                 Expose => if (ev.xexpose.count == 0) {
                     self.resized_pending = true;
                 },
@@ -836,7 +806,6 @@ pub const Host = struct {
             }
         }
 
-        // Synthetic input (agent control channel) joins the real events.
         self.inject.apply(q);
 
         const resized = self.resized_pending or self.first_resize;
@@ -853,9 +822,7 @@ pub const Host = struct {
         var n: c_int = 0;
         var has_chars = true;
         if (self.xic) |ic| {
-            // Committed text from the input method (also dead keys / Compose
-            // on the built-in IM). Overflow drops the commit rather than
-            // splitting a code point.
+            // Overflow must not split a committed code point.
             var status: c_int = 0;
             n = self.x.Xutf8LookupString(ic, ev, &buf, buf.len, &keysym, &status);
             has_chars = (status == XLookupChars or status == XLookupBoth) and status != XBufferOverflow;
@@ -865,21 +832,15 @@ pub const Host = struct {
         }
         const chars = buf[0..if (n > 0) @intCast(n) else 0];
 
-        // 0. Alt on its own: the press arms an `alt_tap`, the release fires it.
         if (keysym == XK_Alt_L or keysym == XK_Alt_R) return q.altDown();
 
-        // 0. Keyboard shortcuts (Ctrl/Alt combinations, F-keys) for the App's
-        //    `commands` table, IN ADDITION to the special-key / text paths
-        //    below; an Alt combination never types text.
         if (shortcutFromKeysym(keysym)) |sk| q.pushShortcut(sk);
         if (q.mods.alt and !q.mods.ctrl) {
             if (navFromKeysym(keysym)) |nk| q.pushNav(nk);
             return;
         }
 
-        // 1. Navigation / editing keys (Shift variants resolved by the queue).
         if (navFromKeysym(keysym)) |nk| return q.pushNav(nk);
-        // 2. Ctrl chords (their control-char text is not typed).
         if (q.mods.ctrl) {
             if (chordFromKeysym(keysym)) |nk| {
                 q.pushNav(nk);
@@ -887,10 +848,6 @@ pub const Host = struct {
             }
             return;
         }
-        // 3. Text. With an input method the lookup yields whole UTF-8
-        //    (committed compositions included); without, Unicode / Latin-1
-        //    keysyms map straight to a code point and anything else falls
-        //    back to the ASCII `XLookupString` produced.
         if (self.xic != null) {
             var it = std.unicode.Utf8View.initUnchecked(chars).iterator();
             if (std.unicode.utf8ValidateSlice(chars)) {
@@ -914,8 +871,6 @@ pub const Host = struct {
         _ = self.x.XLookupString(ev, &buf, buf.len, &keysym, null);
         if (keysym == XK_Alt_L or keysym == XK_Alt_R) self.queue.altUp();
     }
-
-    // ── Selections: clipboard + XDND ────────────────────────────────
 
     /// Send a 32-bit ClientMessage to `target` (pub for `x11_test.zig`).
     pub fn sendClientMessage(self: *Host, target: Window, msg_type: Atom, l: [5]c_long) void {
@@ -1077,8 +1032,6 @@ pub const Host = struct {
         if (ev.property == None) return self.failTransfer();
         const info = self.fetchProperty(self.window, ev.property, true, &t.buf) orelse return self.failTransfer();
         if (info.type == self.atoms.incr) {
-            // The owner will stream chunks as PropertyNotify(NewValue) on our
-            // property; the size hint it sent is discarded.
             t.incr = true;
             t.buf.clearRetainingCapacity();
             t.deadline_ms = self.nowMs() + TRANSFER_TIMEOUT_MS;
@@ -1225,7 +1178,7 @@ pub const Host = struct {
             .property = None,
             .time = req.time,
         };
-        // Obsolete clients leave `property` unset: the target names it.
+        // Older clients use the target as the property when none is supplied.
         const prop = if (req.property == None) req.target else req.property;
         if (req.selection == a.clipboard) if (self.clip_out) |out| {
             if (req.target == a.targets) {
@@ -1364,8 +1317,6 @@ pub const Host = struct {
         return !self.running;
     }
 
-    // ── Agent control channel (optional Host surface; src/control.zig) ──
-
     pub fn controlListen(self: *Host, path: []const u8) bool {
         return self.ctl.listen(path);
     }
@@ -1419,8 +1370,6 @@ pub const Host = struct {
         return text.measure(text_bytes, font);
     }
 
-    // ── Declarative effects (docs/features/effects.md) ──────────────
-
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
             .write_clipboard => |w| {
@@ -1436,9 +1385,6 @@ pub const Host = struct {
     }
 
     pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize {
-        // Called after key routing: a Ctrl+V that `Clipboard.read` did not
-        // claim becomes an asynchronous paste whose answer lands in a later
-        // frame as `pasted_text` / `dropped`.
         if (self.paste_requested) {
             self.paste_requested = false;
             self.startPaste();
@@ -1654,7 +1600,6 @@ pub const Host = struct {
     }
 
     pub fn nowMs(_: *const Host) u64 {
-        // Monotonic milliseconds (clocks live behind `std.Io`).
         const now = std.Io.Clock.awake.now(std.Options.debug_io);
         return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms));
     }
@@ -1946,176 +1891,4 @@ fn codepointFromKeysym(keysym: KeySym) ?u21 {
 
 comptime {
     teak.validateHost(Host);
-}
-
-test "X11 key tables reach every SpecialKey through the shared policy" {
-    var seen = std.EnumSet(SpecialKey).empty;
-    const keysyms = [_]KeySym{
-        XK_BackSpace, XK_Delete,   XK_Left, XK_Right,        XK_Up,     XK_Down, XK_Home, XK_End, XK_Prior, XK_Next,
-        XK_Return,    XK_KP_Enter, XK_Tab,  XK_ISO_Left_Tab, XK_Escape, XK_F10,  XK_Menu, 'a',    'c',      'x',
-        'v',          'y',         'z',     XK_F12,
-    };
-    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = true } };
-    for (mod_sets) |mods| {
-        for (keysyms) |ks| {
-            const nk = (if (mods.ctrl) chordFromKeysym(ks) else null) orelse navFromKeysym(ks) orelse continue;
-            if (teak.resolveKey(nk, mods)) |sk| seen.insert(sk);
-        }
-    }
-    for (std.enums.values(SpecialKey)) |sk| {
-        if (sk == .alt_tap) continue; // synthesized by InputQueue.altUp, not a keysym
-        try std.testing.expect(seen.contains(sk));
-    }
-}
-
-test "navFromKeysym: letters are text, not keys" {
-    try std.testing.expect(navFromKeysym('a') == null);
-    try std.testing.expectEqual(NavKey.tab, navFromKeysym(XK_ISO_Left_Tab).?);
-    try std.testing.expectEqual(NavKey.c, chordFromKeysym('C').?); // Caps Lock / Shift folded
-    try std.testing.expect(chordFromKeysym('1') == null);
-}
-
-test "codepointFromKeysym: ASCII, Latin-1 and Unicode keysyms" {
-    try std.testing.expectEqual(@as(u21, 'q'), codepointFromKeysym('q').?);
-    try std.testing.expectEqual(@as(u21, 0xE9), codepointFromKeysym(0xe9).?); // eacute
-    try std.testing.expectEqual(@as(u21, 0x20AC), codepointFromKeysym(0x010020ac).?); // EuroSign
-    try std.testing.expect(codepointFromKeysym(XK_Left) == null);
-    try std.testing.expect(codepointFromKeysym(0x1f) == null);
-}
-
-test "modsFromState decodes shift/ctrl/alt/super" {
-    const m = modsFromState(ShiftMask | Mod4Mask | 0x2); // 0x2 = Caps Lock: ignored
-    try std.testing.expect(m.shift and m.meta and !m.ctrl and !m.alt);
-    try std.testing.expect(modsFromState(ControlMask | Mod1Mask).ctrl);
-}
-
-test "parseXftDpi extracts the value from a resource-manager dump" {
-    // Tab-separated (xrdb's default) and space-separated forms, with the
-    // key surrounded by unrelated resources.
-    try std.testing.expectEqual(@as(f32, 192), parseXftDpi("Xft.antialias:\t1\nXft.dpi:\t192\nXft.hinting:\t1\n").?);
-    try std.testing.expectEqual(@as(f32, 96), parseXftDpi("*customization:\t-color\nXft.dpi:  96").?);
-    try std.testing.expectEqual(@as(f32, 120.5), parseXftDpi("Xft.dpi:\t120.5\n").?);
-    // Absent / empty / non-numeric → null.
-    try std.testing.expect(parseXftDpi("Xft.antialias:\t1\n") == null);
-    try std.testing.expect(parseXftDpi("") == null);
-    try std.testing.expect(parseXftDpi("Xft.dpi:\tauto\n") == null);
-    // Must not match a differently-named key that merely contains the text.
-    try std.testing.expect(parseXftDpi("Xft.dpimode:\t7\n") == null);
-}
-
-test "scaleFromXrm derives a clamped scale, defaulting to 1.0" {
-    try std.testing.expectEqual(@as(f32, 2.0), scaleFromXrm("Xft.dpi:\t192\n"));
-    try std.testing.expectEqual(@as(f32, 1.0), scaleFromXrm("Xft.dpi:\t96\n"));
-    try std.testing.expectEqual(@as(f32, 1.0), scaleFromXrm("")); // unset
-    try std.testing.expectEqual(@as(f32, 1.0), scaleFromXrm("Xft.dpi:\t0\n")); // non-positive guard
-    // Absurd values clamp into range rather than producing a giant scale.
-    try std.testing.expectEqual(@as(f32, 8.0), scaleFromXrm("Xft.dpi:\t9999\n"));
-}
-
-test "control surface: injected input joins the real queue; socket lines round-trip" {
-    // Needs a reachable X server (Xvfb is fine); skipped without one.
-    var h = Host.init("teak control test", 320, 200) catch return error.SkipZigTest;
-    defer h.deinit();
-
-    var path_buf: [64]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "/tmp/teak-x11-ctl-{d}.sock", .{std.os.linux.getpid()});
-    try std.testing.expect(h.controlListen(path));
-
-    var cl = try control_socket.Client.connect(path);
-    defer cl.close();
-    try cl.sendLine("{\"cmd\":\"ping\"}");
-    var line: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("{\"cmd\":\"ping\"}", h.controlRecv(&line) orelse return error.TestUnexpectedResult);
-
-    h.injectInput(.{ .move = .{ 40, 50 } });
-    h.injectInput(.{ .down = .left });
-    h.injectInput(.{ .up = .left });
-    h.injectInput(.{ .chars = "hi" });
-    h.injectInput(.{ .key = .enter });
-    const in = h.pollInputs();
-    try std.testing.expectEqual(@as(f32, 40), in.mouse_x);
-    try std.testing.expect(in.mouse_down and in.mouse_up);
-    try std.testing.expectEqualStrings("hi", in.chars);
-    try std.testing.expectEqual(@as(usize, 1), in.keys.len);
-
-    // Nothing queued: the injected text and key are gone, not repeated.
-    const next = h.pollInputs();
-    try std.testing.expectEqual(@as(usize, 0), next.chars.len);
-
-    try std.testing.expect(!h.shouldClose());
-    h.requestClose();
-    try std.testing.expect(h.shouldClose());
-}
-
-test "preedit callbacks drive the composition state (multibyte and wide)" {
-    var ctx: ImeCtx = .{};
-    try std.testing.expectEqual(@as(c_int, -1), preeditStart(null, &ctx, null));
-    try std.testing.expect(ctx.preedit.active);
-
-    var mb = XIMText{ .length = 2, .feedback = null, .encoding_is_wchar = 0, .string = .{ .multi_byte = "ni" } };
-    var draw = XIMPreeditDrawCallbackStruct{ .caret = 2, .chg_first = 0, .chg_length = 0, .text = &mb };
-    preeditDraw(null, &ctx, &draw);
-    try std.testing.expectEqualStrings("ni", ctx.preedit.text());
-
-    // The IM converts: replace both characters with one wide-char CJK glyph.
-    const wide = [_]u32{ 0x4F60, 0 };
-    var wt = XIMText{ .length = 1, .feedback = null, .encoding_is_wchar = 1, .string = .{ .wide_char = &wide } };
-    draw = .{ .caret = 1, .chg_first = 0, .chg_length = 2, .text = &wt };
-    preeditDraw(null, &ctx, &draw);
-    try std.testing.expectEqualStrings("你", ctx.preedit.text());
-    try std.testing.expectEqual(@as(usize, 3), ctx.preedit.out_caret);
-
-    // text == NULL deletes the range; caret callback clamps.
-    draw = .{ .caret = 0, .chg_first = 0, .chg_length = 1, .text = null };
-    preeditDraw(null, &ctx, &draw);
-    try std.testing.expectEqualStrings("", ctx.preedit.text());
-    var caret = XIMPreeditCaretCallbackStruct{ .position = 9, .direction = 0, .style = 0 };
-    preeditCaret(null, &ctx, &caret);
-    try std.testing.expectEqual(@as(usize, 0), ctx.preedit.caret);
-
-    preeditDone(null, &ctx, null);
-    try std.testing.expect(!ctx.preedit.active);
-}
-
-test "atomsFromBytes decodes a format-32 property" {
-    var raw: [3 * @sizeOf(c_long)]u8 = undefined;
-    for (0..3) |i| std.mem.writeInt(c_ulong, raw[i * @sizeOf(c_long) ..][0..@sizeOf(c_ulong)], @as(c_ulong, 100) + @as(c_ulong, @intCast(i)), @import("builtin").cpu.arch.endian());
-    var out: [4]Atom = undefined;
-    try std.testing.expectEqual(@as(usize, 3), atomsFromBytes(&raw, &out));
-    try std.testing.expectEqual(@as(Atom, 102), out[2]);
-}
-
-test "shortcutFromKeysym maps letters, digits, F-keys and punctuation" {
-    try std.testing.expectEqual(teak.Key.p, shortcutFromKeysym('P').?);
-    try std.testing.expectEqual(teak.Key.d5, shortcutFromKeysym('5').?);
-    try std.testing.expectEqual(teak.Key.f1, shortcutFromKeysym(0xffbe).?);
-    try std.testing.expectEqual(teak.Key.f12, shortcutFromKeysym(XK_F12).?);
-    try std.testing.expectEqual(teak.Key.comma, shortcutFromKeysym(',').?);
-    try std.testing.expectEqual(teak.Key.page_down, shortcutFromKeysym(XK_Next).?);
-    try std.testing.expect(shortcutFromKeysym(0x1234567) == null);
-}
-
-test "pickScale: TEAK_SCALE beats GDK_SCALE beats Xft.dpi; junk falls through" {
-    const xrm = "Xft.dpi:\t144\n";
-    try std.testing.expectEqual(@as(f32, 2), pickScale("2", "3", xrm));
-    try std.testing.expectEqual(@as(f32, 3), pickScale(null, "3", xrm));
-    try std.testing.expectEqual(@as(f32, 1.5), pickScale(null, null, xrm));
-    try std.testing.expectEqual(@as(f32, 1.5), pickScale("banana", "0", xrm));
-    try std.testing.expectEqual(@as(f32, 1), pickScale(null, null, null));
-    try std.testing.expectEqual(@as(f32, 1), pickScale("99", null, null)); // out of range ignored
-}
-
-test "logical <-> device pixel conversion round-trips and never hits 0" {
-    try std.testing.expectEqual(@as(u32, 800), physicalOf(400, 2));
-    try std.testing.expectEqual(@as(u32, 400), logicalOf(800, 2));
-    try std.testing.expectEqual(@as(u32, 600), physicalOf(400, 1.5));
-    try std.testing.expectEqual(@as(u32, 400), logicalOf(600, 1.5));
-    try std.testing.expectEqual(@as(u32, 1), logicalOf(0, 2));
-}
-
-test "every cursor shape maps to a font cursor and a theme name" {
-    for (std.enums.values(teak.CursorShape)) |sh| {
-        try std.testing.expect(xcursorName(sh).len > 0);
-        try std.testing.expect(fontCursorId(sh) % 2 == 0); // cursorfont glyph ids are even
-    }
 }

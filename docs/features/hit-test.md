@@ -4,7 +4,7 @@
 (`hit_test.pointerTarget` / `wheelTarget` / `PointerTarget` / `WheelTarget` are
 reached through `teak.hit_test`).
 **Source**: `src/input/hit_test.zig`
-**Tests**: colocated — scroll clipping, painter's order, slider value mapping.
+**Checks**: the background gate drives the headless todo application through its input path.
 
 ## Contract
 

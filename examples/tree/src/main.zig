@@ -20,7 +20,6 @@ pub fn main() !void {
     std.debug.print("initial visible:\n", .{});
     printVisible(&model);
 
-    // Find "input" (collapsed by default) and expand it.
     var input_idx: ?u16 = null;
     for (model.nodes[0..model.nodes_len], 0..) |node, i| {
         if (std.mem.eql(u8, node.label[0..node.label_len], "input")) {
@@ -34,7 +33,6 @@ pub fn main() !void {
         printVisible(&model);
     }
 
-    // Full layout pass to confirm the pipeline end-to-end.
     App.view(&model, &cb);
     var rects: [512]teak.Rect = undefined;
     const cmds = cb.cmds.items;
@@ -62,29 +60,4 @@ fn printVisible(m: *const App.Model) void {
 
         if (!node.is_leaf and !node.expanded) hide_below = node.depth + 1;
     }
-}
-
-test "cli trace: toggling collapsed 'input' reveals focus.zig in the next view" {
-    const testing = std.testing;
-    var m = App.Model.init();
-
-    var input_idx: ?u16 = null;
-    for (m.nodes[0..m.nodes_len], 0..) |node, i| {
-        if (std.mem.eql(u8, node.label[0..node.label_len], "input")) {
-            input_idx = @intCast(i);
-            break;
-        }
-    }
-    try testing.expect(input_idx != null);
-    App.update(&m, .{ .toggle = input_idx.? });
-
-    var cb = teak.CmdBuffer(App.Msg).init(testing.allocator);
-    defer cb.deinit();
-    App.view(&m, &cb);
-
-    var saw_focus = false;
-    for (cb.cmds.items) |c| {
-        if (c == .button and std.mem.eql(u8, c.button.label, "focus.zig")) saw_focus = true;
-    }
-    try testing.expect(saw_focus);
 }

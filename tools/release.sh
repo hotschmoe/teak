@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # Cut a release: bump the ONE version (build.zig.zon .version), commit, tag v<version>, push.
-#   tools/release.sh 1.2.3
-# The release workflow refuses a tag that doesn't match build.zig.zon.
 set -euo pipefail
 v="${1:?usage: tools/release.sh <semver, e.g. 1.2.3>}"
 v="${v#v}"

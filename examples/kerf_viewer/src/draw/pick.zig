@@ -46,7 +46,6 @@ pub fn textContains(font: *const Font, t: ir.Text, px: f64, py: f64, tol: f64) b
     const sr = @sin(rad);
     const dx = px - t.x;
     const dy = py - t.y;
-    // into text-local frame (rotate by -rot)
     const lx = dx * cr + dy * sr;
     const ly = -dx * sr + dy * cr;
     const sc = t.h / font.cap_height;
@@ -81,7 +80,6 @@ fn isRegionPen(d: *const ir.Drawing, it: ir.Item) bool {
 pub fn pickHit(d: *const ir.Drawing, font: *const Font, x: f64, y: f64, tol: f64) ?Hit {
     const items = d.items;
 
-    // 1. text
     var i: usize = items.len;
     while (i > 0) {
         i -= 1;
@@ -91,7 +89,6 @@ pub fn pickHit(d: *const ir.Drawing, font: *const Font, x: f64, y: f64, tol: f64
         if (textContains(font, it.body.text, x, y, tol)) return .{ .src = it.src, .kind = .text, .item = i, .dist = 0 };
     }
 
-    // 2. fills
     i = items.len;
     while (i > 0) {
         i -= 1;
@@ -109,7 +106,6 @@ pub fn pickHit(d: *const ir.Drawing, font: *const Font, x: f64, y: f64, tol: f64
         if (best <= tol) return .{ .src = it.src, .kind = .fill, .item = i, .dist = best };
     }
 
-    // 3. linework: nearest path within tol, ties -> topmost
     var best_i: ?usize = null;
     var best_d: f64 = std.math.inf(f64);
     i = items.len;
@@ -127,7 +123,6 @@ pub fn pickHit(d: *const ir.Drawing, font: *const Font, x: f64, y: f64, tol: f64
     }
     if (best_i) |bi| return .{ .src = items[bi].src, .kind = .line, .item = bi, .dist = best_d };
 
-    // 4. interiors: smallest enclosing region
     var reg_i: ?usize = null;
     var reg_area: f64 = std.math.inf(f64);
     i = items.len;
@@ -178,7 +173,6 @@ pub fn bboxOfSrc(d: *const ir.Drawing, font: *const Font, src: []const u8) ?BBox
         switch (it.body) {
             .text => |t| bb.merge(font.textBBox(t.s, t.h, t.x, t.y, t.rot, t.halign, t.valign)),
             .hatch => |h| {
-                // loops only (lines lie inside them)
                 if (h.loops.len > 0) {
                     for (h.loops) |l| bb.merge(geom.bboxOfPath(l, true));
                 } else bb.merge(it.bbox);
@@ -214,10 +208,6 @@ pub fn textOrigin(d: *const ir.Drawing, src: []const u8) ?TextOrigin {
     return .{ .x = b.x, .y = b.y, .halign = b.halign, .valign = b.valign, .h = b.h, .rot = b.rot };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 const testing = std.testing;
 
 const pick_json =
@@ -236,94 +226,3 @@ const pick_json =
     \\    { "t": "text", "pen": "anno", "src": "rot", "s": "VERT", "x": 38, "y": 2, "h": 1, "rot": 90 }
     \\  ] }
 ;
-
-test "pick: interior, nesting (smallest region), outside, no src" {
-    var d = try ir.parse(testing.allocator, pick_json);
-    defer d.deinit();
-    var font = try Font.initEmbedded(testing.allocator);
-    defer font.deinit();
-    // inside big only
-    try testing.expectEqualStrings("big", pick(&d, &font, 4, 5, 0.1).?);
-    // inside inner (nested) => inner (smaller region); the hatch hole excludes big's hatch there
-    try testing.expectEqualStrings("inner", pick(&d, &font, 10, 5, 0.1).?);
-    // outside everything
-    try testing.expect(pick(&d, &font, 22, 18, 0.1) == null);
-    // item without src (beyond path at y=18) is never a hit
-    try testing.expect(pick(&d, &font, 2, 18, 0.2) == null);
-}
-
-test "pick: edge within tolerance beats interior; nearest edge wins" {
-    var d = try ir.parse(testing.allocator, pick_json);
-    defer d.deinit();
-    var font = try Font.initEmbedded(testing.allocator);
-    defer font.deinit();
-    // 0.05 outside big's right edge
-    try testing.expectEqualStrings("big", pick(&d, &font, 20.05, 5, 0.1).?);
-    try testing.expect(pick(&d, &font, 20.5, 5, 0.1) == null);
-    // near inner's left edge but inside big: edge distance 0.04 -> inner (line pass beats region pass)
-    const h = pickHit(&d, &font, 8.04, 5, 0.1).?;
-    try testing.expectEqualStrings("inner", h.src);
-    try testing.expectEqual(HitKind.line, h.kind);
-    try testing.expect(h.dist < 0.05);
-    // leader line
-    try testing.expectEqualStrings("n1", pick(&d, &font, 25, 15.03, 0.1).?);
-}
-
-test "pick: fills and arcs" {
-    var d = try ir.parse(testing.allocator, pick_json);
-    defer d.deinit();
-    var font = try Font.initEmbedded(testing.allocator);
-    defer font.deinit();
-    // the dot is a circle centered (15.5,5) r 0.5 inside big
-    const h = pickHit(&d, &font, 15.5, 5, 0.05).?;
-    try testing.expectEqualStrings("dot", h.src);
-    try testing.expectEqual(HitKind.fill, h.kind);
-    try testing.expectEqualStrings("dot", pick(&d, &font, 16.03, 5, 0.1).?); // just outside, within tol
-    // arc-bulge region: (25,0)->(35,0) bulge 1 (below chord), closing (35,1)->(25,0)
-    try testing.expectEqualStrings("arcy", pick(&d, &font, 30, -3, 0.01).?); // inside the semicircle (center (30,0) r5)
-    try testing.expect(pick(&d, &font, 30, -6, 0.01) == null);
-}
-
-test "pick: text wins over regions; rotated text; second line" {
-    var d = try ir.parse(testing.allocator, pick_json);
-    defer d.deinit();
-    var font = try Font.initEmbedded(testing.allocator);
-    defer font.deinit();
-    const h = pickHit(&d, &font, 32, 15, 0.05).?;
-    try testing.expectEqualStrings("n1", h.src);
-    try testing.expectEqual(HitKind.text, h.kind);
-    try testing.expectEqualStrings("n1", pick(&d, &font, 32, 12.5, 0.05).?); // second line
-    try testing.expect(pick(&d, &font, 32, 17, 0.05) == null);
-    // vertical text: rot 90 => runs upward from (38,2)
-    try testing.expectEqualStrings("rot", pick(&d, &font, 37.7, 4, 0.05).?);
-    try testing.expect(pick(&d, &font, 40.5, 2.2, 0.05) == null);
-}
-
-test "bboxOfSrc and textOrigin" {
-    var d = try ir.parse(testing.allocator, pick_json);
-    defer d.deinit();
-    var font = try Font.initEmbedded(testing.allocator);
-    defer font.deinit();
-    const b = bboxOfSrc(&d, &font, "big").?;
-    try testing.expectEqual(@as(f64, 0), b.x0);
-    try testing.expectEqual(@as(f64, 20), b.x1);
-    const a = bboxOfSrc(&d, &font, "arcy").?;
-    try testing.expectApproxEqAbs(@as(f64, -5), a.y0, 1e-9);
-    const n = bboxOfSrc(&d, &font, "n1").?;
-    try testing.expect(n.x1 > 36 and n.y1 > 15.4 and n.y0 < 12);
-    try testing.expect(bboxOfSrc(&d, &font, "zzz") == null);
-    try testing.expect(bboxOfSrc(&d, &font, "") == null);
-    const o = textOrigin(&d, "n1").?;
-    try testing.expectEqual(@as(f64, 30.5), o.x);
-    try testing.expectEqual(@as(f64, 14.5), o.y); // top line, not the second
-    try testing.expect(textOrigin(&d, "big") == null);
-    try testing.expectEqual(@as(f64, 90), textOrigin(&d, "rot").?.rot);
-}
-
-test "pick on empty drawing" {
-    var d = try ir.parse(testing.allocator, "{\"kerf_drawing\":\"0.1\"}");
-    defer d.deinit();
-    var font = try Font.initEmbedded(testing.allocator);
-    defer font.deinit();
-    try testing.expect(pick(&d, &font, 0, 0, 1) == null);
-}

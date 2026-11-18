@@ -30,14 +30,14 @@ At a glance (verified against master `4f898c0`; the open list is [`tasks.md`](ta
 | **Rendering** | SDF rounded rects / borders / gradients / soft shadows, images, canvas + charts, `scene3d` (camera, picking, instancing, grid, section cuts, layers) | SVG, subpixel LCD AA |
 | **Widgets** | button, checkbox, radio, slider, dropdown, combobox, numeric + date field, toggle, progress, tabs, split, tooltip, toast, dialog, menus, `DataTable`, `VarList`, `TreeList` | colour picker, number spinner, whole-UI keyboard navigation |
 | **Loop** | event-driven idle, `Sub` timers, `teak.anim` tweens, declarative effects + GPU resources, `pointerMsg` | commands / shortcuts / drag and drop |
-| **Tooling** | `zig build audit` / `bench` / `shot` / `api`, `TEAK_SNAPSHOT`, golden snapshots, generated API reference | agent driver + MCP (#46), hot reload (#79), visual regression (#32), a11y publishing (#58) |
+| **Tooling** | `zig build audit` / `bench` / `shot` / `api`, `TEAK_SNAPSHOT`, generated API reference | agent driver + MCP (#46), hot reload (#79), a11y publishing (#58) |
 
 Examples: `chrome`, `counter_greeter`, `effects`, `fonts`, `gallery`, `kerf_viewer`, `notes`, `scene3d`, `scene_layers`, `tables`, `todo`, `tree`, `viewport`.
 
 - **Text rendering shipped.** Both backends rasterize glyph-accurate text into a texture atlas and draw via `uploadText` / `renderFrame`.
 - **Functional-gaps push landed** on `functional_gaps_yolo`: overlay layer, image rendering, selection + clipboard, subscriptions, multi-window + dialogs surface, virtual list, a11y tree, rich text. See [`docs/features/functional-gaps.md`](docs/features/functional-gaps.md).
 - **Declarative effects:** `effects` / `effectMsg` (HARDLINE hatch 7) — HTTP, downloads, file open, storage, clock, clipboard, query params, plus pasted / dropped images and files; see [`docs/features/effects.md`](docs/features/effects.md).
-- **Agent DX + consumer gaps landed:** `canvas` widget + line-chart helper, declarative subscriptions (`Sub` / `subscribe`, serviced by `teak.run`), golden snapshot tests + live `TEAK_SNAPSHOT` streaming, ComponentList stable-key per-item focus, Dropdown open-list scrolling, and the audit-enforced [`llms.txt`](llms.txt) + [`docs/cookbook.md`](docs/cookbook.md).
+- **Agent DX + consumer gaps landed:** `canvas` widget + line-chart helper, declarative subscriptions (`Sub` / `subscribe`, serviced by `teak.run`), live `TEAK_SNAPSHOT` streaming, ComponentList stable-key per-item focus, Dropdown open-list scrolling, and the audit-enforced [`llms.txt`](llms.txt) + [`docs/cookbook.md`](docs/cookbook.md).
 
 - **Kerf push (branch `kerf`)** — driven by a real CAD app ([kerf](https://github.com/hotschmoe/kerf) `apps/teak`): `Runtime` (one frame at a time, so the web shares `teak.run`), pointer/scroll routing (`canvasMsg`, `scrollMsg`, `scrollLayoutMsg`, `windowMsg`), a real layout model (fixed sizes, align/justify, spacer), chrome styling (borders, hover inversion, underline fields, hard shadows, font weight/tracking), `core/table`, canvas triangle/line batches, `scene3d` + declarative `resources()` (depth-tested meshes), MSAA, declarative **effects** (HTTP, files, storage, clock, clipboard, paste/drop; web + Linux), web/native font registration (IBM Plex Mono), overlay layering, and a **headless native screenshot path** (`zig build shot`).
 
@@ -45,9 +45,12 @@ Examples: `chrome`, `counter_greeter`, `effects`, `fonts`, `gallery`, `kerf_view
 
 Requires **Zig 0.17.0+**.
 
+On Linux the background gate needs Vulkan, Chromium, Node and the tools dependencies (`npm ci --prefix tools`). On Windows it drives native windows through PowerShell.
+
 ```sh
 # From repo root — library
-zig build test           # unit + integration tests
+zig build test -j4       # blocking end-to-end checks
+zig build test-heavy -j4 # background end-to-end checks
 zig build test-wasm      # wasm32-freestanding compile canary
 zig build audit          # HARDLINE drift audit (depends on test-wasm)
 
@@ -71,7 +74,7 @@ Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no
 - [`docs/HARDLINE.md`](docs/HARDLINE.md) — the non-negotiable rules. Start here.
 - [`docs/showcase.md`](docs/showcase.md) — screenshots of the examples, native and web, retro / modern / dark / light, with the PR behind each feature.
 - [`docs/consuming-teak.md`](docs/consuming-teak.md) — **build an app**: `build.zig.zon` → `teak.run` in a few steps.
-- [`docs/cookbook.md`](docs/cookbook.md) — **add X to my app**: ~12 intent-oriented recipes (modal, dropdown, chart, golden test, second window, new widget…).
+- [`docs/cookbook.md`](docs/cookbook.md) — intent-oriented recipes (modal, dropdown, chart, visual inspection, second window, new widget…).
 - [`CLAUDE.md`](CLAUDE.md) — orientation for LLMs and new contributors.
 - [`docs/features/`](docs/features/) — one contract per `pub` surface unit (`teak.run`, widgets, `Components`, `TransientState`, `Host`, `Gpu`, hit-test, layout, focus).
 - [`docs/pitfalls.md`](docs/pitfalls.md) — real bugs we hit and how to recognise their shape next time.
@@ -108,7 +111,7 @@ Windows ARM64 hosts: the native aarch64-windows Zig 0.17 toolchain works with no
 ```
 src/
 ├── teak.zig              public library root, re-exports
-├── run.zig               teak.run / Runtime — canonical host loop (tests: run_test.zig)
+├── run.zig               teak.run / Runtime — canonical host loop
 ├── control.zig           agent control channel + TEAK_RECORD/REPLAY, driven from run.zig
 ├── core/
 │   ├── cmd.zig           Cmd union, CmdBuffer, arena mgmt (incl. disabled, canvas, validateBalance)
@@ -120,7 +123,7 @@ src/
 │   ├── theme.zig         Theme / Palette / Typography (dark + light presets)
 │   ├── sub.zig           Sub(Msg) declarative timers + runSubs
 │   ├── chart.zig         lineChartPrimitives — canvas chart helper
-│   ├── snapshot.zig      []Cmd+[]Rect → text; golden tests + TEAK_SNAPSHOT
+│   ├── snapshot.zig      []Cmd+[]Rect → text; TEAK_SNAPSHOT
 │   ├── inspector.zig     dev inspector panel (tree, hover, Msgs, timings) as overlay cmds
 │   └── transient.zig     hover/press/focus presentation state
 ├── layout/

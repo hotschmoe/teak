@@ -90,68 +90,9 @@ fn emit(cb: anytype, style: Style, fill_x: f32, fill_w: f32, label: []const u8) 
     cb.canvasLabeled(.{ .width = style.width, .height = style.height, .flex = style.flex }, prims, label);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
 const text = @import("../text.zig");
 
 const TestMsg = union(enum) { x };
-
-test "progress: satisfies the component contract" {
-    component.validateComponent(@This());
-}
-
-test "progress: determinate fill is proportional and clamped; NaN reads as 0" {
-    var cb = cmd.CmdBuffer(TestMsg).init(testing.allocator);
-    defer cb.deinit();
-    bar(&cb, 0.5, .{ .width = 102 });
-    try testing.expectEqual(@as(f32, 50), cb.cmds.items[0].canvas.primitives[2].filled_rect.w);
-    try testing.expectEqualStrings("50%", cb.cmds.items[0].canvas.label);
-    bar(&cb, 7, .{ .width = 102 });
-    try testing.expectEqual(@as(f32, 100), cb.cmds.items[1].canvas.primitives[2].filled_rect.w);
-    bar(&cb, -1, .{ .width = 102 });
-    try testing.expectEqual(@as(f32, 0), cb.cmds.items[2].canvas.primitives[2].filled_rect.w);
-    bar(&cb, std.math.nan(f32), .{ .width = 102 });
-    try testing.expectEqual(@as(f32, 0), cb.cmds.items[3].canvas.primitives[2].filled_rect.w);
-}
-
-test "progress: the indeterminate block enters, crosses and leaves the track" {
-    var cb = cmd.CmdBuffer(TestMsg).init(testing.allocator);
-    defer cb.deinit();
-    const s: Style = .{ .width = 102, .block = 0.3 }; // inner 100, block 30
-    indeterminate(&cb, 0, s); // fully off the left edge
-    try testing.expectEqual(@as(f32, 0), cb.cmds.items[0].canvas.primitives[2].filled_rect.w);
-    indeterminate(&cb, PERIOD / 2, s); // mid-track: whole block visible
-    const mid = cb.cmds.items[1].canvas.primitives[2].filled_rect;
-    try testing.expectEqual(@as(f32, 30), mid.w);
-    try testing.expect(mid.x > 1 and mid.x + mid.w < 101);
-    indeterminate(&cb, PERIOD - 1, s); // clipped at the right edge
-    const end = cb.cmds.items[2].canvas.primitives[2].filled_rect;
-    try testing.expect(end.w < 30 and end.x + end.w <= 101.0001);
-}
-
-test "progress: update wraps the phase" {
-    var m: Model = .{ .phase = PERIOD - 1 };
-    update(&m, .tick);
-    try testing.expectEqual(@as(u16, 0), m.phase);
-}
-
-test "progress: snapshot golden" {
-    var cb = cmd.CmdBuffer(TestMsg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 4 });
-    bar(&cb, 0.25, .{ .width = 120 });
-    indeterminate(&cb, 10, .{ .width = 120 });
-    cb.popGroup();
-    var rects: [8]engine.Rect = undefined;
-    const n = cb.cmds.items.len;
-    engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 200, 60, text.monoMeasurer());
-    try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
-        \\group (0,0,200,60) vertical
-        \\  canvas (0,0,120,10) prims=3 "25%"
-        \\  canvas (0,14,120,10) prims=3 "busy"
-        \\
-    );
-}

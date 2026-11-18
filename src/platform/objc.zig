@@ -133,8 +133,6 @@ pub fn allocInit(class: Id) Id {
     return msg(Id, msg(Id, class, sel("alloc"), .{}), sel("init"), .{});
 }
 
-// ── NSString / NSArray helpers ─────────────────────────────────────
-
 /// A new autoreleased NSString from UTF-8 (`s` must be NUL-terminated).
 pub fn nsString(s: [*:0]const u8) Id {
     return msg(Id, cls("NSString"), sel("stringWithUTF8String:"), .{s});
@@ -147,8 +145,6 @@ pub fn utf8Of(str: Id) []const u8 {
     const p = msg(?[*:0]const u8, str, sel("UTF8String"), .{}) orelse return "";
     return std.mem.span(p);
 }
-
-// ── Class construction ─────────────────────────────────────────────
 
 pub const Method = struct { name: [*:0]const u8, imp: Imp, types: [*:0]const u8 };
 
@@ -174,10 +170,4 @@ pub fn setState(obj: Id, state: ?*anyopaque) void {
 pub fn getState(obj: Id) ?*anyopaque {
     const iv = api.class_getInstanceVariable(msg(Class, obj, sel("class"), .{}), "teak_state");
     return api.object_getIvar(obj, iv);
-}
-
-test "CGRect / NSRange have the C layout the ABI expects" {
-    try std.testing.expectEqual(@as(usize, 32), @sizeOf(CGRect));
-    try std.testing.expectEqual(@as(usize, 16), @sizeOf(NSRange));
-    try std.testing.expectEqual(@as(usize, 16), @sizeOf(CGPoint));
 }

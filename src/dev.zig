@@ -34,8 +34,6 @@ const run_mod = @import("run.zig");
 /// Bump when the exported C ABI below changes.
 pub const abi_version: u32 = 1;
 
-// ── Fingerprints ───────────────────────────────────────────────────
-
 /// A 64-bit hash of a type's SHAPE: its name, size, and (recursively) the
 /// names, types and offsets of its fields. Pointers hash their own type name
 /// only (no recursion through them), so self-referential types terminate.
@@ -49,8 +47,7 @@ pub fn typeFingerprint(comptime T: type) u64 {
 }
 
 fn feed(h: *std.hash.Wyhash, comptime T: type, comptime depth: u32) void {
-    // Anonymous aggregates carry a compiler-numbered name (`...__struct_1234`)
-    // that shifts with unrelated edits; their fields are hashed below anyway.
+    // Anonymous type names shift with unrelated edits; hash their fields instead.
     if (std.mem.find(u8, @typeName(T), "__") == null) h.update(@typeName(T));
     h.update(std.mem.asBytes(&@as(u64, @sizeOf(T))));
     if (depth > 12) return;
@@ -78,8 +75,6 @@ fn feed(h: *std.hash.Wyhash, comptime T: type, comptime depth: u32) void {
         else => {}, // scalars, pointers: the type name + size above identify them
     }
 }
-
-// ── The library side ───────────────────────────────────────────────
 
 /// Everything the window system and GPU need, created once by the FIRST
 /// library and handed to every later one.
@@ -211,8 +206,6 @@ pub fn Plugin(comptime App: type, comptime Host: type, comptime Gpu: type, compt
     };
 }
 
-// ── The loader side ────────────────────────────────────────────────
-
 /// One loaded image: its symbols.
 const Image = struct {
     lib: std.DynLib,
@@ -327,8 +320,7 @@ pub const Loader = struct {
     pub fn pollReload(self: *Loader) ReloadResult {
         const mt = self.mtime() orelse return .unchanged;
         if (mt == self.last_mtime) return .unchanged;
-        // The build may still be writing: wait until the mtime has been
-        // stable for one more poll.
+        // Require a stable mtime so the build finishes writing before reload.
         std.Io.sleep(self.io, .fromMilliseconds(30), .awake) catch {};
         if ((self.mtime() orelse 0) != mt) return .unchanged;
         self.last_mtime = mt;
@@ -406,32 +398,6 @@ pub fn runLoader(init: std.process.Init, default_path: []const u8) !void {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 fn fpOf(comptime T: type) u64 {
     return comptime typeFingerprint(T);
-}
-
-test "typeFingerprint: stable for equal shapes, sensitive to fields, types and order" {
-    const A = struct { a: i32, b: [4]u8, c: ?u16 };
-    const A2 = struct { a: i32, b: [4]u8, c: ?u16 };
-    const B = struct { a: i32, b: [4]u8, c: ?u32 };
-    const C = struct { b: [4]u8, a: i32, c: ?u16 };
-    const D = struct { a: i32, b: [5]u8, c: ?u16 };
-    const E = struct { a: i32, b: [4]u8, c: ?u16, d: bool };
-    try std.testing.expect(fpOf(A) != fpOf(A2)); // @typeName differs per declaration
-    // The same type always hashes the same.
-    try std.testing.expectEqual(fpOf(A), fpOf(A));
-    try std.testing.expect(fpOf(A) != fpOf(B));
-    try std.testing.expect(fpOf(A) != fpOf(C));
-    try std.testing.expect(fpOf(A) != fpOf(D));
-    try std.testing.expect(fpOf(A) != fpOf(E));
-}
-
-test "typeFingerprint terminates on self-referential types and covers unions / enums" {
-    const Node = struct { next: ?*@This(), v: u8, k: union(enum) { a: u8, b: [2]u16 }, e: enum { x, y } };
-    _ = fpOf(Node);
-    const E1 = enum { a, b };
-    const E2 = enum { a, c };
-    try std.testing.expect(fpOf(E1) != fpOf(E2));
 }

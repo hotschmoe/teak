@@ -183,7 +183,6 @@ fn emitWrapped(
         if (!line.ellipsized and bidi_text.mayBeRtl(piece)) {
             var sc: bidi_text.Scratch = .{};
             if (bidi_text.layoutLine(txt.content, line.start, line.end, txt.font, measurer, std.math.inf(f32), &sc)) |lay| {
-                // A right-to-left paragraph starts at the right edge.
                 const bx = switch (txt.text_align) {
                     .start => if (lay.para_rtl) rect.x + rect.w - line.width else rect.x,
                     else => x,
@@ -193,8 +192,6 @@ fn emitWrapped(
             }
         }
         if (line.ellipsized) {
-            // Two draws, no allocation: the kept text, then a static "…"
-            // right after it (the run loop's allocator is the long-lived gpa).
             const ew = measurer.measure(text_wrap.ELLIPSIS, txt.font).width;
             const kept_w = line.width - ew;
             emitText(text_draws, alloc, piece, txt.font, txt.color, .{ .x = x, .y = y, .w = kept_w, .h = lh }, clip);
@@ -319,7 +316,6 @@ fn emitTextArea(
             const b = @min(sel_hi, @as(usize, line.hang));
             const x0 = if (a > line.start) measurer.measure(ta.content[line.start..a], ta.font).width else 0;
             var x1 = if (b > line.start) measurer.measure(ta.content[line.start..b], ta.font).width else x0;
-            // A selection that runs past the line end shows a newline stub.
             if (sel_hi > line.hang) x1 += lh * 0.3;
             if (x1 > x0) emit(verts, alloc, .{ .x = ox + x0, .y = y, .w = x1 - x0, .h = lh }, st.selection_bg, clip);
         }
@@ -444,8 +440,6 @@ fn buildLayer(
             .base => !in_overlay,
             .overlay => in_overlay,
         };
-        // Keyboard focus ring: a frame just OUTSIDE the widget, drawn before it
-        // (nothing of the widget covers it). One look in retro and modern.
         if (visible and transient.nav_index != null and transient.nav_index.? == i) {
             const w = transient.ring_width;
             const outer = Rect{ .x = rect.x - w, .y = rect.y - w, .w = rect.w + 2 * w, .h = rect.h + 2 * w };
@@ -461,8 +455,6 @@ fn buildLayer(
         switch (c) {
             .push_overlay => |ov| {
                 overlay_depth += 1;
-                // Only the overlay layer draws the backdrop + clips to
-                // the overlay rect.
                 if (layer == .overlay) {
                     if (ov.shadow) |sh| {
                         const shadow_rect = Rect{ .x = rect.x + ov.shadow_offset[0], .y = rect.y + ov.shadow_offset[1], .w = rect.w, .h = rect.h };
@@ -474,13 +466,7 @@ fn buildLayer(
                     }
                     clip.push(clipRect(rect, cur_clip));
                 } else {
-                    // Base-layer must still push a clip so the
-                    // overlay's children are correctly skipped from
-                    // base-layer accumulation — but a no-effect clip
-                    // (the existing cur_clip) is wrong because then
-                    // contents would draw. We push a zero rect so
-                    // anything inside is clipped away (defensive — the
-                    // `visible` gate already drops them).
+                    // A zero clip defensively suppresses overlay children in the base pass.
                     clip.push(.{ .x = -1e9, .y = -1e9, .w = 0, .h = 0 });
                 }
             },
@@ -491,9 +477,6 @@ fn buildLayer(
             .push_scroll => clip.push(clipRect(rect, cur_clip)),
             .pop_scroll => clip.pop(),
             .push_group => |grp| {
-                // Optional panel/card fill. Drawn BEFORE children so they
-                // paint on top. Layout already gives us the group's full
-                // (padded) rect; no inset.
                 if (visible) {
                     if (!emitSurface(verts, alloc, rect, grp.radius, grp.bg, grp.gradient, grp.border, grp.border_width, grp.soft_shadow, cur_clip)) {
                         if (grp.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
@@ -532,8 +515,6 @@ fn buildLayer(
                     emitRichWrapped(text_draws, alloc, rt, rect, cur_clip, measurer);
                     continue;
                 }
-                // Walk spans + uncovered ranges, emitting one TextDraw
-                // per run. Maintains an x cursor along the rect.
                 var x_cursor = rect.x;
                 var byte_cursor: u32 = 0;
                 for (rt.spans) |sp| {
@@ -565,8 +546,6 @@ fn buildLayer(
                 if (!visible) continue;
                 if (rect.w <= 0 or rect.h <= 0) continue;
                 if (img.handle == TEXTURE_HANDLE_NONE) {
-                    // No texture loaded yet — draw a tinted placeholder
-                    // so the app sees where the image would go.
                     emit(verts, alloc, rect, img.style.tint, cur_clip);
                 } else {
                     image_draws.append(alloc, .{
@@ -623,8 +602,6 @@ fn buildLayer(
             },
             .button => |btn| {
                 if (!visible) continue;
-                // Disabled buttons show no hover/press feedback: a flat
-                // greyed-out bg + greyed label, skipping the color ladder.
                 var bg = btn.style.disabled_bg;
                 var fg = btn.style.disabled_fg;
                 var label_dy: f32 = 0;
@@ -645,9 +622,6 @@ fn buildLayer(
                         fg = btn.style.fg;
                     }
                 }
-                // Rounded / gradient / shadowed buttons are one SDF quad; the
-                // gradient is the idle look, a raised shadow is dropped while
-                // pressed or disabled.
                 const raised = idle or (!btn.disabled and (if (transient.hover_index) |hi| hi == i else false));
                 const sdf_drawn = emitSurface(verts, alloc, rect, btn.style.radius, bg, if (idle) btn.style.gradient else null, btn.style.border, btn.style.border_width, if (raised) btn.style.soft_shadow else null, cur_clip);
                 if (!sdf_drawn) {
@@ -698,8 +672,6 @@ fn buildLayer(
             },
             .text_input => |ti| {
                 if (!visible) continue;
-                // Disabled inputs are non-interactive: flat greyed border +
-                // bg + text, skipping focus border, selection, and cursor.
                 const focused = !ti.disabled and (if (transient.focus_index) |fi| fi == i else false);
                 const border_color = if (ti.disabled)
                     ti.style.disabled_border
@@ -708,8 +680,6 @@ fn buildLayer(
                 else
                     ti.style.border;
 
-                // Boxed: border-colored rect with the bg inset inside it.
-                // Underline: no box, just a rule along the bottom edge.
                 const underline = ti.style.variant == .underline;
                 const pad_x = if (underline) UNDERLINE_PADDING_X else INPUT_TEXT_PADDING;
                 const pad_y = if (underline) UNDERLINE_PADDING_Y else INPUT_TEXT_PADDING;
@@ -727,8 +697,6 @@ fn buildLayer(
                     }
                 }
 
-                // Selection highlight before the text so text draws on top.
-                // Disabled inputs never draw selection.
                 var ti_scratch: bidi_text.Scratch = .{};
                 const ti_lay: ?bidi_text.Layout = if (bidi_text.mayBeRtl(ti.content) and std.mem.indexOfScalar(u8, ti.content, '\n') == null)
                     bidi_text.layoutLine(ti.content, 0, ti.content.len, ti.font, measurer, std.math.inf(f32), &ti_scratch)
@@ -774,12 +742,6 @@ fn buildLayer(
                     }
                 }
 
-                // IME composition: when the focused input has an active
-                // pre-commit string, draw it inline at the caret with an
-                // underline indicator. The composition lives in
-                // TransientState (mirror of Host.imeState()) and never
-                // enters Model — commit fires WM_CHAR which flows through
-                // the normal text-input update path.
                 const ime_drawn = focused and transient.ime_active and transient.ime_text.len > 0;
                 if (ime_drawn) {
                     const prefix_w = if (ti_lay) |l| l.caretX(ti.cursor) else measurer.prefixWidth(ti.content, ti.font, ti.cursor);
@@ -801,11 +763,6 @@ fn buildLayer(
                     emit(verts, alloc, underline_rect, ti.style.cursor, cur_clip);
                 }
 
-                // Blinking cursor when focused (phase from the run loop's
-                // Host-clock `blink_on`, default 500 ms on / 500 ms off).
-                // While IME composition is active the caret moves to the
-                // end of the composition string so the user sees where
-                // the next codepoint will commit.
                 if (focused and transient.blink_on) {
                     const base_prefix = if (ti_lay) |l| l.caretX(ti.cursor) else measurer.prefixWidth(ti.content, ti.font, ti.cursor);
                     const ime_offset = if (ime_drawn)
@@ -857,8 +814,6 @@ fn buildLayer(
             },
             .radio => |rd| {
                 if (!visible) continue;
-                // Quads-only renderer: a filled inner square stands in for
-                // the classic radio dot until we get a circle primitive.
                 const box_rect = Rect{
                     .x = rect.x,
                     .y = rect.y + @max(0, (rect.h - rd.style.size) * 0.5),
@@ -920,11 +875,6 @@ fn buildLayer(
             .canvas => |cv| {
                 if (!visible) continue;
                 if (rect.w <= 0 or rect.h <= 0) continue;
-                // Primitives clip to the canvas rect intersected with the
-                // surrounding scroll/overlay clip — same rect-intersection
-                // mechanism the rest of the pass uses, extended in data
-                // space (Liang–Barsky) for the rotated polyline quads that
-                // a plain rect clip can't express.
                 const canvas_clip = clipRect(rect, cur_clip);
                 if (canvas_clip.w <= 0 or canvas_clip.h <= 0) continue;
                 if (cv.style.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
@@ -944,528 +894,12 @@ fn buildLayer(
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
-// Chrome (border / shadow / hover / underline) tests live in their own file.
-test {
-    _ = sdf;
-    _ = canvas_tess;
-    _ = @import("chrome_test.zig");
-}
-
 const cmd_mod = @import("../core/cmd.zig");
 
 fn newTextDraws(alloc: std.mem.Allocator) std.ArrayList(TextDraw) {
     _ = alloc;
     return .empty;
 }
-
-test "buildVertices emits one bg quad per button and one TextDraw per label/text" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{});
-    cb.text("hello");
-    cb.button(.a, "+");
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-    // 1 button bg = 1 quad * 6 verts. Text and label go to text_draws.
-    try testing.expectEqual(@as(usize, 6), verts.items.len);
-    try testing.expectEqual(@as(usize, 2), text_draws.items.len); // "hello" + "+"
-}
-
-test "buildVertices: a grid with bg emits one fill quad before its cells" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{});
-    cb.pushGrid(.{ .columns = 2, .bg = .{ 0.5, 0.5, 0.5, 1 } });
-    cb.text("k");
-    cb.button(.a, "v");
-    cb.popGrid();
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-    // Grid bg + button bg = 2 quads; the grid's comes first.
-    try testing.expectEqual(@as(usize, 12), verts.items.len);
-    try testing.expectEqual(rects[1].x, verts.items[0].x);
-    try testing.expectEqual(rects[1].y, verts.items[0].y);
-}
-
-test "buildVertices: an underlined button label adds one thin quad under that glyph" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0 });
-    cb.buttonStyledUnderlined(.a, "File", cb.theme.button, 0);
-    cb.buttonStyledUnderlined(.a, "Edit", cb.theme.button, null);
-    cb.buttonStyledUnderlined(.a, "Save", cb.theme.button, 9); // out of range: nothing drawn
-    cb.popGroup();
-    var rects: [8]Rect = undefined;
-    const n = cb.cmds.items.len;
-    layout.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..n], .{}, text_mod.monoMeasurer());
-    // three button bgs (3 quads) + one underline quad
-    try testing.expectEqual(@as(usize, 4 * 6), verts.items.len);
-}
-
-test "buildVertices clips child widgets to scroll container" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    // 100x100 viewport, four buttons — first two fit, third partial, fourth fully clipped.
-    cb.pushScroll(.{ .width = 100, .height = 100, .padding = 0, .gap = 0 });
-    cb.button(.a, "A"); // y = 0..36, fits
-    cb.button(.a, "B"); // y = 36..72, fits
-    cb.button(.a, "C"); // y = 72..108, partially clipped
-    cb.button(.a, "D"); // y = 108..144, fully clipped
-    cb.popScroll();
-
-    var rects: [16]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 400, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    // 3 visible button backgrounds = 3 * 6 verts. D fully clipped emits nothing.
-    // C's bg still emits a (clipped) quad.
-    try testing.expectEqual(@as(usize, 18), verts.items.len);
-    // All four labels go into text_draws regardless of clip — the GPU
-    // pass does visibility clipping on the draw side.
-    try testing.expectEqual(@as(usize, 4), text_draws.items.len);
-}
-
-test "buildVertices draws overlay backdrop + content after base layer" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.button(.a, "Base");
-    cb.pushOverlay(.{
-        .x = 100,
-        .y = 100,
-        .width = 200,
-        .height = 100,
-        .padding = 0,
-        .backdrop = .{ 0, 0, 0, 0.5 },
-    });
-    cb.button(.a, "OvBtn");
-    cb.popOverlay();
-    cb.popGroup();
-
-    var rects: [16]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    // 3 quads expected: base button bg, overlay backdrop, overlay button bg.
-    try testing.expectEqual(@as(usize, 18), verts.items.len);
-    // Both button labels rendered.
-    try testing.expectEqual(@as(usize, 2), text_draws.items.len);
-}
-
-test "buildVertices rich_text emits one TextDraw per span" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    const spans = [_]@import("../core/cmd.zig").RichTextSpan{
-        .{ .start = 0, .end = 5, .color = .{ 1, 0, 0, 1 } }, // "hello"
-        .{ .start = 6, .end = 11, .color = .{ 0, 1, 0, 1 } }, // "world"
-    };
-
-    cb.pushGroup(.{});
-    cb.richText("hello world", &spans);
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    // "hello", " " (uncovered), "world" = 3 draws.
-    try testing.expectEqual(@as(usize, 3), text_draws.items.len);
-}
-
-test "buildVertices draws border + bg + cursor for focused text input" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{});
-    cb.textInput(.focus, "ab", 1);
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-
-    // Focused, blink-on frame.
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{
-        .focus_index = 1,
-        .blink_on = true,
-    }, text_mod.monoMeasurer());
-    // border + bg + cursor = 3 quads = 18 verts. Content goes to text_draws.
-    try testing.expectEqual(@as(usize, 18), verts.items.len);
-    try testing.expectEqual(@as(usize, 1), text_draws.items.len); // "ab"
-}
-
-test "buildVertices: GroupStyle.bg emits a panel quad BEFORE children" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    // Single group with a red bg + a text child. The bg quad must be the
-    // first 6 vertices in the stream (text goes to text_draws, not verts).
-    cb.pushGroup(.{ .bg = .{ 1, 0, 0, 1 } });
-    cb.text("hello");
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    // One bg quad = 6 vertices, all red. Text is in text_draws.
-    try testing.expectEqual(@as(usize, 6), verts.items.len);
-    try testing.expectEqual(@as(usize, 1), text_draws.items.len);
-    // Every vertex of the bg quad should carry the red color we passed in.
-    for (verts.items) |v| {
-        try testing.expectEqual(@as(f32, 1), v.r);
-        try testing.expectEqual(@as(f32, 0), v.g);
-        try testing.expectEqual(@as(f32, 0), v.b);
-        try testing.expectEqual(@as(f32, 1), v.a);
-    }
-}
-
-test "buildVertices: GroupStyle.bg = null emits no panel quad (regression)" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{}); // bg defaults to null
-    cb.text("hello");
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    // Null bg → no quad at all. Text still flows to text_draws.
-    try testing.expectEqual(@as(usize, 0), verts.items.len);
-    try testing.expectEqual(@as(usize, 1), text_draws.items.len);
-}
-
-test "buildVertices: canvas axis-aligned prims each emit one quad" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    const prims = [_]CanvasPrimitive{
-        .{ .filled_rect = .{ .x = 0, .y = 0, .w = 10, .h = 10 } },
-        .{ .hline = .{ .y = 20 } },
-        .{ .vline = .{ .x = 30 } },
-        .{ .marker = .{ .x = 40, .y = 40 } },
-    };
-    // bg + 4 axis-aligned prims = 5 quads = 30 verts.
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.canvas(.{ .width = 100, .height = 100, .bg = .{ 0.1, 0.1, 0.1, 1 } }, &prims);
-    cb.popGroup();
-
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 100, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    try testing.expectEqual(@as(usize, 30), verts.items.len);
-}
-
-test "clipSegment rejects NaN endpoints (F10)" {
-    const testing = std.testing;
-    const clip = Rect{ .x = 0, .y = 0, .w = 100, .h = 100 };
-
-    // A NaN in any endpoint must reject: every Liang–Barsky t-test against NaN
-    // is false, so without the guard the segment would be "accepted" with a
-    // NaN length and emit six NaN vertices.
-    inline for (0..4) |which| {
-        var x0: f32 = 10;
-        var y0: f32 = 10;
-        var x1: f32 = 50;
-        var y1: f32 = 50;
-        const ptrs = [_]*f32{ &x0, &y0, &x1, &y1 };
-        ptrs[which].* = std.math.nan(f32);
-        try testing.expect(!clipSegment(&x0, &y0, &x1, &y1, clip));
-    }
-
-    // A finite, in-bounds segment is still accepted (no false negatives).
-    var x0: f32 = 10;
-    var y0: f32 = 10;
-    var x1: f32 = 50;
-    var y1: f32 = 50;
-    try testing.expect(clipSegment(&x0, &y0, &x1, &y1, clip));
-}
-
-test "buildVertices: canvas polyline with a NaN point emits no NaN vertices (F10)" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    const nan = std.math.nan(f32);
-    const prims = [_]CanvasPrimitive{
-        .{ .polyline = .{
-            .points = &.{ .{ .x = 0, .y = 0 }, .{ .x = nan, .y = nan }, .{ .x = 50, .y = 50 } },
-            .thickness = 2,
-        } },
-    };
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.canvas(.{ .width = 100, .height = 100 }, &prims);
-    cb.popGroup();
-
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 100, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    // Both segments touch a NaN endpoint, so both are dropped — no vertices,
-    // and definitely no NaN ones.
-    for (verts.items) |v| {
-        try testing.expect(!std.math.isNan(v.x));
-        try testing.expect(!std.math.isNan(v.y));
-    }
-    try testing.expectEqual(@as(usize, 0), verts.items.len);
-}
-
-test "buildVertices: canvas polyline diagonal segment emits a rotated quad with expected corners" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Diagonal (0,0)->(50,50). thickness = 2√2 → half-width √2 → the
-    // perpendicular offset is exactly (∓1, ±1). Canvas sits at the origin.
-    const thick = 2.0 * @sqrt(2.0);
-    const prims = [_]CanvasPrimitive{
-        .{ .polyline = .{
-            .points = &.{ .{ .x = 0, .y = 0 }, .{ .x = 50, .y = 50 } },
-            .thickness = thick,
-        } },
-    };
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.canvas(.{ .width = 100, .height = 100 }, &prims); // no bg
-    cb.popGroup();
-
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 100, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    // One segment → one quad → 6 verts.
-    try testing.expectEqual(@as(usize, 6), verts.items.len);
-    // Triangle 1 corners: c0=(-1,1), c1=(49,51), c2=(51,49).
-    try testing.expectApproxEqAbs(@as(f32, -1), verts.items[0].x, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 1), verts.items[0].y, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 49), verts.items[1].x, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 51), verts.items[1].y, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 51), verts.items[2].x, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 49), verts.items[2].y, 0.001);
-    // Triangle 2 ends at c3=(1,-1).
-    try testing.expectApproxEqAbs(@as(f32, 1), verts.items[5].x, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, -1), verts.items[5].y, 0.001);
-}
-
-test "buildVertices: canvas polyline fully outside the canvas is clipped away" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Segment lives entirely past the canvas's 100x100 bounds → Liang–
-    // Barsky rejects it → no geometry emitted.
-    const prims = [_]CanvasPrimitive{
-        .{ .polyline = .{
-            .points = &.{ .{ .x = 200, .y = 200 }, .{ .x = 300, .y = 300 } },
-            .thickness = 4,
-        } },
-    };
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.canvas(.{ .width = 100, .height = 100 }, &prims);
-    cb.popGroup();
-
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 100, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    try testing.expectEqual(@as(usize, 0), verts.items.len);
-}
-
-test "buildVertices: nested groups with bg render outer first, then inner" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    const CmdBuffer = cmd_mod.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    // Outer red, inner green. Painter's order → outer bg verts first,
-    // then inner bg verts.
-    cb.pushGroup(.{ .bg = .{ 1, 0, 0, 1 } });
-    cb.pushGroup(.{ .bg = .{ 0, 1, 0, 1 } });
-    cb.text("inner");
-    cb.popGroup();
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws = newTextDraws(testing.allocator);
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    // Two bg quads = 12 vertices. First 6 = red (outer), next 6 = green (inner).
-    try testing.expectEqual(@as(usize, 12), verts.items.len);
-    for (verts.items[0..6]) |v| {
-        try testing.expectEqual(@as(f32, 1), v.r);
-        try testing.expectEqual(@as(f32, 0), v.g);
-        try testing.expectEqual(@as(f32, 0), v.b);
-    }
-    for (verts.items[6..12]) |v| {
-        try testing.expectEqual(@as(f32, 0), v.r);
-        try testing.expectEqual(@as(f32, 1), v.g);
-        try testing.expectEqual(@as(f32, 0), v.b);
-    }
-}
-
-// ── Triangles / lines / scene draws ────────────────────────────────
 
 const TestFrame = struct {
     verts: std.ArrayList(Vertex) = .empty,
@@ -1525,303 +959,6 @@ fn canvasWith(alloc: std.mem.Allocator, w: f32, h: f32, prims: []const CanvasPri
     return buildTestFrame(alloc, &cb);
 }
 
-test "canvas triangles fully inside are copied through, translated and colored" {
-    const testing = std.testing;
-    const tris = [_]TV{ tv(10, 10, 1, 0, 0), tv(60, 10, 0, 1, 0), tv(10, 60, 0, 0, 1), tv(70, 70, 1, 1, 1), tv(90, 70, 1, 1, 1), tv(90, 90, 1, 1, 1) };
-    var f = try canvasWith(testing.allocator, 100, 100, &.{.{ .triangles = .{ .verts = &tris } }});
-    defer f.deinit(testing.allocator);
-
-    try testing.expectEqual(@as(usize, 6), f.verts.items.len);
-    // Group padding 0 + canvas at origin: local == window coords.
-    try testing.expectEqual(@as(f32, 10), f.verts.items[0].x);
-    try testing.expectEqual(@as(f32, 1), f.verts.items[0].r);
-    try testing.expectEqual(@as(f32, 1), f.verts.items[1].g);
-    try testing.expectEqual(@as(f32, 1), f.verts.items[2].b);
-    try testing.expectEqual(@as(f32, 1), f.verts.items[2].a);
-}
-
-test "canvas triangles are clipped to the canvas rect with color interpolation" {
-    const testing = std.testing;
-    // A=(50,10) red, B=(150,10) green, C=(50,60) blue; canvas is 100x100 so
-    // everything past x=100 is cut: the kept polygon is
-    // A, (100,10), (100,35), C with area 1875.
-    const tris = [_]TV{ tv(50, 10, 1, 0, 0), tv(150, 10, 0, 1, 0), tv(50, 60, 0, 0, 1) };
-    var f = try canvasWith(testing.allocator, 100, 100, &.{.{ .triangles = .{ .verts = &tris } }});
-    defer f.deinit(testing.allocator);
-
-    try testing.expectEqual(@as(usize, 6), f.verts.items.len); // quad -> 2 triangles
-    for (f.verts.items) |v| {
-        try testing.expect(v.x >= 50 - 0.001 and v.x <= 100 + 0.001);
-        try testing.expect(v.y >= 10 - 0.001 and v.y <= 60 + 0.001);
-    }
-    try testing.expectApproxEqAbs(@as(f32, 1875), totalArea(f.verts.items), 0.5);
-
-    // The point where the A-B edge crosses x=100 is the midpoint: r=g=0.5.
-    var found = false;
-    for (f.verts.items) |v| {
-        if (@abs(v.x - 100) < 0.001 and @abs(v.y - 10) < 0.001) {
-            try testing.expectApproxEqAbs(@as(f32, 0.5), v.r, 1e-5);
-            try testing.expectApproxEqAbs(@as(f32, 0.5), v.g, 1e-5);
-            found = true;
-        }
-    }
-    try testing.expect(found);
-}
-
-test "canvas triangles: fully outside, non-finite and trailing partial triangles are dropped" {
-    const testing = std.testing;
-    const nan = std.math.nan(f32);
-    const tris = [_]TV{
-        tv(200, 200, 1, 1, 1), tv(300, 200, 1, 1, 1), tv(200, 300, 1, 1, 1), // outside
-        tv(nan, 0, 1, 1, 1), tv(10, 0, 1, 1, 1), tv(0, 10, 1, 1, 1), // NaN
-        tv(10, 10, 1, 1, 1), tv(20, 10, 1, 1, 1), tv(10, 20, 1, 1, 1), // kept
-        tv(1, 1, 1, 1, 1), tv(2, 2, 1, 1, 1), // partial trailer
-    };
-    var f = try canvasWith(testing.allocator, 100, 100, &.{.{ .triangles = .{ .verts = &tris } }});
-    defer f.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 3), f.verts.items.len);
-    for (f.verts.items) |v| try testing.expect(std.math.isFinite(v.x) and std.math.isFinite(v.y));
-}
-
-test "canvas triangles honour the surrounding scroll clip, not just the canvas rect" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    // A 100x40 viewport over a 100x100 canvas: only the top 40 rows show.
-    const tris = [_]TV{ tv(0, 0, 1, 1, 1), tv(100, 0, 1, 1, 1), tv(0, 100, 1, 1, 1) };
-    cb.pushScroll(.{ .width = 100, .height = 40, .padding = 0, .gap = 0 });
-    cb.canvas(.{ .width = 100, .height = 100 }, &.{.{ .triangles = .{ .verts = &tris } }});
-    cb.popScroll();
-    var f = try buildTestFrame(testing.allocator, &cb);
-    defer f.deinit(testing.allocator);
-
-    try testing.expect(f.verts.items.len >= 3);
-    for (f.verts.items) |v| try testing.expect(v.y <= 40 + 0.001);
-    // Visible part: triangle area within y<=40 = 100*100/2 - 100*60... = 5000 - (60*60... )
-    // The triangle narrows linearly: at y the width is 100*(1 - y/100).
-    // Area(0..40) = integral of (100 - y) dy = 100*40 - 40*40/2 = 3200.
-    try testing.expectApproxEqAbs(@as(f32, 3200), totalArea(f.verts.items), 1);
-}
-
-test "canvas lines: one quad per visible segment, trimmed to the canvas" {
-    const testing = std.testing;
-    const segs = [_][4]f32{
-        .{ 10, 10, 90, 10 }, // inside
-        .{ 200, 0, 300, 0 }, // outside
-        .{ 50, 50, 150, 50 }, // crosses the right edge
-    };
-    var f = try canvasWith(testing.allocator, 100, 100, &.{.{ .lines = .{ .segs = &segs, .thickness = 2, .color = .{ 1, 0, 0, 1 } } }});
-    defer f.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 12), f.verts.items.len); // 2 quads
-    for (f.verts.items) |v| {
-        try testing.expect(v.x <= 100 + 0.001);
-        try testing.expectEqual(@as(f32, 1), v.r);
-    }
-}
-
-test "viewport3d items are flattened per scene with their range; hidden items are dropped" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    const first = [_]SceneItem{ .{ .mesh = 1, .id = 1 }, .{ .mesh = 2, .id = 2, .flags = .{ .hidden = true } }, .{ .mesh = 1, .id = 3 } };
-    const second = [_]SceneItem{.{ .mesh = 4, .id = 9 }};
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.viewport3d(.{ .style = .{ .width = 100, .height = 50 }, .view = .{ .items = &first, .grid = .{}, .material = .flat } });
-    cb.viewport3d(.{ .style = .{ .width = 100, .height = 50 }, .view = .{ .items = &second, .cut = .{ .plane = .{ 0, 1, 0, 2 } } } });
-    cb.scene3d(.{ .style = .{ .width = 100, .height = 50 }, .mesh = 5 }); // legacy single mesh
-    cb.popGroup();
-
-    var f = try buildTestFrame(testing.allocator, &cb);
-    defer f.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 3), f.scenes.items.len);
-    try testing.expectEqual(@as(usize, 3), f.items.items.len);
-    const a = f.scenes.items[0];
-    try testing.expectEqual(@as(u32, 0), a.item_first);
-    try testing.expectEqual(@as(u32, 2), a.item_count);
-    try testing.expect(a.grid != null and a.material == .flat and a.cut == null);
-    try testing.expectEqual(@as(u32, 3), f.items.items[1].id); // hidden id 2 skipped
-    const b = f.scenes.items[1];
-    try testing.expectEqual(@as(u32, 2), b.item_first);
-    try testing.expectEqual(@as(u32, 1), b.item_count);
-    try testing.expect(b.cut != null);
-    const legacy = f.scenes.items[2];
-    try testing.expectEqual(@as(u32, 0), legacy.item_count);
-    try testing.expectEqual(@as(u32, 5), legacy.mesh);
-}
-
-test "scene3d emits a SceneDraw with rect, clip and camera; buildVertices skips it" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 10, .gap = 0 });
-    cb.text("title");
-    var cam: scene_types.Camera = .{};
-    cam.eye = .{ 1, 2, 3 };
-    cb.scene3d(.{ .style = .{ .width = 200, .height = 150 }, .mesh = 7, .camera = cam, .clear = .{ 1, 0, 0, 1 }, .edge_px = 3 });
-    cb.popGroup();
-
-    var f = try buildTestFrame(testing.allocator, &cb);
-    defer f.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 1), f.scenes.items.len);
-    const sd = f.scenes.items[0];
-    try testing.expectEqual(@as(u32, 7), sd.mesh);
-    try testing.expectEqual(@as(f32, 200), sd.rect_w);
-    try testing.expectEqual(@as(f32, 150), sd.rect_h);
-    try testing.expectEqual(@as(f32, 10), sd.rect_x);
-    try testing.expectEqual(@as(f32, 3), sd.camera.eye[2]);
-    try testing.expectEqual(@as(f32, 3), sd.edge_px);
-    try testing.expectEqual(@as(f32, 1), sd.clear[0]);
-    // No solid quad is drawn for the scene itself.
-    try testing.expectEqual(@as(usize, 0), f.verts.items.len);
-
-    // The scene-less entry point ignores it without leaking.
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var texts: std.ArrayList(TextDraw) = .empty;
-    defer texts.deinit(testing.allocator);
-    var images: std.ArrayList(ImageDraw) = .empty;
-    defer images.deinit(testing.allocator);
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 400, text_mod.monoMeasurer());
-    buildVertices(&verts, &texts, &images, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-    try testing.expectEqual(@as(usize, 1), texts.items.len);
-}
-
-test "scene3d is clipped by a scroll container's clip rect" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushScroll(.{ .width = 100, .height = 60, .padding = 0, .gap = 0 });
-    cb.scene3d(.{ .style = .{ .width = 300, .height = 300 } });
-    cb.popScroll();
-    var f = try buildTestFrame(testing.allocator, &cb);
-    defer f.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 1), f.scenes.items.len);
-    try testing.expectEqual(@as(f32, 300), f.scenes.items[0].rect_w);
-    try testing.expectEqual(@as(f32, 100), f.scenes.items[0].clip_w);
-    try testing.expectEqual(@as(f32, 60), f.scenes.items[0].clip_h);
-}
-
-test "scene3d inside an overlay is emitted by the overlay layer" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{});
-    cb.scene3d(.{ .mesh = 1 });
-    cb.pushOverlay(.{ .x = 50, .y = 50, .width = 200, .height = 200 });
-    cb.scene3d(.{ .mesh = 2 });
-    cb.popOverlay();
-    cb.popGroup();
-    var f = try buildTestFrame(testing.allocator, &cb);
-    defer f.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 2), f.scenes.items.len);
-    try testing.expectEqual(@as(u32, 1), f.scenes.items[0].mesh); // base layer first
-    try testing.expectEqual(@as(u32, 2), f.scenes.items[1].mesh);
-}
-
-// 200k vertices (66k triangles): the all-inside path is a single bulk copy
-// (one allocation); the clipping path stays linear. Wall-clock bounds are
-// deliberately loose (Debug build, shared CI) — they catch accidental
-// quadratic behaviour, not micro-regressions.
-test "perf: 200k triangle vertices, inside and clipped" {
-    const testing = std.testing;
-    const n_tris: usize = 66_666;
-    const list = try testing.allocator.alloc(TV, n_tris * 3);
-    defer testing.allocator.free(list);
-    for (0..n_tris) |t| {
-        const x: f32 = @floatFromInt(t % 250);
-        const y: f32 = @floatFromInt(t / 250 % 250);
-        list[t * 3 + 0] = tv(x * 2, y * 2, 1, 0, 0);
-        list[t * 3 + 1] = tv(x * 2 + 1.5, y * 2, 0, 1, 0);
-        list[t * 3 + 2] = tv(x * 2, y * 2 + 1.5, 0, 0, 1);
-    }
-
-    const io = testing.io;
-    const t0 = std.Io.Clock.awake.now(io).nanoseconds;
-
-    // Inside: the clip covers everything -> one bulk conversion, one allocation.
-    var counting = testing.FailingAllocator.init(testing.allocator, .{});
-    var inside: std.ArrayList(Vertex) = .empty;
-    defer inside.deinit(counting.allocator());
-    const all: Rect = .{ .x = 0, .y = 0, .w = 600, .h = 600 };
-    emitTriangles(&inside, counting.allocator(), all, list, all);
-    try testing.expectEqual(n_tris * 3, inside.items.len);
-    try testing.expectEqual(@as(usize, 1), counting.allocations);
-
-    // Clipped: a 250x250 canvas cuts about 5/6 of the field; triangles
-    // straddling the edge go through Sutherland–Hodgman.
-    var clipped = try canvasWith(testing.allocator, 250, 250, &.{.{ .triangles = .{ .verts = list } }});
-    defer clipped.deinit(testing.allocator);
-    try testing.expect(clipped.verts.items.len > 0 and clipped.verts.items.len < n_tris * 3);
-    for (clipped.verts.items) |v| try testing.expect(v.x <= 250.001 and v.y <= 250.001);
-
-    const elapsed_ms = @divTrunc(std.Io.Clock.awake.now(io).nanoseconds - t0, std.time.ns_per_ms);
-    try testing.expect(elapsed_ms < 3000);
-}
-
-test "perf: 100k line segments" {
-    const testing = std.testing;
-    const n: usize = 100_000;
-    const segs = try testing.allocator.alloc([4]f32, n);
-    defer testing.allocator.free(segs);
-    for (segs, 0..) |*s, i| {
-        const y: f32 = @floatFromInt(i % 500);
-        const x: f32 = @floatFromInt(i / 500);
-        s.* = .{ x, y, x + 3, y + 2 };
-    }
-    var f = try canvasWith(testing.allocator, 400, 400, &.{.{ .lines = .{ .segs = segs, .thickness = 1 } }});
-    defer f.deinit(testing.allocator);
-    try testing.expect(f.verts.items.len > 0 and f.verts.items.len <= n * 6);
-}
-
-test "buildFrame reports where the overlay layer starts in every list" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .bg = .{ 0.1, 0.1, 0.1, 1 } }); // 1 base quad
-    cb.text("base"); // 1 base text
-    cb.scene3d(.{ .mesh = 1 }); // 1 base scene
-    cb.pushOverlay(.{ .x = 10, .y = 10, .width = 100, .height = 60, .backdrop = .{ 1, 1, 1, 1 } }); // overlay panel quad
-    cb.text("over");
-    cb.text("over2");
-    cb.scene3d(.{ .mesh = 2 });
-    cb.popOverlay();
-    cb.popGroup();
-
-    var f = try buildTestFrame(testing.allocator, &cb);
-    defer f.deinit(testing.allocator);
-    try testing.expectEqual(@as(u32, 6), f.split.verts); // base group bg = 1 quad
-    try testing.expectEqual(@as(u32, 1), f.split.text);
-    try testing.expectEqual(@as(u32, 0), f.split.images);
-    try testing.expectEqual(@as(u32, 1), f.split.scenes);
-    // Everything after the split is overlay content.
-    try testing.expectEqual(@as(usize, 3), f.texts.items.len);
-    try testing.expectEqualStrings("over", f.texts.items[f.split.text].content);
-    try testing.expectEqual(@as(usize, 2), f.scenes.items.len);
-    try testing.expectEqual(@as(u32, 2), f.scenes.items[f.split.scenes].mesh);
-    try testing.expect(f.verts.items.len > f.split.verts);
-}
-
-test "buildFrame without an overlay splits at the end of every list" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{});
-    cb.text("only base");
-    cb.popGroup();
-    var f = try buildTestFrame(testing.allocator, &cb);
-    defer f.deinit(testing.allocator);
-    try testing.expectEqual(@as(u32, @intCast(f.verts.items.len)), f.split.verts);
-    try testing.expectEqual(@as(u32, 1), f.split.text);
-}
-
 fn renderTexts(comptime Msg: type, cb: *cmd_mod.CmdBuffer(Msg), rects: []Rect, w: f32, h: f32, draws: *std.ArrayList(TextDraw)) !void {
     const testing = std.testing;
     layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, w, h, text_mod.monoMeasurer());
@@ -1831,324 +968,4 @@ fn renderTexts(comptime Msg: type, cb: *cmd_mod.CmdBuffer(Msg), rects: []Rect, w
     defer image_draws.deinit(testing.allocator);
     draws.clearRetainingCapacity();
     buildVertices(&verts, draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-}
-
-test "wrapped text emits one TextDraw per line, stacked at the line height" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
-    cb.paragraph("hello world foo bar");
-    cb.popGroup();
-    var rects: [4]Rect = undefined;
-    var draws: std.ArrayList(TextDraw) = .empty;
-    defer draws.deinit(testing.allocator);
-    try renderTexts(Msg, &cb, &rects, 100, 200, &draws);
-    try testing.expectEqual(@as(usize, 3), draws.items.len);
-    try testing.expectEqualStrings("hello", draws.items[0].content);
-    try testing.expectEqualStrings("world foo", draws.items[1].content);
-    try testing.expectEqualStrings("bar", draws.items[2].content);
-    try testing.expectEqual(@as(f32, 20), draws.items[1].rect_y);
-    try testing.expectEqual(@as(f32, 40), draws.items[2].rect_y);
-}
-
-test "ellipsis and max_lines draw U+2026; center alignment offsets each line" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
-    cb.textEllipsis("one two three four five");
-    cb.paragraphStyled("aa bb cc dd ee ff gg hh", cb.theme.typography.body, cb.theme.text_color, .{ .max_lines = 2, .text_align = .center });
-    cb.popGroup();
-    var rects: [8]Rect = undefined;
-    var draws: std.ArrayList(TextDraw) = .empty;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 100, 200, text_mod.monoMeasurer());
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-    buildVertices(&verts, &draws, &image_draws, arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-    try testing.expectEqualStrings("one two", draws.items[0].content);
-    try testing.expectEqualStrings("\u{2026}", draws.items[1].content);
-    try testing.expectEqual(@as(f32, 70), draws.items[1].rect_x); // right after the kept text
-    try testing.expectEqualStrings("aa bb cc", draws.items[2].content);
-    // Centered: line width 80 in a 100-wide rect.
-    try testing.expectEqual(@as(f32, 10), draws.items[2].rect_x);
-    try testing.expectEqualStrings("dd ee f", draws.items[3].content);
-    try testing.expectEqualStrings("\u{2026}", draws.items[4].content);
-}
-
-test "layout height equals the rendered line count for random strings and widths" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var prng = std.Random.DefaultPrng.init(0xBEEF);
-    const rnd = prng.random();
-    const words = [_][]const u8{ "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "supercalifragilistic", "日本", "。", "-", "x-y", "e\u{0301}e\u{0301}" };
-    var buf: [256]u8 = undefined;
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    var rects: [4]Rect = undefined;
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var iter: usize = 0;
-    while (iter < 1000) : (iter += 1) {
-        var n: usize = 0;
-        for (0..1 + rnd.uintLessThan(usize, 12)) |_| {
-            const w = words[rnd.uintLessThan(usize, words.len)];
-            if (n + w.len + 1 > buf.len) break;
-            @memcpy(buf[n..][0..w.len], w);
-            n += w.len;
-            if (rnd.boolean()) {
-                buf[n] = ' ';
-                n += 1;
-            }
-        }
-        const width: f32 = @floatFromInt(20 + rnd.uintLessThan(u32, 300));
-        const max_lines: u16 = @intCast(rnd.uintLessThan(u32, 4));
-        const mode: cmd_mod.Wrap = if (rnd.uintLessThan(u8, 5) == 0) .char else .word;
-        cb.reset();
-        cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
-        cb.paragraphStyled(buf[0..n], cb.theme.typography.body, cb.theme.text_color, .{ .wrap = mode, .max_lines = max_lines });
-        cb.popGroup();
-        _ = arena.reset(.retain_capacity);
-        var draws: std.ArrayList(TextDraw) = .empty;
-        layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, width, 2000, text_mod.monoMeasurer());
-        var verts: std.ArrayList(Vertex) = .empty;
-        var image_draws: std.ArrayList(ImageDraw) = .empty;
-        buildVertices(&verts, &draws, &image_draws, arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-        var drawn_lines: f32 = 0;
-        var last_y: f32 = -1;
-        for (draws.items) |d| {
-            if (d.rect_y != last_y) drawn_lines += 1;
-            last_y = d.rect_y;
-        }
-        testing.expectEqual(rects[1].h, drawn_lines * 20) catch |e| {
-            std.debug.print("text='{s}' w={d} mode={s} max_lines={d}\n", .{ buf[0..n], width, @tagName(mode), max_lines });
-            var it = text_wrap.LineIter.init(buf[0..n], cb.theme.typography.body, rects[1].w, mode, max_lines, text_mod.monoMeasurer());
-            while (it.next()) |l| std.debug.print("  line {d}..{d} hang {d} next {d}\n", .{ l.start, l.end, l.hang, l.next });
-            return e;
-        };
-    }
-}
-
-test "text_area: multi-line selection quads, per-line text, scroll culling, caret" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    const sel: [4]f32 = .{ 0.2, 0.4, 0.9, 0.5 };
-    var style = cb.theme.text_input;
-    style.selection_bg = sel;
-    // Inner box: border 2 + padding 6 -> 184 wide = 18 chars; 5 rows of 20 px.
-    const content = "aaaa bbbb cccc dddd eeee ffff gggg"; // wraps to 3 lines
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.textArea(.{ .focus_msg = .focus, .id = 1, .content = content, .cursor = 24, .selection_anchor = 7, .style = style, .width = 200, .height = 116 });
-    cb.popGroup();
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var ts: TransientState = .{};
-    ts.focus_index = 1;
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws: std.ArrayList(TextDraw) = .empty;
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-    var scenes: std.ArrayList(SceneDraw) = .empty;
-    defer scenes.deinit(testing.allocator);
-    var items: std.ArrayList(SceneItem) = .empty;
-    defer items.deinit(testing.allocator);
-    var sprites: std.ArrayList(SceneSprite) = .empty;
-    defer sprites.deinit(testing.allocator);
-    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, &items, &sprites, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], ts, text_mod.monoMeasurer());
-
-    // Three wrapped lines of text.
-    try testing.expectEqual(@as(usize, 3), text_draws.items.len);
-    try testing.expectEqualStrings("aaaa bbbb cccc", text_draws.items[0].content);
-    try testing.expectEqualStrings("dddd eeee ffff", text_draws.items[1].content);
-    try testing.expectEqualStrings("gggg", text_draws.items[2].content);
-    // Selection [7, 24) covers the tail of line 0, all of line 1 and nothing of line 2: two quads.
-    var sel_quads: usize = 0;
-    var i: usize = 0;
-    while (i + 6 <= verts.items.len) : (i += 6) {
-        const v = verts.items[i];
-        if (v.r == sel[0] and v.g == sel[1] and v.b == sel[2] and v.a == sel[3]) sel_quads += 1;
-    }
-    try testing.expectEqual(@as(usize, 2), sel_quads);
-    // Selection quads sit on rows 0 and 1 (origin y = 8).
-    try testing.expectEqual(@as(f32, 8), text_draws.items[0].rect_y);
-    try testing.expectEqual(@as(f32, 28), text_draws.items[1].rect_y);
-}
-
-test "text_area: scrolled content culls lines above the viewport" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.textArea(.{ .focus_msg = .focus, .id = 1, .content = "1\n2\n3\n4\n5\n6\n7\n8", .scroll_y = 60, .width = 200, .height = 56 });
-    cb.popGroup();
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws: std.ArrayList(TextDraw) = .empty;
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-    buildVertices(&verts, &text_draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-    // Inner height 40: rows 4..5 are visible (scroll 60 = 3 lines), lines 1-3 above are culled.
-    try testing.expectEqual(@as(usize, 2), text_draws.items.len);
-    try testing.expectEqualStrings("4", text_draws.items[0].content);
-    try testing.expectEqualStrings("5", text_draws.items[1].content);
-}
-
-test "text_area: a right-to-left paragraph draws its runs in visual order, right-aligned" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    // Logical: Hebrew1 " abc " Hebrew2 -- RTL paragraph, so Hebrew2 is leftmost.
-    const content = "\u{5d0}\u{5d1} abc \u{5d3}\u{5d4}";
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.textArea(.{ .focus_msg = .focus, .id = 1, .content = content, .width = 300, .height = 60 });
-    cb.popGroup();
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws: std.ArrayList(TextDraw) = .empty;
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-    var scenes: std.ArrayList(SceneDraw) = .empty;
-    defer scenes.deinit(testing.allocator);
-    var items: std.ArrayList(SceneItem) = .empty;
-    defer items.deinit(testing.allocator);
-    var sprites: std.ArrayList(SceneSprite) = .empty;
-    defer sprites.deinit(testing.allocator);
-    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, &items, &sprites, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-    const d = text_draws.items;
-    try testing.expectEqual(@as(usize, 3), d.len);
-    try testing.expectEqualStrings(" \u{5d3}\u{5d4}", d[0].content);
-    try testing.expect(d[0].font.rtl);
-    try testing.expectEqualStrings("abc", d[1].content);
-    try testing.expect(!d[1].font.rtl);
-    try testing.expectEqualStrings("\u{5d0}\u{5d1} ", d[2].content);
-    try testing.expect(d[2].font.rtl);
-    try testing.expect(d[0].rect_x < d[1].rect_x and d[1].rect_x < d[2].rect_x);
-    // Right-aligned inside the 300 px box (inner right edge = 400 - 2 - 6 ... of the area).
-    const right = d[2].rect_x + d[2].rect_w;
-    try testing.expectApproxEqAbs(rects[1].x + rects[1].w - 8, right, 0.5);
-}
-
-test "text_area: mixed-direction selection becomes per-run highlight rects" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    const sel: [4]f32 = .{ 0.2, 0.4, 0.9, 0.5 };
-    var style = cb.theme.text_input;
-    style.selection_bg = sel;
-    // LTR paragraph; select from inside the Latin run into the Hebrew run.
-    const content = "abcd \u{5d0}\u{5d1}\u{5d2}\u{5d3} efgh";
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.textArea(.{ .focus_msg = .focus, .id = 1, .content = content, .cursor = 5 + 4, .selection_anchor = 2, .style = style, .width = 400, .height = 60 });
-    cb.popGroup();
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 500, 300, text_mod.monoMeasurer());
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var text_draws: std.ArrayList(TextDraw) = .empty;
-    defer text_draws.deinit(testing.allocator);
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    defer image_draws.deinit(testing.allocator);
-    var scenes: std.ArrayList(SceneDraw) = .empty;
-    defer scenes.deinit(testing.allocator);
-    var ts: TransientState = .{};
-    ts.focus_index = 1;
-    var items: std.ArrayList(SceneItem) = .empty;
-    defer items.deinit(testing.allocator);
-    var sprites: std.ArrayList(SceneSprite) = .empty;
-    defer sprites.deinit(testing.allocator);
-    _ = buildFrame(&verts, &text_draws, &image_draws, &scenes, &items, &sprites, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], ts, text_mod.monoMeasurer());
-    var quads: usize = 0;
-    var i: usize = 0;
-    while (i + 6 <= verts.items.len) : (i += 6) {
-        const v = verts.items[i];
-        if (v.r == sel[0] and v.g == sel[1] and v.b == sel[2] and v.a == sel[3]) quads += 1;
-    }
-    // Logically contiguous, visually split: "cd " at the left, then alef+bet at
-    // the RIGHT end of the Hebrew run (gimel, dalet lie between): two rects.
-    try testing.expectEqual(@as(usize, 2), quads);
-}
-
-test "wrapped rich_text: per-line pieces keep their span font and colour, ellipsis closes the last line" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    const wide: FontSpec = .{ .letter_spacing = 10 };
-    const red: [4]f32 = .{ 1, 0, 0, 1 };
-    const spans = [_]cmd_mod.RichTextSpan{.{ .start = 3, .end = 7, .font = wide, .color = red }};
-    cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });
-    cb.richParagraph("aa bbbb cc dd ee ff gg hh", &spans, .{ .max_lines = 2 });
-    cb.popGroup();
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 130, 300, text_mod.monoMeasurer());
-    var verts: std.ArrayList(Vertex) = .empty;
-    defer verts.deinit(testing.allocator);
-    var draws: std.ArrayList(TextDraw) = .empty;
-    defer draws.deinit(testing.allocator);
-    var imgs: std.ArrayList(ImageDraw) = .empty;
-    defer imgs.deinit(testing.allocator);
-    buildVertices(&verts, &draws, &imgs, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-
-    // Line 1: "aa " default + "bbbb" wide/red; line 2 is ellipsized.
-    try testing.expectEqualStrings("aa ", draws.items[0].content);
-    try testing.expectEqualStrings("bbbb", draws.items[1].content);
-    try testing.expectEqual(red, draws.items[1].color);
-    try testing.expectEqual(@as(f32, 10), draws.items[1].font.letter_spacing);
-    try testing.expectEqual(@as(f32, 30), draws.items[1].rect_x); // after "aa " (30 px)
-    try testing.expectEqualStrings("cc dd ee", draws.items[2].content[0..8]); // line 2 starts at x = 0
-    try testing.expectEqual(@as(f32, 0), draws.items[2].rect_x);
-    try testing.expectEqual(@as(f32, 20), draws.items[2].rect_y);
-    try testing.expectEqual(@as(f32, 0), draws.items[0].rect_y);
-    const last = draws.items[draws.items.len - 1];
-    try testing.expectEqualStrings("\u{2026}", last.content);
-    try testing.expectEqual(@as(f32, 20), last.rect_y);
-}
-
-test "a button with `ellipsis` keeps its width and cuts its label at the pixel" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    var st = cb.theme.button;
-    st.min_width = 100; // mono measurer: 10 px per byte; 8 px padding each side -> 84 px for text
-    st.h_padding = 8;
-    st.ellipsis = true;
-    cb.buttonStyled(.a, "a long label here", st);
-    cb.buttonStyled(.a, "short", st);
-    cb.popGroup();
-    var rects: [8]Rect = undefined;
-    var draws: std.ArrayList(TextDraw) = .empty;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 200, text_mod.monoMeasurer());
-    try testing.expectEqual(@as(f32, 100), rects[1].w); // fixed, though the label is 170 px wide
-    try testing.expectEqual(@as(f32, 100), rects[2].w);
-    var verts: std.ArrayList(Vertex) = .empty;
-    var image_draws: std.ArrayList(ImageDraw) = .empty;
-    buildVertices(&verts, &draws, &image_draws, arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
-    try testing.expectEqualStrings("a lon", draws.items[0].content); // 5 x 10 + "\u{2026}" (3 bytes = 30 under the mono measurer) = 80 <= 84
-    try testing.expectEqualStrings("\u{2026}", draws.items[1].content);
-    try testing.expect(draws.items[1].rect_x + draws.items[1].rect_w <= rects[1].x + rects[1].w - st.h_padding + 0.01);
-    try testing.expectEqualStrings("short", draws.items[2].content); // fits: drawn plain
 }

@@ -12,7 +12,6 @@ const W = teak.widgets;
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 14, .align_cross = .start });
 
-    // Column 1
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 330, .align_cross = .stretch });
     ui.card(cb, "Buttons", 0, 0);
     ui.row(cb);
@@ -36,7 +35,6 @@ pub fn view(m: *const Model, cb: anytype) void {
     ui.endCard(cb);
     cb.popGroup();
 
-    // Column 2
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 330, .align_cross = .stretch });
     ui.card(cb, "Toggle switch", 0, 0);
     W.toggle.view(cb, Msg{ .toggle_wifi = {} }, m.wifi, "Wi-Fi");
@@ -60,7 +58,6 @@ pub fn view(m: *const Model, cb: anytype) void {
     ui.endCard(cb);
     cb.popGroup();
 
-    // Column 3
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 370, .align_cross = .stretch });
     ui.card(cb, "Text styles", 0, 0);
     cb.heading("Heading");

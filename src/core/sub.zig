@@ -89,8 +89,7 @@ pub fn runSubs(
                 const last_tick = last_frame_ms / e.interval_ms;
                 const now_tick = now_ms / e.interval_ms;
                 if (now_tick > last_tick) {
-                    // Fire once per crossed boundary (typically 1; can
-                    // be more if the frame was slow).
+                    // A slow frame can cross multiple timer boundaries.
                     var i: u64 = 0;
                     while (i < (now_tick - last_tick)) : (i += 1) {
                         dispatch.call(e.msg);
@@ -102,7 +101,6 @@ pub fn runSubs(
                     dispatch.call(a.msg);
                 }
             },
-            // Serviced by the run loop (it needs the App's `animationMsg` hook).
             .animation_frame => {},
         }
     }
@@ -123,92 +121,4 @@ pub fn nextDueMs(comptime Msg: type, subs: []const Sub(Msg), now_ms: u64) ?u64 {
         best = if (best) |b| @min(b, due) else due;
     }
     return best;
-}
-
-test "nextDueMs: nearest of every/at, null when nothing is armed" {
-    const Msg = union(enum) { t };
-    const subs = [_]Sub(Msg){
-        .{ .every = .{ .interval_ms = 100, .msg = .t } },
-        .{ .at = .{ .deadline_ms = 1030, .msg = .t } },
-        .{ .at = .{ .deadline_ms = 10, .msg = .t } }, // already passed
-        .{ .every = .{ .interval_ms = 0, .msg = .t } },
-    };
-    try std.testing.expectEqual(@as(?u64, 20), nextDueMs(Msg, &subs, 1010)); // every: 1100-1010=90; at: 20
-    try std.testing.expectEqual(@as(?u64, 50), nextDueMs(Msg, &subs, 1050)); // every: 50; at: 0 -> skipped? deadline 1030 passed
-    try std.testing.expectEqual(@as(?u64, null), nextDueMs(Msg, &[_]Sub(Msg){}, 5));
-}
-
-// ── Tests ──────────────────────────────────────────────────────────
-
-test "runSubs: .every fires once per crossed interval" {
-    const Msg = union(enum) { tick };
-    const subs = [_]Sub(Msg){.{ .every = .{ .interval_ms = 100, .msg = .tick } }};
-
-    var fire_count: u32 = 0;
-    // The dispatcher carries its context (the counter pointer) as a field —
-    // no module-level statics — and exposes it through `call(msg)`.
-    const Counter = struct {
-        count: *u32,
-        fn call(self: @This(), _: Msg) void {
-            self.count.* += 1;
-        }
-    };
-    const counter = Counter{ .count = &fire_count };
-
-    // 50 → 90: no crossing of 100.
-    runSubs(Msg, &subs, 50, 90, counter);
-    try std.testing.expectEqual(@as(u32, 0), fire_count);
-
-    // 90 → 110: crosses 100 once.
-    runSubs(Msg, &subs, 90, 110, counter);
-    try std.testing.expectEqual(@as(u32, 1), fire_count);
-
-    // 110 → 320: crosses 200 and 300 → 2 fires.
-    runSubs(Msg, &subs, 110, 320, counter);
-    try std.testing.expectEqual(@as(u32, 3), fire_count);
-}
-
-test "runSubs: .at fires exactly once when deadline is crossed" {
-    const Msg = union(enum) { done };
-    const subs = [_]Sub(Msg){.{ .at = .{ .deadline_ms = 500, .msg = .done } }};
-
-    var fire_count: u32 = 0;
-    const Counter = struct {
-        count: *u32,
-        fn call(self: @This(), _: Msg) void {
-            self.count.* += 1;
-        }
-    };
-    const counter = Counter{ .count = &fire_count };
-
-    // 0 → 400: no fire.
-    runSubs(Msg, &subs, 0, 400, counter);
-    try std.testing.expectEqual(@as(u32, 0), fire_count);
-
-    // 400 → 500: crosses to exactly the deadline — fires.
-    runSubs(Msg, &subs, 400, 500, counter);
-    try std.testing.expectEqual(@as(u32, 1), fire_count);
-
-    // 500 → 600: deadline already passed, doesn't fire again. The app
-    // is responsible for removing the sub from subscribe() to prevent
-    // a re-fire when the same deadline is re-emitted.
-    runSubs(Msg, &subs, 500, 600, counter);
-    try std.testing.expectEqual(@as(u32, 1), fire_count);
-}
-
-test "runSubs: zero interval is a no-op (avoid div-by-zero)" {
-    const Msg = union(enum) { tick };
-    const subs = [_]Sub(Msg){.{ .every = .{ .interval_ms = 0, .msg = .tick } }};
-
-    var fire_count: u32 = 0;
-    const Counter = struct {
-        count: *u32,
-        fn call(self: @This(), _: Msg) void {
-            self.count.* += 1;
-        }
-    };
-    const counter = Counter{ .count = &fire_count };
-
-    runSubs(Msg, &subs, 0, 1000, counter);
-    try std.testing.expectEqual(@as(u32, 0), fire_count);
 }

@@ -57,7 +57,6 @@ pub const TextEvent = struct {
     keep_goal: bool = false,
     mods: pointer.Modifiers = .{},
     clicks: u8 = 1,
-    // metrics -------------------------------------------------------
     /// Inner (padding-free) box and the wrapped content extent.
     viewport_w: f32 = 0,
     viewport_h: f32 = 0,

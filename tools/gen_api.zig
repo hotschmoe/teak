@@ -39,7 +39,6 @@ pub fn generate(gpa: std.mem.Allocator, io: std.Io) !Out {
     const root_src = try readZ(arena, io, ROOT);
     const root = try Ast.parse(arena, root_src, .{});
 
-    // Pass 1: name -> file for every `pub const x = @import("p.zig")`.
     var imports: std.ArrayList(Import) = .empty;
     for (root.rootDecls()) |d| {
         const vd = root.fullVarDecl(d) orelse continue;
@@ -64,7 +63,6 @@ pub fn generate(gpa: std.mem.Allocator, io: std.Io) !Out {
         \\
     );
 
-    // Pass 2: the root's own public surface.
     for (root.rootDecls()) |d| {
         if (!isPub(root, d)) continue;
         const name = declName(root, d) orelse continue;
@@ -84,7 +82,6 @@ pub fn generate(gpa: std.mem.Allocator, io: std.Io) !Out {
         }
     }
 
-    // Pass 3: one section per imported module.
     try o.writeAll("\n## Modules\n");
     for (imports.items) |imp| {
         const path = try std.fmt.allocPrint(arena, "src/{s}", .{imp.path});
@@ -106,7 +103,6 @@ pub fn generate(gpa: std.mem.Allocator, io: std.Io) !Out {
     return .{ .api = api, .full = full };
 }
 
-// ── Emitting ───────────────────────────────────────────────────────
 
 fn writeDecl(arena: std.mem.Allocator, o: *std.Io.Writer, tree: Ast, d: Ast.Node.Index) !void {
     try writeDoc(o, tree, d, "");
@@ -124,7 +120,6 @@ fn writeDecl(arena: std.mem.Allocator, o: *std.Io.Writer, tree: Ast, d: Ast.Node
         try o.print("- `{s} {s}`\n", .{ kind, name });
         try writeMembers(arena, o, tree, init_node, "  ");
     } else if (importPath(tree, init_node) != null) {
-        // module aliases inside a module are not part of its API surface
     } else {
         try o.print("- `{s}`\n", .{oneLine(arena, srcOf(tree, d))});
     }
@@ -155,7 +150,6 @@ fn writeMembers(arena: std.mem.Allocator, o: *std.Io.Writer, tree: Ast, node: As
             try writeDoc(o, tree, m, indent);
             try o.print("{s}- `{s}`\n", .{ indent, oneLine(arena, fnSig(tree, m)) });
         } else if (tree.fullVarDecl(m)) |vd| {
-            // Nested public types / constants: name + kind only.
             const name = tree.tokenSlice(vd.ast.mut_token + 1);
             if (vd.ast.init_node.unwrap()) |i| {
                 if (containerKind(tree, i)) |kind| {
@@ -199,7 +193,6 @@ fn writeDoc(o: *std.Io.Writer, tree: Ast, node: Ast.Node.Index, indent: []const 
     }
 }
 
-// ── AST helpers ────────────────────────────────────────────────────
 
 fn isPub(tree: Ast, d: Ast.Node.Index) bool {
     const t = tree.firstToken(d);
@@ -304,7 +297,6 @@ fn readZ(arena: std.mem.Allocator, io: std.Io, path: []const u8) ![:0]const u8 {
     return z[0..bytes.len :0];
 }
 
-// ── CLI ────────────────────────────────────────────────────────────
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;

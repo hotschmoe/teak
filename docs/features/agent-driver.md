@@ -2,7 +2,7 @@
 
 **Status**: `pub` as `teak.control`, `teak.input_record`, `teak.inspector`, `teak.headless.serve`; tool `tools/teak_drive.zig` (`zig build drive` -> `zig-out/bin/teak-drive`).
 **Source**: `src/control.zig`, `src/input_record.zig`, `src/core/inspector.zig`, `src/platform/control_socket.zig`, hooks in `src/run.zig`.
-**Tests**: `zig build test` (protocol end to end over a real socket, record -> replay equality, inspector panel, X11 injection when `DISPLAY` is set).
+**Checks**: `zig build test-heavy -j4` drives the real headless todo app over a control socket.
 
 Three tools that let a coding agent (or a shell script, or CI) *use* a running teak app instead of guessing from source: read the GUI as text or pixels, operate it through the real input path, replay a session deterministically, and see why the layout looks the way it does.
 

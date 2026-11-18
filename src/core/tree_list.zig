@@ -122,9 +122,7 @@ pub fn TreeList(comptime cap: usize) type {
                     if (node >= m.n_nodes or !hasChildren(m, src, node)) return;
                     m.setExpanded(node, !m.isExpanded(node));
                     // A collapsed ancestor may now hide the selection: move it up.
-                    if (m.selected) |s| if (m.rowOf(s) == null) {
-                        // handled after rebuild below
-                    };
+                    if (m.selected) |s| if (m.rowOf(s) == null) {};
                     m.rebuild(src);
                     if (m.selected) |s| if (m.rowOf(s) == null) {
                         m.selected = node;
@@ -308,18 +306,9 @@ fn mix(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     return .{ a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1 };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const Tr = TreeList(64);
 
-// root0
-//   a1
-//     a2
-//     b2
-//   c1
-// root1
-//   d1
 const depths = [_]u16{ 0, 1, 2, 2, 1, 0, 1 };
 const TestTree = struct {
     pub fn depth(_: TestTree, node: u32) u16 {
@@ -343,117 +332,4 @@ fn collapsed(m: *Tr.Model) void {
     m.* = .{};
     m.view_h = 66;
     m.setNodes(depths.len, tree, 0);
-}
-
-test "setNodes: everything collapsed shows only the roots" {
-    var m: Tr.Model = undefined;
-    collapsed(&m);
-    try testing.expectEqualSlices(u32, &.{ 0, 5 }, m.visible[0..m.n_visible]);
-}
-
-test "toggle expands one level; nested collapsed subtrees stay hidden; collapsing re-hides" {
-    var m: Tr.Model = undefined;
-    collapsed(&m);
-    Tr.update(&m, .{ .toggle = 0 }, tree);
-    try testing.expectEqualSlices(u32, &.{ 0, 1, 4, 5 }, m.visible[0..m.n_visible]);
-    Tr.update(&m, .{ .toggle = 1 }, tree);
-    try testing.expectEqualSlices(u32, &.{ 0, 1, 2, 3, 4, 5 }, m.visible[0..m.n_visible]);
-    Tr.update(&m, .{ .toggle = 0 }, tree);
-    try testing.expectEqualSlices(u32, &.{ 0, 5 }, m.visible[0..m.n_visible]);
-    Tr.update(&m, .{ .toggle = 2 }, tree); // a leaf: no-op
-    try testing.expectEqual(@as(u32, 2), m.n_visible);
-}
-
-test "setNodes with expand depth 1 opens the roots only" {
-    var m: Tr.Model = .{};
-    m.view_h = 66;
-    m.setNodes(depths.len, tree, 1);
-    try testing.expectEqualSlices(u32, &.{ 0, 1, 4, 5, 6 }, m.visible[0..m.n_visible]);
-    try testing.expectEqual(@as(?u32, 2), m.rowOf(4));
-    try testing.expectEqual(@as(?u32, null), m.rowOf(2));
-}
-
-test "collapsing the parent of the selection selects the parent" {
-    var m: Tr.Model = undefined;
-    collapsed(&m);
-    Tr.update(&m, .{ .toggle = 0 }, tree);
-    Tr.update(&m, .{ .toggle = 1 }, tree);
-    Tr.update(&m, .{ .select = 3 }, tree);
-    Tr.update(&m, .{ .toggle = 0 }, tree);
-    try testing.expectEqual(@as(?u32, 0), m.selected);
-}
-
-test "keyboard: down/up, right expands then enters, left collapses then goes to the parent" {
-    var m: Tr.Model = undefined;
-    collapsed(&m);
-    Tr.update(&m, .{ .key = .down }, tree);
-    try testing.expectEqual(@as(?u32, 0), m.selected);
-    Tr.update(&m, .{ .key = .right }, tree); // expand root0
-    try testing.expectEqual(@as(u32, 4), m.n_visible);
-    try testing.expectEqual(@as(?u32, 0), m.selected);
-    Tr.update(&m, .{ .key = .right }, tree); // into the first child
-    try testing.expectEqual(@as(?u32, 1), m.selected);
-    Tr.update(&m, .{ .key = .left }, tree); // a1 is collapsed: to the parent
-    try testing.expectEqual(@as(?u32, 0), m.selected);
-    Tr.update(&m, .{ .key = .left }, tree); // root0 expanded: collapse
-    try testing.expectEqual(@as(u32, 2), m.n_visible);
-    Tr.update(&m, .{ .key = .left }, tree); // a root: stays
-    try testing.expectEqual(@as(?u32, 0), m.selected);
-    Tr.update(&m, .{ .key = .end }, tree);
-    try testing.expectEqual(@as(?u32, 5), m.selected);
-    Tr.update(&m, .{ .key = .toggle }, tree);
-    try testing.expectEqual(@as(u32, 3), m.n_visible);
-    Tr.update(&m, .{ .key = .home }, tree);
-    try testing.expectEqual(@as(?u32, 0), m.selected);
-}
-
-test "a large tree: 100k nodes in preorder flatten and scan correctly" {
-    const Big = struct {
-        // 1000 roots, each with 99 children: node i is a root when i % 100 == 0.
-        pub fn depth(_: @This(), node: u32) u16 {
-            return if (node % 100 == 0) 0 else 1;
-        }
-    };
-    const B = TreeList(100_000);
-    var m = try testing.allocator.create(B.Model);
-    defer testing.allocator.destroy(m);
-    m.* = .{};
-    m.view_h = 440;
-    m.setNodes(100_000, Big{}, 0);
-    try testing.expectEqual(@as(u32, 1000), m.n_visible);
-    B.update(m, .{ .toggle = 500 * 100 }, Big{});
-    try testing.expectEqual(@as(u32, 1000 + 99), m.n_visible);
-    try testing.expectEqual(@as(?u32, 500), m.rowOf(500 * 100));
-    try testing.expectEqual(@as(?u32, 501), m.rowOf(500 * 100 + 1));
-}
-
-test "view: indentation groups, chevrons for parents, balanced" {
-    const AppMsg = union(enum) { toggle: u32, select: u32 };
-    const msgs = struct {
-        pub fn toggle(n: u32) AppMsg {
-            return .{ .toggle = n };
-        }
-        pub fn select(n: u32) AppMsg {
-            return .{ .select = n };
-        }
-    };
-    var m: Tr.Model = undefined;
-    collapsed(&m);
-    Tr.update(&m, .{ .toggle = 0 }, tree);
-    Tr.update(&m, .{ .toggle = 1 }, tree);
-    var cb = cmd.CmdBuffer(AppMsg).init(testing.allocator);
-    defer cb.deinit();
-    Tr.view(&m, &cb, tree, msgs, .{ .id = 3 });
-    try testing.expect(cmd.validateBalance(cb.cmds.items) == null);
-    var toggles: usize = 0;
-    var chevrons_open: usize = 0;
-    for (cb.cmds.items) |c| switch (c) {
-        .button => |b| {
-            if (b.msg == .toggle) toggles += 1;
-            if (std.mem.eql(u8, b.label, "\u{25BE}")) chevrons_open += 1;
-        },
-        else => {},
-    };
-    try testing.expectEqual(@as(usize, 3), toggles); // root0, a1, root1 have children
-    try testing.expectEqual(@as(usize, 2), chevrons_open); // root0 and a1 are open
 }

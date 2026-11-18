@@ -89,19 +89,11 @@ const Sampled = struct {
     }
 };
 
-// ── Image cache (app-driven, growable, no eviction) ───────────────────────────────
-//
-// Unlike the glyph cache, the app explicitly creates image textures via
-// `uploadImage` and frees them with `releaseImage`. The returned handle
-// is a slot index (+1 so 0 is the sentinel).
-
 const ImageCache = GrowSlotTable(Sampled, IMAGE_MAX_SLOTS);
 
 const SHADER_CODE = @import("teak-shaders").quad_wgsl;
 const SHADER_GLYPH = @import("teak-shaders").glyph_wgsl;
 const SHADER_IMAGE = @import("teak-shaders").image_wgsl;
-
-// ── Gpu ────────────────────────────────────────────────────────────
 
 /// Mirror of `platform/win32.zig`'s MAX_SECONDARY_WINDOWS. We keep them
 /// in lock-step so the same id space covers both layers; the GPU side
@@ -161,7 +153,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         width: u32,
         height: u32,
 
-        // ── Text pass (instanced glyph quads from the atlas) ───────
         glyph_pipeline: c.WGPURenderPipeline,
         glyph_bgl: c.WGPUBindGroupLayout,
         /// {logical size, scale, text gamma}; see shaders/glyph.wgsl.
@@ -179,7 +170,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// Device pixels per logical pixel (`InitOptions.scale`).
         scale: f32,
 
-        // ── Image pass (shares text_bgl + sampler) ─────────────────
         image_pipeline: c.WGPURenderPipeline,
         images: ImageCache,
         image_draws: std.ArrayList(QuadDraw),
@@ -187,12 +177,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         image_vert_buf: c.WGPUBuffer,
         image_vert_buf_size: u64,
 
-        // ── 3D scenes ──────────────────────────────────────────────
-        //
-        // `scene` renders into offscreen targets; the main pass draws each
-        // target as an image-pipeline quad (`scene_draws`). Composite bind
-        // groups are cached per slot and rebuilt when the slot's target
-        // is recreated (`scene_bg_gen` != target.generation).
         scene: wgpu_scene.Renderer,
         scene_bind_groups: [scene_common.max_scenes]c.WGPUBindGroup,
         scene_bg_gen: [scene_common.max_scenes]u32,
@@ -207,25 +191,10 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// presents to, read back by `readFrame`. null for windowed Gpus.
         offscreen: c.WGPUTexture,
 
-        // ── Overlay layering ───────────────────────────────────────
-        //
-        // `setOverlayStart` records where the overlay layer begins in each
-        // input list; the upload loops translate that into staged-record
-        // indices (`*_ov`) so the main pass can draw base content first and
-        // overlay content after it. null = no split (draw by kind).
         overlay_split: ?OverlaySplit,
         image_ov: usize,
         scene_ov: usize,
 
-        // ── Secondary surfaces ─────────────────────────────────────
-        //
-        // The primary `surface` field above stays untouched — single-window
-        // apps see no behavior change. Each entry below is an opaque wgpu
-        // surface configured against an additional native window provided
-        // by the Host layer; the device, queue, pipelines, and caches are
-        // all shared. `renderToWindow(id)` picks the right surface;
-        // `uniform_buf` is rewritten per call so the shader sees that
-        // window's size.
         secondary_surfaces: [MAX_SECONDARY_SURFACES]SurfaceSlot,
 
         /// `handle` duck-types as the surface provider's `Handle` (an
@@ -281,7 +250,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const tex = self.offscreen orelse return error.NotOffscreen;
             const ctx: wgpu_c.DeviceContext = .{ .adapter = self.adapter, .device = self.device, .queue = self.queue };
             const px = try wgpu_c.readTexture(allocator, ctx, tex, @max(self.width, 1), @max(self.height, 1), 4);
-            // The target is BGRA8; PNG and most consumers want RGBA.
             var i: usize = 0;
             while (i + 3 < px.len) : (i += 4) std.mem.swap(u8, &px[i], &px[i + 2]);
             return px;
@@ -301,17 +269,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         ) !Self {
             const device = ctx.device;
 
-            // Surface format is hardcoded to BGRA8Unorm — universal on D3D12
-            // (Windows) and on essentially every desktop Vulkan swapchain
-            // (Linux/X11). If a Vulkan driver ever rejects it (blank/garbled
-            // window), query the surface's supported set with
-            // wgpuSurfaceGetCapabilities and pick from caps.formats here
-            // (the glyph/image textures stay BGRA8Unorm regardless — they're
-            // sampled independently of the swapchain format).
             const surf_format = c.WGPUTextureFormat_BGRA8Unorm;
             const samples: u32 = if (options.msaa) scene_common.msaa_samples else 1;
 
-            // Every UI pipeline shares one vertex layout: pos, color, uv.
             const vert_attrs = [_]c.WGPUVertexAttribute{
                 .{ .format = c.WGPUVertexFormat_Float32x2, .offset = 0, .shaderLocation = 0 },
                 .{ .format = c.WGPUVertexFormat_Float32x4, .offset = 8, .shaderLocation = 1 },
@@ -324,12 +284,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .attributes = &vert_attrs,
             }};
 
-            // Solid pipeline: one uniform buffer (screen size).
             const shader = try wgpu_c.createShader(device, "quad-shader", SHADER_CODE);
             defer c.wgpuShaderModuleRelease(shader);
 
-            // binding 0: screen size; binding 1: the solid vertex buffer again,
-            // read-only, so SDF quads can fetch their records (render/sdf.zig).
             var bgl_entries = [_]c.WGPUBindGroupLayoutEntry{ std.mem.zeroes(c.WGPUBindGroupLayoutEntry), std.mem.zeroes(c.WGPUBindGroupLayoutEntry) };
             bgl_entries[0].binding = 0;
             bgl_entries[0].visibility = c.WGPUShaderStage_Vertex;
@@ -361,12 +318,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .samples = samples,
             }) orelse return error.PipelineCreateFailed;
 
-            // Uniform buffer (8 bytes: vec2f screen_size).
             const uniform_buf = wgpu_c.createBuffer(device, "uniform-buf", c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst, 8) orelse return error.UniformBufFailed;
 
-            // Text + image pipelines: BGL with uniform + texture + sampler.
-            // Same vertex layout / blend state as the solid pipeline; only
-            // the fragment shader differs.
             var text_bgl_entries = [_]c.WGPUBindGroupLayoutEntry{
                 std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
                 std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
@@ -396,7 +349,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const text_pipeline_layout = c.wgpuDeviceCreatePipelineLayout(device, &text_pl_desc) orelse return error.TextPipelineLayoutFailed;
             defer c.wgpuPipelineLayoutRelease(text_pipeline_layout);
 
-            // Image shader: texture * tint, no alpha-from-texture trick.
             const image_shader = try wgpu_c.createShader(device, "image-shader", SHADER_IMAGE);
             defer c.wgpuShaderModuleRelease(image_shader);
             const image_pipeline = wgpu_c.createPipeline(device, .{
@@ -413,11 +365,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             sampler_desc.addressModeU = c.WGPUAddressMode_ClampToEdge;
             sampler_desc.addressModeV = c.WGPUAddressMode_ClampToEdge;
             sampler_desc.addressModeW = c.WGPUAddressMode_ClampToEdge;
-            // Nearest on magnification avoids bilinear re-blurring of the
-            // grayscale-AA the rasterizer already baked into the atlas.
-            // Linear on minification handles the case where a text rect is
-            // smaller than its backing texture (rare — `uploadText` sizes
-            // the text quad to match the rasterization extent).
             sampler_desc.magFilter = c.WGPUFilterMode_Nearest;
             sampler_desc.minFilter = c.WGPUFilterMode_Linear;
             sampler_desc.mipmapFilter = c.WGPUMipmapFilterMode_Nearest;
@@ -432,14 +379,12 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             const scene = try wgpu_scene.Renderer.init(device, ctx.queue, surf_format, options.scene_msaa);
 
-            // OS-specific glyph rasterizer (stb_truetype).
             const raster = try Rasterizer.init(std.heap.page_allocator);
 
             const scale: f32 = if (options.scale > 0) options.scale else 1;
             var text = try text_stage.TextStage(Rasterizer).init(std.heap.page_allocator, raster, options.max_atlas_pages, scale);
             errdefer text.deinit();
 
-            // Glyph pipeline: {uniform, R8 atlas page}; instance-stepped quads.
             var glyph_bgl_entries = [_]c.WGPUBindGroupLayoutEntry{
                 std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
                 std.mem.zeroes(c.WGPUBindGroupLayoutEntry),
@@ -469,7 +414,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             defer c.wgpuPipelineLayoutRelease(glyph_pl);
             const glyph_shader = try wgpu_c.createShader(device, "glyph-shader", SHADER_GLYPH);
             defer c.wgpuShaderModuleRelease(glyph_shader);
-            // Raw words, unpacked in glyph.wgsl (shared with the web backend).
             const inst_attrs = [_]c.WGPUVertexAttribute{
                 .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(glyph_atlas.GlyphInstance, "x"), .shaderLocation = 0 },
                 .{ .format = c.WGPUVertexFormat_Uint32x2, .offset = @offsetOf(glyph_atlas.GlyphInstance, "w"), .shaderLocation = 1 },
@@ -514,8 +458,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .msaa_view = null,
                 .msaa_w = 0,
                 .msaa_h = 0,
-                // `gpu.resize(width, height)` below populates these for real;
-                // zero-init here keeps the field set strictly post-init.
                 .width = 0,
                 .height = 0,
                 .text_bgl = text_bgl,
@@ -561,8 +503,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            // Bind groups hold refs to views, which hold refs to textures:
-            // release in that order. Vertex buffers last.
             for (self.scene_bind_groups) |bg| if (bg) |g| c.wgpuBindGroupRelease(g);
             if (self.scene_vert_buf) |b| c.wgpuBufferRelease(b);
             self.scene.deinit();
@@ -608,9 +548,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             c.wgpuAdapterRelease(self.adapter);
             if (self.surface != null) c.wgpuSurfaceRelease(self.surface);
 
-            // Release any still-active secondary surfaces. Apps that pair
-            // `openSecondarySurface` with `closeSecondaryWindow` will have
-            // already done so; this is the safety net for early-exit paths.
             for (&self.secondary_surfaces) |*slot| {
                 if (slot.active and slot.surface != null) {
                     c.wgpuSurfaceRelease(slot.surface);
@@ -716,11 +653,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
         pub fn uploadVertices(self: *Self, verts: []const Vertex) void {
             self.vert_count = @intCast(verts.len);
-            // Also bound read-only in the fragment stage: SDF quads read their records from it.
             self.writeVertsAs("vertex-buf", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_Storage, &self.vert_buf, &self.vert_buf_size, verts);
         }
-
-        // ── Main pass ──────────────────────────────────────────────
 
         fn releaseMsaa(self: *Self) void {
             if (self.msaa_view) |v| c.wgpuTextureViewRelease(v);
@@ -775,7 +709,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// upload* + renderToWindow once per window per frame).
         pub fn renderToWindow(self: *Self, window_id: u32, clear_color: ClearColor) void {
             if (self.surface == null and window_id == 0) {
-                // Headless: the primary "window" is the offscreen target.
                 if (self.offscreen) |t| self.renderToTexture(t, self.width, self.height, clear_color);
                 return;
             }
@@ -787,12 +720,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 break :blk .{ slot.width, slot.height, slot.surface };
             };
 
-            // The shared uniform buffer holds the target window's pixel
-            // size; the vertex shader divides clip-space against it. Must
-            // be rewritten for EVERY renderToWindow call (primary included)
-            // — otherwise rendering a secondary leaves its dims in the
-            // uniform, scaling the next primary frame to the secondary's
-            // viewport. Single 8-byte queue write per frame per window.
             self.writeScreenSize(target_w, target_h);
 
             var surface_texture: c.WGPUSurfaceTexture = undefined;
@@ -800,8 +727,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             if (surface_texture.status != c.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal and
                 surface_texture.status != c.WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal)
             {
-                // Say so (a few times): a surface that never yields a texture
-                // otherwise looks like a blank window.
                 const Seen = struct {
                     var n: u32 = 0;
                 };
@@ -812,10 +737,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 return;
             }
 
-            // The frame texture is returned with ownership. Holding it past
-            // the present keeps a swap-chain buffer referenced, which makes
-            // the next `wgpuSurfaceConfigure` (a window resize) fail on DX12
-            // with "Invalid surface".
             defer c.wgpuTextureRelease(surface_texture.texture);
             const texture_view = c.wgpuTextureCreateView(surface_texture.texture, null);
             defer c.wgpuTextureViewRelease(texture_view);
@@ -851,8 +772,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .a = clear_color[3],
             };
             color_attachment.depthSlice = 0xFFFFFFFF;
-            // MSAA: draw into the multisampled target, resolve into the
-            // swap-chain texture, and discard the samples.
             if (self.samples > 1) {
                 if (self.msaaViewFor(target_w, target_h)) |msaa| {
                     color_attachment.view = msaa;
@@ -868,11 +787,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             const pass = c.wgpuCommandEncoderBeginRenderPass(encoder, &rp_desc);
 
-            // Base layer first, then the overlay: within a layer, solids,
-            // images, scene composites (same pipeline: a scene is an image
-            // the GPU rendered this frame), then text on top. Drawing the
-            // overlay's solids after the base's TEXT is what lets an opaque
-            // popup hide the text beneath it.
             const solid = overlay.Range.of(self.splitOf("verts", self.vert_count), self.vert_count);
             const imgs = overlay.Range.of(self.image_ov, self.image_draws.items.len);
             const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
@@ -970,7 +884,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             const surface = Surface.createSurface(self.instance, handle) catch return null;
 
-            // Configure the surface with the same format the primary uses.
             const dw = self.devicePx(w);
             const dh = self.devicePx(h);
             self.configureSurface(surface, dw, dh);
@@ -1012,8 +925,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             slot.height = self.devicePx(h);
             self.configureSurface(slot.surface, slot.width, slot.height);
         }
-
-        // ── Text: shaped glyphs -> atlas -> instanced quads ────────
 
         /// Per-frame text staging (call after `uploadVertices`, before
         /// `renderFrame`). `text_stage` shapes every `TextDraw`, packs glyphs the
@@ -1121,7 +1032,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const total = self.text.finish();
             if (total == 0) return;
             const bytes: u64 = @as(u64, total) * @sizeOf(glyph_atlas.GlyphInstance);
-            // Grow geometrically so a scrolling frame does not reallocate every frame.
             const want = if (self.glyph_buf != null and bytes > self.glyph_buf_size) bytes + bytes / 2 else bytes;
             wgpu_c.ensureBuffer(self.device, "glyph-instances", c.WGPUBufferUsage_Vertex | c.WGPUBufferUsage_CopyDst, &self.glyph_buf, &self.glyph_buf_size, want);
             for (0..2) |layer| {
@@ -1158,8 +1068,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 }
             }
         }
-
-        // ── Sampled textures (text glyph runs, images) ─────────────
 
         /// Bind group for sampling `view` through the text/image pipelines:
         /// {screen-size uniform, texture, sampler}.
@@ -1289,8 +1197,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             self.writeVerts("image-vert-buf", &self.image_vert_buf, &self.image_vert_buf_size, self.image_verts.items);
         }
 
-        // ── 3D scenes ──────────────────────────────────────────────
-
         /// Upload mesh geometry; the returned handle goes into
         /// `SceneDraw.mesh`. `MESH_HANDLE_NONE` on invalid data or a full
         /// table. See `wgpu_scene.Renderer.uploadMesh`.
@@ -1317,8 +1223,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             enc_desc.label = wgpuStr("scene-encoder");
             const encoder = c.wgpuDeviceCreateCommandEncoder(self.device, &enc_desc);
 
-            // Scene targets are rendered at device resolution (logical size
-            // times the HiDPI scale) and composited 1:1.
             const scale = self.scale;
             for (draws[0..@min(draws.len, scene_common.max_scenes)], 0..) |draw, i| {
                 mark.visit(i, self.scene_draw_count);

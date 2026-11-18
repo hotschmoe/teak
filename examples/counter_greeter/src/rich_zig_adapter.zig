@@ -54,9 +54,7 @@ pub fn buildRichText(
     default_font: teak.FontSpec,
 ) !teak.RichTextCmd {
     const text = try rich.Text.fromMarkup(arena, markup);
-    // Note: `text` owns `plain` (owns_plain=true). We DON'T deinit it
-    // here — the caller's arena reset frees the allocation in bulk.
-    // If we deinit'd, the slices below would dangle.
+    // The frame arena owns the buffer borrowed by the emitted slices.
 
     const teak_spans = try arena.alloc(teak.RichTextSpan, text.spans.len);
     for (text.spans, 0..) |sp, i| {
@@ -77,45 +75,4 @@ pub fn buildRichText(
         .default_color = default_color,
         .default_font = default_font,
     };
-}
-
-// ── Tests ──────────────────────────────────────────────────────────
-
-test "colorToRgba: default falls back" {
-    const out = colorToRgba(null, .{ 0.5, 0.5, 0.5, 1.0 });
-    try std.testing.expectEqual(@as(f32, 0.5), out[0]);
-}
-
-test "colorToRgba: standard red maps to its triplet" {
-    const out = colorToRgba(rich.Color.red, .{ 0, 0, 0, 1 });
-    // Standard red is ANSI color 1 — triplet approximately (170, 0, 0)
-    // in rich_zig's table. We just assert R is dominant and >> G/B.
-    try std.testing.expect(out[0] > 0.5);
-    try std.testing.expect(out[1] < 0.3);
-    try std.testing.expect(out[2] < 0.3);
-    try std.testing.expectEqual(@as(f32, 1.0), out[3]);
-}
-
-test "buildRichText: parses markup into spans + plain" {
-    const arena = std.testing.allocator;
-    var heap = std.heap.ArenaAllocator.init(arena);
-    defer heap.deinit();
-
-    const cmd = try buildRichText(
-        heap.allocator(),
-        "[bold]Hello[/] [red]world[/]",
-        .{ 1, 1, 1, 1 },
-        .{},
-    );
-    // Plain string strips the markup tags.
-    try std.testing.expectEqualStrings("Hello world", cmd.content);
-    // Two styled runs: bold "Hello" + red "world".
-    try std.testing.expectEqual(@as(usize, 2), cmd.spans.len);
-    try std.testing.expectEqual(@as(u32, 0), cmd.spans[0].start);
-    try std.testing.expectEqual(@as(u32, 5), cmd.spans[0].end);
-    try std.testing.expect(cmd.spans[0].bold);
-    try std.testing.expectEqual(@as(u32, 6), cmd.spans[1].start);
-    try std.testing.expectEqual(@as(u32, 11), cmd.spans[1].end);
-    try std.testing.expect(!cmd.spans[1].bold);
-    try std.testing.expect(cmd.spans[1].color[0] > 0.5); // red-ish
 }

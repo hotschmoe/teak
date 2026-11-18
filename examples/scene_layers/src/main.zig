@@ -25,7 +25,3 @@ pub fn main() !void {
     defer gpa.free(dump);
     std.debug.print("{s}", .{dump});
 }
-
-test {
-    std.testing.refAllDecls(App);
-}

@@ -5,9 +5,7 @@
 keyboard navigation (`RunOptions.keyboard_nav`) is described first; the traversal
 primitives follow.
 **Source**: `src/input/focus.zig`
-**Tests**: colocated — forward/backward wrap, empty buffer, single-focusable
-self-wrap, `indexOfFocusMsg` mapping + conditional-drop stability,
-`focusMsgAt` round-trip, Tab-skips-disabled.
+**Checks**: the background gate exercises focus through the browser todo application.
 
 ## Keyboard navigation (run loop)
 
@@ -134,8 +132,7 @@ landing leaf's `focusMsgAt`.
 ## Per-item focus in a `ComponentList` (consumer issue #1)
 
 **Source**: `src/core/component_list.zig`
-**Tests**: colocated — helper round-trip + Tab order, and focus survival
-across remove-before, insert-before, and swap.
+**Checks**: the background gate exercises browser focus through the todo app.
 
 A `ComponentList(Child, cap)` manages a dynamic homogeneous list. Its
 child Msgs route by a **stable per-item key**, not the item's current

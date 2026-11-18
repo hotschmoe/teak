@@ -12,12 +12,6 @@ pub fn wgpuStr(s: []const u8) c.WGPUStringView {
     return .{ .data = s.ptr, .length = s.len };
 }
 
-// ── Device bring-up ────────────────────────────────────────────────
-//
-// wgpu-native completes these requests inside `wgpuInstanceProcessEvents`,
-// so a spin loop is enough on native; each callback only stores the result
-// through `userdata1` (or logs why there is none).
-
 fn adapterCallback(
     status: c.WGPURequestAdapterStatus,
     adapter: c.WGPUAdapter,
@@ -109,8 +103,6 @@ pub fn requestDevice(instance: c.WGPUInstance, surface: ?c.WGPUSurface) error{ A
     adapter_opts.compatibleSurface = surface orelse null;
     adapter_opts.powerPreference = c.WGPUPowerPreference_HighPerformance;
     adapter_opts.featureLevel = c.WGPUFeatureLevel_Core;
-    // `TEAK_GPU_FALLBACK=1` asks for a software adapter (DX12 WARP, lavapipe,
-    // SwiftShader): CI runners and containers without a GPU.
     if (std.c.getenv("TEAK_GPU_FALLBACK")) |v| {
         if (std.mem.span(v).len > 0 and v[0] != '0') adapter_opts.forceFallbackAdapter = 1;
     }
@@ -126,8 +118,6 @@ pub fn requestDevice(instance: c.WGPUInstance, surface: ?c.WGPUSurface) error{ A
         c.wgpuInstanceProcessEvents(instance);
     }
 
-    // Ask for what the adapter can do rather than wgpu's defaults, which
-    // software adapters (SwiftShader) cannot all satisfy.
     var limits = std.mem.zeroes(c.WGPULimits);
     _ = c.wgpuAdapterGetLimits(adapter, &limits);
     var device: c.WGPUDevice = null;
@@ -152,8 +142,6 @@ pub fn requestDevice(instance: c.WGPUInstance, surface: ?c.WGPUSurface) error{ A
 
     return .{ .adapter = adapter, .device = device, .queue = c.wgpuDeviceGetQueue(device) };
 }
-
-// ── Resource helpers ───────────────────────────────────────────────
 
 pub fn createShader(device: c.WGPUDevice, label: []const u8, wgsl: []const u8) error{ShaderCreateFailed}!c.WGPUShaderModule {
     var src = std.mem.zeroes(c.WGPUShaderSourceWGSL);
@@ -290,8 +278,6 @@ pub fn depthState(format: c.WGPUTextureFormat, write: bool, compare: c.WGPUCompa
     d.depthCompare = compare;
     return d;
 }
-
-// ── Readback (tests, screenshots) ──────────────────────────────────
 
 fn mapCallback(
     status: c.WGPUMapAsyncStatus,

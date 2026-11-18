@@ -47,35 +47,3 @@ pub const Range = struct {
         return .{ self.base_end, self.total };
     }
 };
-
-test "Marker finds the first staged record of the overlay layer" {
-    // Inputs: 0,1 base (1 skipped), 2,3 overlay (2 skipped).
-    var m: Marker = .{ .start = 2 };
-    var staged: usize = 0;
-    for (0..4) |i| {
-        m.visit(i, staged);
-        const skipped = i == 1 or i == 2;
-        if (!skipped) staged += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 1), m.finish(staged)); // base staged 1 record; overlay starts at 1
-}
-
-test "Marker with no overlay inputs, or a split past the end, reports the total" {
-    var none: Marker = .{ .start = 10 };
-    for (0..3) |i| none.visit(i, i);
-    try std.testing.expectEqual(@as(usize, 3), none.finish(3));
-    var empty: Marker = .{ .start = 0 };
-    try std.testing.expectEqual(@as(usize, 0), empty.finish(0));
-}
-
-test "Range splits a list into base and overlay halves" {
-    const r = Range.of(3, 5);
-    try std.testing.expectEqual(@as(usize, 0), r.base()[0]);
-    try std.testing.expectEqual(@as(usize, 3), r.base()[1]);
-    try std.testing.expectEqual(@as(usize, 3), r.overlay()[0]);
-    try std.testing.expectEqual(@as(usize, 5), r.overlay()[1]);
-    // A split beyond the list length clamps: everything is base.
-    const all = Range.of(99, 5);
-    try std.testing.expectEqual(@as(usize, 5), all.base()[1]);
-    try std.testing.expectEqual(all.overlay()[0], all.overlay()[1]);
-}

@@ -191,9 +191,6 @@ pub const Renderer = struct {
             .{ .format = .float32x3, .offset = @offsetOf(MeshVertex, "normal"), .shader_location = 1 },
             .{ .format = .float32x4, .offset = @offsetOf(MeshVertex, "color"), .shader_location = 2 },
         };
-        // Per-item instance stream (`scene_pass.Packed`): per-instance for
-        // triangles, stride 0 for lines so every segment of one item reads
-        // the same record.
         const inst_attrs = [_]zgpu.VertexAttribute{
             .{ .format = .float32x4, .offset = 0, .shader_location = 4 },
             .{ .format = .float32x4, .offset = 16, .shader_location = 5 },
@@ -205,7 +202,6 @@ pub const Renderer = struct {
             zgpu.VertexBufferLayout.fromSlice(@sizeOf(MeshVertex), .vertex, &mesh_attrs),
             zgpu.VertexBufferLayout.fromSlice(@sizeOf(scene_pass.Packed), .instance, &inst_attrs),
         };
-        // One instance = one segment = a pair of LineVertex.
         const line_attrs = [_]zgpu.VertexAttribute{
             .{ .format = .float32x3, .offset = @offsetOf(LineVertex, "pos"), .shader_location = 0 },
             .{ .format = .float32x4, .offset = @offsetOf(LineVertex, "color"), .shader_location = 1 },
@@ -224,7 +220,6 @@ pub const Renderer = struct {
         });
         const ident_buf = makeBuffer(zgpu.BufferUsage.VERTEX, std.mem.asBytes(&scene_pass.pack(.{ .mesh = 1 })));
 
-        // A cap vertex is a position and a colour: the `LineVertex` layout.
         const cap_attrs = [_]zgpu.VertexAttribute{
             .{ .format = .float32x3, .offset = @offsetOf(LineVertex, "pos"), .shader_location = 0 },
             .{ .format = .float32x4, .offset = @offsetOf(LineVertex, "color"), .shader_location = 1 },
@@ -235,7 +230,6 @@ pub const Renderer = struct {
         const invert_face: zgpu.StencilFace = .{ .pass_op = .invert };
         const cap_face: zgpu.StencilFace = .{ .compare = .not_equal, .depth_fail_op = .zero, .pass_op = .zero };
 
-        // Plane layers and sprites.
         const layer_inst_attrs = [_]zgpu.VertexAttribute{
             .{ .format = .float32x4, .offset = 0, .shader_location = 4 },
             .{ .format = .float32x4, .offset = 16, .shader_location = 5 },
@@ -402,8 +396,6 @@ pub const Renderer = struct {
         zgpu.release(self.mesh_pipeline);
         zgpu.release(self.bgl);
     }
-
-    // ── Meshes ─────────────────────────────────────────────────────
 
     /// Copy `data` into GPU buffers. Returns `MESH_HANDLE_NONE` when the
     /// data is invalid or the table is full.
@@ -626,8 +618,6 @@ pub const Renderer = struct {
         return buf;
     }
 
-    // ── Targets ────────────────────────────────────────────────────
-
     pub fn target(self: *const Renderer, index: usize) ?*const Target {
         return if (self.targets[index]) |*t| t else null;
     }
@@ -722,7 +712,6 @@ pub const Renderer = struct {
             const inst_buf = ensureInstBuf(t, inst_bytes);
             zgpu.bufferWrite(inst_buf, 0, std.mem.sliceAsBytes(self.plan.insts.items));
             zgpu.renderPassSetBindGroup(pass, 0, t.bind_group);
-            // Triangles: one instanced draw per run of items sharing a mesh.
             zgpu.renderPassSetPipeline(pass, self.mesh_pipeline);
             for (self.plan.runs.items) |run| {
                 const m = self.meshes.get(run.mesh) orelse continue;
@@ -732,7 +721,6 @@ pub const Renderer = struct {
                 zgpu.renderPassSetIndexBuffer(pass, m.index_buf.?, .uint32, 0, m.index_bytes);
                 zgpu.renderPassDrawIndexed(pass, m.index_bytes / @sizeOf(u32), run.count, 0, 0, run.first);
             }
-            // Section caps: per item, stencil parity then the cap quad (which clears it).
             for (self.cap_quads.items) |cd| {
                 const m = self.meshOfInstance(cd.inst) orelse continue;
                 zgpu.renderPassSetPipeline(pass, self.stencil_pipeline);
@@ -745,7 +733,6 @@ pub const Renderer = struct {
                 zgpu.renderPassSetVertexBuffer(pass, 0, t.cap_buf.?, cd.first_vertex * @sizeOf(LineVertex), 6 * @sizeOf(LineVertex));
                 zgpu.renderPassDraw(pass, 6, 1, 0, 0);
             }
-            // Feature edges: one draw per item (its transform is bound at stride 0).
             zgpu.renderPassSetPipeline(pass, self.line_pipeline);
             for (self.plan.runs.items) |run| {
                 const m = self.meshes.get(run.mesh) orelse continue;
@@ -761,7 +748,6 @@ pub const Renderer = struct {
 
         self.drawLayers(pass, t, images);
 
-        // Cut outline: exact plane x mesh segments with their own line width.
         if (cut_geo.outline_verts > 0) {
             zgpu.renderPassSetPipeline(pass, self.line_pipeline);
             zgpu.renderPassSetBindGroup(pass, 0, t.outline_bg);
@@ -770,7 +756,6 @@ pub const Renderer = struct {
             zgpu.renderPassDraw(pass, 6, cut_geo.outline_verts / 2, 0, 0);
         }
 
-        // Grid: depth-tested against everything drawn above, blended over it.
         if (draw.grid) |grid| if (scene_pass.gridUniform(draw, grid, size.w, size.h, scale)) |gu| {
             zgpu.bufferWriteTyped(scene_pass.GridUniform, t.grid_buf, 0, &.{gu});
             zgpu.renderPassSetPipeline(pass, self.grid_pipeline);
@@ -778,7 +763,6 @@ pub const Renderer = struct {
             zgpu.renderPassDraw(pass, 3, 1, 0, 0);
         };
 
-        // Gizmo: axis triad in a corner sub-viewport, always on top.
         if (draw.gizmo) |gz| {
             const r = scene_pass.gizmoRect(gz, size.w, size.h, scale);
             const lines = scene_pass.gizmoLines(draw.camera.view_proj, gz);

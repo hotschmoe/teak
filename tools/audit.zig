@@ -12,7 +12,6 @@ const gen_api = @import("gen_api.zig");
 const Io = std.Io;
 const Dir = Io.Dir;
 
-// ── Rules ──────────────────────────────────────────────────────────
 
 const FRAMEWORK_CORE_DIRS = [_][]const u8{
     "src/core",
@@ -113,17 +112,12 @@ const VIEW_SIG_RULE = Rule{
     .forbid_any = &.{},
 };
 
-// llms.txt sync: every `pub const NAME` re-export in src/teak.zig must be
-// mentioned somewhere in the hand-curated llms.txt, so the one-read context
-// pack can't silently fall behind the public API.
 const LLMS_TXT_RULE = Rule{
     .name = "llms.txt lists every src/teak.zig re-export",
     .reason = "llms.txt is hand-curated + audit-enforced — a new/renamed pub const must be documented there.",
     .forbid_any = &.{},
 };
 
-// Doc-drift rules (HARDLINE §5, "docs match the code"): each is a named
-// check with a list of (source, needle-extractor, doc) triples.
 const DOC_DRIFT_RULE = Rule{
     .name = "docs name every escape hatch, App hook, Host/Gpu surface and example",
     .reason = "llms.txt hatch list, docs/features/{run,host,gpu}.md and README must not fall behind the code (HARDLINE §5).",
@@ -133,8 +127,6 @@ const DOC_DRIFT_RULE = Rule{
 const TEAK_ROOT_FILE = "src/teak.zig";
 const LLMS_TXT_FILE = "llms.txt";
 
-// Generated API reference: docs/api.md and llms-full.txt must equal what
-// tools/gen_api.zig produces from the current sources + llms.txt.
 const API_RULE_NAME = "docs/api.md and llms-full.txt are up to date (tools/gen_api.zig)";
 
 fn auditApiReference(gpa: std.mem.Allocator, io: Io) usize {
@@ -190,7 +182,6 @@ fn auditMigrationLinks(gpa: std.mem.Allocator, io: Io) usize {
     return bad;
 }
 
-// ── Main ───────────────────────────────────────────────────────────
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -231,7 +222,6 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Manual review still required: validator coverage + feature-doc completeness.\n", .{});
 }
 
-// ── Rule engine ────────────────────────────────────────────────────
 
 const Hit = struct {
     path: []const u8,
@@ -281,7 +271,6 @@ fn reportRule(rule: Rule, hits: []const Hit) usize {
     return hits.len;
 }
 
-// ── File walking + scanning ────────────────────────────────────────
 
 fn scanDir(
     gpa: std.mem.Allocator,
@@ -354,13 +343,6 @@ fn stripLineComment(line: []const u8) []const u8 {
     return line;
 }
 
-// ── Dedicated: module-scope var statics ────────────────────────────
-//
-// A `var` declaration at column 0 (or after `pub ` at column 0) is
-// module-scope. Function-local vars are indented. Test blocks use
-// `test "..." { var ... }` which is also indented. So a simple
-// column-zero check catches the real violations without false
-// positives.
 
 fn auditModuleVars(gpa: std.mem.Allocator, io: Io, dirs: []const []const u8) ![]Hit {
     var hits: std.ArrayList(Hit) = .empty;
@@ -455,7 +437,6 @@ fn scanFileForModuleVars(
     }
 }
 
-// ── Dedicated: view() signatures ───────────────────────────────────
 
 fn auditViewSignatures(gpa: std.mem.Allocator, io: Io, dirs: []const []const u8) ![]Hit {
     var hits: std.ArrayList(Hit) = .empty;
@@ -547,13 +528,6 @@ fn scanFileForViewSig(
     }
 }
 
-// ── Dedicated: llms.txt ↔ src/teak.zig re-export sync ──────────────
-//
-// Extract every column-zero `pub const NAME` from src/teak.zig (the file
-// that defines what "public" means) and flag any NAME that is absent from
-// llms.txt. Substring match is deliberately lenient: the goal is to catch a
-// brand-new export that was never documented, not to police phrasing. A
-// missing llms.txt is itself a single violation.
 
 fn isIdentChar(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
@@ -630,7 +604,6 @@ fn auditDocDrift(gpa: std.mem.Allocator, io: Io) ![]Hit {
     }
     const cwd = Dir.cwd();
 
-    // 1. Escape hatches: llms.txt's §2 list must carry every hatch HARDLINE defines.
     if (try readOpt(gpa, io, "docs/HARDLINE.md")) |hardline| {
         defer gpa.free(hardline);
         var n_hatches: usize = 0;
@@ -656,7 +629,6 @@ fn auditDocDrift(gpa: std.mem.Allocator, io: Io) ![]Hit {
         }
     }
 
-    // 2. Examples: every examples/<dir> is listed in README.md.
     if (try readOpt(gpa, io, "README.md")) |readme| {
         defer gpa.free(readme);
         if (cwd.openDir(io, "examples", .{ .iterate = true })) |dir_const| {
@@ -676,8 +648,6 @@ fn auditDocDrift(gpa: std.mem.Allocator, io: Io) ![]Hit {
         } else |_| {}
     }
 
-    // 2b. Orientation docs: every non-test src/**/*.zig is in CLAUDE.md's and
-    // AGENTS.md's module tree (regenerate with tools/gen_tree.py).
     {
         const claude = try readOpt(gpa, io, "CLAUDE.md");
         defer if (claude) |b| gpa.free(b);
@@ -707,7 +677,6 @@ fn auditDocDrift(gpa: std.mem.Allocator, io: Io) ![]Hit {
         } else |_| {}
     }
 
-    // 3. Optional surfaces the run loop probes: documented where readers look.
     const run_src = (try readOpt(gpa, io, "src/run.zig")) orelse return hits.toOwnedSlice(gpa);
     defer gpa.free(run_src);
 
@@ -756,7 +725,6 @@ fn auditLlmsTxt(gpa: std.mem.Allocator, io: Io) ![]Hit {
 
     const cwd = Dir.cwd();
 
-    // A missing llms.txt is a single, loud violation.
     const llms = cwd.readFileAlloc(io, LLMS_TXT_FILE, gpa, .unlimited) catch |err| switch (err) {
         error.FileNotFound => {
             try hits.append(gpa, .{

@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `Effect`, `EffectResult`, `HttpRequest`, `HttpResult`, `HttpMethod`, `Header`, `Drop`, `DropKind`, `EffectSubmit` (the rest of the data types under `teak.effects`).
 **Source**: `src/core/effects.zig` (contract types + issued-id table), `src/run.zig` (servicing), `src/platform/host.zig` (the optional Host pair).
-**Tests**: `src/core/effects.zig` (table + helpers), `src/run_effects_test.zig` (whole loop against the scripted Host), `src/platform/wasm.zig` / `src/platform/native_effects.zig` (host-side pure parts).
+**Checks**: the background gate runs the effects example.
 
 HARDLINE §2 escape hatch 7 — the sibling of [subscriptions](subscriptions.md).
 
@@ -178,10 +178,7 @@ runtime, request payloads live in `Model`; every answer is a `Msg` through
 - 32 distinct ids in flight at once.
 - A Host that rejects an effect kind (`unsupported`) is not retried.
 
-## Test coverage
+## Checks
 
-`src/run_effects_test.zig` drives the whole loop with the scripted Host:
-HTTP round trip, issued once while listed, forgotten and re-issuable after
-delisting, cancellation drops late results, list/result ordering,
-fire-and-forget, `busy` retry, `unsupported` failed results, table
-overflow, unsolicited drops and pastes (an `effectMsg`-only app).
+The background gate builds and runs the effects example. Individual effect
+behaviors are not currently exercised by an automated end-to-end scenario.

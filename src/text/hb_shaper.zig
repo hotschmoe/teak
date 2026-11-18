@@ -34,8 +34,6 @@ const ShapeResult = teak.ShapeResult;
 const FontSpec = teak.FontSpec;
 const Font = face_mod.Font;
 
-// ── HarfBuzz C API (the few entry points we use) ──────────────────────
-
 const hb = struct {
     const Blob = opaque {};
     const Face = opaque {};
@@ -66,8 +64,6 @@ const hb = struct {
     extern fn hb_buffer_get_glyph_infos(b: *Buffer, length: ?*c_uint) [*]GlyphInfo;
     extern fn hb_buffer_get_glyph_positions(b: *Buffer, length: ?*c_uint) [*]GlyphPosition;
 };
-
-// ── Per-face hb objects ───────────────────────────────────────────────
 
 const max_faces = face_mod.fallback_face_id + 1;
 
@@ -116,8 +112,6 @@ pub fn deinit() void {
     buffer = null;
 }
 
-// ── Script classification ─────────────────────────────────────────────
-
 /// True when `cp` belongs to a script that needs more than cmap + kerning.
 fn isComplex(cp: u21) bool {
     return (cp >= 0x0590 and cp <= 0x109F) or // Hebrew .. Myanmar (Arabic, Syriac, Indic, Thai, Lao, Tibetan)
@@ -131,7 +125,6 @@ fn isComplex(cp: u21) bool {
 pub fn needsShaping(text: []const u8) bool {
     var i: usize = 0;
     while (i < text.len) {
-        // ASCII and 2-byte Latin / Greek / Cyrillic (< U+0590) cannot be complex.
         if (text[i] < 0xD6) {
             i += 1;
             continue;
@@ -163,8 +156,6 @@ fn coveringFace(primary_id: u16, cp: u21) ?u16 {
     }
     return null;
 }
-
-// ── Runs ──────────────────────────────────────────────────────────────
 
 const Run = struct { start: usize, len: usize, face_id: u16, rtl: bool = false };
 const max_runs = 48;
@@ -209,8 +200,6 @@ fn shapeRun(text: []const u8, run: *Run, font: FontSpec, sc: *Scratch) bool {
     hb.hb_buffer_clear_contents(buf);
     hb.hb_buffer_add_utf8(buf, text.ptr, @intCast(text.len), @intCast(run.start), @intCast(run.len));
     hb.hb_buffer_guess_segment_properties(buf);
-    // A run the bidi layer marked right-to-left is shaped RTL whatever its script
-    // guess says (neutrals, digits-free punctuation); glyphs come out in visual order.
     if (font.rtl) hb.hb_buffer_set_direction(buf, hb.DIRECTION_RTL);
     run.rtl = hb.hb_buffer_get_direction(buf) == hb.DIRECTION_RTL;
     hb.hb_shape(slot.font, buf, null, 0);
@@ -220,7 +209,6 @@ fn shapeRun(text: []const u8, run: *Run, font: FontSpec, sc: *Scratch) bool {
     const poss = hb.hb_buffer_get_glyph_positions(buf, null);
     if (n > scratch_cap) return false;
     const scale = f.scaleForEm(font.size_px);
-    // Joining scripts keep their letters connected: no tracking.
     const spacing: f32 = if (run.rtl) 0 else font.letter_spacing;
     var x: f32 = 0;
     for (0..n) |i| {
@@ -264,13 +252,11 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     var consumed: usize = 0;
     var i: usize = 0;
     while (i < nruns) {
-        // Direction is only known after hb sees the run: probe it, then group.
         var first = runs[i];
         if (!shapeRun(text, &first, font, &scratch)) break;
         runs[i] = first;
         var j = i + 1;
         if (first.rtl) {
-            // Gather the following RTL runs; they are emitted last-to-first.
             while (j < nruns) : (j += 1) {
                 var r = runs[j];
                 if (!shapeRun(text, &r, font, &scratch)) break;
@@ -278,7 +264,6 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
                 runs[j] = r;
             }
         }
-        // Emit runs j-1 .. i (reverse) for RTL groups, else just run i.
         var k = j;
         while (k > i) {
             k -= 1;
@@ -286,8 +271,6 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
             if (!shapeRun(text, &r, font, &scratch)) return finishPartial(count, x, consumed);
             if (count + scratch.count > out.len) {
                 if (count == 0 and scratch.count > 0) {
-                    // One run alone overflows `out`: cut it in half at a code
-                    // point boundary and let the caller continue from there.
                     return shapeCut(text, r, font, out);
                 }
                 return finishPartial(count, x, consumed);
@@ -300,7 +283,6 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
             }
             x += scratch.width;
         }
-        // Whole group emitted: consumed advances past its last run.
         const last = runs[j - 1];
         consumed = last.start + last.len;
         i = j;
@@ -316,7 +298,6 @@ fn finishPartial(count: usize, x: f32, consumed: usize) ShapeResult {
 fn shapeCut(text: []const u8, run: Run, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     var len = @min(run.len / 2, out.len);
     while (len > 0) {
-        // Back to a code point boundary.
         while (len > 0 and (text[run.start + len] & 0xC0) == 0x80) len -= 1;
         if (len == 0) break;
         var r = Run{ .start = run.start, .len = len, .face_id = run.face_id };

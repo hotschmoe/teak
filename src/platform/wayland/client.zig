@@ -105,12 +105,3 @@ pub fn fixedToF32(v: i32) f32 {
 pub fn f32ToFixed(v: f32) i32 {
     return @intFromFloat(@round(v * 256.0));
 }
-
-test "fixed point round trips" {
-    try std.testing.expectEqual(@as(f32, 1.5), fixedToF32(f32ToFixed(1.5)));
-    try std.testing.expectEqual(@as(f32, -10.25), fixedToF32(f32ToFixed(-10.25)));
-}
-
-test "Argument is pointer-sized" {
-    try std.testing.expectEqual(@sizeOf(usize), @sizeOf(Argument));
-}

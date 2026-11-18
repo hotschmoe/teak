@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `teak.svg` (`rasterize`, `rasterizeInto`, `Options`, `Error`)
 **Source**: `src/core/svg.zig` (pure, std only, no platform code)
-**Tests**: colocated `test` blocks; `examples/vector_canvas` (toolbar icons)
+**Checks**: the background gate runs `examples/vector_canvas` (toolbar icons).
 
 `teak.svg` rasterizes a practical SVG subset on the CPU into RGBA8 pixels.
 The pixels go to the GPU as an **image resource** (HARDLINE §2 hatch 8) and

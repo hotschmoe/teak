@@ -25,10 +25,10 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0
+          version: 0.17.1
 
       - name: Test
-        run: zig build test --summary all
+        run: zig build test -j4 --summary all
 
       - name: Create GitHub release
         env:

@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `MeshData`, `MeshVertex`, `LineVertex`, `MeshHandle`, `MESH_HANDLE_NONE`, `Camera`, `SceneDraw`, `SceneCmd`, `SceneStyle`, `Resource`, `MeshResource`, `ImageResource`, `buildFrame`; the emitter is `CmdBuffer.scene3d`.
 **Source**: `src/core/scene.zig` (data), `src/core/cmd.zig` (`SceneCmd`), `src/render/build.zig` (`SceneDraw` emission), `src/core/resources.zig` + `src/resources.zig` (declarative resources), `shaders/scene.wgsl`, backends `src/gpu/wgpu_scene.zig` + `src/gpu/web_scene.zig`, shared `src/gpu/scene_common.zig`.
-**Tests**: `zig build test` (data, layout, hit-test, snapshot, a11y, render, resource table, run loop with a recording Gpu, `scene_common`); `zig build test-gpu` (real rendering + pixel readback on a Vulkan device); the `examples/scene3d` app on web and native.
+**Checks**: the background gate runs the scene3d example and a real headless GPU application.
 
 Worked example: `examples/scene3d` (stud-wall mesh with edges + grid, orbiting camera driven by a `Sub` tick, a vector canvas of alpha-feathered triangles over a batched hatch, mesh declared through `resources()`; native via `teak.run` with MSAA on, web via a hand loop using `teak.ResourceTable` / `teak.stageDraws`).
 
@@ -85,4 +85,4 @@ The loop uploads on a new `key`, re-uploads when `rev` changes, releases vanishe
 - Composites draw with the images: within a layer above the solid quads and below the text; an opaque overlay hides base-layer scenes (overlay layering, see [gpu.md](gpu.md)).
 - No transparency, no textures, no PBR, no picking against geometry (pick in app code from the camera + your own data), no per-object transforms, no shadows, no stencil.
 - Release meshes between frames on web (a mesh destroyed while an unpresented recorded frame uses it invalidates the submit); `teak.run` releases during resource sync, before the frame is recorded.
-- wgpu-native cannot open Chromium's SwiftShader ICD; `zig build test-gpu` needs a real Vulkan driver (it skips otherwise).
+- Native headless rendering needs a working Vulkan implementation.

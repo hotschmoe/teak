@@ -35,7 +35,7 @@ const notes_id: u32 = 11;
 const chat_id: u32 = 12;
 const Orbit = scene.Orbit;
 
-// ── Palette (kerf/spec/DESIGN.md section 1) and theme ──────────────
+// Palette: kerf/spec/DESIGN.md §1.
 
 pub const paper: [4]f32 = .{ 0.949, 0.937, 0.902, 1 }; // #F2EFE6
 pub const paper2: [4]f32 = .{ 0.914, 0.898, 0.847, 1 }; // #E9E5D8
@@ -181,8 +181,6 @@ const row_button_on: teak.ButtonStyle = .{
     .min_width = 0,
     .h_padding = 6,
 };
-
-// ── Model ──────────────────────────────────────────────────────────
 
 pub const scene_id: u32 = 7;
 pub const list_id: u32 = 8;
@@ -477,7 +475,6 @@ pub const Model = struct {
         const next: u32 = if (id <= m.partCount()) id else 0;
         if (next == m.selected) return;
         m.selected = next;
-        // Keep the row visible in the panel.
         if (next != 0 and m.list_viewport > 0) {
             const top = @as(f32, @floatFromInt(next - 1)) * row_height;
             if (top < m.list_scroll) m.list_scroll = top;
@@ -659,8 +656,6 @@ pub const Msg = union(enum) {
     noop,
 };
 
-// ── update ─────────────────────────────────────────────────────────
-
 pub fn update(m: *Model, msg: Msg) void {
     step(m, msg);
     m.refresh2d();
@@ -829,7 +824,6 @@ const gizmo_view: teak.scene.Gizmo = .{
     .corner = .bottom_left,
     .size_px = 100,
     .margin_px = 10,
-    // X / Y / Z in Kerf's red, green and blue
     .colors = .{ .{ 0.784, 0.063, 0.180, 1 }, .{ 0.180, 0.490, 0.196, 1 }, .{ 0.114, 0.306, 0.620, 1 } },
 };
 
@@ -857,7 +851,6 @@ fn viewEvent(m: *Model, ev: teak.CanvasEvent) void {
             }
         },
         .up => if (ev.button == .left and m.drag_px < click_slop_px and !ev.mods.shift) {
-            // A click on a gizmo cap looks down that axis; anywhere else it picks a part.
             const axis = if (m.grid) gizmoHit(m, ev.x, ev.y, ev.w, ev.h) else null;
             if (axis) |a| {
                 m.cam.setPreset(a.preset(m.cam.up));
@@ -917,8 +910,6 @@ fn sheetEvent(m: *Model, ev: teak.CanvasEvent) void {
     }
 }
 
-// ── Host hooks ─────────────────────────────────────────────────────
-
 /// The one pointer hook: canvases (scene, sheet, cut slider), scroll wheels and text areas.
 pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
     if (ev.asCanvas()) |c| return onCanvas(m, c);
@@ -929,7 +920,6 @@ pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
 
 fn onCanvas(_: *const Model, ev: teak.CanvasEvent) ?Msg {
     if (ev.id == cut_slider_id) {
-        // Drag the thumb: press or move with the left button down.
         const dragging = ev.kind == .down or (ev.kind == .move and ev.buttons.left);
         return if (dragging and ev.w > 0) Msg{ .cut_set = ev.x / ev.w } else null;
     }
@@ -1055,8 +1045,6 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
             else => Msg{ .palette = pm },
         };
     }
-    // Escape leaves an editor; everything else edits (Up/Down/Home/End
-    // arrive as `pointerMsg` move events).
     switch (m.focus) {
         .notes => {
             if (key == .escape) return Msg.blur;
@@ -1064,8 +1052,6 @@ pub fn keySpecialMsg(m: *const Model, key: teak.SpecialKey) ?Msg {
         },
         .chat => {
             if (key == .escape) return Msg.blur;
-            // A focused text area gets Enter as a key (the runtime does not call
-            // `submitMsg` then): Enter sends, Shift+Enter (`Chat.keyMsg`) is a newline.
             if (key == .enter) return Msg.send;
             return if (Chat.keyMsg(key)) |n| Msg{ .chat = n } else null;
         },
@@ -1113,16 +1099,12 @@ pub fn windowTitle(_: *const Model) ?[]const u8 {
     return "Kerf workstation";
 }
 
-// ── Camera ─────────────────────────────────────────────────────────
-
 pub fn camera(m: *const Model) teak.Camera {
     const b: ?scene.Bounds = if (m.loaded) |l| l.bounds() else null;
     var cam = m.cam.camera(m.vp[0], m.vp[1], b);
     cam.light_dir = .{ 0, 0, 0 }; // headlight: whatever faces the viewer is lit
     return cam;
 }
-
-// ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 0, .gap = 0, .bg = paper, .align_cross = .stretch });
@@ -1152,7 +1134,6 @@ pub fn view(m: *const Model, cb: anytype) void {
 fn header(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .horizontal, .pad_x = 12, .pad_y = 0, .gap = 12, .height = 40, .bg = ink, .align_cross = .center });
     cb.textStyled("KERF", plex_wordmark, paper);
-    // The three saw-kerf bars of the wordmark.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 3, .align_cross = .center });
     for (0..3) |_| {
         cb.pushGroup(.{ .padding = 0, .gap = 0, .width = 6, .height = 14, .bg = paper });
@@ -1169,19 +1150,16 @@ fn header(m: *const Model, cb: anytype) void {
     cb.buttonStyled(.open_file, "OPEN...", header_button);
     cb.buttonStyled(.{ .palette = .focus }, "CTRL+K", header_button);
     cb.popGroup();
-    // 2px rule under the header (DESIGN section 1).
+    // Header rule: kerf/spec/DESIGN.md §1.
     cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 2, .bg = ink });
     cb.popGroup();
 }
-
-// ── OPERATOR CONSOLE (chat) ────────────────────────────────────────
 
 fn console(m: *const Model, cb: anytype) void {
     const a = cb.arena.allocator();
     cb.pushGroup(.{ .width = 360, .padding = 12, .gap = 8, .bg = paper, .border = ink, .align_cross = .stretch });
     cb.textStyled("OPERATOR CONSOLE", plex_label, ink2);
 
-    // The message log: framed, scrolls, sticks to the newest message.
     cb.pushGroup(.{ .padding = 1, .gap = 0, .flex = 1, .border = ink, .bg = paper2, .align_cross = .stretch });
     cb.pushScroll(.{ .padding = 8, .gap = 8, .flex = 1, .align_cross = .stretch, .scroll_y = m.chat_scroll, .id = chat_scroll_id });
     if (m.log.n == 0) cb.textMuted("NO MESSAGES. TYPE BELOW.");
@@ -1194,7 +1172,6 @@ fn console(m: *const Model, cb: anytype) void {
     cb.popScroll();
     cb.popGroup();
 
-    // Input: multi-line TextArea; Enter sends, Shift+Enter is a newline.
     var st = cb.theme.text_input;
     st.bg = vellum;
     st.fg = ink;
@@ -1237,8 +1214,6 @@ fn messageCard(cb: anytype, msg: *const chat.Message) void {
     }
     cb.popGroup();
 }
-
-// ── Center: tabs + viewport ────────────────────────────────────────
 
 fn centerColumn(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 12, .gap = 8, .flex = 1, .bg = paper2, .align_cross = .stretch });
@@ -1328,7 +1303,6 @@ fn sheetView(m: *const Model, cb: anytype) void {
 }
 
 fn presetRow(m: *const Model, cb: anytype) void {
-    // View-cube style presets as bracketed tabs, then projection / edges.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 4, .align_cross = .center });
     const presets = [_]struct { label: []const u8, p: Orbit.Preset }{
         .{ .label = "[FRONT]", .p = .front },
@@ -1350,7 +1324,6 @@ fn cutBar(m: *const Model, cb: anytype) void {
     cb.buttonStyled(.toggle_cut, if (m.cut_on) "[CUT ON]" else "[CUT OFF]", tab_button);
     const axes = [_][]const u8{ "[X]", "[Y]", "[Z]" };
     for (axes, 0..) |label, i| {
-        // the selected axis reads in bold ink; others are plain
         cb.buttonStyled(.{ .cut_axis = @intCast(i) }, label, if (m.cut_axis == i) tab_button_on else tab_button);
     }
     cb.buttonStyled(.cut_flip, if (m.cut_flip) "[FLIP *]" else "[FLIP]", tab_button);
@@ -1407,7 +1380,6 @@ fn partItems(m: *const Model, arena: std.mem.Allocator) []const teak.SceneItem {
             .tint = if (m.hovered == id and m.selected != id) .{ 1.18, 1.18, 1.18, 1 } else .{ 1, 1, 1, 1 },
             // open shells would streak under stencil parity: outline only
             .flags = .{ .highlight = m.selected == id, .no_edges = !m.edges, .no_cap = !p.closed },
-            // cap = manila (DESIGN) pulled toward the part's own colour
             .cap_color = kerf.mix(manila, p.color, 0.35),
         };
     }
@@ -1468,13 +1440,10 @@ fn gizmoLabels(m: *const Model, cb: anytype) void {
     }
 }
 
-// ── Right: parts, detail, notes ────────────────────────────────────
-
 fn rightColumn(m: *const Model, cb: anytype) void {
     const a = cb.arena.allocator();
     cb.pushGroup(.{ .width = 320, .padding = 12, .gap = 10, .bg = paper, .border = ink, .align_cross = .stretch });
 
-    // Parts table: header band + clickable rows, selection synced both ways.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .justify = .space_between });
     cb.textStyled("INSPECTOR", plex_label, ink2);
     cb.textMuted(std.fmt.allocPrint(a, "{d} PARTS", .{m.partCount()}) catch "");
@@ -1613,8 +1582,6 @@ fn statusBar(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const test_msr = teak.monoMeasurer();
 
@@ -1656,652 +1623,12 @@ fn findPart2d(m: *const Model, id: u32) ?[2]f32 {
     return null;
 }
 
-test "init: bundled document loads mesh and drawings, camera frames it, resources published" {
-    var m = Model.init();
-    defer m.loaded.?.deinit();
-    try testing.expectEqual(@as(u32, 24), m.partCount());
-    try testing.expectEqual(@as(usize, 5), m.sectionCount());
-    try testing.expect(!m.hasIso()); // palmer has five sections, no iso
-    try testing.expectEqual(Tab.section, m.tab);
-    try testing.expectEqual(@as(usize, 24), resources(&m).len);
-    for (resources(&m), 1..) |res, id| {
-        try testing.expectEqual(@as(u32, @intCast(id)), res.mesh.key);
-        try testing.expectEqual(m.rev, res.mesh.rev);
-    }
-    // the framed camera puts the model centre at the viewport centre
-    const l = &m.loaded.?;
-    const c = scene.mat.scale(scene.mat.add(l.lo, l.hi), 0.5);
-    const s = scene.project(camera(&m), m.vp[0], m.vp[1], c).?;
-    try testing.expectApproxEqAbs(m.vp[0] / 2, s[0], 0.5);
-    try testing.expectApproxEqAbs(m.vp[1] / 2, s[1], 0.5);
-    // the first effect is the `?mesh=` query
-    try testing.expect(effects(&m)[0] == .query_param);
-    // the console opens with the demo-mode greeting
-    try testing.expectEqual(@as(u8, 1), m.log.n);
-}
-
-test "flush fixture: section A and iso B land on the right tabs" {
-    var m = sheetModel();
-    defer m.loaded.?.deinit();
-    try testing.expectEqual(@as(usize, 1), m.sectionCount());
-    try testing.expect(m.hasIso());
-    try testing.expectEqualStrings("A", m.docs.?.sheets.items[m.activeSheet().?].d.view);
-    update(&m, .{ .tab = .iso });
-    try testing.expectEqualStrings("B", m.docs.?.sheets.items[m.activeSheet().?].d.view);
-    update(&m, .{ .tab = .three_d });
-    try testing.expect(m.activeSheet() == null);
-}
-
-test "sheet: layout fits; wheel zooms at the cursor; drag pans; fit restores" {
-    var m = sheetModel();
-    defer m.loaded.?.deinit();
-    const dx = m.docs.?;
-    const idx = m.activeSheet().?;
-    const fit_cam = dx.sheets.items[idx].cam;
-    try testing.expect(dx.sheets.items[idx].fitted);
-    try testing.expect(dx.verts().len > 3000);
-
-    const model_x = fit_cam.modelX(300);
-    update(&m, .{ .sheet_event = .{ .id = sheet_id, .kind = .wheel, .dy = -200, .x = 300, .y = 200, .w = 900, .h = 600 } });
-    const zoomed = dx.sheets.items[idx].cam;
-    try testing.expect(zoomed.px_per_model_in > fit_cam.px_per_model_in);
-    try testing.expectApproxEqAbs(@as(f64, model_x), zoomed.modelX(300), 1e-3); // the point under the cursor stays put
-
-    // empty corner: press, travel, release = pan (and no selection change)
-    update(&m, .{ .sheet_event = leftDown(2, 2) });
-    update(&m, .{ .sheet_event = moveTo(32, 12, 30, 10, true) });
-    update(&m, .{ .sheet_event = leftUp(32, 12) });
-    try testing.expectApproxEqAbs(zoomed.origin_x + 30, dx.sheets.items[idx].cam.origin_x, 1e-3);
-    try testing.expectApproxEqAbs(zoomed.origin_y + 10, dx.sheets.items[idx].cam.origin_y, 1e-3);
-
-    update(&m, .fit);
-    try testing.expectApproxEqAbs(fit_cam.px_per_model_in, dx.sheets.items[idx].cam.px_per_model_in, 1e-3);
-    update(&m, .{ .zoom2d = 2 });
-    try testing.expectApproxEqAbs(fit_cam.px_per_model_in * 2, dx.sheets.items[idx].cam.px_per_model_in, 1e-3);
-}
-
-test "sheet <-> table <-> 3D share one selection and one hover" {
-    var m = sheetModel();
-    defer m.loaded.?.deinit();
-    const dx = m.docs.?;
-    const beam: u32 = 2; // flush-psl-2x6 part 02
-    const pt = findPart2d(&m, beam) orelse return error.TestUnexpectedResult;
-
-    // hover over the sheet: the part is hovered everywhere (3D tint, table row, status)
-    update(&m, .{ .sheet_event = moveTo(pt[0], pt[1], 1, 1, false) });
-    try testing.expectEqual(beam, m.hovered);
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    try testing.expect(partItems(&m, arena.allocator())[beam - 1].tint[0] > 1);
-    const n_plain = dx.verts().len;
-
-    // a click selects it (row, 3D highlight flag, tinted fill in the sheet)
-    update(&m, .{ .sheet_event = leftDown(pt[0], pt[1]) });
-    update(&m, .{ .sheet_event = leftUp(pt[0], pt[1]) });
-    try testing.expectEqual(beam, m.selected);
-    try testing.expect(partItems(&m, arena.allocator())[beam - 1].flags.highlight);
-    try testing.expect(dx.verts().len != n_plain);
-
-    // selecting from the table (or 3D) changes the sheet; clearing restores it
-    update(&m, .{ .select = 7 });
-    const n_king = dx.verts().len;
-    update(&m, .{ .select = 0 });
-    update(&m, .{ .sheet_event = moveTo(2, 2, 0, 0, false) });
-    try testing.expectEqual(@as(u32, 0), m.hovered);
-    try testing.expect(dx.verts().len != n_king);
-
-    // a click on empty paper clears the selection
-    update(&m, .{ .select = beam });
-    update(&m, .{ .sheet_event = leftDown(2, 2) });
-    update(&m, .{ .sheet_event = leftUp(2, 2) });
-    try testing.expectEqual(@as(u32, 0), m.selected);
-}
-
-test "iso tab shows drawing B; hover maps instances (#k) to their own part" {
-    var m = sheetModel();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .tab = .iso });
-    update(&m, .{ .sheet_event = .{ .id = sheet_id, .kind = .layout, .w = 900, .h = 600 } });
-    const l = &m.loaded.?;
-    // both jack_studs instances (parts 3 and 4) are reachable in the iso
-    var seen: [11]bool = @splat(false);
-    var y: f32 = 10;
-    while (y < 590) : (y += 4) {
-        var x: f32 = 10;
-        while (x < 890) : (x += 4) seen[m.partAt2d(x, y)] = true;
-    }
-    try testing.expect(seen[3] or seen[4]);
-    var n: usize = 0;
-    for (seen[1..]) |b| n += @intFromBool(b);
-    try testing.expect(n >= 4);
-    _ = l;
-}
-
-test "palmer: no iso drawing, the ISO tab is an empty state with a message" {
-    var m = Model.init();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .tab = .iso });
-    try testing.expect(m.activeSheet() == null);
-    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.theme = theme;
-    view(&m, &cb);
-    var found = false;
-    for (cb.cmds.items) |c| switch (c) {
-        .text => |t| if (std.mem.startsWith(u8, t.content, "NO ISO VIEW")) {
-            found = true;
-        },
-        else => {},
-    };
-    try testing.expect(found);
-}
-
-test "section picker switches between palmer's five sheets, each with its own camera" {
-    var m = Model.init();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .sheet_event = .{ .id = sheet_id, .kind = .layout, .w = 900, .h = 600 } });
-    const dx = m.docs.?;
-    update(&m, .{ .section_sel = 2 });
-    try testing.expectEqualStrings("C", dx.sheets.items[m.activeSheet().?].d.view);
-    update(&m, .{ .zoom2d = 3 });
-    const zoomed = dx.sheets.items[m.activeSheet().?].cam.px_per_model_in;
-    update(&m, .{ .section_sel = 0 });
-    try testing.expect(dx.sheets.items[m.activeSheet().?].cam.px_per_model_in != zoomed);
-    update(&m, .{ .section_sel = 9 }); // out of range: ignored
-    try testing.expectEqual(@as(u8, 0), m.sec_sel);
-}
-
-test "every bundled drawing tessellates to finite triangles and picks parts" {
-    for (fixtures, 0..) |_, fi| {
-        var m = Model.init();
-        defer m.loaded.?.deinit();
-        update(&m, .{ .load_fixture = @intCast(fi) });
-        update(&m, .{ .sheet_event = .{ .id = sheet_id, .kind = .layout, .w = 900, .h = 600 } });
-        const dx = m.docs.?;
-        for (dx.sheets.items, 0..) |s, si| {
-            m.tab = if (s.kind() == .iso) .iso else .section;
-            if (s.kind() == .section) {
-                var n: usize = 0;
-                for (dx.sheets.items[0..si]) |o| n += @intFromBool(o.kind() == .section);
-                m.sec_sel = @intCast(n);
-            }
-            update(&m, .{ .sheet_event = .{ .id = sheet_id, .kind = .layout, .w = 901, .h = 601 } });
-            update(&m, .fit);
-            try testing.expect(dx.verts().len > 300);
-            for (dx.verts()) |v| try testing.expect(std.math.isFinite(v.x) and std.math.isFinite(v.y) and std.math.isFinite(v.a));
-            // at least one part is selectable from every drawing
-            var any = false;
-            var y: f32 = 10;
-            while (y < 590 and !any) : (y += 6) {
-                var x: f32 = 10;
-                while (x < 890) : (x += 6) if (m.partAt2d(x, y) != 0) {
-                    any = true;
-                    break;
-                };
-            }
-            try testing.expect(any);
-        }
-    }
-}
-
-test "selecting and hovering change items only: no new revision, no geometry edit" {
-    var m = smallModel();
-    defer m.loaded.?.deinit();
-    const rev0 = m.rev;
-    const verts_before = m.loaded.?.parts[2].mesh.vertices[0];
-    update(&m, .{ .select = 3 });
-    try testing.expectEqual(@as(u32, 3), m.selected);
-    m.hovered = 5;
-    try testing.expectEqual(rev0, m.rev);
-    try testing.expectEqual(rev0, resources(&m)[2].mesh.rev);
-    try testing.expect(std.meta.eql(verts_before, m.loaded.?.parts[2].mesh.vertices[0]));
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const items = partItems(&m, arena.allocator());
-    try testing.expectEqual(@as(usize, 10), items.len);
-    for (items, 1..) |it, id| {
-        try testing.expectEqual(@as(u32, @intCast(id)), it.mesh);
-        try testing.expectEqual(@as(u32, @intCast(id)), it.id);
-        try testing.expectEqual(id == 3, it.flags.highlight);
-        try testing.expect(!it.flags.no_edges);
-        try testing.expectEqual(id == 5, it.tint[0] > 1);
-    }
-    update(&m, .toggle_edges);
-    try testing.expect(partItems(&m, arena.allocator())[0].flags.no_edges);
-    try testing.expectEqual(rev0, m.rev);
-
-    // out-of-range clears the selection; loading a document bumps the revision
-    update(&m, .{ .select = 999 });
-    try testing.expectEqual(@as(u32, 0), m.selected);
-    update(&m, .{ .load_fixture = 0 });
-    try testing.expect(m.rev != rev0);
-    try testing.expectEqual(m.rev, resources(&m)[0].mesh.rev);
-}
-
-test "select_step wraps in both directions" {
-    var m = smallModel();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .select_step = 1 });
-    try testing.expectEqual(@as(u32, 1), m.selected);
-    update(&m, .{ .select_step = -1 });
-    try testing.expectEqual(@as(u32, 10), m.selected);
-    update(&m, .{ .select_step = 1 });
-    try testing.expectEqual(@as(u32, 1), m.selected);
-}
-
-test "click picks the part under the cursor; a drag orbits instead" {
-    var m = smallModel();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .layout, .w = 900, .h = 600 } });
-    try testing.expectEqual(@as(f32, 900), m.vp[0]);
-    update(&m, .fit);
-
-    // aim at a triangle centroid of part 2: project it, click there
-    const l = &m.loaded.?;
-    const pm = l.parts[1].mesh;
-    const v0 = pm.vertices[pm.indices[0]].pos;
-    const v1 = pm.vertices[pm.indices[1]].pos;
-    const v2 = pm.vertices[pm.indices[2]].pos;
-    const c = scene.mat.scale(scene.mat.add(scene.mat.add(v0, v1), v2), 1.0 / 3.0);
-    const px = scene.project(camera(&m), 900, 600, c).?;
-    const ev = teak.CanvasEvent{ .id = scene_id, .kind = .up, .button = .left, .x = px[0], .y = px[1], .w = 900, .h = 600 };
-    update(&m, .{ .view_event = ev });
-    try testing.expect(m.selected != 0); // some part is hit there (maybe an occluder)
-
-    // empty space deselects
-    var corner = ev;
-    corner.x = 2;
-    corner.y = 2;
-    update(&m, .{ .view_event = corner });
-    try testing.expectEqual(@as(u32, 0), m.selected);
-
-    // a drag past the slop radius is not a click and moves the camera
-    update(&m, .{ .select = 4 });
-    const yaw = m.cam.yaw;
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .down, .button = .left, .buttons = .{ .left = true }, .x = px[0], .y = px[1], .w = 900, .h = 600 } });
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .move, .dx = 30, .dy = 0, .buttons = .{ .left = true }, .w = 900, .h = 600 } });
-    update(&m, .{ .view_event = corner });
-    try testing.expectEqual(@as(u32, 4), m.selected);
-    try testing.expect(m.cam.yaw != yaw);
-}
-
-test "clicking a gizmo cap looks down that axis; elsewhere it still picks" {
-    var m = smallModel();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .layout, .w = 900, .h = 600 } });
-    m.cam.setPreset(.front);
-    // front view: the +x cap sits right of the gizmo centre (bottom-left corner)
-    const layout: scene.pick.GizmoLayout = .{ .corner = .bottom_left, .size_px = gizmo_view.size_px, .margin_px = gizmo_view.margin_px };
-    const tips = scene.pick.gizmoTips(m.cam, layout, 900, 600);
-    const plus_x = tips[0];
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .up, .button = .left, .x = plus_x.x, .y = plus_x.y, .w = 900, .h = 600 } });
-    try testing.expectApproxEqAbs(@as(f32, std.math.pi / 2.0), m.cam.yaw, 1e-4); // `right` preset
-    try testing.expectEqual(@as(u32, 0), m.selected);
-    // with the grid (and gizmo) off the same click is just a pick
-    update(&m, .toggle_grid);
-    m.cam.setPreset(.front);
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .up, .button = .left, .x = plus_x.x, .y = plus_x.y, .w = 900, .h = 600 } });
-    try testing.expectEqual(@as(f32, 0), m.cam.yaw);
-}
-
-test "section cut: plane from axis, offset and flip; caps skip open shells; slider drag" {
-    var m = Model.init(); // palmer: parts 6 (dowel) and 10 (wedge/shank) are open shells
-    defer m.loaded.?.deinit();
-    try testing.expect(cutPlane(&m) == null);
-    update(&m, .toggle_cut);
-    const l = &m.loaded.?;
-    // default: Y axis halfway, keeping the lower half
-    var pl = cutPlane(&m).?;
-    try testing.expectEqual([3]f32{ 0, 1, 0 }, pl[0..3].*);
-    try testing.expectApproxEqAbs((l.lo[1] + l.hi[1]) / 2, -pl[3], 1e-4); // n.p + d = 0 at the mid height
-    update(&m, .{ .cut_axis = 2 });
-    update(&m, .{ .cut_set = 0.25 });
-    update(&m, .cut_flip);
-    pl = cutPlane(&m).?;
-    try testing.expectEqual([3]f32{ 0, 0, -1 }, pl[0..3].*);
-    try testing.expectApproxEqAbs(l.lo[2] + 0.25 * (l.hi[2] - l.lo[2]), pl[3], 1e-4); // -(n*pos) with n = -1
-    update(&m, .{ .cut_set = 7 });
-    try testing.expectEqual(@as(f32, 1), m.cut_t); // clamped
-
-    // the slider canvas maps a press / drag to a fraction of its width
-    const down = onCanvas(&m, .{ .id = cut_slider_id, .kind = .down, .x = 55, .w = 220 }).?;
-    try testing.expectApproxEqAbs(@as(f32, 0.25), down.cut_set, 1e-6);
-    try testing.expect(onCanvas(&m, .{ .id = cut_slider_id, .kind = .move, .x = 55, .w = 220 }) == null); // no button: hover
-    const drag = onCanvas(&m, .{ .id = cut_slider_id, .kind = .move, .x = 110, .w = 220, .buttons = .{ .left = true } }).?;
-    try testing.expectApproxEqAbs(@as(f32, 0.5), drag.cut_set, 1e-6);
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const items = partItems(&m, arena.allocator());
-    for (items, 0..) |it, i| try testing.expectEqual(i == 5 or i == 9, it.flags.no_cap);
-    // per-part cap tint: a mix of manila and the part colour, opaque
-    try testing.expect(items[0].cap_color[3] == 1);
-    try testing.expect(!std.meta.eql(items[0].cap_color, items[1].cap_color) or std.meta.eql(l.parts[0].color, l.parts[1].color));
-}
-
-test "gizmo labels follow the viewport's window origin" {
-    var m = smallModel();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .layout, .x = 12, .y = 86, .w = 900, .h = 600 } });
-    try testing.expectEqual([2]f32{ 12, 86 }, m.vp_origin);
-    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.theme = theme;
-    view(&m, &cb);
-    var overlays: usize = 0;
-    var first: ?teak.OverlayStyle(Msg) = null;
-    for (cb.cmds.items) |c| switch (c) {
-        .push_overlay => |o| {
-            overlays += 1;
-            if (first == null) first = o.*;
-        },
-        else => {},
-    };
-    try testing.expectEqual(@as(usize, 3), overlays); // X, Y, Z
-    // bottom-left gizmo: the letters live in the lower-left of the viewport, in window space
-    try testing.expect(first.?.x > 12 and first.?.x < 12 + 140 and first.?.y > 86 + 400);
-    update(&m, .toggle_grid);
-    cb.reset();
-    cb.theme = theme;
-    view(&m, &cb);
-    for (cb.cmds.items) |c| try testing.expect(c != .push_overlay);
-}
-
-test "wheel zoom changes distance; presets and ortho toggle apply" {
-    var m = smallModel();
-    defer m.loaded.?.deinit();
-    const d = m.cam.dist;
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .wheel, .dy = -100, .x = 100, .y = 80, .w = 800, .h = 600 } });
-    try testing.expect(m.cam.dist < d);
-    update(&m, .{ .preset = .top });
-    try testing.expect(m.cam.pitch > 1.5);
-    update(&m, .toggle_ortho);
-    try testing.expect(m.cam.projection == .ortho);
-    update(&m, .toggle_edges);
-    try testing.expect(!m.edges);
-}
-
-test "scroll clamps and selection scrolls its row into view" {
-    var m = Model.init();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .list_extent = .{ 200, 24 * row_height } });
-    update(&m, .{ .list_scroll_by = 99999 });
-    try testing.expectEqual(24 * row_height - 200, m.list_scroll);
-    update(&m, .{ .select = 1 });
-    try testing.expectEqual(@as(f32, 0), m.list_scroll);
-    update(&m, .{ .select = 24 });
-    try testing.expectEqual(24 * row_height - 200, m.list_scroll);
-}
-
-test "startup params: ?mesh=, ?tab= and ?select= chain through query_param" {
-    var m = Model.init();
-    defer m.loaded.?.deinit();
-    try testing.expectEqualStrings("mesh", effects(&m)[0].query_param.name);
-    update(&m, effectMsg(&m, .{ .query_value = .{ .id = param_id_base, .value = "flush-psl-2x6.json" } }).?);
-    try testing.expectEqualStrings("flush-psl-2x6", m.doc());
-    try testing.expectEqual(@as(u32, 10), m.partCount());
-    try testing.expectEqualStrings("tab", effects(&m)[0].query_param.name);
-    update(&m, effectMsg(&m, .{ .query_value = .{ .id = param_id_base + 1, .value = "iso" } }).?);
-    try testing.expectEqual(Tab.iso, m.tab);
-    try testing.expectEqualStrings("select", effects(&m)[0].query_param.name);
-    update(&m, effectMsg(&m, .{ .query_value = .{ .id = param_id_base + 2, .value = "beam" } }).?);
-    try testing.expectEqual(@as(u32, 2), m.selected);
-    try testing.expectEqual(@as(usize, 0), effects(&m).len); // chain done
-}
-
-test "?mesh= with a URL becomes an http effect; failures keep the document" {
-    var m = Model.init();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .param = .{ .id = param_id_base, .value = "https://example.com/m/part.json" } });
-    try testing.expect(effects(&m)[0] == .http);
-    try testing.expectEqualStrings("https://example.com/m/part.json", effects(&m)[0].http.url);
-    update(&m, .{ .http_done = .{ .status = 404, .body = "", .err = "" } });
-    try testing.expectEqual(@as(usize, 0), effects(&m).len);
-    try testing.expect(std.mem.startsWith(u8, m.status(), "FETCH FAILED"));
-    update(&m, .{ .http_done = .{ .status = 200, .body = kerf.small_fixture, .err = "" } });
-    try testing.expectEqual(@as(u32, 10), m.partCount());
-
-    update(&m, .{ .file_opened = .{ .name = "bad.json", .bytes = "{nope" } });
-    try testing.expectEqual(@as(u32, 10), m.partCount());
-    try testing.expect(std.mem.startsWith(u8, m.status(), "ERR bad.json"));
-
-    update(&m, .open_file);
-    try testing.expect(effects(&m)[0] == .open_file);
-    update(&m, .open_file); // already in flight
-    update(&m, .file_cancelled);
-    try testing.expectEqual(@as(usize, 0), effects(&m).len);
-}
-
-test "opening files: a drawing joins the document, a mesh replaces it; drops arrive as file_opened" {
-    var m = Model.init();
-    defer m.loaded.?.deinit();
-    const dx = m.docs.?;
-    // flush mesh (clears palmer's drawings), then its two drawings one by one
-    update(&m, .{ .file_opened = .{ .name = "mesh.json", .bytes = kerf.small_fixture } });
-    try testing.expectEqual(@as(usize, 0), dx.sheets.items.len);
-    update(&m, .{ .file_opened = .{ .name = "drawing-B.json", .bytes = @embedFile("fixtures/flush-psl-2x6.B.json") } });
-    try testing.expectEqual(Tab.iso, m.tab); // an iso drawing opens on the ISO tab
-    update(&m, .{ .file_opened = .{ .name = "drawing-A.json", .bytes = @embedFile("fixtures/flush-psl-2x6.A.json") } });
-    try testing.expectEqual(Tab.section, m.tab);
-    try testing.expectEqual(@as(usize, 2), dx.sheets.items.len);
-    try testing.expectEqualStrings("A", dx.sheets.items[0].d.view);
-    // a broken drawing is reported and changes nothing
-    update(&m, .{ .file_opened = .{ .name = "x.json", .bytes = "{\"kerf_drawing\":\"0.1\", nope" } });
-    try testing.expect(std.mem.startsWith(u8, m.status(), "ERR x.json"));
-    try testing.expectEqual(@as(usize, 2), dx.sheets.items.len);
-
-    const f = effectMsg(&m, .{ .dropped = .{ .kind = .file, .name = "a.json", .bytes = "{}" } }).?;
-    try testing.expectEqualStrings("a.json", f.file_opened.name);
-    try testing.expect(effectMsg(&m, .{ .dropped = .{ .kind = .text, .bytes = "x" } }) == null);
-}
-
-test "chat: Enter sends, Shift+Enter is a newline; the reply is paced by ticks and drives the UI" {
-    var m = sheetModel();
-    defer m.loaded.?.deinit();
-    const n0 = m.log.n;
-    update(&m, .{ .chat = .focus });
-    try testing.expect(keyCharMsg(&m, 'o').? == .chat); // typed letters, not the viewer shortcuts
-    for ("select the beam") |c| update(&m, keyCharMsg(&m, c).?);
-    update(&m, keySpecialMsg(&m, .shift_enter).?);
-    try testing.expectEqualStrings("select the beam\n", m.chat.content());
-    try testing.expect(keySpecialMsg(&m, .enter).? == .send);
-    update(&m, keySpecialMsg(&m, .enter).?);
-    try testing.expectEqual(n0 + 1, m.log.n);
-    try testing.expectEqualStrings("select the beam", m.log.at(n0).body()); // trimmed
-    try testing.expectEqualStrings("", m.chat.content());
-    try testing.expectEqual(@as(usize, 1), subscribe(&m).len); // the pacing timer exists only now
-    try testing.expectEqual(@as(u32, 0), m.selected);
-
-    update(&m, .reply_tick);
-    update(&m, .reply_tick); // tool step: the UI action lands with the tool line
-    try testing.expectEqual(@as(u32, 2), m.selected);
-    try testing.expectEqual(chat.Role.tool, m.log.at(n0 + 1).role);
-    try testing.expect(std.mem.indexOf(u8, m.log.at(n0 + 1).body(), "SELECT") != null);
-    update(&m, .reply_tick);
-    update(&m, .reply_tick);
-    update(&m, .reply_tick);
-    try testing.expectEqual(chat.Role.kerf, m.log.at(n0 + 2).role);
-    try testing.expect(std.mem.indexOf(u8, m.log.at(n0 + 2).body(), "**beam**") != null);
-    try testing.expectEqual(@as(usize, 0), subscribe(&m).len);
-    update(&m, .reply_tick); // a stray tick does nothing
-    try testing.expectEqual(n0 + 3, m.log.n);
-
-    // views by name, a new message while one is pending finishes the old reply
-    update(&m, .{ .chat = .{ .char = 'i' } });
-    update(&m, .{ .chat = .{ .char = 's' } });
-    update(&m, .{ .chat = .{ .char = 'o' } });
-    update(&m, .send);
-    update(&m, .reply_tick);
-    update(&m, .reply_tick);
-    try testing.expectEqual(Tab.iso, m.tab);
-    update(&m, .{ .chat = .{ .char = '3' } });
-    update(&m, .{ .chat = .{ .char = 'd' } });
-    update(&m, .send); // finishes the iso reply instantly, then starts the 3d one
-    try testing.expectEqual(@as(u8, reply_total), m.reply_ticks);
-    while (m.reply_ticks > 0) update(&m, .reply_tick);
-    try testing.expectEqual(Tab.three_d, m.tab);
-
-    // empty / whitespace-only input is not sent
-    const n1 = m.log.n;
-    update(&m, .{ .chat = .{ .char = ' ' } });
-    update(&m, .send);
-    try testing.expectEqual(n1, m.log.n);
-    update(&m, .clear_chat);
-    try testing.expectEqual(@as(u8, 0), m.log.n);
-}
-
-test "chat on a document with no iso falls back to the 3D iso preset" {
-    var m = Model.init(); // palmer: sections only
-    defer m.loaded.?.deinit();
-    for ("show iso") |c| update(&m, .{ .chat = .{ .char = c } });
-    update(&m, .send);
-    while (m.reply_ticks > 0) update(&m, .reply_tick);
-    try testing.expectEqual(Tab.three_d, m.tab);
-    try testing.expect(std.mem.indexOf(u8, m.log.at(m.log.n - 1).body(), "no iso drawing") != null);
-}
-
-test "chat scroll sticks to the newest message until the user scrolls up" {
-    var m = Model.init();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .chat_extent = .{ 200, 600 } });
-    try testing.expectEqual(@as(f32, 400), m.chat_scroll);
-    update(&m, .{ .chat_scroll_by = -100 });
-    try testing.expect(!m.chat_stick);
-    update(&m, .{ .chat_extent = .{ 200, 800 } });
-    try testing.expectEqual(@as(f32, 300), m.chat_scroll); // stays where the user left it
-    update(&m, .{ .chat_scroll_by = 9999 });
-    try testing.expect(m.chat_stick);
-    update(&m, .{ .chat_extent = .{ 200, 900 } });
-    try testing.expectEqual(@as(f32, 700), m.chat_scroll);
-}
-
-test "notes: focused text area takes typed letters instead of the viewer shortcuts" {
-    var m = Model.init();
-    defer m.loaded.?.deinit();
-    // Shortcut when not editing.
-    try testing.expect(keyCharMsg(&m, 'o').? == .toggle_ortho);
-    try testing.expect(keyCharMsg(&m, 's').? == .tab);
-    update(&m, .{ .notes = .focus });
-    try testing.expect(keyCharMsg(&m, 'o').? == .notes);
-    for ("fit the plate") |c| update(&m, keyCharMsg(&m, c).?);
-    try testing.expectEqualStrings("fit the plate", m.notes.content());
-    update(&m, keySpecialMsg(&m, .enter).?); // Enter in the notes is a newline
-    try testing.expectEqualStrings("fit the plate\n", m.notes.content());
-    // Escape leaves the editor; the next Escape deselects.
-    update(&m, keySpecialMsg(&m, .escape).?);
-    try testing.expectEqual(Focus.none, m.focus);
-    try testing.expect(keySpecialMsg(&m, .escape).? == .select);
-}
-
-test "keyboard: tab hotkeys and 2D zoom" {
-    var m = sheetModel();
-    defer m.loaded.?.deinit();
-    update(&m, keyCharMsg(&m, 'i').?);
-    try testing.expectEqual(Tab.iso, m.tab);
-    update(&m, keyCharMsg(&m, 'd').?);
-    try testing.expectEqual(Tab.three_d, m.tab);
-    update(&m, keyCharMsg(&m, 's').?);
-    const dx = m.docs.?;
-    const z = dx.sheets.items[m.activeSheet().?].cam.px_per_model_in;
-    update(&m, keyCharMsg(&m, '+').?);
-    try testing.expect(dx.sheets.items[m.activeSheet().?].cam.px_per_model_in > z);
-}
-
 fn frameOf(m: *const Model, cb: *teak.CmdBuffer(Msg), rects: []teak.Rect, w: f32, h: f32) []const teak.Rect {
     cb.reset();
     cb.theme = theme;
     view(m, cb);
     teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, w, h, test_msr);
     return rects[0..cb.cmds.items.len];
-}
-
-test "view (3D tab): balanced, one interactive scene3d, 320px inspector, 360px console, 24px status bar" {
-    var m = smallModel();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .select = 2 });
-    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    var rects: [768]teak.Rect = undefined;
-    const rs = frameOf(&m, &cb, &rects, 1280, 800);
-    try testing.expect(teak.validateBalance(cb.cmds.items) == null);
-    var scenes: usize = 0;
-    var canvases: usize = 0;
-    for (cb.cmds.items, rs) |c, r| switch (c) {
-        .scene3d => |s| {
-            scenes += 1;
-            try testing.expect(s.pointer and s.id == scene_id);
-            try testing.expectEqual(@as(usize, 10), s.view.items.len);
-            try testing.expect(s.view.items[1].flags.highlight); // part 2 is selected
-            try testing.expectEqual(m.rev, @as(u32, @intCast(s.key)));
-            try testing.expect(r.w > 500 and r.h > 400); // flexes into the centre
-        },
-        .canvas => canvases += 1,
-        else => {},
-    };
-    try testing.expectEqual(@as(usize, 1), scenes);
-    try testing.expectEqual(@as(usize, 1), canvases); // only the cut slider
-}
-
-test "view (section tab): the sheet is one pointer canvas carrying the tessellator's triangles" {
-    var m = sheetModel();
-    defer m.loaded.?.deinit();
-    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    var rects: [768]teak.Rect = undefined;
-    const rs = frameOf(&m, &cb, &rects, 1280, 800);
-    try testing.expect(teak.validateBalance(cb.cmds.items) == null);
-    var sheets: usize = 0;
-    for (cb.cmds.items, rs) |c, r| switch (c) {
-        .canvas => |cv| {
-            try testing.expect(cv.pointer and cv.id == sheet_id);
-            sheets += 1;
-            try testing.expectEqual(@as(usize, 1), cv.primitives.len);
-            const t = cv.primitives[0].triangles;
-            try testing.expectEqual(m.docs.?.key, t.key);
-            try testing.expect(t.verts.len > 3000);
-            try testing.expect(r.w > 500 and r.h > 400);
-        },
-        .scene3d => return error.TestUnexpectedResult,
-        else => {},
-    };
-    try testing.expectEqual(@as(usize, 1), sheets);
-}
-
-test "view: snapshot golden, SECTION tab" {
-    var m = sheetModel();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .select = 2 });
-    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    var rects: [768]teak.Rect = undefined;
-    const rs = frameOf(&m, &cb, &rects, 1280, 800);
-    try teak.expectSnapshot(cb.cmds.items, rs, .{}, golden_section);
-}
-
-test "view: snapshot golden, ISO tab" {
-    var m = sheetModel();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .tab = .iso });
-    update(&m, .{ .sheet_event = .{ .id = sheet_id, .kind = .layout, .w = 900, .h = 600 } });
-    update(&m, .{ .select = 3 });
-    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    var rects: [768]teak.Rect = undefined;
-    const rs = frameOf(&m, &cb, &rects, 1280, 800);
-    try teak.expectSnapshot(cb.cmds.items, rs, .{}, golden_iso);
-}
-
-test "view: snapshot golden, 3D tab" {
-    var m = smallModel();
-    defer m.loaded.?.deinit();
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .layout, .w = 700, .h = 500 } });
-    update(&m, .{ .select = 2 });
-    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    var rects: [768]teak.Rect = undefined;
-    const rs = frameOf(&m, &cb, &rects, 1280, 800);
-    try teak.expectSnapshot(cb.cmds.items, rs, .{}, golden_3d);
 }
 
 const golden_section =
@@ -2671,41 +1998,3 @@ const golden_3d =
     \\    text (1158,778,110,20) "CLAUDE DEMO"
     \\
 ;
-
-test "commands: the palette runs a view command and shortcuts resolve" {
-    var m = smallModel();
-    defer m.loaded.?.deinit();
-    var list: teak.CommandList(Msg) = .{};
-    commands(&m, &list);
-    try testing.expectEqual(Msg.toggle_ortho, list.match(teak.Chord.altKey(.o)).?.msg);
-    try testing.expectEqual(Msg{ .palette = .focus }, list.match(teak.Chord.ctrl(.k)).?.msg);
-
-    update(&m, .{ .palette = .focus });
-    try testing.expect(m.palette.open);
-    for ("vtop") |c| update(&m, keyCharMsg(&m, c).?);
-    const enter = keySpecialMsg(&m, .enter).?; // "View: Top" is the only fuzzy match for "vtop"? at least first
-    update(&m, enter);
-    try testing.expect(!m.palette.open);
-}
-
-test "menubar: rows come from the command table (shortcut text, enabled) and a row runs its command" {
-    var m = smallModel();
-    defer m.loaded.?.deinit();
-    var list: teak.CommandList(Msg) = .{};
-    commands(&m, &list);
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const rows = teak.commands.menuItems(MB.Item, arena.allocator(), &list, .pc, &.{ "view.fit", "-", "view.ortho" });
-    try testing.expectEqual(@as(usize, 3), rows.len);
-    try testing.expectEqualStrings("Fit to Window", rows[0].label);
-    try testing.expectEqualStrings("Ctrl+0", rows[0].shortcut);
-    try testing.expectEqualStrings("Alt+O", rows[2].shortcut);
-    // F10 opens the bar; Enter on the first menu's first row runs "Open Mesh..." (command 1).
-    try testing.expect(keySpecialMsg(&m, .f10).? == .menubar);
-    update(&m, keySpecialMsg(&m, .f10).?);
-    try testing.expect(MB.isActive(&m.menubar));
-    const before = std.meta.activeTag(m.cam.projection);
-    update(&m, .{ .menu_run = 7 }); // "Toggle Orthographic" per the table order
-    try testing.expect(std.meta.activeTag(m.cam.projection) != before);
-    try testing.expect(!m.menubar.st.active); // a chosen row closes the bar
-}

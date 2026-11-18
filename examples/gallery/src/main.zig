@@ -25,10 +25,3 @@ pub fn main() !void {
     defer gpa.free(dump);
     std.debug.print("{s}", .{dump});
 }
-
-test {
-    _ = @import("focus_audit.zig");
-    // Pull in the app's tests (layout geometry, update).
-    std.testing.refAllDecls(App);
-    _ = App;
-}

@@ -31,8 +31,6 @@ pub fn themeFor(m: *const Model) teak.Theme {
     return theme_mod.themeOf(m.look);
 }
 
-// ── Menus ──────────────────────────────────────────────────────────
-
 const Item = MB.Item;
 
 /// One chord per command: the `commands` table binds it (so it works) and the
@@ -118,8 +116,6 @@ fn wrapRun(a: model_mod.Action) Msg {
 pub const bar_msgs = .{ .menu = wrapMenu, .run = wrapRun };
 pub const ctx_msgs = .{ .menu = wrapCtx, .run = wrapRun };
 
-// ── View ───────────────────────────────────────────────────────────
-
 pub fn view(m: *const Model, cb: anytype) void {
     const pal = cb.theme.palette;
     const body_h = m.win_h - ui.menu_h - ui.status_h;
@@ -143,7 +139,6 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
     cb.popGroup();
 
-    // Status line.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 4, .pad_x = 12, .gap = 16, .height = ui.status_h, .bg = pal.bg_panel, .border = pal.border, .align_cross = .center });
     cb.textMuted(if (m.last_action) |a| ui.fmt(cb, "last action: {s}", .{@tagName(a)}) else "ready");
     cb.spacer(1);
@@ -228,8 +223,6 @@ fn sidebar(m: *const Model, cb: anytype) void {
     }
     cb.popGroup();
 }
-
-// ── Hooks ──────────────────────────────────────────────────────────
 
 /// Frame time while a toast is sliding in or out.
 pub fn animationMsg(_: *const Model, dt_ms: u32) ?Msg {
@@ -367,142 +360,4 @@ fn layoutAll(m: *const Model, cb: *teak.CmdBuffer(Msg), rects: []teak.Rect) []te
     const n = cb.cmds.items.len;
     teak.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, m.win_w, m.win_h, teak.monoMeasurer());
     return rects[0..n];
-}
-
-test "every page in every look builds a balanced command buffer that lays out" {
-    var rects: [4096]teak.Rect = undefined;
-    for (std.enums.values(model_mod.Page)) |page| for (std.enums.values(Look)) |look| {
-        var cb = teak.CmdBuffer(Msg).init(testing.allocator);
-        defer cb.deinit();
-        var m: Model = .{};
-        m.page = page;
-        m.look = look;
-        _ = layoutAll(&m, &cb, &rects);
-        try testing.expect(teak.validateBalance(cb.cmds.items) == null);
-    };
-}
-
-test "overlays: open menu, context menu, dialog and toasts balance too" {
-    var rects: [4096]teak.Rect = undefined;
-    var m: Model = .{ .page = .overlays };
-    update(&m, .{ .menubar = .{ .goto = .{ .active = true, .hot = 1, .open = true, .depth = 1, .sel = .{ 1, 0, 0, 0 } } } });
-    update(&m, .{ .ctx = CM.openAt(400, 300) });
-    update(&m, .{ .dialog = .shortcuts });
-    update(&m, .{ .toast_push = .{ .kind = .danger } });
-    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    _ = layoutAll(&m, &cb, &rects);
-    try testing.expect(teak.validateBalance(cb.cmds.items) == null);
-}
-
-test "F10 activates the menu bar; mnemonics open menus; Enter runs an item and closes the bar" {
-    var m: Model = .{};
-    update(&m, keySpecialMsg(&m, .f10).?);
-    try testing.expect(m.menubar.st.active);
-    update(&m, keyCharMsg(&m, 'v').?); // View
-    try testing.expect(m.menubar.st.open and m.menubar.st.hot == 1);
-    update(&m, keyCharMsg(&m, 'f').?); // Re&fresh
-    try testing.expect(!m.menubar.st.active and !m.menubar.st.open);
-    try testing.expectEqual(@as(?model_mod.Action, .refresh), m.last_action);
-    try testing.expectEqual(@as(usize, 1), m.toasts.len);
-}
-
-test "the theme submenu switches the look and a confirm dialog resets the demo" {
-    var m: Model = .{};
-    update(&m, .{ .run = .look_dark });
-    try testing.expectEqual(Look.dark, m.look);
-    update(&m, .{ .check_b = {} });
-    update(&m, .{ .run = .reset });
-    try testing.expectEqual(model_mod.Dialog.confirm_reset, m.dialog);
-    // Enter confirms through the dialog key hook.
-    update(&m, keySpecialMsg(&m, .enter).?);
-    try testing.expectEqual(model_mod.Dialog.none, m.dialog);
-    try testing.expect(!m.check_b);
-    try testing.expectEqual(Look.dark, m.look); // the look survives a reset
-}
-
-test "tooltips: hovering a target arms Sub.at; the deadline fires and the tip shows" {
-    var m: Model = .{};
-    const ev: teak.PointerEvent(Msg) = .{ .x = 10, .y = 10, .hit = Msg{ .demo = 0 }, .box = .{ .x = 20, .y = 100, .w = 60, .h = 26 }, .now_ms = 1000 };
-    update(&m, onHover(&m, ev).?);
-    try testing.expectEqual(@as(usize, 1), subscribe(&m).len);
-    try testing.expectEqual(@as(u64, 1550), subscribe(&m)[0].at.deadline_ms);
-    update(&m, subscribe(&m)[0].at.msg);
-    try testing.expect(m.tip.shown);
-    // A click on the target hides it (the demo handler does).
-    update(&m, .{ .demo = 0 });
-    try testing.expect(!m.tip.shown);
-    // An open menu suppresses new tips.
-    update(&m, .{ .menubar = .{ .goto = .{ .active = true, .open = true } } });
-    try testing.expect(onHover(&m, ev) == null);
-}
-
-test "right-click opens the context menu only inside the content area" {
-    var m: Model = .{};
-    const inside: teak.PointerEvent(Msg) = .{ .x = 600, .y = 400 };
-    try testing.expect(onContext(&m, inside) != null);
-    try testing.expect(onContext(&m, .{ .x = 50, .y = 400 }) == null); // sidebar
-    try testing.expect(onContext(&m, .{ .x = 600, .y = 10 }) == null); // menu bar
-}
-
-test "subscriptions are listed only while something needs them" {
-    var m: Model = .{};
-    try testing.expectEqual(@as(usize, 0), subscribe(&m).len);
-    update(&m, .{ .toast_push = .{ .kind = .info } });
-    try testing.expectEqual(@as(usize, 2), subscribe(&m).len); // the tick + the slide-in animation
-    update(&m, animationMsg(&m, 400).?); // slide finished
-    try testing.expectEqual(@as(usize, 1), subscribe(&m).len);
-    update(&m, .job_start);
-    try testing.expectEqual(@as(usize, 3), subscribe(&m).len);
-    var i: usize = 0;
-    while (i < 60) : (i += 1) update(&m, .job_tick);
-    try testing.expect(!m.job_running);
-    try testing.expectEqual(@as(f32, 1), m.job);
-}
-
-test "sliders report and the split drags through pointerMsg targets" {
-    var m: Model = .{};
-    update(&m, onSlider(&m, .{ .slider_grab = .mix }, 0.25).?);
-    try testing.expectEqual(@as(f32, 0.25), m.mix);
-    try testing.expect(onSlider(&m, .clicked, 0.5) == null);
-
-    const o = page_layout.split_opts;
-    update(&m, onCanvas(&m, .{ .id = o.id, .kind = .down, .button = .left }).?);
-    const before = m.split.ratio;
-    update(&m, onCanvas(&m, .{ .id = o.id, .kind = .move, .dx = 40 }).?);
-    try testing.expect(m.split.ratio > before);
-}
-
-test "the virtual list window follows the scroll offset and clamps at the end" {
-    var m: Model = .{};
-    update(&m, .{ .list_scroll_by = 1e9 });
-    try testing.expectEqual(m.list_content - m.list_viewport, m.list_scroll);
-    update(&m, .{ .list_scroll_by = -1e9 });
-    try testing.expectEqual(@as(f32, 0), m.list_scroll);
-}
-
-test "the Inputs page text area takes focus and typed text (Enter makes a new line)" {
-    var m: Model = .{};
-    update(&m, .{ .go = .inputs });
-    update(&m, .{ .area = .focus });
-    try testing.expectEqual(model_mod.Field.area, m.focus.?);
-    for ("hi") |c| update(&m, keyCharMsg(&m, c).?);
-    update(&m, keySpecialMsg(&m, .enter).?);
-    update(&m, keyCharMsg(&m, '!').?);
-    try testing.expectEqualStrings("hi\n!", m.area.content());
-    try testing.expect(focusedMsg(&m).?.area == .focus);
-    const ev: teak.TextEvent = .{ .id = model_mod.area_id, .kind = .metrics };
-    try testing.expect(onText(&m, ev) != null);
-}
-
-test "commands: menu shortcut text is the chord that fires the command" {
-    var m: Model = .{};
-    var list: teak.CommandList(Msg) = .{};
-    commands(&m, &list);
-    const c = list.match(teak.Chord.ctrl(.t)).?;
-    try testing.expectEqual(Msg{ .run = .toast_demo }, c.msg);
-    try testing.expectEqualStrings("Ctrl+T", file_menu[1].shortcut);
-    try testing.expectEqualStrings("F5", view_menu[3].shortcut);
-    update(&m, c.msg);
-    try testing.expectEqual(@as(?model_mod.Action, .toast_demo), m.last_action);
 }

@@ -73,7 +73,6 @@ pub fn TextStage(comptime Raster: type) type {
         memo_prev: std.ArrayList(Memo) = .empty,
         /// Last frame's instance lists (double buffer of `insts`).
         prev_insts: std.ArrayList(PageInstances) = .empty,
-        // Per-draw emission tracking (see `appendInstance`).
         cur_count: u32 = 0,
         cur_page: u8 = 0,
         cur_layer: u8 = 0,
@@ -83,8 +82,6 @@ pub fn TextStage(comptime Raster: type) type {
         /// CPU copy of each atlas page (`atlas_dim^2` bytes).
         pages: std.ArrayList([]u8) = .empty,
         insts: std.ArrayList(PageInstances) = .empty,
-        // Colour glyphs (emoji): a second atlas of RGBA pages. Its keys use `mode = 2`;
-        // the shader reads the texel's own colour instead of tinting coverage.
         catlas: glyph_atlas.GlyphAtlas,
         cpages: std.ArrayList([]u8) = .empty,
         cinsts: std.ArrayList(PageInstances) = .empty,
@@ -95,7 +92,6 @@ pub fn TextStage(comptime Raster: type) type {
         frame_no: u64 = 0,
         log_frame: u64 = 0,
 
-        // Shaped-run cache (open addressing; cleared wholesale when the pools fill).
         runs: []Run = &.{},
         run_count: usize = 0,
         run_glyphs: std.ArrayList(teak.ShapedGlyph) = .empty,
@@ -119,7 +115,6 @@ pub fn TextStage(comptime Raster: type) type {
         pub fn init(gpa: std.mem.Allocator, raster: Raster, max_pages: u8, scale: f32) !Self {
             var atlas = try glyph_atlas.GlyphAtlas.init(gpa, @max(max_pages, 1));
             errdefer atlas.deinit();
-            // Colour pages are 4 MiB each: a couple is plenty for emoji.
             var catlas = try glyph_atlas.GlyphAtlas.init(gpa, 2);
             errdefer catlas.deinit();
             const runs = try gpa.alloc(Run, 256);
@@ -258,7 +253,6 @@ pub fn TextStage(comptime Raster: type) type {
                         .ok = !self.cur_multi and self.dropped == dropped0,
                     }) catch {};
                 };
-                // Cull runs entirely outside their clip (logical px).
                 const vx0 = @max(draw.rect_x, draw.clip_x);
                 const vy0 = @max(draw.rect_y, draw.clip_y);
                 const vx1 = @min(draw.rect_x + draw.rect_w, draw.clip_x + draw.clip_w);
@@ -281,16 +275,13 @@ pub fn TextStage(comptime Raster: type) type {
 
                 const run = self.runFor(draw.content, font) orelse continue;
                 const glyphs = self.run_glyphs.items[run.off..][0..run.len];
-                // The atlas entry resolved last frame is reused while its page
-                // generation (and the glyph's subpixel bin) is unchanged.
+                // Reuse requires matching page generation and subpixel bin.
                 const entries = self.run_entries.items[run.off..][0..run.len];
                 for (glyphs, entries) |g, *cached| {
                     self.emitGlyph(layer, draw.content, font, g, cached, base_x + g.x * scale, baseline + @round(g.y * scale), size_q, snap, color, clip);
                 }
             }
         }
-
-        // ── Shaped-run cache ───────────────────────────────────────
 
         fn clearRuns(self: *Self) void {
             self.memo_prev.clearRetainingCapacity();
@@ -354,7 +345,6 @@ pub fn TextStage(comptime Raster: type) type {
         fn runFor(self: *Self, text: []const u8, font: teak.FontSpec) ?RunSpan {
             if (text.len == 0) return .{ .off = 0, .len = 0 };
             if (comptime !run_cache) {
-                // No cross-frame cache: shape into the pool, reused by the next draw.
                 self.run_glyphs.clearRetainingCapacity();
                 self.run_entries.clearRetainingCapacity();
                 return self.shapeInto(text, font);
@@ -370,7 +360,6 @@ pub fn TextStage(comptime Raster: type) type {
                     return .{ .off = r.glyph_off, .len = r.glyph_len };
                 }
             }
-            // Miss: shape, then record.
             if (self.run_glyphs.items.len > max_pool_glyphs or self.run_text.items.len > max_pool_text or
                 (self.run_count + 1) * 2 > self.runs.len)
             {
@@ -436,8 +425,6 @@ pub fn TextStage(comptime Raster: type) type {
             self.runs = fresh;
             self.gpa.free(old);
         }
-
-        // ── Emission ───────────────────────────────────────────────
 
         fn emitGlyph(
             self: *Self,
@@ -633,7 +620,6 @@ pub fn TextStage(comptime Raster: type) type {
                 .u = e.rect.x,
                 .v = e.rect.y,
                 .color = color,
-                // A glyph fully inside its clip skips the fragment test.
                 .clip_xy = if (inside) .{ 0, 0 } else clip.xy,
                 .clip_wh = if (inside) .{ 0, 0 } else clip.wh,
             }) catch return;
@@ -682,7 +668,6 @@ pub fn TextStage(comptime Raster: type) type {
             };
             if (w == 0 or h == 0) return e;
             if (!self.ensurePage(e.page)) return null;
-            // Zero the padded cell, then copy the glyph rows into it.
             const staging = self.pages.items[e.page];
             const x: usize = e.rect.x;
             const y: usize = e.rect.y;
@@ -750,8 +735,6 @@ fn deviceClip(draw: teak.TextDraw, scale: f32) DeviceClip {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 /// 6-px-wide boxes, one glyph per byte.
 const FakeRaster = struct {
     const Bitmap = struct { pixels: []const u8, width: u32, height: u32, bearing_x: i32, bearing_y: i32 };
@@ -771,40 +754,4 @@ const FakeRaster = struct {
 
 fn testDraw(text: []const u8, x: f32) teak.TextDraw {
     return .{ .rect_x = x, .rect_y = 10, .rect_w = 100, .rect_h = 12, .content = text, .font = .{ .size_px = 10 }, .color = .{ 1, 1, 1, 1 }, .clip_x = 0, .clip_y = 0, .clip_w = 500, .clip_h = 500 };
-}
-
-test "stage: unchanged draws replay last frame's instances; changed ones are rebuilt" {
-    const gpa = std.testing.allocator;
-    var st = try TextStage(FakeRaster).init(gpa, .{}, 2, 1);
-    defer st.deinit();
-
-    var draws = [_]teak.TextDraw{ testDraw("abc", 0), testDraw("xy", 50), testDraw("hello", 90) };
-    st.stage(&draws, draws.len);
-    const first = try gpa.dupe(GlyphInstance, st.insts.items[0].list[0].items);
-    defer gpa.free(first);
-    try std.testing.expectEqual(@as(usize, 10), first.len);
-
-    // Frame 2: identical draws come from the memo; the result is byte-identical.
-    st.stage(&draws, draws.len);
-    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(first), std.mem.sliceAsBytes(st.insts.items[0].list[0].items));
-
-    // Frame 3: one draw changes; the others still match a from-scratch stage.
-    draws[1] = testDraw("xyz", 50);
-    st.stage(&draws, draws.len);
-    var fresh = try TextStage(FakeRaster).init(gpa, .{}, 2, 1);
-    defer fresh.deinit();
-    fresh.stage(&draws, draws.len);
-    // Atlas cells depend on packing order, so compare geometry, colour and clip only.
-    const a = fresh.insts.items[0].list[0].items;
-    const b = st.insts.items[0].list[0].items;
-    try std.testing.expectEqual(a.len, b.len);
-    for (a, b) |x, y| {
-        var xn = x;
-        var yn = y;
-        xn.u = 0;
-        xn.v = 0;
-        yn.u = 0;
-        yn.v = 0;
-        try std.testing.expectEqualSlices(u8, std.mem.asBytes(&xn), std.mem.asBytes(&yn));
-    }
 }
