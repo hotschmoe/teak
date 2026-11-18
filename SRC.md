@@ -228,3 +228,11 @@ The tree builder collects overlay nodes first; a modal overlay suppresses base-l
 ## src/render/canvas_tess.zig
 
 Line clipping trims centre lines to the clip rectangle; a thick quad can extend up to half its thickness past a trimmed endpoint. Polygon ear clipping falls back to a fan if no further ear is found. Triangle-list clipping uses a bounds pass and then per-triangle clipping with two scratch polygons. NaN endpoints must be rejected before Liang–Barsky comparisons because NaNs would otherwise pass the comparisons and produce invalid vertices. With downward y, positive signed area is clockwise on screen and the outside is left of each edge.
+
+## src/platform/cocoa.zig
+
+The view is layer-backed by a CAMetalLayer sized and scaled by AppKit. If a presented frame was dropped while a window was occluded, becoming visible requests a rebuild through the resize input because idle frames otherwise do not redraw. The non-blocking event pump lets Core Animation commit. Unclaimed Cmd+V becomes a text or PNG paste, while other Cmd or Ctrl chords do not enter text. Marked IME text is kept as UTF-8 with a byte-indexed caret and is never truncated within a code point.
+
+## src/control.zig
+
+Commands are driven over frames: a click separates press and release because the runtime routes input against the previous frame's layout. Text is sent in 32-byte batches to stay within the 64-byte per-frame input queue. Selector offsets are relative to the node centre and allow interactions with specific regions of a widget.

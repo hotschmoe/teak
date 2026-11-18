@@ -91,7 +91,6 @@ pub const State = struct {
     width: u32 = 0,
     height: u32 = 0,
 
-    // ── command in flight ──
     busy: bool = false,
     acts: std.ArrayList(Act) = .empty,
     act_i: usize = 0,
@@ -101,18 +100,15 @@ pub const State = struct {
     note: std.ArrayList(u8) = .empty,
     line_buf: [16 * 1024]u8 = undefined,
 
-    // ── Msg ring ──
     ring: [ring_n][ring_w]u8 = undefined,
     ring_len: [ring_n]u8 = @splat(0),
     ring_total: u32 = 0,
 
-    // ── record ──
     rec_path: ?[]u8 = null,
     rec_buf: std.ArrayList(u8) = .empty,
     rec_lines_unflushed: u32 = 0,
     tracker: record.Tracker = .{},
 
-    // ── replay ──
     replay_data: ?[]u8 = null,
     replay_pos: usize = 0,
 
@@ -164,7 +160,6 @@ pub const State = struct {
 
     /// The most recent Msgs, oldest first (`n` newest at most).
     pub fn msgAt(self: *const State, age: usize) ?[]const u8 {
-        // age 0 = newest.
         const have = @min(self.ring_total, ring_n);
         if (age >= have) return null;
         const slot = (self.ring_total - 1 - age) % ring_n;
@@ -185,7 +180,6 @@ pub const State = struct {
     }
 };
 
-// ── Setup ──────────────────────────────────────────────────────────
 
 /// Owned dupe of environment variable `name` if set and non-empty.
 fn envVar(gpa: std.mem.Allocator, name: []const u8) ?[]u8 {
@@ -210,7 +204,6 @@ pub fn start(st: *State, host: anytype, opts: anytype) void {
     if (comptime !fs_capable) return;
     const gpa = st.gpa;
 
-    // Control channel.
     if (comptime hasControl(@TypeOf(host.*))) {
         const env = envVar(gpa, "TEAK_CONTROL");
         defer if (env) |e| gpa.free(e);
@@ -222,7 +215,6 @@ pub fn start(st: *State, host: anytype, opts: anytype) void {
         }
     }
 
-    // Inspector.
     if (opts.inspect) st.inspect = true;
     if (envVar(gpa, "TEAK_INSPECT")) |v| {
         defer gpa.free(v);
@@ -230,13 +222,11 @@ pub fn start(st: *State, host: anytype, opts: anytype) void {
     }
     if (st.inspect) st.log_msgs = true;
 
-    // Record.
     const rec_env = envVar(gpa, "TEAK_RECORD");
     if (rec_env orelse (if (opts.record_path) |p| gpa.dupe(u8, p) catch null else null)) |p| {
         st.rec_path = p;
     }
 
-    // Replay.
     const rp_env = envVar(gpa, "TEAK_REPLAY");
     defer if (rp_env) |e| gpa.free(e);
     if (rp_env orelse opts.replay_path) |path| {
@@ -250,7 +240,6 @@ pub fn start(st: *State, host: anytype, opts: anytype) void {
     }
 }
 
-// ── Inspector support (called from Runtime) ────────────────────────
 
 pub fn toggleInspect(st: *State) void {
     st.inspect = !st.inspect;
@@ -282,7 +271,6 @@ pub fn appendInspectorFor(rt: anytype, cb: anytype, cur: u1, prev: u1, window_w:
     }, .{});
 }
 
-// ── Per-frame hooks (called from Runtime.frame) ────────────────────
 
 /// Before the Host is polled: replayed input, then the control channel.
 pub fn beforePoll(rt: anytype) void {
@@ -380,7 +368,6 @@ fn buttonSet(b: pointer.Buttons, which: pointer.Button) bool {
     };
 }
 
-// ── Command execution ──────────────────────────────────────────────
 
 fn stepAct(rt: anytype) void {
     const st = &rt.ctl;
@@ -548,7 +535,6 @@ fn addPool(st: *State, bytes: []const u8) struct { off: u32, len: u32 } {
     return .{ .off = off, .len = @intCast(bytes.len) };
 }
 
-// ── Latest frame access ────────────────────────────────────────────
 
 /// The latest frame's cmds WITHOUT the dev inspector's overlay, so the agent
 /// reads and operates the app, not the tool.
@@ -590,7 +576,6 @@ fn takeScreenshot(rt: anytype, path: []const u8) !void {
     try headless_run.writeFramePng(rt.gpu, rt.ctl.gpa, path);
 }
 
-// ── Instant commands ───────────────────────────────────────────────
 
 fn cmdInfo(rt: anytype) void {
     const st = &rt.ctl;
@@ -697,7 +682,6 @@ fn writeNode(w: *std.Io.Writer, n: a11y.A11yNode, i: usize) !void {
     try w.writeByte('}');
 }
 
-// ── Selectors ──────────────────────────────────────────────────────
 
 const Target = struct {
     x: f32,
@@ -716,8 +700,6 @@ fn resolve(rt: anytype, obj: std.json.ObjectMap) !Target {
         .object => |o| o,
         else => obj,
     } else obj;
-    // Optional offset from the node's center: to press the non-interactive
-    // part of a row, or a specific spot inside a big widget.
     if (getNum(sel, "offset_x")) |o| t.x += @floatCast(o);
     if (getNum(sel, "offset_y")) |o| t.y += @floatCast(o);
     return t;
@@ -797,7 +779,6 @@ fn setTargetNote(rt: anytype, t: Target) void {
     st.note.appendSlice(st.gpa, ",") catch {};
 }
 
-// ── Input commands ─────────────────────────────────────────────────
 
 fn cmdClick(rt: anytype, obj: std.json.ObjectMap) void {
     const st = &rt.ctl;
@@ -806,8 +787,7 @@ fn cmdClick(rt: anytype, obj: std.json.ObjectMap) void {
         std.meta.stringToEnum(pointer.Button, b) orelse .left
     else
         .left;
-    // The runtime routes against the PREVIOUS frame's layout, so a click needs
-    // a frame between its parts, exactly as a real mouse produces them.
+    // Press and release must span frames because routing uses the previous frame.
     addAct(st, .{ .move = .{ t.x, t.y } });
     addAct(st, .{ .down = button });
     addAct(st, .{ .up = button });
@@ -845,7 +825,7 @@ fn cmdType(rt: anytype, obj: std.json.ObjectMap) void {
     const st = &rt.ctl;
     const text = getStr(obj, "text") orelse return fail(rt, "type needs \"text\"", .{});
     if (!std.unicode.utf8ValidateSlice(text)) return fail(rt, "text is not valid UTF-8", .{});
-    // One frame's input queue holds 64 bytes; send 32 per frame.
+    // Keep each batch below the input queue's 64-byte limit.
     var rest = text;
     while (rest.len > 0) {
         var n = @min(rest.len, 32);
@@ -934,5 +914,4 @@ fn cmdScreenshot(rt: anytype, obj: std.json.ObjectMap) void {
     begin(rt);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
