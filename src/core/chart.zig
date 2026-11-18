@@ -104,7 +104,6 @@ pub fn lineChartPrimitives(
     return list.toOwnedSlice(arena) catch oom();
 }
 
-// ── Bar and scatter charts ─────────────────────────────────────────
 
 pub const BarChartOpts = struct {
     /// Canvas size the primitives are laid out for (match the CanvasStyle).
@@ -226,7 +225,6 @@ const Plot = struct {
 
 
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 
 

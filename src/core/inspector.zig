@@ -235,7 +235,6 @@ pub fn fmtValue(w: *std.Io.Writer, v: anytype) std.Io.Writer.Error!void {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const cmd_mod = @import("cmd.zig");
 

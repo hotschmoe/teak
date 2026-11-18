@@ -130,7 +130,6 @@ pub fn isTerminator(cp: u21) bool {
     };
 }
 
-// ── Tests ─────────────────────────────────────────────────────────
 
 const testing = std.testing;
 

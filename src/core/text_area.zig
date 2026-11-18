@@ -159,7 +159,6 @@ pub fn TextArea(comptime cap: usize) type {
             model.scroll_x = clampScroll(sx, model.content_w + 2, model.viewport_w);
         }
 
-        // ── Host-hook helpers ─────────────────────────────────────
 
         pub fn eventMsg(ev: TextEvent) Msg {
             return .{ .event = ev };
@@ -185,7 +184,6 @@ pub fn TextArea(comptime cap: usize) type {
             };
         }
 
-        // ── View ──────────────────────────────────────────────────
 
         /// `base` with no box, border, focus border or caret: a read-only
         /// area drawn like a label (selection highlight kept). Pass it as
@@ -230,7 +228,6 @@ pub fn TextArea(comptime cap: usize) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const component = @import("component.zig");

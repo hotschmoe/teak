@@ -160,7 +160,6 @@ pub fn fitCell(
     return out;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 

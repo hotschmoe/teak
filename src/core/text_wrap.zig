@@ -538,7 +538,6 @@ pub fn resolveNav(text: []const u8, cursor: usize, goal_x: ?f32, kind: NavKind, 
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────
 
 const testing = std.testing;
 

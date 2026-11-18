@@ -140,7 +140,6 @@ pub fn CommandList(comptime Msg: type) type {
     };
 }
 
-// ── Menus ──────────────────────────────────────────────────────────
 
 /// Build menu rows from the command table, so the shortcut a menu shows is
 /// the one that works. `ids` names the commands in order; `"-"` is a
@@ -183,7 +182,6 @@ pub fn menuItems(
     return out.items;
 }
 
-// ── Command palette ────────────────────────────────────────────────
 
 pub const PaletteViewOpts = struct {
     /// Window size in logical pixels (centers the panel; pass what `windowMsg` gave you).
@@ -336,7 +334,6 @@ pub fn CommandPalette(comptime cap: usize) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("snapshot.zig");

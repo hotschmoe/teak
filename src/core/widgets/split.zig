@@ -234,7 +234,6 @@ pub fn end(cb: anytype) void {
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");

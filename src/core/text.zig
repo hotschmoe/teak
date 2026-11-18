@@ -173,7 +173,6 @@ pub fn monoMeasurer() TextMeasurer {
     return .{ .ctx = undefined, .measure_fn = &S.measure };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 fn testMeasure(_: *anyopaque, text: []const u8, font: FontSpec) TextMetrics {
     return .{

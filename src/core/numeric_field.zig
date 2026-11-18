@@ -42,7 +42,6 @@
 const std = @import("std");
 const teak_text_field = @import("text_field.zig");
 
-// ── Config ──────────────────────────────────────────────────────────
 
 pub const NumericConfig = struct {
     /// Max chars in the underlying text buffer.
@@ -58,7 +57,6 @@ pub const NumericConfig = struct {
     invalid_message: []const u8 = "invalid number",
 };
 
-// ── Component factory ───────────────────────────────────────────────
 //
 // `NumericField(config)` returns a struct exposing Model/Msg/update/view
 // (so `validateComponent` passes and `Components()` composes it) plus the
@@ -110,7 +108,6 @@ pub fn NumericField(comptime config: NumericConfig) type {
             }
         }
 
-        // ── Accessors ───────────────────────────────────────────────
 
         /// Parse the buffer with `std.fmt.parseFloat`. Returns null if it
         /// doesn't parse OR falls outside [min, max]. Empty buffer → null.
@@ -163,7 +160,6 @@ pub fn NumericField(comptime config: NumericConfig) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const cmd_mod = @import("cmd.zig");
 const component_mod = @import("component.zig");

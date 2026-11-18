@@ -233,7 +233,6 @@ pub fn arrowTarget(text: []const u8, ls: usize, le: usize, cursor: usize, arrow:
     return best;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 

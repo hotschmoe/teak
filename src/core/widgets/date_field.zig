@@ -132,7 +132,6 @@ pub fn textValid(model: *const Model) bool {
     return t.len == 0 or date.parseIso(t) != null;
 }
 
-// ── Keys ───────────────────────────────────────────────────────────
 
 pub fn charMsg(c: u8) Msg {
     return .{ .edit = .{ .char = c } };
@@ -161,7 +160,6 @@ pub fn keyMsg(model: *const Model, key: keys.SpecialKey) ?Msg {
     return .{ .edit = wrapped.m };
 }
 
-// ── View ───────────────────────────────────────────────────────────
 
 pub const ViewOpts = struct {
     /// Window position of the popover's top-left (the field's bottom-left).
@@ -302,7 +300,6 @@ fn dayStyle(cb: anytype, model: *const Model, d: Date, o: ViewOpts) cmd.ButtonSt
     return st;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const component = @import("../component.zig");

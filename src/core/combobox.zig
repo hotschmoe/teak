@@ -64,7 +64,6 @@ pub const ViewOpts = struct {
     input_style: ?cmd.TextInputStyle = null,
 };
 
-// ── Matching (pure) ────────────────────────────────────────────────
 
 /// Simple case fold: ASCII, Latin-1 Supplement, Latin Extended-A (paired
 /// forms), Greek and Cyrillic capitals map to their lowercase.
@@ -156,7 +155,6 @@ fn hashContent(s: []const u8) u64 {
     return std.hash.Wyhash.hash(0, s);
 }
 
-// ── Component ──────────────────────────────────────────────────────
 
 /// A combobox whose query field holds up to `cap` bytes.
 pub fn Combobox(comptime cap: usize) type {
@@ -260,7 +258,6 @@ pub fn Combobox(comptime cap: usize) type {
             return @max(0, new);
         }
 
-        // ── Msg builders for the app's host hooks ─────────────────
 
         /// Msg for one typed byte (route from `keyCharMsg` while the combobox has focus).
         pub fn charMsg(c: u8) Msg {
@@ -325,7 +322,6 @@ pub fn Combobox(comptime cap: usize) type {
             return @as(f32, @floatFromInt(count - max_visible)) * ITEM_HEIGHT;
         }
 
-        // ── View ──────────────────────────────────────────────────
 
         /// Canonical 3-arg view (composes through `Components`): just the input.
         pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
@@ -403,7 +399,6 @@ pub fn Combobox(comptime cap: usize) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("snapshot.zig");

@@ -280,7 +280,6 @@ fn kindColor(pal: anytype, kind: Kind) [4]f32 {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");

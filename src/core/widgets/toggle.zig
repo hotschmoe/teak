@@ -57,7 +57,6 @@ pub fn viewStyled(cb: anytype, msg: anytype, on: bool, label: []const u8, style:
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");

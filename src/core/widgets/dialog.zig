@@ -106,7 +106,6 @@ pub fn keyMsg(key: keys.SpecialKey, msgs: anytype, has_cancel: bool) ?@TypeOf(ms
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");

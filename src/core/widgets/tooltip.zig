@@ -146,7 +146,6 @@ pub fn view(model: *const Model, cb: anytype, texts: []const []const u8, o: View
     cb.popOverlay();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");

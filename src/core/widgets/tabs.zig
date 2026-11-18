@@ -132,7 +132,6 @@ pub fn viewWith(
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");

@@ -119,7 +119,6 @@ pub fn Spinner(comptime cfg: Config) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");

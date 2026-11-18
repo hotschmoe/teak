@@ -165,7 +165,6 @@ pub fn DragValue(comptime cfg: Config) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const DV = DragValue(.{ .min = 0, .max = 10, .speed = 0.25, .step = 1, .precision = 1 });
