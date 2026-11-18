@@ -123,7 +123,7 @@ src/
 │   ├── theme.zig         Theme / Palette / Typography (dark + light presets)
 │   ├── sub.zig           Sub(Msg) declarative timers + runSubs
 │   ├── chart.zig         lineChartPrimitives — canvas chart helper
-│   ├── snapshot.zig      []Cmd+[]Rect → text; golden tests + TEAK_SNAPSHOT
+│   ├── snapshot.zig      []Cmd+[]Rect → text; TEAK_SNAPSHOT
 │   ├── inspector.zig     dev inspector panel (tree, hover, Msgs, timings) as overlay cmds
 │   └── transient.zig     hover/press/focus presentation state
 ├── layout/

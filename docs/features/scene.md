@@ -1,5 +1,10 @@
 # `teak.scene` — Viewport3D and 2.5D layers
 
+The testing plans below are historical. The current testing policy in
+`/home/hotschmoe/github/hotschmoe-setup/ENGINEERING.md` supersedes unit tests,
+snapshot tests, and the former `test-gpu` command. Run `zig build test -j4`
+for blocking checks and `zig build test-heavy -j4` for background checks.
+
 **Status**: M1 and M2 shipped except the optional ID-buffer pick (M1b) and
 text/offscreen planes (M2c). Shipped: camera, picking and section math (S1/S2),
 the `View` payload (S3), instanced items with tint / highlight / flat (S4),
