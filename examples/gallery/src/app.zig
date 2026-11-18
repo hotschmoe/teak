@@ -31,7 +31,6 @@ pub fn themeFor(m: *const Model) teak.Theme {
     return theme_mod.themeOf(m.look);
 }
 
-
 const Item = MB.Item;
 
 /// One chord per command: the `commands` table binds it (so it works) and the
@@ -116,7 +115,6 @@ fn wrapRun(a: model_mod.Action) Msg {
 }
 pub const bar_msgs = .{ .menu = wrapMenu, .run = wrapRun };
 pub const ctx_msgs = .{ .menu = wrapCtx, .run = wrapRun };
-
 
 pub fn view(m: *const Model, cb: anytype) void {
     const pal = cb.theme.palette;
@@ -225,7 +223,6 @@ fn sidebar(m: *const Model, cb: anytype) void {
     }
     cb.popGroup();
 }
-
 
 /// Frame time while a toast is sliding in or out.
 pub fn animationMsg(_: *const Model, dt_ms: u32) ?Msg {
@@ -364,14 +361,3 @@ fn layoutAll(m: *const Model, cb: *teak.CmdBuffer(Msg), rects: []teak.Rect) []te
     teak.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, m.win_w, m.win_h, teak.monoMeasurer());
     return rects[0..n];
 }
-
-
-
-
-
-
-
-
-
-
-

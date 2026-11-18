@@ -129,8 +129,6 @@ pub const SceneData = struct {
     sprites: []Sprite = &.{},
 };
 
-
-
 // Scene helpers: docs/features/scene.md.
 pub const mat = @import("scene/mat.zig");
 pub const camera = @import("scene/camera.zig");
@@ -153,4 +151,3 @@ pub const Bounds = camera.Bounds;
 pub const Ray = camera.Ray;
 pub const pickRay = camera.pickRay;
 pub const project = camera.project;
-

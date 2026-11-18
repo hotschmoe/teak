@@ -231,7 +231,6 @@ pub fn arrowTarget(text: []const u8, ls: usize, le: usize, cursor: usize, arrow:
     return best;
 }
 
-
 const testing = std.testing;
 
 /// 10 px per code point, fixed (test measurer).
@@ -247,9 +246,3 @@ fn tm() TextMeasurer {
 }
 
 const S = "ab \u{5d0}\u{5d1}\u{5d2} cd"; // a b _ [alef bet gimel] _ c d  (cps 0..8)
-
-
-
-
-
-

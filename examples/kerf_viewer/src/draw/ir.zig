@@ -461,7 +461,6 @@ pub fn parse(allocator: Allocator, json_bytes: []const u8) ParseError!Drawing {
     return d;
 }
 
-
 const testing = std.testing;
 
 pub const tiny_json =
@@ -485,10 +484,3 @@ pub const tiny_json =
     \\  "diagnostics": [ {"level": "warning", "code": "W_FLOATING", "id": "x", "message": "m"} ]
     \\}
 ;
-
-
-
-
-
-
-

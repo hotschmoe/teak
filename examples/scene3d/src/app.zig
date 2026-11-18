@@ -55,14 +55,12 @@ pub fn subscribe(_: *const Model) []const teak.Sub(Msg) {
     return &.{.{ .every = .{ .interval_ms = 16, .msg = .tick } }};
 }
 
-
 const mesh_with_edges = [_]teak.Resource{.{ .mesh = .{ .key = mesh_key, .rev = 1, .data = mesh.with_edges } }};
 const mesh_without_edges = [_]teak.Resource{.{ .mesh = .{ .key = mesh_key, .rev = 2, .data = mesh.without_edges } }};
 
 pub fn resources(m: *const Model) []const teak.Resource {
     return if (m.edges) &mesh_with_edges else &mesh_without_edges;
 }
-
 
 pub const scene_w: f32 = 520;
 pub const scene_h: f32 = 380;
@@ -82,7 +80,6 @@ pub fn camera(m: *const Model) teak.Camera {
         .light_dir = .{ -0.5, -1, -0.6 },
     };
 }
-
 
 const canvas_size: f32 = 240;
 
@@ -126,7 +123,6 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
     cb.popGroup();
 }
-
 
 const ring_segments = 48;
 const TV = teak.CanvasPrimitive.TriVertex;
@@ -177,6 +173,3 @@ fn canvasPrimitives(arena: std.mem.Allocator, m: *const Model) []const teak.Canv
 fn vtx(x: f32, y: f32, rgb: [3]f32, alpha: f32) TV {
     return .{ .x = x, .y = y, .r = rgb[0], .g = rgb[1], .b = rgb[2], .a = alpha };
 }
-
-
-

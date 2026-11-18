@@ -20,7 +20,6 @@ const FontSpec = text.FontSpec;
 const FontFamily = text.FontFamily;
 const FontWeight = text.FontWeight;
 
-
 pub const Palette = struct {
     /// Window / scene background — what the empty window draws as.
     bg: [4]f32,
@@ -52,7 +51,6 @@ pub const Palette = struct {
     warning: [4]f32 = .{ 0.92, 0.66, 0.20, 1.0 },
 };
 
-
 pub const Typography = struct {
     /// Body text default. Used by `cb.text(...)` when no per-cmd font.
     body: FontSpec = .{ .size_px = 14, .family = .sans },
@@ -63,7 +61,6 @@ pub const Typography = struct {
     /// Small / caption — units suffixes, validation messages.
     small: FontSpec = .{ .size_px = 12, .family = .sans },
 };
-
 
 /// Shape and depth vocabulary next to the palette's colours: corner radii,
 /// stroke width, a spacing scale and shadow elevations. The retro look is
@@ -115,7 +112,6 @@ pub const modern_tokens: Tokens = .{
         .{ .dx = 0, .dy = 12, .blur = 28, .color = .{ 0.06, 0.09, 0.16, 0.20 } },
     },
 };
-
 
 /// Everything the un-styled emitters consult. A plain struct: build one
 /// with `fromPalette`, tweak a derived theme, or write a literal from
@@ -303,7 +299,6 @@ fn lighten(c: [4]f32, amount: f32) [4]f32 {
     return .{ c[0] + (target - c[0]) * t, c[1] + (target - c[1]) * t, c[2] + (target - c[2]) * t, c[3] };
 }
 
-
 pub const dark_palette: Palette = .{
     .bg = .{ 0.08, 0.08, 0.10, 1.0 },
     .bg_panel = .{ 0.15, 0.15, 0.18, 1.0 },
@@ -363,16 +358,3 @@ pub const modern_dark_palette: Palette = .{
     .border = .{ 0.204, 0.224, 0.267, 1.0 },
     .warning = .{ 0.960, 0.740, 0.330, 1.0 },
 };
-
-
-
-
-
-
-
-
-
-
-
-
-

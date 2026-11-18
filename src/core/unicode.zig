@@ -80,7 +80,6 @@ pub fn utf8PrevStart(bytes: []const u8, i: usize) usize {
     return i - 1;
 }
 
-
 inline fn gprop(cp: u21) u8 {
     return t.lookup(&t.grapheme_runs, cp);
 }
@@ -104,7 +103,6 @@ pub fn isWide(cp: u21) bool {
     return lprop(cp) & 0x80 != 0;
 }
 
-
 /// Incremental UAX #29 boundary decider. Feed code points in order; `step`
 /// answers whether there is a boundary *before* the fed code point.
 pub const GraphemeState = struct {
@@ -127,8 +125,7 @@ pub const GraphemeState = struct {
 
         if (ext_pict) {
             self.pict = 1;
-        } else if (cur == .extend and self.pict == 1) {
-        } else if (cur == .zwj and self.pict == 1) {
+        } else if (cur == .extend and self.pict == 1) {} else if (cur == .zwj and self.pict == 1) {
             self.pict = 2;
         } else self.pict = 0;
         self.ri_odd = cur == .ri and brk;
@@ -233,7 +230,6 @@ pub fn graphemeCount(text: []const u8) usize {
     while (it.next()) |_| n += 1;
     return n;
 }
-
 
 pub const WordClass = enum { space, word, punct, han };
 
@@ -340,7 +336,6 @@ pub fn wordRangeAt(text: []const u8, i: usize) Span {
     return .{ .start = s, .end = e };
 }
 
-
 const testing = std.testing;
 const conformance_excerpt = @embedFile("testdata/GraphemeBreakTest_excerpt.txt");
 
@@ -355,13 +350,6 @@ fn utf8Lossy(bytes: []const u8, out: []u21) usize {
     return n;
 }
 
-
-
-
 fn parseHexCps(tok: []const u8) u21 {
     return @intCast(std.fmt.parseInt(u32, tok, 16) catch unreachable);
 }
-
-
-
-

@@ -92,7 +92,6 @@ pub const BBox = struct {
     }
 };
 
-
 pub const Arc = struct {
     cx: f64,
     cy: f64,
@@ -182,7 +181,6 @@ pub fn appendFlattened(out: *std.ArrayList(Vec2), a: Allocator, pts: []const BPt
     if (!closed) try out.append(a, pts[n - 1].v());
 }
 
-
 pub fn distPointSeg(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) f64 {
     const dx = bx - ax;
     const dy = by - ay;
@@ -242,7 +240,6 @@ pub fn bboxOfPath(pts: []const BPt, closed: bool) BBox {
     }
     return bb;
 }
-
 
 /// Signed shoelace area (positive = counter-clockwise in a y-up frame).
 pub fn polygonArea(pts: []const Vec2) f64 {
@@ -348,7 +345,6 @@ pub fn pointInLoopsEvenOdd(loops: []const []const BPt, x: f64, y: f64) bool {
     };
     return inside;
 }
-
 
 /// Triangles as a flat list: every 3 consecutive points form a triangle.
 pub const TriList = std.ArrayList(Vec2);
@@ -575,7 +571,6 @@ fn earClip(a: Allocator, ar: Allocator, ring: []const Vec2, out: *TriList) Alloc
     }
 }
 
-
 const testing = std.testing;
 
 fn triAreaSum(tris: []const Vec2) f64 {
@@ -584,22 +579,3 @@ fn triAreaSum(tris: []const Vec2) f64 {
     while (i + 2 < tris.len) : (i += 3) s += cross3(tris[i], tris[i + 1], tris[i + 2]) * 0.5;
     return s;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

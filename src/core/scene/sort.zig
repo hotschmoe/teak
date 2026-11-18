@@ -29,4 +29,3 @@ pub fn byDepth(eye: mat.Vec3, centers: []const mat.Vec3, out_order: []u32) void 
     };
     std.mem.sortUnstable(u32, out_order, Ctx{ .eye = eye, .centers = centers }, Ctx.farther);
 }
-

@@ -228,13 +228,7 @@ pub fn fmtFtIn(arena: std.mem.Allocator, inches: f32) []const u8 {
     return std.fmt.allocPrint(arena, "{s}{d}{s}\"", .{ sign, whole, frac_s }) catch "?";
 }
 
-
 const testing = std.testing;
 
 pub const small_fixture = @embedFile("fixtures/flush-psl-2x6.json");
 pub const large_fixture = @embedFile("fixtures/palmer-sd1-like.json");
-
-
-
-
-

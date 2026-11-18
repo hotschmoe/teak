@@ -280,7 +280,6 @@ fn kindColor(pal: anytype, kind: Kind) [4]f32 {
     };
 }
 
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
@@ -293,8 +292,6 @@ fn dismiss(id: u32) TMsg {
 }
 const tmsgs = .{ .dismissMsg = dismiss };
 
-
-
 fn frames(m: *T.Model, ms: u32) void {
     var left = ms;
     while (left > 0) {
@@ -303,13 +300,3 @@ fn frames(m: *T.Model, ms: u32) void {
         left -= dt;
     }
 }
-
-
-
-
-
-
-
-
-
-

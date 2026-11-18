@@ -205,7 +205,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             doc_end,
         };
 
-
         pub fn content(self: *const Self) []const u8 {
             return self.buf[0..self.len];
         }
@@ -230,7 +229,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
         pub fn selectionText(self: *const Self) []const u8 {
             return self.selection();
         }
-
 
         /// Replace the whole content (truncated at capacity on a grapheme
         /// boundary), cursor at the end, history cleared.
@@ -274,7 +272,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             const r = unicode.wordRangeAt(self.content(), i);
             self.setSelection(r.start, r.end);
         }
-
 
         /// Move the cursor to `i` (snapped back to a grapheme boundary),
         /// extending the selection when `extend`.
@@ -371,7 +368,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             }
             return true;
         }
-
 
         /// Insert text at the cursor, replacing the selection. Control
         /// characters are dropped; newline and tab become spaces unless
@@ -498,7 +494,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             return unicode.wordClass(unicode.firstCodepoint(t)) == .word;
         }
 
-
         /// Raw splice used by undo/redo (sizes always fit: they replay states
         /// that existed).
         fn splice(self: *Self, pos: usize, del: usize, ins: []const u8) void {
@@ -533,7 +528,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             self.goal_x = null;
             return true;
         }
-
 
         /// Apply a layout-independent editing key. Returns false when the key
         /// is not handled here (Up/Down/PageUp/PageDown need layout -- use
@@ -570,7 +564,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
             return true;
         }
 
-
         pub const Window = struct { start: usize, end: usize, cursor: usize, anchor: ?usize };
 
         /// Bytes `[start, end)` to display in a box that fits `max_cols`
@@ -592,7 +585,6 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type {
         }
     };
 }
-
 
 fn seqLen(lead: u8) usize {
     return if (lead >= 0xF0) 4 else if (lead >= 0xE0) 3 else 2;
@@ -686,15 +678,9 @@ fn filterInsert(multiline: bool, input: []const u8, max: usize, dest: ?[]u8) usi
     return out;
 }
 
-
 const testing = std.testing;
 
 const E = Editor(256, 512);
-
-
-
-
-
 
 fn expectInvariants(e: anytype) !void {
     const t = e.content();
@@ -705,18 +691,3 @@ fn expectInvariants(e: anytype) !void {
         try testing.expect(unicode.isGraphemeBoundary(t, a));
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -46,4 +46,3 @@ pub fn view(_: *const Model, cb: anytype) void {
     line(cb, mono(20, .regular, 0), "emoji: \u{1F600} \u{1F389} \u{1F680} \u{2764}\u{FE0F}");
     cb.popGroup();
 }
-

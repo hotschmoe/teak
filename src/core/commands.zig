@@ -140,7 +140,6 @@ pub fn CommandList(comptime Msg: type) type {
     };
 }
 
-
 /// Build menu rows from the command table, so the shortcut a menu shows is
 /// the one that works. `ids` names the commands in order; `"-"` is a
 /// separator. Each row's label is the command label, its shortcut text is
@@ -181,7 +180,6 @@ pub fn menuItems(
     }
     return out.items;
 }
-
 
 pub const PaletteViewOpts = struct {
     /// Window size in logical pixels (centers the panel; pass what `windowMsg` gave you).
@@ -331,7 +329,6 @@ pub fn CommandPalette(comptime cap: usize) type {
     };
 }
 
-
 const testing = std.testing;
 const snapshot = @import("snapshot.zig");
 const engine = @import("../layout/engine.zig");
@@ -350,15 +347,9 @@ fn sampleList(dirty: bool) List {
     return l;
 }
 
-
-
-
 const P = CommandPalette(24);
 
 fn pick(i: usize) TMsg {
     _ = i;
     return .quit;
 }
-
-
-

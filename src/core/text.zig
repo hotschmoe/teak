@@ -173,7 +173,6 @@ pub fn monoMeasurer() TextMeasurer {
     return .{ .ctx = undefined, .measure_fn = &S.measure };
 }
 
-
 fn testMeasure(_: *anyopaque, text: []const u8, font: FontSpec) TextMetrics {
     return .{
         .width = @as(f32, @floatFromInt(text.len)) * font.size_px,
@@ -182,7 +181,3 @@ fn testMeasure(_: *anyopaque, text: []const u8, font: FontSpec) TextMetrics {
         .descent = font.size_px * 0.25,
     };
 }
-
-
-
-

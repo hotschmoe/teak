@@ -131,7 +131,6 @@ fn appendFileUri(list: *std.ArrayList(u8), path: []const u8) void {
     list.appendSlice(gpa, "\r\n") catch return;
 }
 
-
 var view_class: objc.Class = null;
 var delegate_class: objc.Class = null;
 
@@ -185,7 +184,6 @@ fn defineClasses() void {
     };
     delegate_class = objc.defineClass("TeakWindowDelegate", "NSObject", &delegate_methods, &.{});
 }
-
 
 fn yes(_: Id, _: Sel) callconv(.c) bool {
     return true;
@@ -278,7 +276,6 @@ fn resetCursorRects(self: Id, _: Sel) callconv(.c) void {
     msg(void, self, sel("addCursorRect:cursor:"), .{ msg(objc.CGRect, self, sel("bounds"), .{}), s.cursor });
 }
 
-
 /// The text of an `insertText:` / `setMarkedText:` argument, which is an
 /// NSString or an NSAttributedString.
 fn stringArg(obj: Id) []const u8 {
@@ -351,7 +348,6 @@ fn characterIndex(_: Id, _: Sel, _: objc.CGPoint) callconv(.c) u64 {
 
 fn doCommand(_: Id, _: Sel, _: Sel) callconv(.c) void {}
 
-
 fn draggingEntered(_: Id, _: Sel, _: Id) callconv(.c) u64 {
     return 1; // NSDragOperationCopy
 }
@@ -368,7 +364,6 @@ fn performDrag(self: Id, _: Sel, info: Id) callconv(.c) bool {
     }
     return n > 0;
 }
-
 
 fn monotonicMs() u64 {
     return @intCast(@divFloor(std.Io.Clock.awake.now(std.Options.debug_io).nanoseconds, std.time.ns_per_ms));
@@ -544,7 +539,6 @@ pub const Host = struct {
         return text.measure(text_bytes, font);
     }
 
-
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
             .write_clipboard => |w| {
@@ -588,7 +582,6 @@ pub const Host = struct {
         try text.registerFace(family, weight, ttf);
     }
 
-
     pub fn clipboard(self: *Host) Clipboard {
         return .{ .ctx = @ptrCast(self), .read_fn = clipRead, .write_fn = clipWrite };
     }
@@ -615,7 +608,6 @@ pub const Host = struct {
         _ = msg(bool, pb, sel("setString:forType:"), .{ nsStringFrom(txt), objc.nsString(PB_STRING) });
     }
 
-
     pub fn imeState(self: *const Host) ImeState {
         const s = self.st;
         if (!s.has_marked) return .{};
@@ -627,7 +619,6 @@ pub const Host = struct {
     pub fn setImeSpot(self: *Host, x: i32, y: i32) void {
         self.st.ime_spot = .{ .x = @floatFromInt(x), .y = @floatFromInt(y) };
     }
-
 
     pub fn setCursor(self: *Host, shape: teak.CursorShape) void {
         const s = self.st;
@@ -644,7 +635,6 @@ pub const Host = struct {
         msg(void, s.window, sel("invalidateCursorRectsForView:"), .{s.view});
         if (c != null) msg(void, c, sel("set"), .{});
     }
-
 
     pub fn openFileDialog(self: *Host, _: FileDialogFilter) FileDialogResult {
         return self.runPanel(cls("NSOpenPanel"), sel("openPanel"));
@@ -706,4 +696,3 @@ pub const Host = struct {
 comptime {
     teak.validateHost(Host);
 }
-

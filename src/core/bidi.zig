@@ -549,7 +549,6 @@ fn isNeutral(c: Class) bool {
     };
 }
 
-
 /// L1 for the line `[start, end)` (byte offsets, e.g. `text_wrap.Line.start` and
 /// `.hang`): separators and trailing whitespace / isolate controls get the
 /// paragraph level. `out` must hold one level per code point of the line;
@@ -649,7 +648,6 @@ pub fn lineRuns(gpa: std.mem.Allocator, an: Analysis, start: usize, end: usize) 
     }
     return out.toOwnedSlice(gpa);
 }
-
 
 /// Direction of an arrow key.
 pub const Arrow = enum { left, right };
@@ -802,15 +800,6 @@ pub fn selectionSpans(gpa: std.mem.Allocator, text: []const u8, an: Analysis, st
     return out.toOwnedSlice(gpa);
 }
 
-
 const testing = std.testing;
 
-
-
-
-
-
-
-
 const conformance = @embedFile("testdata/BidiCharacterTest_excerpt.txt");
-

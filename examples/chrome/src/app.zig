@@ -11,7 +11,6 @@
 const std = @import("std");
 const teak = @import("teak");
 
-
 pub const ink: [4]f32 = .{ 0.10, 0.09, 0.08, 1 };
 pub const paper: [4]f32 = .{ 0.93, 0.91, 0.84, 1 };
 pub const paper_dark: [4]f32 = .{ 0.87, 0.84, 0.75, 1 };
@@ -114,7 +113,6 @@ const tab_button: teak.ButtonStyle = .{
     .min_width = 0,
     .h_padding = 8,
 };
-
 
 /// The modern theme: the stock `Theme.modern_light` (rounded, soft shadows,
 /// indigo accent) in the default sans typography.
@@ -294,7 +292,6 @@ fn lookFor(is_modern: bool) *const Look {
     return if (is_modern) &modern else &retro;
 }
 
-
 const Part = struct { name: []const u8, qty: u32, len_mm: f32 };
 const parts = [_]Part{
     .{ .name = "BRACKET-L-100", .qty = 4, .len_mm = 100.0 },
@@ -330,7 +327,6 @@ const material_opts: teak.ComboboxViewOpts = .{
 };
 
 const tab_names = [_][]const u8{ "PARTS", "NOTES", "DIFF" };
-
 
 pub const MAX_NAME = 24;
 const default_name_text = "BASE-PLATE";
@@ -414,7 +410,6 @@ const material_msgs = .{
 fn materialSelect(i: usize) Msg {
     return .{ .material = .{ .select = i } };
 }
-
 
 pub fn view(m: *const Model, cb: anytype) void {
     const l = lookFor(m.modern);
@@ -615,7 +610,6 @@ fn helpPopover(cb: anytype, l: *const Look, slide: f32) void {
     cb.popOverlay();
 }
 
-
 /// Ask for frame callbacks only while the popover is animating; once it
 /// settles the run loop goes idle again.
 pub fn subscribe(m: *const Model) []const teak.Sub(Msg) {
@@ -668,7 +662,6 @@ pub fn themeFor(m: *const Model) teak.Theme {
     return if (m.modern) modern_theme else theme;
 }
 
-
 const test_msr = teak.monoMeasurer();
 
 fn frame(m: *const Model, cb: *teak.CmdBuffer(Msg), rects: []teak.Rect, w: f32, h: f32) []const teak.Rect {
@@ -678,10 +671,3 @@ fn frame(m: *const Model, cb: *teak.CmdBuffer(Msg), rects: []teak.Rect, w: f32, 
     teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, w, h, test_msr);
     return rects[0..cb.cmds.items.len];
 }
-
-
-
-
-
-
-

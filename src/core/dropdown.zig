@@ -154,7 +154,6 @@ pub fn Dropdown(comptime cap: usize) type {
             }
         }
 
-
         /// New highlight index after `move`, clamped to `[0, count)`.
         fn moveIndex(cur: usize, move: Move, count: usize) usize {
             if (count == 0) return 0;
@@ -359,10 +358,6 @@ pub fn Dropdown(comptime cap: usize) type {
     };
 }
 
-
-
-
-
 const TestApp = struct {
     pub const Msg = union(enum) {
         toggle,
@@ -381,11 +376,6 @@ const TestApp = struct {
 
 const test_options = [_][]const u8{ "Alpha", "Beta", "Gamma", "Delta" };
 
-
-
-
-
-
 const layout = @import("../layout/engine.zig");
 const hit_test = @import("../input/hit_test.zig");
 const text_mod = @import("text.zig");
@@ -393,12 +383,3 @@ const text_mod = @import("text.zig");
 const long_options = [_][]const u8{
     "o0", "o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8", "o9",
 };
-
-
-
-
-
-
-
-
-

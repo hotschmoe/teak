@@ -32,4 +32,3 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(dump);
     std.debug.print("{s}", .{dump});
 }
-

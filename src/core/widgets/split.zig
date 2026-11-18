@@ -231,7 +231,6 @@ pub fn end(cb: anytype) void {
     cb.popGroup();
 }
 
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
@@ -239,10 +238,4 @@ const text = @import("../text.zig");
 
 const opts: Opts = .{ .width = 506, .height = 200, .divider = 6, .min_a = 100, .min_b = 150 };
 
-
-
-
-
-
 const TestMsg = union(enum) { x };
-

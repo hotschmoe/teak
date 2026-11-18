@@ -1,6 +1,5 @@
 const std = @import("std");
 
-
 pub const MAX_NAME: usize = 63;
 const BUFFER_LEN: usize = MAX_NAME + 1;
 
@@ -144,16 +143,3 @@ pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
 
     cb.popGroup();
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

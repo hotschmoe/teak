@@ -26,4 +26,3 @@ comptime {
     // wasm32-freestanding has no libc: stb gets malloc/libm from this shim.
     if (@import("builtin").os.tag == .freestanding) _ = @import("stb_wasm_shim.zig");
 }
-

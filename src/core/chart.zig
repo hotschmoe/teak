@@ -102,7 +102,6 @@ pub fn lineChartPrimitives(
     return list.toOwnedSlice(arena) catch oom();
 }
 
-
 pub const BarChartOpts = struct {
     /// Canvas size the primitives are laid out for (match the CanvasStyle).
     width: f32,
@@ -220,10 +219,3 @@ const Plot = struct {
         }
     }
 };
-
-
-
-
-
-
-

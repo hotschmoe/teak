@@ -77,4 +77,3 @@ pub fn droppedFiles(svc: *Service, uri_list: []const u8) void {
         count += 1;
     }
 }
-

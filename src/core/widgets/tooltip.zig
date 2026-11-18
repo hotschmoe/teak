@@ -144,7 +144,6 @@ pub fn view(model: *const Model, cb: anytype, texts: []const []const u8, o: View
     cb.popOverlay();
 }
 
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
@@ -157,10 +156,3 @@ const tip_text = [_][]const u8{ "Save (Ctrl+S)", "Open a file" };
 fn mkev(hit: ?TMsg, now: u64) pointer.PointerEvent(TMsg) {
     return .{ .x = 10, .y = 10, .hit = hit, .box = .{ .x = 10, .y = 20, .w = 60, .h = 30 }, .now_ms = now };
 }
-
-
-
-
-
-
-

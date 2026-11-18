@@ -13,11 +13,9 @@
 const std = @import("std");
 const teak = @import("teak");
 
-
 pub const MAX_ITEMS = 256;
 pub const MAX_LABEL = 64;
 pub const MAX_INPUT = MAX_LABEL;
-
 
 pub const Item = struct {
     label: [MAX_LABEL]u8 = @splat(0),
@@ -57,7 +55,6 @@ pub const Drag = struct {
     after: bool = false,
 };
 
-
 pub const Msg = union(enum) {
     input_focus,
     input_char: u8,
@@ -86,7 +83,6 @@ pub fn moveItem(m: *Model, from: usize, to: usize) void {
     }
     m.items[to] = item;
 }
-
 
 pub fn update(m: *Model, msg: Msg) void {
     switch (msg) {
@@ -174,7 +170,6 @@ fn updateDrag(m: *Model, ev: teak.DragEvent) void {
         .cancel => m.drag = null,
     }
 }
-
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .vertical, .padding = 20, .gap = 12, .align_cross = .stretch });
@@ -264,7 +259,6 @@ pub fn dragMsg(_: *const Model, ev: teak.DragEvent) ?Msg {
     return .{ .drag = ev };
 }
 
-
 pub fn keyCharMsg(m: *const Model, c: u8) ?Msg {
     if (!m.input_focused) return null;
     return .{ .input_char = c };
@@ -295,19 +289,10 @@ pub fn debugState(m: *const Model, w: *std.Io.Writer) void {
     }
 }
 
-
-
-
-
-
-
-
-
 fn labels(m: *const Model, buf: *[8][]const u8) []const []const u8 {
     for (m.items[0..m.items_len], 0..) |*it, i| buf[i] = it.label[0..it.label_len];
     return buf[0..m.items_len];
 }
-
 
 fn flat(parts: []const []const u8) []const u8 {
     const S = struct {
@@ -320,7 +305,3 @@ fn flat(parts: []const []const u8) []const u8 {
     }
     return S.out[0..n];
 }
-
-
-
-

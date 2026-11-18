@@ -352,5 +352,3 @@ pub fn compose(base: u21, mark: u21) ?u21 {
     }
     return null;
 }
-
-

@@ -67,6 +67,3 @@ pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
 
     cb.popGroup();
 }
-
-
-

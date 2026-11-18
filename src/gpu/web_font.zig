@@ -41,5 +41,3 @@ pub fn css(buf: *[css_buf_len]u8, font: teak.FontSpec) []const u8 {
     };
     return std.fmt.bufPrint(buf, "{d} {d}px {s}", .{ cssWeight(font.weight), font.size_px, list }) catch "14px monospace";
 }
-
-

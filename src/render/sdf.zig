@@ -152,7 +152,6 @@ pub fn recordFloat(verts: []const Vertex, header: usize, k: usize) f32 {
     };
 }
 
-
 const testing = std.testing;
 
 fn emitTest(spec: Spec, clip: Rect) !std.ArrayList(Vertex) {
@@ -162,8 +161,3 @@ fn emitTest(spec: Spec, clip: Rect) !std.ArrayList(Vertex) {
 }
 
 const big_clip = Rect{ .x = -1000, .y = -1000, .w = 4000, .h = 4000 };
-
-
-
-
-

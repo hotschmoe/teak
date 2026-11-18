@@ -283,7 +283,6 @@ pub fn TextStage(comptime Raster: type) type {
             }
         }
 
-
         fn clearRuns(self: *Self) void {
             self.memo_prev.clearRetainingCapacity();
             for (self.runs) |*r| r.used = false;
@@ -426,7 +425,6 @@ pub fn TextStage(comptime Raster: type) type {
             self.runs = fresh;
             self.gpa.free(old);
         }
-
 
         fn emitGlyph(
             self: *Self,
@@ -737,7 +735,6 @@ fn deviceClip(draw: teak.TextDraw, scale: f32) DeviceClip {
     };
 }
 
-
 /// 6-px-wide boxes, one glyph per byte.
 const FakeRaster = struct {
     const Bitmap = struct { pixels: []const u8, width: u32, height: u32, bearing_x: i32, bearing_y: i32 };
@@ -758,4 +755,3 @@ const FakeRaster = struct {
 fn testDraw(text: []const u8, x: f32) teak.TextDraw {
     return .{ .rect_x = x, .rect_y = 10, .rect_w = 100, .rect_h = 12, .content = text, .font = .{ .size_px = 10 }, .color = .{ 1, 1, 1, 1 }, .clip_x = 0, .clip_y = 0, .clip_w = 500, .clip_h = 500 };
 }
-

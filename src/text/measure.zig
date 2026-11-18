@@ -102,5 +102,3 @@ fn metricsWith(w: f32, font: teak.FontSpec) teak.TextMetrics {
         .descent = vm.descent,
     };
 }
-
-

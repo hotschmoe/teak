@@ -736,4 +736,3 @@ fn toolLaunch(mcp: *Mcp, args: std.json.ObjectMap, res: *ToolResult) !void {
         jsonInt(o.get("height") orelse .{ .integer = 0 }),
     });
 }
-

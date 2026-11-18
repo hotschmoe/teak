@@ -112,4 +112,3 @@ const lines_without = edgeLines(false);
 
 pub const with_edges: teak.MeshData = .{ .vertices = &vertices, .indices = &indices, .lines = &lines_with };
 pub const without_edges: teak.MeshData = .{ .vertices = &vertices, .indices = &indices, .lines = &lines_without };
-

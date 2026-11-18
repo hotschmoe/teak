@@ -50,7 +50,6 @@ pub const FileDialogPoll = teak.FileDialogPoll;
 
 const gpa = std.heap.page_allocator;
 
-
 const PollFd = extern struct { fd: c_int, events: c_short, revents: c_short };
 const POLLIN: c_short = 0x001;
 const POLLOUT: c_short = 0x004;
@@ -67,7 +66,6 @@ extern "c" fn munmap(addr: *anyopaque, len: usize) c_int;
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 const O_NONBLOCK: c_int = 0x800;
 const O_CLOEXEC: c_int = 0x80000;
-
 
 const Xkb = struct {
     lib: std.DynLib,
@@ -101,7 +99,6 @@ const Xkb = struct {
     }
 };
 
-
 const CursorImage = extern struct { width: u32, height: u32, hotspot_x: u32, hotspot_y: u32, delay: u32 };
 const WlCursor = extern struct { image_count: c_uint, images: [*]*CursorImage, name: [*:0]const u8 };
 const CursorLib = struct {
@@ -124,7 +121,6 @@ const CursorLib = struct {
         return .{ .lib = lib, .theme_load = a.?, .theme_destroy = b.?, .theme_get_cursor = c.?, .image_get_buffer = d.? };
     }
 };
-
 
 const MAX_OFFERS = 6;
 const Offer = struct {
@@ -234,7 +230,6 @@ const State = struct {
 
     effects: *native_effects.Service,
 
-
     fn setTitleZ(self: *State, title: []const u8) void {
         var buf: [256]u8 = undefined;
         const n = @min(title.len, buf.len - 1);
@@ -272,7 +267,6 @@ const State = struct {
         if (self.viewport) |vp| wl.wp_viewport_set_destination(vp, @intCast(self.width), @intCast(self.height));
     }
 
-
     /// Read whatever the compositor sent (never blocks) and dispatch it.
     fn pumpEvents(self: *State) void {
         const api = &client.api;
@@ -295,7 +289,6 @@ const State = struct {
             }
         }
     }
-
 
     fn currentMods(self: *State) teak.Modifiers {
         const x = self.xkb orelse return .{};
@@ -322,7 +315,6 @@ const State = struct {
         if (r.paste and first) self.paste_requested = true;
         if (first and r.repeats and x.f.keymap_key_repeats(self.xkb_keymap.?, code) != 0) self.repeat.press(key, self.now_ms);
     }
-
 
     fn initCursor(self: *State) void {
         const lib = self.cursor_lib orelse return;
@@ -353,7 +345,6 @@ const State = struct {
         wl.wl_pointer_set_cursor(ptr, self.pointer_serial, surf, @divTrunc(@as(i32, @intCast(img.hotspot_x)), bs), @divTrunc(@as(i32, @intCast(img.hotspot_y)), bs));
         _ = client.api.display_flush(self.display);
     }
-
 
     fn writeClipboard(self: *State, txt: []const u8) void {
         const mgr = self.data_mgr orelse return;
@@ -488,7 +479,6 @@ const State = struct {
         return self.read_buf orelse "";
     }
 
-
     /// A text-input `done`: apply the commit, then the preedit.
     fn applyImeDone(self: *State) void {
         if (self.commit_tmp_len > 0) {
@@ -545,7 +535,6 @@ extern "c" fn signal(sig: c_int, handler: ?*const anyopaque) ?*const anyopaque;
 fn S(d: ?*anyopaque) *State {
     return @ptrCast(@alignCast(d.?));
 }
-
 
 fn nameIs(iface: [*:0]const u8, comptime want: []const u8) bool {
     return std.mem.eql(u8, std.mem.span(iface), want);
@@ -877,7 +866,6 @@ const text_input_listener = wl.zwp_text_input_v3_listener{
     .done = onTiDone,
 };
 
-
 fn monotonicMs() u64 {
     return @intCast(@divFloor(std.Io.Clock.awake.now(std.Options.debug_io).nanoseconds, std.time.ns_per_ms));
 }
@@ -1033,7 +1021,6 @@ pub const Host = struct {
     fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
         return text.measure(text_bytes, font);
     }
-
 
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
@@ -1193,4 +1180,3 @@ fn envScale() ?f32 {
 comptime {
     teak.validateHost(Host);
 }
-

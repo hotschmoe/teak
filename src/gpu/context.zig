@@ -117,5 +117,3 @@ pub fn validateGpu(comptime T: type) void {
         @compileError("Gpu '" ++ tn ++ "'.setOverlayStart must be a function " ++
             "(expected fn(*Gpu, OverlaySplit) void)");
 }
-
-

@@ -25,4 +25,3 @@ fn disabled(c: anytype) bool {
         else => false,
     };
 }
-

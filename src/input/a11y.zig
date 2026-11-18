@@ -493,20 +493,8 @@ fn nodeEql(a: A11yNode, b: A11yNode) bool {
         std.mem.eql(u8, a.label, b.label) and std.mem.eql(u8, a.value, b.value);
 }
 
-
 const cmd_mod = @import("../core/cmd.zig");
 const text_mod = @import("../core/text.zig");
-
-
-
-
-
-
-
-
-
-
-
 
 /// Fixed-capacity queue of assistive-technology requests that arrive on
 /// another thread (UIA worker). The producer calls `push` under its own lock;
@@ -560,5 +548,3 @@ pub const ActionQueue = struct {
         return n;
     }
 };
-
-

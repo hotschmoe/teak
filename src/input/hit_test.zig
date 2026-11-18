@@ -6,7 +6,6 @@ const Rect = layout.Rect;
 const ClipStack = layout.ClipStack;
 const clipRect = layout.clipRect;
 
-
 pub fn HitResult(comptime Msg: type) type {
     return struct {
         /// Cmd index of the hit. Useful for the host to look up the
@@ -163,7 +162,6 @@ fn hitTestLayer(
     if (modal_index) |idx| return .{ .index = idx, .msg = modal_msg };
     return null;
 }
-
 
 /// The pointer canvas (`CanvasCmd.pointer`) under the cursor.
 pub const PointerTarget = struct {
@@ -404,36 +402,7 @@ pub fn sliderDrag(
     };
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn testLayout(rects: []Rect, cb: anytype, w: f32, h: f32) []const Rect {
     layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, w, h, text_mod.monoMeasurer());
     return rects[0..cb.cmds.items.len];
 }
-
-
-
-
-
-
-
-

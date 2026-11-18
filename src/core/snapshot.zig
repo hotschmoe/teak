@@ -31,7 +31,6 @@ const transient_mod = @import("transient.zig");
 const Rect = layout.Rect;
 const TransientState = transient_mod.TransientState;
 
-
 /// Optional header printed once above the cmd lines. Every field is
 /// caller-supplied data — this module never reads a clock or a global,
 /// so passing a header keeps the output deterministic for a fixed frame.
@@ -55,7 +54,6 @@ pub const SnapshotOptions = struct {
     /// Optional header line (window size, frame counter, last-msg name).
     header: ?Header = null,
 };
-
 
 /// Serialize the frame `cmds` + `rects` to `writer`. `cmds` is any slice
 /// of `Cmd(Msg)` — taken as `anytype` like the layout passes, since only
@@ -129,7 +127,6 @@ pub fn expectSnapshot(
     defer std.testing.allocator.free(actual);
     try std.testing.expectEqualStrings(expected, actual);
 }
-
 
 fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
     switch (c) {
@@ -284,7 +281,6 @@ fn writeCmd(writer: anytype, c: anytype, r: Rect) !void {
     }
 }
 
-
 /// Round a float to the nearest integer for stable, diff-friendly output.
 /// Sub-pixel jitter never changes the serialized bytes.
 ///
@@ -335,7 +331,6 @@ fn writeQuoted(writer: anytype, s: []const u8) !void {
     try writer.writeByte('"');
 }
 
-
 const cmd = @import("cmd.zig");
 const text = @import("text.zig");
 
@@ -345,26 +340,3 @@ fn layoutInto(rects: []Rect, cmds: anytype, w: f32, h: f32) []const Rect {
     layout.LayoutEngine.doLayout(rects[0..cmds.len], cmds, w, h, text.monoMeasurer());
     return rects[0..cmds.len];
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

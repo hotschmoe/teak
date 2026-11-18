@@ -138,7 +138,6 @@ fn scriptsLine(cb: anytype) void {
     cb.popGroup();
 }
 
-
 /// The one pointer hook: pointer, wheel and metrics for the text areas.
 pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
     if (ev.asText()) |t| return onText(m, t);
@@ -214,7 +213,3 @@ pub fn clipboardMsg(m: *const Model, key: teak.SpecialKey, paste: []const u8) ?M
         else => null,
     };
 }
-
-
-
-

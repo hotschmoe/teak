@@ -12,4 +12,3 @@
 pub fn oom() noreturn {
     @panic("teak: out of memory (per-frame command buffer / arena / vertex list)");
 }
-

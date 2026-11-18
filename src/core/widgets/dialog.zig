@@ -106,7 +106,6 @@ pub fn keyMsg(key: keys.SpecialKey, msgs: anytype, has_cancel: bool) ?@TypeOf(ms
     };
 }
 
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
@@ -123,8 +122,3 @@ fn layoutFor(cb: anytype, rects: []engine.Rect) []const engine.Rect {
     engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 600, 400, text_mod.monoMeasurer());
     return rects[0..n];
 }
-
-
-
-
-

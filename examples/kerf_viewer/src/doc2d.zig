@@ -136,7 +136,6 @@ pub const Docs2D = struct {
         return if (idx < self.sheets.items.len) &self.sheets.items[idx] else null;
     }
 
-
     pub fn fit(self: *Docs2D, idx: usize) void {
         const s = self.sheet(idx) orelse return;
         if (self.w <= 0 or self.h <= 0) return;
@@ -185,7 +184,6 @@ pub const Docs2D = struct {
         s.fitted = true;
     }
 
-
     /// `src` of the topmost thing under canvas-local `(x, y)` (4 px tolerance).
     pub fn pickSrc(self: *Docs2D, idx: usize, x: f32, y: f32) ?[]const u8 {
         const s = self.sheet(idx) orelse return null;
@@ -206,7 +204,6 @@ pub const Docs2D = struct {
         for (s.d.items) |it| if (ir.srcMatches(it.src, src)) return true;
         return false;
     }
-
 
     /// Rebuild the triangle list for sheet `idx` with `selected` / `hovered`
     /// highlighted. A no-op when nothing changed since the last build.
@@ -258,7 +255,6 @@ pub const Docs2D = struct {
     }
 };
 
-
 /// 1-based part id for a drawing `src` ("beam", "studs#1"), 0 when it names
 /// no part (notes, dimensions, titles). A bare id with several instances maps
 /// to the first; "#k" picks the part whose `instance` is `k`.
@@ -290,11 +286,6 @@ pub fn srcOfPart(docs: *Docs2D, idx: usize, p: kerf.Part, buf: []u8) []const u8 
     return "";
 }
 
-
 const testing = std.testing;
 const flush_a = @embedFile("fixtures/flush-psl-2x6.A.json");
 const flush_b = @embedFile("fixtures/flush-psl-2x6.B.json");
-
-
-
-

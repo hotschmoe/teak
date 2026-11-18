@@ -160,7 +160,6 @@ pub fn fitCell(
     return out;
 }
 
-
 const testing = std.testing;
 
 fn expectFit(expected: []const u8, s: []const u8, width: usize, al: CellAlign) !void {
@@ -169,13 +168,6 @@ fn expectFit(expected: []const u8, s: []const u8, width: usize, al: CellAlign) !
     try testing.expectEqualStrings(expected, got);
 }
 
-
-
-
-
-
-
 const cmd = @import("cmd.zig");
 const layout = @import("../layout/engine.zig");
 const snapshot = @import("snapshot.zig");
-

@@ -236,4 +236,3 @@ pub const Client = struct {
         }
     }
 };
-

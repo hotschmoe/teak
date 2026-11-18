@@ -208,7 +208,6 @@ pub fn textOrigin(d: *const ir.Drawing, src: []const u8) ?TextOrigin {
     return .{ .x = b.x, .y = b.y, .halign = b.halign, .valign = b.valign, .h = b.h, .rot = b.rot };
 }
 
-
 const testing = std.testing;
 
 const pick_json =
@@ -227,9 +226,3 @@ const pick_json =
     \\    { "t": "text", "pen": "anno", "src": "rot", "s": "VERT", "x": 38, "y": 2, "h": 1, "rot": 90 }
     \\  ] }
 ;
-
-
-
-
-
-

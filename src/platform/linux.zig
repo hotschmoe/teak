@@ -234,4 +234,3 @@ pub const Host = struct {
 comptime {
     teak.validateHost(Host);
 }
-

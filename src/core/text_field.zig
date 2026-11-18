@@ -27,7 +27,6 @@ const editor_mod = @import("editor.zig");
 
 const SpecialKey = keys.SpecialKey;
 
-
 pub fn TextField(comptime capacity: usize) type {
     return struct {
         /// Canonical text-field message vocabulary. Same variant names
@@ -129,7 +128,6 @@ pub fn TextField(comptime capacity: usize) type {
     };
 }
 
-
 /// Build the AppMsg for a typed character into the named field.
 /// `field_name` is the field on the composed AppMsg (e.g. "search").
 pub fn textFieldChar(
@@ -227,24 +225,5 @@ pub fn textFieldCopyText(model: anytype, key: SpecialKey) ?[]const u8 {
     return model.selectionText();
 }
 
-
 const cmd_mod = @import("cmd.zig");
 const component_mod = @import("component.zig");
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

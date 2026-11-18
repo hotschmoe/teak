@@ -183,7 +183,3 @@ pub fn translation(t: Vec3) Affine {
 }
 
 const expectApproxEqAbs = std.testing.expectApproxEqAbs;
-
-
-
-

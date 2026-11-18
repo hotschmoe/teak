@@ -34,7 +34,6 @@ const run_mod = @import("run.zig");
 /// Bump when the exported C ABI below changes.
 pub const abi_version: u32 = 1;
 
-
 /// A 64-bit hash of a type's SHAPE: its name, size, and (recursively) the
 /// names, types and offsets of its fields. Pointers hash their own type name
 /// only (no recursion through them), so self-referential types terminate.
@@ -76,7 +75,6 @@ fn feed(h: *std.hash.Wyhash, comptime T: type, comptime depth: u32) void {
         else => {}, // scalars, pointers: the type name + size above identify them
     }
 }
-
 
 /// Everything the window system and GPU need, created once by the FIRST
 /// library and handed to every later one.
@@ -207,7 +205,6 @@ pub fn Plugin(comptime App: type, comptime Host: type, comptime Gpu: type, compt
         }
     };
 }
-
 
 /// One loaded image: its symbols.
 const Image = struct {
@@ -401,9 +398,6 @@ pub fn runLoader(init: std.process.Init, default_path: []const u8) !void {
     }
 }
 
-
 fn fpOf(comptime T: type) u64 {
     return comptime typeFingerprint(T);
 }
-
-

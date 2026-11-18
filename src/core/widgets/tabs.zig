@@ -132,7 +132,6 @@ pub fn viewWith(
     cb.popGroup();
 }
 
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
@@ -147,8 +146,3 @@ const App = struct {
 };
 
 const tab_labels = [_][]const u8{ "General", "Network", "About" };
-
-
-
-
-

@@ -274,7 +274,6 @@ fn serializeA11yTree(nodes: []const A11yNode) struct { records_len: u32, strings
     return .{ .records_len = @intCast(count * A11Y_RECORD_BYTES), .strings_len = strings_used };
 }
 
-
 const MAX_A11Y_ACTIONS: usize = 16;
 const A11Y_ACTION_BYTES: usize = 16;
 const A11Y_ACTION_TEXT_BYTES: usize = 2048;
@@ -688,7 +687,6 @@ pub const Host = struct {
         slot.state = .resolved_ok;
     }
 
-
     pub fn submit(_: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
             .http => |r| {
@@ -829,13 +827,3 @@ comptime {
 }
 
 //
-
-
-
-
-
-
-
-
-
-

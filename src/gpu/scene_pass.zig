@@ -124,7 +124,6 @@ pub const Plan = struct {
     }
 };
 
-
 /// One plane's placement as the `vs_plane` instance stream reads it: the
 /// plane frame as a 3x4 transform (columns `u`, `v`, `u x v`, origin), the
 /// opacity in `tint.a`, and the depth-bias layer. 80 bytes.
@@ -263,7 +262,6 @@ pub const Layers = struct {
     }
 };
 
-
 /// Corners of a quad lying in the cut plane that covers the world-space
 /// bounds of an item (`lo`/`hi` of its mesh under `xf`), or null when the
 /// whole box is on one side of the plane (nothing to cap). The plane keeps
@@ -305,7 +303,6 @@ pub fn capQuad(plane: [4]f32, lo: mat.Vec3, hi: mat.Vec3, xf: mat.Affine) ?[4]ma
     }
     return out;
 }
-
 
 const mat = teak.scene.mat;
 
@@ -357,7 +354,6 @@ pub fn gridUniform(draw: SceneDraw, grid: teak.scene.Grid, target_w: u32, target
         .extra = .{ far_w, if (draw.camera.view_proj[11] != 0) 1 else 0, 0, 0 },
     };
 }
-
 
 /// View-space image of the world direction `d`, read off a camera
 /// `view_proj` (perspective or orthographic): `(right, up, toward-viewer)`.
@@ -444,7 +440,6 @@ pub fn gizmoProjection() [16]f32 {
     };
 }
 
-
 const TestCtx = struct {
     pub fn hasMesh(_: TestCtx, h: u32) bool {
         return h != 99;
@@ -458,26 +453,12 @@ fn draw0() SceneDraw {
     return .{ .mesh = 0, .rect_x = 0, .rect_y = 0, .rect_w = 1, .rect_h = 1, .clip_x = 0, .clip_y = 0, .clip_w = 1, .clip_h = 1 };
 }
 
-
-
-
-
-
-
 fn orbitCam(o: teak.scene.Orbit) teak.Camera {
     return o.camera(800, 600, null);
 }
-
-
-
-
-
-
 
 const LayerCtx = struct {
     pub fn hasImage(_: LayerCtx, h: u32) bool {
         return h != 99;
     }
 };
-
-

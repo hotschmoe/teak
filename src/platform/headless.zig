@@ -108,7 +108,6 @@ pub const Host = struct {
         self.captured.deinit(self.gpa);
     }
 
-
     fn push(self: *Host, e: Event) void {
         if (self.event_count == MAX_EVENTS) return; // a script that outruns its frames: drop, not crash
         self.events[self.event_count] = e;
@@ -190,7 +189,6 @@ pub const Host = struct {
         return self.title_buf[0..self.title_len];
     }
 
-
     /// Start listening on the Unix socket `path`. False: unsupported OS or
     /// the socket could not be created.
     pub fn controlListen(self: *Host, path: []const u8) bool {
@@ -221,7 +219,6 @@ pub const Host = struct {
     pub fn requestClose(self: *Host) void {
         self.close();
     }
-
 
     pub fn nativeHandle(_: *Host) void {}
 
@@ -339,7 +336,6 @@ pub const Host = struct {
         return 1.0;
     }
 
-
     pub fn submit(self: *Host, e: Effect) EffectSubmit {
         const cap = self.capture(e) catch return .busy;
         self.captured.append(self.gpa, cap) catch {
@@ -400,18 +396,9 @@ comptime {
     teak.validateHost(Host);
 }
 
-
 fn testHost() !Host {
     return Host.init(std.testing.allocator, 640, 480) catch |e| switch (e) {
         error.FontNotFound => return error.SkipZigTest, // no system TTF (headless CI)
         else => return e,
     };
 }
-
-
-
-
-
-
-
-

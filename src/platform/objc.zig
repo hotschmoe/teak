@@ -133,7 +133,6 @@ pub fn allocInit(class: Id) Id {
     return msg(Id, msg(Id, class, sel("alloc"), .{}), sel("init"), .{});
 }
 
-
 /// A new autoreleased NSString from UTF-8 (`s` must be NUL-terminated).
 pub fn nsString(s: [*:0]const u8) Id {
     return msg(Id, cls("NSString"), sel("stringWithUTF8String:"), .{s});
@@ -146,7 +145,6 @@ pub fn utf8Of(str: Id) []const u8 {
     const p = msg(?[*:0]const u8, str, sel("UTF8String"), .{}) orelse return "";
     return std.mem.span(p);
 }
-
 
 pub const Method = struct { name: [*:0]const u8, imp: Imp, types: [*:0]const u8 };
 
@@ -173,4 +171,3 @@ pub fn getState(obj: Id) ?*anyopaque {
     const iv = api.class_getInstanceVariable(msg(Class, obj, sel("class"), .{}), "teak_state");
     return api.object_getIvar(obj, iv);
 }
-

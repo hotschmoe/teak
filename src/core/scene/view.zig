@@ -151,6 +151,3 @@ pub const View = struct {
     planes: []const Plane = &.{},
     sprites: []const Sprite = &.{},
 };
-
-
-

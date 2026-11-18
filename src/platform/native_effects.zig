@@ -126,7 +126,6 @@ pub const Service = struct {
         self.mutex.unlock(self.io);
     }
 
-
     /// Start `e`. Slices inside `e` are copied; nothing is kept by reference.
     pub fn submit(self: *Service, e: Effect) teak.EffectSubmit {
         switch (e) {
@@ -180,7 +179,6 @@ pub const Service = struct {
         self.push(null, r);
     }
 
-
     /// Fill `buf` with the results that are ready; returns the count. The
     /// slices stay valid until the next `poll`.
     pub fn poll(self: *Service, buf: []EffectResult, now_ms: u64) usize {
@@ -214,7 +212,6 @@ pub const Service = struct {
             self.pending.append(gpa, .{ .arena = a, .result = .{ .http = .{ .id = j.id, .status = 0, .err = err } } }) catch freeArena(a);
         }
     }
-
 
     const HttpJob = struct {
         service: *Service,
@@ -331,7 +328,6 @@ pub const Service = struct {
         return .{ .status = @backingInt(res.status), .body = out.written() };
     }
 
-
     fn storageSet(self: *Service, key: []const u8, value: []const u8) void {
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const path = storagePath(&path_buf, self.app_name, key) orelse return;
@@ -354,7 +350,6 @@ pub const Service = struct {
             null;
         self.push(arena, .{ .storage_value = .{ .id = id, .value = value } });
     }
-
 
     const DialogJob = struct {
         service: *Service,
@@ -538,7 +533,6 @@ fn selfCmdline(io: Io, a: std.mem.Allocator) []const u8 {
 }
 extern "c" fn _NSGetArgc() *c_int;
 extern "c" fn _NSGetArgv() *[*][*:0]u8;
-
 
 /// "Kerf CAD (beta)" -> "kerf-cad-beta": lowercase letters and digits, runs
 /// of anything else become one '-', no leading / trailing '-'; "app" if
@@ -796,15 +790,6 @@ fn utcOffsetMinutes(unix_secs: i64) i32 {
     return @intCast(@divTrunc(tm.gmtoff, 60));
 }
 
-
-
-
-
-
-
-
-
-
 const TestServer = struct {
     fd: c_int,
     port: u16,
@@ -894,12 +879,6 @@ fn waitOne(svc: *Service, out: *EffectResult) !void {
     return error.NoResult;
 }
 
-
-
-
-
-
-
 const posix_env = struct {
     extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
     extern "c" fn unsetenv(name: [*:0]const u8) c_int;
@@ -925,12 +904,6 @@ fn unsetEnv(name: [:0]const u8) void {
     } else _ = posix_env.unsetenv(name);
 }
 
-
-
-
-
-
-
 /// Write an executable picker script that records its argv in `<dir>/argv`
 /// and prints `choice` (nothing when empty), exiting `code`.
 fn writePickerScript(dir: []const u8, choice: []const u8, code: u8) !void {
@@ -942,6 +915,3 @@ fn writePickerScript(dir: []const u8, choice: []const u8, code: u8) !void {
     const text = try std.fmt.bufPrint(&body, "#!/bin/sh\nprintf '%s\\n' \"$@\" > {s}/argv\n[ -n '{s}' ] && echo '{s}'\nexit {d}\n", .{ dir, choice, choice, code });
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = text, .flags = .{ .permissions = .executable_file } });
 }
-
-
-

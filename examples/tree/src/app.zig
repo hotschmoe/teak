@@ -17,7 +17,6 @@
 const std = @import("std");
 const teak = @import("teak");
 
-
 pub const MAX_NODES = 128;
 pub const MAX_LABEL = 48;
 pub const INDENT_PER_LEVEL: f32 = 20;
@@ -29,7 +28,6 @@ pub const INDENT_PER_LEVEL: f32 = 20;
 pub const SCROLL_VIEWPORT_HEIGHT: f32 = 400;
 /// Pixel delta for an arrow-key step. Roughly one row.
 pub const SCROLL_LINE_PX: f32 = 24;
-
 
 pub const Node = struct {
     label: [MAX_LABEL]u8 = @splat(0),
@@ -87,14 +85,12 @@ pub const Model = struct {
     }
 };
 
-
 pub const Msg = union(enum) {
     toggle: u16, // node pre-order index
     select: u16,
     /// Relative scroll delta in pixels; positive = scroll down.
     scroll_by: f32,
 };
-
 
 pub fn update(m: *Model, msg: Msg) void {
     switch (msg) {
@@ -111,7 +107,6 @@ pub fn update(m: *Model, msg: Msg) void {
         },
     }
 }
-
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .vertical, .padding = 20, .gap = 12 });
@@ -165,7 +160,6 @@ fn emitRow(cb: anytype, idx: u16, node: *const Node) void {
 
     cb.popGroup();
 }
-
 
 const SampleEntry = struct { depth: u8, label: []const u8, expanded: bool = true };
 
@@ -221,12 +215,3 @@ pub fn wheelMsg(_: *const Model, wheel_dy: f32) ?Msg {
     if (wheel_dy == 0) return null;
     return .{ .scroll_by = wheel_dy };
 }
-
-
-
-
-
-
-
-
-

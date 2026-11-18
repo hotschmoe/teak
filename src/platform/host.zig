@@ -320,6 +320,3 @@ pub fn validateHost(comptime T: type) void {
         @compileError("Host '" ++ tn ++ "' must declare both `submit` and `pollEffectResults` " ++
             "(declarative effects) or neither");
 }
-
-
-

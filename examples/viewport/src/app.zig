@@ -190,6 +190,3 @@ fn scrollbarThumb(arena: std.mem.Allocator, m: *const Model) []const teak.Canvas
     prims[0] = .{ .filled_rect = .{ .x = 0, .y = thumb_y, .w = 8, .h = thumb_h, .color = .{ 0.55, 0.6, 0.75, 1 } } };
     return prims;
 }
-
-
-

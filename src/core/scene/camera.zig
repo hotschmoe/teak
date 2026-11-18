@@ -315,24 +315,9 @@ pub fn unprojectPx(cam: Camera, w: f32, h: f32, x: f32, y: f32, z: f32) ?Vec3 {
     return unproject(inv, 2 * x / w - 1, 1 - 2 * y / h, z);
 }
 
-
 const testing = std.testing;
 const approx = testing.expectApproxEqAbs;
 
 fn expectVec(want: Vec3, got: Vec3, tol: f32) !void {
     for (0..3) |i| try approx(want[i], got[i], tol);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-

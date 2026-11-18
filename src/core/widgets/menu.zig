@@ -170,7 +170,6 @@ pub const ViewOpts = struct {
     bar_bg: bool = true,
 };
 
-
 fn firstSelectable(items: anytype) ?u8 {
     for (items, 0..) |it, i| if (it.selectable()) return @intCast(i);
     return null;
@@ -367,7 +366,6 @@ pub fn Nav(comptime Action: type) type {
             return .none;
         }
 
-
         fn rowsHeight(items: []const I, o: ViewOpts) f32 {
             var h: f32 = 0;
             for (items) |it| h += if (it.separator) SEP_H else o.row_h;
@@ -479,7 +477,6 @@ pub fn Nav(comptime Action: type) type {
     };
 }
 
-
 pub fn MenuBar(comptime Action: type) type {
     const N = Nav(Action);
     return struct {
@@ -584,7 +581,6 @@ pub fn MenuBar(comptime Action: type) type {
     };
 }
 
-
 pub fn ContextMenu(comptime Action: type) type {
     const N = Nav(Action);
     return struct {
@@ -663,7 +659,6 @@ pub fn ContextMenu(comptime Action: type) type {
     };
 }
 
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
@@ -718,17 +713,3 @@ fn press(m: *MB.Model, k: keys.SpecialKey) ?Act {
     }
     return null;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-

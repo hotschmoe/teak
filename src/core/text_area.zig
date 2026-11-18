@@ -158,7 +158,6 @@ pub fn TextArea(comptime cap: usize) type {
             model.scroll_x = clampScroll(sx, model.content_w + 2, model.viewport_w);
         }
 
-
         pub fn eventMsg(ev: TextEvent) Msg {
             return .{ .event = ev };
         }
@@ -182,7 +181,6 @@ pub fn TextArea(comptime cap: usize) type {
                 else => null,
             };
         }
-
 
         /// `base` with no box, border, focus border or caret: a read-only
         /// area drawn like a label (selection highlight kept). Pass it as
@@ -227,7 +225,6 @@ pub fn TextArea(comptime cap: usize) type {
     };
 }
 
-
 const testing = std.testing;
 const component = @import("component.zig");
 
@@ -236,8 +233,3 @@ const TA = TextArea(256);
 fn type_(m: *TA.Model, s: []const u8) void {
     for (s) |c| TA.update(m, .{ .char = c });
 }
-
-
-
-
-

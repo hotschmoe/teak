@@ -64,7 +64,6 @@ pub const ViewOpts = struct {
     input_style: ?cmd.TextInputStyle = null,
 };
 
-
 /// Simple case fold: ASCII, Latin-1 Supplement, Latin Extended-A (paired
 /// forms), Greek and Cyrillic capitals map to their lowercase.
 pub fn foldCase(cp: u21) u21 {
@@ -154,7 +153,6 @@ pub fn ordinalOf(query: []const u8, options: []const []const u8, mode: Match, in
 fn hashContent(s: []const u8) u64 {
     return std.hash.Wyhash.hash(0, s);
 }
-
 
 /// A combobox whose query field holds up to `cap` bytes.
 pub fn Combobox(comptime cap: usize) type {
@@ -258,7 +256,6 @@ pub fn Combobox(comptime cap: usize) type {
             return @max(0, new);
         }
 
-
         /// Msg for one typed byte (route from `keyCharMsg` while the combobox has focus).
         pub fn charMsg(c: u8) Msg {
             return .{ .edit = .{ .char = c } };
@@ -321,7 +318,6 @@ pub fn Combobox(comptime cap: usize) type {
             if (max_visible == 0 or count <= max_visible) return 0;
             return @as(f32, @floatFromInt(count - max_visible)) * ITEM_HEIGHT;
         }
-
 
         /// Canonical 3-arg view (composes through `Components`): just the input.
         pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
@@ -399,25 +395,18 @@ pub fn Combobox(comptime cap: usize) type {
     };
 }
 
-
 const testing = std.testing;
 const snapshot = @import("snapshot.zig");
 const engine = @import("../layout/engine.zig");
 const text = @import("text.zig");
 
-
-
 const opts_list = [_][]const u8{ "Pine", "Oak", "Maple", "Spruce", "Cedar", "Birch", "Ash", "Beech" };
-
 
 const CB = Combobox(16);
 
 fn typeStr(m: *CB.Model, s: []const u8) void {
     for (s) |c| CB.update(m, CB.charMsg(c));
 }
-
-
-
 
 const ViewOpts_ = ViewOpts;
 
@@ -441,11 +430,3 @@ fn renderSnapshot(m: *const CB.Model, opts: ViewOpts_, expected: []const u8) !vo
     engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 400, 400, text.monoMeasurer());
     try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{}, expected);
 }
-
-
-
-
-
-
-
-

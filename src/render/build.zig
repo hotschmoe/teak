@@ -894,30 +894,12 @@ fn buildLayer(
     }
 }
 
-
-
 const cmd_mod = @import("../core/cmd.zig");
 
 fn newTextDraws(alloc: std.mem.Allocator) std.ArrayList(TextDraw) {
     _ = alloc;
     return .empty;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 const TestFrame = struct {
     verts: std.ArrayList(Vertex) = .empty,
@@ -977,19 +959,6 @@ fn canvasWith(alloc: std.mem.Allocator, w: f32, h: f32, prims: []const CanvasPri
     return buildTestFrame(alloc, &cb);
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn renderTexts(comptime Msg: type, cb: *cmd_mod.CmdBuffer(Msg), rects: []Rect, w: f32, h: f32, draws: *std.ArrayList(TextDraw)) !void {
     const testing = std.testing;
     layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, w, h, text_mod.monoMeasurer());
@@ -1000,12 +969,3 @@ fn renderTexts(comptime Msg: type, cb: *cmd_mod.CmdBuffer(Msg), rects: []Rect, w
     draws.clearRetainingCapacity();
     buildVertices(&verts, draws, &image_draws, testing.allocator, cb.cmds.items, rects[0..cb.cmds.items.len], .{}, text_mod.monoMeasurer());
 }
-
-
-
-
-
-
-
-
-

@@ -231,5 +231,3 @@ pub fn view(m: *const Model, cb: anytype) void {
     }, if (m.xf == null) &.{} else all, CANVAS_ID, "frame");
     cb.popGroup();
 }
-
-

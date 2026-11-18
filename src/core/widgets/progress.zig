@@ -90,15 +90,9 @@ fn emit(cb: anytype, style: Style, fill_x: f32, fill_w: f32, label: []const u8) 
     cb.canvasLabeled(.{ .width = style.width, .height = style.height, .flex = style.flex }, prims, label);
 }
 
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
 const text = @import("../text.zig");
 
 const TestMsg = union(enum) { x };
-
-
-
-
-

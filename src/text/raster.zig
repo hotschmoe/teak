@@ -110,5 +110,3 @@ pub const StbttRasterizer = struct {
         };
     }
 };
-
-

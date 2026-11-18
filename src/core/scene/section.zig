@@ -236,7 +236,6 @@ pub fn isClosed(gpa: std.mem.Allocator, mesh: MeshData) std.mem.Allocator.Error!
     return true;
 }
 
-
 const testing = std.testing;
 const approx = testing.expectApproxEqAbs;
 
@@ -265,18 +264,8 @@ fn loopArea(pts: []const Vec3, axis: usize) f32 {
     return s * 0.5;
 }
 
-
-
-
-
-
-
-
-
-
 const KerfPart = struct {
     positions: []const f32,
     indices: []const u32,
 };
 const KerfMesh = struct { parts: []const KerfPart };
-

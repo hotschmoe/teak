@@ -238,7 +238,6 @@ pub fn Components(comptime components: anytype, comptime AppLevel: ?type) type {
     };
 }
 
-
 const cmd = @import("cmd.zig");
 
 const TestCounter = struct {
@@ -286,7 +285,3 @@ const TestGreeter = struct {
         cb.button(msgs.clear, "Clear");
     }
 };
-
-
-
-

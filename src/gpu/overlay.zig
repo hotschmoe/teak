@@ -47,6 +47,3 @@ pub const Range = struct {
         return .{ self.base_end, self.total };
     }
 };
-
-
-

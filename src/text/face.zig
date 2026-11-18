@@ -174,7 +174,6 @@ const KernSlot = struct { used: bool, left: u16, right: u16, value: i32, face: u
 var kern_epoch: u64 = 0;
 var kern_cache: [8192]KernSlot = std.mem.zeroes([8192]KernSlot);
 
-
 const family_count = std.enums.values(teak.FontFamily).len;
 const weight_count = std.enums.values(teak.FontWeight).len;
 
@@ -358,4 +357,3 @@ pub fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (list.items.len == 0) return error.EmptyFont;
     return try list.toOwnedSlice(allocator);
 }
-

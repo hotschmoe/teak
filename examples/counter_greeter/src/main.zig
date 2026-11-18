@@ -111,4 +111,3 @@ fn printFrame(cmds: []const teak.Cmd(App.Msg), rects: []const teak.Rect) void {
         }
     }
 }
-

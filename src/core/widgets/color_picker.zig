@@ -56,7 +56,6 @@ pub const swatches = [16]Rgb{
     .{ .r = 120, .g = 60, .b = 190 }, .{ .r = 200, .g = 70, .b = 190 },  .{ .r = 230, .g = 100, .b = 140 }, .{ .r = 130, .g = 85, .b = 50 },
 };
 
-
 pub fn hsvToRgb(c: Hsv) Rgb {
     const h = @mod(c.h, 360) / 60;
     const s = std.math.clamp(c.s, 0, 1);
@@ -115,7 +114,6 @@ pub fn parseHex(text: []const u8) ?Rgb {
 pub fn formatHex(c: Rgb, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "#{X:0>2}{X:0>2}{X:0>2}", .{ c.r, c.g, c.b }) catch "";
 }
-
 
 pub const Target = enum { sv, hue };
 
@@ -247,7 +245,6 @@ pub fn fieldText(model: *const Model, field: Field) []const u8 {
     return model.texts[@backingInt(field)].content();
 }
 
-
 pub const Opts = struct {
     /// Square size.
     sv_w: f32 = 200,
@@ -299,7 +296,6 @@ pub fn keyMsg(field: Field, key: keys.SpecialKey) ?Msg {
 pub fn pasteMsg(field: Field, bytes: []const u8) Msg {
     return .{ .edit = .{ .field = field, .msg = .{ .replace_selection = bytes } } };
 }
-
 
 const TV = cmd.CanvasPrimitive.TriVertex;
 
@@ -441,7 +437,6 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: Opts) void {
     cb.popGroup();
 }
 
-
 const testing = std.testing;
 const component = @import("../component.zig");
 const snapshot = @import("../snapshot.zig");
@@ -451,11 +446,3 @@ const text_mod = @import("../text.zig");
 fn expectRgb(want: Rgb, got: Rgb) !void {
     try testing.expectEqual(want, got);
 }
-
-
-
-
-
-
-
-

@@ -124,7 +124,3 @@ fn testDib(a: std.mem.Allocator, w: i32, h: i32, bpp: u16, pixels: []const u8) !
     @memcpy(dib[40..][0..pixels.len], pixels);
     return dib;
 }
-
-
-
-

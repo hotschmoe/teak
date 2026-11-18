@@ -166,7 +166,6 @@ pub fn stageDraws(
     if (comptime @hasDecl(@TypeOf(gpu.*), "renderScenes")) gpu.renderScenes(scenes, data);
 }
 
-
 const StubGpu = struct {
     next: u32 = 1,
     uploads: u32 = 0,
@@ -204,9 +203,3 @@ fn img(key: u32, rev: u32) Resource {
 fn mesh(key: u32, rev: u32) Resource {
     return .{ .mesh = .{ .key = key, .rev = rev, .data = .{} } };
 }
-
-
-
-
-
-

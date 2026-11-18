@@ -57,4 +57,3 @@ pub fn chordFromKeysym(sym: u32) ?NavKey {
         else => null,
     };
 }
-

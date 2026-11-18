@@ -105,5 +105,3 @@ pub fn fixedToF32(v: i32) f32 {
 pub fn f32ToFixed(v: f32) i32 {
     return @intFromFloat(@round(v * 256.0));
 }
-
-

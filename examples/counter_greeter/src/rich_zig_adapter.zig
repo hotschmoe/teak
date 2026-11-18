@@ -76,7 +76,3 @@ pub fn buildRichText(
         .default_font = default_font,
     };
 }
-
-
-
-

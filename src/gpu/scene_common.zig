@@ -168,12 +168,3 @@ fn testDraw() SceneDraw {
         .clip_h = 1000,
     };
 }
-
-
-
-
-
-
-
-
-

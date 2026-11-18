@@ -10,7 +10,6 @@
 
 const std = @import("std");
 
-
 /// Iterates the URIs of a `text/uri-list` payload (RFC 2483): one per line,
 /// `#` lines are comments, blank lines are skipped.
 pub const UriIter = struct {
@@ -58,7 +57,6 @@ pub fn uriToPath(uri: []const u8, buf: []u8) ?[]const u8 {
     return buf[0..n];
 }
 
-
 pub const ImageSize = struct { w: u32, h: u32 };
 
 /// Pixel size from a PNG's IHDR chunk, or null when `bytes` is not a PNG.
@@ -71,7 +69,6 @@ pub fn pngSize(bytes: []const u8) ?ImageSize {
     if (w == 0 or h == 0) return null;
     return .{ .w = w, .h = h };
 }
-
 
 /// Pick what to fetch from a `TARGETS` list: text wins over an image (a
 /// copied web selection often offers both). Returns an index into the
@@ -103,7 +100,6 @@ pub fn latin1ToUtf8(src: []const u8, out: []u8) []const u8 {
     }
     return out[0..n];
 }
-
 
 /// On-the-spot composition buffer, edited by `XIMPreeditDrawCallback`. The
 /// X protocol addresses the buffer in *characters* (`chg_first`,
@@ -206,7 +202,6 @@ pub fn decodeUtf8Lossy(bytes: []const u8, out: []u21) usize {
     return n;
 }
 
-
 pub const XIMPreeditArea: c_ulong = 0x0001;
 pub const XIMPreeditCallbacks: c_ulong = 0x0002;
 pub const XIMPreeditPosition: c_ulong = 0x0004;
@@ -267,14 +262,3 @@ pub fn utf8ToLatin1(src: []const u8, out: []u8) usize {
     }
     return n;
 }
-
-
-
-
-
-
-
-
-
-
-

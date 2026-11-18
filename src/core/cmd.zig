@@ -20,9 +20,7 @@ pub const Wrap = text_wrap.Wrap;
 const DEFAULT_FONT = text.DEFAULT_FONT;
 const TextureHandle = text.TextureHandle;
 
-
 pub const Direction = enum { vertical, horizontal };
-
 
 pub const A11ySemantic = enum {
     none,
@@ -423,7 +421,6 @@ pub const ScrollStyle = struct {
     id: u32 = 0,
 };
 
-
 pub fn OverlayStyle(comptime Msg: type) type {
     return struct {
         pub const MsgT = Msg;
@@ -518,7 +515,6 @@ pub fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
     };
 }
 
-
 pub const ImageStyle = struct {
     /// Intrinsic size in pixels. The render pass scales the texture
     /// to fit this rect. Width=0 or height=0 = the cmd takes no space
@@ -541,7 +537,6 @@ pub const ImageCmd = struct {
     handle: TextureHandle,
     style: ImageStyle = .{},
 };
-
 
 pub const VirtualListStyle = struct {
     direction: Direction = .vertical,
@@ -573,7 +568,6 @@ pub const VirtualListStyle = struct {
     id: u32 = 0,
 };
 
-
 /// A styled byte range of a `rich_text` (defined in `text.zig` so `text_wrap`
 /// can measure runs without importing the Cmd types).
 pub const RichTextSpan = text.RichTextSpan;
@@ -593,7 +587,6 @@ pub const RichTextCmd = struct {
     text_align: TextAlign = .start,
 };
 
-
 pub const MixedPart = struct {
     text: []const u8,
     /// null falls back to the theme's `typography.body` at emit time.
@@ -603,7 +596,6 @@ pub const MixedPart = struct {
     bold: bool = false,
     italic: bool = false,
 };
-
 
 /// A point in canvas-local logical pixels.
 pub const CanvasPoint = struct {
@@ -904,7 +896,6 @@ pub fn CanvasCmd(comptime Msg: type) type {
     };
 }
 
-
 pub const SceneStyle = struct {
     /// Intrinsic size in logical pixels; the scene is rendered at exactly
     /// this size (times the display scale), so it is never resampled.
@@ -947,7 +938,6 @@ pub fn SceneCmd(comptime Msg: type) type {
         view: scene.view.View = .{},
     };
 }
-
 
 /// Keyboard grouping of list-row buttons (see docs/features/focus.md).
 pub const Roving = enum {
@@ -1141,7 +1131,6 @@ pub fn Cmd(comptime Msg: type) type {
     };
 }
 
-
 /// The container kinds that bracket a region of the flat buffer.
 /// `pushFormRow` / `popFormRow` are sugar over `push_group` / `pop_group`
 /// (they emit exactly those Cmds), so a form row shows up here as
@@ -1322,7 +1311,6 @@ pub fn formatBalanceError(err: BalanceError, buf: []u8) []const u8 {
     } catch buf[0..0];
 }
 
-
 pub const FormRowOpts = struct {
     /// Label to the left of the content (theme.text_color). Empty
     /// string skips the label cmd.
@@ -1405,7 +1393,6 @@ pub fn CmdBuffer(comptime Msg: type) type {
             _ = self.arena.reset(.retain_capacity);
             self.form_row_depth = 0;
         }
-
 
         pub fn pushGroup(self: *Self, style: GroupStyle) void {
             self.cmds.append(self.backing, self.box(.push_group, style)) catch oom();
@@ -1723,7 +1710,6 @@ pub fn CmdBuffer(comptime Msg: type) type {
             })) catch oom();
         }
 
-
         pub fn pushOverlay(self: *Self, style: OverlayStyle(Msg)) void {
             self.cmds.append(self.backing, self.box(.push_overlay, style)) catch oom();
         }
@@ -2013,37 +1999,3 @@ pub fn CmdBuffer(comptime Msg: type) type {
         }
     };
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

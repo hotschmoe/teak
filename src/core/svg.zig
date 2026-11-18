@@ -57,7 +57,6 @@ pub fn rasterize(gpa: Allocator, source: []const u8, width: u32, height: u32, op
     return out;
 }
 
-
 const Pt = [2]f32;
 
 /// 2D affine matrix [a b c d e f]: x' = a x + c y + e, y' = b x + d y + f.
@@ -83,7 +82,6 @@ fn apply(m: Mat, p: Pt) Pt {
 fn matScale(m: Mat) f32 {
     return @sqrt(@abs(m[0] * m[3] - m[1] * m[2]));
 }
-
 
 const Paint = union(enum) { none, current, rgba: [4]f32 };
 const FillRule = enum { nonzero, evenodd };
@@ -277,7 +275,6 @@ const Renderer = struct {
         };
     }
 
-
     fn fillCurrent(r: *Renderer, rule: FillRule, color: [4]f32, alpha: f32) Error!void {
         r.edges.clearRetainingCapacity();
         var start: usize = 0;
@@ -370,7 +367,6 @@ const Renderer = struct {
             px[3] = toByte(oa);
         }
     }
-
 
     fn strokeCurrent(r: *Renderer, width: f32, cap: Cap, join: Join, color: [4]f32, alpha: f32) Error!void {
         r.edges.clearRetainingCapacity();
@@ -568,7 +564,6 @@ fn parseLength(v: ?[]const u8) ?f32 {
     return nr.number();
 }
 
-
 fn applyAttrs(st: *Style, tag: Tag) void {
     var it = tag.attrs();
     while (it.next()) |kv| applyProp(st, kv.k, kv.v);
@@ -681,7 +676,6 @@ fn parseTransform(v: []const u8) Mat {
     }
     return m;
 }
-
 
 const PathBuilder = struct {
     r: *Renderer,
@@ -964,7 +958,6 @@ fn parseNumber(s: []const u8) ?f32 {
     return nr.number();
 }
 
-
 const Tag = struct {
     name: []const u8,
     body: []const u8, // the attribute text
@@ -1060,16 +1053,8 @@ const TagIter = struct {
     }
 };
 
-
 const testing = std.testing;
 
 fn pixelAt(img: []const u8, w: u32, x: u32, y: u32) [4]u8 {
     return img[(y * w + x) * 4 ..][0..4].*;
 }
-
-
-
-
-
-
-

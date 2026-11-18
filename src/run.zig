@@ -1557,7 +1557,6 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
         }
 
-
         const NavFocus = struct { msg: Msg, ordinal: u32, index: u32 };
 
         /// Remember leaf `idx` as the navigation focus.
@@ -1952,7 +1951,6 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (!has_canvas_hook) return true;
             return self.deliver(ev).claimed;
         }
-
 
         /// Wrap mode + width a text area lays its content out with.
         fn textAreaGeometry(ta: anytype, rect: Rect) struct { inner: Rect, wrap_w: f32, mode: text_wrap.Wrap } {
@@ -2697,4 +2695,3 @@ pub fn rectsEqual(a: []const Rect, b: []const Rect) bool {
     }
     return true;
 }
-

@@ -328,5 +328,3 @@ pub const Chord = struct {
         };
     }
 };
-
-

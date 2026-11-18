@@ -119,7 +119,6 @@ pub fn Spinner(comptime cfg: Config) type {
     };
 }
 
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
@@ -131,9 +130,3 @@ const F = Spinner(.{ .min = 0, .max = 1, .step = 0.1, .big_step = 0.5, .precisio
 fn typeStr(m: *S.Model, s: []const u8) void {
     for (s) |c| S.update(m, .{ .char = c });
 }
-
-
-
-
-
-

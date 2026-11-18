@@ -113,8 +113,3 @@ pub const Scroller = struct {
         if (@abs(self.target - self.pos) <= eps_px) self.pos = self.target;
     }
 };
-
-
-
-
-

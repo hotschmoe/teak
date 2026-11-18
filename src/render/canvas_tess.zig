@@ -24,7 +24,6 @@ pub fn emit(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, r: Rect, co
     emitQuad(verts, alloc, cr, color);
 }
 
-
 /// How a canvas lowers its primitives: the world -> canvas-local transform,
 /// antialiased edges, and whether circles may use the SDF quad (2D pass only:
 /// the 3D plane layers draw the plain vertex stream with another shader).
@@ -451,7 +450,6 @@ fn isEar(pts: []const [2]f32, ring: []const u32, ia: u32, ib: u32, ic: u32, sign
     return true;
 }
 
-
 const TriVertex = CanvasPrimitive.TriVertex;
 
 fn toVertex(canvas: Rect, xf: CanvasTransform, v: TriVertex) Vertex {
@@ -684,7 +682,6 @@ pub fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
     return true;
 }
 
-
 const testing = std.testing;
 const big: Rect = .{ .x = 0, .y = 0, .w = 1000, .h = 1000 };
 
@@ -704,13 +701,3 @@ fn plainArea(v: []const Vertex) f32 {
     }
     return area;
 }
-
-
-
-
-
-
-
-
-
-

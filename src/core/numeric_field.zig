@@ -42,7 +42,6 @@
 const std = @import("std");
 const teak_text_field = @import("text_field.zig");
 
-
 pub const NumericConfig = struct {
     /// Max chars in the underlying text buffer.
     capacity: usize = 16,
@@ -105,7 +104,6 @@ pub fn NumericField(comptime config: NumericConfig) type {
             }
         }
 
-
         /// Parse the buffer with `std.fmt.parseFloat`. Returns null if it
         /// doesn't parse OR falls outside [min, max]. Empty buffer → null.
         pub fn value(model: *const Model) ?f64 {
@@ -157,20 +155,5 @@ pub fn NumericField(comptime config: NumericConfig) type {
     };
 }
 
-
 const cmd_mod = @import("cmd.zig");
 const component_mod = @import("component.zig");
-
-
-
-
-
-
-
-
-
-
-
-
-
-

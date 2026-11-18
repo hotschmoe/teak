@@ -95,8 +95,3 @@ pub fn clippedTexturedQuad(rect: Rect, clip: Rect, tint: [4]f32) ?[6]Vertex {
         .{ .x = x0, .y = y1, .r = r, .g = g, .b = b, .a = a, .u = uv_u0, .v = uv_v1 },
     };
 }
-
-
-
-
-

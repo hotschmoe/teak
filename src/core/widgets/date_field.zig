@@ -131,7 +131,6 @@ pub fn textValid(model: *const Model) bool {
     return t.len == 0 or date.parseIso(t) != null;
 }
 
-
 pub fn charMsg(c: u8) Msg {
     return .{ .edit = .{ .char = c } };
 }
@@ -158,7 +157,6 @@ pub fn keyMsg(model: *const Model, key: keys.SpecialKey) ?Msg {
     const wrapped = text_field.textFieldSpecial(W, "m", key) orelse return null;
     return .{ .edit = wrapped.m };
 }
-
 
 pub const ViewOpts = struct {
     /// Window position of the popover's top-left (the field's bottom-left).
@@ -295,7 +293,6 @@ fn dayStyle(cb: anytype, model: *const Model, d: Date, o: ViewOpts) cmd.ButtonSt
     return st;
 }
 
-
 const testing = std.testing;
 const component = @import("../component.zig");
 const snapshot = @import("../snapshot.zig");
@@ -306,11 +303,6 @@ fn typeIso(m: *Model, s: []const u8) void {
     for (s) |c| update(m, charMsg(c));
 }
 
-
-
-
-
-
 const TMsg = union(enum) { focus, toggle, close, today, clear, pick: Date, go: Nav };
 fn pickMsg(d: Date) TMsg {
     return .{ .pick = d };
@@ -319,6 +311,3 @@ fn goMsg(n: Nav) TMsg {
     return .{ .go = n };
 }
 const tmsgs = .{ .focus = TMsg{ .focus = {} }, .toggle = TMsg{ .toggle = {} }, .close = TMsg{ .close = {} }, .today = TMsg{ .today = {} }, .clear = TMsg{ .clear = {} }, .pickMsg = pickMsg, .goMsg = goMsg };
-
-
-

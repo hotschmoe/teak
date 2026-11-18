@@ -167,7 +167,6 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
             }
         }
 
-
         /// Stable key of the item at visual index `i`, or null if out of
         /// range.
         pub fn keyAt(model: *const Model, i: usize) ?u64 {
@@ -272,7 +271,6 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
     };
 }
 
-
 const cmd = @import("cmd.zig");
 
 const Card = struct {
@@ -295,16 +293,6 @@ const Card = struct {
     }
 };
 
-
-
-
-
-
-
-
-
-
-
 const focus = @import("../input/focus.zig");
 
 /// A focusable child: one text input whose focus click carries the
@@ -324,18 +312,11 @@ fn appendFields(comptime App: type, m: *App.Model, n: usize) void {
     while (i < n) : (i += 1) App.update(m, .{ .fields = .{ .append = .{} } });
 }
 
-
-
 /// Re-view helper: rebuild the cmd buffer against the current model.
 fn viewInto(comptime App: type, m: *const App.Model, cb: anytype) void {
     cb.reset();
     App.view(m, cb);
 }
-
-
-
-
-
 
 const text_field_mod = @import("text_field.zig");
 
@@ -429,4 +410,3 @@ fn inputIndices(cmds: anytype, out: []usize) usize {
     }
     return n;
 }
-

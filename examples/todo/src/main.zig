@@ -41,4 +41,3 @@ pub fn main() !void {
 
     std.debug.print("\nframe has {d} commands\n", .{cmds.len});
 }
-

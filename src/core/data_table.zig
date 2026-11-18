@@ -415,7 +415,6 @@ pub fn DataTable(comptime cfg: Config) type {
             return .{ .grip = .{ .col = @intCast(ev.id - grip_base), .dx = ev.dx } };
         }
 
-
         pub const ViewOpts = struct {
             /// `ScrollStyle.id` of the body (wheel + layout reports). Non-zero.
             id: u32,
@@ -576,7 +575,6 @@ fn mix(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     return .{ a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1 };
 }
 
-
 const testing = std.testing;
 const T = DataTable(.{ .max_rows = 256, .max_cols = 4 });
 
@@ -601,11 +599,3 @@ fn fresh(m: *T.Model) void {
     m.view_h = 66; // three rows at 22
     m.row_h = 22;
 }
-
-
-
-
-
-
-
-

@@ -533,7 +533,6 @@ pub fn resolveNav(text: []const u8, cursor: usize, goal_x: ?f32, kind: NavKind, 
     }
 }
 
-
 const testing = std.testing;
 
 fn mono() TextMeasurer {
@@ -560,15 +559,6 @@ fn expectLines(text: []const u8, max_w: f32, mode: Wrap, max_lines: u32, expecte
     try testing.expectEqual(expected.len, i);
 }
 
-
-
-
-
-
-
-
-
-
 const samples = [_][]const u8{
     "",
     "hello world foo bar baz",
@@ -580,10 +570,3 @@ const samples = [_][]const u8{
     "bad \xFF\xFE bytes \xE2\x82 end",
     "שלום עולם مرحبا",
 };
-
-
-
-
-
-
-

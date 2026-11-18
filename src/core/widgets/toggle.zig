@@ -57,12 +57,9 @@ pub fn viewStyled(cb: anytype, msg: anytype, on: bool, label: []const u8, style:
     cb.popGroup();
 }
 
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
 const text = @import("../text.zig");
 
 const TestMsg = union(enum) { flip, other };
-
-

@@ -36,4 +36,3 @@ pub fn rowExtents(cmds: anytype, rects: []const Rect, index: usize, out: []f32) 
     }
     return n;
 }
-

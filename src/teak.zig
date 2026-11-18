@@ -553,5 +553,3 @@ pub const TEXTURE_HANDLE_NONE = text.TEXTURE_HANDLE_NONE;
 pub const TextDraw = text.TextDraw;
 /// Stateless fixed-advance measurer for CLI canaries and tests.
 pub const monoMeasurer = text.monoMeasurer;
-
-

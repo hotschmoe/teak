@@ -220,14 +220,5 @@ pub fn VarList(comptime cap: usize) type {
     };
 }
 
-
 const testing = std.testing;
 const L = VarList(64);
-
-
-
-
-
-
-
-

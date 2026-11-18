@@ -5,7 +5,6 @@ const counter = @import("counter.zig");
 const greeter = @import("greeter.zig");
 const rich_zig_adapter = @import("rich_zig_adapter.zig");
 
-
 pub const FocusField = enum { greeter };
 
 const AppLevel = struct {
@@ -215,7 +214,6 @@ pub fn greeterSelection(m: *const Model) []const u8 {
     return greeter.selectionText(&m.greeter);
 }
 
-
 /// Per-frame theme. `dark_mode` flips between the two presets — the same
 /// choice the old `ui_main.zig` made when assigning `cb.theme`.
 pub fn themeFor(m: *const Model) teak.Theme {
@@ -268,15 +266,3 @@ pub const secondaryView = statsView;
 pub fn secondaryClosedMsg(_: *const Model) ?Msg {
     return .close_stats_window;
 }
-
-
-
-
-
-
-
-
-
-
-
-

@@ -61,4 +61,3 @@ fn printVisible(m: *const App.Model) void {
         if (!node.is_leaf and !node.expanded) hide_below = node.depth + 1;
     }
 }
-

@@ -28,7 +28,6 @@ pub const FileDialogResult = teak.FileDialogResult;
 pub const FileDialogPoll = teak.FileDialogPoll;
 pub const FileDialogFilter = teak.FileDialogFilter;
 
-
 const WINAPI = std.builtin.CallingConvention.winapi;
 const BOOL = c_int;
 const UINT = c_uint;
@@ -257,7 +256,6 @@ fn queueDroppedFiles(hdrop: HANDLE) void {
         g_drop_count += 1;
     }
 }
-
 
 const POINTL = extern struct { x: c_long, y: c_long };
 
@@ -792,7 +790,6 @@ extern "kernel32" fn DeleteCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) v
 extern "kernel32" fn EnterCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) void;
 extern "kernel32" fn LeaveCriticalSection(*CRITICAL_SECTION) callconv(WINAPI) void;
 
-
 const SimpleThis = *const IRawElementProviderSimple_Vtbl;
 const FragmentThis = *const IRawElementProviderFragment_Vtbl;
 const FragmentRootThis = *const IRawElementProviderFragmentRoot_Vtbl;
@@ -888,7 +885,6 @@ const NodeProvider = extern struct {
     index: u32,
 };
 
-
 fn rpQueryInterface(this: *SimpleThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *RootProvider = @fieldParentPtr("vtbl_simple", this);
     return rootQueryInterface(self, iid, ppv);
@@ -967,7 +963,6 @@ fn rootQueryInterface(self: *RootProvider, iid: *const GUID, ppv: *?*anyopaque) 
     return E_NOINTERFACE;
 }
 
-
 fn rpfQueryInterface(this: *FragmentThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *RootProvider = @fieldParentPtr("vtbl_fragment", this);
     return rootQueryInterface(self, iid, ppv);
@@ -1038,7 +1033,6 @@ fn rpfGetFragmentRoot(this: *FragmentThis, out: *?*anyopaque) callconv(WINAPI) H
     return S_OK;
 }
 
-
 fn rprQueryInterface(this: *FragmentRootThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *RootProvider = @fieldParentPtr("vtbl_root", this);
     return rootQueryInterface(self, iid, ppv);
@@ -1090,7 +1084,6 @@ fn rprGetFocus(_: *FragmentRootThis, out: *?*anyopaque) callconv(WINAPI) HRESULT
     out.* = null;
     return S_OK;
 }
-
 
 fn npQueryInterface(this: *SimpleThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *NodeProvider = @fieldParentPtr("vtbl_simple", this);
@@ -1145,7 +1138,6 @@ fn npGetPatternProvider(this: *SimpleThis, pattern_id: c_long, out: *?*anyopaque
     }
     return S_OK;
 }
-
 
 /// Queue `kind` for the published node `index` (lock held by the caller).
 fn queueAction(index: u32, kind: teak.A11yActionKind, payload: []const u8) HRESULT {
@@ -1249,7 +1241,6 @@ fn npGetHostRawElementProvider(_: *SimpleThis, pp: *?*anyopaque) callconv(WINAPI
     return S_OK;
 }
 
-
 fn npfQueryInterface(this: *FragmentThis, iid: *const GUID, ppv: *?*anyopaque) callconv(WINAPI) HRESULT {
     const self: *NodeProvider = @fieldParentPtr("vtbl_fragment", this);
     return nodeQueryInterface(self, iid, ppv);
@@ -1345,7 +1336,6 @@ fn npfGetFragmentRoot(_: *FragmentThis, out: *?*anyopaque) callconv(WINAPI) HRES
     out.* = @ptrCast(&g_root_provider.vtbl_root);
     return S_OK;
 }
-
 
 /// Build the 2-element SAFEARRAY UIA expects from `GetRuntimeId` —
 /// `[UiaAppendRuntimeId, caller_id]`. `caller_id` is 0 for the root
@@ -1600,7 +1590,6 @@ var g_window_title_w: [256]u16 = @splat(0);
 /// init / after deinit so the property getter can fail closed.
 var g_hwnd_for_uia: ?HANDLE = null;
 
-
 const MAX_A11Y_NODES: usize = 256;
 const MAX_A11Y_LABEL_BYTES: usize = 8192;
 
@@ -1645,7 +1634,6 @@ fn initNodeProviderPool() void {
 var g_last_tree_len: usize = 0;
 var g_last_focus_index: ?u32 = null;
 
-
 var g_running: bool = true;
 var g_width: u32 = 0;
 var g_height: u32 = 0;
@@ -1661,7 +1649,6 @@ var g_ime_active: bool = false;
 var g_ime_text: [256]u8 = undefined;
 var g_ime_text_len: usize = 0;
 var g_ime_cursor: usize = 0;
-
 
 pub const MAX_SECONDARY_WINDOWS: usize = 4;
 
@@ -1881,7 +1868,6 @@ fn utf16OffsetToUtf8(utf8: []const u8, utf16_off: usize) usize {
     return byte_i;
 }
 
-
 fn imeStart() void {
     g_ime_active = true;
     imeClearText();
@@ -1989,7 +1975,6 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
         },
     }
 }
-
 
 pub const NativeHandle = struct {
     hinstance: HANDLE,
@@ -2152,7 +2137,6 @@ pub const Host = struct {
         title_buf[title_len] = 0;
         _ = SetWindowTextW(self.hwnd, @ptrCast(&title_buf));
     }
-
 
     /// Start one effect. The file pickers, the clipboard and downloads are
     /// native Win32 UI and run here (blocking the frame while a dialog is
@@ -2596,10 +2580,4 @@ comptime {
     teak.validateHost(Host);
 }
 
-
 const builtin = @import("builtin");
-
-
-
-
-

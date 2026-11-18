@@ -334,7 +334,6 @@ fn setButton(set: *Buttons, b: Button, value: bool) void {
     }
 }
 
-
 /// Touch -> pointer for hosts that only see touch points (the web canvas
 /// suppresses the browser's synthesized mouse events). One finger is the
 /// left button: down, drag, up. Two fingers are a trackpad: moving them
@@ -392,15 +391,3 @@ pub const TouchMapper = struct {
 };
 
 const testing = std.testing;
-
-
-
-
-
-
-
-
-
-
-
-

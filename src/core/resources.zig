@@ -57,4 +57,3 @@ pub const Resource = union(Kind) {
         };
     }
 };
-

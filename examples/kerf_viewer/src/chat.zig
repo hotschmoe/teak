@@ -60,7 +60,6 @@ pub const Log = struct {
     }
 };
 
-
 /// One display line: stripped text and its bold spans (indices into `text`).
 pub const Line = struct {
     text: []const u8,
@@ -147,7 +146,6 @@ fn makeLine(a: std.mem.Allocator, p: []const u8, is_bold: []const bool, s: usize
     }
     return .{ .text = p[s..e], .spans = spans.items };
 }
-
 
 pub const Intent = union(enum) {
     greet,
@@ -259,11 +257,5 @@ pub fn replyText(buf: []u8, intent: Intent, ctx: Context, detail: []const u8) []
     }) catch buf[0..0];
 }
 
-
 const testing = std.testing;
 const test_bold: teak.FontSpec = .{ .size_px = 13, .family = .mono, .weight = .bold };
-
-
-
-
-

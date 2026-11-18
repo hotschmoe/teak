@@ -69,7 +69,6 @@ pub const Model = struct {
     }
 };
 
-
 fn mixHash(x: u32) u32 {
     var h = x *% 0x9E3779B1;
     h ^= h >> 15;
@@ -173,7 +172,6 @@ const ListSrc = struct {
     }
 };
 
-
 pub fn update(m: *Model, msg: Msg) void {
     switch (msg) {
         .tab => |t| m.tab = t,
@@ -190,7 +188,6 @@ pub fn update(m: *Model, msg: Msg) void {
         },
     }
 }
-
 
 /// The one pointer hook: scroll-region wheels and the column-grip canvases.
 pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
@@ -258,7 +255,6 @@ pub fn themeFor(_: *const Model) teak.Theme {
     return teak.Theme.dark_default;
 }
 
-
 const msgs = struct {
     pub fn sort(col: u8) Msg {
         return .{ .table = .{ .sort = col } };
@@ -318,7 +314,3 @@ pub fn view(m: *const Model, cb: anytype) void {
     }
     cb.popGroup();
 }
-
-
-
-

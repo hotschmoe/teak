@@ -76,5 +76,3 @@ pub const Gradient = struct {
         return .{ @sin(a), -@cos(a) };
     }
 };
-
-

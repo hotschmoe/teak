@@ -77,7 +77,6 @@ pub fn scrollExtent(cmds: anytype, rects: []const Rect, index: usize) Extent {
     };
 }
 
-
 const cmd_mod = @import("../core/cmd.zig");
 const text_mod = @import("../core/text.zig");
 
@@ -87,6 +86,3 @@ fn layoutOf(rects: []Rect, cb: *cmd_mod.CmdBuffer(Msg)) []const Rect {
     layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 400, text_mod.monoMeasurer());
     return rects[0..cb.cmds.items.len];
 }
-
-
-

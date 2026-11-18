@@ -70,5 +70,3 @@ pub fn defaultFor(cmd: anytype) CursorShape {
         else => .arrow,
     };
 }
-
-

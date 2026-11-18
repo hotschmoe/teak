@@ -292,7 +292,6 @@ pub fn clipboardMsg(_: *const Model, key: teak.SpecialKey, paste: []const u8) ?M
     };
 }
 
-
 fn row(cb: anytype, msg: Msg, label: []const u8, result: []const u8) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 12, .align_cross = .center });
     cb.pushGroup(.{ .padding = 0, .width = 150 });
@@ -345,9 +344,3 @@ fn thumbnail(m: *const Model, cb: anytype, arena: std.mem.Allocator) void {
     const style: teak.CanvasStyle = .{ .width = @as(f32, @floatFromInt(m.thumb_w)) * scale, .height = @as(f32, @floatFromInt(m.thumb_h)) * scale, .bg = .{ 0.1, 0.1, 0.1, 1 } };
     cb.canvasLabeled(style, prims, "dropped image thumbnail");
 }
-
-
-
-
-
-

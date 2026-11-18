@@ -126,5 +126,3 @@ fn isBitwise(comptime T: type) bool {
 }
 
 const testing = std.testing;
-
-

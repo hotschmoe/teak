@@ -333,21 +333,8 @@ fn substitute(cp: u21) u21 {
     };
 }
 
-
 const testing = std.testing;
 
 fn testFont() !Font {
     return Font.initEmbedded(testing.allocator);
 }
-
-
-
-
-
-
-
-
-
-
-
-

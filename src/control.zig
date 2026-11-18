@@ -180,7 +180,6 @@ pub const State = struct {
     }
 };
 
-
 /// Owned dupe of environment variable `name` if set and non-empty.
 fn envVar(gpa: std.mem.Allocator, name: []const u8) ?[]u8 {
     if (comptime !fs_capable) return null;
@@ -240,7 +239,6 @@ pub fn start(st: *State, host: anytype, opts: anytype) void {
     }
 }
 
-
 pub fn toggleInspect(st: *State) void {
     st.inspect = !st.inspect;
     st.dirty = true;
@@ -270,7 +268,6 @@ pub fn appendInspectorFor(rt: anytype, cb: anytype, cur: u1, prev: u1, window_w:
         .timings = st.timings,
     }, .{});
 }
-
 
 /// Before the Host is polled: replayed input, then the control channel.
 pub fn beforePoll(rt: anytype) void {
@@ -367,7 +364,6 @@ fn buttonSet(b: pointer.Buttons, which: pointer.Button) bool {
         .none => false,
     };
 }
-
 
 fn stepAct(rt: anytype) void {
     const st = &rt.ctl;
@@ -535,7 +531,6 @@ fn addPool(st: *State, bytes: []const u8) struct { off: u32, len: u32 } {
     return .{ .off = off, .len = @intCast(bytes.len) };
 }
 
-
 /// The latest frame's cmds WITHOUT the dev inspector's overlay, so the agent
 /// reads and operates the app, not the tool.
 fn frameCmds(rt: anytype) @TypeOf(rt.bufs[0].cmds.items) {
@@ -575,7 +570,6 @@ fn takeScreenshot(rt: anytype, path: []const u8) !void {
     if (comptime !@hasDecl(Gpu, "readFrame")) return error.NoOffscreenGpu;
     try headless_run.writeFramePng(rt.gpu, rt.ctl.gpa, path);
 }
-
 
 fn cmdInfo(rt: anytype) void {
     const st = &rt.ctl;
@@ -682,7 +676,6 @@ fn writeNode(w: *std.Io.Writer, n: a11y.A11yNode, i: usize) !void {
     try w.writeByte('}');
 }
 
-
 const Target = struct {
     x: f32,
     y: f32,
@@ -778,7 +771,6 @@ fn setTargetNote(rt: anytype, t: Target) void {
     st.note.appendSlice(st.gpa, t.desc[0..t.desc_len]) catch {};
     st.note.appendSlice(st.gpa, ",") catch {};
 }
-
 
 fn cmdClick(rt: anytype, obj: std.json.ObjectMap) void {
     const st = &rt.ctl;
@@ -913,5 +905,3 @@ fn cmdScreenshot(rt: anytype, obj: std.json.ObjectMap) void {
     addAct(st, .{ .screenshot = .{ .off = p.off, .len = p.len } });
     begin(rt);
 }
-
-

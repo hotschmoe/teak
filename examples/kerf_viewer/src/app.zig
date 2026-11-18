@@ -182,7 +182,6 @@ const row_button_on: teak.ButtonStyle = .{
     .h_padding = 6,
 };
 
-
 pub const scene_id: u32 = 7;
 pub const list_id: u32 = 8;
 pub const cut_slider_id: u32 = 9;
@@ -657,7 +656,6 @@ pub const Msg = union(enum) {
     noop,
 };
 
-
 pub fn update(m: *Model, msg: Msg) void {
     step(m, msg);
     m.refresh2d();
@@ -912,7 +910,6 @@ fn sheetEvent(m: *Model, ev: teak.CanvasEvent) void {
     }
 }
 
-
 /// The one pointer hook: canvases (scene, sheet, cut slider), scroll wheels and text areas.
 pub fn pointerMsg(m: *const Model, ev: teak.PointerEvent(Msg)) ?Msg {
     if (ev.asCanvas()) |c| return onCanvas(m, c);
@@ -1102,14 +1099,12 @@ pub fn windowTitle(_: *const Model) ?[]const u8 {
     return "Kerf workstation";
 }
 
-
 pub fn camera(m: *const Model) teak.Camera {
     const b: ?scene.Bounds = if (m.loaded) |l| l.bounds() else null;
     var cam = m.cam.camera(m.vp[0], m.vp[1], b);
     cam.light_dir = .{ 0, 0, 0 }; // headlight: whatever faces the viewer is lit
     return cam;
 }
-
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 0, .gap = 0, .bg = paper, .align_cross = .stretch });
@@ -1159,7 +1154,6 @@ fn header(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 0, .gap = 0, .height = 2, .bg = ink });
     cb.popGroup();
 }
-
 
 fn console(m: *const Model, cb: anytype) void {
     const a = cb.arena.allocator();
@@ -1220,7 +1214,6 @@ fn messageCard(cb: anytype, msg: *const chat.Message) void {
     }
     cb.popGroup();
 }
-
 
 fn centerColumn(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 12, .gap = 8, .flex = 1, .bg = paper2, .align_cross = .stretch });
@@ -1447,7 +1440,6 @@ fn gizmoLabels(m: *const Model, cb: anytype) void {
     }
 }
 
-
 fn rightColumn(m: *const Model, cb: anytype) void {
     const a = cb.arena.allocator();
     cb.pushGroup(.{ .width = 320, .padding = 12, .gap = 10, .bg = paper, .border = ink, .align_cross = .stretch });
@@ -1590,7 +1582,6 @@ fn statusBar(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-
 const testing = std.testing;
 const test_msr = teak.monoMeasurer();
 
@@ -1632,30 +1623,6 @@ fn findPart2d(m: *const Model, id: u32) ?[2]f32 {
     return null;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn frameOf(m: *const Model, cb: *teak.CmdBuffer(Msg), rects: []teak.Rect, w: f32, h: f32) []const teak.Rect {
     cb.reset();
     cb.theme = theme;
@@ -1663,11 +1630,6 @@ fn frameOf(m: *const Model, cb: *teak.CmdBuffer(Msg), rects: []teak.Rect, w: f32
     teak.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, w, h, test_msr);
     return rects[0..cb.cmds.items.len];
 }
-
-
-
-
-
 
 const golden_section =
     \\group (0,0,1280,800) vertical bg
@@ -2036,5 +1998,3 @@ const golden_3d =
     \\    text (1158,778,110,20) "CLAUDE DEMO"
     \\
 ;
-
-

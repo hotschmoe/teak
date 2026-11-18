@@ -90,6 +90,3 @@ pub fn rotateX(t: f32) Mat4 {
         0, 0,  0, 1,
     };
 }
-
-
-

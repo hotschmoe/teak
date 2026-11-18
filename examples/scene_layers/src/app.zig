@@ -53,7 +53,6 @@ const tab_button: teak.ButtonStyle = .{ .bg = clear, .hover_bg = paper2, .press_
 const row_button: teak.ButtonStyle = .{ .bg = clear, .hover_bg = paper2, .press_bg = paper2, .fg = ink, .label_align = .start, .height = 24, .min_width = 0, .h_padding = 6 };
 const row_button_on: teak.ButtonStyle = .{ .bg = ink, .hover_bg = ink, .press_bg = ink, .fg = paper, .label_align = .start, .height = 24, .min_width = 0, .h_padding = 6 };
 
-
 pub const scene_id: u32 = 7;
 const mesh_key: u32 = 1;
 const img_ring: u32 = 1;
@@ -93,7 +92,6 @@ fn markerPos(id: u32) Vec3 {
         else => .{ -44, 50, 22 },
     };
 }
-
 
 pub const Model = struct {
     cam: Orbit = .{ .target = .{ 48, 40, 30 }, .dist = 270, .yaw = -0.62, .pitch = 0.42 },
@@ -180,7 +178,6 @@ pub fn camera(m: *const Model) teak.Camera {
     return m.cam.camera(m.vp[0], m.vp[1], .{ .lo = .{ -20, -10, -40 }, .hi = .{ 130, 100, 90 } });
 }
 
-
 /// Which layer is under viewport-local px `(x, y)`: markers first (they float
 /// in front), then the nearest sheet or the annotation layer. 0 = nothing.
 fn pickAtImpl(m: *const Model, x: f32, y: f32, w: f32, h: f32) u32 {
@@ -193,7 +190,6 @@ fn pickAtImpl(m: *const Model, x: f32, y: f32, w: f32, h: f32) u32 {
     if (scene.pick.planes(ray, planes_list)) |p| return p.id;
     return 0;
 }
-
 
 /// The planes without content (frames only): enough for picking.
 fn planeFrames(m: *const Model, buf: *[4]teak.ScenePlane) []const teak.ScenePlane {
@@ -360,7 +356,6 @@ fn annotationContent(a: std.mem.Allocator, lit: bool) []const teak.CanvasPrimiti
     return p.items;
 }
 
-
 const marker_px = 48;
 
 /// A ring (outline circle) and a filled bubble with a notch, white on
@@ -483,7 +478,6 @@ fn buildStructure() Structure {
     }
     return s;
 }
-
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 0, .gap = 0, .bg = paper, .align_cross = .stretch });
@@ -658,10 +652,4 @@ fn statusBar(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-
 const testing = std.testing;
-
-
-
-
-

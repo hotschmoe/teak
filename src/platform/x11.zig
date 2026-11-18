@@ -288,7 +288,6 @@ const XK_End: KeySym = 0xff57;
 /// WHEEL_PIXELS_PER_NOTCH so wheel feel is consistent across hosts.
 const WHEEL_PIXELS_PER_NOTCH: f32 = 48;
 
-
 /// Xlib entry points (pub for `x11_test.zig`).
 pub const Xlib = struct {
     XOpenDisplay: *const fn (?[*:0]const u8) callconv(.c) ?*Display,
@@ -351,7 +350,6 @@ pub const Xlib = struct {
         return x;
     }
 };
-
 
 pub const Atoms = struct {
     wm_protocols: Atom,
@@ -541,7 +539,6 @@ fn preeditCaret(_: ?*anyopaque, client_data: ?*anyopaque, call: ?*anyopaque) cal
     const d: *const XIMPreeditCaretCallbackStruct = @ptrCast(@alignCast(call orelse return));
     if (d.position >= 0) c.preedit.moveCaret(@intCast(d.position));
 }
-
 
 /// X11 native window handle: opaque `Display*` + `Window` XID. Structurally
 /// matches `gpu/surface_xlib.Handle`; that provider duck-types it.
@@ -874,7 +871,6 @@ pub const Host = struct {
         _ = self.x.XLookupString(ev, &buf, buf.len, &keysym, null);
         if (keysym == XK_Alt_L or keysym == XK_Alt_R) self.queue.altUp();
     }
-
 
     /// Send a 32-bit ClientMessage to `target` (pub for `x11_test.zig`).
     pub fn sendClientMessage(self: *Host, target: Window, msg_type: Atom, l: [5]c_long) void {
@@ -1321,7 +1317,6 @@ pub const Host = struct {
         return !self.running;
     }
 
-
     pub fn controlListen(self: *Host, path: []const u8) bool {
         return self.ctl.listen(path);
     }
@@ -1374,7 +1369,6 @@ pub const Host = struct {
     fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
         return text.measure(text_bytes, font);
     }
-
 
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
@@ -1898,16 +1892,3 @@ fn codepointFromKeysym(keysym: KeySym) ?u21 {
 comptime {
     teak.validateHost(Host);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

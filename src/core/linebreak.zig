@@ -130,7 +130,6 @@ pub fn isTerminator(cp: u21) bool {
     };
 }
 
-
 const testing = std.testing;
 
 /// Renders `text` with `|` at soft opportunities and `!` at hard ones (the
@@ -158,11 +157,3 @@ fn expectMarked(text: []const u8, expected: []const u8) !void {
         return e;
     };
 }
-
-
-
-
-
-
-
-

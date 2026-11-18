@@ -8,7 +8,6 @@ const Align = cmd.Align;
 const Justify = cmd.Justify;
 const TextMeasurer = text.TextMeasurer;
 
-
 pub const Rect = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -550,7 +549,6 @@ pub const LayoutEngine = struct {
         }
         return needs_wrap;
     }
-
 
     /// A direct child as the width passes see it.
     const Kid = struct {
@@ -1280,7 +1278,6 @@ pub const LayoutEngine = struct {
         };
     }
 
-
     fn assertPushable(len: usize, cap: usize, cmd_index: usize) void {
         if (len >= cap) std.debug.panic(
             "teak layout: push_* at cmd #{d} exceeds container nesting depth {d} " ++
@@ -1316,30 +1313,8 @@ pub const LayoutEngine = struct {
     }
 };
 
-
 /// 10-px-per-byte, 20-px-line-height stub measurer — the same numbers
 /// every existing assertion was written against. Shared with
 /// `src/input/hit_test.zig`, `src/render/build.zig`, and example
 /// tests via `text.monoMeasurer`.
 const test_measurer = text.monoMeasurer();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

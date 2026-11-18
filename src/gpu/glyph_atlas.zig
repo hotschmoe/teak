@@ -363,25 +363,15 @@ pub fn GlyphAtlasWith(comptime hashFn: fn (GlyphKey) u64) type {
     };
 }
 
-
 const testing = std.testing;
 
 fn K(glyph: u16, size_q: u16, bin: u2) GlyphKey {
     return .{ .face = 1, .glyph = glyph, .size_q = size_q, .bin = bin };
 }
 
-
-
-
 fn collideHash(_: GlyphKey) u64 {
     return 7;
 }
-
-
-
-
-
-
 
 /// Synthetic realistic glyph mix (documented distribution): UI font sizes
 /// 11..32 px with weights favouring body sizes; per size, width 0.30..0.65 em,
@@ -393,5 +383,3 @@ fn syntheticGlyph(rng: std.Random) struct { w: u16, h: u16 } {
     const h = s * (0.55 + 0.60 * rng.float(f32));
     return .{ .w = @max(1, @as(u16, @intFromFloat(@round(w)))), .h = @max(1, @as(u16, @intFromFloat(@round(h)))) };
 }
-
-

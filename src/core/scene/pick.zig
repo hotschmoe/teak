@@ -354,7 +354,6 @@ pub fn items(ray: Ray, list: []const Item, meshes: []const MeshRef, opt: Options
     return best;
 }
 
-
 pub const PlaneHit = struct {
     id: u32,
     /// Index into the `planes` slice.
@@ -454,7 +453,6 @@ pub fn sprites(cam: camera.Camera, w: f32, h: f32, x: f32, y: f32, list: []const
     }
     return best;
 }
-
 
 pub const Corner = enum { top_left, top_right, bottom_left, bottom_right };
 
@@ -586,7 +584,6 @@ pub fn gizmoHit(orbit: camera.Orbit, l: GizmoLayout, w: f32, h: f32, x: f32, y: 
     return if (best) |b| b.axis else null;
 }
 
-
 const testing = std.testing;
 const approx = testing.expectApproxEqAbs;
 
@@ -610,25 +607,12 @@ const cube_idx = [36]u32{
 };
 const cube = MeshData{ .vertices = &cube_verts, .indices = &cube_idx };
 
-
-
-
-
-
-
-
-
-
-
-
 fn approxEq(a: f32, b: f32) bool {
     return @abs(a - b) < 1e-3;
 }
-
 
 const KerfPart = struct {
     positions: []const f32,
     indices: []const u32,
 };
 const KerfMesh = struct { parts: []const KerfPart };
-
