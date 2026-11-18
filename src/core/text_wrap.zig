@@ -168,7 +168,6 @@ fn hardLine(text: []const u8, start: usize, font: FontSpec, m: TextMeasurer) Lin
     var br = linebreak.Breaker.init(text, start);
     while (br.next()) |b| {
         if (b.kind == .soft) continue;
-        // The terminator (if any) is at the end of the last segment.
         const tr = trimSegment(text, start, b.end);
         return .{
             .start = @intCast(start),
@@ -322,7 +321,6 @@ pub const LineIter = struct {
         var line = nextLine(self.text, self.pos, self.font, self.max_w, self.mode, self.m);
         const last_visible = self.max_lines != 0 and self.index + 1 == self.max_lines;
         if (last_visible and (line.next < self.text.len or (self.mode == .ellipsis and line.width > self.max_w))) {
-            // Text remains after this line (or the unwrapped line overflows).
             if (self.mode == .word or self.mode == .char) {
                 if (line.next < self.text.len) line = ellipsize(self.text, line, self.font, self.max_w, self.m);
             } else line = ellipsize(self.text, line, self.font, self.max_w, self.m);
@@ -451,7 +449,6 @@ pub fn indexAt(text: []const u8, x: f32, y: f32, font: FontSpec, max_w: f32, mod
         li += 1;
     }
     if (!is_last) is_last = blk: {
-        // Peek: is there another visible line after `cur`?
         var probe = it;
         break :blk probe.next() == null;
     };

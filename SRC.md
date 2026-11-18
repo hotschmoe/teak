@@ -290,3 +290,11 @@ An overlong input line is discarded through its newline. Replies are single line
 ## src/platform/file_picker.zig
 
 The dialog subprocess needs an allocating `Io` and inherits the environment, including display, session-bus and XDG variables needed by the desktop toolkit. Zenity and kdialog return status 1 for cancellation and 0 with the selected path on stdout.
+
+## src/core/widgets/split.zig
+
+Focused-divider arrow keys adjust by `key_step`; Home and End request the minimum and maximum first-pane sizes, clamped by update.
+
+## src/core/widgets/tooltip.zig
+
+The tooltip prefers the widget's lower-left side, flipping above or right-aligned near the lower or right edge of the window.

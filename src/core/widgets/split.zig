@@ -135,8 +135,6 @@ pub fn canvasMsg(model: *const Model, ev: pointer.CanvasEvent, o: Opts) ?Msg {
             .min_b = o.min_b,
         } } else null,
         .up => if (ev.button == .left) .release else null,
-        // Keyboard on a focused divider: arrows nudge it by `key_step`, Home /
-        // End collapse the first pane to its minimum / maximum (clamped by `update`).
         .key => blk: {
             const k = ev.key orelse break :blk null;
             const horiz = o.orientation == .horizontal;
@@ -206,7 +204,6 @@ fn dividerImpl(model: *const Model, cb: anytype, o: Opts, comptime focusable: bo
     const col = if (model.dragging) pal.accent else pal.border;
     const prims = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 2) catch oom();
     prims[0] = .{ .filled_rect = .{ .x = 0, .y = 0, .w = w, .h = h, .color = col } };
-    // A short grip in the middle so the handle is discoverable.
     const grip = pal.fg_muted;
     prims[1] = if (horiz)
         .{ .filled_rect = .{ .x = w / 2 - 0.5, .y = h / 2 - 12, .w = 1, .h = 24, .color = grip } }

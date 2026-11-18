@@ -126,8 +126,6 @@ pub fn view(model: *const Model, cb: anytype, texts: []const []const u8, o: View
     if (i >= texts.len) return;
     const pal = cb.theme.palette;
     const b = model.box;
-    // Prefer below-left of the widget; flip to above / right-aligned when the
-    // widget is in the lower third / right half of the window.
     const above = b.y + b.h > o.window_h * 0.66;
     const right = b.x + b.w * 0.5 > o.window_w * 0.5;
     cb.pushOverlay(.{

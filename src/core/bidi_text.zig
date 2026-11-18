@@ -201,7 +201,6 @@ pub fn arrowTarget(text: []const u8, ls: usize, le: usize, cursor: usize, arrow:
     const ptext = text[pb.s..pb.e];
     const slots_buf = gpa.alloc(u32, MAX_PARA + 1) catch return null;
     const slots = bidi.boundarySlots(gpa, ptext, an, ls - pb.s, le - pb.s, slots_buf) catch return null;
-    // Boundary byte offsets, aligned with `slots`.
     var cur_slot: ?u32 = null;
     var p = ls;
     var k: usize = 0;
@@ -212,7 +211,6 @@ pub fn arrowTarget(text: []const u8, ls: usize, le: usize, cursor: usize, arrow:
         if (k + 1 < slots.len) p = @min(unicode.nextGrapheme(text[0..le], p), le);
     }
     const cs = cur_slot orelse return null;
-    // Nearest position strictly beyond `cs` in the arrow's direction.
     var best: ?usize = null;
     var best_slot: u32 = 0;
     p = ls;

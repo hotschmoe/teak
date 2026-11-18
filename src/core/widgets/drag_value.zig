@@ -150,8 +150,6 @@ pub fn DragValue(comptime cfg: Config) type {
             prims[1] = .{ .filled_rect = .{ .x = 1, .y = 1, .w = opts.width - 2, .h = opts.height - 2, .color = pal.bg_sunken } };
             // Left-padded; canvas text has no measurer at view time.
             prims[2] = .{ .text = .{ .x = 8, .y = @max(0, (opts.height - font.size_px * 1.2) / 2), .content = text, .font = font, .color = pal.fg } };
-            // A focusable pointer canvas (as `canvasInteractiveFocusable`) with
-            // the horizontal-resize cursor.
             cb.cmds.append(cb.backing, cb.box(.canvas, .{
                 .style = .{ .width = opts.width, .height = opts.height },
                 .primitives = prims,

@@ -214,7 +214,6 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: ViewOpts) vo
     cb.pushGroup(.{ .direction = .vertical, .padding = panel_pad, .gap = panel_gap, .bg = pal.bg_panel, .border = pal.border, .width = pw, .align_cross = .stretch });
 
     const cur = model.cursor;
-    // Header: << < October 2026 > >>
     var nav = cb.theme.button;
     nav.min_width = o.cell_w;
     nav.height = o.cell_h;
@@ -230,7 +229,6 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: ViewOpts) vo
     cb.buttonStyled(msgs.goMsg(.year_next), ">>", nav);
     cb.popGroup();
 
-    // Weekday headings.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0 });
     for (date.weekday_short) |w| {
         cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .width = o.cell_w, .height = o.cell_h, .justify = .center, .align_cross = .center });
@@ -239,7 +237,6 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: ViewOpts) vo
     }
     cb.popGroup();
 
-    // 6 x 7 grid, Monday first, starting on or before the 1st.
     const first: Date = .{ .year = cur.year, .month = cur.month, .day = 1 };
     const lead: i64 = date.weekday(first);
     var row: i64 = 0;
@@ -253,7 +250,6 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: ViewOpts) vo
         cb.popGroup();
     }
 
-    // Footer.
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 6, .justify = .end });
     var foot = cb.theme.button;
     foot.height = o.cell_h;
