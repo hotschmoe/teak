@@ -124,7 +124,6 @@ pub const Plan = struct {
     }
 };
 
-// ── Plane and sprite layers ────────────────────────────────────────
 
 /// One plane's placement as the `vs_plane` instance stream reads it: the
 /// plane frame as a 3x4 transform (columns `u`, `v`, `u x v`, origin), the
@@ -264,7 +263,6 @@ pub const Layers = struct {
     }
 };
 
-// ── Section cap ────────────────────────────────────────────────────
 
 /// Corners of a quad lying in the cut plane that covers the world-space
 /// bounds of an item (`lo`/`hi` of its mesh under `xf`), or null when the
@@ -273,7 +271,6 @@ pub const Layers = struct {
 pub fn capQuad(plane: [4]f32, lo: mat.Vec3, hi: mat.Vec3, xf: mat.Affine) ?[4]mat.Vec3 {
     const n = mat.normalizeOr(.{ plane[0], plane[1], plane[2] }, .{ 0, 1, 0 });
     const d = plane[3] / @max(mat.length(.{ plane[0], plane[1], plane[2] }), 1e-12);
-    // plane basis
     const helper: mat.Vec3 = if (@abs(n[1]) < 0.9) .{ 0, 1, 0 } else .{ 1, 0, 0 };
     const u = mat.normalize(mat.cross(helper, n));
     const v = mat.cross(n, u);
@@ -304,13 +301,11 @@ pub fn capQuad(plane: [4]f32, lo: mat.Vec3, hi: mat.Vec3, xf: mat.Affine) ?[4]ma
     const corners = [4][2]f32{ .{ lo_u - pad, lo_v - pad }, .{ hi_u + pad, lo_v - pad }, .{ hi_u + pad, hi_v + pad }, .{ lo_u - pad, hi_v + pad } };
     var out: [4]mat.Vec3 = undefined;
     for (corners, 0..) |c, i| {
-        // origin has zero u,v components along n only; add the in-plane offsets
         out[i] = mat.add(origin, mat.add(mat.scale(u, c[0] - mat.dot(u, origin)), mat.scale(v, c[1] - mat.dot(v, origin))));
     }
     return out;
 }
 
-// ── Grid ───────────────────────────────────────────────────────────
 
 const mat = teak.scene.mat;
 
@@ -342,8 +337,6 @@ pub fn gridUniform(draw: SceneDraw, grid: teak.scene.Grid, target_w: u32, target
         .yz => 0,
     };
     const plane_dist = @abs(draw.camera.eye[axis] - grid.offset);
-    // View-space distance of the far plane (`w` of a far-plane point): the
-    // shader dissolves the grid before it so there is no hard edge.
     const far_w = blk: {
         var h: [4]f32 = undefined;
         for (0..4) |row| h[row] = inv[8 + row] + inv[12 + row];
@@ -365,15 +358,11 @@ pub fn gridUniform(draw: SceneDraw, grid: teak.scene.Grid, target_w: u32, target
     };
 }
 
-// ── Gizmo ──────────────────────────────────────────────────────────
 
 /// View-space image of the world direction `d`, read off a camera
 /// `view_proj` (perspective or orthographic): `(right, up, toward-viewer)`.
 /// The projection's x/y scale and w row make this exact for both modes.
 pub fn viewDir(view_proj: [16]f32, d: mat.Vec3) mat.Vec3 {
-    // Rows of `P * V`: rows 0, 1 (and 2 for ortho) are the unit rows of the
-    // view rotation scaled by the projection's diagonal, so dividing by their
-    // length recovers the rotation; the w row of a perspective is `-V.row2`.
     const m = view_proj;
     const r0 = mat.Vec3{ m[0], m[4], m[8] };
     const r1 = mat.Vec3{ m[1], m[5], m[9] };
@@ -420,7 +409,6 @@ pub fn gizmoLines(view_proj: [16]f32, gz: teak.scene.Gizmo) [gizmo_segments * 2]
         const col = gz.colors[axis];
         const dim = [4]f32{ col[0], col[1], col[2], col[3] * 0.4 };
         const tip = v;
-        // barbs: back from the tip along the shaft, spread across the screen perpendicular
         const len2d = @sqrt(v[0] * v[0] + v[1] * v[1]);
         const dir2: [2]f32 = if (len2d > 1e-3) .{ v[0] / len2d, v[1] / len2d } else .{ 1, 0 };
         const perp: [2]f32 = .{ -dir2[1], dir2[0] };
@@ -456,7 +444,6 @@ pub fn gizmoProjection() [16]f32 {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const TestCtx = struct {
     pub fn hasMesh(_: TestCtx, h: u32) bool {

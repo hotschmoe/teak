@@ -170,7 +170,6 @@ pub const ViewOpts = struct {
     bar_bg: bool = true,
 };
 
-// ── Pure navigation ────────────────────────────────────────────────
 
 fn firstSelectable(items: anytype) ?u8 {
     for (items, 0..) |it, i| if (it.selectable()) return @intCast(i);
@@ -369,7 +368,6 @@ pub fn Nav(comptime Action: type) type {
             return .none;
         }
 
-        // ── View pieces ────────────────────────────────────────────
 
         fn rowsHeight(items: []const I, o: ViewOpts) f32 {
             var h: f32 = 0;
@@ -484,7 +482,6 @@ pub fn Nav(comptime Action: type) type {
     };
 }
 
-// ── Menu bar ───────────────────────────────────────────────────────
 
 pub fn MenuBar(comptime Action: type) type {
     const N = Nav(Action);
@@ -591,7 +588,6 @@ pub fn MenuBar(comptime Action: type) type {
     };
 }
 
-// ── Context menu ───────────────────────────────────────────────────
 
 pub fn ContextMenu(comptime Action: type) type {
     const N = Nav(Action);
@@ -672,7 +668,6 @@ pub fn ContextMenu(comptime Action: type) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");

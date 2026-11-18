@@ -254,3 +254,19 @@ Each `TextField(N)` capacity has a distinct message type with the same shape. Ke
 ## src/core/data_table.zig
 
 Sorting is stable for equal rows in either direction. The header stays fixed outside the body scroll region. The table exposes one Tab stop on the cursor row's first cell, or the first displayed row when needed; application key routing then moves the table cursor.
+
+## src/text/measure.zig
+
+Cache entries compare text and every font field; the hash selects a slot but is not identity. The cache is cleared when the face table changes, and runs longer than `max_text` bypass it. Native builds use a larger two-way table; wasm uses a small table and an all-zero initial representation to avoid occupying the data section. Short ASCII runs bypass hashing and cache lookup.
+
+## src/platform/host.zig
+
+Optional Host surfaces are validated only when declared. A missing scale factor defaults to 1.0; effect submission and result polling are paired. The Host clock supplies subscriptions and other time-dependent services without reading time in `view`. Accessibility actions are polled before input routing. See HARDLINE §2 hatch 4 and §3.
+
+## src/gpu/scene_pass.zig
+
+The grid fades before its far plane. Gizmo rotation is recovered by normalizing the view-projection rows after removing projection scale; the perspective w row is the negative third view row.
+
+## src/platform/native_effects.zig
+
+Hosts with native clipboards intercept clipboard effects before the shared service. Windows UTC offsets combine the base bias with the active standard or daylight adjustment; current rules are used for the queried instant. Completed effects are delivered asynchronously by the Host.

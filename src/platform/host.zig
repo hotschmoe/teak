@@ -287,14 +287,7 @@ pub fn validateHost(comptime T: type) void {
         .{ .name = "pollSecondaryInputs", .sig = "fn(*Host, u32) ?InputState" },
         .{ .name = "closeSecondaryWindow", .sig = "fn(*Host, u32) void" },
         .{ .name = "secondaryWindowHandle", .sig = "fn(*const Host, u32) ?NativeHandle" },
-        // Update the window title bar from a UTF-8 string (e.g. an
-        // "* unsaved" marker or the open document's name). See the
-        // surface-extension note above.
         .{ .name = "setTitle", .sig = "fn(*Host, []const u8) void" },
-        // Monotonic millisecond timestamp on the host's clock. Used by
-        // subscriptions (`Sub.at(deadline_ms, msg)`) and by anything
-        // else that needs a host-side wall-clock without violating
-        // HARDLINE §3's "no wall-clock in view".
         .{ .name = "nowMs", .sig = "fn(*const Host) u64" },
     };
     inline for (required) |d| {
@@ -306,17 +299,11 @@ pub fn validateHost(comptime T: type) void {
                 "(expected " ++ d.sig ++ ")");
     }
 
-    // Optional surface extensions — checked for callability only when the
-    // Host declares them, so their absence is not a contract violation. A
-    // Host may omit `scaleFactor` (defaults to a 1.0 assumption at the
-    // orchestrator once it consumes the decl); if present it must be a fn.
-    // `submit` and `pollEffectResults` come as a pair.
+    // Optional Host extensions and pairing rules: HARDLINE §2 and SRC.md.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
         .{ .name = "setImeSpot", .sig = "fn(*Host, i32, i32) void" },
         .{ .name = "setImeActive", .sig = "fn(*Host, bool) void" },
-        // Assistive-technology requests (web DOM mirror, UIA patterns): fills
-        // `out` and returns the count; called once per frame before input routing.
         .{ .name = "pollA11yActions", .sig = "fn(*Host, []A11yAction) usize" },
         .{ .name = "setCursor", .sig = "fn(*Host, CursorShape) void" },
         .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },

@@ -80,7 +80,6 @@ pub fn utf8PrevStart(bytes: []const u8, i: usize) usize {
     return i - 1;
 }
 
-// ── Property lookups ──────────────────────────────────────────────
 
 inline fn gprop(cp: u21) u8 {
     return t.lookup(&t.grapheme_runs, cp);
@@ -105,7 +104,6 @@ pub fn isWide(cp: u21) bool {
     return lprop(cp) & 0x80 != 0;
 }
 
-// ── Grapheme clusters ─────────────────────────────────────────────
 
 /// Incremental UAX #29 boundary decider. Feed code points in order; `step`
 /// answers whether there is a boundary *before* the fed code point.
@@ -127,11 +125,9 @@ pub const GraphemeState = struct {
         const brk = !self.started or self.decide(prev, cur, ext_pict, incb);
         self.started = true;
 
-        // Update context for the next call.
         if (ext_pict) {
             self.pict = 1;
         } else if (cur == .extend and self.pict == 1) {
-            // stays 1
         } else if (cur == .zwj and self.pict == 1) {
             self.pict = 2;
         } else self.pict = 0;
@@ -239,7 +235,6 @@ pub fn graphemeCount(text: []const u8) usize {
     return n;
 }
 
-// ── Word classes ──────────────────────────────────────────────────
 
 pub const WordClass = enum { space, word, punct, han };
 
@@ -346,7 +341,6 @@ pub fn wordRangeAt(text: []const u8, i: usize) Span {
     return .{ .start = s, .end = e };
 }
 
-// ── Tests ─────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const conformance_excerpt = @embedFile("testdata/GraphemeBreakTest_excerpt.txt");

@@ -56,7 +56,6 @@ pub const swatches = [16]Rgb{
     .{ .r = 120, .g = 60, .b = 190 }, .{ .r = 200, .g = 70, .b = 190 },  .{ .r = 230, .g = 100, .b = 140 }, .{ .r = 130, .g = 85, .b = 50 },
 };
 
-// ── Colour maths (pure) ────────────────────────────────────────────
 
 pub fn hsvToRgb(c: Hsv) Rgb {
     const h = @mod(c.h, 360) / 60;
@@ -117,7 +116,6 @@ pub fn formatHex(c: Rgb, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "#{X:0>2}{X:0>2}{X:0>2}", .{ c.r, c.g, c.b }) catch "";
 }
 
-// ── Component ──────────────────────────────────────────────────────
 
 pub const Target = enum { sv, hue };
 
@@ -249,7 +247,6 @@ pub fn fieldText(model: *const Model, field: Field) []const u8 {
     return model.texts[@backingInt(field)].content();
 }
 
-// ── Pointer + keys ─────────────────────────────────────────────────
 
 pub const Opts = struct {
     /// Square size.
@@ -303,7 +300,6 @@ pub fn pasteMsg(field: Field, bytes: []const u8) Msg {
     return .{ .edit = .{ .field = field, .msg = .{ .replace_selection = bytes } } };
 }
 
-// ── View ───────────────────────────────────────────────────────────
 
 const TV = cmd.CanvasPrimitive.TriVertex;
 
@@ -325,14 +321,12 @@ fn svPrimitives(cb: anytype, model: *const Model, o: Opts) []const cmd.CanvasPri
     const white: [3]f32 = .{ 1, 1, 1 };
     const black: [3]f32 = .{ 0, 0, 0 };
     const tris = a.alloc(TV, 12) catch return &.{};
-    // base: white -> hue
     tris[0] = vtx(0, 0, white, 1);
     tris[1] = vtx(w, 0, hue, 1);
     tris[2] = vtx(0, h, white, 1);
     tris[3] = vtx(w, 0, hue, 1);
     tris[4] = vtx(w, h, hue, 1);
     tris[5] = vtx(0, h, white, 1);
-    // overlay: transparent -> black
     tris[6] = vtx(0, 0, black, 0);
     tris[7] = vtx(w, 0, black, 0);
     tris[8] = vtx(0, h, black, 1);
@@ -342,7 +336,6 @@ fn svPrimitives(cb: anytype, model: *const Model, o: Opts) []const cmd.CanvasPri
 
     const prims = a.alloc(cmd.CanvasPrimitive, 5) catch return &.{};
     prims[0] = .{ .triangles = .{ .verts = tris, .key = 1000 + @as(u64, @intFromFloat(model.h * 10)) } };
-    // marker: a black square ring with a white one inside it
     const mx = model.s * w;
     const my = (1 - model.v) * h;
     prims[1] = .{ .filled_rect = .{ .x = mx - 6, .y = my - 6, .w = 12, .h = 12, .color = .{ 0, 0, 0, 1 } } };
@@ -394,13 +387,11 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: Opts) void {
     const pal = cb.theme.palette;
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 14, .align_cross = .start });
 
-    // Left: square + strip.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 8 });
     cb.canvasInteractive(.{ .width = o.sv_w, .height = o.sv_h }, svPrimitives(cb, model, o), o.sv_id, "saturation and value");
     cb.canvasInteractive(.{ .width = o.sv_w, .height = o.hue_h }, huePrimitives(cb, model, o), o.hue_id, "hue");
     cb.popGroup();
 
-    // Right: preview, fields, swatches.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 6 });
     const cur = rgba(model);
     const prev = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 2) catch oom();
@@ -427,7 +418,6 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: Opts) void {
         cb.popGroup();
     }
 
-    // Swatches: 8 x 2 flat buttons.
     var i: usize = 0;
     while (i < swatches.len) : (i += 8) {
         cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 2 });
@@ -451,7 +441,6 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: Opts) void {
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const component = @import("../component.zig");

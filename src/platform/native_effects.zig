@@ -126,7 +126,6 @@ pub const Service = struct {
         self.mutex.unlock(self.io);
     }
 
-    // ── Submit ──────────────────────────────────────────────────────
 
     /// Start `e`. Slices inside `e` are copied; nothing is kept by reference.
     pub fn submit(self: *Service, e: Effect) teak.EffectSubmit {
@@ -142,8 +141,6 @@ pub const Service = struct {
                     self.openPath(o.id, envValue("TEAK_OPEN"));
                 } else return self.startDialog(.open, o.id, o.accept, o.title, "", "");
             },
-            // Hosts with a real clipboard (X11, Win32) intercept this before
-            // it reaches the service; any other embedder gets a one-time note.
             .write_clipboard, .write_clipboard_image => {
                 if (!self.clipboard_warned) {
                     self.clipboard_warned = true;
@@ -183,7 +180,6 @@ pub const Service = struct {
         self.push(null, r);
     }
 
-    // ── Poll ────────────────────────────────────────────────────────
 
     /// Fill `buf` with the results that are ready; returns the count. The
     /// slices stay valid until the next `poll`.
@@ -219,7 +215,6 @@ pub const Service = struct {
         }
     }
 
-    // ── HTTP ────────────────────────────────────────────────────────
 
     const HttpJob = struct {
         service: *Service,
@@ -336,7 +331,6 @@ pub const Service = struct {
         return .{ .status = @backingInt(res.status), .body = out.written() };
     }
 
-    // ── Storage, download, open, clock, query ───────────────────────
 
     fn storageSet(self: *Service, key: []const u8, value: []const u8) void {
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -361,7 +355,6 @@ pub const Service = struct {
         self.push(arena, .{ .storage_value = .{ .id = id, .value = value } });
     }
 
-    // ── File dialogs ────────────────────────────────────────────────
 
     const DialogJob = struct {
         service: *Service,
@@ -489,7 +482,6 @@ pub const Service = struct {
         };
         const name = std.fs.path.basename(path);
         const mime = mimeFromName(name);
-        // PNG / JPEG files are images (size known for PNG), like web and X11.
         const is_image = std.mem.eql(u8, mime, "image/png") or std.mem.eql(u8, mime, "image/jpeg");
         const size = if (is_image) x11_data.pngSize(bytes) else null;
         self.push(arena, .{ .dropped = .{
@@ -547,7 +539,6 @@ fn selfCmdline(io: Io, a: std.mem.Allocator) []const u8 {
 extern "c" fn _NSGetArgc() *c_int;
 extern "c" fn _NSGetArgv() *[*][*:0]u8;
 
-// ── Pure helpers ────────────────────────────────────────────────────
 
 /// "Kerf CAD (beta)" -> "kerf-cad-beta": lowercase letters and digits, runs
 /// of anything else become one '-', no leading / trailing '-'; "app" if
@@ -790,9 +781,7 @@ const localtime_r = if (is_windows) {} else struct {
 
 fn utcOffsetMinutes(unix_secs: i64) i32 {
     if (is_windows) {
-        // `bias` is minutes to add to local time to get UTC; the active
-        // (standard or daylight) adjustment is added on top. The current
-        // rules are applied to every instant, which is exact for "now".
+        // Windows bias is the number of minutes added to local time for UTC.
         var info: win.TimeZoneInformation = undefined;
         const id = win.GetTimeZoneInformation(&info);
         const extra: i32 = switch (id) {
@@ -807,7 +796,6 @@ fn utcOffsetMinutes(unix_secs: i64) i32 {
     return @intCast(@divTrunc(tm.gmtoff, 60));
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
 
 
 
@@ -816,7 +804,6 @@ fn utcOffsetMinutes(unix_secs: i64) i32 {
 
 
 
-// ── Local server for the round-trip tests (libc sockets) ────────────
 
 const TestServer = struct {
     fd: c_int,
@@ -840,7 +827,6 @@ const TestServer = struct {
     }
 
     fn stop(self: *TestServer) void {
-        // Unblock a server still waiting in accept, then join.
         if (self.thread) |t| {
             var addr: std.c.sockaddr.in = .{ .port = std.mem.nativeToBig(u16, self.port), .addr = std.mem.nativeToBig(u32, 0x7f000001) };
             const fd = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
@@ -858,7 +844,6 @@ const TestServer = struct {
         defer _ = std.c.close(conn);
         var req: [4096]u8 = undefined;
         var n: usize = 0;
-        // Read the head, then the body announced by Content-Length.
         while (n < req.len) {
             const got = std.c.read(conn, req[n..].ptr, req.len - n);
             if (got <= 0) return;
@@ -868,7 +853,6 @@ const TestServer = struct {
             if (n >= head_end + 4 + want) break;
         }
         if (self.mode == .silent) {
-            // Say nothing for longer than the test's timeout, then hang up.
             _ = std.c.nanosleep(&.{ .sec = 0, .nsec = 700 * std.time.ns_per_ms }, null);
             return;
         }

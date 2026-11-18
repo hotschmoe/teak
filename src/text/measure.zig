@@ -25,17 +25,6 @@ pub fn width(text: []const u8, font: teak.FontSpec) f32 {
     return total;
 }
 
-// ── Measure cache ──────────────────────────────────────────────────
-//
-// Layout measures every text run of every frame, and an app's labels barely
-// change between frames. A direct-mapped table keyed by the full (text, font)
-// returns the previous result without shaping. Entries compare the text and
-// every font field (the hash only picks the slot) and are dropped wholesale when
-// the face table changes. Runs longer than `max_text` bypass the cache.
-
-//
-// Native builds size the table for a 10k-run screen (2-way set associative);
-// wasm keeps it small (its linear memory is the budget).
 const small = @import("builtin").cpu.arch.isWasm();
 const max_text = if (small) 48 else 96;
 const cache_slots = if (small) 1024 else 4096;
@@ -48,7 +37,7 @@ const Slot = struct {
     metrics: teak.TextMetrics,
 };
 
-// All-zero (so it lives in .bss, not the wasm data section): `used` is false.
+// Zero initialization keeps the cache out of the wasm data section.
 var cache: [cache_slots]Slot = std.mem.zeroes([cache_slots]Slot);
 var cache_epoch: u64 = 0;
 
@@ -73,8 +62,6 @@ pub fn measure(text: []const u8, font: teak.FontSpec) teak.TextMetrics {
         cache = std.mem.zeroes([cache_slots]Slot);
         cache_epoch = face_mod.epoch;
     }
-    // Short pure-ASCII runs cost less than a cache probe (a cold cache line each):
-    // no table, no hashing. Longer ones are cheaper to remember.
     if (text.len <= 16) {
         if (shaper_mod.asciiWidth(text, font)) |w| return metricsWith(w, font);
     }
@@ -85,7 +72,6 @@ pub fn measure(text: []const u8, font: teak.FontSpec) teak.TextMetrics {
         return slot.metrics;
     }
     if (!small) {
-        // Second way: the neighbouring slot.
         const other = &cache[@as(usize, @intCast(h % cache_slots)) ^ 1];
         if (other.used and other.len == text.len and sameFont(other.font, font) and std.mem.eql(u8, other.text[0..other.len], text)) {
             return other.metrics;
