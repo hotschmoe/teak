@@ -40,7 +40,7 @@ commit) when a zunk release ships.
 
 Requires **Zig 0.17.0+**.
 
-The binding testing and comment policy is in `/home/hotschmoe/github/hotschmoe-setup/ENGINEERING.md`. Run the blocking end-to-end gate from the repository root with `zig build test -j4`; run the background gate with `zig build test-heavy -j4`. The gates use Bash; the background gate also needs Linux and Vulkan for the headless driver. Do not add unit tests or golden-output tests.
+The binding testing and comment policy is in `/home/hotschmoe/github/hotschmoe-setup/ENGINEERING.md`. Run the blocking end-to-end gate from the repository root with `zig build test -j4`; run the background gate with `zig build test-heavy -j4`. The gates use Bash; the background gate also needs Linux, Vulkan, Chromium, Node and the tools npm dependencies (`npm ci --prefix tools`). Do not add unit tests or golden-output tests.
 
 ```sh
 # Library

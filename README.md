@@ -45,6 +45,8 @@ Examples: `chrome`, `counter_greeter`, `effects`, `fonts`, `gallery`, `kerf_view
 
 Requires **Zig 0.17.0+**.
 
+The background gate also needs Linux, Vulkan, Chromium, Node and the tools dependencies (`npm ci --prefix tools`).
+
 ```sh
 # From repo root — library
 zig build test -j4       # blocking end-to-end checks

@@ -29,6 +29,8 @@ case "${1:-}" in
     for example in chrome effects fonts gallery kerf_viewer notes scene3d scene_layers tables vector_canvas viewport; do
       run_example "$example"
     done
-    "$root/tools/drive-e2e.sh" ;;
+    "$root/tools/drive-e2e.sh"
+    (cd "$root/examples/todo" && "$zig" build web -j4)
+    WEBSHOT_ANGLE="${WEBSHOT_ANGLE:-vulkan}" node "$root/tools/a11yprobe.mjs" todo "$root/examples/todo/dist" ;;
   *) echo 'usage: tools/test-e2e.sh blocking|heavy' >&2; exit 2 ;;
 esac
