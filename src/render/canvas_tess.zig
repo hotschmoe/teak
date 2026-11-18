@@ -24,7 +24,6 @@ pub fn emit(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, r: Rect, co
     emitQuad(verts, alloc, cr, color);
 }
 
-// ── Canvas primitive emission ──────────────────────────────────────
 
 /// How a canvas lowers its primitives: the world -> canvas-local transform,
 /// antialiased edges, and whether circles may use the SDF quad (2D pass only:
@@ -118,7 +117,6 @@ pub fn emitCanvasPrimitiveOpts(
         .polyline => |pl| {
             if (pl.points.len < 2) return;
             if (!o.aa) {
-                // Historical hard-edged path: independent quads, no joins.
                 var i: usize = 1;
                 while (i < pl.points.len) : (i += 1) {
                     const a = wp(canvas, xf, pl.points[i - 1].x, pl.points[i - 1].y);
@@ -181,7 +179,6 @@ fn emitCircle(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, canvas: R
         ctr[0] - reach > clip.x + clip.w or ctr[1] - reach > clip.y + clip.h) return;
 
     if (o.sdf_circles and rx == ry) {
-        // One SDF quad: an exact antialiased disc / ring at any size.
         const outer = if (c.stroke != null) rx + c.thickness * 0.5 else rx;
         sdf.emitRect(verts, alloc, .{
             .rect = .{ .x = ctr[0] - outer, .y = ctr[1] - outer, .w = 2 * outer, .h = 2 * outer },
@@ -268,10 +265,6 @@ fn strokeSegment(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, a: [2]
     var y0 = a[1];
     var x1 = b[0];
     var y1 = b[1];
-    // Fully-outside segments are rejected; partially-outside ones are
-    // trimmed to the clip rect at the data level. The thick quad may still
-    // bulge by up to thickness/2 past the boundary at a trimmed endpoint —
-    // negligible and bounded.
     if (!clipSegment(&x0, &y0, &x1, &y1, clip)) return;
     if (!aa) {
         if (e0 == 0 and e1 == 0) {
@@ -287,7 +280,6 @@ fn strokeSegment(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, a: [2]
         emitSegmentQuad(verts, alloc, x0 - ux * e0, y0 - uy * e0, x1 + ux * e1, y1 + uy * e1, thickness, color);
         return;
     }
-    // A trimmed end sits on the clip edge: push its soft cap outside the clip.
     const pad = thickness * 0.5 + 1;
     const t0 = if (x0 != a[0] or y0 != a[1]) pad else e0;
     const t1 = if (x1 != b[0] or y1 != b[1]) pad else e1;
@@ -392,9 +384,6 @@ fn fillWindowPolygon(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, pt
     if (convex) {
         for (1..n - 1) |k| putTriangle(verts, alloc, pts[0], pts[k], pts[k + 1], color, clip, inside);
     } else {
-        // Ear clipping over an index ring, O(n^2) worst case. A ring that
-        // stops yielding ears (self-intersection, collinear runs) is closed
-        // with a fan so something sensible still fills.
         const idx = alloc.alloc(u32, n) catch return;
         defer alloc.free(idx);
         for (idx, 0..) |*v, i| v.* = @intCast(i);
@@ -422,8 +411,7 @@ fn fillWindowPolygon(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, pt
 
     if (!aa) return;
     verts.ensureUnusedCapacity(alloc, n * 6) catch return;
-    // With y down, area2 > 0 is a clockwise ring on screen; its outside is
-    // to the left of each edge.
+    // With downward y, positive area is clockwise on screen.
     const s: f32 = if (area2 > 0) 1 else -1;
     for (0..n) |k| {
         const a = pts[k];
@@ -463,7 +451,6 @@ fn isEar(pts: []const [2]f32, ring: []const u32, ia: u32, ib: u32, ic: u32, sign
     return true;
 }
 
-// ── Triangle list emission ─────────────────────────────────────────
 
 const TriVertex = CanvasPrimitive.TriVertex;
 
@@ -504,7 +491,6 @@ pub fn emitTrianglesXf(
     if (n == 0) return;
     const tris = list[0..n];
 
-    // Tier 1: bounds of everything (and finiteness) in one linear scan.
     var min_x = std.math.inf(f32);
     var min_y = std.math.inf(f32);
     var max_x = -std.math.inf(f32);
@@ -535,10 +521,8 @@ pub fn emitTrianglesXf(
         const tx1 = @max(t[0].x, @max(t[1].x, t[2].x));
         const ty1 = @max(t[0].y, @max(t[1].y, t[2].y));
         if (boundsInside(canvas, xf, tx0, ty0, tx1, ty1, clip)) {
-            // Tier 2.
             verts.appendSlice(alloc, &.{ toVertex(canvas, xf, t[0]), toVertex(canvas, xf, t[1]), toVertex(canvas, xf, t[2]) }) catch return;
         } else if (boundsOverlap(canvas, xf, tx0, ty0, tx1, ty1, clip)) {
-            // Tier 3.
             clipTriangle(verts, alloc, .{ toVertex(canvas, xf, t[0]), toVertex(canvas, xf, t[1]), toVertex(canvas, xf, t[2]) }, clip);
         }
     }
@@ -581,7 +565,6 @@ const MAX_CLIP_POLY = 8;
 /// Sutherland–Hodgman: clip one window-space triangle to `clip` and emit
 /// the resulting convex polygon as a triangle fan.
 fn clipTriangle(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, tri: [3]Vertex, clip: Rect) void {
-    // Ping-pong between two scratch polygons, one pass per clip edge.
     var buf_a: [MAX_CLIP_POLY]Vertex = undefined;
     var buf_b: [MAX_CLIP_POLY]Vertex = undefined;
     buf_a[0..3].* = tri;
@@ -589,7 +572,6 @@ fn clipTriangle(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, tri: [3
     var dst: *[MAX_CLIP_POLY]Vertex = &buf_b;
     var spare: *[MAX_CLIP_POLY]Vertex = &buf_a;
 
-    // Four edges: x >= left, x <= right, y >= top, y <= bottom.
     const Edge = struct { axis_y: bool, bound: f32, keep_greater: bool };
     const edges = [4]Edge{
         .{ .axis_y = false, .bound = clip.x, .keep_greater = true },
@@ -643,7 +625,6 @@ fn emitSegmentQuad(
     const len = @sqrt(dx * dx + dy * dy);
     if (len <= 0) return;
     const half = thickness * 0.5;
-    // Unit normal (perpendicular to the segment) scaled by half-thickness.
     const nx = -dy / len * half;
     const ny = dx / len * half;
     emitQuadCorners(
@@ -661,11 +642,7 @@ fn emitSegmentQuad(
 /// endpoints to the visible sub-segment and returns true if any part is
 /// visible; returns false (endpoints untouched-but-ignored) if fully out.
 pub fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
-    // Reject a segment with any NaN endpoint outright. Every Liang–Barsky
-    // t-comparison against a NaN is false, so a NaN segment would otherwise
-    // sail through "accepted" and `emitSegmentQuad`'s `len <= 0` guard is also
-    // false for a NaN length — the net result being six NaN vertices in the
-    // buffer. Drop it here instead.
+    // NaN endpoints would pass clipping comparisons and produce NaN vertices.
     if (std.math.isNan(x0.*) or std.math.isNan(y0.*) or
         std.math.isNan(x1.*) or std.math.isNan(y1.*)) return false;
 
@@ -683,7 +660,6 @@ pub fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
     var t1: f32 = 1;
     for (p, q) |pk, qk| {
         if (pk == 0) {
-            // Segment parallel to this edge: reject if it starts outside.
             if (qk < 0) return false;
         } else {
             const t = qk / pk;
@@ -708,7 +684,6 @@ pub fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
     return true;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const big: Rect = .{ .x = 0, .y = 0, .w = 1000, .h = 1000 };

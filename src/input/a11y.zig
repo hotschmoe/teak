@@ -74,7 +74,6 @@ pub const Role = enum {
     /// Modal/popup overlay. Screen readers should announce focus
     /// trapping here when present.
     overlay,
-    // Semantic roles from `A11yHint` (groups, scrolls, buttons).
     list,
     listitem,
     listbox,
@@ -236,15 +235,9 @@ pub fn buildTree(
     var out: std.ArrayList(A11yNode) = .empty;
     errdefer out.deinit(arena);
 
-    // Pass 1 (overlay): collect overlay-layer nodes and remember
-    // whether any modal overlay is present in this frame. The result
-    // gates pass 2.
     const modal_present = try collectLayer(arena, &out, cmds, rects, focus_index, .overlay);
 
-    // Pass 2 (base): collect base-layer nodes, but only if no modal
-    // overlay was open. A modal overlay occludes the base layer for
-    // input — a11y mirrors that so a screen reader doesn't announce
-    // widgets the user can't actually interact with.
+    // Modal overlays suppress inaccessible base-layer nodes.
     if (!modal_present) {
         _ = try collectLayer(arena, &out, cmds, rects, focus_index, .base);
     }
@@ -269,9 +262,6 @@ fn collectLayer(
     var clip: ClipStack = .{};
     var overlay_depth: u32 = 0;
     var modal_present: bool = false;
-    // Enclosing emitted container per open push_*: containers that emit no
-    // node (clipped away, or in the other layer) pass their parent through,
-    // so every node's `parent` is the nearest emitted ancestor.
     var parents: [64]u32 = undefined;
     var plen: usize = 0;
 
@@ -284,9 +274,6 @@ fn collectLayer(
         };
         const parent: u32 = if (plen > 0) parents[plen - 1] else NO_PARENT;
 
-        // Container handling: maintain the clip stack + overlay-depth
-        // counter, and emit the container's own node when its layer
-        // matches the current pass. Mirrors `hitTestLayer` exactly.
         switch (c) {
             .push_scroll => |sc| {
                 clip.push(clipRect(rects[i], cur_clip));
@@ -310,16 +297,10 @@ fn collectLayer(
                 continue;
             },
             .push_overlay => |ov| {
-                // The overlay's own bounds, clipped by its parent (so
-                // a modal nested in a scrolled-away parent gets zero
-                // area — same rule hit_test uses).
                 const ov_bounds = clipRect(rects[i], cur_clip);
                 overlay_depth += 1;
-                // The overlay establishes its own clip for contents.
                 clip.push(ov_bounds);
                 var my_parent = parent;
-                // The overlay node + its modal flag belong to the
-                // .overlay pass; we only record / count there.
                 if (layer == .overlay and hasArea(ov_bounds)) {
                     my_parent = @intCast(out.items.len);
                     try out.append(arena, .{
@@ -447,10 +428,7 @@ fn collectLayer(
             .divider => .{ .role = .divider, .cmd_index = @intCast(i), .bounds = b },
             .image => .{ .role = .image, .cmd_index = @intCast(i), .bounds = b },
             .canvas => |cv| .{ .role = .canvas, .cmd_index = @intCast(i), .bounds = b, .label = cv.label },
-            // A 3D scene is announced as an image with its label.
             .scene3d => |sc| .{ .role = .image, .cmd_index = @intCast(i), .bounds = b, .label = sc.label },
-            // Containers handled above; pop_* + virtual_list never
-            // emit leaves.
             .push_group, .push_grid, .pop_group, .pop_grid, .push_scroll, .pop_scroll, .push_overlay, .pop_overlay, .push_virtual_list, .pop_virtual_list => null,
         };
         if (node) |*n| {
@@ -515,7 +493,6 @@ fn nodeEql(a: A11yNode, b: A11yNode) bool {
         std.mem.eql(u8, a.label, b.label) and std.mem.eql(u8, a.value, b.value);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const cmd_mod = @import("../core/cmd.zig");
 const text_mod = @import("../core/text.zig");
@@ -523,7 +500,6 @@ const text_mod = @import("../core/text.zig");
 
 
 
-// ── Clip + occlusion (mirrors hit_test.zig semantics) ──────────────
 
 
 
@@ -576,8 +552,7 @@ pub const ActionQueue = struct {
             out[n] = .{ .kind = e.kind, .cmd_index = e.cmd_index, .text = text_buf[used..][0..src.len] };
             used += src.len;
         }
-        // Compact what was not delivered (text offsets stay valid: texts are
-        // only reclaimed once the queue empties).
+        // Text offsets remain valid until the queue empties.
         const rest = self.len - n;
         std.mem.copyForwards(Entry, self.entries[0..rest], self.entries[n..self.len]);
         self.len = rest;

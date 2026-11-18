@@ -216,3 +216,15 @@ A component provides default-initializable `Model`, tagged-union `Msg`, `update(
 ## src/core/component_list.zig
 
 List messages carry stable item keys rather than array indices so focused children survive insertion, removal and reordering. A row with multiple text fields can expose separate focus variants; the app stores the item key and field in its Model and routes focused messages using the key. Message tags are selected at compile time.
+
+## src/platform/wayland.zig
+
+Wayland clipboard writes are non-blocking and unfinished bytes are handled by `pumpWrites`, so a slow reader cannot stall a frame. A reader that quits during transfer must not terminate the process. `TEAK_WL_NO_VIEWPORT=1` forces integer buffer scaling for compositor debugging. Unclaimed Ctrl+V begins an asynchronous paste; initial window setup waits for configure and scale announcements.
+
+## src/input/a11y.zig
+
+The tree builder collects overlay nodes first; a modal overlay suppresses base-layer nodes so assistive technology does not expose controls blocked from input. Containers that do not emit a node pass their nearest emitted ancestor through to descendants. Overlay bounds respect the parent clip, and the overlay establishes a clip for its children, matching hit-test behavior. Queued actions retain text storage until the action queue empties, so compaction does not invalidate offsets.
+
+## src/render/canvas_tess.zig
+
+Line clipping trims centre lines to the clip rectangle; a thick quad can extend up to half its thickness past a trimmed endpoint. Polygon ear clipping falls back to a fan if no further ear is found. Triangle-list clipping uses a bounds pass and then per-triangle clipping with two scratch polygons. NaN endpoints must be rejected before Liang–Barsky comparisons because NaNs would otherwise pass the comparisons and produce invalid vertices. With downward y, positive signed area is clockwise on screen and the outside is left of each edge.

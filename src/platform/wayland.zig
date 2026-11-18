@@ -50,7 +50,6 @@ pub const FileDialogPoll = teak.FileDialogPoll;
 
 const gpa = std.heap.page_allocator;
 
-// ── libc bits (libc is linked: DynLib needs its dlopen) ────────────
 
 const PollFd = extern struct { fd: c_int, events: c_short, revents: c_short };
 const POLLIN: c_short = 0x001;
@@ -69,7 +68,6 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 const O_NONBLOCK: c_int = 0x800;
 const O_CLOEXEC: c_int = 0x80000;
 
-// ── xkbcommon (dlopened) ───────────────────────────────────────────
 
 const Xkb = struct {
     lib: std.DynLib,
@@ -103,7 +101,6 @@ const Xkb = struct {
     }
 };
 
-// ── libwayland-cursor (dlopened, optional) ─────────────────────────
 
 const CursorImage = extern struct { width: u32, height: u32, hotspot_x: u32, hotspot_y: u32, delay: u32 };
 const WlCursor = extern struct { image_count: c_uint, images: [*]*CursorImage, name: [*:0]const u8 };
@@ -128,7 +125,6 @@ const CursorLib = struct {
     }
 };
 
-// ── Host state ─────────────────────────────────────────────────────
 
 const MAX_OFFERS = 6;
 const Offer = struct {
@@ -158,7 +154,6 @@ const State = struct {
     cursor_lib: ?CursorLib,
     display: *client.Display,
 
-    // globals
     registry: *wl.wl_registry,
     compositor: ?*wl.wl_compositor = null,
     shm: ?*wl.wl_shm = null,
@@ -171,7 +166,6 @@ const State = struct {
     viewporter: ?*wl.wp_viewporter = null,
     output_scale: u32 = 1,
 
-    // window
     surface: *wl.wl_surface = undefined,
     xdg_surface: *wl.xdg_surface = undefined,
     toplevel: *wl.xdg_toplevel = undefined,
@@ -191,7 +185,6 @@ const State = struct {
     scale_env: ?f32 = null,
     fractional_120: ?u32 = null,
 
-    // input
     pointer: ?*wl.wl_pointer = null,
     keyboard: ?*wl.wl_keyboard = null,
     queue: InputQueue = .{},
@@ -209,12 +202,10 @@ const State = struct {
     paste_requested: bool = false,
     now_ms: u64 = 0,
 
-    // cursor
     cursor_surface: ?*wl.wl_surface = null,
     cursor_theme: ?*anyopaque = null,
     cursor_shape: teak.CursorShape = .arrow,
 
-    // clipboard / dnd
     data_device: ?*wl.wl_data_device = null,
     offers: [MAX_OFFERS]Offer = @splat(.{}),
     selection: ?usize = null,
@@ -225,7 +216,6 @@ const State = struct {
     xfer: ?Transfer = null,
     writes: [4]?WriteJob = @splat(null),
 
-    // IME (zwp_text_input_v3)
     text_input: ?*wl.zwp_text_input_v3 = null,
     ti_enabled: bool = false,
     ti_serial: u32 = 0,
@@ -244,7 +234,6 @@ const State = struct {
 
     effects: *native_effects.Service,
 
-    // ── Window / scale ──────────────────────────────────────────────
 
     fn setTitleZ(self: *State, title: []const u8) void {
         var buf: [256]u8 = undefined;
@@ -283,7 +272,6 @@ const State = struct {
         if (self.viewport) |vp| wl.wp_viewport_set_destination(vp, @intCast(self.width), @intCast(self.height));
     }
 
-    // ── Event pump ──────────────────────────────────────────────────
 
     /// Read whatever the compositor sent (never blocks) and dispatch it.
     fn pumpEvents(self: *State) void {
@@ -308,7 +296,6 @@ const State = struct {
         }
     }
 
-    // ── Keyboard ────────────────────────────────────────────────────
 
     fn currentMods(self: *State) teak.Modifiers {
         const x = self.xkb orelse return .{};
@@ -336,7 +323,6 @@ const State = struct {
         if (first and r.repeats and x.f.keymap_key_repeats(self.xkb_keymap.?, code) != 0) self.repeat.press(key, self.now_ms);
     }
 
-    // ── Cursor ──────────────────────────────────────────────────────
 
     fn initCursor(self: *State) void {
         const lib = self.cursor_lib orelse return;
@@ -368,7 +354,6 @@ const State = struct {
         _ = client.api.display_flush(self.display);
     }
 
-    // ── Clipboard + drag and drop ───────────────────────────────────
 
     fn writeClipboard(self: *State, txt: []const u8) void {
         const mgr = self.data_mgr orelse return;
@@ -503,7 +488,6 @@ const State = struct {
         return self.read_buf orelse "";
     }
 
-    // ── IME ─────────────────────────────────────────────────────────
 
     /// A text-input `done`: apply the commit, then the preedit.
     fn applyImeDone(self: *State) void {
@@ -562,7 +546,6 @@ fn S(d: ?*anyopaque) *State {
     return @ptrCast(@alignCast(d.?));
 }
 
-// ── Protocol callbacks ─────────────────────────────────────────────
 
 fn nameIs(iface: [*:0]const u8, comptime want: []const u8) bool {
     return std.mem.eql(u8, std.mem.span(iface), want);
@@ -651,7 +634,6 @@ fn onSeatCaps(d: ?*anyopaque, seat: *wl.wl_seat, caps: u32) callconv(.c) void {
 }
 const seat_listener = wl.wl_seat_listener{ .capabilities = onSeatCaps };
 
-// pointer
 fn onPtrEnter(d: ?*anyopaque, _: *wl.wl_pointer, serial: u32, _: *wl.wl_surface, x: i32, y: i32) callconv(.c) void {
     const s = S(d);
     s.pointer_serial = serial;
@@ -695,7 +677,6 @@ const pointer_listener = wl.wl_pointer_listener{
     .frame = onPtrFrame,
 };
 
-// keyboard
 fn onKbKeymap(d: ?*anyopaque, _: *wl.wl_keyboard, format: u32, fd: i32, size: u32) callconv(.c) void {
     const s = S(d);
     defer _ = close(fd);
@@ -746,7 +727,6 @@ const keyboard_listener = wl.wl_keyboard_listener{
     .repeat_info = onKbRepeat,
 };
 
-// data device
 fn offerIndex(s: *State, p: ?*wl.wl_data_offer) ?usize {
     const target = p orelse return null;
     for (s.offers, 0..) |o, i| if (o.proxy == target) return i;
@@ -761,8 +741,7 @@ const offer_listener = wl.wl_data_offer_listener{ .offer = onOffer };
 
 fn onDataOffer(d: ?*anyopaque, _: *wl.wl_data_device, id: *wl.wl_data_offer) callconv(.c) void {
     const s = S(d);
-    // A free slot; failing that, one that is neither the clipboard
-    // selection nor the drag in progress.
+    // Active selection and drag offers must not be evicted.
     var slot: usize = 0;
     var found = false;
     for (s.offers, 0..) |o, i| {
@@ -826,7 +805,6 @@ const data_device_listener = wl.wl_data_device_listener{
     .drop = onDndDrop,
 };
 
-// data source (our clipboard)
 fn onSourceSend(d: ?*anyopaque, _: *wl.wl_data_source, _: [*:0]const u8, fd: i32) callconv(.c) void {
     const s = S(d);
     const out = s.clip_out orelse {
@@ -837,8 +815,7 @@ fn onSourceSend(d: ?*anyopaque, _: *wl.wl_data_source, _: [*:0]const u8, fd: i32
         _ = close(fd);
         return;
     };
-    // Non-blocking so a slow reader cannot stall a frame; leftovers go
-    // through `pumpWrites`.
+    // A slow clipboard reader must not stall the frame.
     for (&s.writes) |*slot| if (slot.* == null) {
         slot.* = .{ .fd = fd, .bytes = copy };
         s.pumpWrites();
@@ -858,7 +835,6 @@ fn onSourceCancelled(d: ?*anyopaque, src: *wl.wl_data_source) callconv(.c) void 
 }
 const source_listener = wl.wl_data_source_listener{ .send = onSourceSend, .cancelled = onSourceCancelled };
 
-// text input (IME)
 fn onTiEnter(d: ?*anyopaque, ti: *wl.zwp_text_input_v3, _: *wl.wl_surface) callconv(.c) void {
     const s = S(d);
     wl.zwp_text_input_v3_enable(ti);
@@ -901,7 +877,6 @@ const text_input_listener = wl.zwp_text_input_v3_listener{
     .done = onTiDone,
 };
 
-// ── State methods ──────────────────────────────────────────────────
 
 fn monotonicMs() u64 {
     return @intCast(@divFloor(std.Io.Clock.awake.now(std.Options.debug_io).nanoseconds, std.time.ns_per_ms));
@@ -915,7 +890,7 @@ pub const Host = struct {
 
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         client.load() catch return error.WaylandLoadFailed;
-        // A clipboard reader that quits mid-transfer must not kill us.
+        // A disconnected clipboard reader must not terminate the process.
         _ = signal(13, @ptrFromInt(1)); // SIGPIPE -> SIG_IGN
         const display = client.api.display_connect(null) orelse return error.WaylandConnectFailed;
         errdefer client.api.display_disconnect(display);
@@ -956,7 +931,6 @@ pub const Host = struct {
             }
         }
 
-        // The window.
         s.surface = wl.wl_compositor_create_surface(s.compositor.?);
         s.xdg_surface = wl.xdg_wm_base_get_xdg_surface(s.wm_base.?, s.surface);
         wl.xdg_surface_add_listener(s.xdg_surface, &xdg_surface_listener, s);
@@ -974,14 +948,11 @@ pub const Host = struct {
             s.fractional = f;
             wl.wp_fractional_scale_v1_add_listener(f, &fractional_listener, s);
         }
-        // TEAK_WL_NO_VIEWPORT=1 forces the integer `set_buffer_scale` path
-        // (debugging compositors with a misbehaving wp_viewporter).
         if (s.viewporter) |vp| {
             if (std.c.getenv("TEAK_WL_NO_VIEWPORT") == null) s.viewport = wl.wp_viewporter_get_viewport(vp, s.surface);
         }
         wl.wl_surface_commit(s.surface);
 
-        // Wait for the first configure (and the scale announcements).
         var tries: u32 = 0;
         while (!s.configured and tries < 50) : (tries += 1) _ = client.api.display_roundtrip(display);
         if (!s.configured) return error.WaylandNoConfigure;
@@ -1063,7 +1034,6 @@ pub const Host = struct {
         return text.measure(text_bytes, font);
     }
 
-    // ── Effects ─────────────────────────────────────────────────────
 
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
@@ -1077,7 +1047,6 @@ pub const Host = struct {
 
     pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize {
         const s = self.st;
-        // Ctrl+V that `Clipboard.read` did not claim: start an async paste.
         if (s.paste_requested) {
             s.paste_requested = false;
             s.startPaste();
