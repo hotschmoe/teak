@@ -29,7 +29,10 @@ pub fn build(b: *std.Build) void {
     blocking_run.setCwd(b.path("."));
     blocking.dependOn(&blocking_run.step);
     const heavy = b.step("test-heavy", "Run background end-to-end checks");
-    const heavy_run = b.addSystemCommand(&.{ "bash", "tools/test-e2e.sh", "heavy" });
+    const heavy_run = if (b.graph.host.result.os.tag == .windows)
+        b.addSystemCommand(&.{ "powershell.exe", "-NoProfile", "-File", "tools/test-heavy-win32.ps1" })
+    else
+        b.addSystemCommand(&.{ "bash", "tools/test-e2e.sh", "heavy" });
     heavy_run.setCwd(b.path("."));
     heavy.dependOn(&heavy_run.step);
 

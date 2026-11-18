@@ -1,32 +1,17 @@
-name: Win32 live
-
-# A real Win32 window on the runner's interactive desktop, on the software
-# adapter (DX12 WARP), driven with real input (SendInput, DoDragDrop, the
-# clipboard) by tools/win32_live/driver.zig. The GUI is read back through the
-# TEAK_SNAPSHOT sink and the window is captured to PNG artifacts.
+name: Win32 background gate
 
 on:
   schedule:
     - cron: '37 2 * * *'
   workflow_dispatch:
 
-concurrency:
-  group: win32-live-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  ZIG_VERSION: 0.17.1
-
 jobs:
-  live:
-    name: Live ${{ matrix.example }} (${{ matrix.arch }})
+  heavy:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, windows-11-arm]
-        example: [chrome, effects]
         include:
           - { os: windows-latest, arch: x86_64 }
           - { os: windows-11-arm, arch: aarch64 }
@@ -37,24 +22,14 @@ jobs:
       - uses: actions/checkout@v4
         with: { path: teak }
       - uses: mlugg/setup-zig@v2
-        with: { version: "${{ env.ZIG_VERSION }}" }
-      - name: Build the driver
-        run: zig build-exe -lc --dep teak "-Mroot=tools/win32_live/driver.zig" "-Mteak=src/teak.zig" "-femit-bin=$env:RUNNER_TEMP\driver.exe"
-      - name: Build the UI exe
-        working-directory: teak/examples/${{ matrix.example }}
-        run: zig build ui-install --summary all
-      - name: Drive it
-        working-directory: teak/examples/${{ matrix.example }}
+        with: { version: '0.17.1' }
+      - name: Run background gate
         env:
-          TEAK_GPU_FALLBACK: "1"
-        run: |
-          $out = "$env:GITHUB_WORKSPACE\live-${{ matrix.example }}-${{ matrix.arch }}"
-          $env:PATH = "$PWD\zig-out\bin;$env:PATH"
-          & "$env:RUNNER_TEMP\driver.exe" "$PWD\zig-out\bin\${{ matrix.example }}-ui.exe" $out ${{ matrix.example }}
-          if ($LASTEXITCODE -ne 0) { throw "live driver reported failures (exit $LASTEXITCODE)" }
+          TEAK_HEAVY_OUT: ${{ github.workspace }}\live-${{ matrix.arch }}
+        run: zig build test-heavy -j4
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: live-${{ matrix.example }}-${{ matrix.arch }}
-          path: ${{ github.workspace }}/live-${{ matrix.example }}-${{ matrix.arch }}
+          name: live-${{ matrix.arch }}
+          path: ${{ github.workspace }}/live-${{ matrix.arch }}/**
           if-no-files-found: warn

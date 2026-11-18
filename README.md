@@ -45,7 +45,7 @@ Examples: `chrome`, `counter_greeter`, `effects`, `fonts`, `gallery`, `kerf_view
 
 Requires **Zig 0.17.0+**.
 
-The background gate also needs Linux, Vulkan, Chromium, Node and the tools dependencies (`npm ci --prefix tools`).
+On Linux the background gate needs Vulkan, Chromium, Node and the tools dependencies (`npm ci --prefix tools`). On Windows it drives native windows through PowerShell.
 
 ```sh
 # From repo root — library
