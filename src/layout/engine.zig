@@ -159,7 +159,6 @@ const GroupContext = struct {
     is_virtual: bool = false,
     total_count: f32 = 0,
     item_extent: f32 = 0,
-    // Accumulators.
     fixed_main: f32 = 0,
     flex_total: f32 = 0,
     cross_axis_max: f32 = 0,
@@ -316,8 +315,6 @@ pub const LayoutEngine = struct {
                 },
                 .push_grid => |g| {
                     assertPushable(stack.len, stack.buffer.len, i);
-                    // `.vertical` so a divider in a cell lies flat and
-                    // single-line controls do not take a flex weight.
                     stack.push(.{
                         .cmd_index = i,
                         .direction = .vertical,
@@ -376,7 +373,6 @@ pub const LayoutEngine = struct {
                         .pad_y = vl.padding,
                         .gap = vl.gap,
                         .is_virtual = true,
-                        // Variable-height mode claims `total_extent` as one "item".
                         .total_count = if (vl.total_extent > 0) 1 else @floatFromInt(vl.total_count),
                         .item_extent = if (vl.total_extent > 0) vl.total_extent else vl.item_extent,
                     });
@@ -385,12 +381,7 @@ pub const LayoutEngine = struct {
                     assertPoppable(stack.len, i);
                     const grp = stack.pop();
                     var r = finishContainer(grp);
-                    // (Not in a grid cell: cells ignore flex.)
                     if (grp.is_scroll and grp.flex > 0 and stack.len > 0 and !stack.top().is_grid) {
-                        // Scroll content is allowed to overflow, so a flex
-                        // scroll starts from zero on the parent's main axis
-                        // (unless it fixed a size there) and takes only its
-                        // share of the leftover.
                         switch (stack.top().direction) {
                             .horizontal => if (grp.fixed_w <= 0) {
                                 r.w = 0;
@@ -399,9 +390,6 @@ pub const LayoutEngine = struct {
                                 r.h = 0;
                             },
                         }
-                        // The same holds along the scroll's own axis whatever
-                        // the parent's direction (a vertical scroll inside a
-                        // horizontal row must not size the row to its content).
                         switch (grp.direction) {
                             .horizontal => if (grp.fixed_w <= 0) {
                                 r.w = 0;
@@ -418,8 +406,6 @@ pub const LayoutEngine = struct {
                 .pop_overlay => {
                     assertPoppable(stack.len, i);
                     const grp = stack.pop();
-                    // Overlays do NOT contribute to their parent's
-                    // measured size — they hop the layout.
                     var r = finishContainer(grp);
                     r.end = @intCast(i);
                     rects[grp.cmd_index] = r;
@@ -428,7 +414,6 @@ pub const LayoutEngine = struct {
                     assertPoppable(stack.len, i);
                     const grp = stack.pop();
                     var r = finishContainer(grp);
-                    // Main axis = the full logical list, whatever was emitted.
                     const total_main = grp.total_count * grp.item_extent;
                     switch (grp.direction) {
                         .horizontal => r.w = total_main + 2 * grp.pad_x,
@@ -459,15 +444,12 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, w, h, btn.style.flex);
                 },
                 .text_input => |ti| {
-                    // Intrinsic size; flex/cross-stretch expand it in the position pass.
                     const w = ti.style.min_width;
                     const h = ti.style.height;
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, rowFlex(&stack, ti.style.flex));
                 },
                 .text_area => |ta| {
-                    // Canvas-like box: explicit size; flex grows the main axis,
-                    // a stretching parent fills the cross axis in pass 2/position.
                     const w = if (ta.width > 0) ta.width else ta.min_width;
                     rects[i] = .{ .w = w, .h = ta.height };
                     addLeafToTop(&stack, w, ta.height, ta.flex);
@@ -493,8 +475,6 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, w, h, rowFlex(&stack, sl.style.flex));
                 },
                 .divider => |dv| {
-                    // Thickness goes on the parent's main-axis; cross stretches
-                    // to the inner width/height in positionPass.
                     const parent_dir = if (stack.len > 0) stack.top().direction else .horizontal;
                     const w: f32 = switch (parent_dir) {
                         .horizontal => dv.thickness,
@@ -514,15 +494,12 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, w, h, img.style.flex);
                 },
                 .scene3d => |sc| {
-                    // Fixed-size leaf, same sizing convention as `canvas`.
                     const w = sc.style.width;
                     const h = sc.style.height;
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, sc.style.flex);
                 },
                 .canvas => |cv| {
-                    // Intrinsic w/h come from the style; flex grows the box
-                    // along the parent's main axis, `.stretch` along the cross.
                     const w = cv.style.width;
                     const h = cv.style.height;
                     rects[i] = .{ .w = w, .h = h };
@@ -537,8 +514,6 @@ pub const LayoutEngine = struct {
                         addLeafToTop(&stack, mw.w, mw.h, 0);
                         continue;
                     }
-                    // Measure each span with its own font; fall back to
-                    // default_font for any byte not covered by a span.
                     var max_h: f32 = 0;
                     var total_w: f32 = 0;
                     var cursor: u32 = 0;
@@ -638,7 +613,6 @@ pub const LayoutEngine = struct {
             .push_group => |g| .{ .direction = g.direction, .pad_x = g.padX(), .pad_y = g.padY(), .gap = g.gap, .align_cross = g.align_cross, .can_shrink = true },
             .push_scroll => |sc| .{ .direction = sc.direction, .pad_x = sc.padding, .pad_y = sc.padding, .gap = sc.gap, .align_cross = sc.align_cross, .can_shrink = sc.direction == .vertical },
             .push_overlay => |ov| .{ .direction = ov.direction, .pad_x = ov.padding, .pad_y = ov.padding, .gap = ov.gap, .align_cross = ov.align_cross, .can_shrink = true },
-            // A grid settles its cells' widths in `resolveGridWidths`.
             .push_grid, .pop_grid, .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list, .push_virtual_list, .text, .rich_text, .button, .text_input, .text_area, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas => null,
         };
     }
@@ -668,9 +642,6 @@ pub const LayoutEngine = struct {
                     const kid = kidOf(cmds[k]);
                     const stretch = spec.align_cross == .stretch or (spec.align_cross == .start and kid.fills_cross);
                     if (kid.wrapped) {
-                        // Wrapped text fills a stretching parent (and any
-                        // aligned paragraph); otherwise it takes its natural
-                        // width capped by the room it has.
                         rects[k].w = if (stretch) inner_w else @min(rects[k].w, inner_w);
                     } else if (stretch and !kid.fixed_w) {
                         rects[k].w = @max(inner_w, kid.min_w);
@@ -678,7 +649,6 @@ pub const LayoutEngine = struct {
                 }
             }
         }
-        // `measurer` is used by min-content (shrink) only.
     }
 
     const EPS: f32 = 0.001;
@@ -822,7 +792,6 @@ pub const LayoutEngine = struct {
                     var r = finishContainer(grp);
                     r.w = old.w;
                     r.end = old.end;
-                    // A flex scroll's main-axis size was zeroed in pass 1; keep it.
                     if (grp.is_scroll and grp.flex > 0) r.h = old.h;
                     rects[grp.cmd_index] = r;
                     foldChild(&stack, r.w, r.h);
@@ -882,13 +851,9 @@ pub const LayoutEngine = struct {
     /// goes at the running cursor.
     pub fn positionPass(rects: []Rect, cmds: anytype) void {
         var stack: FixedStack(CursorContext, MAX_DEPTH) = .{};
-        // Open grids, parallel to `stack` (a grid's CursorContext points here).
         var grids: FixedStack(GridCursor, MAX_DEPTH) = .{};
 
         for (cmds, 0..) |c, i| {
-            // A direct child of a grid: at the first cell of a row, take the
-            // row's height from the next `n` children (each cmd is scanned
-            // once more here, so the pass stays linear).
             if (stack.len > 0) if (stack.top().grid) |g| if (i == g.next) beginGridCell(rects, cmds, g, i);
             switch (c) {
                 .push_grid => |g| {
@@ -919,7 +884,6 @@ pub const LayoutEngine = struct {
                         gc.col_x[col] = x;
                         x += gc.col_w[col] + g.col_gap;
                     }
-                    // First direct child (skips leading overlays).
                     var it = i + 1;
                     gc.next = nextKid(rects, cmds, &it, r.end) orelse no_cell;
                     assertPushable(grids.len, grids.buffer.len, i);
@@ -955,9 +919,6 @@ pub const LayoutEngine = struct {
                         .fixed_w = sc.width > 0,
                         .fixed_h = sc.height > 0,
                     });
-                    // Children's cursor starts shifted by the scroll offsets:
-                    // an overflowing child ends up outside the viewport, and
-                    // the render/hit-test clip stacks discard it.
                     pushChildren(rects, &stack, i, .{
                         .direction = sc.direction,
                         .pad_x = sc.padding,
@@ -969,9 +930,6 @@ pub const LayoutEngine = struct {
                     });
                 },
                 .push_overlay => |ov| {
-                    // Absolute placement; anchor fraction shifts by
-                    // (-w * frac_x, -h * frac_y). Overlays do NOT advance
-                    // the parent cursor.
                     rects[i].x = ov.x - rects[i].w * ov.anchor_x_frac;
                     rects[i].y = ov.y - rects[i].h * ov.anchor_y_frac;
                     if (ov.anchor_msg) |am| {
@@ -994,8 +952,6 @@ pub const LayoutEngine = struct {
                         .gap = vl.gap,
                         .align_cross = vl.align_cross,
                     });
-                    // Bump the cursor so the first emitted child sits at
-                    // row visible_start, not row 0.
                     const ctx = stack.top();
                     const offset: f32 = if (vl.total_extent > 0) vl.start_offset else @as(f32, @floatFromInt(vl.visible_start)) * vl.item_extent;
                     switch (vl.direction) {
@@ -1123,14 +1079,7 @@ pub const LayoutEngine = struct {
         });
     }
 
-    // ── Grid (docs/features/layout.md#grid) ─────────────────────────
-    //
-    // A grid's direct children fill `columnCount()` columns row by row. Its
-    // per-column and per-row maxima are not kept anywhere: each pass that
-    // needs them rescans the grid's direct children (hopping their subtrees
-    // via `Rect.end`), so every cmd is visited a bounded number of extra
-    // times and each pass stays O(n). Column scratch is a fixed
-    // `MAX_GRID_COLUMNS` array; rows need none (one running row).
+    // Grid layout: docs/features/layout.md#grid.
 
     const GridCols = [cmd.MAX_GRID_COLUMNS]f32;
 
@@ -1331,17 +1280,6 @@ pub const LayoutEngine = struct {
         };
     }
 
-    // ── Stack-balance diagnostics ──────────────────────────────────
-    //
-    // The FixedStack push/pop already `std.debug.assert` the depth
-    // invariant, but a bare assert names no cmd — so an unbalanced or
-    // too-deep buffer panics without pointing at the offending command.
-    // These guards run at the pass call sites (where the cmd index `i`
-    // is in scope) and panic with that index before the assert would
-    // fire. They sit purely on the error path: for balanced, in-bounds
-    // input the condition is never true, so layout behavior is
-    // unchanged. For a diagnostic that reports *without* panicking (and
-    // also catches crossed pairs), run `cmd.validateBalance` first.
 
     fn assertPushable(len: usize, cap: usize, cmd_index: usize) void {
         if (len >= cap) std.debug.panic(
@@ -1378,7 +1316,6 @@ pub const LayoutEngine = struct {
     }
 };
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 /// 10-px-per-byte, 20-px-line-height stub measurer — the same numbers
 /// every existing assertion was written against. Shared with
@@ -1402,8 +1339,6 @@ const test_measurer = text.monoMeasurer();
 
 
 
-// Sizing-model tests (fixed sizes, align, justify, stretch, flex, golden
-// snapshots) live in their own file to keep this one readable.
 
 
 

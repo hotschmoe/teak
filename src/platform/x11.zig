@@ -39,11 +39,7 @@ pub const FileDialogResult = teak.FileDialogResult;
 pub const FileDialogFilter = teak.FileDialogFilter;
 pub const FileDialogPoll = teak.FileDialogPoll;
 
-// ── Xlib types (hand-declared; 64-bit ABI) ─────────────────────────
-//
-// Display is opaque. Window / Atom / KeySym / Time are `unsigned long`.
-// Bool is `int`. Event structs share an `int type` first field (named
-// `kind` here — `type` is a Zig primitive); the XEvent union aliases it.
+// Xlib declarations use the 64-bit ABI; see SRC.md.
 
 const Display = anyopaque;
 const Window = c_ulong;
@@ -227,7 +223,6 @@ pub const XEvent = extern union {
     pad: [24]c_long,
 };
 
-// X protocol event type codes.
 const KeyPress: c_int = 2;
 const KeyRelease: c_int = 3;
 const ButtonPress: c_int = 4;
@@ -253,13 +248,11 @@ const XBufferOverflow: c_int = -1;
 const XLookupChars: c_int = 2;
 const XLookupBoth: c_int = 4;
 
-// Modifier masks (`state` of key / button / motion events).
 const ShiftMask: c_uint = 1 << 0;
 const ControlMask: c_uint = 1 << 2;
 const Mod1Mask: c_uint = 1 << 3; // Alt
 const Mod4Mask: c_uint = 1 << 6; // Super
 
-// XSelectInput event masks.
 const KeyPressMask: c_long = 1 << 0;
 const KeyReleaseMask: c_long = 1 << 1;
 const ButtonPressMask: c_long = 1 << 2;
@@ -270,7 +263,6 @@ const FocusChangeMask: c_long = 1 << 21;
 const PropertyChangeMask: c_long = 1 << 22;
 const StructureNotifyMask: c_long = 1 << 17;
 
-// Keysyms (keysymdef.h).
 const XK_BackSpace: KeySym = 0xff08;
 const XK_Tab: KeySym = 0xff09;
 const XK_ISO_Left_Tab: KeySym = 0xfe20;
@@ -296,7 +288,6 @@ const XK_End: KeySym = 0xff57;
 /// WHEEL_PIXELS_PER_NOTCH so wheel feel is consistent across hosts.
 const WHEEL_PIXELS_PER_NOTCH: f32 = 48;
 
-// ── Xlib function pointer table (resolved via dlopen) ───────────────
 
 /// Xlib entry points (pub for `x11_test.zig`).
 pub const Xlib = struct {
@@ -321,7 +312,6 @@ pub const Xlib = struct {
     /// database) as a NUL-terminated string, or null when unset. We read
     /// `Xft.dpi` out of it to derive the desktop scale factor.
     XResourceManagerString: *const fn (*Display) callconv(.c) ?[*:0]const u8,
-    // Selections (clipboard + XDND).
     XSetSelectionOwner: *const fn (*Display, Atom, Window, c_ulong) callconv(.c) c_int,
     XGetSelectionOwner: *const fn (*Display, Atom) callconv(.c) Window,
     XConvertSelection: *const fn (*Display, Atom, Atom, Atom, Window, c_ulong) callconv(.c) c_int,
@@ -333,10 +323,8 @@ pub const Xlib = struct {
     XFree: *const fn (?*anyopaque) callconv(.c) c_int,
     XExtendedMaxRequestSize: *const fn (*Display) callconv(.c) c_long,
     XMaxRequestSize: *const fn (*Display) callconv(.c) c_long,
-    // Cursors.
     XCreateFontCursor: *const fn (*Display, c_uint) callconv(.c) c_ulong,
     XDefineCursor: *const fn (*Display, Window, c_ulong) callconv(.c) c_int,
-    // Input methods.
     XSupportsLocale: *const fn () callconv(.c) c_int,
     XSetLocaleModifiers: *const fn ([*:0]const u8) callconv(.c) ?[*:0]const u8,
     XFilterEvent: *const fn (*XEvent, Window) callconv(.c) c_int,
@@ -364,7 +352,6 @@ pub const Xlib = struct {
     }
 };
 
-// ── Atoms, transfers, input-method plumbing ────────────────────────
 
 pub const Atoms = struct {
     wm_protocols: Atom,
@@ -555,7 +542,6 @@ fn preeditCaret(_: ?*anyopaque, client_data: ?*anyopaque, call: ?*anyopaque) cal
     if (d.position >= 0) c.preedit.moveCaret(@intCast(d.position));
 }
 
-// ── Public types ───────────────────────────────────────────────────
 
 /// X11 native window handle: opaque `Display*` + `Window` XID. Structurally
 /// matches `gpu/surface_xlib.Handle`; that provider duck-types it.
@@ -649,9 +635,6 @@ pub const Host = struct {
         const display = x.XOpenDisplay(null) orelse return error.X11OpenDisplayFailed;
         errdefer _ = x.XCloseDisplay(display);
 
-        // Display scale: TEAK_SCALE, else GDK_SCALE, else Xft.dpi / 96 (see
-        // `pickScale`). Needed before the window exists: `width`/`height`
-        // are logical, the X window is `scale` times larger.
         const xrm: ?[]const u8 = if (x.XResourceManagerString(display)) |rm| std.mem.span(rm) else null;
         const scale = pickScale(envSlice("TEAK_SCALE"), envSlice("GDK_SCALE"), xrm);
 
@@ -662,14 +645,10 @@ pub const Host = struct {
         setWindowTitle(&x, display, window, title);
         const atoms = Atoms.intern(&x, display);
 
-        // Route the window-manager close button through ClientMessage.
-        // We keep both atoms so the ClientMessage handler can confirm the
-        // message is a WM_PROTOCOLS/WM_DELETE_WINDOW pair (not some other
-        // client message whose data happens to collide with the atom id).
+        // Both atoms are needed to distinguish close requests from other messages.
         var wm_delete = atoms.wm_delete;
         _ = x.XSetWMProtocols(display, window, &wm_delete, 1);
 
-        // Accept XDND file / text drops (protocol version 5).
         var xdnd_ver: c_long = XDND_VERSION;
         _ = x.XChangeProperty(display, window, atoms.xdnd_aware, XA_ATOM, 32, PropModeReplace, @ptrCast(&xdnd_ver), 1);
 
@@ -680,7 +659,6 @@ pub const Host = struct {
         var select_mask: c_long = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask |
             PointerMotionMask | StructureNotifyMask | ExposureMask | FocusChangeMask | PropertyChangeMask;
         if (im.ic) |ic| {
-            // The IM may need events beyond the ones we asked for.
             var filter: c_ulong = 0;
             if (x.XGetICValues(ic, "filterEvents", &filter, @as(?*anyopaque, null)) == null)
                 select_mask |= @as(c_long, @bitCast(filter));
@@ -743,7 +721,7 @@ pub const Host = struct {
         };
         _ = self.x.XDestroyWindow(self.display, self.window);
         _ = self.x.XCloseDisplay(self.display);
-        // libXcursor hooks display close: unload it only after the display.
+        // Xcursor must remain loaded until the display closes.
         if (self.xcursor) |xc| {
             xc.lib.close();
             gpa.destroy(xc);
@@ -760,8 +738,6 @@ pub const Host = struct {
         while (self.x.XPending(self.display) > 0) {
             var ev: XEvent = undefined;
             _ = self.x.XNextEvent(self.display, &ev);
-            // Input methods get first refusal on every event (key events they
-            // consume for composition never reach the switch below).
             if (self.x.XFilterEvent(&ev, None) != 0) continue;
             if (ev.xany.window != self.window) {
                 if (self.secondaryFor(ev.xany.window)) |sw| {
@@ -781,8 +757,6 @@ pub const Host = struct {
                         1 => q.buttonDown(.left),
                         2 => q.buttonDown(.middle),
                         3 => q.buttonDown(.right),
-                        // X11 wheel = buttons 4/5 (vertical), 6/7 (horizontal).
-                        // Sign per InputState: positive = scroll down / right.
                         4 => q.wheel(0, -WHEEL_PIXELS_PER_NOTCH),
                         5 => q.wheel(0, WHEEL_PIXELS_PER_NOTCH),
                         6 => q.wheel(-WHEEL_PIXELS_PER_NOTCH, 0),
@@ -815,8 +789,7 @@ pub const Host = struct {
                         }
                     }
                 },
-                // Uncovered / first-mapped area: the idle loop skips frames, so an
-                // expose must force the next one (the last frame is redrawn).
+                // Expose must redraw even while idle.
                 Expose => if (ev.xexpose.count == 0) {
                     self.resized_pending = true;
                 },
@@ -836,7 +809,6 @@ pub const Host = struct {
             }
         }
 
-        // Synthetic input (agent control channel) joins the real events.
         self.inject.apply(q);
 
         const resized = self.resized_pending or self.first_resize;
@@ -853,9 +825,7 @@ pub const Host = struct {
         var n: c_int = 0;
         var has_chars = true;
         if (self.xic) |ic| {
-            // Committed text from the input method (also dead keys / Compose
-            // on the built-in IM). Overflow drops the commit rather than
-            // splitting a code point.
+            // Overflow must not split a committed code point.
             var status: c_int = 0;
             n = self.x.Xutf8LookupString(ic, ev, &buf, buf.len, &keysym, &status);
             has_chars = (status == XLookupChars or status == XLookupBoth) and status != XBufferOverflow;
@@ -865,21 +835,15 @@ pub const Host = struct {
         }
         const chars = buf[0..if (n > 0) @intCast(n) else 0];
 
-        // 0. Alt on its own: the press arms an `alt_tap`, the release fires it.
         if (keysym == XK_Alt_L or keysym == XK_Alt_R) return q.altDown();
 
-        // 0. Keyboard shortcuts (Ctrl/Alt combinations, F-keys) for the App's
-        //    `commands` table, IN ADDITION to the special-key / text paths
-        //    below; an Alt combination never types text.
         if (shortcutFromKeysym(keysym)) |sk| q.pushShortcut(sk);
         if (q.mods.alt and !q.mods.ctrl) {
             if (navFromKeysym(keysym)) |nk| q.pushNav(nk);
             return;
         }
 
-        // 1. Navigation / editing keys (Shift variants resolved by the queue).
         if (navFromKeysym(keysym)) |nk| return q.pushNav(nk);
-        // 2. Ctrl chords (their control-char text is not typed).
         if (q.mods.ctrl) {
             if (chordFromKeysym(keysym)) |nk| {
                 q.pushNav(nk);
@@ -887,10 +851,6 @@ pub const Host = struct {
             }
             return;
         }
-        // 3. Text. With an input method the lookup yields whole UTF-8
-        //    (committed compositions included); without, Unicode / Latin-1
-        //    keysyms map straight to a code point and anything else falls
-        //    back to the ASCII `XLookupString` produced.
         if (self.xic != null) {
             var it = std.unicode.Utf8View.initUnchecked(chars).iterator();
             if (std.unicode.utf8ValidateSlice(chars)) {
@@ -915,7 +875,6 @@ pub const Host = struct {
         if (keysym == XK_Alt_L or keysym == XK_Alt_R) self.queue.altUp();
     }
 
-    // ── Selections: clipboard + XDND ────────────────────────────────
 
     /// Send a 32-bit ClientMessage to `target` (pub for `x11_test.zig`).
     pub fn sendClientMessage(self: *Host, target: Window, msg_type: Atom, l: [5]c_long) void {
@@ -1077,8 +1036,6 @@ pub const Host = struct {
         if (ev.property == None) return self.failTransfer();
         const info = self.fetchProperty(self.window, ev.property, true, &t.buf) orelse return self.failTransfer();
         if (info.type == self.atoms.incr) {
-            // The owner will stream chunks as PropertyNotify(NewValue) on our
-            // property; the size hint it sent is discarded.
             t.incr = true;
             t.buf.clearRetainingCapacity();
             t.deadline_ms = self.nowMs() + TRANSFER_TIMEOUT_MS;
@@ -1225,7 +1182,7 @@ pub const Host = struct {
             .property = None,
             .time = req.time,
         };
-        // Obsolete clients leave `property` unset: the target names it.
+        // Older clients use the target as the property when none is supplied.
         const prop = if (req.property == None) req.target else req.property;
         if (req.selection == a.clipboard) if (self.clip_out) |out| {
             if (req.target == a.targets) {
@@ -1364,7 +1321,6 @@ pub const Host = struct {
         return !self.running;
     }
 
-    // ── Agent control channel (optional Host surface; src/control.zig) ──
 
     pub fn controlListen(self: *Host, path: []const u8) bool {
         return self.ctl.listen(path);
@@ -1419,7 +1375,6 @@ pub const Host = struct {
         return text.measure(text_bytes, font);
     }
 
-    // ── Declarative effects (docs/features/effects.md) ──────────────
 
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
@@ -1436,9 +1391,6 @@ pub const Host = struct {
     }
 
     pub fn pollEffectResults(self: *Host, buf: []teak.EffectResult) usize {
-        // Called after key routing: a Ctrl+V that `Clipboard.read` did not
-        // claim becomes an asynchronous paste whose answer lands in a later
-        // frame as `pasted_text` / `dropped`.
         if (self.paste_requested) {
             self.paste_requested = false;
             self.startPaste();
@@ -1654,7 +1606,6 @@ pub const Host = struct {
     }
 
     pub fn nowMs(_: *const Host) u64 {
-        // Monotonic milliseconds (clocks live behind `std.Io`).
         const now = std.Io.Clock.awake.now(std.Options.debug_io);
         return @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms));
     }
