@@ -208,3 +208,11 @@ Keyboard focus can also produce hover notifications for tooltips. The menu key a
 ## src/platform/x11.zig
 
 Xlib ABI declarations target 64-bit platforms: Display is opaque; Window, Atom, KeySym and Time are unsigned long; Bool is int. Display scale is resolved before window creation so logical dimensions can be converted to physical pixels. Window-close messages must match both the `WM_PROTOCOLS` type and `WM_DELETE_WINDOW` payload. Input methods may add event masks and get first refusal on each event; committed text is dropped rather than split when the queue overflows. Shortcut events are delivered alongside navigation, while Ctrl or Alt chords do not enter text. Without an input method, Unicode and Latin-1 keysyms map to code points and remaining input uses `XLookupString`. Wheel buttons 4–7 map to Host down/right-positive axes. Expose events force a redraw even while idle. Xcursor must be unloaded after closing the display. Clipboard INCR transfers arrive in property-change chunks; an unclaimed Ctrl+V is delivered asynchronously as text or an image.
+
+## src/core/component.zig
+
+A component provides default-initializable `Model`, tagged-union `Msg`, `update(*Model, Msg)` and `view(*const Model, cb, msgs)`. The view receives a Model pointer because slices emitted into commands may refer to Model storage and must outlive the call. Composed model fields require defaults; validation reports missing defaults at the component boundary. The generated buffer and message parameters are generic, so validation checks the concrete Model parameter and return type. See HARDLINE §2 hatch 1.
+
+## src/core/component_list.zig
+
+List messages carry stable item keys rather than array indices so focused children survive insertion, removal and reordering. A row with multiple text fields can expose separate focus variants; the app stores the item key and field in its Model and routes focused messages using the key. Message tags are selected at compile time.

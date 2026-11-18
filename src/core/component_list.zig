@@ -167,7 +167,6 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
             }
         }
 
-        // ── Stable-key helpers (pure) ──────────────────────────────────
 
         /// Stable key of the item at visual index `i`, or null if out of
         /// range.
@@ -210,11 +209,6 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
             comptime AppMsg: type,
         ) AppMsg {
             const list_msg: Msg = .{ .child = .{ .key = key, .child_msg = child_msg } };
-            // `@unionInit`'s field-name argument is already a comptime slot, so
-            // `listTagName(AppMsg)` is forced to evaluate at comptime here —
-            // no explicit `comptime` needed (and this toolchain rejects it as
-            // redundant). The `view` call site, in a runtime scope, keeps its
-            // explicit `comptime`.
             return @unionInit(AppMsg, listTagName(AppMsg), list_msg);
         }
 
@@ -256,20 +250,13 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
         }
 
         pub fn view(model: *const Model, cb: anytype, msgs: anytype) void {
-            // msgs.clear is `AppMsg{ .<our_field> = .clear }` (built by
-            // Components.buildMsgs). Its compile-time type is AppMsg.
             const AppMsg = @TypeOf(msgs.clear);
             const list_tag_name = comptime listTagName(AppMsg);
 
             const child_msg_info = @typeInfo(Child.Msg).@"union";
 
             for (0..model.len) |i| {
-                // Build msgs for items[i]: one field per payloadless
-                // Child.Msg variant, value = AppMsg{ .<list_tag_name> =
-                // .{ .child = .{ .key = keys[i], .child_msg = .<variant> } } }.
-                // Keying by the STABLE key (not `i`) is what lets a focused
-                // child survive reordering — the focus Msg the leaf carries
-                // moves with the item.
+                // Stable keys keep focused children attached through reorder.
                 const key = model.keys[i];
                 var child_msgs: component_mod.MsgsStructFor(Child, AppMsg) = undefined;
                 inline for (child_msg_info.field_names, child_msg_info.field_types) |field_name, field_type| {
@@ -285,7 +272,6 @@ pub fn ComponentList(comptime Child: type, comptime capacity: usize) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 
 const cmd = @import("cmd.zig");
 
@@ -318,7 +304,6 @@ const Card = struct {
 
 
 
-// ── Per-item focus (stable keys) ────────────────────────────────────
 
 const focus = @import("../input/focus.zig");
 
@@ -351,15 +336,6 @@ fn viewInto(comptime App: type, m: *const App.Model, cb: anytype) void {
 
 
 
-// ── Worked example: rows that each own two TextFields (issue #1) ────
-//
-// The question: "focus on a specific sub-field of a specific row, with keys
-// routed to it". The answer is the stable-key pattern: a row component with a
-// payloadless focus variant per field (`focus_p`, `focus_a`); ComponentList
-// wires each into `rows.child{key, focus_x}`; the app remembers
-// `(key, field)` in its Model, and builds `focusedMsg` + key Msgs from the
-// key via `focusedMsgForKey` / `childMsg`. The key survives insert / remove /
-// reorder, so focus stays on the same logical field.
 
 const text_field_mod = @import("text_field.zig");
 
