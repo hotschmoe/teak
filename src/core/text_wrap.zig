@@ -242,8 +242,7 @@ pub fn nextLine(text: []const u8, start: usize, font: FontSpec, max_w: f32, mode
             // Unbreakable token wider than the line: cut it at graphemes.
             var cut = charLine(text, start, tr.content, font, max_w, m);
             if (cut.end == tr.content) {
-                // The last piece of the token: its trailing spaces hang here
-                // instead of becoming a blank line of their own.
+                // Keep trailing spaces on the token's last piece.
                 cut.hang = @intCast(tr.hang);
                 cut.next = @intCast(b.end);
                 cut.hard_break = b.kind == .hard;
@@ -456,8 +455,7 @@ pub fn indexAt(text: []const u8, x: f32, y: f32, font: FontSpec, max_w: f32, mod
         var probe = it;
         break :blk probe.next() == null;
     };
-    // Candidate boundaries: start .. limit. At a soft wrap the line's visible
-    // end is the next line's start; leave that index to the next line.
+    // A soft-wrap boundary belongs to the next line.
     var limit: usize = if (cur.ellipsized) cur.end else cur.hang;
     if (!is_last and !cur.hard_break and !cur.ellipsized and limit == cur.next and limit > cur.start) {
         limit = unicode.prevGrapheme(text, limit);

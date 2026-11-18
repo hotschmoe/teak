@@ -102,8 +102,7 @@ pub fn TextArea(comptime cap: usize) type {
             if (model.read_only) switch (msg) {
                 .char, .newline, .paste => return,
                 .key => |k| {
-                    // Keep caret / selection motion, refuse edits: apply the
-                    // key to a copy and keep it only if the text is unchanged.
+                    // Read-only navigation is accepted only when text stays unchanged.
                     var trial = model.ed;
                     _ = trial.applyKey(k);
                     if (std.mem.eql(u8, trial.content(), model.ed.content())) model.ed = trial;

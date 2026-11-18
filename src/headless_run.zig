@@ -325,8 +325,6 @@ pub fn shotCli(
         return;
     }
     if (idle_frames) |n| {
-        // `--idle-check N [--state s]`: the idle gate. Exit non-zero when a
-        // settled state keeps doing work.
         var any_busy = false;
         for (states) |st| {
             if (!std.mem.eql(u8, want, "*") and !std.mem.eql(u8, st.name, want)) continue;
@@ -391,7 +389,6 @@ pub fn encodePng(gpa: std.mem.Allocator, rgba: []const u8, width: u32, height: u
     ihdr[12] = 0;
     try appendChunk(gpa, &out, "IHDR", &ihdr);
 
-    // zlib stream of filtered scanlines.
     var z = try std.Io.Writer.Allocating.initCapacity(gpa, 1 << 16);
     defer z.deinit();
     const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
@@ -517,7 +514,6 @@ pub fn decodePng(gpa: std.mem.Allocator, png: []const u8) !Image {
     var decomp: std.compress.flate.Decompress = .init(&in, .zlib, &window);
     try decomp.reader.readSliceAll(raw);
 
-    // Unfilter in place (each row against the previous reconstructed row).
     for (0..height) |y| {
         const f = raw[y * (stride + 1)];
         const cur = raw[y * (stride + 1) + 1 ..][0..stride];

@@ -814,8 +814,6 @@ fn buildLayer(
             },
             .radio => |rd| {
                 if (!visible) continue;
-                // Quads-only renderer: a filled inner square stands in for
-                // the classic radio dot until we get a circle primitive.
                 const box_rect = Rect{
                     .x = rect.x,
                     .y = rect.y + @max(0, (rect.h - rd.style.size) * 0.5),
@@ -877,11 +875,6 @@ fn buildLayer(
             .canvas => |cv| {
                 if (!visible) continue;
                 if (rect.w <= 0 or rect.h <= 0) continue;
-                // Primitives clip to the canvas rect intersected with the
-                // surrounding scroll/overlay clip — same rect-intersection
-                // mechanism the rest of the pass uses, extended in data
-                // space (Liang–Barsky) for the rotated polyline quads that
-                // a plain rect clip can't express.
                 const canvas_clip = clipRect(rect, cur_clip);
                 if (canvas_clip.w <= 0 or canvas_clip.h <= 0) continue;
                 if (cv.style.bg) |bg| emit(verts, alloc, rect, bg, cur_clip);
@@ -902,7 +895,6 @@ fn buildLayer(
 }
 
 
-// Chrome (border / shadow / hover / underline) tests live in their own file.
 
 const cmd_mod = @import("../core/cmd.zig");
 
@@ -994,10 +986,6 @@ fn canvasWith(alloc: std.mem.Allocator, w: f32, h: f32, prims: []const CanvasPri
 
 
 
-// 200k vertices (66k triangles): the all-inside path is a single bulk copy
-// (one allocation); the clipping path stays linear. Wall-clock bounds are
-// deliberately loose (Debug build, shared CI) — they catch accidental
-// quadratic behaviour, not micro-regressions.
 
 
 

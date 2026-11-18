@@ -169,7 +169,7 @@ Grid passes rescan direct children while skipping subtrees via `Rect.end`, visit
 
 ## src/render/build.zig
 
-Base rendering pushes a zero clip for overlay children, defensively suppressing them until the overlay pass. A group's panel and text-selection highlights are emitted before their contents so painter order places content on top. Missing image handles render tinted placeholders. Disabled controls omit interaction feedback, focus, selection and caret. IME preedit comes from `TransientState`, draws inline with an underline, and is committed through the normal text-input message path; the caret moves to the end of the preedit. Canvas primitives use the intersection of their own rect and enclosing scroll or overlay clip.
+Base rendering pushes a zero clip for overlay children, defensively suppressing them until the overlay pass. A group's panel and text-selection highlights are emitted before their contents so painter order places content on top. Missing image handles render tinted placeholders. Disabled controls omit interaction feedback, focus, selection and caret. IME preedit comes from `TransientState`, draws inline with an underline, and is committed through the normal text-input message path; the caret moves to the end of the preedit. Canvas primitives use the intersection of their own rect and enclosing scroll or overlay clip; rotated polylines additionally use data-space Liang–Barsky clipping.
 
 ## src/core/dropdown.zig
 
@@ -270,3 +270,7 @@ The grid fades before its far plane. Gizmo rotation is recovered by normalizing 
 ## src/platform/native_effects.zig
 
 Hosts with native clipboards intercept clipboard effects before the shared service. Windows UTC offsets combine the base bias with the active standard or daylight adjustment; current rules are used for the queried instant. Completed effects are delivered asynchronously by the Host.
+
+## src/core/unicode.zig
+
+Backward grapheme scanning can restart without prior context between adjacent ASCII bytes other than CR followed by LF. Kana and half-width kana count as letters even when their UAX #14 line-break class is NS or CJ.

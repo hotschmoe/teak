@@ -179,8 +179,7 @@ pub fn nextGrapheme(text: []const u8, i: usize) usize {
 /// (`0 < i <= text.len`); equals the previous boundary when `i` is one.
 pub fn prevGrapheme(text: []const u8, i: usize) usize {
     std.debug.assert(i > 0 and i <= text.len);
-    // Walk back to a context-free restart point: two adjacent ASCII bytes that
-    // are not CR LF always have a boundary between them and carry no state.
+    // Adjacent ASCII bytes other than CRLF form a context-free boundary.
     var q = utf8PrevStart(text, i);
     while (q > 0 and !(text[q] < 0x80 and text[q - 1] < 0x80 and !(text[q - 1] == '\r' and text[q] == '\n')))
         q = utf8PrevStart(text, q);

@@ -48,8 +48,7 @@ pub fn typeFingerprint(comptime T: type) u64 {
 }
 
 fn feed(h: *std.hash.Wyhash, comptime T: type, comptime depth: u32) void {
-    // Anonymous aggregates carry a compiler-numbered name (`...__struct_1234`)
-    // that shifts with unrelated edits; their fields are hashed below anyway.
+    // Anonymous type names shift with unrelated edits; hash their fields instead.
     if (std.mem.find(u8, @typeName(T), "__") == null) h.update(@typeName(T));
     h.update(std.mem.asBytes(&@as(u64, @sizeOf(T))));
     if (depth > 12) return;
@@ -324,8 +323,7 @@ pub const Loader = struct {
     pub fn pollReload(self: *Loader) ReloadResult {
         const mt = self.mtime() orelse return .unchanged;
         if (mt == self.last_mtime) return .unchanged;
-        // The build may still be writing: wait until the mtime has been
-        // stable for one more poll.
+        // Require a stable mtime so the build finishes writing before reload.
         std.Io.sleep(self.io, .fromMilliseconds(30), .awake) catch {};
         if ((self.mtime() orelse 0) != mt) return .unchanged;
         self.last_mtime = mt;

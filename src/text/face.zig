@@ -147,8 +147,7 @@ pub const Font = struct {
     /// Kerning between two glyphs of this face, in font units (legacy `kern`
     /// table or GPOS pair adjustment, whichever stb finds).
     pub fn kernUnits(self: *const Font, left: u16, right: u16) i32 {
-        // stb re-walks the kern/GPOS tables per call; a direct-mapped cache keyed by
-        // (face, pair) turns repeat pairs into one load. Losable: a miss recomputes.
+        // Kerning cache misses recompute from the face's kern/GPOS tables.
         if (kern_epoch != epoch) {
             kern_cache = std.mem.zeroes([8192]KernSlot);
             kern_epoch = epoch;

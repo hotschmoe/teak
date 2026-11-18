@@ -78,7 +78,6 @@ pub fn appendInspector(cb: anytype, cmds: anytype, rects: []const Rect, data: Da
     add(arena, &lines, opts.accent, "TEAK INSPECTOR   frame {d}   {d} cmds   {d:.0}x{d:.0}", .{ data.frame, cmds.len, data.window_w, data.window_h }, opts.max_cols);
     add(arena, &lines, opts.fg, "view {d:.2}ms  layout {d:.2}ms  render {d:.2}ms", .{ data.timings.view_ms, data.timings.layout_ms, data.timings.render_ms }, opts.max_cols);
 
-    // Hovered widget.
     var highlight: ?Rect = null;
     add(arena, &lines, opts.accent, "-- hover --", .{}, opts.max_cols);
     if (data.hover_index) |hi| if (hi < cmds.len and hi < rects.len) {
@@ -92,7 +91,6 @@ pub fn appendInspector(cb: anytype, cmds: anytype, rects: []const Rect, data: Da
         add(arena, &lines, opts.dim, "(nothing)", .{}, opts.max_cols);
     }
 
-    // Widget tree (a11y roles: what a screen reader would see).
     add(arena, &lines, opts.accent, "-- tree --", .{}, opts.max_cols);
     if (a11y.buildTree(arena, cmds, rects, data.focus_index)) |nodes| {
         var shown: usize = 0;
@@ -115,12 +113,10 @@ pub fn appendInspector(cb: anytype, cmds: anytype, rects: []const Rect, data: Da
         }
     } else |_| {}
 
-    // Msgs.
     add(arena, &lines, opts.accent, "-- last {d} msgs --", .{data.msgs.len}, opts.max_cols);
     if (data.msgs.len == 0) add(arena, &lines, opts.dim, "(none yet)", .{}, opts.max_cols);
     for (data.msgs) |m| add(arena, &lines, opts.fg, "{s}", .{m}, opts.max_cols);
 
-    // Emit. The highlight goes first so the panel paints above it.
     if (highlight) |r| {
         cb.pushOverlay(.{
             .x = r.x,

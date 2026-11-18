@@ -108,8 +108,7 @@ pub fn validateGpu(comptime T: type) void {
     if (present != 0 and present != scene_block.len)
         @compileError("Gpu '" ++ tn ++ "' declares part of the scene extension; " ++
             "uploadMesh, releaseMesh and renderScenes come together");
-    // Optional overlay layering: where the overlay layer starts in each
-    // staged list. Called before the uploads of a frame.
+    // Overlay boundaries must be supplied before frame uploads.
     // Optional HiDPI hook: render at `scale` physical pixels per logical unit.
     if (@hasDecl(T, "setScale") and @typeInfo(@TypeOf(T.setScale)) != .@"fn")
         @compileError("Gpu '" ++ tn ++ "'.setScale must be a function " ++

@@ -10,8 +10,7 @@ const std = @import("std");
 
 fn isFocusable(c: anytype) bool {
     return switch (c) {
-        // A disabled input is skipped by Tab traversal, mirroring how
-        // hit-test refuses to focus it on click.
+        // Disabled inputs must be skipped by both Tab and hit-test.
         .text_input => |t| !t.disabled,
         .text_area => |t| !t.disabled,
         .push_group,
@@ -161,7 +160,6 @@ pub fn isNavigable(c: anytype) bool {
     return switch (c) {
         .button => |b| !b.disabled,
         .checkbox, .radio, .slider => true,
-        // A clickable canvas (the toggle switch, plots with a click Msg).
         .canvas => |cv| cv.msg != null,
         else => isFocusable(c),
     };
@@ -229,7 +227,6 @@ pub fn groupNeighbor(cmds: anytype, idx: usize, forward: bool) ?usize {
     var members: [64]usize = undefined;
     var n: usize = 0;
     var self_pos: usize = 0;
-    // Scan back to the group's first member.
     var lo = idx;
     var depth: i32 = 0;
     var i = idx;

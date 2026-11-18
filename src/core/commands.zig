@@ -257,7 +257,6 @@ pub fn CommandPalette(comptime cap: usize) type {
             var labels: [max_commands][]const u8 = undefined;
             var map: [max_commands]u16 = undefined;
             const n_opts = list.paletteOptions(&labels, &map);
-            // Rows show "label    shortcut".
             for (labels[0..n_opts], map[0..n_opts]) |*l, mi| l.* = list.items[mi].menuLabel(arena, opts.platform, opts.column);
 
             const q = model.query.content();
@@ -272,7 +271,6 @@ pub fn CommandPalette(comptime cap: usize) type {
             const x = @max((opts.window_w - w) / 2, 0);
             const y = opts.window_h * 0.14;
 
-            // Dim, click-to-close layer over the whole window.
             cb.pushOverlay(.{
                 .x = 0,
                 .y = 0,
@@ -284,7 +282,6 @@ pub fn CommandPalette(comptime cap: usize) type {
                 .padding = 0,
             });
             cb.popOverlay();
-            // The panel.
             cb.pushOverlay(.{
                 .x = x,
                 .y = y,

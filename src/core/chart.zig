@@ -66,7 +66,6 @@ pub fn lineChartPrimitives(
     const plot_h = @max(0, plot_bottom - plot_top);
     const plot_w = @max(0, plot_right - plot_left);
 
-    // Horizontal gridlines, top edge to bottom edge inclusive.
     if (opts.grid_lines > 1) {
         var g: u32 = 0;
         while (g < opts.grid_lines) : (g += 1) {
@@ -76,7 +75,6 @@ pub fn lineChartPrimitives(
         }
     }
 
-    // Polyline through the mapped data points.
     if (series.len >= 2) {
         const pts = arena.alloc(CanvasPoint, series.len) catch oom();
         const span = opts.max - opts.min;
