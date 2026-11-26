@@ -210,7 +210,7 @@ fn print_elapsed(state: *State, started: std.Io.Timestamp) !void {
 
 fn parse_options(init: std.process.Init) !Options {
     var result: Options = .{};
-    var arguments = init.minimal.args.iterate();
+    var arguments = try init.minimal.args.iterateAllocator(init.arena.allocator());
     assert(arguments.next() != null);
     for (0..16) |_| {
         const argument = arguments.next() orelse return result;
