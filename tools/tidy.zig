@@ -152,7 +152,7 @@ const Options = struct { update: bool = false, table: bool = false, root: ?[]con
 const State = struct {
     io: std.Io,
     output: *std.Io.Writer,
-    root: std.Io.Dir = .cwd(),
+    root: std.Io.Dir,
     report_only: bool = false,
     held: [files_max]Path = undefined,
     held_len: u16 = 0,
@@ -188,7 +188,7 @@ pub fn main(init: std.process.Init) !void {
     const started = std.Io.Clock.awake.now(init.io);
     const state = try init.gpa.create(State);
     defer init.gpa.destroy(state);
-    state.* = .{ .io = init.io, .output = &output.interface };
+    state.* = .{ .io = init.io, .output = &output.interface, .root = .cwd() };
     assert(state.paths_len == 0);
     assert(state.groups_len == 0);
     run(state, init) catch |err| {
@@ -210,7 +210,7 @@ fn print_elapsed(state: *State, started: std.Io.Timestamp) !void {
 
 fn parse_options(init: std.process.Init) !Options {
     var result: Options = .{};
-    var arguments = init.minimal.args.iterate();
+    var arguments = try init.minimal.args.iterateAllocator(init.arena.allocator());
     assert(arguments.next() != null);
     for (0..16) |_| {
         const argument = arguments.next() orelse return result;
@@ -467,7 +467,8 @@ fn measure_lines(group: *Group, path: *const Path, source: []const u8, tree: Ast
         offset += @intCast(line.len + 1);
         const site: Site = .{ .path = path.*, .line = number };
         record(group, .lines, site);
-        const columns = std.unicode.utf8CountCodepoints(line) catch line.len;
+        const text = std.mem.trimEnd(u8, line, "\r");
+        const columns = std.unicode.utf8CountCodepoints(text) catch text.len;
         if (columns > 100) record(group, if (literal) .literal_long_lines else .long_lines, site);
     }
     assert(number <= source.len);
