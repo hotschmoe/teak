@@ -1007,6 +1007,7 @@ const thread_names = [_][]const u8{
     "thrd_current",
 };
 const task_names = [_][]const u8{ "concurrent", "async" };
+const ambiguous_names = [_][]const u8{ "wait", "kill", "clone", "clone3" };
 const process_names = [_][]const u8{
     "clone",
     "clone3",
@@ -1111,7 +1112,8 @@ fn measure_system_calls(group: *Group, site: Site, tree: Ast, callee: Ast.Node.I
     if (has_chain(tree, receiver, &.{ "std", "Thread" }) or
         has_chain(tree, callee, &.{ "std", "Thread" }) or
         has_chain(tree, callee, &.{ "Io", "Threaded" }) or
-        std.mem.startsWith(u8, name, "pthread_") or listed(name, &thread_names) or
+        std.mem.startsWith(u8, name, "pthread_") or
+        (listed(name, &thread_names) and (raw or !listed(name, &ambiguous_names))) or
         (tree.nodeTag(callee) == .field_access and listed(name, &task_names)) or
         (raw and std.mem.startsWith(u8, name, "futex"))) record(group, .threads, site);
     if ((has_chain(tree, callee, &.{ "std", "fs" }) and
@@ -1129,7 +1131,7 @@ fn measure_system_calls(group: *Group, site: Site, tree: Ast, callee: Ast.Node.I
         has_chain(tree, receiver, &.{ "std", "process" })) and
         listed(name, &.{ "spawn", "run", "replace" })) or
         (listed(name, &process_names) and
-            (!listed(name, &.{ "wait", "kill" }) or raw or tree.nodeTag(callee) == .identifier)))
+            (!listed(name, &ambiguous_names) or raw or tree.nodeTag(callee) == .identifier)))
     {
         record(group, .processes, site);
     }
