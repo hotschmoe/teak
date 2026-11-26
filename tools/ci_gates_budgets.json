@@ -3,7 +3,7 @@
   "alert_over_pct": 10,
   "idle_frames": 125,
   "latency_budget_frames": 1,
-  "notes": "125 frames * 16 ms = 2 s of the headless clock. strict_states must be fully quiet (no busy frame; presents only from a caret blink). Other states must be quiet at the end of the window: a one-shot Sub.at that fires and finishes still passes, a subscription still firing does not. The human --idle-check flag still requires settled() (quiet by the end and no re-wake). expect_busy records a state and does not fail; [\"*\"] exempts the example. scene3d subscribes every frame for the orbit and is exempt on purpose. gallery toasts and toast_sliding keep a tick subscription and are expect_busy. Latency budget is 1 frame (hit-test uses the previous frame). wasm_brotli_bytes is wasm32 ReleaseSmall, brotli quality 11, and is the portable budget. platforms.* native_exe_bytes, rss_bytes and committed_bytes are per host triple and GPU; 0 means unbudgeted and does not fail. The native exe is unstripped ReleaseSmall. committed_bytes is Committed_AS when the kernel prints it, else RssAnon+VmSwap. The aarch64-linux numbers below were measured on lavapipe with Zig 0.17.0 (this kernel's committed bytes are RssAnon+VmSwap). x86_64 CI records native and RSS until that triple is filled in.",
+  "notes": "Policy is described in SRC.md (tools/ci_gates.zig). wasm_brotli_bytes is the portable budget. platforms.<arch>-<os> budgets apply only on that host triple; a host with no entry has its native exe size and idle memory reported and skipped. Seed a triple with zig build gates -- --update-budgets on the machine that will enforce it.",
   "examples": {
     "chrome": {
       "strict_states": [
@@ -16,7 +16,7 @@
         "x": 47,
         "y": 253
       },
-      "wasm_brotli_bytes": 140283,
+      "wasm_brotli_bytes": 138392,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 950808,
@@ -35,7 +35,7 @@
         "x": 70,
         "y": 134
       },
-      "wasm_brotli_bytes": 128642,
+      "wasm_brotli_bytes": 126637,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 937216,
@@ -54,7 +54,7 @@
         "x": 60,
         "y": 101
       },
-      "wasm_brotli_bytes": 127702,
+      "wasm_brotli_bytes": 125801,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 1347264,
@@ -69,7 +69,7 @@
       ],
       "expect_busy": [],
       "latency": null,
-      "wasm_brotli_bytes": 217489,
+      "wasm_brotli_bytes": 215501,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 1315888,
@@ -92,7 +92,7 @@
         "x": 88,
         "y": 110
       },
-      "wasm_brotli_bytes": 194698,
+      "wasm_brotli_bytes": 192679,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 1154688,
@@ -109,7 +109,7 @@
         "x": 492,
         "y": 92
       },
-      "wasm_brotli_bytes": 266658,
+      "wasm_brotli_bytes": 264306,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 1872736,
@@ -128,7 +128,7 @@
         "x": 60,
         "y": 765
       },
-      "wasm_brotli_bytes": 134706,
+      "wasm_brotli_bytes": 132087,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 976144,
@@ -143,7 +143,7 @@
         "*"
       ],
       "latency": null,
-      "wasm_brotli_bytes": 107344,
+      "wasm_brotli_bytes": 105195,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 946048,
@@ -162,7 +162,7 @@
         "x": 1100,
         "y": 108
       },
-      "wasm_brotli_bytes": 137990,
+      "wasm_brotli_bytes": 135938,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 969968,
@@ -181,7 +181,7 @@
         "x": 140,
         "y": 27
       },
-      "wasm_brotli_bytes": 140293,
+      "wasm_brotli_bytes": 138320,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 2838320,
@@ -200,7 +200,7 @@
         "x": 80,
         "y": 171
       },
-      "wasm_brotli_bytes": 125256,
+      "wasm_brotli_bytes": 123470,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 905104,
@@ -219,7 +219,7 @@
         "x": 75,
         "y": 117
       },
-      "wasm_brotli_bytes": 122464,
+      "wasm_brotli_bytes": 120266,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 916240,
@@ -238,7 +238,7 @@
         "x": 180,
         "y": 24
       },
-      "wasm_brotli_bytes": 157813,
+      "wasm_brotli_bytes": 156035,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 966208,
@@ -257,7 +257,7 @@
         "x": 620,
         "y": 140
       },
-      "wasm_brotli_bytes": 128894,
+      "wasm_brotli_bytes": 126928,
       "platforms": {
         "aarch64-linux": {
           "native_exe_bytes": 912496,

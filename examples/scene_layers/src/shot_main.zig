@@ -9,8 +9,6 @@ const App = @import("app.zig");
 pub fn main(init: std.process.Init) !void {
     const args = init.minimal.args.toSlice(init.arena.allocator()) catch &.{};
     if (teak.headless.requestsGate(args)) {
-        // The default PNG below is one scripted shot. Measurement gets named
-        // states: `initial` is the resting frame, `row` is the same click.
         return teak.headless.shotCli(App, Host, Gpu, init, "scene_layers.png", .{
             .width = 1280,
             .height = 800,

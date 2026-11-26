@@ -41,8 +41,6 @@ const states = [_]teak.headless.ShotState{
 };
 
 pub fn main(init: std.process.Init) !void {
-    // `shotCli` parses `--state`, `--list`, `--all`, `--idle-check`, `--gates-json`.
-    // The first state (`controls_dark`) stays the default PNG.
     try teak.headless.shotCli(App, Host, Gpu, init, "gallery.png", .{
         .width = 1280,
         .height = 800,

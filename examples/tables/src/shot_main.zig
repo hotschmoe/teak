@@ -36,9 +36,6 @@ fn parseArgs(init: std.process.Init) Opts {
 pub fn main(init: std.process.Init) !void {
     const args = init.minimal.args.toSlice(init.arena.allocator()) catch &.{};
     if (teak.headless.requestsGate(args)) {
-        // The bench path below forces `idle_skip = false`. The gate uses the
-        // default loop (idle skip on) and the untouched Model: `initial` is
-        // the table tab, `list` is one click on the List tab.
         return teak.headless.shotCli(App, Host, Gpu, init, "tables.png", .{
             .width = 1100,
             .height = 700,

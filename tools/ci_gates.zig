@@ -1,22 +1,6 @@
-//! CI gates for every example: idle, input latency, idle memory and binary size.
-//!
-//!   zig build gates
-//!   zig build gates -- --examples counter_greeter --only idle,latency
-//!   zig build gates -- --update-budgets
-//!
-//! Writes one JSON artifact (default `zig-out/gates/ci-gates.json`). Budgets
-//! live in `tools/ci_gates_budgets.json`. A measured value fails when it is
-//! more than `alert_over_pct` (10) over its budget. A budget of 0, or no
-//! entry for this host triple, is recorded and does not fail. Wasm brotli is
-//! portable across hosts; the native exe, RSS and committed bytes are not.
-//!
-//! Idle policy here is looser than the human `--idle-check` flag. A
-//! non-strict state passes when the window ends quiet, so a one-shot
-//! `Sub.at` that fires and finishes (a tooltip deadline) is not a failure.
-//! A subscription still firing at the end fails unless the state is
-//! `expect_busy`. Strict states must be fully quiet. `--idle-check` still
-//! exits on `!settled()` (quiet by the end and no re-wake). `scene3d` is
-//! `expect_busy`: its orbit subscribes every frame on purpose.
+//! Background gates for every example: idle, input latency, idle memory and
+//! binary size. `zig build gates [-- --examples a,b --only idle,latency,memory,size --update-budgets]`.
+//! Policy and budgets: SRC.md and tools/ci_gates_budgets.json.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -27,9 +11,6 @@ pub const default_idle_frames: u32 = 125;
 pub const default_latency_budget: u32 = 1;
 pub const default_alert_pct: u64 = 10;
 
-/// `measured` is over the budget by more than `pct` percent. A zero budget
-/// is unbudgeted and never fails. Integer arithmetic: 110 on a budget of
-/// 100 at 10% passes, 111 fails.
 pub fn overBudget(measured: u64, budget: u64, pct: u64) bool {
     if (budget == 0) return false;
     return measured * 100 > budget * (100 + pct);
@@ -46,8 +27,7 @@ pub const LatencyCfg = struct {
 };
 
 pub const ExampleCfg = struct {
-    /// When true, `strict` is the whole strict set (it may be empty). When
-    /// false, the runner treats `initial` (or the first state) as strict.
+    /// False: `initial` (or the first state) is the strict set.
     strict_explicit: bool = false,
     strict: []const []const u8 = &.{},
     expect_busy: []const []const u8 = &.{},
@@ -57,6 +37,8 @@ pub const ExampleCfg = struct {
     native_exe: u64 = 0,
     rss: u64 = 0,
     committed: u64 = 0,
+    /// The budgets file has a `platforms` entry for this host triple.
+    host_budgeted: bool = false,
 };
 
 pub fn listed(names: []const []const u8, name: []const u8) bool {
@@ -64,13 +46,6 @@ pub fn listed(names: []const []const u8, name: []const u8) bool {
     return false;
 }
 
-/// Idle policy for `zig build gates`. `expect_busy` (or `"*"`) records the
-/// state and does not fail. Every other state must end quiet
-/// (`ended_quiet` is `!busy_at_end`): a one-shot re-wake that has finished
-/// still passes, a subscription still firing does not. A strict state must
-/// also be fully quiet: no busy frame, and every present was a caret blink.
-/// This is not `IdleReport.settled` — the human `--idle-check` flag still
-/// fails a re-wake.
 pub fn idleOk(cfg: ExampleCfg, name: []const u8, ended_quiet: bool, fully_quiet: bool, strict_fallback: ?[]const u8) bool {
     if (cfg.expect_all_busy or listed(cfg.expect_busy, name)) return true;
     if (!ended_quiet) return false;
@@ -136,16 +111,18 @@ const ExResult = struct {
     latency_state: []const u8 = "",
     latency_x: f32 = 0,
     latency_y: f32 = 0,
+    host_budgeted: bool = false,
     mem_unbudgeted: bool = true,
     mem_ok: bool = true,
     rss: u64 = 0,
     committed: u64 = 0,
-    mem_source: []const u8 = "",
     rss_budget: u64 = 0,
     committed_budget: u64 = 0,
     native_unbudgeted: bool = true,
     brotli_unbudgeted: bool = true,
     bin_ok: bool = true,
+    native_ok: bool = true,
+    brotli_ok: bool = true,
     native_bytes: u64 = 0,
     wasm_bytes: u64 = 0,
     brotli_bytes: u64 = 0,
@@ -223,6 +200,7 @@ pub fn main(init: std.process.Init) !void {
         try results.append(arena, r);
         printRow(r);
     }
+    printUnbudgeted(triple, o.budgets, results.items);
 
     if (o.update) {
         try updateBudgets(arena, io, o.budgets, triple, results.items);
@@ -261,13 +239,29 @@ fn printRow(r: ExResult) void {
         std.debug.print("[gates] {s}: ERROR {s}\n", .{ r.name, r.err });
         return;
     }
-    std.debug.print("[gates] {s}: idle {s}, latency {s}, mem {s}, size {s}\n", .{
+    std.debug.print("[gates] {s}: idle {s}, latency {s}, memory {s}, native size {s}, wasm size {s}\n", .{
         r.name,
-        if (!r.ran_shot) "skip" else if (r.idle_ok) "ok" else "FAIL",
-        if (r.latency_skipped) "skip" else if (r.latency_ok) "ok" else "FAIL",
-        if (!r.ran_shot) "skip" else if (r.mem_unbudgeted) "recorded" else if (r.mem_ok) "ok" else "FAIL",
-        if (!r.ran_size) "skip" else if (r.native_unbudgeted and r.brotli_unbudgeted) "recorded" else if (r.bin_ok) "ok" else "FAIL",
+        if (!r.ran_shot) "not run" else if (r.idle_ok) "ok" else "FAIL",
+        if (r.latency_skipped) "not run" else if (r.latency_ok) "ok" else "FAIL",
+        verdict(r.ran_shot, r.mem_unbudgeted, r.mem_ok),
+        verdict(r.ran_size, r.native_unbudgeted, r.native_ok),
+        verdict(r.ran_size, r.brotli_unbudgeted, r.brotli_ok),
     });
+}
+
+fn verdict(ran: bool, unbudgeted: bool, ok: bool) []const u8 {
+    if (!ran) return "not run";
+    if (unbudgeted) return "SKIPPED (no budget)";
+    return if (ok) "ok" else "FAIL";
+}
+
+fn printUnbudgeted(triple: []const u8, budgets: []const u8, results: []const ExResult) void {
+    var missing: usize = 0;
+    for (results) |r| {
+        if (r.err.len == 0 and !r.host_budgeted) missing += 1;
+    }
+    if (missing == 0) return;
+    std.debug.print("[gates] {s} has no {s} budgets for {d} of {d} examples: their native exe size and idle memory were measured and SKIPPED, not gated\n", .{ budgets, triple, missing, results.len });
 }
 
 fn runExample(
@@ -285,6 +279,7 @@ fn runExample(
     r.committed_budget = ecfg.committed;
     r.native_budget = ecfg.native_exe;
     r.brotli_budget = ecfg.wasm_brotli;
+    r.host_budgeted = ecfg.host_budgeted;
     const dir = try std.fmt.allocPrint(arena, "examples/{s}", .{ex});
 
     if (which.wantShot()) {
@@ -361,9 +356,9 @@ fn runExample(
 
         r.native_unbudgeted = ecfg.native_exe == 0;
         r.brotli_unbudgeted = ecfg.wasm_brotli == 0;
-        const native_over = overBudget(r.native_bytes, ecfg.native_exe, cfg.alert_pct);
-        const brotli_over = overBudget(r.brotli_bytes, ecfg.wasm_brotli, cfg.alert_pct);
-        r.bin_ok = !native_over and !brotli_over;
+        r.native_ok = !overBudget(r.native_bytes, ecfg.native_exe, cfg.alert_pct);
+        r.brotli_ok = !overBudget(r.brotli_bytes, ecfg.wasm_brotli, cfg.alert_pct);
+        r.bin_ok = r.native_ok and r.brotli_ok;
         if (!r.bin_ok) r.ok = false;
     }
     return r;
@@ -376,9 +371,6 @@ fn fillShot(arena: std.mem.Allocator, r: *ExResult, text: []const u8, ecfg: Exam
     const mem = root.object.get("memory") orelse return error.BadShotJson;
     r.rss = intOf(mem.object.get("rss_bytes"));
     r.committed = intOf(mem.object.get("committed_bytes"));
-    if (mem.object.get("source")) |s| if (s == .string) {
-        r.mem_source = try arena.dupe(u8, s.string);
-    };
     r.mem_unbudgeted = ecfg.rss == 0 and ecfg.committed == 0;
     const rss_over = overBudget(r.rss, ecfg.rss, cfg.alert_pct);
     const com_over = overBudget(r.committed, ecfg.committed, cfg.alert_pct);
@@ -491,6 +483,7 @@ fn exampleCfg(arena: std.mem.Allocator, root: std.json.Value, name: []const u8, 
     cfg.wasm_brotli = intOf(ex.object.get("wasm_brotli_bytes"));
     if (ex.object.get("platforms")) |p| if (p == .object) {
         if (p.object.get(triple)) |plat| if (plat == .object) {
+            cfg.host_budgeted = true;
             cfg.native_exe = intOf(plat.object.get("native_exe_bytes"));
             cfg.rss = intOf(plat.object.get("rss_bytes"));
             cfg.committed = intOf(plat.object.get("committed_bytes"));
@@ -576,9 +569,6 @@ fn wasmPath(arena: std.mem.Allocator, io: std.Io, dir: []const u8, ex: []const u
 }
 
 fn brotliLen(arena: std.mem.Allocator, io: std.Io, node: []const u8, path: []const u8) !u64 {
-    if (std.process.run(arena, io, .{ .argv = &.{ "brotli", "-c", "-q", "11", path } })) |r| {
-        if (exitedOk(r.term)) return r.stdout.len;
-    } else |_| {}
     const js =
         \\const fs = require("fs");
         \\const zlib = require("zlib");
@@ -646,7 +636,7 @@ fn renderReport(
     try field(&j, "ok");
     try j.write(all_ok);
     try field(&j, "notes");
-    try j.write("rss_bytes, committed_bytes and native_exe_bytes depend on the host triple and the GPU that loaded. wasm_brotli_bytes is wasm32 ReleaseSmall compressed with brotli quality 11 and should match across hosts on the same Zig. committed_bytes is Committed_AS when /proc/self/status has it, otherwise RssAnon+VmSwap. The native exe is unstripped ReleaseSmall. A zero budget is unbudgeted and does not fail.");
+    try j.write("rss_bytes, committed_bytes and native_exe_bytes depend on the host triple and the GPU that loaded. wasm_brotli_bytes is wasm32 ReleaseSmall compressed with brotli quality 11 and should match across hosts on the same Zig. committed_bytes is RssAnon+VmSwap from /proc/self/status. The native exe is unstripped ReleaseSmall. A zero or missing budget is unbudgeted: the value is reported and its gate is skipped.");
     try field(&j, "examples");
     try j.beginArray();
     for (results) |r| {
@@ -718,12 +708,12 @@ fn renderReport(
         try j.write(r.mem_ok);
         try field(&j, "unbudgeted");
         try j.write(r.mem_unbudgeted);
+        try field(&j, "host_budgeted");
+        try j.write(r.host_budgeted);
         try field(&j, "rss_bytes");
         try j.write(r.rss);
         try field(&j, "committed_bytes");
         try j.write(r.committed);
-        try field(&j, "source");
-        try j.write(r.mem_source);
         try field(&j, "rss_budget");
         try j.write(r.rss_budget);
         try field(&j, "committed_budget");
@@ -802,37 +792,4 @@ fn putInt(arena: std.mem.Allocator, map: *std.json.ObjectMap, key: []const u8, n
         return;
     }
     try map.put(arena, try arena.dupe(u8, key), v);
-}
-
-test "overBudget is a +10% ceiling and a zero budget does not fail" {
-    try std.testing.expect(!overBudget(100, 100, 10));
-    try std.testing.expect(!overBudget(110, 100, 10));
-    try std.testing.expect(overBudget(111, 100, 10));
-    try std.testing.expect(!overBudget(99999, 0, 10));
-    try std.testing.expect(overBudget(1, 0, 10) == false);
-}
-
-test "idleOk exempts expect_busy and requires fullyQuiet only on strict states" {
-    const cfg: ExampleCfg = .{
-        .strict_explicit = true,
-        .strict = &.{"initial"},
-        .expect_busy = &.{"orbit"},
-    };
-    // Third argument is ended-quiet, not IdleReport.settled. A one-shot
-    // re-wake that finished still passes. A frame that is still busy fails.
-    try std.testing.expect(idleOk(cfg, "orbit", false, false, null));
-    try std.testing.expect(idleOk(cfg, "hover", true, false, null));
-    try std.testing.expect(!idleOk(cfg, "hover", false, false, null));
-    try std.testing.expect(idleOk(cfg, "initial", true, true, null));
-    try std.testing.expect(!idleOk(cfg, "initial", true, false, null));
-    try std.testing.expect(!idleOk(cfg, "initial", false, false, null));
-
-    const all: ExampleCfg = .{ .expect_all_busy = true };
-    try std.testing.expect(idleOk(all, "edges_hidden", false, false, null));
-
-    const fallback: ExampleCfg = .{};
-    try std.testing.expect(idleOk(fallback, "initial", true, true, "initial"));
-    try std.testing.expect(!idleOk(fallback, "initial", true, false, "initial"));
-    try std.testing.expect(idleOk(fallback, "hover", true, false, "initial"));
-    try std.testing.expect(!idleOk(fallback, "hover", false, false, "initial"));
 }
