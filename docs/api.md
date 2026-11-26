@@ -2624,7 +2624,8 @@ viewport-agnostic snapshot back.
 > which must surface as `InputState.resized`), an async effect result is
 > ready, or `timeout_ms` elapses — then return. Hosts without it keep
 > polling at their own pace (the skipped frames are still nearly free).
-> X11: `XPending` + `poll` on the connection fd; Win32:
+> X11: `XPending` + `poll` on the connection fd; Wayland:
+> `prepare_read` + `poll` on the display fd; Win32:
 > `MsgWaitForMultipleObjects`; web: n/a (rAF drives `frame`).
 > - `openSecondaryWindow(title, w, h)` returns an opaque window handle
 > for a second top-level window sharing this Host's event source.

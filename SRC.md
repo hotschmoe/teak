@@ -217,7 +217,7 @@ List messages carry stable item keys rather than array indices so focused childr
 
 ## src/platform/wayland.zig
 
-Wayland clipboard writes are non-blocking and unfinished bytes are handled by `pumpWrites`, so a slow reader cannot stall a frame. A reader that quits during transfer must not terminate the process. `TEAK_WL_NO_VIEWPORT=1` forces integer buffer scaling for compositor debugging. Unclaimed Ctrl+V begins an asynchronous paste; initial window setup waits for configure and scale announcements.
+Wayland clipboard writes are non-blocking and unfinished bytes are handled by `pumpWrites`, so a slow reader cannot stall a frame. A reader that quits during transfer must not terminate the process. `TEAK_WL_NO_VIEWPORT=1` forces integer buffer scaling for compositor debugging. Unclaimed Ctrl+V begins an asynchronous paste; initial window setup waits for configure and scale announcements. `waitEvents` blocks in `poll` on the display fd between `prepare_read` and `cancel_read` and reads nothing, so `pollInputs` still sees every event; it wakes early for client-side key repeat and for clipboard transfers on their own fds. It has not been run against a live compositor.
 
 ## src/input/a11y.zig
 

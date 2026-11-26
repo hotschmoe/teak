@@ -439,8 +439,10 @@ built frame with the new phase (`TransientState.blink_on`) — no view or layout
 `waitEvents(timeout_ms)` (documented in `platform/host.zig`) with the time to
 the nearer of the next due `Sub` (`sub.nextDueMs`) and the next caret toggle
 (16 ms while an effect is outstanding, else at most 1 s). Implemented by the
-X11 (`XPending` + `poll` on the connection fd), Win32
-(`MsgWaitForMultipleObjectsEx`) and headless Hosts; Expose / WM_PAINT surface as
+X11 (`XPending` + `poll` on the connection fd), Wayland (`prepare_read` +
+`poll` on the display fd, woken early for key repeat and clipboard transfers), Win32
+(`MsgWaitForMultipleObjectsEx`) and headless Hosts, and forwarded by the Linux
+Host to whichever backend is live; the macOS Host has none yet and polls; Expose / WM_PAINT surface as
 `InputState.resized` so an uncovered window repaints. The web loop stays
 rAF-driven but skips the same work: a quiet rAF tick costs about 0.2 ms
 in headless Chromium (median, including the JS tick), against 0.8 ms median
