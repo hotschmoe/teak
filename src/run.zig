@@ -1049,9 +1049,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             @import("assert.zig").assert(input.focus_lost);
             @import("assert.zig").assert(prev == self.current);
             if (comptime has_drag) {
-                if (self.drag.phase == .active)
+                if (self.drag.phase == .active) {
                     const prev_cmds = self.bufs[prev].cmds.items;
                     self.sendDrag(.cancel, input, prev_cmds, self.rects[prev].items);
+                }
                 self.drag.phase = .idle;
             }
             self.press_target = null;
