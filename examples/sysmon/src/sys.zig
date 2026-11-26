@@ -54,6 +54,8 @@ pub const Counters = struct {
     disk_write_bytes: u64 = 0,
     net_rx_bytes: u64 = 0,
     net_tx_bytes: u64 = 0,
+    n_disks: u32 = 0,
+    n_adapters: u32 = 0,
 };
 
 pub const Sample = struct {

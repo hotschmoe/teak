@@ -156,6 +156,7 @@ comptime {
 }
 
 const if_type_loopback = 24;
+const if_type_tunnel = 131;
 const if_oper_up = 1;
 const if_flag_filter: u8 = 1 << 1;
 const if_flag_connector: u8 = 1 << 2;
@@ -228,6 +229,7 @@ pub const State = struct {
             if (DeviceIoControl(d, ioctl_disk_performance, null, 0, &perf, @sizeOf(DiskPerformance), &returned, null) == 0) continue;
             c.disk_read_bytes += @intCast(@max(perf.bytes_read, 0));
             c.disk_write_bytes += @intCast(@max(perf.bytes_written, 0));
+            c.n_disks += 1;
         }
     }
 
@@ -287,18 +289,25 @@ fn readMemory(s: *sys.Sample) void {
     }
 }
 
-/// Connected, non-loopback adapters with a physical connector; the filter-layer
-/// rows that mirror an adapter's counters would count its traffic again.
+/// Connected, non-loopback adapters, without the filter-layer rows that mirror
+/// an adapter's counters. Adapters with a physical connector are preferred, so a
+/// virtual switch is not counted on top of the card behind it; a virtual machine
+/// has no such adapter, and then every remaining one counts.
 fn readNetwork(c: *sys.Counters) void {
     var table: ?*IfTable2 = null;
     if (GetIfTable2(&table) != 0) return;
     const t = table orelse return;
     defer FreeMibTable(t);
     const rows: [*]const IfRow2 = @ptrCast(&t.rows);
-    for (rows[0..t.n]) |row| {
-        if (row.kind == if_type_loopback or row.oper_status != if_oper_up) continue;
-        if (row.flags & if_flag_filter != 0 or row.flags & if_flag_connector == 0) continue;
-        c.net_rx_bytes += row.in_octets;
-        c.net_tx_bytes += row.out_octets;
+    for ([_]bool{ true, false }) |need_connector| {
+        for (rows[0..t.n]) |row| {
+            if (row.kind == if_type_loopback or row.kind == if_type_tunnel) continue;
+            if (row.oper_status != if_oper_up or row.flags & if_flag_filter != 0) continue;
+            if (need_connector and row.flags & if_flag_connector == 0) continue;
+            c.net_rx_bytes += row.in_octets;
+            c.net_tx_bytes += row.out_octets;
+            c.n_adapters += 1;
+        }
+        if (c.n_adapters > 0) return;
     }
 }

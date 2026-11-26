@@ -15,6 +15,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const sample = try gpa.create(sys.Sample);
     defer gpa.destroy(sample);
+    var totals: sys.Counters = .{};
 
     if (sys.supported) {
         const sampler = try gpa.create(sys.Sampler);
@@ -24,6 +25,7 @@ pub fn main(init: std.process.Init) !void {
         sampler.sample(nowMs(init.io), sample);
         try std.Io.sleep(init.io, .fromMilliseconds(400), .awake);
         sampler.sample(nowMs(init.io), sample);
+        totals = sampler.cur;
     } else {
         std.debug.print("sysmon: no sampler for this OS, showing synthetic data\n", .{});
         sys.synthetic(30, sample);
@@ -34,8 +36,12 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("memory: {d} MiB total, {d} MiB available, {d} MiB cached, commit {d}/{d} MiB\n", .{
         s.mem_total >> 20, s.mem_available >> 20, s.mem_cached >> 20, s.commit_used >> 20, s.commit_limit >> 20,
     });
-    std.debug.print("disk: read {d:.0} B/s, write {d:.0} B/s\n", .{ s.disk_read_bps, s.disk_write_bps });
-    std.debug.print("network: rx {d:.0} B/s, tx {d:.0} B/s\n", .{ s.net_rx_bps, s.net_tx_bps });
+    std.debug.print("disk: {d} devices, read {d:.0} B/s, write {d:.0} B/s, {d} MiB read and {d} MiB written since boot\n", .{
+        totals.n_disks, s.disk_read_bps, s.disk_write_bps, totals.disk_read_bytes >> 20, totals.disk_write_bytes >> 20,
+    });
+    std.debug.print("network: {d} adapters, rx {d:.0} B/s, tx {d:.0} B/s, {d} MiB in and {d} MiB out since boot\n", .{
+        totals.n_adapters, s.net_rx_bps, s.net_tx_bps, totals.net_rx_bytes >> 20, totals.net_tx_bytes >> 20,
+    });
     std.debug.print("processes: {d}, threads: {d}, uptime: {d} s, sensors: {d}\n", .{ s.n_procs, s.n_threads, s.uptime_s, s.n_sensors });
     var top: ?*const sys.Proc = null;
     for (s.procs[0..s.n_procs]) |*p| {

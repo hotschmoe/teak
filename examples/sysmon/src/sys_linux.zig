@@ -110,19 +110,29 @@ pub const State = struct {
             const sectors_written = parseU64(it.next() orelse "0");
             c.disk_read_bytes += sectors_read * 512;
             c.disk_write_bytes += sectors_written * 512;
+            c.n_disks += 1;
         }
     }
 
+    /// Interfaces backed by a device are preferred, so a bridge or a container's
+    /// veth pair is not counted on top of the card behind it; when there is no
+    /// such interface, every one but the loopback counts.
     fn readNetwork(self: *State, c: *sys.Counters) void {
-        var lines = std.mem.tokenizeScalar(u8, readFile("/proc/net/dev", &self.scratch), '\n');
-        while (lines.next()) |line| {
-            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-            const name = std.mem.trim(u8, line[0..colon], " ");
-            if (std.mem.eql(u8, name, "lo")) continue;
-            var it = std.mem.tokenizeScalar(u8, line[colon + 1 ..], ' ');
-            c.net_rx_bytes += parseU64(it.next() orelse "0");
-            for (0..7) |_| _ = it.next();
-            c.net_tx_bytes += parseU64(it.next() orelse "0");
+        const text = readFile("/proc/net/dev", &self.scratch);
+        for ([_]bool{ true, false }) |need_device| {
+            var lines = std.mem.tokenizeScalar(u8, text, '\n');
+            while (lines.next()) |line| {
+                const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+                const name = std.mem.trim(u8, line[0..colon], " ");
+                if (std.mem.eql(u8, name, "lo")) continue;
+                if (need_device and !hasDevice(name)) continue;
+                var it = std.mem.tokenizeScalar(u8, line[colon + 1 ..], ' ');
+                c.net_rx_bytes += parseU64(it.next() orelse "0");
+                for (0..7) |_| _ = it.next();
+                c.net_tx_bytes += parseU64(it.next() orelse "0");
+                c.n_adapters += 1;
+            }
+            if (c.n_adapters > 0) return;
         }
     }
 
@@ -226,6 +236,15 @@ fn readFile(path: [*:0]const u8, buf: []u8) []const u8 {
         n += got;
     }
     return buf[0..n];
+}
+
+fn hasDevice(name: []const u8) bool {
+    var path: [96]u8 = undefined;
+    const p = std.fmt.bufPrintSentinel(&path, "/sys/class/net/{s}/device", .{name}, 0) catch return false;
+    const rc = linux.open(p, .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .PATH = true }, 0);
+    if (linux.errno(rc) != .SUCCESS) return false;
+    _ = linux.close(@intCast(rc));
+    return true;
 }
 
 fn parseU64(text: []const u8) u64 {
