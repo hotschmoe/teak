@@ -725,7 +725,12 @@ fn measure_banned(group: *Group, site: Site, tree: Ast, callee: Ast.Node.Index) 
     {
         record(group, .clock, site);
     }
-    if (listed(name, &environment_names)) record(group, .environment, site);
+    if (listed(name, &environment_names) or
+        has_chain(tree, callee, &.{ "init", "environ_map" }) or
+        has_chain(tree, callee, &.{ "minimal", "environ" }))
+    {
+        record(group, .environment, site);
+    }
     if (has_chain(tree, callee, &.{ "std", "Thread" })) record(group, .threads, site);
     if (has_chain(tree, callee, &.{ "std", "fs" }) or
         has_chain(tree, callee, &.{ "Io", "Dir" }) or
