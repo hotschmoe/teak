@@ -30,7 +30,7 @@ pub const InjectBuffer = struct {
     pub const CAP = 128;
     const Entry = union(enum) {
         ev: host.InjectEvent,
-        chars: struct { buf: [InputQueue.CHARS_CAP]u8, len: u8 },
+        chars: struct { buf: [InputQueue.CHARS_CAP]u8, len: u16 },
     };
 
     entries: [CAP]Entry = undefined,

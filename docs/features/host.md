@@ -36,6 +36,7 @@ A Host type must expose these declarations:
 | `nowMs` | `fn(*const Host) u64` | Monotonic millisecond timestamp on the host's clock. Used by `Sub.at(deadline_ms, msg)` and anything else needing a host-side wall clock without violating HARDLINE §3's "no wall-clock in `view`". |
 | `now_ns` *(optional)* | `fn(*const Host) u64` | Monotonic nanoseconds for frame statistics. Without it, Runtime uses `nowMs() *\| std.time.ns_per_ms`, with whole-millisecond precision and saturating multiplication. Native and headless Hosts supply the same awake clock previously read by Runtime; headless `nowMs` stays fake. Web omits this function. |
 | `files` *(optional)* | `fn(*Host) FileIo` | Whole-file capability for runtime snapshots, recording, replay, statistics and control screenshots. Web omits it; those file features remain silently unavailable. |
+| `replay_value` *(optional)* | `fn(*Host, comptime Call, anytype) void` | Observes a replayed Host result. SimHost mirrors input, clock and scale for checker fingerprints. Runtime supplies the value; this hook neither decodes recordings nor mutates Model. |
 | `submit` + `pollEffectResults` *(optional pair)* | `fn(*Host, Effect) EffectSubmit` / `fn(*Host, []EffectResult) usize` | Declarative effects ([effects.md](effects.md), HARDLINE hatch 7): `submit` starts one effect (slices valid only during the call), `pollEffectResults` fills `buf` with finished results and unsolicited drops / pastes (slices valid until the next `pollInputs`). Declare both or neither; a Host without them answers every effect as unsupported. |
 | `registerFont` *(X11, Win32; not in `validateHost`)* | `fn(*Host, FontFamily, FontWeight, []const u8) !void` | Register a TTF (typically `@embedFile`) as the face for a family and weight, shared with the Gpu rasterizer. Win32 accepts and ignores it. See [text.md](text.md#custom-fonts-ibm-plex-mono-and-friends). |
 | `setCursor` *(optional)* | `fn(*Host, CursorShape) void` | Show an OS mouse cursor. `teak.run` calls it only when the shape changes; the shape comes from the hovered cmd (button/checkbox/radio/slider pointer, text_input ibeam, canvas its `cursor`, else arrow) and the App's optional `cursorFor(model, HoverKind) ?CursorShape`. X11: libXcursor theme names (dlopened) with `cursorfont` fallback; Win32: `IDC_*` re-applied in `WM_SETCURSOR`; web: CSS `cursor` via zunk `app.setCursor`. Win32 has no grab cursor (hand / four-way arrow). Disabled widgets do not hit-test, so they show the arrow. |
@@ -131,7 +132,7 @@ capability with in-memory files; Runtime has no implicit filesystem fallback.
 
 The native implementation bounds the atomic temporary path at `std.Io.Dir.max_path_bytes`, returns
 `NoSpaceLeft` if it does not fit, and closes handles after each operation. The recording
-still replaces the full buffer every 32 recorded lines and at shutdown. Statistics append
+is written every 32 complete frame records and at shutdown: replace first, then append. Statistics append
 at 16 KiB and shutdown, then replace the summary. No per-feature Host functions are needed.
 
 Native font startup supplies `teak-text.face.Source` with captured options and two byte

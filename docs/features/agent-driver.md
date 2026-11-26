@@ -44,7 +44,14 @@ Commands execute one at a time. Multi-frame commands reply after the last step's
 
 ## 2. Record / replay
 
-`TEAK_RECORD=<file>` (or `RunOptions.record_path`) writes the Host's per-frame `InputState` stream: one text line per frame that had input, keyed by the runtime's frame number (format in `src/input_record.zig`). Inputs, not Msgs: a Msg may borrow slices that die with its frame, and replaying inputs re-runs the real routing so a recording survives Msg changes. `TEAK_REPLAY=<file>` (or `replay_path`) feeds it back through `Host.injectInput` on the same frame numbers. On the headless Host the clock is fake (16 ms/frame), so a headless recording replays to an identical final snapshot, timers included; the test `record a scripted todo session, replay it...` asserts it. A recording made on a real Host replays the inputs but not its wall-clock timing.
+`TEAK_RECORD=<file>` (or `Options.record_path`) records every frame's ordered Host results.
+`TEAK_REPLAY=<file>` supplies those results directly to the same Runtime calls: full input
+snapshots, clocks, sizes, scale, IME, clipboard reads, accessibility actions, effect answers
+and text metrics. Routing still dispatches the app's own Msgs through `update`.
+Replay does not inject aggregate edges through `Host.injectInput` or issue recorded effects.
+It ends after the last complete frame. Old recordings fail at startup; record them again.
+The versioned binary format, limits and flush guarantees are described in
+[migration-recording.md](../migration-recording.md).
 
 ## 3. `teak-drive`
 

@@ -8,6 +8,7 @@ const Host = sim.Host(sim.Metrics(@import("teak-text").Font));
 
 const frames_max = 100000;
 const trace_bytes_max = 128 * 1024 * 1024;
+const workspace_bytes_max = trace_bytes_max + sim.files.storage_bytes_max;
 const Options = struct {
     app: sim.trace.App = .todo,
     seed: ?u64 = null,
@@ -18,6 +19,30 @@ const Options = struct {
     save: ?[]const u8 = null,
     record_check: bool = false,
 };
+const Workspace = struct {
+    frames: []sim.input.Frame,
+    fingerprints: []sim.check.Fingerprint,
+    bytes: []u8,
+
+    fn init(allocator: std.mem.Allocator, capacity: u32) !Workspace {
+        assert(capacity > 0);
+        assert(capacity <= frames_max + sim.runner.settle_frames);
+        const frames = try allocator.alloc(sim.input.Frame, capacity);
+        errdefer allocator.free(frames);
+        const fingerprints = try allocator.alloc(sim.check.Fingerprint, capacity);
+        errdefer allocator.free(fingerprints);
+        const bytes = try allocator.alloc(u8, workspace_bytes_max);
+        return .{ .frames = frames, .fingerprints = fingerprints, .bytes = bytes };
+    }
+
+    fn deinit(self: Workspace, allocator: std.mem.Allocator) void {
+        assert(self.frames.len == self.fingerprints.len);
+        assert(self.bytes.len == workspace_bytes_max);
+        allocator.free(self.frames);
+        allocator.free(self.fingerprints);
+        allocator.free(self.bytes);
+    }
+};
 const Diagnostics = struct {
     io: std.Io,
     directory: std.Io.Dir,
@@ -26,6 +51,7 @@ const Diagnostics = struct {
     frames: []sim.input.Frame,
     bytes: []u8,
     record_bytes: []u8,
+    file_bytes: []u8,
     record_len: u32 = 0,
     record_check: bool = false,
 };
@@ -53,12 +79,8 @@ pub fn main(init: std.process.Init) !void {
         frames_max + sim.runner.settle_frames
     else
         options.frames + sim.runner.settle_frames;
-    const frames = try init.gpa.alloc(sim.input.Frame, capacity);
-    defer init.gpa.free(frames);
-    const fingerprints = try init.gpa.alloc(sim.check.Fingerprint, capacity);
-    defer init.gpa.free(fingerprints);
-    const bytes = try init.gpa.alloc(u8, trace_bytes_max);
-    defer init.gpa.free(bytes);
+    const work = try Workspace.init(init.gpa, capacity);
+    defer work.deinit(init.gpa);
     var seed_bytes: [8]u8 = undefined;
     var seed = options.seed orelse block: {
         init.io.random(&seed_bytes);
@@ -67,9 +89,10 @@ pub fn main(init: std.process.Init) !void {
     var state: Diagnostics = .{
         .io = init.io,
         .directory = std.Io.Dir.cwd(),
-        .frames = frames,
-        .bytes = bytes,
-        .record_bytes = bytes[0..sim.files.file_bytes_max],
+        .frames = work.frames,
+        .bytes = work.bytes[0..trace_bytes_max],
+        .record_bytes = work.bytes[0..sim.files.file_bytes_max],
+        .file_bytes = work.bytes[trace_bytes_max..],
         .record_check = options.record_check,
         .header = .{
             .app = options.app,
@@ -94,7 +117,7 @@ pub fn main(init: std.process.Init) !void {
     }
     diagnostics = &state;
     defer diagnostics = null;
-    try run_seeds(init, options, &state, fingerprints[0..count], seed);
+    try run_seeds(init, options, &state, work.fingerprints[0..count], seed);
 }
 
 fn parse_options(arguments: []const []const u8) !Options {
@@ -173,6 +196,7 @@ fn run_seeds(
             .replay = options.replay != null,
             .record_check = options.record_check,
             .record_bytes = state.record_bytes,
+            .file_bytes = state.file_bytes,
             .record_len = &state.record_len,
         };
         const began = clock_ns(state);
@@ -262,7 +286,13 @@ fn save_trace(state: *Diagnostics, path: []const u8) !void {
     assert(state.bytes.len == trace_bytes_max);
     var writer: std.Io.Writer = .fixed(state.bytes);
     try sim.trace.write(&writer, state.header, state.frames[0..state.progress.recorded]);
-    try state.directory.writeFile(state.io, .{ .sub_path = path, .data = writer.buffered() });
+    try write_artifact(state, path, writer.buffered());
+}
+
+fn write_artifact(state: *Diagnostics, path: []const u8, bytes: []const u8) !void {
+    assert(state.bytes.len == trace_bytes_max);
+    assert(state.record_len <= state.record_bytes.len);
+    try state.directory.writeFile(state.io, .{ .sub_path = path, .data = bytes });
 }
 
 fn report_failure(state: *Diagnostics, message: []const u8) !void {
@@ -289,6 +319,15 @@ fn report_failure(state: *Diagnostics, message: []const u8) !void {
     const path = try std.fmt.bufPrint(&path_bytes, "zig-out/sim/{s}-{d}.jsonl", .{
         @tagName(state.header.app), state.header.seed,
     });
+    if (state.record_len > 0) {
+        var record_path_bytes: [256]u8 = undefined;
+        const record_path = try std.fmt.bufPrint(
+            &record_path_bytes,
+            "zig-out/sim/{s}-{d}.record",
+            .{ @tagName(state.header.app), state.header.seed },
+        );
+        try write_artifact(state, record_path, state.record_bytes[0..state.record_len]);
+    }
     state.progress.recorded = @min(state.progress.recorded, state.progress.frame + 1);
     try save_trace(state, path);
     const flag = if (state.record_check) " --record-check 1" else "";

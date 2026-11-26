@@ -10,10 +10,14 @@
   `sim-heavy` supplies budgeted seed campaigns. See [simulation](docs/features/sim.md)
   for limits. Mixed pointer/key/text bursts, live Tab-cycle checks and an independent
   painter/clip hit oracle now cover the first version's gaps. Host-owned memory files
-  exercise runtime snapshots, recording and statistics. `--record-check 1` exposes the
-  existing recorder's omissions and remains outside gate seeds.
+  exercise runtime snapshots, recording and statistics. `--record-check 1` uses the ordinary
+  runtime replay path and is enabled in fixed-seed and background simulation gates.
 
 ### Changed
+
+- Input recordings now carry every frame's ordered Host results, including clocks, complete
+  input, IME, accessibility, clipboard bytes, effect answers and text metrics. Old files are
+  rejected at startup. See [recording migration](docs/migration-recording.md).
 
 - Runtime statistics time and file sinks now use optional Host `now_ns` and `files`
   capabilities. Native/headless behavior and flush cadences are preserved. Font discovery
@@ -26,6 +30,8 @@
   See [migration-options.md](docs/migration-options.md). Hot-reload ABI is now version 2.
 
 ### Fixed
+
+- Injected text lengths can represent the Host's full 256-byte input capacity.
 
 - Tree clamps its scroll offset using runtime-reported viewport/content extents.
 - A later modal backdrop blocks earlier overlay click, wheel and drag targets.

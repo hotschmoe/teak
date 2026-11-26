@@ -27,7 +27,8 @@ case "${1:-}" in
     for example in todo counter_greeter tree gallery tables notes probe; do
       frames=128
       seed=1
-      (cd "$root" && "$zig" build sim -j4 -- --app "$example" --seed "$seed" --frames "$frames")
+      (cd "$root" && "$zig" build sim -j4 -- --app "$example" --seed "$seed" \
+        --frames "$frames" --record-check 1)
     done ;;
   heavy)
     set +e

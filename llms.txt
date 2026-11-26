@@ -30,6 +30,7 @@
   changes (`b.args`, lowercase optimize modes), toolchain, what did not change in teak's API. A new `docs/migration-<ver>.md`
   must be linked here (audit-enforced).
 - Other migrations: [docs/migration-clipboard.md](docs/migration-clipboard.md) — `handleClipboard` to `clipboardText` / `clipboardMsg`.
+- [docs/migration-recording.md](docs/migration-recording.md) — versioned complete Host-result recordings.
 
 ## The core loop
 
@@ -660,7 +661,8 @@ INJECTED through `Host.injectInput` into the real input path (HARDLINE: no secon
 State.init(gpa) State; State.replayDone() bool; State.flushRecording() void
 fmtValue(w: *std.Io.Writer, v: anytype) !void       // compact Msg/payload text (.tag(payload))
 // teak.input_record: TEAK_RECORD / TEAK_REPLAY file format
-FrameRec; writeLine(w, *const FrameRec) !void; parseLine(line) !?FrameRec; Tracker.observe(frame, input) ?FrameRec
+Frame; Call; validate_version(bytes) !u32; next_frame(bytes, position, index) !Frame
+write_frame(target, Frame) !u32; check_input(input) !void
 // teak.inspector: pure overlay builder used by run (TEAK_INSPECT=1 / F12)
 appendInspector(cb, cmds, rects, Data{window_w, window_h, frame, hover_index, focus_index, msgs, timings}, Opts) void
 // teak.headless.serve(App, Host, Gpu, gpa, ServeOptions) !void   // headless app until quit (pair with TEAK_CONTROL)
@@ -1037,6 +1039,7 @@ FileIo = struct { ctx: ?*anyopaque, read: *const fn(ctx, allocator, path, limit:
     // WriteMode: replace, atomic (.tmp + rename), append (existing file).
     // Optional Host.files() FileIo supplies runtime files; omitted by web; no implicit fallback.
     // Optional Host.now_ns() u64 supplies monotonic statistics time; else nowMs() *| ns_per_ms.
+    // Optional Host.replay_value(comptime Call, value) observes replayed results (simulation).
     // Read bytes belong to the supplied allocator; positive limit; writes borrow bytes until return.
     // Consumer migration: docs/migration-host-io.md
 ```

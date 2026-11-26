@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = @import("src/assert.zig").assert;
 
 /// Single source of truth: build.zig.zon `.version` (docs/VERSIONING.md). `-Dversion-meta=<str>` appends "+<str>".
 fn versionString(b: *std.Build) []const u8 {
@@ -206,6 +207,12 @@ fn add_sim(
     run_sim.addPassthruArgs();
     run_sim.step.dependOn(&install.step);
     b.step("sim", "Seeded Runtime simulation without a GPU").dependOn(&run_sim.step);
+    add_sim_heavy(b, exe);
+}
+
+fn add_sim_heavy(b: *std.Build, exe: *std.Build.Step.Compile) void {
+    assert(exe.kind == .exe);
+    assert(exe.root_module.optimize == .safe);
     const heavy = b.step("sim-heavy", "Random seeds within a simulation time budget");
     for ([_][]const u8{
         "todo", "counter_greeter", "tree", "gallery", "tables", "notes", "probe",
@@ -214,7 +221,9 @@ fn add_sim(
         run_heavy.setCwd(b.path("."));
         run_heavy.has_side_effects = true;
         run_heavy.stdio = .inherit;
-        run_heavy.addArgs(&.{ "--app", app, "--seeds", "100000", "--budget-ms", "15000" });
+        run_heavy.addArgs(&.{
+            "--app", app, "--seeds", "100000", "--budget-ms", "15000", "--record-check", "1",
+        });
         heavy.dependOn(&run_heavy.step);
     }
 }

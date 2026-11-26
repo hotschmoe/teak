@@ -58,6 +58,7 @@ pub const Config = struct {
     replay: bool = false,
     record_check: bool = false,
     record_bytes: []u8,
+    file_bytes: []u8,
     record_len: *u32,
     cleanup_model: ?*const fn (*anyopaque) void = null,
 };
@@ -115,13 +116,25 @@ fn run_pass(
         config.progress.recorded = 1;
     }
     var host = try Host.init();
+    host.file_table.init(config.file_bytes);
     var host_live = true;
     defer if (host_live) host.deinit();
     var gpu: Gpu = .{};
+    const from_record = config.record_check and config.progress.pass == 1;
+    if (from_record) {
+        const files = host.files();
+        try files.write(
+            files.ctx,
+            recording.recording_path,
+            config.record_bytes[0..config.record_len.*],
+            .replace,
+        );
+    }
     var runtime = try run.Runtime(App, Host, Gpu).init(allocator, &host, &gpu, .{
         .inspect_hotkey = false,
         .snapshot_path = recording.snapshot_path,
         .record_path = recording.recording_path,
+        .replay_path = if (from_record) recording.recording_path else null,
         .stats_path = "frame.stats",
     });
     var runtime_live = true;
@@ -148,13 +161,12 @@ fn drive(comptime App: type, runtime: anytype, scratch: anytype, config: Config)
     assert(runtime.gpu.live);
     var state: RunState = .{ .generator = .{ .state = config.seed } };
     var idle: IdleWatch = .{ .counters = &state.counters };
-    const source = try record_source(runtime, config);
-    defer if (source) |bytes| runtime.gpa.free(bytes);
-    var playback: recording.Replay = .{ .bytes = config.record_bytes[0..config.record_len.*] };
-    if (source) |bytes| playback.bytes = bytes;
     for (0..config.frames.len) |index| {
         config.progress.frame = @intCast(index);
-        config.progress.checker = .no_stop;
+        config.progress.checker = if (config.record_check and config.progress.pass == 1)
+            .record_replay
+        else
+            .no_stop;
         const from_record = config.record_check and config.progress.pass == 1;
         const generated = if (from_record) input.Frame{} else try next_frame(
             &state.generator,
@@ -163,7 +175,6 @@ fn drive(comptime App: type, runtime: anytype, scratch: anytype, config: Config)
             @intCast(index),
             &state.cycle,
         );
-        if (from_record) runtime.host.recorded_input = try playback.next(@intCast(index));
         runtime.host.next = generated;
         runtime.gpu.begin();
         const before = observe(runtime);
@@ -185,25 +196,6 @@ fn drive(comptime App: type, runtime: anytype, scratch: anytype, config: Config)
     state.counters.focus_pending = @intFromBool(state.cycle.active);
     state.counters.limits += state.cycle.limited;
     return state;
-}
-
-fn record_source(runtime: anytype, config: Config) !?[]u8 {
-    assert(runtime.host.live);
-    assert(config.progress.pass <= 1);
-    if (!config.record_check or config.progress.pass == 0) return null;
-    const files = runtime.host.files();
-    try files.write(
-        files.ctx,
-        recording.recording_path,
-        config.record_bytes[0..config.record_len.*],
-        .replace,
-    );
-    return try files.read(
-        files.ctx,
-        runtime.gpa,
-        recording.recording_path,
-        @import("files.zig").file_bytes_max,
-    );
 }
 
 fn finish(
@@ -238,6 +230,7 @@ fn finish(
     counters.file_atomic = runtime.host.file_table.writes[1];
     counters.file_append = runtime.host.file_table.writes[2];
     counters.limits += runtime.host.file_table.limits;
+    counters.limits += runtime.ctl.session.limits;
     return .{
         .counters = counters.*,
         .kinds = generator.counts,

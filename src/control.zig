@@ -40,6 +40,8 @@ const snapshot = @import("core/snapshot.zig");
 const keys = @import("input/keys.zig");
 const pointer = @import("core/pointer.zig");
 const record = @import("input_record.zig");
+const record_session = @import("record_session.zig");
+const assert = @import("assert.zig").assert;
 const headless_run = @import("headless_run.zig");
 const teak = @import("teak.zig");
 const inspector = @import("core/inspector.zig");
@@ -50,6 +52,7 @@ pub const fmtValue = inspector.fmtValue;
 /// Msgs kept for the `msglog` command and the inspector.
 pub const ring_n = 32;
 const ring_w = 160;
+const ControlState = struct { inspect: bool, dirty: bool, log_msgs: bool };
 
 /// One step of a multi-frame command.
 const Act = union(enum) {
@@ -101,13 +104,13 @@ pub const State = struct {
     ring_len: [ring_n]u8 = @splat(0),
     ring_total: u32 = 0,
 
-    rec_path: ?[]u8 = null,
-    rec_buf: std.ArrayList(u8) = .empty,
+    rec_path: ?[]const u8 = null,
     rec_lines_unflushed: u32 = 0,
-    tracker: record.Tracker = .{},
+    rec_flushed: u32 = 0,
+    rec_write_failed: bool = false,
+    session: record_session.Session = .{},
 
     replay_data: ?[]u8 = null,
-    replay_pos: usize = 0,
 
     /// Inspector panel is shown (`TEAK_INSPECT`, F12, or the `inspect` command).
     inspect: bool = false,
@@ -126,9 +129,8 @@ pub const State = struct {
 
     pub fn deinit(self: *State) void {
         if (self.rec_path != null) self.flushRecording();
-        if (self.rec_path) |p| self.gpa.free(p);
         if (self.replay_data) |d| self.gpa.free(d);
-        self.rec_buf.deinit(self.gpa);
+        self.session.deinit(self.gpa);
         self.acts.deinit(self.gpa);
         self.pool.deinit(self.gpa);
         self.note.deinit(self.gpa);
@@ -143,15 +145,22 @@ pub const State = struct {
 
     pub fn replayDone(self: *const State) bool {
         const d = self.replay_data orelse return true;
-        return self.replay_pos >= d.len;
+        return self.session.replay_position >= d.len;
     }
 
     /// Write the recording so far to its file.
     pub fn flushRecording(self: *State) void {
         const files = self.files orelse return;
         const path = self.rec_path orelse return;
-        files.write(files.ctx, path, self.rec_buf.items, .replace) catch
-            std.log.warn("teak: could not write recording \"{s}\"", .{path});
+        assert(self.rec_flushed <= self.session.stream_len);
+        if (self.rec_write_failed or self.rec_flushed == self.session.stream_len) return;
+        const bytes = self.session.stream[self.rec_flushed..self.session.stream_len];
+        const mode: teak.FileIo.WriteMode = if (self.rec_flushed == 0) .replace else .append;
+        files.write(files.ctx, path, bytes, mode) catch |err| {
+            self.rec_write_failed = true;
+            if (self.session.recording) self.session.stop(err);
+        };
+        self.rec_flushed = self.session.stream_len;
         self.rec_lines_unflushed = 0;
     }
 
@@ -183,9 +192,8 @@ fn hasControl(comptime Host: type) bool {
         @hasDecl(Host, "controlSend") and @hasDecl(Host, "injectInput");
 }
 
-/// Start the requested control services from the supplied options.
-/// Failures degrade to "feature off" with a log line, never a crash.
-pub fn start(st: *State, host: anytype, opts: anytype) void {
+/// See SRC.md for control startup and recording failures.
+pub fn start(st: *State, host: anytype, opts: anytype) !void {
     if (comptime @hasDecl(@TypeOf(host.*), "files")) st.files = host.files();
     const gpa = st.gpa;
 
@@ -202,17 +210,16 @@ pub fn start(st: *State, host: anytype, opts: anytype) void {
     if (st.inspect) st.log_msgs = true;
 
     if (st.files == null) return;
-    if (opts.record_path) |p| st.rec_path = gpa.dupe(u8, p) catch null;
+    st.rec_path = opts.record_path;
 
     if (opts.replay_path) |path| {
-        if (comptime !@hasDecl(@TypeOf(host.*), "injectInput")) {
-            std.log.warn("teak: replay disabled — this Host cannot inject input", .{});
-        } else if (st.files.?.read(st.files.?.ctx, gpa, path, 64 * 1024 * 1024)) |data| {
-            st.replay_data = data;
-        } else |_| {
-            std.log.warn("teak: replay disabled — could not read \"{s}\"", .{path});
-        }
+        st.replay_data = try st.files.?.read(st.files.?.ctx, gpa, path, record.recording_bytes_max);
     }
+    st.session = record_session.Session.init(gpa, st.rec_path != null, st.replay_data) catch |err| {
+        if (err == error.RecordingVersion)
+            std.log.err("recording was made by an older teak; record it again", .{});
+        return err;
+    };
 }
 
 pub fn toggleInspect(st: *State) void {
@@ -245,10 +252,9 @@ pub fn appendInspectorFor(rt: anytype, cb: anytype, cur: u1, prev: u1, window_w:
     }, .{});
 }
 
-/// Before the Host is polled: replayed input, then the control channel.
+/// See SRC.md for control commands before the Host poll.
 pub fn beforePoll(rt: anytype) void {
     const st = &rt.ctl;
-    replayTick(rt);
     if (comptime !hasControl(@TypeOf(rt.host.*))) return;
     if (!st.active or !rt.built_once) return;
     while (true) {
@@ -261,18 +267,105 @@ pub fn beforePoll(rt: anytype) void {
     }
 }
 
-/// After the Host is polled: capture the frame's input into the recording.
+/// See SRC.md for input limits and frame dimensions.
 pub fn afterPoll(rt: anytype, input: anytype) void {
     const st = &rt.ctl;
     st.width = input.width;
     st.height = input.height;
-    if (st.rec_path == null) return;
-    const r = st.tracker.observe(st.frame_no, input) orelse return;
-    var aw: std.Io.Writer.Allocating = .fromArrayList(st.gpa, &st.rec_buf);
-    record.writeLine(&aw.writer, &r) catch {};
-    st.rec_buf = aw.toArrayList();
-    st.rec_lines_unflushed += 1;
-    if (st.rec_lines_unflushed >= 32) st.flushRecording();
+    if (st.session.recording) record.check_input(input) catch |err| st.session.stop(err);
+}
+
+pub fn record_control(rt: anytype) void {
+    const st = &rt.ctl;
+    assert(st.session.in_frame);
+    assert(st.rec_lines_unflushed < 32);
+    const state = st.session.value(.control_state, ControlState{
+        .inspect = st.inspect,
+        .dirty = st.dirty,
+        .log_msgs = st.log_msgs,
+    });
+    st.inspect = state.inspect;
+    st.dirty = state.dirty;
+    st.log_msgs = state.log_msgs;
+}
+
+pub fn begin_record(rt: anytype) !void {
+    const session = &rt.ctl.session;
+    assert(!session.in_frame);
+    assert(session.storage_used <= session.scratch.len);
+    try session.begin(rt.ctl.frame_no);
+    if (session.replay == null) return;
+    var validation = session.*;
+    for (0..validation.used) |_| {
+        if (validation.position == validation.used) return;
+        const call = std.enums.fromInt(record.Call, validation.buffer[validation.position]) orelse
+            return error.BadRecording;
+        validate_call(&validation, call) catch |err| {
+            std.log.err("teak: replay frame {d} call {s} byte {d}: {s}", .{
+                rt.ctl.frame_no, @tagName(call), validation.position, @errorName(err),
+            });
+            return err;
+        };
+        if (validation.failure) |err| return err;
+    }
+    return error.BadRecording;
+}
+
+fn validate_call(session: *record_session.Session, call: record.Call) !void {
+    assert(session.in_frame);
+    assert(session.position < session.used);
+    switch (call) {
+        .control_state => _ = session.value(.control_state, std.mem.zeroes(ControlState)),
+        .pollInputs => try validate_input(session.value(
+            .pollInputs,
+            std.mem.zeroes(teak.InputState),
+        )),
+        .pollSecondaryInputs => {
+            if (session.value(.pollSecondaryInputs, @as(?teak.InputState, null))) |input|
+                try validate_input(input);
+        },
+        .nowMs, .now_ns => |tag| switch (tag) {
+            inline else => |active| _ = session.value(active, @as(u64, 0)),
+        },
+        .scaleFactor => {
+            const scale = session.value(.scaleFactor, @as(f32, 1));
+            if (!std.math.isFinite(scale) or scale <= 0) return error.BadRecording;
+        },
+        .imeState => {
+            const ime = session.value(.imeState, teak.ImeState{});
+            if (ime.active and ime.cursor > ime.text.len) return error.BadRecording;
+        },
+        .pollEffectResults => _ = session.value(
+            .pollEffectResults,
+            @as([]const teak.EffectResult, &.{}),
+        ),
+        .pollA11yActions => _ = session.value(.pollA11yActions, @as([]const a11y.Action, &.{})),
+        .submit => _ = session.value(.submit, teak.EffectSubmit.accepted),
+        .clipboard_read => _ = session.value(.clipboard_read, @as([]const u8, "")),
+        .measure => {
+            const metrics = session.value(.measure, std.mem.zeroes(teak.TextMetrics));
+            if (!std.math.isFinite(metrics.width) or !std.math.isFinite(metrics.height) or
+                !std.math.isFinite(metrics.ascent) or !std.math.isFinite(metrics.descent) or
+                metrics.width < 0 or metrics.height < 0) return error.BadRecording;
+        },
+        .shouldClose,
+        .secondary_opened,
+        .secondary_handle,
+        .secondary_surface,
+        .file_write,
+        => |tag| switch (tag) {
+            inline else => |active| _ = session.value(active, false),
+        },
+    }
+}
+
+fn validate_input(input: teak.InputState) !void {
+    try record.check_input(input);
+    if (!std.math.isFinite(input.mouse_x) or !std.math.isFinite(input.mouse_y) or
+        !std.math.isFinite(input.wheel_dx) or !std.math.isFinite(input.wheel_dy))
+        return error.BadRecording;
+    assert(input.chars.len <= record.text_max);
+    assert(input.keys.len <= record.keys_max);
 }
 
 /// After the frame is built and presented: finish the command in flight.
@@ -302,43 +395,58 @@ pub fn afterFrame(rt: anytype) void {
     if (st.act_i >= st.acts.items.len) finish(rt);
 }
 
-fn replayTick(rt: anytype) void {
+pub fn finish_record(rt: anytype) !void {
     const st = &rt.ctl;
-    const data = st.replay_data orelse return;
-    if (comptime !@hasDecl(@TypeOf(rt.host.*), "injectInput")) return;
-    while (st.replay_pos < data.len) {
-        const end = std.mem.indexOfScalarPos(u8, data, st.replay_pos, '\n') orelse data.len;
-        const line = data[st.replay_pos..end];
-        const parsed = record.parseLine(line) catch {
-            std.log.warn("teak: replay stopped — bad line \"{s}\"", .{line});
-            st.replay_pos = data.len;
-            return;
-        };
-        const r = parsed orelse {
-            st.replay_pos = @min(end + 1, data.len);
-            continue;
-        };
-        if (r.frame > st.frame_no) return; // a later frame: wait for it
-        st.replay_pos = @min(end + 1, data.len);
-        if (r.frame < st.frame_no) continue; // missed (replay started late)
-        if (r.mods) |m| rt.host.injectInput(.{ .mods = m });
-        if (r.move) |m| rt.host.injectInput(.{ .move = m });
-        const btns = [_]pointer.Button{ .left, .middle, .right };
-        for (btns) |b| if (buttonSet(r.down, b)) rt.host.injectInput(.{ .down = b });
-        for (btns) |b| if (buttonSet(r.up, b)) rt.host.injectInput(.{ .up = b });
-        if (r.wheel[0] != 0 or r.wheel[1] != 0) rt.host.injectInput(.{ .wheel = r.wheel });
-        if (r.chars_len > 0) rt.host.injectInput(.{ .chars = r.charsSlice() });
-        for (r.keysSlice()) |k| rt.host.injectInput(.{ .key = k });
+    assert(st.session.in_frame);
+    assert(st.rec_lines_unflushed < 32);
+    if (try st.session.finish(st.frame_no)) {
+        st.rec_lines_unflushed += 1;
+        if (st.rec_lines_unflushed == 32) st.flushRecording();
     }
 }
 
-fn buttonSet(b: pointer.Buttons, which: pointer.Button) bool {
-    return switch (which) {
-        .left => b.left,
-        .middle => b.middle,
-        .right => b.right,
-        .none => false,
-    };
+pub fn host_call(rt: anytype, comptime call: record.Call, args: anytype) @typeInfo(
+    @TypeOf(@field(@TypeOf(rt.host.*), @tagName(call))),
+).@"fn".return_type.? {
+    const Host = @TypeOf(rt.host.*);
+    const Result = @typeInfo(@TypeOf(@field(Host, @tagName(call)))).@"fn".return_type.?;
+    const session = &rt.ctl.session;
+    assert(session.position <= session.buffer.len);
+    assert(session.used <= session.buffer.len);
+    const replay = session.in_frame and session.replay != null;
+    const actual = if (replay)
+        std.mem.zeroes(Result)
+    else
+        @call(.auto, @field(Host, @tagName(call)), .{rt.host} ++ args);
+    if (comptime call == .pollSecondaryInputs) {
+        if (session.recording) if (actual) |input|
+            record.check_input(input) catch |err| session.stop(err);
+    }
+    const result = session.value(call, actual);
+    if (comptime @hasDecl(Host, "replay_value")) {
+        if (replay) rt.host.replay_value(call, result);
+    }
+    return result;
+}
+
+pub fn poll_results(rt: anytype, comptime call: record.Call, buffer: anytype) []const @typeInfo(
+    @typeInfo(@TypeOf(buffer)).pointer.child,
+).array.child {
+    const Host = @TypeOf(rt.host.*);
+    const count = if (rt.ctl.session.replay != null)
+        0
+    else
+        @call(.auto, @field(Host, @tagName(call)), .{ rt.host, buffer });
+    const Child = @typeInfo(@typeInfo(@TypeOf(buffer)).pointer.child).array.child;
+    const values: []const Child = buffer[0..count];
+    assert(count <= buffer.len);
+    const result = rt.ctl.session.value(call, values);
+    if (result.len > buffer.len) {
+        rt.ctl.session.failure = error.BadRecording;
+        return &.{};
+    }
+    assert(result.len <= buffer.len);
+    return result;
 }
 
 fn stepAct(rt: anytype) void {

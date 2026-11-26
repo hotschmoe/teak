@@ -395,7 +395,7 @@ pub fn serve(
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
-    while (!host.shouldClose()) {
+    while (!host.shouldClose() and !rt.exitRequested()) {
         try rt.frame();
         if (o.frame_sleep_ms > 0) {
             std.Io.sleep(std.Options.debug_io, .fromMilliseconds(o.frame_sleep_ms), .awake) catch {};

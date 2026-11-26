@@ -1,7 +1,7 @@
 # Deterministic simulation
 
 `teak.sim` runs the real Runtime with a virtual Host and recording Gpu, without windows or
-wgpu. The Host measures embedded IBM Plex Mono bytes and captures effects without answering.
+wgpu. The Host measures embedded IBM Plex Mono bytes and supplies deterministic effect replies.
 
 ```sh
 zig build sim -- --app todo --seed 1
@@ -26,22 +26,24 @@ frozen-buffer focus traversal and sampled live Runtime Tab cycles. Live cycles r
 changed-set exemptions and unfinished attempts. Mixed bursts deliver pointer, key and text
 events together, with separate event counters.
 
-The Host owns four memory files (256 KiB each, names up to 128 bytes). Recording, snapshots
-and statistics run through the real runtime sinks with no real file. The optional recording
-roundtrip check currently fails: the recorder omits resize, scale, focus loss, elapsed time and
-shortcut chords and final button state/edge order, and truncates text/keys below the Host's
-limits. Todo seed 1 fails at frame 1
-because probe time is zero. This check stays outside blocking/background seeds; the recorder
-has not been extended. Simulator JSONL traces retain all those facts for exact replay.
+The Host owns four memory files (64 MiB each, names up to 128 bytes), reserved at startup.
+Recording, snapshots and statistics run through the real runtime sinks with no real file.
+`--record-check 1` runs the second pass through Runtime's ordinary `replay_path`, using the
+first pass's recording. All frame hashes must match. SimHost's optional `replay_value` observes
+delivered input, clocks and scale for the input fingerprint; it does not decode recordings.
+The blocking fixed seeds and every app in `sim-heavy` enable this check. Simulator JSONL
+traces remain a separate format for generating and reproducing checker failures.
 
 Consumers instantiate sim.Host(sim.Metrics(Font)) with the existing teak-text Font provider,
 choose sim.Gpu, preallocate sim.input.Frame and sim.check.Fingerprint slices, and call
 sim.runner.simulate(App, HostType, allocator, config). Config carries seed, workload length,
-buffers and Progress, plus a 256 KiB recording buffer and a pointer to its used length. The
+buffers and Progress, plus a 64 MiB recording buffer, its used-length pointer, and
+`file_bytes` with `sim.files.storage_bytes_max` (256 MiB) bytes. The caller retains these
+buffers through both passes; the CLI reserves file storage once for the whole campaign. The
 App uses its normal Model/Msg/view/update without a simulation adapter.
 
-This does not cover OS backends, GPU pixels, native shaping, effect responses, IME, secondary
+This does not cover OS backends, GPU pixels, native shaping, real effect services, IME, secondary
 windows, allocation failure or implementation comparison. Read [SRC.md](../../SRC.md#srcsim)
 for hashing, active-capacity schemas, weights, checker decisions, reachability and limits.
-The file-read copy adds one allocation seam; its unapproved 0 -> 1 tidy movement remains
-visible, so the complete blocking gate is currently red on that inventory alone.
+Recording limits contribute to `limits`; a stopped recording is a valid complete prefix.
+See [recording migration](../migration-recording.md) for the format, limits and replay scope.
