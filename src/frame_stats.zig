@@ -7,15 +7,11 @@
 //! optional HUD overlay appended after the app's view), so the TEA loop is
 //! untouched (HARDLINE §1, §3 "view() reading wall-clock").
 //!
-//! The file sink compiles out on targets with no host filesystem
-//! (wasm/freestanding), exactly like the snapshot sink; the record itself
-//! and `summarize` work everywhere.
+//! See SRC.md for Host-owned file sinks and clocks.
 
 const std = @import("std");
 const builtin = @import("builtin");
-
-/// The target has a host filesystem + environment (not wasm/freestanding).
-pub const fs_capable = builtin.os.tag != .freestanding;
+const FileIo = @import("teak.zig").FileIo;
 
 /// What one `Runtime.frame` call cost. Plain data; every duration is in
 /// milliseconds of the loop clock (a monotonic high-resolution clock on
@@ -131,7 +127,7 @@ pub const Sink = struct {
     enabled: bool = false,
     gpa: std.mem.Allocator = undefined,
     path: []u8 = &.{},
-    file: if (fs_capable) std.Io.File else void = undefined,
+    files: ?FileIo = null,
     buf: std.Io.Writer.Allocating = undefined,
     /// Every presented frame's `frame_ms` (first present excluded).
     samples: std.ArrayList(f32) = .empty,
@@ -143,26 +139,24 @@ pub const Sink = struct {
 
     /// Open the supplied path. Any
     /// failure yields a disabled sink.
-    pub fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8) Sink {
-        if (comptime !fs_capable) return .{};
+    pub fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8, files_opt: ?FileIo) Sink {
+        const files = files_opt orelse return .{};
         const path = gpa.dupe(u8, opt_path orelse return .{}) catch return .{};
         if (path.len == 0) {
             gpa.free(path);
             return .{};
         }
-        const io = std.Options.debug_io;
-        const file = std.Io.Dir.cwd().createFile(io, path, .{}) catch {
+        files.write(files.ctx, path, "", .replace) catch {
             std.log.warn("teak: frame stats disabled — could not create \"{s}\"", .{path});
             gpa.free(path);
             return .{};
         };
-        var s: Sink = .{ .enabled = true, .gpa = gpa, .path = path, .file = file, .buf = .init(gpa) };
+        var s: Sink = .{ .enabled = true, .gpa = gpa, .path = path, .files = files, .buf = .init(gpa) };
         s.buf.writer.writeAll(csv_header) catch s.fail();
         return s;
     }
 
     pub fn record(self: *Sink, s: FrameStats) void {
-        if (comptime !fs_capable) return;
         if (!self.enabled) return;
         self.frames += 1;
         if (s.presented) {
@@ -180,9 +174,9 @@ pub const Sink = struct {
     }
 
     fn flush(self: *Sink) void {
-        if (comptime !fs_capable) return;
         if (!self.enabled) return;
-        self.file.writeStreamingAll(std.Options.debug_io, self.buf.written()) catch return self.fail();
+        const files = self.files.?;
+        files.write(files.ctx, self.path, self.buf.written(), .append) catch return self.fail();
         self.buf.clearRetainingCapacity();
     }
 
@@ -207,12 +201,10 @@ pub const Sink = struct {
         };
     }
 
-    /// Flush the CSV, write the summary (stderr + `<path>.summary.txt`),
-    /// close the file.
+    /// See SRC.md for the CSV and summary flush policy.
     pub fn deinit(self: *Sink) void {
-        if (comptime !fs_capable) return;
         if (self.path.len == 0) return;
-        const io = std.Options.debug_io;
+        const files = self.files.?;
         if (self.enabled) {
             self.flush();
             const summary = summarize(self.samples.items);
@@ -221,10 +213,9 @@ pub const Sink = struct {
             if (!builtin.is_test) std.debug.print("{s}", .{self.buf.written()});
             if (std.fmt.allocPrint(self.gpa, "{s}.summary.txt", .{self.path})) |sp| {
                 defer self.gpa.free(sp);
-                std.Io.Dir.cwd().writeFile(io, .{ .sub_path = sp, .data = self.buf.written() }) catch {};
+                files.write(files.ctx, sp, self.buf.written(), .replace) catch {};
             } else |_| {}
         }
-        self.file.close(io);
         self.buf.deinit();
         self.samples.deinit(self.gpa);
         self.gpa.free(self.path);

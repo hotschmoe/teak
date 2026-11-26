@@ -34,13 +34,15 @@ A Host type must expose these declarations:
 | `closeSecondaryWindow` | `fn(*Host, u32) void` | Destroy a secondary window and free its slot. No-op on invalid ids. |
 | `secondaryWindowHandle` | `fn(*const Host, u32) ?NativeHandle` | Return the native handle of a secondary window so the app can hand it to `gpu.openSecondarySurface`. |
 | `nowMs` | `fn(*const Host) u64` | Monotonic millisecond timestamp on the host's clock. Used by `Sub.at(deadline_ms, msg)` and anything else needing a host-side wall clock without violating HARDLINE §3's "no wall-clock in `view`". |
-| `stats_now_ns` *(optional)* | `fn(*const Host) u64` | Statistics clock override. The simulator returns its virtual clock in ns; hosts without this keep the runtime's native statistics clock. |
+| `now_ns` *(optional)* | `fn(*const Host) u64` | Monotonic nanoseconds for frame statistics. Without it, Runtime uses `nowMs() *\| std.time.ns_per_ms`, with whole-millisecond precision and saturating multiplication. Native and headless Hosts supply the same awake clock previously read by Runtime; headless `nowMs` stays fake. Web omits this function. |
+| `files` *(optional)* | `fn(*Host) FileIo` | Whole-file capability for runtime snapshots, recording, replay, statistics and control screenshots. Web omits it; those file features remain silently unavailable. |
 | `submit` + `pollEffectResults` *(optional pair)* | `fn(*Host, Effect) EffectSubmit` / `fn(*Host, []EffectResult) usize` | Declarative effects ([effects.md](effects.md), HARDLINE hatch 7): `submit` starts one effect (slices valid only during the call), `pollEffectResults` fills `buf` with finished results and unsolicited drops / pastes (slices valid until the next `pollInputs`). Declare both or neither; a Host without them answers every effect as unsupported. |
 | `registerFont` *(X11, Win32; not in `validateHost`)* | `fn(*Host, FontFamily, FontWeight, []const u8) !void` | Register a TTF (typically `@embedFile`) as the face for a family and weight, shared with the Gpu rasterizer. Win32 accepts and ignores it. See [text.md](text.md#custom-fonts-ibm-plex-mono-and-friends). |
 | `setCursor` *(optional)* | `fn(*Host, CursorShape) void` | Show an OS mouse cursor. `teak.run` calls it only when the shape changes; the shape comes from the hovered cmd (button/checkbox/radio/slider pointer, text_input ibeam, canvas its `cursor`, else arrow) and the App's optional `cursorFor(model, HoverKind) ?CursorShape`. X11: libXcursor theme names (dlopened) with `cursorfont` fallback; Win32: `IDC_*` re-applied in `WM_SETCURSOR`; web: CSS `cursor` via zunk `app.setCursor`. Win32 has no grab cursor (hand / four-way arrow). Disabled widgets do not hit-test, so they show the arrow. |
 | `scaleFactor` *(optional)* | `fn(*const Host) f32` | Physical device pixels per logical UI unit at the window's current DPI (1.0 = no scaling). **Optional** — `validateHost` checks it for callability only when present, so Hosts (and `run.zig`'s test stubs) that predate it still validate. Nothing in the framework consumes it yet; see [DPI and scaling](#dpi-and-scaling). |
 
-`validateHost` comptime-asserts every non-`init` **required** decl above, and checks the optional `scaleFactor` only when a Host declares it. The clipboard / IME / a11y / dialog / secondary-window / `nowMs` decls landed during the `functional_gaps_yolo` push as HARDLINE §4(d) surface extensions. Compile-error format:
+`validateHost` comptime-asserts every non-`init` **required** decl above, and checks optional
+functions, including `files` and `now_ns`, for callability when declared. Compile-error format:
 
 ```
 Host 'MyHost' is missing declaration 'pollInputs'
@@ -110,6 +112,32 @@ backend-specific. See [migration-options.md](../migration-options.md).
 **X11 v1 stubs** — present in the contract so apps call them unconditionally, but no-ops today (`openFileDialog` / `saveFileDialog` now run the external picker, `file_picker.zig`, blocking like Win32's): `publishA11yTree` is a no-op (no AT-SPI yet). Secondary windows are real on X11 too (up to 4: pointer, wheel, resize and close routed by window from the primary pump; keyboard stays with the primary window). Windows implements file dialogs for real.
 
 > **Verification status (Linux).** The X11 host has been verified to compile, link, and start headlessly (the dlopen + Xlib FFI path is sound); pixels-on-screen verification on a real display is pending.
+
+## Runtime file capability
+
+`FileIo` contains `ctx: ?*anyopaque`, and these synchronous function pointers:
+
+```zig
+read(ctx, allocator: std.mem.Allocator, path: []const u8, limit: u32) anyerror![]u8
+write(ctx, path: []const u8, bytes: []const u8, mode: FileIo.WriteMode) anyerror!void
+```
+
+Reads require a positive byte limit and return bytes owned by the supplied allocator.
+Write modes are `.replace` (create/truncate), `.atomic` (replace using a sibling `.tmp`
+and rename), and `.append` (append to an existing file). Byte slices are borrowed only
+until the call returns; paths are relative to cwd or absolute on native Hosts. I/O errors
+return to the feature, preserving its warning/disable behavior. Hosts may implement this
+capability with in-memory files; Runtime has no implicit filesystem fallback.
+
+The native implementation bounds the atomic temporary path at `std.Io.Dir.max_path_bytes`, returns
+`NoSpaceLeft` if it does not fit, and closes handles after each operation. The recording
+still replaces the full buffer every 32 recorded lines and at shutdown. Statistics append
+at 16 KiB and shutdown, then replace the summary. No per-feature Host functions are needed.
+
+Native font startup supplies `teak-text.face.Source` with captured options and two byte
+loaders from `src/platform/native_fonts.zig`. Primary and fallback path discovery and reads
+are Host work; the text module parses and caches the returned bytes. Registered/embedded
+faces work without a source. See [migration-host-io.md](../migration-host-io.md).
 
 ## DPI and scaling
 

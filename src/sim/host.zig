@@ -150,7 +150,7 @@ pub fn Host(comptime Metrics: type) type {
             return self.clock_ms;
         }
 
-        pub fn stats_now_ns(self: *const Self) u64 {
+        pub fn now_ns(self: *const Self) u64 {
             assert(self.live);
             assert(self.clock_ms <= std.math.maxInt(u64) / 1000000);
             return self.clock_ms * 1000000;

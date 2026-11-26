@@ -13,6 +13,11 @@
 
 ### Changed
 
+- Runtime statistics time and file sinks now use optional Host `now_ns` and `files`
+  capabilities. Native/headless behavior and flush cadences are preserved. Font discovery
+  and reads live in the native Host layer; text receives byte loaders and keeps parsing
+  and caches. See [migration-host-io.md](docs/migration-host-io.md).
+
 - Replace `RunOptions` with `Options`. Native entry points capture environment overrides once
   with `options_from_environment(init, defaults)` and pass settings to hosts and the runtime;
   headless tools and hot reload use the same path. Web callers pass explicit defaults.
@@ -37,6 +42,15 @@
 - The minimum Zig version is 0.17.1 (`build.zig.zon`), the version CI and releases already build with.
 
 ### Repository
+
+- Sync tidy's portable implementation with zunk, retaining Teak's source scope and
+  helper names. One-statement functions no longer affect the assertion average;
+  multiline literal long lines are reported separately. Held files now include
+  the owned assert, entry-point options and native font loaders.
+- Tidy inventories persistent mutable globals and process calls, and detects
+  libc/raw file APIs, dynamic library loads, sleeps and environment writes.
+  Pure `std.fs.path` helpers no longer count as file IO. Ratchets were reconciled
+  for these accounting changes without editing library or example code.
 
 - `zig build tidy` measures TigerStyle with the Zig parser and runs in the blocking
   gate. Exact per-directory ratchets live in `tools/tidy_ratchet.zon`; `-- --table`

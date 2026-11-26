@@ -10,6 +10,14 @@
 
 const std = @import("std");
 
+pub const FileIo = struct {
+    ctx: ?*anyopaque = null,
+    read: *const fn (?*anyopaque, std.mem.Allocator, []const u8, u32) anyerror![]u8,
+    write: *const fn (?*anyopaque, []const u8, []const u8, WriteMode) anyerror!void,
+
+    pub const WriteMode = enum { replace, atomic, append };
+};
+
 pub const SpecialKey = @import("../input/keys.zig").SpecialKey;
 pub const Chord = @import("../input/keys.zig").Chord;
 pub const Buttons = pointer.Buttons;
@@ -303,7 +311,8 @@ pub fn validateHost(comptime T: type) void {
 
     // Optional Host extensions and pairing rules: HARDLINE §2 and SRC.md.
     const optional = [_]HostDecl{
-        .{ .name = "stats_now_ns", .sig = "fn(*const Host) u64" },
+        .{ .name = "files", .sig = "fn(*Host) FileIo" },
+        .{ .name = "now_ns", .sig = "fn(*const Host) u64" },
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
         .{ .name = "setImeSpot", .sig = "fn(*Host, i32, i32) void" },
         .{ .name = "setImeActive", .sig = "fn(*Host, bool) void" },

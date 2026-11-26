@@ -153,7 +153,7 @@ fn printRow(label: []const u8, r: Row) void {
 
 pub fn main(init: std.process.Init) !void {
     const options = try teak.options_from_environment(init, .{});
-    text.face.configure(options);
+    @import("native-fonts").configure(text, options);
     var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_impl.deinit();
     const gpa = gpa_impl.allocator();

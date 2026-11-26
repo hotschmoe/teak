@@ -98,40 +98,7 @@ pub fn build(b: *std.Build) void {
     wasm_step.dependOn(&wasm_canary.step);
     blocking_run.step.dependOn(wasm_step);
 
-    {
-        const bench_teak = b.createModule(.{
-            .root_source_file = b.path("src/teak.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-        });
-        const bench_text = b.createModule(.{
-            .root_source_file = b.path("src/text/text.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-            .link_libc = true,
-            .imports = &.{.{ .name = "teak", .module = bench_teak }},
-        });
-        configureTextShaper(b, b, bench_text, false, target, .ReleaseFast);
-        bench_text.addImport("stb-c", translateC(b, b.path("src/gpu/vendor/stb_truetype.h"), null, target, .ReleaseFast));
-        bench_text.addIncludePath(b.path("src/gpu/vendor"));
-        bench_text.addCSourceFile(.{ .file = b.path("src/gpu/vendor/stb_truetype_impl.c"), .flags = &.{"-std=c99"} });
-        const bench_exe = b.addExecutable(.{
-            .name = "teak-bench",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("tools/bench/main.zig"),
-                .target = target,
-                .optimize = .ReleaseFast,
-                .strip = false, // keep symbols so `perf report` works on the binary
-                .imports = &.{
-                    .{ .name = "teak", .module = bench_teak },
-                    .{ .name = "teak-text", .module = bench_text },
-                },
-            }),
-        });
-        const bench_run = b.addRunArtifact(bench_exe);
-        bench_run.has_side_effects = true;
-        b.step("bench", "CPU pipeline benchmark (view/layout/hit/render/cmdsEqual + text)").dependOn(&bench_run.step);
-    }
+    add_bench(b, target);
 
     const audit_exe = b.addExecutable(.{
         .name = "teak-audit",
@@ -275,6 +242,53 @@ fn add_sim_apps(
             module.addImport("rich_zig", rich.module("rich_zig"));
         main_mod.addImport(app, module);
     }
+}
+
+fn add_bench(b: *std.Build, target: std.Build.ResolvedTarget) void {
+    const bench_teak = b.createModule(.{
+        .root_source_file = b.path("src/teak.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const bench_text = b.createModule(.{
+        .root_source_file = b.path("src/text/text.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{.{ .name = "teak", .module = bench_teak }},
+    });
+    configureTextShaper(b, b, bench_text, false, target, .ReleaseFast);
+    const stb_header = b.path("src/gpu/vendor/stb_truetype.h");
+    bench_text.addImport("stb-c", translateC(b, stb_header, null, target, .ReleaseFast));
+    bench_text.addIncludePath(b.path("src/gpu/vendor"));
+    bench_text.addCSourceFile(.{
+        .file = b.path("src/gpu/vendor/stb_truetype_impl.c"),
+        .flags = &.{"-std=c99"},
+    });
+    const bench_fonts = b.createModule(.{
+        .root_source_file = b.path("src/platform/native_fonts.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{.{ .name = "teak", .module = bench_teak }},
+    });
+    const bench_exe = b.addExecutable(.{
+        .name = "teak-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/bench/main.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .strip = false, // keep symbols so `perf report` works on the binary
+            .imports = &.{
+                .{ .name = "teak", .module = bench_teak },
+                .{ .name = "teak-text", .module = bench_text },
+                .{ .name = "native-fonts", .module = bench_fonts },
+            },
+        }),
+    });
+    const bench_run = b.addRunArtifact(bench_exe);
+    bench_run.has_side_effects = true;
+    b.step("bench", "CPU pipeline benchmark (view/layout/hit/render/cmdsEqual + text)")
+        .dependOn(&bench_run.step);
 }
 
 fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {

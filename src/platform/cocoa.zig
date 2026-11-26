@@ -388,7 +388,7 @@ pub const Host = struct {
     st: *State,
 
     pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
-        text.face.configure(options);
+        @import("native_fonts.zig").configure(text, options);
         try objc.load();
         const pool = objc.poolPush();
         defer objc.poolPop(pool);
@@ -682,6 +682,9 @@ pub const Host = struct {
     pub fn secondaryWindowHandle(_: *const Host, _: u32) ?NativeHandle {
         return null;
     }
+
+    pub const files = @import("native_io.zig").files;
+    pub const now_ns = @import("native_io.zig").now_ns;
 
     pub fn nowMs(_: *const Host) u64 {
         return monotonicMs();
