@@ -151,7 +151,9 @@ fn printRow(label: []const u8, r: Row) void {
     std.debug.print("{s:<6} {d:>7} {d:>8} {d:>9.3} {d:>9.3} {d:>9.3} {d:>9.3} {d:>9.3}\n", .{ label, r.rows, r.cmds, r.view, r.layout, r.hit, r.render, r.eq });
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{});
+    text.face.configure(options);
     var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_impl.deinit();
     const gpa = gpa_impl.allocator();

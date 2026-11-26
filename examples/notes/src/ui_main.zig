@@ -9,19 +9,20 @@ const App = @import("app.zig");
 const script_fonts = @import("script_fonts.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{ .clear_color = App.bg });
     var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_impl.deinit();
     const gpa = gpa_impl.allocator();
 
-    var host = try platform.Host.init("Kerf notes", 1440, 900);
+    var host = try platform.Host.init("Kerf notes", 1440, 900, options);
     defer host.deinit();
 
     const faces = script_fonts.load(gpa, init.io);
     defer script_fonts.free(gpa, faces);
     for (faces) |f| try host.registerFont(f.family, f.weight, f.bytes);
 
-    var gpu = try gpu_native.Gpu.init(host.nativeHandle(), 1440, 900);
+    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 1440, 900, .{ .gpu_fallback = options.gpu_fallback });
     defer gpu.deinit();
 
-    try teak.run(App, gpa, &host, &gpu, .{ .clear_color = App.bg });
+    try teak.run(App, gpa, &host, &gpu, options);
 }

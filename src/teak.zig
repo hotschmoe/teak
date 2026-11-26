@@ -347,7 +347,7 @@ pub const SliderDrag = hit_test.SliderDrag;
 pub const nextFocusable = focus.nextFocusable;
 /// Previous focusable cmd index before `current`, wrapping around.
 pub const prevFocusable = focus.prevFocusable;
-/// `nextFocusable` over every keyboard-operable leaf (buttons, checkboxes, radios, sliders, text fields): the Tab order of `RunOptions.keyboard_nav`.
+/// `nextFocusable` over every keyboard-operable leaf: the Tab order of `Options.keyboard_nav`.
 pub const nextNavigable = focus.nextNavigable;
 /// `prevFocusable` over every keyboard-operable leaf.
 pub const prevNavigable = focus.prevNavigable;
@@ -512,8 +512,10 @@ pub const validateGpu = gpu.validateGpu;
 pub const run = runtime.run;
 /// The frame-stepping runtime behind `run` (one `frame()` per iteration).
 pub const Runtime = runtime.Runtime;
-/// Options for `run` (title, clear color, snapshot sink, ...).
-pub const RunOptions = runtime.RunOptions;
+/// Startup settings passed to hosts, tooling and the runtime.
+pub const Options = runtime.Options;
+/// Capture process environment overrides once in the entry point.
+pub const options_from_environment = @import("options.zig").from_environment;
 /// Pointer hooks superseded by `pointerMsg` that `App` still declares.
 pub const deprecatedHooks = runtime.deprecatedHooks;
 /// A second top-level window the app wants open this frame.

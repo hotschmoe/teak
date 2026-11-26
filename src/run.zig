@@ -193,7 +193,24 @@ const max_issued_effects = 32;
 /// Results fetched from the host per frame; the rest wait for the next one.
 const effect_batch = 16;
 
-pub const RunOptions = struct {
+pub const Options = struct {
+    font_path: ?[]const u8 = null,
+    windows_directory: ?[]const u8 = null,
+    fallback_fonts: ?[]const u8 = null,
+    backend: ?[]const u8 = null,
+    wayland_display: ?[]const u8 = null,
+    scale: ?[]const u8 = null,
+    gdk_scale: ?[]const u8 = null,
+    picker: ?[]const u8 = null,
+    open_path: ?[]const u8 = null,
+    output_directory: ?[]const u8 = null,
+    config_home: ?[]const u8 = null,
+    home: ?[]const u8 = null,
+    app_data: ?[]const u8 = null,
+    cocoa_debug: bool = false,
+    wayland_no_viewport: bool = false,
+    gpu_fallback: bool = false,
+    environment: []const @import("options.zig").Entry = &.{},
     /// Keyboard navigation of buttons, checkboxes, radios and sliders (Tab /
     /// Shift+Tab, focus ring, Space / Enter, arrows in radio groups and on
     /// sliders). Text fields keep their Model-owned focus. Off = Tab only
@@ -210,16 +227,7 @@ pub const RunOptions = struct {
     /// caret change (vertices from the last built frame; no view/layout), so
     /// a focused field costs two cheap frames per second when idle.
     blink_half_ms: u32 = 500,
-    /// Live-snapshot sink. When non-null (or the `TEAK_SNAPSHOT` env var is
-    /// set — env wins), `run` mirrors the current frame's snapshot text to
-    /// this file every time the frame content changes, so an LLM agent
-    /// driving the running app can read the GUI as data instead of pixels.
-    /// The env var is read once at `run` start (never per frame). The write
-    /// is atomic (`<path>.tmp` then rename) so a reader never sees a torn
-    /// file. A path that can't be written disables the sink for the rest of
-    /// the run after one `std.log.warn` — it never crashes or slows the app.
-    /// See `docs/features/snapshot.md`. On a target with no host filesystem
-    /// (wasm/freestanding) the whole sink compiles out.
+    /// See docs/features/snapshot.md for the atomic snapshot sink.
     snapshot_path: ?[]const u8 = null,
     /// Names the app for hosts that keep per-app files (native storage lives
     /// under `<config>/teak/<app_name>/`). Empty: the Host's default, the
@@ -232,16 +240,11 @@ pub const RunOptions = struct {
     /// bridge make the publish a no-op, so the cost is the tree build when
     /// the frame changes.
     a11y: bool = true,
-    /// Agent control channel: the Unix socket path the Host listens on
-    /// (`TEAK_CONTROL` wins). Needs a Host with the control surface. See
-    /// `docs/features/agent-driver.md`.
+    /// See docs/features/agent-driver.md for the optional Host control surface.
     control_path: ?[]const u8 = null,
-    /// Record the per-frame input stream to this file (`TEAK_RECORD` wins).
     record_path: ?[]const u8 = null,
-    /// Replay a recording made with `record_path` (`TEAK_REPLAY` wins); needs
-    /// a Host with `injectInput` (the headless Host).
+    /// Replay requires a Host with injectInput.
     replay_path: ?[]const u8 = null,
-    /// Show the dev inspector panel from the first frame (`TEAK_INSPECT=1`).
     inspect: bool = false,
     /// F12 toggles the inspector (the key is consumed). On in Debug builds;
     /// elsewhere F12 reaches the app like any key.
@@ -257,26 +260,24 @@ pub const RunOptions = struct {
     idle_skip: bool = true,
     /// Continuous (benchmark) mode: every frame does the full work — no idle
     /// skip AND no frame-diff skip of the vertex rebuild + upload — so frame
-    /// pacing reflects the real per-frame cost. `TEAK_CONTINUOUS=1` turns it
-    /// on (`=0` off; env wins, read once at start). The snapshot / a11y
+    /// pacing reflects the real per-frame cost. The snapshot / a11y
     /// publish stay change-gated. See `Runtime.lastFrameStats`.
     continuous: bool = false,
     /// Per-frame timing CSV (`teak.FrameStats`, one line per `frame` call
     /// after a header row); at shutdown the `frame_ms` count / mean / p50 /
     /// p95 / p99 / max and per-phase means go to stderr and
-    /// `<path>.summary.txt`. `TEAK_FRAME_STATS=<path>` wins. Compiled out on
+    /// `<path>.summary.txt`. Compiled out on
     /// targets with no filesystem (wasm); `Runtime.lastFrameStats` works
     /// everywhere.
     stats_path: ?[]const u8 = null,
     /// Stop after this many `frame` calls (0 = never): `run` returns as if
     /// the window closed, so a benchmark terminates itself.
-    /// `TEAK_EXIT_AFTER_FRAMES=<n>` wins. Hosts that own the loop (web) can
+    /// Hosts that own the loop (web) can
     /// poll `Runtime.exitRequested`.
     exit_after_frames: u64 = 0,
     /// Frame-time HUD: a small overlay in the top-left corner with the last
     /// frame's `FrameStats`, appended by the loop after the app's view (an
     /// overlay with no Msgs: clicks fall through, the Model never sees it).
-    /// `TEAK_HUD=1` wins.
     hud: bool = false,
 };
 
@@ -295,9 +296,7 @@ const snapshot_fs_capable = builtin.os.tag != .freestanding;
 /// File I/O goes through `std.Options.debug_io` (the globally-available `Io`
 /// std itself uses for diagnostics) and `std.Io.Dir` rather than libc, so the
 /// sink works in every build that reaches `run` — including the library test
-/// runner, which links no libc. The `TEAK_SNAPSHOT` override is read from the
-/// process environment the same globally-available handle exposes. Both are
-/// compiled out on `!snapshot_fs_capable`.
+/// runner, which links no libc. Compiled out on `!snapshot_fs_capable`.
 const SnapshotSink = struct {
     /// Actively mirroring. Flips to false permanently on the first write
     /// failure (a broken sink must never crash or throttle the app).
@@ -313,16 +312,12 @@ const SnapshotSink = struct {
     /// steady-state frames allocate nothing.
     buf: std.Io.Writer.Allocating = undefined,
 
-    /// Resolve the destination (env `TEAK_SNAPSHOT` wins over `opt_path`,
-    /// read exactly once here) and allocate the reusable buffers. Any failure
+    /// Allocate the reusable buffers for the supplied path. Any failure
     /// yields a disabled no-op sink rather than an error.
     fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8) SnapshotSink {
         if (comptime !snapshot_fs_capable) return .{};
 
-        const env_owned = envSnapshotPath(gpa);
-        defer if (env_owned) |e| gpa.free(e);
-
-        const chosen = env_owned orelse opt_path orelse return .{};
+        const chosen = opt_path orelse return .{};
         if (chosen.len == 0) return .{};
 
         const dest = gpa.dupe(u8, chosen) catch return .{};
@@ -345,20 +340,6 @@ const SnapshotSink = struct {
         self.buf.deinit();
         self.gpa.free(self.dest);
         self.gpa.free(self.tmp);
-    }
-
-    /// Owned dupe of `TEAK_SNAPSHOT` if set and non-empty, else null. Read
-    /// from the process environment via the same globally-available `Io`
-    /// handle std uses for diagnostics — no libc, no `Io` threaded into
-    /// `main` (this fork's bare `main()` gets neither).
-    fn envSnapshotPath(gpa: std.mem.Allocator) ?[]u8 {
-        if (comptime !snapshot_fs_capable) return null;
-        const threaded = std.Options.debug_threaded_io orelse return null;
-        var map = threaded.environ.process_environ.createMap(gpa) catch return null;
-        defer map.deinit();
-        const v = map.get("TEAK_SNAPSHOT") orelse return null;
-        if (v.len == 0) return null;
-        return gpa.dupe(u8, v) catch null;
     }
 
     /// Serialize the primary frame (and, when open, the secondary window
@@ -445,7 +426,7 @@ fn SecondaryDriver(comptime CmdBufT: type) type {
     };
 }
 
-/// The `RunOptions.hud` overlay: the previous frame's `FrameStats` in a
+/// The `Options.hud` overlay: the previous frame's `FrameStats` in a
 /// small top-left panel, appended by the loop AFTER the app's (pure) view, like
 /// the inspector. It carries no Msg and is not modal, so clicks and hovers
 /// fall through to the app; the Model never sees it.
@@ -485,7 +466,7 @@ pub fn run(
     gpa: std.mem.Allocator,
     host: anytype,
     gpu: anytype,
-    opts: RunOptions,
+    opts: Options,
 ) !void {
     var rt = try Runtime(App, @TypeOf(host.*), @TypeOf(gpu.*)).init(gpa, host, gpu, opts);
     defer rt.deinit();
@@ -568,7 +549,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         gpa: std.mem.Allocator,
         host: *Host,
         gpu: *Gpu,
-        opts: RunOptions,
+        opts: Options,
         measurer: text.TextMeasurer,
 
         model: App.Model,
@@ -675,7 +656,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         prev_secondary_open: bool = false,
 
         /// True when the last `frame()` found nothing to do and skipped the
-        /// pipeline (see `RunOptions.idle_skip`). `run` blocks in
+        /// pipeline (see `Options.idle_skip`). `run` blocks in
         /// `Host.waitEvents` while this holds.
         quiet: bool = false,
         /// Count of Msgs dispatched so far; a frame that leaves it unchanged
@@ -721,12 +702,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         last_present_ns: u64 = 0,
         /// `frame` calls that ran (the stats index / exit counter).
         frames_run: u64 = 0,
-        /// Resolved once at init: `RunOptions` with the env overrides applied.
+        /// Supplied by the entry point.
         continuous: bool = false,
         hud: bool = false,
         exit_after_frames: u64 = 0,
 
-        pub fn init(gpa: std.mem.Allocator, host: *Host, gpu: *Gpu, opts: RunOptions) !Self {
+        pub fn init(gpa: std.mem.Allocator, host: *Host, gpu: *Gpu, opts: Options) !Self {
             if (comptime @hasDecl(Host, "setAppName")) {
                 if (opts.app_name.len > 0) host.setAppName(opts.app_name);
             }
@@ -747,9 +728,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .secondary = SecondaryDriver(CmdBufT).init(gpa),
                 .snap = SnapshotSink.init(gpa, opts.snapshot_path),
                 .stats_sink = frame_stats.Sink.init(gpa, opts.stats_path),
-                .continuous = frame_stats.envFlag(gpa, "TEAK_CONTINUOUS") orelse opts.continuous,
-                .hud = frame_stats.envFlag(gpa, "TEAK_HUD") orelse opts.hud,
-                .exit_after_frames = frame_stats.envInt(gpa, "TEAK_EXIT_AFTER_FRAMES") orelse opts.exit_after_frames,
+                .continuous = opts.continuous,
+                .hud = opts.hud,
+                .exit_after_frames = opts.exit_after_frames,
             };
         }
 

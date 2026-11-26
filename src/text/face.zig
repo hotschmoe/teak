@@ -77,9 +77,9 @@ pub const Font = struct {
     /// Load the fallback face: the bytes given to `setFallbackBytes` if any
     /// (the web Host embeds one), else the system font (`TEAK_FONT`, then the
     /// candidate list).
-    pub fn loadSystem(allocator: std.mem.Allocator) !Font {
+    pub fn loadSystem(allocator: std.mem.Allocator, options: teak.Options) !Font {
         if (fallback_bytes) |bytes| return fromBytes(bytes);
-        const data = try readFontFile(allocator);
+        const data = try readFontFile(allocator, options);
         errdefer allocator.free(data);
         var font = try fromBytes(data);
         font.allocator = allocator;
@@ -275,7 +275,7 @@ pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
 
     if (!registry.fallback_tried) {
         registry.fallback_tried = true;
-        registry.fallback = Font.loadSystem(std.heap.page_allocator) catch null;
+        registry.fallback = Font.loadSystem(std.heap.page_allocator, .{}) catch null;
         if (comptime has_files) {
             if (registry.fallback == null) std.log.warn("teak: no font found (register one or set TEAK_FONT); text will not draw", .{});
         }
@@ -304,19 +304,18 @@ pub fn windowsFontCandidate(buf: []u8, windir: []const u8, i: usize) ?[]const u8
 
 const readFontFile = if (has_files) readFontFileLibc else readFontFileNone;
 
-fn readFontFileNone(_: std.mem.Allocator) ![]u8 {
+fn readFontFileNone(_: std.mem.Allocator, _: teak.Options) ![]u8 {
     return error.FontNotFound;
 }
 
-fn readFontFileLibc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.c.getenv("TEAK_FONT")) |env_ptr| {
-        const env_path = std.mem.span(env_ptr);
+fn readFontFileLibc(allocator: std.mem.Allocator, options: teak.Options) ![]u8 {
+    if (options.font_path) |env_path| {
         if (env_path.len > 0) {
             if (readAbsolute(allocator, env_path)) |bytes| return bytes else |_| {}
         }
     }
     if (builtin.os.tag == .windows) {
-        const windir = if (std.c.getenv("WINDIR")) |w| std.mem.span(w) else "C:\\Windows";
+        const windir = options.windows_directory orelse "C:\\Windows";
         var buf: [1024]u8 = undefined;
         var i: usize = 0;
         while (windowsFontCandidate(&buf, windir, i)) |path| : (i += 1) {
@@ -328,6 +327,15 @@ fn readFontFileLibc(allocator: std.mem.Allocator) ![]u8 {
         if (readAbsolute(allocator, path)) |bytes| return bytes else |_| {}
     }
     return error.FontNotFound;
+}
+
+pub fn configure(options: teak.Options) void {
+    fallback.checkEnv(options.fallback_fonts);
+    if (options.font_path == null and options.windows_directory == null) return;
+    if (!registry.fallback_tried) {
+        registry.fallback_tried = true;
+        registry.fallback = Font.loadSystem(std.heap.page_allocator, options) catch null;
+    }
 }
 
 /// Read an absolute path via libc stdio. The module already links libc

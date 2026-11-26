@@ -1,7 +1,12 @@
 # Application loop (`teak.run` / `teak.Runtime`)
 
 `src/run.zig` — the canonical host-loop wrapper. Re-exported as
-`teak.run`, `teak.Runtime` (+ `teak.RunOptions`).
+`teak.run`, `teak.Runtime`, `teak.Options`, `teak.options_from_environment`.
+
+Native entry points call `teak.options_from_environment(init, defaults)` once and pass the
+result to the Host and runtime. Environment overrides are applied there; lower layers only
+use supplied settings. Web entry points pass `teak.Options{}` defaults. Borrowed settings
+must outlive the Host, runtime and worker jobs. See [migration-options.md](../migration-options.md).
 
 ## Why
 
@@ -45,7 +50,7 @@ export fn frame(_: f32) void { runtime.frame() catch @panic("frame failed"); }
 export fn resize(w: u32, h: u32) void { gpu.resize(w, h); }
 ```
 
-`init(gpa, *Host, *Gpu, RunOptions) !Runtime`, `frame(*Runtime) !void` (one
+`init(gpa, *Host, *Gpu, Options) !Runtime`, `frame(*Runtime) !void` (one
 iteration; returns early without presenting if the host reports close during the
 input poll), `deinit()`. The value holds the Model, the double-buffered cmd/rect
 storage and all loop bookkeeping — create it once and don't move it. `frame`
@@ -59,7 +64,7 @@ for the web; the window simply never opens there.
 ## Shape
 
 ```zig
-pub fn run(comptime App: type, gpa: Allocator, host: anytype, gpu: anytype, opts: RunOptions) !void
+pub fn run(comptime App: type, gpa: Allocator, host: anytype, gpu: anytype, opts: Options) !void
 ```
 
 `App` must expose `Model`, `Msg`, `update(*Model, Msg)`,
@@ -232,7 +237,7 @@ and wasm hosts' `openSecondaryWindow` return `null`, so the hooks compile
 and run everywhere but the second window only actually opens on Windows;
 the primary window is unaffected on the other backends.
 
-`RunOptions`:
+`Options`:
 - `clear_color: ?[4]f32` — scene clear color; `null` (default) follows `theme.palette.bg`, so `themeFor` apps switch background with the theme.
 - `blink_half_ms: u32` — text-cursor blink half-period in Host-clock ms
   (default 500; 0 = no blinking). The caret phase is `TransientState.blink_on`,
@@ -266,7 +271,7 @@ only as data: `Runtime.lastFrameStats()`, the CSV sink, or the HUD.
 
 Options (each env var is read once at `Runtime.init` and wins over the field):
 
-| `RunOptions` field | Env | Effect |
+| `Options` field | Entry-point environment override | Effect |
 |---|---|---|
 | `continuous: bool = false` | `TEAK_CONTINUOUS=1` (`0` = off) | every frame does the full work: no idle skip AND no frame-diff skip of the vertex rebuild + upload. Snapshot and a11y publish stay change-gated. |
 | `stats_path: ?[]const u8 = null` | `TEAK_FRAME_STATS=<path>` | one CSV row per `frame()` after a header row (`frame,frame_ms,work_ms,update_ms,view_ms,layout_ms,build_ms,gpu_ms,cmds,vertices,quiet,presented,rebuilt`); at shutdown a summary (frame count, `frame_ms` sample count, mean / min / p50 / p95 / p99 / max, per-phase means over presented frames) goes to stderr and `<path>.summary.txt`. Buffered, flushed every 16 KiB. Compiled out on wasm. |
@@ -289,8 +294,8 @@ backend presents with FIFO.
 
 ### Live snapshot sink (`TEAK_SNAPSHOT`)
 
-When `snapshot_path` is non-null — or the `TEAK_SNAPSHOT` env var is set
-(env wins, read once at `run` start) — `run` mirrors each *changed* frame's
+When `snapshot_path` is non-null (the entry-point builder applies `TEAK_SNAPSHOT`),
+`run` mirrors each *changed* frame's
 snapshot text to that file, so an agent driving the running app can read
 the GUI as data instead of pixels. The write is atomic (`<path>.tmp` then
 rename, so a reader never sees a torn file) and change-gated (idle frames
@@ -469,14 +474,14 @@ its worst case (a changed frame exits at the first difference).
 
 ## Event-driven idle
 
-With `RunOptions.idle_skip` (default true) a frame in which nothing happened
+With `Options.idle_skip` (default true) a frame in which nothing happened
 does no pipeline work at all: no view, layout, diff, upload or present. A
 frame is *quiet* when, after routing, there was no input event (pointer
 moved / button / wheel / key / char / resize), no Msg was dispatched (so no
 sub fired, no effect result or window hook arrived), no
 IME composition, no secondary window, and it is not the first frame. A focused
 text input does not prevent idling: the loop sleeps until the caret's next
-toggle (`RunOptions.blink_half_ms`) and then re-uploads vertices for the last
+toggle (`Options.blink_half_ms`) and then re-uploads vertices for the last
 built frame with the new phase (`TransientState.blink_on`) — no view or layout.
 `Runtime.quiet` reports it, and `run` then calls the Host's optional
 `waitEvents(timeout_ms)` (documented in `platform/host.zig`) with the time to

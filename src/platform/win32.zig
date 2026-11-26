@@ -2009,7 +2009,8 @@ pub const Host = struct {
     /// pattern is "request → wait one frame → poll → consume".
     file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = @splat(.{}),
 
-    pub fn init(title: []const u8, width: u32, height: u32) !Host {
+    pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
+        text.face.configure(options);
         // DPI awareness must be set before creating windows.
         _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         g_scale = dpiScale(GetDpiForSystem());
@@ -2062,7 +2063,7 @@ pub const Host = struct {
         _ = ShowWindow(hwnd, SW_SHOW);
         registerDropTarget(hwnd);
         g_scale = dpiScale(GetDpiForWindow(hwnd));
-        const effects = try native_effects.Service.create(title);
+        const effects = try native_effects.Service.create(title, options);
         errdefer effects.destroy();
         g_effects = effects;
 
@@ -2147,11 +2148,11 @@ pub const Host = struct {
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
             .open_file => |o| {
-                if (native_effects.envSet("TEAK_OPEN")) return self.effects.submit(e);
+                if (self.effects.options.open_path != null) return self.effects.submit(e);
                 self.effects.openPath(o.id, runFileDialog(self, .{}, false, ""));
             },
             .download => |d| {
-                if (native_effects.envSet("TEAK_OUT")) return self.effects.submit(e);
+                if (self.effects.options.output_directory != null) return self.effects.submit(e);
                 if (runFileDialog(self, .{}, true, std.fs.path.basename(d.name))) |path| {
                     self.effects.downloadTo(d.id, path, d.bytes);
                 } else self.effects.downloadCancelled(d.id);

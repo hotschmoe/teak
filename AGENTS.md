@@ -160,6 +160,7 @@ src/                                          -- the library, consumable as a Zi
   frame_stats.zig                             -- Frame timing and perf counters for the run loop: FrameStats, the percentile summary, and the
   headless_run.zig                            -- Tool API for headless runs: script input, run frames, grab pixels, write a PNG
   input_record.zig                            -- Input record / replay file format (TEAK_RECORD / TEAK_REPLAY)
+  options.zig                                 -- Entry-point environment capture; see SRC.md
   resources.zig                               -- run-loop resource table (key -> Gpu handle), stageDraws
   run.zig                                     -- teak.run + Runtime(App, Host, Gpu): the canonical loop (one frame() per tick), App hooks, idle
   teak.zig                                    -- public library root: every re-export, documented

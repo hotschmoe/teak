@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- Replace `RunOptions` with `Options`. Native entry points capture environment overrides once
+  with `options_from_environment(init, defaults)` and pass settings to hosts and the runtime;
+  headless tools and hot reload use the same path. Web callers pass explicit defaults.
+  See [migration-options.md](docs/migration-options.md). Hot-reload ABI is now version 2.
+
 ### Fixed
 
 - Agent control channel: a command sent as soon as the socket appeared could be served before the first frame existed, so selectors found no nodes (`no visible node matches the selector`). Commands now wait in the socket until a frame has been built. This was the intermittent `tools/drive-e2e.sh` failure in the background gate.

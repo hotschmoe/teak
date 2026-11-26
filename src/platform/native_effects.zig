@@ -73,6 +73,7 @@ const Job = struct {
 };
 
 pub const Service = struct {
+    options: teak.Options,
     io: Io,
     mutex: Io.Mutex = .init,
     app_name: []u8,
@@ -86,14 +87,14 @@ pub const Service = struct {
 
     /// `app_name` (usually the window title) names the storage directory; it
     /// is reduced to a lowercase slug.
-    pub fn create(app_name: []const u8) !*Service {
+    pub fn create(app_name: []const u8, options: teak.Options) !*Service {
         const self = try gpa.create(Service);
         errdefer gpa.destroy(self);
-        self.* = .{ .io = std.Options.debug_io, .app_name = try slug(app_name) };
+        self.* = .{ .io = std.Options.debug_io, .app_name = try slug(app_name), .options = options };
         return self;
     }
 
-    /// Rename the storage directory (`RunOptions.app_name`).
+    /// Rename the storage directory (`Options.app_name`).
     pub fn setAppName(self: *Service, app_name: []const u8) !void {
         const name = try slug(app_name);
         self.lock();
@@ -132,12 +133,12 @@ pub const Service = struct {
             .http => |r| return self.startHttp(r),
             .download => |d| {
                 if (d.pick) return self.startDialog(.save, d.id, "", d.title, d.name, d.bytes);
-                const ok = writeDownload(self.io, d.name, d.bytes);
+                const ok = writeDownload(self.io, d.name, d.bytes, self.options.output_directory);
                 self.finish(.{ .downloaded = .{ .id = d.id, .ok = ok } });
             },
             .open_file => |o| {
-                if (envValue("TEAK_OPEN") != null) {
-                    self.openPath(o.id, envValue("TEAK_OPEN"));
+                if (self.options.open_path != null) {
+                    self.openPath(o.id, self.options.open_path);
                 } else return self.startDialog(.open, o.id, o.accept, o.title, "", "");
             },
             .write_clipboard, .write_clipboard_image => {
@@ -330,7 +331,7 @@ pub const Service = struct {
 
     fn storageSet(self: *Service, key: []const u8, value: []const u8) void {
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const path = storagePath(&path_buf, self.app_name, key) orelse return;
+        const path = storagePath(&path_buf, self.app_name, key, self.options) orelse return;
         const dir = std.fs.path.dirname(path) orelse return;
         if (value.len == 0) {
             Io.Dir.cwd().deleteFile(self.io, path) catch {};
@@ -344,7 +345,7 @@ pub const Service = struct {
     fn storageGet(self: *Service, id: u32, key: []const u8) void {
         const arena = newArena() orelse return;
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const value: ?[]const u8 = if (storagePath(&path_buf, self.app_name, key)) |path|
+        const value: ?[]const u8 = if (storagePath(&path_buf, self.app_name, key, self.options)) |path|
             Io.Dir.cwd().readFileAlloc(self.io, path, arena.allocator(), .limited(max_body_bytes)) catch null
         else
             null;
@@ -405,7 +406,7 @@ pub const Service = struct {
             self.unlock();
             freeArena(job.arena);
         }
-        const chosen: ?[]u8 = file_picker.pick(gpa, envValue("TEAK_PICKER"), job.kind, job.accept, job.title, job.name) catch |e| blk: {
+        const chosen: ?[]u8 = file_picker.pick(gpa, self.options, job.kind, job.accept, job.title, job.name) catch |e| blk: {
             if (e == error.NoPicker and !self.picker_warned) {
                 self.picker_warned = true;
                 warn("teak: no file dialog available (install zenity or kdialog, or set TEAK_OPEN)", .{});
@@ -509,7 +510,14 @@ pub const Service = struct {
         const value: ?[]const u8 = argValue(cmdline, name) orelse blk: {
             var env_buf: [128]u8 = undefined;
             const env_name = envVarName(&env_buf, name) orelse break :blk null;
-            break :blk envValue(env_name);
+            for (self.options.environment) |entry| {
+                const matches = if (is_windows)
+                    std.ascii.eqlIgnoreCase(entry.name, env_name)
+                else
+                    std.mem.eql(u8, entry.name, env_name);
+                if (matches and entry.value.len > 0) break :blk entry.value;
+            }
+            break :blk null;
         };
         self.push(arena, .{ .query_value = .{ .id = id, .value = value } });
     }
@@ -571,9 +579,9 @@ fn describeError(e: anyerror) []const u8 {
 
 /// Where the value of `key` lives: `<config>/teak/<app>/<escaped key>`.
 /// Null for an empty key or when no config dir can be found.
-fn storagePath(buf: []u8, app_name: []const u8, key: []const u8) ?[]const u8 {
+fn storagePath(buf: []u8, app_name: []const u8, key: []const u8, options: teak.Options) ?[]const u8 {
     if (key.len == 0) return null;
-    const base = configDir(buf[0 .. std.fs.max_path_bytes / 2]) orelse return null;
+    const base = configDir(buf[0 .. std.fs.max_path_bytes / 2], options) orelse return null;
     var w: Io.Writer = .fixed(buf[base.len..]);
     const sep = std.fs.path.sep;
     w.print("{c}teak{c}{f}{c}{f}", .{ sep, sep, EscapedName{ .name = app_name }, sep, EscapedName{ .name = key } }) catch return null;
@@ -582,20 +590,20 @@ fn storagePath(buf: []u8, app_name: []const u8, key: []const u8) ?[]const u8 {
 
 /// `$XDG_CONFIG_HOME`, else `$HOME/.config`, written into `buf`. Windows:
 /// `%APPDATA%` (Roaming app data).
-fn configDir(buf: []u8) ?[]const u8 {
+fn configDir(buf: []u8, options: teak.Options) ?[]const u8 {
     if (is_windows) {
-        const appdata = envValue("APPDATA") orelse return null;
+        const appdata = options.app_data orelse return null;
         if (appdata.len > buf.len) return null;
         @memcpy(buf[0..appdata.len], appdata);
         return buf[0..appdata.len];
     }
-    if (envValue("XDG_CONFIG_HOME")) |x| {
+    if (options.config_home) |x| {
         if (x.len > 0 and x.len <= buf.len) {
             @memcpy(buf[0..x.len], x);
             return buf[0..x.len];
         }
     }
-    const home = envValue("HOME") orelse return null;
+    const home = options.home orelse return null;
     return std.fmt.bufPrint(buf, "{s}/.config", .{home}) catch null;
 }
 
@@ -612,39 +620,8 @@ const EscapedName = struct {
     }
 };
 
-/// True when the environment variable `name` is set and non-empty.
-pub fn envSet(name: [:0]const u8) bool {
-    return envValue(name) != null;
-}
-
-/// Windows reads the process environment as UTF-16 (the CRT's `getenv` is
-/// ANSI and misses non-ASCII profile paths); results live in a small
-/// per-thread ring so a few lookups can be held at once.
-threadlocal var env_ring: [4][2048]u8 = undefined;
-threadlocal var env_next: usize = 0;
-
-fn envValue(name: [:0]const u8) ?[]const u8 {
-    if (is_windows) {
-        var wname: [128]u16 = undefined;
-        const n = std.unicode.utf8ToUtf16Le(&wname, name) catch return null;
-        if (n >= wname.len) return null;
-        wname[n] = 0;
-        var wval: [2048]u16 = undefined;
-        const len = win.GetEnvironmentVariableW(@ptrCast(&wname), &wval, wval.len);
-        if (len == 0 or len >= wval.len) return null;
-        const slot = &env_ring[env_next % env_ring.len];
-        env_next +%= 1;
-        const m = std.unicode.utf16LeToUtf8(slot, wval[0..len]) catch return null;
-        return if (m == 0) null else slot[0..m];
-    }
-    const v = std.c.getenv(name) orelse return null;
-    const s = std.mem.span(v);
-    return if (s.len == 0) null else s;
-}
-
 /// The few kernel32 calls the Windows build needs.
 const win = struct {
-    extern "kernel32" fn GetEnvironmentVariableW(name: [*:0]const u16, buf: ?[*]u16, size: u32) callconv(.winapi) u32;
     extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: ?[*:0]const u16) callconv(.winapi) i32;
     extern "kernel32" fn GetCommandLineW() callconv(.winapi) [*:0]const u16;
     extern "kernel32" fn GetTimeZoneInformation(info: *TimeZoneInformation) callconv(.winapi) u32;
@@ -722,11 +699,11 @@ fn argValue(cmdline: []const u8, name: []const u8) ?[]const u8 {
 
 /// Write a download into `$TEAK_OUT` (default the cwd) under the base name of
 /// `name`. False when the name is unusable or the write fails.
-fn writeDownload(io: Io, name: []const u8, bytes: []const u8) bool {
+fn writeDownload(io: Io, name: []const u8, bytes: []const u8, output_directory: ?[]const u8) bool {
     const base = std.fs.path.basename(name);
     if (base.len == 0 or std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "..")) return false;
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = if (envValue("TEAK_OUT")) |dir| blk: {
+    const path = if (output_directory) |dir| blk: {
         Io.Dir.cwd().createDirPath(io, dir) catch return false;
         break :blk std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, base }) catch return false;
     } else base;

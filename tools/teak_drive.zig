@@ -9,6 +9,7 @@
 //! docs/features/agent-driver.md.
 
 const std = @import("std");
+const teak = @import("teak");
 const control_socket = @import("control_socket");
 
 const Client = control_socket.Client;
@@ -37,6 +38,7 @@ const usage =
 ;
 
 pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{});
     const gpa = init.gpa;
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -51,7 +53,10 @@ pub fn main(init: std.process.Init) !void {
     defer errw.flush() catch {};
 
     var i: usize = 1;
-    var socket: ?[]const u8 = init.environ_map.get("TEAK_CONTROL");
+    var socket: ?[]const u8 = null;
+    for (options.environment) |entry| {
+        if (std.mem.eql(u8, entry.name, "TEAK_CONTROL")) socket = entry.value;
+    }
     while (i < args.len and std.mem.startsWith(u8, args[i], "--socket")) {
         if (std.mem.eql(u8, args[i], "--socket") and i + 1 < args.len) {
             socket = args[i + 1];
@@ -68,8 +73,12 @@ pub fn main(init: std.process.Init) !void {
     const cmd = args[i];
     const rest = args[i + 1 ..];
 
-    if (std.mem.eql(u8, cmd, "mcp")) return mcpMain(init, out);
-    if (std.mem.eql(u8, cmd, "launch")) return launchCmd(init, out, errw, socket, rest);
+    if (std.mem.eql(u8, cmd, "mcp")) return mcpMain(init, out, options);
+    if (std.mem.eql(u8, cmd, "launch")) {
+        var launch_options = options;
+        launch_options.control_path = socket;
+        return launchCmd(init, out, errw, rest, launch_options);
+    }
 
     const sock = socket orelse {
         try errw.writeAll("teak-drive: no socket; pass --socket PATH or set TEAK_CONTROL\n");
@@ -265,19 +274,28 @@ const Launched = struct {
 
 /// Spawn `argv` with `TEAK_CONTROL=sock` (and DISPLAY, if given) and wait
 /// until the socket accepts a connection.
-fn spawnApp(init: std.process.Init, argv: []const []const u8, sock: []const u8, cwd: ?[]const u8, display: ?[]const u8, inherit_stdout: bool) !Launched {
+const LaunchOptions = struct {
+    arguments: []const []const u8,
+    socket: []const u8,
+    directory: ?[]const u8 = null,
+    display: ?[]const u8 = null,
+    options: teak.Options,
+};
+
+fn spawnApp(init: std.process.Init, launch: LaunchOptions) !Launched {
     const gpa = init.gpa;
     const io = init.io;
-    var env = try init.environ_map.clone(gpa);
+    var env = std.process.Environ.Map.init(gpa);
     defer env.deinit();
-    try env.put("TEAK_CONTROL", sock);
-    if (display) |d| try env.put("DISPLAY", d);
+    for (launch.options.environment) |entry| try env.put(entry.name, entry.value);
+    try env.put("TEAK_CONTROL", launch.socket);
+    if (launch.display) |d| try env.put("DISPLAY", d);
     var child = try std.process.spawn(io, .{
-        .argv = argv,
+        .argv = launch.arguments,
         .environ_map = &env,
-        .cwd = if (cwd) |c| .{ .path = c } else .inherit,
+        .cwd = if (launch.directory) |c| .{ .path = c } else .inherit,
         .stdin = .ignore,
-        .stdout = if (inherit_stdout) .inherit else .ignore,
+        .stdout = .ignore,
         .stderr = .inherit,
     });
     errdefer child.kill(io);
@@ -285,21 +303,21 @@ fn spawnApp(init: std.process.Init, argv: []const []const u8, sock: []const u8, 
     // Wait for the app to create its socket (GPU init can take a moment).
     var tries: u32 = 0;
     while (tries < 400) : (tries += 1) {
-        if (Client.connect(sock)) |c| {
+        if (Client.connect(launch.socket)) |c| {
             var cc = c;
             cc.close();
-            return .{ .child = child, .sock = try gpa.dupe(u8, sock) };
+            return .{ .child = child, .sock = try gpa.dupe(u8, launch.socket) };
         } else |_| {}
         Io.sleep(io, .fromMilliseconds(50), .awake) catch {};
     }
     return error.AppDidNotStart;
 }
 
-fn launchCmd(init: std.process.Init, out: *Io.Writer, errw: *Io.Writer, socket: ?[]const u8, args: []const []const u8) !void {
+fn launchCmd(init: std.process.Init, out: *Io.Writer, errw: *Io.Writer, args: []const []const u8, options: teak.Options) !void {
     const gpa = init.gpa;
     var x11 = false;
     var display: ?[]const u8 = null;
-    var sock_arg = socket;
+    var sock_arg = options.control_path;
     var i: usize = 0;
     while (i < args.len and std.mem.startsWith(u8, args[i], "--")) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--x11")) {
@@ -319,7 +337,7 @@ fn launchCmd(init: std.process.Init, out: *Io.Writer, errw: *Io.Writer, socket: 
         std.process.exit(2);
     }
     const path = sock_arg orelse try std.fmt.allocPrint(gpa, "/tmp/teak-drive-{d}.sock", .{std.os.linux.getpid()});
-    var l = spawnApp(init, args[i..], path, null, display, false) catch |e| {
+    var l = spawnApp(init, .{ .arguments = args[i..], .socket = path, .display = display, .options = options }) catch |e| {
         try errw.print("teak-drive: could not start {s}: {s}\n", .{ args[i], @errorName(e) });
         std.process.exit(1);
     };
@@ -383,6 +401,7 @@ const tools = [_]Tool{
 
 const Mcp = struct {
     init: std.process.Init,
+    options: teak.Options,
     gpa: std.mem.Allocator,
     io: Io,
     app: ?Launched = null,
@@ -415,10 +434,10 @@ const Mcp = struct {
     }
 };
 
-fn mcpMain(init: std.process.Init, out: *Io.Writer) !void {
+fn mcpMain(init: std.process.Init, out: *Io.Writer, options: teak.Options) !void {
     const gpa = init.gpa;
     const io = init.io;
-    var mcp: Mcp = .{ .init = init, .gpa = gpa, .io = io };
+    var mcp: Mcp = .{ .init = init, .gpa = gpa, .io = io, .options = options };
     defer mcp.stopApp();
 
     const in_buf = try gpa.alloc(u8, 4 * 1024 * 1024);
@@ -654,7 +673,9 @@ fn callTool(mcp: *Mcp, name: []const u8, args: std.json.ObjectMap, res: *ToolRes
 
 fn findTeakRoot(mcp: *Mcp) ![]u8 {
     const gpa = mcp.gpa;
-    if (mcp.init.environ_map.get("TEAK_ROOT")) |r| return gpa.dupe(u8, r);
+    for (mcp.options.environment) |entry| {
+        if (std.mem.eql(u8, entry.name, "TEAK_ROOT")) return gpa.dupe(u8, entry.value);
+    }
     // zig-out/bin/teak-drive -> repo root.
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = std.process.executablePath(mcp.io, &buf) catch return error.BinaryNotFound;
@@ -723,7 +744,7 @@ fn toolLaunch(mcp: *Mcp, args: std.json.ObjectMap, res: *ToolResult) !void {
     const sock = try std.fmt.allocPrint(gpa, "/tmp/teak-drive-{d}-{d}.sock", .{ std.os.linux.getpid(), mcp.launches });
     defer gpa.free(sock);
     const display = getStr(args, "display");
-    mcp.app = try spawnApp(mcp.init, argv.items, sock, cwd, display, false);
+    mcp.app = try spawnApp(mcp.init, .{ .arguments = argv.items, .socket = sock, .directory = cwd, .display = display, .options = mcp.options });
     mcp.cl = try Client.connect(sock);
 
     var reply = try mcp.ask("{\"cmd\":\"info\"}");

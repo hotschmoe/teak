@@ -13,17 +13,18 @@ const sys = @import("sys.zig");
 const Host = platform.Host;
 const Gpu = gpu_native.Gpu;
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{ .app_name = "sysmon" });
     var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_impl.deinit();
     const gpa = gpa_impl.allocator();
 
-    var host = try Host.init("System Monitor", 1100, 720);
+    var host = try Host.init("System Monitor", 1100, 720, options);
     defer host.deinit();
-    var gpu = try Gpu.init(host.nativeHandle(), 1100, 720);
+    var gpu = try Gpu.initWithOptions(host.nativeHandle(), 1100, 720, .{ .gpu_fallback = options.gpu_fallback });
     defer gpu.deinit();
 
-    var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, .{ .app_name = "sysmon" });
+    var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, options);
     defer rt.deinit();
 
     const sampler = try gpa.create(sys.Sampler);

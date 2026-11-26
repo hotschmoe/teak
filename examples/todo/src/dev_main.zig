@@ -6,5 +6,6 @@ const std = @import("std");
 const teak = @import("teak");
 
 pub fn main(init: std.process.Init) !void {
-    try teak.dev.runLoader(init, "zig-out/lib/libapp.so");
+    const options = try teak.options_from_environment(init, .{});
+    try teak.dev.runLoader(init, "zig-out/lib/libapp.so", options);
 }

@@ -30,7 +30,7 @@ pub const NativeHandle = union(Backend) {
     wayland: wayland.Host.NativeHandle,
 };
 
-/// Which backend to try first, from the environment (pure, for tests).
+/// See docs/features/host.md for backend selection and fallback.
 pub fn preferredBackend(wayland_display: ?[]const u8, forced: ?[]const u8) Backend {
     if (forced) |f| {
         if (std.ascii.eqlIgnoreCase(f, "x11")) return .x11;
@@ -40,30 +40,25 @@ pub fn preferredBackend(wayland_display: ?[]const u8, forced: ?[]const u8) Backe
     return .x11;
 }
 
-fn envSlice(name: [*:0]const u8) ?[]const u8 {
-    const v = std.c.getenv(name) orelse return null;
-    return std.mem.span(v);
-}
-
 pub const Host = struct {
     impl: Impl,
 
     const Impl = union(Backend) { x11: x11.Host, wayland: wayland.Host };
 
-    pub fn init(title: []const u8, width: u32, height: u32) !Host {
-        const first = preferredBackend(envSlice("WAYLAND_DISPLAY"), envSlice("TEAK_BACKEND"));
-        const forced = envSlice("TEAK_BACKEND") != null;
+    pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
+        const first = preferredBackend(options.wayland_display, options.backend);
+        const forced = options.backend != null;
         switch (first) {
             .wayland => {
-                if (wayland.Host.init(title, width, height)) |w| {
+                if (wayland.Host.init(title, width, height, options)) |w| {
                     return .{ .impl = .{ .wayland = w } };
                 } else |err| {
                     if (forced) return err;
                     std.log.info("teak: Wayland unavailable ({s}); falling back to X11", .{@errorName(err)});
                 }
-                return .{ .impl = .{ .x11 = try x11.Host.init(title, width, height) } };
+                return .{ .impl = .{ .x11 = try x11.Host.init(title, width, height, options) } };
             },
-            .x11 => return .{ .impl = .{ .x11 = try x11.Host.init(title, width, height) } },
+            .x11 => return .{ .impl = .{ .x11 = try x11.Host.init(title, width, height, options) } },
         }
     }
 

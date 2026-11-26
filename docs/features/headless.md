@@ -8,6 +8,11 @@ Run any teak App on the real native wgpu backend with **no display**, drive it w
 
 ## Quick start (an app's `build.zig`)
 
+The native `main(init: std.process.Init)` captures options once with
+`teak.options_from_environment(init, defaults)` and passes them in `ShotOptions.run` or
+`ServeOptions.run`. Headless helpers use supplied settings. See
+[migration-options.md](../migration-options.md) for the Host and GPU signatures.
+
 ```zig
 const std = @import("std");
 const teak = @import("teak");
@@ -68,7 +73,7 @@ Step = union(enum) { frames: u32, move: [2]f32, down: Button, up: Button, wheel:
                      click: [2]f32,            // move + frame, down + frame, up + frame
                      drag: [2][2]f32 }         // press at a, 4 interpolated moves, release at b
 play(rt: anytype, host: anytype, steps: []const Step) !void
-shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa = true, steps, settle = 3, run: RunOptions }) !void
+shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa = true, steps, settle = 3, run: Options }) !void
 writeFramePng(gpu, gpa, path) !void      // gpu.readFrame -> PNG
 writePng(gpa, path, rgba, w, h) !void
 encodePng(gpa, rgba, w, h) ![]u8         // dependency-free; deflate-compressed with per-row PNG filters, deterministic
@@ -97,7 +102,7 @@ transition and a caret blink pass; an indeterminate progress bar or a never-endi
 Prefer the lower-level pieces when you want to inspect state between steps:
 
 ```zig
-var host = try Host.init(gpa, 1280, 800);
+var host = try Host.init(gpa, 1280, 800, options);
 defer host.deinit();
 var gpu = try Gpu.initOffscreen(1280, 800, .{ .msaa = true });
 defer gpu.deinit();

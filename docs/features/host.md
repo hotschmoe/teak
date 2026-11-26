@@ -12,7 +12,7 @@ A Host type must expose these declarations:
 
 | Decl | Signature | Purpose |
 |---|---|---|
-| `init` | backend-specific (e.g. `fn(title, w, h) !Host`) | Create the window / surface. **Not** validated by `validateHost` — signatures legitimately differ between backends. |
+| `init` | native: `fn(title, w, h, Options) !Host`; headless: `fn(gpa, w, h, Options) !Host`; web: `fn(title, w, h) !Host` | Create the window / surface. **Not** validated by `validateHost` — signatures legitimately differ between backends. |
 | `deinit` | `fn(*Host) void` | Tear down the window. |
 | `pollInputs` | `fn(*Host) InputState` | Drain one frame's events. Called once per frame at the top of the main loop. |
 | `shouldClose` | `fn(*const Host) bool` | True when the user closed the window. The wasm host returns `false` unconditionally; the page lifecycle is zunk's problem. |
@@ -91,7 +91,16 @@ Three Hosts implement the contract; all satisfy `validateHost`.
 
 - **wasm** (`wasm.zig`) — the web backend over zunk shared memory; `shouldClose` returns `false` (page lifecycle is zunk's problem). Services effects through `zunk.web.fx` (fetch, downloads, file picker, localStorage, clock, query params, clipboard, paste / drop; see [effects.md](effects.md)). `clipboard().write` goes through the effects bridge; `clipboard().read` returns the text of the paste event that came with the Ctrl/Cmd+V key press (the browser only exposes it there) and claims it so it is not also reported as `pasted_text`. Cmd acts as Ctrl for chord keys. `nowMs` is `performance.now()`.
 
-X11 also services declarative effects (HTTP on worker threads, storage files, downloads, `TEAK_OPEN`, query params) through `native_effects.zig`; `Host.setAppName` (called from `RunOptions.app_name`) names the storage directory. See [effects.md](effects.md).
+X11 also services declarative effects (HTTP on worker threads, storage files, downloads, `TEAK_OPEN`, query params) through `native_effects.zig`; `Host.setAppName` (called from `Options.app_name`) names the storage directory. See [effects.md](effects.md).
+
+All environment settings mentioned here are captured once by
+`teak.options_from_environment(init, defaults)` in the native entry point and passed to
+`Host.init`. Hosts use `Options.backend`, `wayland_display`, `scale`, `gdk_scale`,
+`font_path`, `windows_directory`, `fallback_fonts`, `picker`, `cocoa_debug` and
+`wayland_no_viewport`. Native effects receive the same settings, including the captured
+environment entries for query parameters and picker subprocesses. The GPU receives
+`options.gpu_fallback` through `InitOptions.gpu_fallback`. Defaults and parsing ranges stay
+backend-specific. See [migration-options.md](../migration-options.md).
 
 **X11 v1 stubs** — present in the contract so apps call them unconditionally, but no-ops today (`openFileDialog` / `saveFileDialog` now run the external picker, `file_picker.zig`, blocking like Win32's): `publishA11yTree` is a no-op (no AT-SPI yet). Secondary windows are real on X11 too (up to 4: pointer, wheel, resize and close routed by window from the primary pump; keyboard stays with the primary window). Windows implements file dialogs for real.
 
@@ -176,7 +185,7 @@ magnified.
 
 Beyond `validateHost`'s required list, `teak.run` uses these when present
 (each compiles out otherwise): `setAppName(name)` (names the per-app storage
-directory; called once at init from `RunOptions.app_name`), `submit(effect)` and
+directory; called once at init from `Options.app_name`), `submit(effect)` and
 `pollEffectResults` (declarative effects, hatch 7), and
 `waitEvents(timeout_ms)` (event-driven idle: block until input or the timeout;
 see [run.md](run.md#event-driven-idle)).

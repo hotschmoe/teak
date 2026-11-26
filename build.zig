@@ -47,6 +47,7 @@ pub fn build(b: *std.Build) void {
         }) }},
     });
     const drive_exe = b.addExecutable(.{ .name = "teak-drive", .root_module = drive_mod });
+    drive_mod.addImport("teak", mod);
     b.step("drive", "Build zig-out/bin/teak-drive (agent driver CLI + MCP server)")
         .dependOn(&b.addInstallArtifact(drive_exe, .{}).step);
 

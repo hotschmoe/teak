@@ -530,7 +530,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.nextFocusable`: `pub const nextFocusable = focus.nextFocusable`
 > Previous focusable cmd index before `current`, wrapping around.
 - `teak.prevFocusable`: `pub const prevFocusable = focus.prevFocusable`
-> `nextFocusable` over every keyboard-operable leaf (buttons, checkboxes, radios, sliders, text fields): the Tab order of `RunOptions.keyboard_nav`.
+> `nextFocusable` over every keyboard-operable leaf: the Tab order of `Options.keyboard_nav`.
 - `teak.nextNavigable`: `pub const nextNavigable = focus.nextNavigable`
 > `prevFocusable` over every keyboard-operable leaf.
 - `teak.prevNavigable`: `pub const prevNavigable = focus.prevNavigable`
@@ -802,9 +802,11 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.run`: `pub const run = runtime.run`
 > The frame-stepping runtime behind `run` (one `frame()` per iteration).
 - `teak.Runtime`: `pub const Runtime = runtime.Runtime`
-> Options for `run` (title, clear color, snapshot sink, ...).
-- `teak.RunOptions` = `runtime.RunOptions`
-  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip, continuous, stats_path, exit_after_frames, hud`
+> Startup settings passed to hosts, tooling and the runtime.
+- `teak.Options` = `runtime.Options`
+  - fields: `font_path, windows_directory, fallback_fonts, backend, wayland_display, scale, gdk_scale, picker, open_path, output_directory, config_home, home, app_data, cocoa_debug, wayland_no_viewport, gpu_fallback, environment, keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip, continuous, stats_path, exit_after, ...`
+> Capture process environment overrides once in the entry point.
+- `teak.options_from_environment`: `pub const options_from_environment = @import("options.zig").from_environment`
 > Pointer hooks superseded by `pointerMsg` that `App` still declares.
 - `teak.deprecatedHooks`: `pub const deprecatedHooks = runtime.deprecatedHooks`
 > A second top-level window the app wants open this frame.
@@ -2620,7 +2622,7 @@ viewport-agnostic snapshot back.
 > completely different flow).
 > - Optional `waitEvents(timeout_ms: u32) void` (NOT checked by
 > `validateHost`): event-driven idle. `teak.run` calls it after a frame
-> that did nothing (`Runtime.quiet`, see `RunOptions.idle_skip`); the Host
+> that did nothing (`Runtime.quiet`, see `Options.idle_skip`); the Host
 > should block until an input event arrives (including resize / expose,
 > which must surface as `InputState.resized`), an async effect result is
 > ready, or `timeout_ms` elapses — then return. Hosts without it keep
@@ -2796,15 +2798,15 @@ compiles wasm32-freestanding-clean.
 > Options a backend's `initWithOptions` accepts (it also keeps a plain
 > `init(handle, w, h)` that behaves like `.{}`).
 - `struct InitOptions`
-  - fields: `msaa, scene_msaa, scale, max_atlas_pages`
+  - fields: `gpu_fallback, msaa, scene_msaa, scale, max_atlas_pages`
 - `pub fn validateGpu(comptime T: type) void`
 
 ### `teak.runtime` (`src/run.zig`)
 
 Canonical application loop — the `teak.run` wrapper.
 
-- `struct RunOptions`
-  - fields: `keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip, continuous, stats_path, exit_after_frames, hud`
+- `struct Options`
+  - fields: `font_path, windows_directory, fallback_fonts, backend, wayland_display, scale, gdk_scale, picker, open_path, output_directory, config_home, home, app_data, cocoa_debug, wayland_no_viewport, gpu_fallback, environment, keyboard_nav, clear_color, blink_half_ms, snapshot_path, app_name, a11y, control_path, record_path, replay_path, inspect, inspect_hotkey, idle_skip, continuous, stats_path, exit_after, ...`
 > Declares a second top-level window the app wants open this frame.
 > Data-only (HARDLINE §3): `secondaryWindow(*const Model)` returns this
 > or `null`; `run` diffs it against the live window to open / close /
@@ -2821,7 +2823,7 @@ Canonical application loop — the `teak.run` wrapper.
 > This is `Runtime` driven in a `while (!host.shouldClose())` loop. Hosts
 > that own the loop themselves (the web: the browser calls an exported
 > `frame` once per rAF tick) build a `Runtime` and call `frame` directly.
-- `pub fn run( comptime App: type, gpa: std.mem.Allocator, host: anytype, gpu: anytype, opts: RunOptions, ) !void`
+- `pub fn run( comptime App: type, gpa: std.mem.Allocator, host: anytype, gpu: anytype, opts: Options, ) !void`
 > The canonical loop body, one `frame` call per iteration, parameterized on
 > the App and the concrete Host/Gpu types (duck-typed against
 > `validateHost` / `validateGpu`; this file imports neither backend).
@@ -2906,10 +2908,8 @@ docs/features/headless.md.
 > Play `o.steps`, settle, then `latencyAfterClick`. Same Host / Gpu as
 > `idleCheck`; no PNG is written.
 - `pub fn latencyCheck( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, o: ShotOptions, x: f32, y: f32, ) !LatencyReport`
-> `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
-> headless run, so any example's `zig build shot` can be taken at 2x without
-> code changes. Unset or invalid: `default`.
-- `pub fn envScale(default: f32) f32`
+> Headless scale parsing retains the [0.25, 16] range.
+- `pub fn envScale(default: f32, value: ?[]const u8) f32`
 - `struct ServeOptions`
   - fields: `width, height, msaa, frame_sleep_ms, run`
 > Run `App` headlessly until the Host closes (the control channel's `quit`
@@ -2964,7 +2964,7 @@ Hot reload for dev builds (native, Linux): the App compiled as a shared
 library behind a stable loader executable. See docs/features/hot-reload.md.
 
 > Bump when the exported C ABI below changes.
-- `pub const abi_version: u32 = 1`
+- `pub const abi_version: u32 = 2`
 > A 64-bit hash of a type's SHAPE: its name, size, and (recursively) the
 > names, types and offsets of its fields. Pointers hash their own type name
 > only (no recursion through them), so self-referential types terminate.
@@ -2975,8 +2975,12 @@ library behind a stable loader executable. See docs/features/hot-reload.md.
 > Build the exported surface for one App. `Init` supplies construction:
 > ```zig
 > const Init = struct {
-> pub fn host(gpa: std.mem.Allocator) !Host { return Host.init(gpa, 720, 600); }
-> pub fn gpu(host: *Host) !Gpu { return Gpu.initOffscreen(720, 600, .{}); }
+> pub fn host(gpa: std.mem.Allocator, o: teak.Options) !Host {
+> return Host.init(gpa, 720, 600, o);
+> }
+> pub fn gpu(host: *Host, o: teak.Options) !Gpu {
+> return Gpu.initOffscreen(720, 600, .{ .gpu_fallback = o.gpu_fallback });
+> }
 > };
 > comptime { teak.dev.Plugin(App, Host, Gpu, Init).exportAll(); }
 > ```
@@ -2984,8 +2988,8 @@ library behind a stable loader executable. See docs/features/hot-reload.md.
 - `enum ReloadResult`
   - fields: `unchanged, kept_model, reset_model, rejected`
 - `struct Loader`
-  - fields: `io, gpa, path, tmp_dir, generation, environ, image, env, rt, last_mtime, loaded, note, note_len`
-  - `pub fn init(gpa: std.mem.Allocator, io: std.Io, path: []const u8, tmp_dir: []const u8, environ: ?[*:null]const ?[*:0]const u8) !Loader`
+  - fields: `io, gpa, path, tmp_dir, generation, options, image, env, rt, last_mtime, loaded, note, note_len`
+  - `pub fn init(gpa: std.mem.Allocator, io: std.Io, path: []const u8, tmp_dir: []const u8, options: run_mod.Options) !Loader`
   - `pub fn deinit(self: *Loader) void`
   - `pub fn lastNote(self: *const Loader) []const u8`
   > Check the file and swap when it changed. Call between frames.
@@ -2999,7 +3003,7 @@ library behind a stable loader executable. See docs/features/hot-reload.md.
   - `pub fn closed(self: *Loader) bool`
 > The loader executable's whole job: `pub fn main(init)` calls this with the
 > library path (default `zig-out/lib/libapp.so`).
-- `pub fn runLoader(init: std.process.Init, default_path: []const u8) !void`
+- `pub fn runLoader(init: std.process.Init, default_path: []const u8, options: run_mod.Options) !void`
 
 ### `teak.control` (`src/control.zig`)
 
@@ -3027,7 +3031,7 @@ See docs/features/agent-driver.md.
   - `pub fn msgCount(self: *const State) usize`
   > Record the Msg `msg` (formatted as text) in the ring.
   - `pub fn logMsg(self: *State, comptime Msg: type, msg: Msg) void`
-> Resolve options + environment (env wins) and start whatever is asked for.
+> Start the requested control services from the supplied options.
 > Failures degrade to "feature off" with a log line, never a crash.
 - `pub fn start(st: *State, host: anytype, opts: anytype) void`
 - `pub fn toggleInspect(st: *State) void`
@@ -3069,21 +3073,13 @@ Frame timing and perf counters for the run loop: `FrameStats`, the percentile su
   - fields: `work_ms, update_ms, view_ms, layout_ms, build_ms, gpu_ms`
 > The human-readable end-of-run report.
 - `pub fn writeSummary(w: *std.Io.Writer, frames: u64, s: Summary, m: PhaseMeans) std.Io.Writer.Error!void`
-> Owned dupe of environment variable `name` if set and non-empty. Read
-> through the globally-available `Io` handle (no libc), like the snapshot
-> sink's `TEAK_SNAPSHOT`. Always null on wasm/freestanding.
-- `pub fn envVar(gpa: std.mem.Allocator, name: []const u8) ?[]u8`
-> `name` as a flag: unset -> null, "0" -> false, anything else -> true.
-- `pub fn envFlag(gpa: std.mem.Allocator, name: []const u8) ?bool`
-> `name` as an unsigned integer; unset or unparsable -> null.
-- `pub fn envInt(gpa: std.mem.Allocator, name: []const u8) ?u64`
 > CSV sink: one line per frame to `<path>`, then the summary to stderr and
 > `<path>.summary.txt` at `deinit`. Lines are buffered and flushed every
 > 16 KiB so a frame rarely touches the disk. A write failure disables the
 > sink after one warning; it never crashes the app.
 - `struct Sink`
   - fields: `enabled, gpa, path, file, buf, samples, sums, presented, frames`
-  > Open `path` (env `TEAK_FRAME_STATS` wins over `opt_path`). Any
+  > Open the supplied path. Any
   > failure yields a disabled sink.
   - `pub fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8) Sink`
   - `pub fn record(self: *Sink, s: FrameStats) void`

@@ -98,7 +98,8 @@ pub const Host = struct {
     injected: [MAX_INJECTED]EffectResult = undefined,
     injected_len: usize = 0,
 
-    pub fn init(gpa: std.mem.Allocator, width: u32, height: u32) !Host {
+    pub fn init(gpa: std.mem.Allocator, width: u32, height: u32, options: teak.Options) !Host {
+        text.face.configure(options);
         return .{ .gpa = gpa, .width = width, .height = height };
     }
 
@@ -222,7 +223,7 @@ pub const Host = struct {
 
     pub fn nativeHandle(_: *Host) void {}
 
-    /// Event-driven idle (`RunOptions.idle_skip`): `run` calls this after a
+    /// Event-driven idle (`Options.idle_skip`): `run` calls this after a
     /// quiet frame. A real Host blocks until an input event or `timeout_ms`;
     /// the headless Host has no event source, so it just jumps its fake clock
     /// forward by the timeout (minus the frame the next poll adds), which
@@ -397,7 +398,7 @@ comptime {
 }
 
 fn testHost() !Host {
-    return Host.init(std.testing.allocator, 640, 480) catch |e| switch (e) {
+    return Host.init(std.testing.allocator, 640, 480, .{}) catch |e| switch (e) {
         error.FontNotFound => return error.SkipZigTest, // no system TTF (headless CI)
         else => return e,
     };

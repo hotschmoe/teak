@@ -64,8 +64,9 @@ fn wantsSharedCli(init: std.process.Init) bool {
 }
 
 pub fn main(init: std.process.Init) !void {
+    var options = try teak.options_from_environment(init, .{});
     if (wantsSharedCli(init)) {
-        return teak.headless.shotCli(App, Host, Gpu, init, "sysmon.png", .{ .width = 1100, .height = 720 }, &.{
+        return teak.headless.shotCli(App, Host, Gpu, init, "sysmon.png", .{ .width = 1100, .height = 720, .run = options }, &.{
             .{ .name = "performance", .steps = &.{.{ .frames = 2 }} },
             .{ .name = "processes", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 183, 25 } }, .{ .move = .{ 600, 400 } } } },
             .{ .name = "sensors", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 300, 25 } }, .{ .move = .{ 600, 400 } } } },
@@ -75,11 +76,12 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const w: u32 = 1100;
     const h: u32 = 720;
-    var host = try Host.init(gpa, w, h);
+    var host = try Host.init(gpa, w, h, options);
     defer host.deinit();
-    var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false });
+    var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false, .gpu_fallback = options.gpu_fallback });
     defer gpu.deinit();
-    var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, .{ .idle_skip = false });
+    options.idle_skip = false;
+    var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, options);
     defer rt.deinit();
 
     rt.post(.{ .page = o.page });

@@ -7,12 +7,13 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{ .clear_color = App.paper });
     const args = init.minimal.args.toSlice(init.arena.allocator()) catch &.{};
     if (teak.headless.requestsGate(args)) {
         return teak.headless.shotCli(App, Host, Gpu, init, "scene_layers.png", .{
             .width = 1280,
             .height = 800,
-            .run = .{ .clear_color = App.paper },
+            .run = options,
         }, &.{
             .{ .name = "initial", .steps = &.{.{ .frames = 4 }} },
             .{ .name = "row", .steps = &.{
@@ -26,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
     try teak.headless.shot(App, Host, Gpu, init.gpa, path, .{
         .width = 1280,
         .height = 800,
-        .run = .{ .clear_color = App.paper },
+        .run = options,
         .steps = &.{
             .{ .frames = 4 },
             .{ .click = .{ 1100, 108 } }, // select a row in the layers list

@@ -17,7 +17,7 @@
 //! `animationMsg(model, dt_ms)` every frame (dt is the Host-clock time since
 //! the previous frame, capped at `max_dt_ms`) and keeps frames flowing; when
 //! the app stops listing it (the tween finished) the loop goes idle again
-//! (`RunOptions.idle_skip`). Because dt is a Msg, an animation replays
+//! (`Options.idle_skip`). Because dt is a Msg, an animation replays
 //! deterministically from a Msg log.
 
 const std = @import("std");

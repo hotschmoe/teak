@@ -34,13 +34,14 @@ fn parseArgs(init: std.process.Init) Opts {
 }
 
 pub fn main(init: std.process.Init) !void {
+    var options = try teak.options_from_environment(init, .{ .clear_color = .{ 0.08, 0.09, 0.11, 1 } });
     const args = init.minimal.args.toSlice(init.arena.allocator()) catch &.{};
     if (teak.headless.requestsGate(args)) {
         return teak.headless.shotCli(App, Host, Gpu, init, "tables.png", .{
             .width = 1100,
             .height = 700,
             .msaa = false,
-            .run = .{ .clear_color = .{ 0.08, 0.09, 0.11, 1 } },
+            .run = options,
         }, &.{
             .{ .name = "initial", .steps = &.{.{ .frames = 4 }} },
             .{ .name = "list", .steps = &.{
@@ -54,11 +55,12 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const w: u32 = 1100;
     const h: u32 = 700;
-    var host = try Host.init(gpa, w, h);
+    var host = try Host.init(gpa, w, h, options);
     defer host.deinit();
-    var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false });
+    var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false, .gpu_fallback = options.gpu_fallback });
     defer gpu.deinit();
-    var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, .{ .clear_color = .{ 0.08, 0.09, 0.11, 1 }, .idle_skip = false });
+    options.idle_skip = false;
+    var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, options);
     defer rt.deinit();
 
     rt.model.tab = o.tab;

@@ -53,14 +53,16 @@ fn parseArgs(init: std.process.Init) Opts {
 
 pub fn main(init: std.process.Init) !void {
     const o = parseArgs(init);
-    if (o.stress > 0) return stress(init, o);
+    const defaults: teak.Options = .{ .clear_color = if (o.stress == 0 and o.anim != null) App.paper else null };
+    const options = try teak.options_from_environment(init, defaults);
+    if (o.stress > 0) return stress(init, o, options);
     if (o.anim) |n| {
         const steps = slide_steps(n);
         try teak.headless.shot(App, Host, Gpu, init.gpa, o.path, .{
             .width = 1280,
             .height = 800,
             .scale = o.scale,
-            .run = .{ .clear_color = App.paper },
+            .run = options,
             .steps = &steps,
         });
         std.debug.print("wrote {s} ({d} frames into the slide-in)\n", .{ o.path, n });
@@ -70,6 +72,7 @@ pub fn main(init: std.process.Init) !void {
         .width = 1280,
         .height = 800,
         .scale = o.scale,
+        .run = options,
     }, &.{
         .{
             .name = "edited",
@@ -112,7 +115,7 @@ fn slide_steps(n: u32) [5]teak.headless.Step {
 }
 
 /// N text runs on a grid sized to fit the image; reports warm frame CPU time.
-fn stress(init: std.process.Init, o: Opts) !void {
+fn stress(init: std.process.Init, o: Opts, options: teak.Options) !void {
     const gpa = init.gpa;
     const many = o.stress > 640;
     const cols: usize = if (many) 48 else 16;
@@ -121,11 +124,13 @@ fn stress(init: std.process.Init, o: Opts) !void {
     const w: u32 = if (many) 1920 else 1280;
     const h: u32 = @intCast(@min(@as(usize, 8000), rows * (if (many) @as(usize, 10) else 14) + 24));
 
-    var host = try Host.init(gpa, w, h);
+    var host = try Host.init(gpa, w, h, options);
     defer host.deinit();
-    var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false, .scale = o.scale, .max_atlas_pages = o.max_pages });
+    var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false, .scale = o.scale, .max_atlas_pages = o.max_pages, .gpu_fallback = options.gpu_fallback });
     defer gpu.deinit();
-    var rt = try teak.Runtime(Stress, Host, Gpu).init(gpa, &host, &gpu, .{ .idle_skip = false });
+    var run_options = options;
+    run_options.idle_skip = false;
+    var rt = try teak.Runtime(Stress, Host, Gpu).init(gpa, &host, &gpu, run_options);
     defer rt.deinit();
     rt.model.cols = cols;
     rt.model.rows = rows;

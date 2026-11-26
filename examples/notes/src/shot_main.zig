@@ -11,6 +11,7 @@ const App = @import("app.zig");
 const script_fonts = @import("script_fonts.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{ .clear_color = App.bg });
     const faces = script_fonts.load(init.gpa, init.io);
     defer script_fonts.free(init.gpa, faces);
     var shot_fonts: [8]teak.headless.ShotFont = undefined;
@@ -19,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
         .fonts = shot_fonts[0..faces.len],
         .width = 1280,
         .height = 800,
-        .run = .{ .clear_color = App.bg },
+        .run = options,
     }, &.{
         .{ .name = "initial", .steps = &.{.{ .frames = 3 }} },
         .{

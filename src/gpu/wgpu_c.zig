@@ -97,15 +97,13 @@ pub const DeviceContext = struct {
 
 /// Pick an adapter (compatible with `surface` when given; headless
 /// otherwise) and open a device + queue on it.
-pub fn requestDevice(instance: c.WGPUInstance, surface: ?c.WGPUSurface) error{ AdapterFailed, DeviceFailed }!DeviceContext {
+pub fn requestDevice(instance: c.WGPUInstance, surface: ?c.WGPUSurface, gpu_fallback: bool) error{ AdapterFailed, DeviceFailed }!DeviceContext {
     var adapter: c.WGPUAdapter = null;
     var adapter_opts = std.mem.zeroes(c.WGPURequestAdapterOptions);
     adapter_opts.compatibleSurface = surface orelse null;
     adapter_opts.powerPreference = c.WGPUPowerPreference_HighPerformance;
     adapter_opts.featureLevel = c.WGPUFeatureLevel_Core;
-    if (std.c.getenv("TEAK_GPU_FALLBACK")) |v| {
-        if (std.mem.span(v).len > 0 and v[0] != '0') adapter_opts.forceFallbackAdapter = 1;
-    }
+    if (gpu_fallback) adapter_opts.forceFallbackAdapter = 1;
 
     var adapter_cb = std.mem.zeroes(c.WGPURequestAdapterCallbackInfo);
     adapter_cb.mode = c.WGPUCallbackMode_AllowSpontaneous;

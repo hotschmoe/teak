@@ -387,7 +387,8 @@ fn nsStringFrom(bytes: []const u8) Id {
 pub const Host = struct {
     st: *State,
 
-    pub fn init(title: []const u8, width: u32, height: u32) !Host {
+    pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
+        text.face.configure(options);
         try objc.load();
         const pool = objc.poolPush();
         defer objc.poolPop(pool);
@@ -396,7 +397,7 @@ pub const Host = struct {
         const app = msg(Id, cls("NSApplication"), sel("sharedApplication"), .{});
         _ = msg(bool, app, sel("setActivationPolicy:"), .{@as(i64, 0)}); // regular app
 
-        const effects = try native_effects.Service.create(title);
+        const effects = try native_effects.Service.create(title, options);
         errdefer effects.destroy();
         const s = try gpa.create(State);
         errdefer gpa.destroy(s);
@@ -408,7 +409,7 @@ pub const Host = struct {
         const view = msg(Id, msg(Id, view_class, sel("alloc"), .{}), sel("initWithFrame:"), .{frame});
         const delegate = objc.allocInit(delegate_class);
         s.* = .{ .app = app, .window = window, .view = view, .layer = null, .width = width, .height = height, .effects = effects };
-        s.debug = std.c.getenv("TEAK_COCOA_DEBUG") != null;
+        s.debug = options.cocoa_debug;
         objc.setState(view, s);
         objc.setState(delegate, s);
 

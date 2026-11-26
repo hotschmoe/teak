@@ -876,14 +876,15 @@ pub const Host = struct {
     /// The last synchronous file dialog's path (`openFileDialog`).
     dialog_buf: [4096]u8 = undefined,
 
-    pub fn init(title: []const u8, width: u32, height: u32) !Host {
+    pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
+        text.face.configure(options);
         client.load() catch return error.WaylandLoadFailed;
         // A disconnected clipboard reader must not terminate the process.
         _ = signal(13, @ptrFromInt(1)); // SIGPIPE -> SIG_IGN
         const display = client.api.display_connect(null) orelse return error.WaylandConnectFailed;
         errdefer client.api.display_disconnect(display);
 
-        const effects = try native_effects.Service.create(title);
+        const effects = try native_effects.Service.create(title, options);
         errdefer effects.destroy();
 
         const s = try gpa.create(State);
@@ -897,7 +898,7 @@ pub const Host = struct {
             .width = width,
             .height = height,
             .effects = effects,
-            .scale_env = envScale(),
+            .scale_env = envScale(options.scale),
         };
         if (s.xkb) |x| s.xkb_ctx = x.f.context_new(0);
         wl.wl_registry_add_listener(registry, &registry_listener, s);
@@ -937,7 +938,7 @@ pub const Host = struct {
             wl.wp_fractional_scale_v1_add_listener(f, &fractional_listener, s);
         }
         if (s.viewporter) |vp| {
-            if (std.c.getenv("TEAK_WL_NO_VIEWPORT") == null) s.viewport = wl.wp_viewporter_get_viewport(vp, s.surface);
+            if (!options.wayland_no_viewport) s.viewport = wl.wp_viewporter_get_viewport(vp, s.surface);
         }
         wl.wl_surface_commit(s.surface);
 
@@ -1088,17 +1089,11 @@ pub const Host = struct {
     /// Synchronous file dialogs through the external picker (`file_picker.zig`),
     /// as on X11. The path lives in `dialog_buf` until the next dialog call.
     pub fn openFileDialog(self: *Host, f: FileDialogFilter) FileDialogResult {
-        return file_picker.pickSync(&self.dialog_buf, .open, f.pattern, pickerEnv());
+        return file_picker.pickSync(&self.dialog_buf, .open, f.pattern, self.st.effects.options);
     }
 
     pub fn saveFileDialog(self: *Host, f: FileDialogFilter) FileDialogResult {
-        return file_picker.pickSync(&self.dialog_buf, .save, f.pattern, pickerEnv());
-    }
-
-    fn pickerEnv() ?[]const u8 {
-        const v = std.c.getenv("TEAK_PICKER") orelse return null;
-        const s = std.mem.span(v);
-        return if (s.len == 0) null else s;
+        return file_picker.pickSync(&self.dialog_buf, .save, f.pattern, self.st.effects.options);
     }
 
     pub fn openSecondaryWindow(_: *Host, _: []const u8, _: u32, _: u32) ?u32 {
@@ -1190,9 +1185,8 @@ pub const Host = struct {
     }
 };
 
-fn envScale() ?f32 {
-    const v = std.c.getenv("TEAK_SCALE") orelse return null;
-    const f = std.fmt.parseFloat(f32, std.mem.span(v)) catch return null;
+fn envScale(value: ?[]const u8) ?f32 {
+    const f = std.fmt.parseFloat(f32, value orelse return null) catch return null;
     return if (f >= 0.5 and f <= 8) f else null;
 }
 

@@ -41,8 +41,10 @@ const states = [_]teak.headless.ShotState{
 };
 
 pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{});
     try teak.headless.shotCli(App, Host, Gpu, init, "gallery.png", .{
         .width = 1280,
         .height = 800,
+        .run = options,
     }, &states);
 }
