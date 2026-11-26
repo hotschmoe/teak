@@ -152,7 +152,7 @@ const Options = struct { update: bool = false, table: bool = false, root: ?[]con
 const State = struct {
     io: std.Io,
     output: *std.Io.Writer,
-    root: std.Io.Dir = .cwd(),
+    root: std.Io.Dir,
     report_only: bool = false,
     held: [files_max]Path = undefined,
     held_len: u16 = 0,
@@ -188,7 +188,7 @@ pub fn main(init: std.process.Init) !void {
     const started = std.Io.Clock.awake.now(init.io);
     const state = try init.gpa.create(State);
     defer init.gpa.destroy(state);
-    state.* = .{ .io = init.io, .output = &output.interface };
+    state.* = .{ .io = init.io, .output = &output.interface, .root = .cwd() };
     assert(state.paths_len == 0);
     assert(state.groups_len == 0);
     run(state, init) catch |err| {
