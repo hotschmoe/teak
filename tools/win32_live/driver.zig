@@ -166,7 +166,6 @@ fn sleepMs(ms: u32) void {
     Sleep(ms);
 }
 
-
 var snap_path: []const u8 = "";
 
 fn readSnapshot() ?[]u8 {
@@ -224,7 +223,6 @@ fn findWidget(snap: []const u8, kind: []const u8, label: []const u8) ?Rect {
     }
     return null;
 }
-
 
 var hwnd: HANDLE = undefined;
 /// False when the runner would not give us the foreground: input is then
@@ -333,7 +331,6 @@ fn typeText(text: []const u8) void {
     sleepMs(200);
 }
 
-
 fn clipboardSet(text: []const u8) bool {
     var wide: [512]u16 = undefined;
     const n = std.unicode.utf8ToUtf16Le(&wide, text) catch return false;
@@ -363,7 +360,6 @@ fn clipboardGet(buf: []u8) ?[]const u8 {
     const len = std.unicode.utf16LeToUtf8(buf, p[0..n]) catch return null;
     return buf[0..len];
 }
-
 
 fn capture(name: []const u8) void {
     var rc: RECT = undefined;
@@ -415,7 +411,6 @@ fn allBlack(px: []const u8) bool {
     }
     return true;
 }
-
 
 const DataObject = extern struct {
     vtbl: *const extern struct {
@@ -622,7 +617,6 @@ fn dragFile(path: []const u8, over_lx: f32, over_ly: f32) bool {
     return finished and drag_effect == 1;
 }
 
-
 fn launch(exe: []const u8) ?HANDLE {
     var cmd: [1024:0]u16 = undefined;
     var tmp: [1024]u8 = undefined;
@@ -647,7 +641,6 @@ fn waitWindow(timeout_ms: u32) bool {
     }
     return false;
 }
-
 
 fn windowSize(snap: []const u8) ?[2]u32 {
     const i = std.mem.indexOf(u8, snap, "window=") orelse return null;
