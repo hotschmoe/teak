@@ -37,6 +37,10 @@ const Table = teak.DataTable(.{ .max_rows = 131_072, .max_cols = 8 });
   100 000 rows sort in a few tens of ms (one click, not per frame).
   When the row *data* changes but the count does not (a re-solve), call `table.resort(src)` (or send `.resort`) once: it
   re-applies the current column and direction without cycling them, and keeps selection, cursor and scroll.
+  When the row *set* changes (a live list: rows appear, vanish or move), call `table.reload(n, src)`: it keeps the sort,
+  the column widths, focus and the scroll position, and drops the selection and cursor, because a data row index no longer
+  names the same row. Re-select what should stay selected with `table.select(row)` (`examples/sysmon` keeps the selection
+  on the same processes by pid). `setRows` is for a new table: it also resets the sort and scrolls to the top.
 * **Selection** is a bitset by *data* row, so it survives sorting. Click selects, Ctrl-click toggles, Shift-click extends from the
   anchor (range in display order); Up/Down/PageUp/PageDown/Home/End move the cursor (Shift extends, Ctrl-A selects all, Escape clears) and
   scroll it into view. Modifier keys reach `update` through the new `modsMsg` hook (below), so a click Msg needs no payload.

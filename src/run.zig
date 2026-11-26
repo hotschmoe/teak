@@ -684,6 +684,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Count of Msgs dispatched so far; a frame that leaves it unchanged
         /// changed no state.
         dispatch_count: u64 = 0,
+        /// `post` delivered a Msg since the last frame: that frame must build.
+        posted: bool = false,
         /// Pointer position / buttons of the previous frame, to tell a still
         /// mouse from a moved one.
         last_mouse_x: f32 = -1,
@@ -883,8 +885,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.serviceEffects();
 
             self.stats_cur.update_ms = self.msSince(t_frame);
-            self.quiet = self.opts.idle_skip and !self.continuous and self.built_once and
+            self.quiet = self.opts.idle_skip and !self.continuous and self.built_once and !self.posted and
                 self.dispatch_count == dispatched_before and !self.layout_dirty and self.inputIdle(input) and !self.ctl.consumeDirty();
+            self.posted = false;
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
@@ -989,6 +992,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (sub_mod.nextDueMs(Msg, App.subscribe(&self.model), now)) |due| wait = @intCast(@min(due, wait));
             }
             return wait;
+        }
+
+        /// A Msg from the code that owns the loop (a sampler, a socket, a
+        /// worker's mailbox drained on the loop thread). Call it between
+        /// frames, on the loop thread; it goes through `update` like a routed
+        /// Msg and the next `frame` builds. See docs/features/run.md.
+        pub fn post(self: *Self, msg: Msg) void {
+            self.dispatch(msg);
+            self.posted = true;
         }
 
         /// Every Msg is routed through here so the live snapshot's header can

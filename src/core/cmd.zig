@@ -316,6 +316,18 @@ pub const ButtonStyle = struct {
     /// Fixed-width label: the button is exactly `min_width` wide whatever the label,
     /// and a label that does not fit is cut with U+2026 at the pixel (table cells).
     ellipsis: bool = false,
+
+    /// This style as one cell of a grid of rows: square, no border, gradient,
+    /// shadow or press offset, whatever shape the theme gives its buttons.
+    pub fn flat(self: ButtonStyle) ButtonStyle {
+        var s = self;
+        s.border = null;
+        s.radius = .{};
+        s.gradient = null;
+        s.soft_shadow = null;
+        s.press_offset_y = 0;
+        return s;
+    }
 };
 
 pub const TextInputStyle = struct {
