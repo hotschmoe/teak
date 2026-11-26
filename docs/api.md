@@ -205,6 +205,9 @@ Signatures and `///` doc comments of every public declaration reachable from
 > Colors, size and alignment of a button.
 - `teak.ButtonStyle` = `cmd.ButtonStyle`
   - fields: `bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg, hover_fg, press_fg, border, border_width, press_offset_y, label_align, h_padding, min_width, height, radius, gradient, soft_shadow, flex, ellipsis`
+  > This style as one cell of a grid of rows: square, no border, gradient,
+  > shadow or press offset, whatever shape the theme gives its buttons.
+  - `pub fn flat(self: ButtonStyle) ButtonStyle`
 > Per-corner radii for SDF surfaces.
 - `teak.Radii`: `pub const Radii = cmd.Radii`
 > Soft box shadow.
@@ -922,6 +925,9 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `content, font, color, wrap, max_lines, text_align`
 - `struct ButtonStyle`
   - fields: `bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg, hover_fg, press_fg, border, border_width, press_offset_y, label_align, h_padding, min_width, height, radius, gradient, soft_shadow, flex, ellipsis`
+  > This style as one cell of a grid of rows: square, no border, gradient,
+  > shadow or press offset, whatever shape the theme gives its buttons.
+  - `pub fn flat(self: ButtonStyle) ButtonStyle`
 - `struct TextInputStyle`
   - fields: `bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg, disabled_border, selection_bg, variant, border_width, flex, min_width, height, radius`
 - `struct CheckboxStyle`
@@ -2624,7 +2630,8 @@ viewport-agnostic snapshot back.
 > which must surface as `InputState.resized`), an async effect result is
 > ready, or `timeout_ms` elapses — then return. Hosts without it keep
 > polling at their own pace (the skipped frames are still nearly free).
-> X11: `XPending` + `poll` on the connection fd; Win32:
+> X11: `XPending` + `poll` on the connection fd; Wayland:
+> `prepare_read` + `poll` on the display fd; Win32:
 > `MsgWaitForMultipleObjects`; web: n/a (rAF drives `frame`).
 > - `openSecondaryWindow(title, w, h)` returns an opaque window handle
 > for a second top-level window sharing this Host's event source.

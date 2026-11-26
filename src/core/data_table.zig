@@ -173,6 +173,28 @@ pub fn DataTable(comptime cfg: Config) type {
                 applySort(self, src);
             }
 
+            /// The row SET changed (rows appeared, vanished or moved): keep
+            /// the sort column and direction, column widths, focus and scroll
+            /// position, and re-apply the sort. Selection and cursor are
+            /// keyed by data row, which no longer names the same row, so they
+            /// are dropped; re-select with `select` what should stay selected.
+            pub fn reload(self: *Model, n: usize, src: anytype) void {
+                self.n_rows = @intCast(@min(n, max_rows));
+                self.clearSelection();
+                self.has_cursor = false;
+                self.search_len = 0;
+                applySort(self, src);
+            }
+
+            /// Add data row `row` to the selection and put the cursor on it.
+            pub fn select(self: *Model, row: u32) void {
+                if (row >= self.n_rows) return;
+                self.setBit(row, true);
+                self.cursor = row;
+                self.anchor = row;
+                self.has_cursor = true;
+            }
+
             /// Whether the scroller still needs frame time.
             pub fn animating(self: *const Model) bool {
                 return self.sc.animating();
@@ -471,7 +493,7 @@ pub fn DataTable(comptime cfg: Config) type {
                 if (m.sort_col != null and m.sort_col.? == i) {
                     title = std.fmt.allocPrint(arena, "{s} {s}", .{ col.title, if (m.sort_desc) "\u{25BC}" else "\u{25B2}" }) catch col.title;
                 }
-                var hs = cb.theme.button;
+                var hs = cb.theme.button.flat();
                 hs.bg = pal.bg_raised;
                 hs.hover_bg = pal.bg_hover;
                 hs.fg = pal.fg_muted;
@@ -527,7 +549,7 @@ pub fn DataTable(comptime cfg: Config) type {
                 cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .height = opts.row_h });
                 for (cols, 0..) |col, i| {
                     const w = m.widths[i];
-                    var bs = cb.theme.button;
+                    var bs = cb.theme.button.flat();
                     bs.bg = bg;
                     bs.hover_bg = bg;
                     bs.press_bg = bg;
