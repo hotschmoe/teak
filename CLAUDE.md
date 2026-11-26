@@ -285,8 +285,8 @@ src/                                          -- the library, consumable as a Zi
     linux.zig                                 -- The Linux host: one binary, two backends
     native_drops.zig                          -- Turning pasted / dropped bytes into the EffectResults the web host produces, for native hosts
     native_effects.zig                        -- Declarative-effects service for native hosts (Linux/X11 and Windows): what Host.submit /
-    native_fonts.zig                          -- Native font discovery and byte loaders
-    native_io.zig                             -- Native file operations and statistics clock
+    native_fonts.zig                          -- See SRC.md, src/platform/native_fonts.zig
+    native_io.zig                             -- See SRC.md, src/platform/native_io.zig
     objc.zig                                  -- A minimal Objective-C runtime binding for the macOS host, loaded with std.DynLib instead of
     wasm.zig                                  -- Wasm host backed by zunk's web.input + web.app modules
     wayland.zig                               -- Wayland host backend: the platform/host.zig contract on top of xdg-shell, the Linux counterpart
@@ -307,12 +307,15 @@ src/                                          -- the library, consumable as a Zi
     vertex.zig                                -- Vertex layout + quad emitters
   sim/
     check.zig                                 -- See SRC.md, src/sim/check.zig
+    files.zig                                 -- See SRC.md, src/sim/files.zig
     gpu.zig                                   -- See SRC.md, src/sim/gpu.zig
     hash.zig                                  -- See SRC.md, src/sim/hash.zig
     host.zig                                  -- See SRC.md, src/sim/host.zig
     input.zig                                 -- See SRC.md, src/sim/input.zig
+    live_focus.zig                            -- See SRC.md, src/sim/live_focus.zig
     metrics.zig                               -- See SRC.md, src/sim/metrics.zig
     probe.zig                                 -- See SRC.md, src/sim/probe.zig
+    recording.zig                             -- See SRC.md, src/sim/recording.zig
     runner.zig                                -- See SRC.md, src/sim/runner.zig
     sim.zig                                   -- See SRC.md, src/sim
     trace.zig                                 -- See SRC.md, src/sim/trace.zig

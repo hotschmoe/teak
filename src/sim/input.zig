@@ -22,6 +22,7 @@ pub const Event = union(enum) {
 
 pub const Frame = struct {
     advance_ms: u32 = 16,
+    focus_probe: bool = false,
     count: u8 = 0,
     events: [events_max]Event = undefined,
 

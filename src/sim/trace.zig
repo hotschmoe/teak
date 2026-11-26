@@ -11,7 +11,11 @@ pub const Header = struct {
     commit: []const u8,
     workload_frames: u32,
 };
-const DiskFrame = struct { advance_ms: u32, events: []const input.Event };
+const DiskFrame = struct {
+    advance_ms: u32,
+    focus_probe: bool = false,
+    events: []const input.Event,
+};
 pub const Loaded = struct { header: Header, count: u32 };
 
 pub fn write(writer: *std.Io.Writer, header: Header, frames: []const input.Frame) !void {
@@ -22,6 +26,7 @@ pub fn write(writer: *std.Io.Writer, header: Header, frames: []const input.Frame
     for (frames) |frame| {
         try std.json.Stringify.value(DiskFrame{
             .advance_ms = frame.advance_ms,
+            .focus_probe = frame.focus_probe,
             .events = frame.events[0..frame.count],
         }, .{}, writer);
         try writer.writeByte('\n');
@@ -49,7 +54,9 @@ pub fn read(
         const frame = value.value;
         if (frame.events.len > input.events_max or frame.advance_ms > 300000)
             return error.TraceInput;
-        frames[count] = .{ .advance_ms = frame.advance_ms };
+        if (frame.focus_probe and (frame.advance_ms != 0 or frame.events.len != 1 or
+            frame.events[0] != .key or frame.events[0].key != .tab)) return error.TraceInput;
+        frames[count] = .{ .advance_ms = frame.advance_ms, .focus_probe = frame.focus_probe };
         for (frame.events) |event| {
             try validate_event(event);
             try frames[count].push(event);

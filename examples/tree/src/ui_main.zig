@@ -1,7 +1,4 @@
-//! Native entry for the tree example. `teak.run` owns the host loop; the
-//! app supplies `keySpecialMsg` (arrow / page-key scrolling) and
-//! `wheelMsg` (mouse-wheel scrolling). Backends (X11 / Win32 + wgpu) are
-//! picked by the build under the stable import names below.
+//! See SRC.md, examples/tree/src/app.zig.
 
 const std = @import("std");
 const teak = @import("teak");

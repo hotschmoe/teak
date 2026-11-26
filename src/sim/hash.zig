@@ -115,11 +115,7 @@ fn Visitor(comptime T: type) type {
                 .@"struct" => |info| if (info.layout == .@"packed") {
                     h.integer(@as(@Int(.unsigned, @bitSizeOf(T)), @bitCast(value.*)));
                 } else {
-                    inline for (0..info.field_names.len) |offset| {
-                        const i = info.field_names.len - offset - 1;
-                        if (info.field_attrs[i].@"comptime") continue;
-                        try h.push(info.field_types[i], &@field(value.*, info.field_names[i]));
-                    }
+                    try fields(h, value);
                 },
                 .@"union" => {
                     h.integer(@backingInt(std.meta.activeTag(value.*)));
@@ -148,6 +144,61 @@ fn Visitor(comptime T: type) type {
             assert(h.count <= jobs_max);
         }
     };
+}
+
+fn fields(h: *Hasher, value: anytype) Error!void {
+    const T = @TypeOf(value.*);
+    const info = @typeInfo(T).@"struct";
+    assert(h.count <= jobs_max);
+    inline for (0..info.field_names.len) |offset| {
+        const i = info.field_names.len - offset - 1;
+        const name = info.field_names[i];
+        if (info.field_attrs[i].@"comptime") continue;
+        if (comptime @typeInfo(info.field_types[i]) == .array) {
+            try array_field(h, value, name);
+        } else try h.push(info.field_types[i], &@field(value.*, name));
+    }
+    assert(h.count <= jobs_max);
+}
+
+fn array_field(h: *Hasher, value: anytype, comptime name: []const u8) Error!void {
+    const T = @TypeOf(value.*);
+    const array = &@field(value.*, name);
+    const Child = @typeInfo(@TypeOf(array.*)).array.child;
+    assert(h.count <= jobs_max);
+    if (comptime std.mem.eql(u8, name, "log") and @hasField(T, "log_n")) {
+        assert(value.log_n <= array.len);
+        h.word(value.log_n);
+        for (0..value.log_n) |offset| {
+            const i = value.log_n - offset - 1;
+            assert(value.log_len[i] <= array[i].len);
+            h.word(value.log_len[i]);
+            try h.span(u8, array[i][0..value.log_len[i]]);
+        }
+        return;
+    }
+    const length = active_length(value, name, @intCast(array.len));
+    assert(length <= array.len);
+    h.word(length);
+    try h.span(Child, array[0..length]);
+}
+
+fn active_length(value: anytype, comptime name: []const u8, capacity: u32) u32 {
+    const T = @TypeOf(value.*);
+    const sibling = name ++ "_len";
+    if (comptime @hasField(T, sibling) and
+        @typeInfo(@FieldType(T, sibling)) == .int) return @intCast(@field(value.*, sibling));
+    inline for (.{
+        .{ "buf", "len" },      .{ "items", "len" },     .{ "text", "len" },
+        .{ "recs", "n" },       .{ "events", "count" },  .{ "heights", "count" },
+        .{ "order", "n_rows" }, .{ "rank", "n_rows" },   .{ "visible", "n_visible" },
+        .{ "h", "n" },          .{ "log_len", "log_n" },
+    }) |pair| {
+        if (comptime std.mem.eql(u8, name, pair[0]) and @hasField(T, pair[1]))
+            return @intCast(@field(value.*, pair[1]));
+    }
+    if (comptime std.mem.eql(u8, name, "prefix") and @hasField(T, "n")) return value.n + 1;
+    return capacity;
 }
 
 pub fn hash(value: anytype) Error!u64 {

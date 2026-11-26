@@ -16,15 +16,13 @@
 
 const std = @import("std");
 const teak = @import("teak");
+const assert = teak.assert;
+const tree_scroll_id: u32 = 1;
 
 pub const MAX_NODES = 128;
 pub const MAX_LABEL = 48;
 pub const INDENT_PER_LEVEL: f32 = 20;
-/// Fixed viewport height for the scroll region. Mirrored from the
-/// `pushScroll` call in `view`. Kept here so the keyboard handler can
-/// translate page_up / page_down into a viewport-sized delta and the
-/// update arm can clamp against the visible window without needing
-/// layout output.
+/// Page keys use the requested scroll height.
 pub const SCROLL_VIEWPORT_HEIGHT: f32 = 400;
 /// Pixel delta for an arrow-key step. Roughly one row.
 pub const SCROLL_LINE_PX: f32 = 24;
@@ -53,6 +51,8 @@ pub const Model = struct {
     /// and arrow / page keys translate into `.scroll_by` Msgs that
     /// nudge this field.
     scroll_y: f32 = 0,
+    viewport_h: f32 = 0,
+    content_h: f32 = 0,
 
     pub fn init() Model {
         var m: Model = .{};
@@ -90,9 +90,11 @@ pub const Msg = union(enum) {
     select: u16,
     /// Relative scroll delta in pixels; positive = scroll down.
     scroll_by: f32,
+    scroll_extent: [2]f32,
 };
 
 pub fn update(m: *Model, msg: Msg) void {
+    assert(m.nodes_len <= MAX_NODES);
     switch (msg) {
         .toggle => |i| {
             if (i >= m.nodes_len) return;
@@ -102,10 +104,21 @@ pub fn update(m: *Model, msg: Msg) void {
             if (i < m.nodes_len) m.selected = i;
         },
         .scroll_by => |dy| {
-            const next = m.scroll_y + dy;
-            m.scroll_y = if (next < 0) 0 else next;
+            m.scroll_y = std.math.clamp(m.scroll_y + dy, 0, @max(0, m.content_h - m.viewport_h));
+        },
+        .scroll_extent => |extent| {
+            m.viewport_h = extent[0];
+            m.content_h = extent[1];
+            m.scroll_y = std.math.clamp(m.scroll_y, 0, @max(0, m.content_h - m.viewport_h));
         },
     }
+    assert(m.scroll_y >= 0);
+}
+
+pub fn scrollLayoutMsg(_: *const Model, id: u32, _: f32, vh: f32, _: f32, ch: f32) ?Msg {
+    assert(vh >= 0);
+    assert(ch >= 0);
+    return if (id == tree_scroll_id) .{ .scroll_extent = .{ vh, ch } } else null;
 }
 
 pub fn view(m: *const Model, cb: anytype) void {
@@ -115,6 +128,7 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.divider();
 
     cb.pushScroll(.{
+        .id = tree_scroll_id,
         .direction = .vertical,
         .padding = 0,
         .gap = 2,
@@ -129,7 +143,7 @@ pub fn view(m: *const Model, cb: anytype) void {
         if (node.depth < hide_below_depth) hide_below_depth = std.math.maxInt(u8);
         if (node.depth >= hide_below_depth) continue;
 
-        emitRow(cb, @intCast(idx), node);
+        emit_row(cb, @intCast(idx), node);
 
         if (!node.is_leaf and !node.expanded) {
             hide_below_depth = node.depth + 1;
@@ -140,7 +154,7 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-fn emitRow(cb: anytype, idx: u16, node: *const Node) void {
+fn emit_row(cb: anytype, idx: u16, node: *const Node) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 6 });
 
     if (node.depth > 0) {
@@ -208,10 +222,12 @@ pub fn keySpecialMsg(_: *const Model, k: teak.SpecialKey) ?Msg {
     };
 }
 
-/// Wheel-input glue. The host calls this with `input.wheel_dy`; a zero
-/// value short-circuits to null so the loop avoids an unnecessary
-/// dispatch.
-pub fn wheelMsg(_: *const Model, wheel_dy: f32) ?Msg {
-    if (wheel_dy == 0) return null;
-    return .{ .scroll_by = wheel_dy };
+pub fn pointerMsg(m: *const Model, event: teak.PointerEvent(Msg)) ?Msg {
+    assert(m.nodes_len <= MAX_NODES);
+    assert(m.scroll_y >= 0);
+    const scroll = event.asScroll() orelse return null;
+    return if (scroll.id == tree_scroll_id and scroll.dy != 0)
+        .{ .scroll_by = scroll.dy }
+    else
+        null;
 }

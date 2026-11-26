@@ -8,8 +8,10 @@
   recording GPU, deterministic hashes, view/idle/layout/hit/focus/resource checks,
   coverage counters and input-prefix replay. `zig build sim` selects the example app;
   `sim-heavy` supplies budgeted seed campaigns. See [simulation](docs/features/sim.md)
-  for limits and the known tree scroll failure. The new interface-name/platform-I/O
-  tidy conflicts remain unresolved; this is not yet a green blocking gate.
+  for limits. Mixed pointer/key/text bursts, live Tab-cycle checks and an independent
+  painter/clip hit oracle now cover the first version's gaps. Host-owned memory files
+  exercise runtime snapshots, recording and statistics. `--record-check 1` exposes the
+  existing recorder's omissions and remains outside gate seeds.
 
 ### Changed
 
@@ -25,6 +27,10 @@
 
 ### Fixed
 
+- Tree clamps its scroll offset using runtime-reported viewport/content extents.
+- A later modal backdrop blocks earlier overlay click, wheel and drag targets.
+- Simulation hashes active container prefixes, including editor undo storage, subscriptions,
+  table permutations, visible tree rows and individually sized notes log rows.
 - Layout initializes structural command rectangles instead of leaving undefined values.
 - Modifier-only messages no longer let Runtime report quiet after changing Model.
 - Runtime accepts a Host statistics clock override and an explicit focus-loss cancellation

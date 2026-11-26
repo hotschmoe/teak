@@ -175,10 +175,7 @@ pub const Generator = struct {
             .text_multibyte => try self.type_text(frame, runtime, 2),
             .text_rtl => try self.type_text(frame, runtime, 3),
             .text_combining => try self.type_text(frame, runtime, 4),
-            .burst => {
-                const count = 12 + self.draw(28);
-                for (0..count) |_| try frame.push(.{ .key = .tab });
-            },
+            .burst => try self.burst(frame, runtime),
             .idle => frame.advance_ms = 1 + self.draw(300000),
             .resize => {
                 const sizes = [_][2]u32{
@@ -205,6 +202,19 @@ pub const Generator = struct {
         };
         const button = choices[self.draw(choices.len)];
         try frame.push(if (kind == .press) .{ .down = button } else .{ .up = button });
+    }
+
+    fn burst(self: *Generator, frame: *input.Frame, runtime: anytype) !void {
+        assert(frame.count == 0);
+        assert(self.phase == .ready);
+        const rounds = 4 + self.draw(10);
+        const choices = [_]keys.SpecialKey{ .tab, .shift_tab, .left, .right, .backspace };
+        for (0..rounds) |_| {
+            try frame.push(.{ .move = self.target(runtime, .move) });
+            try frame.push(.{ .key = choices[self.draw(choices.len)] });
+            try frame.push(.{ .text = @intCast(self.draw(input.text_samples.len)) });
+        }
+        assert(frame.count >= 12 and frame.count <= 39);
     }
 
     fn type_text(self: *Generator, frame: *input.Frame, runtime: anytype, sample: u8) !void {

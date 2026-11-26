@@ -16,6 +16,7 @@ const Options = struct {
     budget_ms: u32 = 0,
     replay: ?[]const u8 = null,
     save: ?[]const u8 = null,
+    record_check: bool = false,
 };
 const Diagnostics = struct {
     io: std.Io,
@@ -24,6 +25,9 @@ const Diagnostics = struct {
     progress: sim.check.Progress = .{},
     frames: []sim.input.Frame,
     bytes: []u8,
+    record_bytes: []u8,
+    record_len: u32 = 0,
+    record_check: bool = false,
 };
 var diagnostics: ?*Diagnostics = null;
 var reporting_panic: bool = false;
@@ -65,6 +69,8 @@ pub fn main(init: std.process.Init) !void {
         .directory = std.Io.Dir.cwd(),
         .frames = frames,
         .bytes = bytes,
+        .record_bytes = bytes[0..sim.files.file_bytes_max],
+        .record_check = options.record_check,
         .header = .{
             .app = options.app,
             .seed = seed,
@@ -114,6 +120,8 @@ fn parse_options(arguments: []const []const u8) !Options {
             result.replay = value;
         } else if (std.mem.eql(u8, flag, "--save")) {
             result.save = value;
+        } else if (std.mem.eql(u8, flag, "--record-check")) {
+            result.record_check = try std.fmt.parseInt(u1, value, 10) == 1;
         } else return error.UnknownArgument;
     }
     if (result.frames == 0 or result.frames > frames_max or result.seeds == 0)
@@ -155,6 +163,7 @@ fn run_seeds(
         state.header.commit = build_options.commit;
         const recorded = state.progress.recorded;
         state.progress = .{ .recorded = if (options.replay != null) recorded else 0 };
+        state.record_len = 0;
         const config: sim.runner.Config = .{
             .seed = seed,
             .workload_frames = options.frames,
@@ -162,6 +171,9 @@ fn run_seeds(
             .fingerprints = fingerprints,
             .progress = &state.progress,
             .replay = options.replay != null,
+            .record_check = options.record_check,
+            .record_bytes = state.record_bytes,
+            .record_len = &state.record_len,
         };
         const began = clock_ns(state);
         const report = dispatch(init.gpa, options.app, config) catch |err| {
@@ -264,11 +276,11 @@ fn report_failure(state: *Diagnostics, message: []const u8) !void {
         state.progress.pass,        @tagName(state.progress.checker), build_options.commit,
         message,
     });
-    if (state.progress.checker == .layout)
+    if (state.progress.checker == .layout or state.progress.checker == .hit_test)
         std.debug.print("index={d} values={any}\n", .{
             state.progress.index, state.progress.values,
         });
-    if (state.progress.checker == .determinism)
+    if (state.progress.checker == .determinism or state.progress.checker == .record_replay)
         std.debug.print("component={d} expected={x} actual={x}\n", .{
             state.progress.index, state.progress.expected, state.progress.actual,
         });
@@ -279,5 +291,6 @@ fn report_failure(state: *Diagnostics, message: []const u8) !void {
     });
     state.progress.recorded = @min(state.progress.recorded, state.progress.frame + 1);
     try save_trace(state, path);
-    std.debug.print("replay: zig build sim -- --replay {s}\n", .{path});
+    const flag = if (state.record_check) " --record-check 1" else "";
+    std.debug.print("replay: zig build sim -- --replay {s}{s}\n", .{ path, flag });
 }

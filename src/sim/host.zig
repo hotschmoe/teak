@@ -6,6 +6,8 @@ const Queue = @import("../platform/input_queue.zig").InputQueue;
 const input = @import("input.zig");
 const hashing = @import("hash.zig");
 const effects = @import("../core/effects.zig");
+const memory_files = @import("files.zig");
+const recording = @import("../input_record.zig");
 
 pub const effects_max = 1024;
 pub const clipboard_max = 8192;
@@ -49,6 +51,8 @@ pub fn Host(comptime Metrics: type) type {
         a11y_publications: u64 = 0,
         title_hash: u64 = 0,
         failure: ?anyerror = null,
+        file_table: memory_files.Table = .{},
+        recorded_input: ?recording.FrameRec = null,
 
         pub fn init() !Self {
             const metrics = try Metrics.init();
@@ -76,6 +80,8 @@ pub fn Host(comptime Metrics: type) type {
             assert(self.live);
             assert(self.next.count <= input.events_max);
             self.queue.beginFrame();
+            if (self.recorded_input) |*record| self.apply_record(record);
+            self.recorded_input = null;
             var resized = self.first_poll;
             var focus_lost = false;
             for (self.next.events[0..self.next.count]) |event| switch (event) {
@@ -121,6 +127,27 @@ pub fn Host(comptime Metrics: type) type {
                 return;
             }
             self.queue.pushKey(key);
+        }
+
+        pub fn files(self: *Self) interface.FileIo {
+            assert(self.live);
+            assert(self.file_table.count <= memory_files.files_max);
+            return self.file_table.capability();
+        }
+
+        fn apply_record(self: *Self, record: *const recording.FrameRec) void {
+            assert(self.live);
+            assert(record.chars_len <= Queue.CHARS_CAP and record.keys_len <= Queue.KEYS_CAP);
+            if (record.move) |point| self.queue.pointerMoved(point[0], point[1]);
+            if (record.mods) |mods| self.queue.mods = mods;
+            const buttons = [_]@import("../core/pointer.zig").Button{ .left, .middle, .right };
+            inline for (buttons) |button| {
+                if (@field(record.down, @tagName(button))) self.queue.buttonDown(button);
+                if (@field(record.up, @tagName(button))) self.queue.buttonUp(button);
+            }
+            self.queue.wheel(record.wheel[0], record.wheel[1]);
+            self.queue.pushText(record.charsSlice());
+            for (record.keysSlice()) |key| self.apply_key(key);
         }
 
         fn apply_text(self: *Self, sample: u8) void {

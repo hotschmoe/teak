@@ -141,6 +141,7 @@ fn hitTestLayer(
                     rectContains(rects[i], mouse_x, mouse_y) and
                     rectContains(cur_clip, mouse_x, mouse_y))
                 {
+                    best = null;
                     modal_index = i;
                     modal_msg = ov.backdrop_msg;
                 }
@@ -248,7 +249,10 @@ fn wheelTargetLayer(cmds: anytype, rects: []const Rect, x: f32, y: f32, layer: L
             .push_overlay => |ov| {
                 overlay_depth += 1;
                 clip.push(clipRect(rects[i], cur_clip));
-                if (layer == .overlay and ov.modal and inside) modal_under_point = true;
+                if (layer == .overlay and ov.modal and inside) {
+                    best = null;
+                    modal_under_point = true;
+                }
             },
             .pop_overlay => {
                 overlay_depth -= 1;
@@ -319,7 +323,10 @@ fn dragLayer(cmds: anytype, rects: []const Rect, x: f32, y: f32, layer: Layer) L
             .push_overlay => |ov| {
                 overlay_depth += 1;
                 clip.push(clipRect(rects[i], cur_clip));
-                if (layer == .overlay and ov.modal and inside) modal_under_point = true;
+                if (layer == .overlay and ov.modal and inside) {
+                    best = .{};
+                    modal_under_point = true;
+                }
             },
             .pop_overlay => {
                 overlay_depth -= 1;

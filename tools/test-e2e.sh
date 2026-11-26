@@ -27,7 +27,6 @@ case "${1:-}" in
     for example in todo counter_greeter tree gallery tables notes probe; do
       frames=128
       seed=1
-      if [[ "$example" == tree ]]; then seed=14; fi
       (cd "$root" && "$zig" build sim -j4 -- --app "$example" --seed "$seed" --frames "$frames")
     done ;;
   heavy)

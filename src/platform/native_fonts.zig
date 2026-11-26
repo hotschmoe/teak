@@ -1,3 +1,4 @@
+//! See SRC.md, src/platform/native_fonts.zig.
 const std = @import("std");
 const builtin = @import("builtin");
 const teak = @import("teak");
