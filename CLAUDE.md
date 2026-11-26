@@ -42,6 +42,12 @@ Requires **Zig 0.17.1+**.
 
 The binding testing and comment policy is in [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md). Run the blocking end-to-end gate from the repository root with `zig build test -j4`; run the background gate with `zig build test-heavy -j4`. The blocking gate uses Bash. On Linux, the background gate needs Vulkan, Chromium, Node and the tools npm dependencies (`npm ci --prefix tools`); on Windows it drives native windows through PowerShell. Do not add unit tests or golden-output tests.
 
+Tidy is shared with zunk; only its typed configuration block differs. The ratchet
+also inventories `processes` and container-level mutable `globals`. Held files
+must meet the style target independently. One-statement functions are excluded
+from the assertion average; multiline literal long lines are reported separately.
+See [SRC.md](SRC.md#toolstidyzig) for matching rules and limits.
+
 ```sh
 # Library
 zig build test -j4                          # Blocking end-to-end checks
