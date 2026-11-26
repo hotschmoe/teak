@@ -665,8 +665,6 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.textFieldSpecial`: `pub const textFieldSpecial = text_field.textFieldSpecial`
 > Build the app Msg for pasted text into a named field.
 - `teak.textFieldReplaceSelection`: `pub const textFieldReplaceSelection = text_field.textFieldReplaceSelection`
-> True if a key needs host-level clipboard access.
-- `teak.keyNeedsClipboard`: `pub const keyNeedsClipboard = text_field.keyNeedsClipboard`
 > The Msg for a clipboard chord on a field, for the App's `clipboardMsg` hook.
 - `teak.textFieldClipboardMsg`: `pub const textFieldClipboardMsg = text_field.textFieldClipboardMsg`
 > What Ctrl+C / Ctrl+X copy from a field Model, for the App's `clipboardText` hook.
@@ -1601,9 +1599,6 @@ Canonical text-input component + key-dispatch helpers.
 > ctrl_v — the host loop handles clipboard at its boundary and then
 > dispatches `replace_selection` via `textFieldReplaceSelection`).
 - `pub fn textFieldSpecial( comptime AppMsg: type, comptime field_name: []const u8, key: SpecialKey, ) ?AppMsg`
-> True if the key requires host-level clipboard interaction (the host
-> reads/writes the OS clipboard and then dispatches a normal Msg).
-- `pub fn keyNeedsClipboard(key: SpecialKey) bool`
 > Build the AppMsg for a paste into the named field. The host calls
 > this after `clipboard.read()` returns the bytes to insert.
 - `pub fn textFieldReplaceSelection( comptime AppMsg: type, comptime field_name: []const u8, bytes: []const u8, ) AppMsg`

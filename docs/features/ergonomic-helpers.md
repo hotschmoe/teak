@@ -81,7 +81,7 @@ for (input.chars) |ch| {
     }
 }
 for (input.keys) |key| {
-    if (teak.keyNeedsClipboard(key)) { ... }   // clipboard chord
+    if (key == .ctrl_c or key == .ctrl_x or key == .ctrl_v) { ... }   // clipboard chord
     else if (focused == .search) {
         if (teak.textFieldSpecial(App.Msg, "search", key)) |m| {
             App.update(&model, m);
@@ -316,7 +316,6 @@ pub const TextField;
 pub const textFieldChar;
 pub const textFieldSpecial;
 pub const textFieldReplaceSelection;
-pub const keyNeedsClipboard;
 
 // Form row
 pub const FormRowOpts;

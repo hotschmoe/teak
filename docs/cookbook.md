@@ -1298,20 +1298,20 @@ pub fn focusedMsg(m: *const Model) ?Msg {
     return if (m.focused) Msg{ .notes = .focus } else null;
 }
 
-// Clipboard is the app's policy: Ctrl+C / X / V reach you with the Host clipboard.
-pub fn keyNeedsClipboard(k: teak.SpecialKey) bool {
-    return teak.keyNeedsClipboard(k);
+// Clipboard: say what Ctrl+C / Ctrl+X copy (the loop writes the Host clipboard),
+// then what Ctrl+X / Ctrl+V do to the Model, as a Msg.
+pub fn clipboardText(m: *const Model, k: teak.SpecialKey) ?[]const u8 {
+    if (!m.focused or (k != .ctrl_c and k != .ctrl_x)) return null;
+    const sel = m.notes.selectionText();
+    return if (sel.len > 0) sel else null;
 }
-pub fn handleClipboard(m: *Model, k: teak.SpecialKey, clip: teak.Clipboard) void {
-    switch (k) {
-        .ctrl_c => if (m.notes.selectionText().len > 0) clip.write(m.notes.selectionText()),
-        .ctrl_x => if (m.notes.selectionText().len > 0) {
-            clip.write(m.notes.selectionText());
-            update(m, .{ .notes = .{ .key = .backspace } });
-        },
-        .ctrl_v => if (clip.read().len > 0) update(m, .{ .notes = Notes.pasteMsg(clip.read()) }),
-        else => {},
-    }
+pub fn clipboardMsg(m: *const Model, k: teak.SpecialKey, paste: []const u8) ?Msg {
+    if (!m.focused) return null;
+    return switch (k) {
+        .ctrl_x => if (m.notes.selectionText().len > 0) Msg{ .notes = .{ .key = .backspace } } else null,
+        .ctrl_v => Msg{ .notes = Notes.pasteMsg(paste) },
+        else => null,
+    };
 }
 ```
 

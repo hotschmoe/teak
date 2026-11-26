@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Removed
+
+- `handleClipboard(*Model, ...)` and `teak.keyNeedsClipboard`, deprecated in 0.2.0: the loop no longer looks for them. Use `clipboardText` / `clipboardMsg` (`docs/migration-clipboard.md`).
+- `teak.linkWin32Wgpu` and `Win32WgpuOptions` (build.zig): use `teak.linkNativeWgpu`.
+
+### Toolchain
+
+- The minimum Zig version is 0.17.1 (`build.zig.zon`), the version CI and releases already build with.
+
+### Repository
+
+- `tools/node_modules` was a tracked symlink to an absolute path on one machine: it dangled on every other checkout until `npm ci --prefix tools` replaced it, which then showed as a change to a tracked file. It is untracked now (the path is already git-ignored). The stray probe `tools/_n.mjs` is gone from the tree.
+
 ## 0.2.0 (2026-10-27)
 
 All changes are additions; exhaustive switches over `CanvasPrimitive` (`circle`/`arc`/`polygon`), `DataTable.Msg` (`resort`) and `Cmd` (`push_grid`/`pop_grid`) need the new arms.

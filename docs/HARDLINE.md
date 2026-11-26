@@ -365,8 +365,7 @@ human review.
 - [ ] **[manual]** Every optional App hook is a function of `*const Model`
       plus loop-supplied data and returns data (a `Msg`, a spec, a theme);
       no hook receives a mutable `*Model`, a callback, or a Host handle it
-      may keep. (The one historical exception, `handleClipboard(*Model, ...)`, is
-      a deprecated one-release adapter over `clipboardMsg` / `clipboardText`.)
+      may keep.
 - [ ] **[auto]** Pointer input has ONE hook. `pointerMsg(*const Model,
       PointerEvent(Msg)) ?Msg` receives every pointer fact (hover, press
       incl. blank space, drag, wheel, context, layout) as data, with a single

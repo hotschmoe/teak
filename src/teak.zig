@@ -428,8 +428,6 @@ pub const textFieldChar = text_field.textFieldChar;
 pub const textFieldSpecial = text_field.textFieldSpecial;
 /// Build the app Msg for pasted text into a named field.
 pub const textFieldReplaceSelection = text_field.textFieldReplaceSelection;
-/// True if a key needs host-level clipboard access.
-pub const keyNeedsClipboard = text_field.keyNeedsClipboard;
 /// The Msg for a clipboard chord on a field, for the App's `clipboardMsg` hook.
 pub const textFieldClipboardMsg = text_field.textFieldClipboardMsg;
 /// What Ctrl+C / Ctrl+X copy from a field Model, for the App's `clipboardText` hook.

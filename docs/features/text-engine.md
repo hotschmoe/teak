@@ -432,7 +432,7 @@ pub fn Editor(comptime cap: usize, comptime undo_cap: usize) type { return struc
 * **Undo/redo**: records `{pos, removed_len, inserted_len}` with the removed/inserted bytes in a fixed byte ring;
   consecutive single-grapheme inserts within one word coalesce into one record; any cursor move or non-adjacent edit
   closes the group. Overflow drops the oldest records (loudly: `UndoLog.dropped` counter in the Model for a status line).
-* **Clipboard**: Host `Clipboard` stays the owner; `keyNeedsClipboard` / `textFieldReplaceSelection` pattern extends to
+* **Clipboard**: Host `Clipboard` stays the owner; the `clipboardMsg` / `textFieldReplaceSelection` pattern extends to
   `ctrl+x/c/v` on the area; paste is bounded by remaining capacity and truncated on a grapheme boundary.
 * `TextField(cap)` becomes a thin single-line wrapper over the same `Editor` (newline rejected, horizontal scroll via
   `scroll_x`), so the old byte-editing code is deleted, not duplicated; its `Msg` names stay for compatibility with the

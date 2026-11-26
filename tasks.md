@@ -8,15 +8,19 @@ per-phase sections below for what shipped earlier.
 
 ## Next up (open)
 
-Snapshot refreshed 2026-10-27 (after PR #161). Shipped items live in `CHANGELOG.md`;
+Snapshot refreshed 2026-11-26 (after PR #170). Shipped items live in `CHANGELOG.md`;
 this section is only what is still open. Rebuild the PR list with
 `gh pr list --state open`; the matrix of what exists vs. what competitors
 ship is [docs/PARITY.md](docs/PARITY.md).
 
 ### In review (open PRs)
 
-None. Every PR the October snapshot listed (#31 - #95) is merged, except #67
-(Win32 live CI), which was closed and superseded by #121.
+| PR | What |
+|---|---|
+| #169 | zunk pin moved to current zunk master |
+| #171 | Linux host blocks when idle (`waitEvents` on the Linux and Wayland hosts) |
+| #172 | Background gates for idle, input latency, idle memory and binary size (#141) |
+| #173 | `examples/sysmon` hardware monitor, `Runtime.post` (stacked on #171) |
 
 ### Open issues worth knowing
 
@@ -32,9 +36,9 @@ None. Every PR the October snapshot listed (#31 - #95) is merged, except #67
 - **Text:** subpixel LCD AA (none); bundled CJK face (none); native colour emoji (web only, #71).
 - **Graphics:** SVG icons via `teak.svg` (subset: no gradients / text / filters); grid layout has fixed columns only (no cell spans, no row tracks). Canvas antialiasing, circles / arcs / polygons and a world transform landed (#125); a GPU-retained canvas vertex buffer (re-lower nothing on pan) is the next step if CPU lowering shows up in profiles (#159).
 - **Input / a11y:** X11 AT-SPI and macOS AX are not built (Win32 UIA and the web mirror are).
-- **Tooling:** hot reload is native (Linux) dev builds only; visual-regression goldens regenerate with `zig build vreg -- --update` (LOOK at every PNG); CI gates for idle / latency / memory / size are proposed in #141.
+- **Tooling:** hot reload is native (Linux) dev builds only; the visual-regression goldens and their tool were retired with the 2026-11-18 test policy (blocking gate = three CLI canaries; everything else is `zig build test-heavy`); CI gates for idle / latency / memory / size are in PR #172.
 - **QA findings left open** (`docs/qa-2026-10.md`, "Open"): `ButtonStyle.label_align` defaults to `.start` for hand-built styles; the tree example is noisy (two bordered buttons per row).
-- **API cleanup:** `handleClipboard` / `keyNeedsClipboard` are deprecated (removed next release, `docs/migration-clipboard.md`); `hoverMsg` / `contextMsg` / `canvasMsg` / `textMsg` / `sliderMsg` migrate onto `pointerMsg` in stages (`docs/features/pointer-msg.md`); moving big `Cmd` payloads out of line is a measured proposal (`docs/features/cmd-size.md`), not scheduled.
+- **API cleanup:** `handleClipboard` / `keyNeedsClipboard` and the `linkWin32Wgpu` build alias are removed (`docs/migration-clipboard.md`); `hoverMsg` / `contextMsg` / `canvasMsg` / `textMsg` / `sliderMsg` migrate onto `pointerMsg` in stages (`docs/features/pointer-msg.md`); moving big `Cmd` payloads out of line is a measured proposal (`docs/features/cmd-size.md`), not scheduled.
 - **Carried from earlier phases:** dropdown open-scroll-to-reveal on toggle (`.toggle` carries no viewport geometry).
 
 ---

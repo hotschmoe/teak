@@ -182,12 +182,6 @@ pub fn textFieldSpecial(
     return null;
 }
 
-/// True if the key requires host-level clipboard interaction (the host
-/// reads/writes the OS clipboard and then dispatches a normal Msg).
-pub fn keyNeedsClipboard(key: SpecialKey) bool {
-    return key == .ctrl_c or key == .ctrl_x or key == .ctrl_v;
-}
-
 /// Build the AppMsg for a paste into the named field. The host calls
 /// this after `clipboard.read()` returns the bytes to insert.
 pub fn textFieldReplaceSelection(

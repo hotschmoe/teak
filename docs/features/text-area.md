@@ -57,13 +57,14 @@ sticky column), the wheel scrolls (clamped to the content), and `metrics` clamps
 | `keyCharMsg(m, c) ?Msg` | `if (focused) .{ .area = Area.charMsg(c) } else null` | typed UTF-8 bytes |
 | `keySpecialMsg(m, k) ?Msg` | `if (focused) if (Area.keyMsg(k)) \|a\| .{ .area = a }` | Enter, Backspace/Delete, Left/Right (+Shift, +Ctrl), Ctrl+A/Z/Y |
 | `focusedMsg(m) ?Msg` | `if (focused) .{ .area = .focus } else null` | focus for Tab traversal, caret blink, IME spot |
-| `keyNeedsClipboard(k)` + `handleClipboard(m, k, clip)` | see below | Ctrl+C / X / V |
+| `clipboardText(m, k)` + `clipboardMsg(m, k, paste)` | see below | Ctrl+C / X / V |
 
-4. **Clipboard** is the app's policy: copy with `clip.write(m.area.selectionText())`, cut = copy then
-   `update(m, .{ .area = .{ .key = .backspace } })`, paste with `Area.pasteMsg(clip.read())`.
+4. **Clipboard**: `clipboardText` returns `m.area.selectionText()` for Ctrl+C / Ctrl+X (the loop writes it to the
+   Host clipboard); `clipboardMsg` returns `.{ .area = .{ .key = .backspace } }` for Ctrl+X (it runs after the copy)
+   and `.{ .area = Area.pasteMsg(paste) }` for Ctrl+V.
 
-The complete, compiled version of exactly this is [cookbook recipe 23](../cookbook.md#23-add-a-multi-line-textarea)
-(it is a test in `src/run_test.zig`, so it cannot drift); `examples/notes` has two areas, a chat log and Send/Clear.
+The complete, compiled version of exactly this is [cookbook recipe 23](../cookbook.md#23-add-a-multi-line-textarea);
+`examples/notes` has two areas, a chat log and Send/Clear.
 
 Motion: Left/Right and Shift variants go to the `Editor` (grapheme-aware; word jumps with Ctrl). Up/Down/Home/End/PageUp/
 PageDown never arrive as keys: the run loop resolves them against the real wrapped layout and sends a `move` event with

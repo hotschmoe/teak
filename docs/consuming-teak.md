@@ -31,7 +31,7 @@ The whole file, as `zig init` would generate it plus the Teak dependency:
     .version = "0.0.0",
     .fingerprint = 0x0123456789abcdef,           // REQUIRED; run `zig build` once and copy the value
                                                  // the error message prints, then never change it
-    .minimum_zig_version = "0.17.0",
+    .minimum_zig_version = "0.17.1",
     .dependencies = .{
         // URL form (a published teak):
         .teak = .{ .url = "git+https://github.com/hotschmoe/teak.git#<commit>", .hash = "..." },
@@ -274,12 +274,9 @@ Script ordering: inside one frame the headless Host delivers all queued
 > dev box. Building the Linux UI needs **no X11 dev package** (libX11 is
 > `dlopen`ed at runtime); at runtime it needs `libX11.so.6`, a Vulkan
 > driver, and a monospace TTF (DejaVuSansMono by default; override with
-> the `TEAK_FONT` env var). Wayland is not supported directly — X11 apps
-> run under XWayland.
->
-> `teak.linkWin32Wgpu` still exists as a **deprecated** Windows-only alias
-> (it asserts a Windows target and forwards to `linkNativeWgpu`); migrate
-> to `linkNativeWgpu`.
+> the `TEAK_FONT` env var). Under a Wayland session (`WAYLAND_DISPLAY` set) the
+> Linux Host uses its native Wayland backend and needs `libwayland-client.so.0`
+> and `libxkbcommon.so.0` instead of `libX11`; `TEAK_BACKEND=x11` forces X11.
 
 ## 3. Write the App
 
@@ -372,7 +369,7 @@ are required; an app without them just doesn't get that behavior.
 |------|-----------|---------|
 | `keyCharMsg` | `(*const Model, u8) ?Msg` | typed characters → Msg |
 | `keySpecialMsg` | `(*const Model, SpecialKey) ?Msg` | arrows/backspace/etc → Msg |
-| `clipboardText` + `clipboardMsg` | `(*const Model, SpecialKey) ?[]const u8` / `(*const Model, SpecialKey, paste: []const u8) ?Msg` | cut/copy/paste (replaces the deprecated `keyNeedsClipboard` + `handleClipboard`) |
+| `clipboardText` + `clipboardMsg` | `(*const Model, SpecialKey) ?[]const u8` / `(*const Model, SpecialKey, paste: []const u8) ?Msg` | cut/copy/paste |
 | `wheelMsg` | `(*const Model, f32) ?Msg` | mouse-wheel scroll (when no canvas / scroll region took it) |
 | `canvasMsg` | `(*const Model, CanvasEvent) ?Msg` | pan / zoom / drag over `cb.canvasInteractive` canvases — see [features/canvas.md](features/canvas.md#interactive-canvases-pan--zoom--drag) |
 | `scrollMsg` | `(*const Model, id: u32, dx: f32, dy: f32) ?Msg` | wheel over a `ScrollStyle.id != 0` region |

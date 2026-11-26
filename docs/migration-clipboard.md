@@ -1,7 +1,9 @@
 # Migration: `handleClipboard` -> `clipboardMsg` / `clipboardText`
 
 `handleClipboard(*Model, SpecialKey, Clipboard) void` changed the Model outside
-`update` (HARDLINE §1) and did clipboard I/O inside app code. Replace the pair
+`update` (HARDLINE §1) and did clipboard I/O inside app code. It was deprecated in
+0.2.0 and is now removed, with `teak.keyNeedsClipboard`: the loop no longer looks
+for either, so an app that still declares them gets no clipboard chords. Replace the pair
 `keyNeedsClipboard` + `handleClipboard` with two pure hooks:
 
 ```zig

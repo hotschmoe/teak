@@ -201,7 +201,7 @@ Input is routed using the previous frame's commands and rectangles, which descri
 
 Keyboard navigation keeps text focus in the Model and uses loop navigation focus for non-text controls. Enter invokes `submitMsg` when provided except in a focused text area, where it remains a newline key. Modal backdrops can consume clicks without producing messages. Pointer capture ends on the last release and is dropped if its canvas disappears. Effect reconciliation forgets no-longer-listed effects before issuing new ones. Long window titles compare against the stored truncated prefix so they do not trigger a title update every frame. A user-closed secondary window is suppressed from reopening until the application's window intent changes. See HARDLINE §1 and §2.
 
-Keyboard focus can also produce hover notifications for tooltips. The menu key and Shift+F10 use the context-menu hook when present; focused text-area motion resolves against wrapped layout. Clipboard chords query `clipboardText` and dispatch `clipboardMsg`; the deprecated `handleClipboard` adapter can mutate the Model outside `update`. Captured canvases receive wheel events regardless of pointer location, and hover entry/exit is suspended during capture.
+Keyboard focus can also produce hover notifications for tooltips. The menu key and Shift+F10 use the context-menu hook when present; focused text-area motion resolves against wrapped layout. Clipboard chords query `clipboardText` and dispatch `clipboardMsg`. Captured canvases receive wheel events regardless of pointer location, and hover entry/exit is suspended during capture.
 
 ## src/platform/x11.zig
 
