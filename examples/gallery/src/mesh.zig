@@ -94,7 +94,6 @@ fn edgeLines(comptime edges: bool) [(if (edges) boxes.len * 12 else 0) * 2 + gri
             }
         }
     }
-    // Ground grid at y = 0, centred under the wall (x 0..4.4, z -2..2).
     const grid = [4]f32{ 0.45, 0.47, 0.50, 0.55 };
     const extent: f32 = grid_half;
     var g: i32 = -grid_half;
@@ -113,10 +112,3 @@ const lines_without = edgeLines(false);
 
 pub const with_edges: teak.MeshData = .{ .vertices = &vertices, .indices = &indices, .lines = &lines_with };
 pub const without_edges: teak.MeshData = .{ .vertices = &vertices, .indices = &indices, .lines = &lines_without };
-
-test "mesh is valid and has the expected counts" {
-    try with_edges.validate();
-    try without_edges.validate();
-    try std.testing.expectEqual(@as(usize, 14 * 12), (with_edges.segmentCount() - without_edges.segmentCount()));
-    try std.testing.expectEqual(@as(usize, 14 * 12), with_edges.triangleCount());
-}

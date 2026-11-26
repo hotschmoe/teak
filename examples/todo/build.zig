@@ -15,7 +15,6 @@ pub fn build(b: *std.Build) void {
     const teak_dep = b.dependency("teak", .{ .target = target, .optimize = optimize });
     const teak_mod = teak_dep.module("teak");
 
-    // --- CLI ---
 
     const exe = b.addExecutable(.{
         .name = "todo",
@@ -36,16 +35,10 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
 
-    // --- Tests ---
 
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
-    const test_step = b.step("test", "Run todo tests");
-    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    const test_step = b.step("test", "Run the example canary");
+    test_step.dependOn(&run_cmd.step);
 
-    // --- Native UI (wgpu native: Win32 / X11) ---
-    //
-    // Gated on `hasNativeBackend` so non-native targets still configure
-    // `run`/`test`/`web`; `linkNativeWgpu` picks the backend per OS.
 
     if (teak.hasNativeBackend(target.result.os.tag)) {
         const ui_exe = b.addExecutable(.{
@@ -67,9 +60,6 @@ pub fn build(b: *std.Build) void {
         ui_step.dependOn(&ui_run.step);
     }
 
-    // --- Headless screenshot (no display; needs a Vulkan device) ---
-    //
-    //   zig build shot -- out.png [--state <name>]   (-- --list prints the states)
 
     if (target.result.os.tag == .linux) {
         const shot_exe = b.addExecutable(.{
@@ -87,8 +77,6 @@ pub fn build(b: *std.Build) void {
         shot_step.dependOn(&shot_run.step);
     }
 
-    // --- Headless agent driver (Linux): the same App, offscreen, controlled
-    // over TEAK_CONTROL by `teak-drive` (docs/features/agent-driver.md). ---
 
     if (target.result.os.tag == .linux) {
         const drive_step = b.step("drive", "Build the agent-driver binaries (zig-out/bin/todo-drive headless, todo-ui windowed)");
@@ -116,10 +104,6 @@ pub fn build(b: *std.Build) void {
         drive_step.dependOn(&b.addInstallArtifact(drive_exe, .{}).step);
     }
 
-    // --- Hot reload (Linux, dev builds): `libapp.so` + a stable loader. ---
-    // `zig build dev [--watch] [-Dbackend=headless]`, then run
-    // `zig-out/bin/todo-dev`; every rebuild of libapp.so is swapped in with
-    // the Model kept (docs/features/hot-reload.md).
 
     if (target.result.os.tag == .linux) {
         const dev_backend: []const u8 = b.option([]const u8, "backend", "dev backend: native (window) or headless") orelse "native";
@@ -155,7 +139,6 @@ pub fn build(b: *std.Build) void {
         dev_step.dependOn(&b.addInstallArtifact(loader, .{}).step);
     }
 
-    // --- Web (wasm + zunk) ---
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,

@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `Components`, `validateComponent`, and (via `teak.component.buildMsgs`) `buildMsgs`.
 **Source**: `src/core/component.zig`
-**Tests**: colocated — four `test "compose: ..."` blocks covering Model generation, Msg routing, view wrapping, and AppLevel extension.
+**Checks**: the blocking gate runs the composed counter-greeter application.
 
 Escape hatch 1 in [HARDLINE §2](../HARDLINE.md#escape-hatch-1-comptime-component-stitching). Read HARDLINE's bounds before proposing changes to this file.
 

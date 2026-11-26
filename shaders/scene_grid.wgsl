@@ -1,7 +1,4 @@
-// Infinite ground grid for 3D scenes: a fullscreen triangle whose fragment
-// shader ray-intersects a world plane, derives anti-aliased line coverage
-// from screen-space derivatives (minor / major spacing, two axis lines) and
-// writes the plane's depth so meshes and edges occlude it.
+// Infinite ground grid for 3D scenes; see SRC.md.
 // Uniform layout must match `GridUniform` in src/gpu/scene_pass.zig (256 B).
 
 struct GridU {
@@ -35,8 +32,6 @@ fn unproject(ndc: vec3f) -> vec3f {
     return h.xyz / h.w;
 }
 
-// Anti-aliased coverage of the lines of a grid with cell size `s`, and how
-// visible that level is (it fades out as cells shrink below a few pixels).
 fn grid_level(c: vec2f, fw: vec2f, s: f32) -> vec2f {
     let x = c / s;
     let g = abs(fract(x - 0.5) - 0.5) / max(fw / s, vec2f(1e-6));
@@ -90,7 +85,6 @@ fn fs_grid(@builtin(position) frag: vec4f) -> FragOut {
 
     let dist = length(p - u.eye.xyz);
     var fade = 1.0 - smoothstep(0.5 * u.params.z, u.params.z, dist);
-    // Dissolve before the far plane so the grid never ends in a hard edge.
     var depth_frac = depth;
     if (u.extra.y > 0.5) { depth_frac = clip.w / max(u.extra.x, 1e-9); }
     fade = fade * (1.0 - smoothstep(0.8, 0.99, depth_frac));

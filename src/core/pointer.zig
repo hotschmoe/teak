@@ -88,8 +88,6 @@ pub const CanvasEvent = struct {
     key: ?@import("../input/keys.zig").SpecialKey = null,
 };
 
-// ── Drag and drop (in-app) ─────────────────────────────────────────
-
 pub const DragPhase = enum {
     /// The pointer moved past the threshold with a drag source pressed.
     start,

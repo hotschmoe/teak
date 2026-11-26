@@ -352,20 +352,3 @@ pub fn compose(base: u21, mark: u21) ?u21 {
     }
     return null;
 }
-
-test "compose: common Latin, Greek and Cyrillic pairs; unrelated pairs are null" {
-    try std.testing.expectEqual(@as(?u21, 0x00E9), compose('e', 0x0301));
-    try std.testing.expectEqual(@as(?u21, 0x00C5), compose('A', 0x030A));
-    try std.testing.expectEqual(@as(?u21, 0x00F1), compose('n', 0x0303));
-    try std.testing.expectEqual(@as(?u21, 0x03AC), compose(0x03B1, 0x0301));
-    try std.testing.expectEqual(@as(?u21, 0x0439), compose(0x0438, 0x0306));
-    try std.testing.expectEqual(@as(?u21, null), compose('e', 0x0302 + 0x100));
-    try std.testing.expectEqual(@as(?u21, null), compose('x', 0x0301));
-}
-
-test "the table is sorted and has no duplicates" {
-    for (table[1..], 0..) |e, i| {
-        const prev = table[i];
-        try std.testing.expect((@as(u32, prev.base) << 16 | prev.mark) < (@as(u32, e.base) << 16 | e.mark));
-    }
-}

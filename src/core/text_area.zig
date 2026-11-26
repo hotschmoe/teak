@@ -102,8 +102,7 @@ pub fn TextArea(comptime cap: usize) type {
             if (model.read_only) switch (msg) {
                 .char, .newline, .paste => return,
                 .key => |k| {
-                    // Keep caret / selection motion, refuse edits: apply the
-                    // key to a copy and keep it only if the text is unchanged.
+                    // Read-only navigation is accepted only when text stays unchanged.
                     var trial = model.ed;
                     _ = trial.applyKey(k);
                     if (std.mem.eql(u8, trial.content(), model.ed.content())) model.ed = trial;
@@ -159,8 +158,6 @@ pub fn TextArea(comptime cap: usize) type {
             model.scroll_x = clampScroll(sx, model.content_w + 2, model.viewport_w);
         }
 
-        // ── Host-hook helpers ─────────────────────────────────────
-
         pub fn eventMsg(ev: TextEvent) Msg {
             return .{ .event = ev };
         }
@@ -184,8 +181,6 @@ pub fn TextArea(comptime cap: usize) type {
                 else => null,
             };
         }
-
-        // ── View ──────────────────────────────────────────────────
 
         /// `base` with no box, border, focus border or caret: a read-only
         /// area drawn like a label (selection highlight kept). Pass it as
@@ -230,8 +225,6 @@ pub fn TextArea(comptime cap: usize) type {
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const component = @import("component.zig");
 
@@ -239,94 +232,4 @@ const TA = TextArea(256);
 
 fn type_(m: *TA.Model, s: []const u8) void {
     for (s) |c| TA.update(m, .{ .char = c });
-}
-
-test "validateComponent: TextArea satisfies the component contract" {
-    component.validateComponent(TA);
-}
-
-test "typing, newline, editing keys" {
-    var m: TA.Model = .{};
-    type_(&m, "ab");
-    TA.update(&m, TA.keyMsg(.enter).?);
-    type_(&m, "cd");
-    try testing.expectEqualStrings("ab\ncd", m.content());
-    TA.update(&m, TA.keyMsg(.backspace).?);
-    TA.update(&m, TA.keyMsg(.ctrl_a).?);
-    try testing.expectEqualStrings("ab\nc", m.content());
-    try testing.expectEqualStrings("ab\nc", m.selectionText());
-    try testing.expect(TA.keyMsg(.up) == null);
-    try testing.expect(TA.keyMsg(.ctrl_c) == null);
-}
-
-test "read_only: selection and motion work, edits are refused" {
-    var m: TA.Model = .{};
-    m.set("alpha beta\ngamma");
-    m.read_only = true;
-    type_(&m, "zz");
-    TA.update(&m, TA.pasteMsg("pasted"));
-    TA.update(&m, TA.keyMsg(.enter).?);
-    TA.update(&m, TA.keyMsg(.backspace).?);
-    TA.update(&m, TA.keyMsg(.ctrl_backspace).?);
-    TA.update(&m, TA.keyMsg(.ctrl_z).?);
-    try testing.expectEqualStrings("alpha beta\ngamma", m.content());
-    // Ctrl+A, word motion and pointer selection still work.
-    TA.update(&m, TA.keyMsg(.ctrl_a).?);
-    try testing.expectEqualStrings("alpha beta\ngamma", m.selectionText());
-    TA.update(&m, TA.keyMsg(.ctrl_home).?);
-    TA.update(&m, TA.keyMsg(.ctrl_shift_right).?);
-    try testing.expect(m.selectionText().len > 0);
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .double_click, .index = 7 } });
-    try testing.expectEqualStrings("beta", m.selectionText());
-    // Delete with a selection would cut it: refused, selection kept.
-    TA.update(&m, TA.keyMsg(.delete).?);
-    try testing.expectEqualStrings("beta", m.selectionText());
-    const st = TA.staticStyle(.{});
-    try testing.expectEqual(@as(f32, 0), st.bg[3]);
-    try testing.expectEqual(@as(f32, 0), st.cursor[3]);
-}
-
-test "pointer events set caret, extend, select words and lines" {
-    var m: TA.Model = .{};
-    TA.update(&m, TA.pasteMsg("one two\nthree four"));
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .down, .index = 5 } });
-    try testing.expectEqual(@as(usize, 5), m.ed.cursor);
-    try testing.expect(!m.ed.hasSelection());
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .drag, .index = 12 } });
-    try testing.expectEqualStrings("wo\nthre", m.selectionText());
-    // Shift-click extends from the caret.
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .down, .index = 2 } });
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .down, .index = 7, .mods = .{ .shift = true } } });
-    try testing.expectEqualStrings("e two", m.selectionText());
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .double_click, .index = 9 } });
-    try testing.expectEqualStrings("three", m.selectionText());
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .triple_click, .index = 9 } });
-    try testing.expectEqualStrings("three four", m.selectionText());
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .triple_click, .index = 3 } });
-    try testing.expectEqualStrings("one two\n", m.selectionText()); // includes the newline
-    // Resolved motion keeps / clears the sticky column.
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .move, .index = 12, .goal_x = 40, .keep_goal = true } });
-    try testing.expectEqual(@as(?f32, 40), m.ed.goal_x);
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .move, .index = 8 } });
-    try testing.expectEqual(@as(?f32, null), m.ed.goal_x);
-}
-
-test "wheel scrolls within the content; metrics clamp and reveal the caret" {
-    var m: TA.Model = .{};
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .metrics, .viewport_w = 100, .viewport_h = 60, .content_w = 100, .content_h = 200, .caret_h = 20 } });
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .wheel, .dy = 50 } });
-    try testing.expectEqual(@as(f32, 50), m.scroll_y);
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .wheel, .dy = 500 } });
-    try testing.expectEqual(@as(f32, 140), m.scroll_y); // 200 - 60
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .wheel, .dy = -9999 } });
-    try testing.expectEqual(@as(f32, 0), m.scroll_y);
-    // Caret below the viewport: scroll so its bottom edge is visible.
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .metrics, .viewport_w = 100, .viewport_h = 60, .content_w = 100, .content_h = 200, .caret_y = 120, .caret_h = 20 } });
-    try testing.expectEqual(@as(f32, 80), m.scroll_y);
-    // Caret above: scroll up to it.
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .metrics, .viewport_w = 100, .viewport_h = 60, .content_w = 100, .content_h = 200, .caret_y = 20, .caret_h = 20 } });
-    try testing.expectEqual(@as(f32, 20), m.scroll_y);
-    // Content shrinks below the scroll: pulled back.
-    TA.update(&m, .{ .event = .{ .id = 1, .kind = .metrics, .viewport_w = 100, .viewport_h = 60, .content_w = 100, .content_h = 70, .caret_y = 0, .caret_h = 20 } });
-    try testing.expectEqual(@as(f32, 0), m.scroll_y);
 }

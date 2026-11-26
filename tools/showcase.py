@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# HarfBuzz notes shot: only when the script fonts were found (tools/showcase.sh)
 """Pick, crop, pair and compress the QA shots into docs/images/showcase/ (called by tools/showcase.sh).
 
 usage: showcase.py <tmp-dir> <out-dir>
@@ -53,13 +54,11 @@ for name, src in SINGLE:
     total += save(load("native", src), name)
     n_images += 1
 
-# HarfBuzz notes shot: only when the script fonts were found (tools/showcase.sh)
 hb = os.path.join(tmp, "native", "notes-scripts@1x.png")
 if os.path.exists(hb):
     total += save(Image.open(hb), "notes-scripts-harfbuzz")
     n_images += 1
 
-# platform shots taken on other machines (env: SHOWCASE_MAC / SHOWCASE_WIN = path to a PNG)
 for name, env in [("platform-macos", "SHOWCASE_MAC"), ("platform-windows-arm64", "SHOWCASE_WIN")]:
     path = os.environ.get(env)
     if path and os.path.exists(path):
@@ -77,7 +76,6 @@ for name, ex, ns, ws in PAIRS:
     pair.paste(b, (w + 8, 0))
     total += save(pair, name)
 
-# one 2x HiDPI crop: device pixels, no resampling
 hi = load("native", "kerf_viewer-section_hover", 2)
 total += save(hi.crop((780, 440, 1580, 1000)), "hidpi-2x-crop")
 

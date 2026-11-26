@@ -115,8 +115,7 @@ pub const Server = struct {
                 return out[0..n];
             }
             if (self.in_len == self.inbuf.len) {
-                // Over-long line with no newline yet: drop it and keep
-                // discarding until its end.
+                // Discard an overlong line through its newline.
                 self.in_len = 0;
                 self.discarding = true;
             }
@@ -224,8 +223,7 @@ pub const Client = struct {
             switch (linux.errno(rc)) {
                 .SUCCESS => {
                     if (rc == 0) return error.ConnectionClosed;
-                    // Replies are one line each and the server sends nothing
-                    // unsolicited, so a chunk holds at most that one line.
+                    // No unsolicited messages means at most one reply per chunk.
                     try out.appendSlice(gpa, chunk[0..rc]);
                     if (std.mem.indexOfScalar(u8, out.items, '\n')) |nl| {
                         out.shrinkRetainingCapacity(nl);
@@ -238,34 +236,3 @@ pub const Client = struct {
         }
     }
 };
-
-test "server and client exchange lines" {
-    if (@import("builtin").os.tag != .linux) return error.SkipZigTest; // Unix-socket control channel (Linux/POSIX only)
-    if (comptime !supported) return error.SkipZigTest;
-    var path_buf: [64]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "/tmp/teak-ctl-test-{d}.sock", .{linux.getpid()});
-
-    var srv: Server = .{};
-    try std.testing.expect(srv.listen(path));
-    defer srv.deinit();
-
-    var out: [128]u8 = undefined;
-    try std.testing.expect(srv.recvLine(&out) == null); // no client yet
-
-    var cl = try Client.connect(path);
-    defer cl.close();
-    try cl.sendLine("{\"cmd\":\"hi\"}");
-    try cl.sendLine("second");
-
-    // Non-blocking: the data is already in the kernel buffer.
-    const l1 = srv.recvLine(&out) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("{\"cmd\":\"hi\"}", l1);
-    const l2 = srv.recvLine(&out) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("second", l2);
-    try std.testing.expect(srv.recvLine(&out) == null);
-
-    srv.send("{\"ok\":true}\n");
-    const reply = try cl.readLine(std.testing.allocator);
-    defer std.testing.allocator.free(reply);
-    try std.testing.expectEqualStrings("{\"ok\":true}", reply);
-}

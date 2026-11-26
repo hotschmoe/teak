@@ -40,16 +40,15 @@ commit) when a zunk release ships.
 
 Requires **Zig 0.17.0+**.
 
-The repo is split into a **library** (root `build.zig`) and **examples** (each with their own `build.zig`). Library tests run from root; example steps run from the example's directory.
+The binding testing and comment policy is in [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md). Run the blocking end-to-end gate from the repository root with `zig build test -j4`; run the background gate with `zig build test-heavy -j4`. The blocking gate uses Bash. On Linux, the background gate needs Vulkan, Chromium, Node and the tools npm dependencies (`npm ci --prefix tools`); on Windows it drives native windows through PowerShell. Do not add unit tests or golden-output tests.
 
 ```sh
 # Library
-zig build test                              # Library tests (run from repo root)
-tools/gate.sh [--quick]                    # Full merge gate: lib+ReleaseSafe+audit+gpu+examples+fmt+win cross+zunk (GATE_OUT for PNGs)
+zig build test -j4                          # Blocking end-to-end checks
+zig build test-heavy -j4                    # Background checks
 
 # Example: counter_greeter (CLI + wgpu UI)
 cd examples/counter_greeter
-zig build test                              # Example tests
 zig build run                               # CLI canary
 zig build web                               # wasm + WebGPU (zunk) -> dist/
 
@@ -325,7 +324,9 @@ shaders/
 tools/
   a11yprobe.mjs                               -- Web accessibility probe: serve a zunk `dist/`, load it in headless Chromium
   audit.zig                                   -- HARDLINE drift audit. Walks `src/` and flags the greppable rules
-  gate.sh                                     -- Local merge gate for teak (+ zunk tests when a ../zunk checkout is present)
+  drive-e2e.sh                                -- Drive the headless todo app over its control socket
+  gate.sh                                     -- Run the blocking end-to-end gate
+  test-e2e.sh                                 -- Run blocking or background example canaries
   gen_api.zig                                 -- Generated API reference: walks `src/teak.zig` with `std.zig.Ast`, follows
   gen_compose.py                              -- generates src/text/compose_table.zig (Unicode compose sequences)
   gen_tree.py                                 -- regenerates the Module Structure tree in CLAUDE.md / AGENTS.md from the files on disk
@@ -336,7 +337,6 @@ tools/
   showcase.py                                 -- HarfBuzz notes shot: only when the script fonts were found (tools/showcase.sh)
   showcase.sh                                 -- Regenerate docs/images/showcase/ (see docs/showcase.md). Run after the last merges
   teak_drive.zig                              -- teak-drive: drive a running teak app from a shell or from an LLM agent
-  vreg.zig                                    -- vreg: the visual-regression runner. Renders every example's named
   web-frame-bench.mjs                         -- rAF cost of a web example under scrolling: serve a zunk `dist/`, load it in headless Chromium
   web-ime-test.mjs                            -- Web IME acceptance test: drive an input-method composition into a teak app in
   web-startup.mjs                             -- Web startup profile: serve a zunk `dist/`, load it in headless Chromium and print where the
@@ -363,8 +363,8 @@ The framework is **implemented and shipping** (facts below were checked against 
 - **Rendering:** SDF rounded rects / borders / gradients / soft shadows, images, canvas primitives + chart helper, depth-tested `scene3d` with picking / instancing / grid / section cuts / plane layers.
 - **Widgets:** button, checkbox, radio, slider, dropdown, combobox, numeric + date field, toggle, progress, tabs, split, tooltip, toast, dialog, menu bar / context menu, `DataTable`, `VarList`, `TreeList`, kinetic `Scroller`.
 - **Loop:** `teak.run` / `Runtime` with event-driven idle (`waitEvents`, caret-aware), declarative `Sub` timers + `animation_frame` (`teak.anim` tweens), declarative effects, declarative GPU resources, `pointerMsg` (stage 1) and the Msg-returning clipboard hooks; every pass is exhaustive over `Cmd` tags and the frame diff is derived by reflection (`core/eql.zig`).
-- **Tooling:** `zig build audit` (HARDLINE greppable half + doc drift + module-tree coverage), `zig build bench`, `TEAK_SNAPSHOT` live frames and golden snapshots, headless `zig build shot`, generated API reference (`zig build api` -> `docs/api.md`, `llms-full.txt`), `tools/gate.sh`.
-- **Also on master** (merged since the snapshot above): agent driver / MCP, hot reload, visual-regression suite, accessibility publishing, commands / shortcuts, macOS, font fallback; and (2026-10-27) canvas circles / arcs / polygons + world transform + antialiasing, frame stats, grid layout, SVG icons, drag value, read-only TextArea. Open work: `tasks.md`.
+- **Tooling:** `zig build audit`, `zig build bench`, `TEAK_SNAPSHOT` live frames, headless `zig build shot`, and the generated API reference (`zig build api` -> `docs/api.md`, `llms-full.txt`).
+- **Also on master** (merged since the snapshot above): agent driver / MCP, hot reload, accessibility publishing, commands / shortcuts, macOS, font fallback; and (2026-10-27) canvas circles / arcs / polygons + world transform + antialiasing, frame stats, grid layout, SVG icons, drag value, read-only TextArea. Open work: `tasks.md`.
 - **Examples (14):** `chrome`, `counter_greeter`, `effects`, `fonts`, `gallery`, `kerf_viewer`, `notes`, `scene3d`, `scene_layers`, `tables`, `todo`, `tree`, `vector_canvas`, `viewport`.
 
 Shipped phases, in order: prototype core loop → cleanup/abstraction hardening → text rendering → functional gaps → ergonomic helpers → consumer DX → Linux native → agent DX → the Oct 2026 session (idiomatic-Zig cleanup, text engine, SDF render, widgets, scene, tables at scale, Wayland, idle + animation). History is in `CHANGELOG.md`; the original phase-by-phase prototype guide survives at `docs/archive/init_convo/first_proto.md`.

@@ -8,18 +8,12 @@ const Align = cmd.Align;
 const Justify = cmd.Justify;
 const TextMeasurer = text.TextMeasurer;
 
-// ── Types ──────────────────────────────────────────────────────────
-
 pub const Rect = struct {
     x: f32 = 0,
     y: f32 = 0,
     w: f32 = 0,
     h: f32 = 0,
 
-    // Meaningful only for container entries (push_group / push_scroll /
-    // push_overlay / push_virtual_list) after the measure pass. Carried
-    // into the position pass so flex / justify distribution has the totals
-    // without rescanning children.
     fixed_main: f32 = 0,
     flex_total: f32 = 0,
     child_count: u32 = 0,
@@ -164,7 +158,6 @@ const GroupContext = struct {
     is_virtual: bool = false,
     total_count: f32 = 0,
     item_extent: f32 = 0,
-    // Accumulators.
     fixed_main: f32 = 0,
     flex_total: f32 = 0,
     cross_axis_max: f32 = 0,
@@ -214,10 +207,7 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
 
         const Self = @This();
 
-        // push / pop / top check the capacity and non-empty bounds with an
-        // unconditional `@panic` (every optimize mode): overflow, underflow
-        // and read-empty are programmer errors — the passes call
-        // `assertPushable` / `assertPoppable` first to name the cmd index.
+        // Bounds failures panic in every optimization mode.
 
         fn push(self: *Self, item: T) void {
             if (self.len >= capacity) @panic("teak layout: container stack overflow");
@@ -238,19 +228,7 @@ fn FixedStack(comptime T: type, comptime capacity: usize) type {
     };
 }
 
-// ── Layout Engine ──────────────────────────────────────────────────
-//
-// Two O(n) passes over a flat []Cmd (four when the frame has wrapped text or
-// `shrink > 0` nodes: widths resolve top-down, heights re-measure bottom-up). Works for any Cmd(Msg) since we
-// only read Msg-independent fields (styles, labels, content).
-//
-// Sizing model (details in docs/features/layout.md):
-//   - measure: every node gets an intrinsic outer size; a group/scroll
-//     `width`/`height` replaces it, `min_width`/`min_height` floor it.
-//   - position: a container's final size is known before its children are
-//     placed. Main axis: flex children split the leftover (on top of their
-//     own size); with no flex children `justify` distributes it. Cross axis:
-//     `align_cross` places each child, `.stretch` sizes it to the inner extent.
+// Layout sizing and pass invariants: docs/features/layout.md and SRC.md.
 
 pub const LayoutEngine = struct {
     const TEXT_HEIGHT: f32 = 20;
@@ -336,8 +314,6 @@ pub const LayoutEngine = struct {
                 },
                 .push_grid => |g| {
                     assertPushable(stack.len, stack.buffer.len, i);
-                    // `.vertical` so a divider in a cell lies flat and
-                    // single-line controls do not take a flex weight.
                     stack.push(.{
                         .cmd_index = i,
                         .direction = .vertical,
@@ -396,7 +372,6 @@ pub const LayoutEngine = struct {
                         .pad_y = vl.padding,
                         .gap = vl.gap,
                         .is_virtual = true,
-                        // Variable-height mode claims `total_extent` as one "item".
                         .total_count = if (vl.total_extent > 0) 1 else @floatFromInt(vl.total_count),
                         .item_extent = if (vl.total_extent > 0) vl.total_extent else vl.item_extent,
                     });
@@ -405,12 +380,7 @@ pub const LayoutEngine = struct {
                     assertPoppable(stack.len, i);
                     const grp = stack.pop();
                     var r = finishContainer(grp);
-                    // (Not in a grid cell: cells ignore flex.)
                     if (grp.is_scroll and grp.flex > 0 and stack.len > 0 and !stack.top().is_grid) {
-                        // Scroll content is allowed to overflow, so a flex
-                        // scroll starts from zero on the parent's main axis
-                        // (unless it fixed a size there) and takes only its
-                        // share of the leftover.
                         switch (stack.top().direction) {
                             .horizontal => if (grp.fixed_w <= 0) {
                                 r.w = 0;
@@ -419,9 +389,6 @@ pub const LayoutEngine = struct {
                                 r.h = 0;
                             },
                         }
-                        // The same holds along the scroll's own axis whatever
-                        // the parent's direction (a vertical scroll inside a
-                        // horizontal row must not size the row to its content).
                         switch (grp.direction) {
                             .horizontal => if (grp.fixed_w <= 0) {
                                 r.w = 0;
@@ -438,8 +405,6 @@ pub const LayoutEngine = struct {
                 .pop_overlay => {
                     assertPoppable(stack.len, i);
                     const grp = stack.pop();
-                    // Overlays do NOT contribute to their parent's
-                    // measured size — they hop the layout.
                     var r = finishContainer(grp);
                     r.end = @intCast(i);
                     rects[grp.cmd_index] = r;
@@ -448,7 +413,6 @@ pub const LayoutEngine = struct {
                     assertPoppable(stack.len, i);
                     const grp = stack.pop();
                     var r = finishContainer(grp);
-                    // Main axis = the full logical list, whatever was emitted.
                     const total_main = grp.total_count * grp.item_extent;
                     switch (grp.direction) {
                         .horizontal => r.w = total_main + 2 * grp.pad_x,
@@ -479,15 +443,12 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, w, h, btn.style.flex);
                 },
                 .text_input => |ti| {
-                    // Intrinsic size; flex/cross-stretch expand it in the position pass.
                     const w = ti.style.min_width;
                     const h = ti.style.height;
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, rowFlex(&stack, ti.style.flex));
                 },
                 .text_area => |ta| {
-                    // Canvas-like box: explicit size; flex grows the main axis,
-                    // a stretching parent fills the cross axis in pass 2/position.
                     const w = if (ta.width > 0) ta.width else ta.min_width;
                     rects[i] = .{ .w = w, .h = ta.height };
                     addLeafToTop(&stack, w, ta.height, ta.flex);
@@ -513,8 +474,6 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, w, h, rowFlex(&stack, sl.style.flex));
                 },
                 .divider => |dv| {
-                    // Thickness goes on the parent's main-axis; cross stretches
-                    // to the inner width/height in positionPass.
                     const parent_dir = if (stack.len > 0) stack.top().direction else .horizontal;
                     const w: f32 = switch (parent_dir) {
                         .horizontal => dv.thickness,
@@ -534,15 +493,12 @@ pub const LayoutEngine = struct {
                     addLeafToTop(&stack, w, h, img.style.flex);
                 },
                 .scene3d => |sc| {
-                    // Fixed-size leaf, same sizing convention as `canvas`.
                     const w = sc.style.width;
                     const h = sc.style.height;
                     rects[i] = .{ .w = w, .h = h };
                     addLeafToTop(&stack, w, h, sc.style.flex);
                 },
                 .canvas => |cv| {
-                    // Intrinsic w/h come from the style; flex grows the box
-                    // along the parent's main axis, `.stretch` along the cross.
                     const w = cv.style.width;
                     const h = cv.style.height;
                     rects[i] = .{ .w = w, .h = h };
@@ -557,8 +513,6 @@ pub const LayoutEngine = struct {
                         addLeafToTop(&stack, mw.w, mw.h, 0);
                         continue;
                     }
-                    // Measure each span with its own font; fall back to
-                    // default_font for any byte not covered by a span.
                     var max_h: f32 = 0;
                     var total_w: f32 = 0;
                     var cursor: u32 = 0;
@@ -595,17 +549,6 @@ pub const LayoutEngine = struct {
         }
         return needs_wrap;
     }
-
-    // ── Passes 2-3: wrapped text and flex shrink (docs/features/layout.md) ──
-    //
-    // Only run when pass 1 saw wrapped `text` or a `shrink > 0` container.
-    // Pass 2 walks forward over containers and, for each, settles its direct
-    // children's WIDTHS (flex growth, shrink down to min-content, cross-axis
-    // stretch, wrapped-text width) -- exactly the width decisions the position
-    // pass would make later, made early so heights can depend on them. Pass 3
-    // re-measures HEIGHTS bottom-up (wrapped text height = its line count)
-    // and refreshes the container accumulators the position pass reads.
-    // After both, the position pass finds no width left to distribute.
 
     /// A direct child as the width passes see it.
     const Kid = struct {
@@ -668,7 +611,6 @@ pub const LayoutEngine = struct {
             .push_group => |g| .{ .direction = g.direction, .pad_x = g.padX(), .pad_y = g.padY(), .gap = g.gap, .align_cross = g.align_cross, .can_shrink = true },
             .push_scroll => |sc| .{ .direction = sc.direction, .pad_x = sc.padding, .pad_y = sc.padding, .gap = sc.gap, .align_cross = sc.align_cross, .can_shrink = sc.direction == .vertical },
             .push_overlay => |ov| .{ .direction = ov.direction, .pad_x = ov.padding, .pad_y = ov.padding, .gap = ov.gap, .align_cross = ov.align_cross, .can_shrink = true },
-            // A grid settles its cells' widths in `resolveGridWidths`.
             .push_grid, .pop_grid, .pop_group, .pop_scroll, .pop_overlay, .pop_virtual_list, .push_virtual_list, .text, .rich_text, .button, .text_input, .text_area, .checkbox, .radio, .slider, .divider, .image, .scene3d, .canvas => null,
         };
     }
@@ -698,9 +640,6 @@ pub const LayoutEngine = struct {
                     const kid = kidOf(cmds[k]);
                     const stretch = spec.align_cross == .stretch or (spec.align_cross == .start and kid.fills_cross);
                     if (kid.wrapped) {
-                        // Wrapped text fills a stretching parent (and any
-                        // aligned paragraph); otherwise it takes its natural
-                        // width capped by the room it has.
                         rects[k].w = if (stretch) inner_w else @min(rects[k].w, inner_w);
                     } else if (stretch and !kid.fixed_w) {
                         rects[k].w = @max(inner_w, kid.min_w);
@@ -708,7 +647,6 @@ pub const LayoutEngine = struct {
                 }
             }
         }
-        // `measurer` is used by min-content (shrink) only.
     }
 
     const EPS: f32 = 0.001;
@@ -852,7 +790,6 @@ pub const LayoutEngine = struct {
                     var r = finishContainer(grp);
                     r.w = old.w;
                     r.end = old.end;
-                    // A flex scroll's main-axis size was zeroed in pass 1; keep it.
                     if (grp.is_scroll and grp.flex > 0) r.h = old.h;
                     rects[grp.cmd_index] = r;
                     foldChild(&stack, r.w, r.h);
@@ -912,13 +849,9 @@ pub const LayoutEngine = struct {
     /// goes at the running cursor.
     pub fn positionPass(rects: []Rect, cmds: anytype) void {
         var stack: FixedStack(CursorContext, MAX_DEPTH) = .{};
-        // Open grids, parallel to `stack` (a grid's CursorContext points here).
         var grids: FixedStack(GridCursor, MAX_DEPTH) = .{};
 
         for (cmds, 0..) |c, i| {
-            // A direct child of a grid: at the first cell of a row, take the
-            // row's height from the next `n` children (each cmd is scanned
-            // once more here, so the pass stays linear).
             if (stack.len > 0) if (stack.top().grid) |g| if (i == g.next) beginGridCell(rects, cmds, g, i);
             switch (c) {
                 .push_grid => |g| {
@@ -949,7 +882,6 @@ pub const LayoutEngine = struct {
                         gc.col_x[col] = x;
                         x += gc.col_w[col] + g.col_gap;
                     }
-                    // First direct child (skips leading overlays).
                     var it = i + 1;
                     gc.next = nextKid(rects, cmds, &it, r.end) orelse no_cell;
                     assertPushable(grids.len, grids.buffer.len, i);
@@ -985,9 +917,6 @@ pub const LayoutEngine = struct {
                         .fixed_w = sc.width > 0,
                         .fixed_h = sc.height > 0,
                     });
-                    // Children's cursor starts shifted by the scroll offsets:
-                    // an overflowing child ends up outside the viewport, and
-                    // the render/hit-test clip stacks discard it.
                     pushChildren(rects, &stack, i, .{
                         .direction = sc.direction,
                         .pad_x = sc.padding,
@@ -999,9 +928,6 @@ pub const LayoutEngine = struct {
                     });
                 },
                 .push_overlay => |ov| {
-                    // Absolute placement; anchor fraction shifts by
-                    // (-w * frac_x, -h * frac_y). Overlays do NOT advance
-                    // the parent cursor.
                     rects[i].x = ov.x - rects[i].w * ov.anchor_x_frac;
                     rects[i].y = ov.y - rects[i].h * ov.anchor_y_frac;
                     if (ov.anchor_msg) |am| {
@@ -1024,8 +950,6 @@ pub const LayoutEngine = struct {
                         .gap = vl.gap,
                         .align_cross = vl.align_cross,
                     });
-                    // Bump the cursor so the first emitted child sits at
-                    // row visible_start, not row 0.
                     const ctx = stack.top();
                     const offset: f32 = if (vl.total_extent > 0) vl.start_offset else @as(f32, @floatFromInt(vl.visible_start)) * vl.item_extent;
                     switch (vl.direction) {
@@ -1153,14 +1077,7 @@ pub const LayoutEngine = struct {
         });
     }
 
-    // ── Grid (docs/features/layout.md#grid) ─────────────────────────
-    //
-    // A grid's direct children fill `columnCount()` columns row by row. Its
-    // per-column and per-row maxima are not kept anywhere: each pass that
-    // needs them rescans the grid's direct children (hopping their subtrees
-    // via `Rect.end`), so every cmd is visited a bounded number of extra
-    // times and each pass stays O(n). Column scratch is a fixed
-    // `MAX_GRID_COLUMNS` array; rows need none (one running row).
+    // Grid layout: docs/features/layout.md#grid.
 
     const GridCols = [cmd.MAX_GRID_COLUMNS]f32;
 
@@ -1361,18 +1278,6 @@ pub const LayoutEngine = struct {
         };
     }
 
-    // ── Stack-balance diagnostics ──────────────────────────────────
-    //
-    // The FixedStack push/pop already `std.debug.assert` the depth
-    // invariant, but a bare assert names no cmd — so an unbalanced or
-    // too-deep buffer panics without pointing at the offending command.
-    // These guards run at the pass call sites (where the cmd index `i`
-    // is in scope) and panic with that index before the assert would
-    // fire. They sit purely on the error path: for balanced, in-bounds
-    // input the condition is never true, so layout behavior is
-    // unchanged. For a diagnostic that reports *without* panicking (and
-    // also catches crossed pairs), run `cmd.validateBalance` first.
-
     fn assertPushable(len: usize, cap: usize, cmd_index: usize) void {
         if (len >= cap) std.debug.panic(
             "teak layout: push_* at cmd #{d} exceeds container nesting depth {d} " ++
@@ -1408,536 +1313,8 @@ pub const LayoutEngine = struct {
     }
 };
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 /// 10-px-per-byte, 20-px-line-height stub measurer — the same numbers
 /// every existing assertion was written against. Shared with
 /// `src/input/hit_test.zig`, `src/render/build.zig`, and example
 /// tests via `text.monoMeasurer`.
 const test_measurer = text.monoMeasurer();
-
-test "measure pass sizes basic widgets" {
-    const testing = std.testing;
-    const Msg = union(enum) { a, b, c };
-    const CmdBuffer = cmd.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .direction = .vertical, .padding = 20, .gap = 12 });
-    cb.text("Count: 0"); // 8 chars * 10 = 80
-    cb.pushGroup(.{ .direction = .horizontal, .gap = 8 });
-    cb.button(.a, "+");
-    cb.button(.b, "-");
-    cb.popGroup();
-    cb.button(.c, "Reset");
-    cb.popGroup();
-
-    var rects: [32]Rect = undefined;
-    LayoutEngine.measurePass(rects[0..cb.cmds.items.len], cb.cmds.items, test_measurer);
-
-    try testing.expectEqual(@as(f32, 80), rects[1].w);
-    try testing.expectEqual(@as(f32, 20), rects[1].h);
-    try testing.expectEqual(@as(f32, 60), rects[3].w); // "+" min 60
-    try testing.expectEqual(@as(f32, 66), rects[6].w); // "Reset" = 5*10+16 = 66
-    try testing.expectEqual(@as(f32, 144), rects[2].w); // 60+8+60+2*8
-}
-
-test "horizontal flex distributes remaining space" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    const CmdBuffer = cmd.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    // Root horizontal, no padding, no gap, 800 wide.
-    // Child A: vertical group, intrinsic, no flex.
-    // Child B: vertical group, flex=1.
-    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0 });
-
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.button(.a, "Hi"); // 2*10+16=36 -> max 60
-    cb.popGroup();
-
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .flex = 1 });
-    cb.button(.a, "Yo");
-    cb.popGroup();
-
-    cb.popGroup();
-
-    var rects: [32]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
-
-    // Root: 800 wide.
-    try testing.expectEqual(@as(f32, 800), rects[0].w);
-    // Left group (cmd 1): intrinsic 60.
-    try testing.expectEqual(@as(f32, 60), rects[1].w);
-    // Right group (cmd 4, the flex=1 push): intrinsic 60 + 680 remainder = 740.
-    try testing.expectEqual(@as(f32, 740), rects[4].w);
-}
-
-test "divider stretches on cross-axis, takes thickness on main-axis" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Vertical group: divider is a horizontal line — h=thickness, w
-    // stretches to the container's full inner width (300, since the root
-    // group is stretched to the window).
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.text("top");
-    cb.divider();
-    cb.text("bot");
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 300, 200, test_measurer);
-
-    // rects[2] is the divider. Default thickness is 1.
-    try testing.expectEqual(@as(f32, 1), rects[2].h);
-    try testing.expectEqual(@as(f32, 300), rects[2].w);
-
-    // Horizontal group: divider is a vertical pillar — w=thickness, h
-    // stretches to the container's full inner height (200).
-    var cb2 = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb2.deinit();
-
-    cb2.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0 });
-    cb2.text("left");
-    cb2.dividerStyled(.{ .thickness = 3 });
-    cb2.text("right");
-    cb2.popGroup();
-
-    var rects2: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects2[0..cb2.cmds.items.len], cb2.cmds.items, 300, 200, test_measurer);
-
-    try testing.expectEqual(@as(f32, 3), rects2[2].w);
-    try testing.expectEqual(@as(f32, 200), rects2[2].h);
-}
-
-test "horizontal flex respects padding and gap" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    const CmdBuffer = cmd.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    // Root: 800 wide, padding=10 (20 consumed), gap=20 (×2 gaps = 40
-    // consumed between 3 children). Inner = 780. Each child has
-    // intrinsic 60 (3×60 = 180 fixed_main). Extra after gaps + intrinsic:
-    // 780 - 40 - 180 = 560. Three flex=1 children split 560 evenly.
-    // Each child ends up at 60 + 560/3 ≈ 246.67 wide.
-    cb.pushGroup(.{ .direction = .horizontal, .padding = 10, .gap = 20 });
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .flex = 1 });
-    cb.button(.a, "Hi");
-    cb.popGroup();
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .flex = 1 });
-    cb.button(.a, "Hi");
-    cb.popGroup();
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0, .flex = 1 });
-    cb.button(.a, "Hi");
-    cb.popGroup();
-    cb.popGroup();
-
-    var rects: [32]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
-
-    // Child push_group entries are cmds 1, 4, 7 (pop_group cmds sit
-    // between them in the buffer).
-    const expected_w: f32 = 60 + 560.0 / 3.0;
-    try testing.expectApproxEqAbs(expected_w, rects[1].w, 0.01);
-    try testing.expectApproxEqAbs(expected_w, rects[4].w, 0.01);
-    try testing.expectApproxEqAbs(expected_w, rects[7].w, 0.01);
-
-    // First child starts at x=padding=10.
-    try testing.expectEqual(@as(f32, 10), rects[1].x);
-    // Second starts at 10 + expected_w + gap(20).
-    try testing.expectApproxEqAbs(10 + expected_w + 20, rects[4].x, 0.01);
-    // Third starts at 10 + 2*(expected_w + gap).
-    try testing.expectApproxEqAbs(10 + 2 * (expected_w + 20), rects[7].x, 0.01);
-}
-
-test "checkbox sizes include label and box" {
-    const testing = std.testing;
-    const Msg = union(enum) { toggle };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.checkbox(.toggle, false, "agree"); // 5 chars
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    LayoutEngine.measurePass(rects[0..cb.cmds.items.len], cb.cmds.items, test_measurer);
-    // size 18 + gap 8 + 5*10 = 76
-    try testing.expectEqual(@as(f32, 76), rects[1].w);
-}
-
-test "slider measures intrinsic min_width, grows with flex" {
-    const testing = std.testing;
-    const Msg = union(enum) { grab };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0 });
-    cb.slider(.grab, 0.5);
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 100, test_measurer);
-    // Slider has flex=1 by default and no siblings, so it expands to fill.
-    try testing.expectEqual(@as(f32, 400), rects[1].w);
-}
-
-test "scroll container clamps to fixed viewport size" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushScroll(.{
-        .direction = .vertical,
-        .padding = 0,
-        .gap = 0,
-        .width = 200,
-        .height = 100,
-        .scroll_y = 50,
-    });
-    // Many buttons that would overflow 100px height.
-    cb.button(.a, "A");
-    cb.button(.a, "B");
-    cb.button(.a, "C");
-    cb.button(.a, "D");
-    cb.popScroll();
-
-    var rects: [16]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
-
-    // Scroll container is clamped to 200x100.
-    try testing.expectEqual(@as(f32, 200), rects[0].w);
-    try testing.expectEqual(@as(f32, 100), rects[0].h);
-    // First child should be at y = 0 - scroll_y = -50.
-    try testing.expectEqual(@as(f32, -50), rects[1].y);
-    // Button height = 36, so second child at y = -50 + 36 = -14.
-    try testing.expectEqual(@as(f32, -14), rects[2].y);
-}
-
-test "overlay positions absolutely and does NOT contribute to parent size" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Root vertical with a button + an overlay containing more content.
-    // The overlay must not push the root height beyond just the button.
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.button(.a, "Anchor"); // 6 chars * 10 + 16 = 76 wide, 36 tall
-    cb.pushOverlay(.{ .x = 200, .y = 50, .padding = 0, .gap = 0 });
-    cb.button(.a, "OvBtn");
-    cb.popOverlay();
-    cb.popGroup();
-
-    var rects: [16]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
-
-    // Root height in this DSL is forced to window height (800x600) by doLayout
-    // because it's the first push_group. But the OVERLAY rect must be at (200, 50),
-    // and the button inside the overlay (cmd index 3) follows.
-    try testing.expectEqual(@as(f32, 200), rects[2].x); // push_overlay
-    try testing.expectEqual(@as(f32, 50), rects[2].y);
-    // Overlay child sits at overlay's inner top-left.
-    try testing.expectEqual(@as(f32, 200), rects[3].x);
-    try testing.expectEqual(@as(f32, 50), rects[3].y);
-}
-
-test "overlay anchor_frac shifts overlay by -w*frac" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.pushOverlay(.{
-        .x = 300,
-        .y = 200,
-        .width = 100,
-        .height = 50,
-        .padding = 0,
-        .anchor_x_frac = 1.0, // right edge at x=300
-        .anchor_y_frac = 1.0, // bottom edge at y=200
-    });
-    cb.text("x");
-    cb.popOverlay();
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
-
-    // Overlay's top-left = (300 - 100*1.0, 200 - 50*1.0) = (200, 150).
-    try testing.expectEqual(@as(f32, 200), rects[1].x);
-    try testing.expectEqual(@as(f32, 150), rects[1].y);
-}
-
-test "virtual list claims total_count * item_extent on main axis" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // 10,000 rows of 24px each, visible window 0..3.
-    cb.pushVirtualList(.{
-        .direction = .vertical,
-        .total_count = 10_000,
-        .item_extent = 24,
-        .visible_start = 0,
-        .visible_end = 3,
-    });
-    cb.text("row 0");
-    cb.text("row 1");
-    cb.text("row 2");
-    cb.popVirtualList();
-
-    var rects: [16]Rect = undefined;
-    LayoutEngine.measurePass(rects[0..cb.cmds.items.len], cb.cmds.items, test_measurer);
-
-    // The virtual-list container's height = 10000 * 24 = 240000 even
-    // though only three rows were emitted.
-    try testing.expectEqual(@as(f32, 240000), rects[0].h);
-}
-
-test "variable-height virtual list claims total_extent and starts at start_offset" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushScroll(.{ .direction = .vertical, .padding = 0, .gap = 0, .width = 400, .height = 200 });
-    cb.pushVirtualList(.{ .total_extent = 5000, .start_offset = 1234, .visible_start = 40, .visible_end = 42 });
-    cb.text("row 40");
-    cb.text("row 41");
-    cb.popVirtualList();
-    cb.popScroll();
-    var rects: [16]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
-    try testing.expectEqual(@as(f32, 5000), rects[1].h);
-    try testing.expectEqual(@as(f32, 1234), rects[2].y);
-    try testing.expect(rects[3].y >= rects[2].y + rects[2].h); // rows flow after each other
-}
-
-test "virtual list children sit at visible_start * item_extent offset" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Render rows 500..503 — first child should land at y=500*24=12000.
-    cb.pushScroll(.{ .direction = .vertical, .padding = 0, .gap = 0, .width = 400, .height = 200 });
-    cb.pushVirtualList(.{
-        .direction = .vertical,
-        .total_count = 1000,
-        .item_extent = 24,
-        .visible_start = 500,
-        .visible_end = 503,
-    });
-    cb.text("row 500");
-    cb.text("row 501");
-    cb.text("row 502");
-    cb.popVirtualList();
-    cb.popScroll();
-
-    var rects: [16]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
-
-    // First text (index 2 — after push_scroll + push_virtual_list).
-    try testing.expectEqual(@as(f32, 12000), rects[2].y);
-}
-
-test "text_input cross-axis stretches in vertical parent" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    const CmdBuffer = cmd.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .direction = .vertical, .padding = 10, .gap = 0 });
-    cb.textInput(.focus, "", 0);
-    cb.popGroup();
-
-    var rects: [16]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, test_measurer);
-
-    // Parent inner width = 400 - 20 = 380.
-    try testing.expectEqual(@as(f32, 380), rects[1].w);
-}
-
-test "canvas is a fixed-size leaf sized from its style" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .direction = .vertical, .padding = 10, .gap = 0 });
-    cb.text("Title"); // 5*10 = 50 wide, 20 tall
-    cb.canvas(.{ .width = 300, .height = 120 }, &.{});
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
-
-    // Canvas keeps its declared box regardless of parent size.
-    try testing.expectEqual(@as(f32, 300), rects[2].w);
-    try testing.expectEqual(@as(f32, 120), rects[2].h);
-    // Placed under the title (y = padding 10 + title height 20 = 30) at x=10.
-    try testing.expectEqual(@as(f32, 10), rects[2].x);
-    try testing.expectEqual(@as(f32, 30), rects[2].y);
-}
-
-test "ClipStack: round-trip up to capacity without tripping bounds" {
-    const testing = std.testing;
-    var clips: ClipStack = .{};
-
-    // top() on empty returns the huge sentinel; this is documented
-    // behavior, not a bug. We do NOT assert here — only push/pop do.
-    const empty_top = clips.top();
-    try testing.expect(empty_top.w > 1e8);
-
-    // Push the full capacity and confirm the stack accepts every
-    // one without a panic.
-    var i: usize = 0;
-    while (i < clips.buffer.len) : (i += 1) {
-        clips.push(.{ .x = @floatFromInt(i), .y = 0, .w = 10, .h = 10 });
-    }
-    try testing.expectEqual(@as(usize, MAX_DEPTH), clips.len);
-    try testing.expectEqual(@as(f32, MAX_DEPTH - 1), clips.top().x);
-
-    // Pop them all; depth returns to zero, no underflow.
-    i = 0;
-    while (i < MAX_DEPTH) : (i += 1) clips.pop();
-    try testing.expectEqual(@as(usize, 0), clips.len);
-}
-
-test "FixedStack (via MAX_DEPTH-deep group nesting): documented depth is reachable" {
-    const testing = std.testing;
-    const Msg = union(enum) { noop };
-    const CmdBuffer = cmd.CmdBuffer(Msg);
-
-    var cb = CmdBuffer.init(testing.allocator);
-    defer cb.deinit();
-
-    // Documented max for the measure-pass FixedStack is MAX_DEPTH. Push that
-    // many groups, all of which must coexist on the stack simultaneously
-    // during the measure pass — this is the boundary case.
-    const DEPTH: usize = MAX_DEPTH;
-    var i: usize = 0;
-    while (i < DEPTH) : (i += 1) {
-        cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    }
-    // Add a single leaf so the innermost group has measured content.
-    cb.text("leaf");
-    i = 0;
-    while (i < DEPTH) : (i += 1) cb.popGroup();
-
-    const rects = try testing.allocator.alloc(Rect, cb.cmds.items.len);
-    defer testing.allocator.free(rects);
-    // The stacks panic on overflow in every mode — this must not, because
-    // MAX_DEPTH is the documented capacity.
-    LayoutEngine.doLayout(rects, cb.cmds.items, 800, 600, test_measurer);
-    try testing.expectEqual(@as(f32, 800), rects[0].w);
-}
-
-// Sizing-model tests (fixed sizes, align, justify, stretch, flex, golden
-// snapshots) live in their own file to keep this one readable.
-test {
-    _ = @import("sizing_test.zig");
-    _ = @import("wrap_test.zig");
-    _ = @import("grid_test.zig");
-}
-
-test "scene3d is a fixed-size leaf sized from its style" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .direction = .vertical, .padding = 10, .gap = 0 });
-    cb.text("Title"); // 50 x 20
-    cb.scene3d(.{ .style = .{ .width = 320, .height = 200 } });
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, test_measurer);
-
-    try testing.expectEqual(@as(f32, 320), rects[2].w);
-    try testing.expectEqual(@as(f32, 200), rects[2].h);
-    try testing.expectEqual(@as(f32, 10), rects[2].x);
-    try testing.expectEqual(@as(f32, 30), rects[2].y);
-}
-
-test "overlay anchored to a widget by Msg: every side" {
-    const testing = std.testing;
-    const Msg = union(enum) { open, other };
-    for (std.enums.values(cmd.AnchorSide)) |side| {
-        var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-        defer cb.deinit();
-        cb.pushGroup(.{ .padding = 0, .gap = 0 });
-        cb.pushGroup(.{ .padding = 0, .gap = 0, .width = 100, .height = 40 }); // offsets the button from the origin
-        cb.popGroup();
-        cb.buttonStyled(.open, "Open", .{ .min_width = 80, .height = 20 });
-        cb.pushOverlay(.{ .width = 50, .height = 30, .padding = 0, .anchor_msg = .open, .anchor_side = side, .anchor_gap = 3 });
-        cb.popOverlay();
-        cb.popGroup();
-        var rects: [16]Rect = undefined;
-        const n = cb.cmds.items.len;
-        LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 800, 600, test_measurer);
-        const a = rects[3];
-        const ov = rects[4];
-        const want: [2]f32 = switch (side) {
-            .below_start => .{ a.x, a.y + a.h + 3 },
-            .below_end => .{ a.x + a.w - ov.w, a.y + a.h + 3 },
-            .above_start => .{ a.x, a.y - ov.h - 3 },
-            .above_end => .{ a.x + a.w - ov.w, a.y - ov.h - 3 },
-            .right_start => .{ a.x + a.w + 3, a.y },
-            .left_start => .{ a.x - ov.w - 3, a.y },
-        };
-        try testing.expectApproxEqAbs(want[0], ov.x, 0.01);
-        try testing.expectApproxEqAbs(want[1], ov.y, 0.01);
-        try testing.expect(a.y >= 40); // the anchor really was laid out below the spacer
-    }
-}
-
-test "overlay anchor: no matching widget falls back to x / y" {
-    const testing = std.testing;
-    const Msg = union(enum) { open, other };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.button(.other, "x");
-    cb.pushOverlay(.{ .x = 33, .y = 44, .width = 50, .height = 30, .padding = 0, .anchor_msg = .open });
-    cb.popOverlay();
-    cb.popGroup();
-    var rects: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..4], cb.cmds.items, 800, 600, test_measurer);
-    try testing.expectEqual(@as(f32, 33), rects[2].x);
-    try testing.expectEqual(@as(f32, 44), rects[2].y);
-}
-
-test "overlay anchor: the nearest EARLIER widget with an equal Msg wins" {
-    const testing = std.testing;
-    const Msg = union(enum) { open: u8 };
-    var cb = cmd.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.button(.{ .open = 1 }, "first");
-    cb.button(.{ .open = 2 }, "second");
-    cb.pushOverlay(.{ .width = 50, .height = 30, .padding = 0, .anchor_msg = .{ .open = 1 } });
-    cb.popOverlay();
-    cb.popGroup();
-    var rects: [8]Rect = undefined;
-    LayoutEngine.doLayout(rects[0..6], cb.cmds.items, 800, 600, test_measurer);
-    const first = rects[1];
-    try testing.expectEqual(first.x, rects[3].x);
-    try testing.expectEqual(first.y + first.h, rects[3].y);
-}

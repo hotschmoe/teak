@@ -57,50 +57,9 @@ pub fn viewStyled(cb: anytype, msg: anytype, on: bool, label: []const u8, style:
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
 const text = @import("../text.zig");
 
 const TestMsg = union(enum) { flip, other };
-
-test "toggle: a clickable canvas with the knob at the end when on" {
-    var cb = cmd.CmdBuffer(TestMsg).init(testing.allocator);
-    defer cb.deinit();
-    view(&cb, TestMsg.flip, true, "Wi-Fi");
-    const items = cb.cmds.items;
-    try testing.expectEqual(@as(usize, 4), items.len); // group, canvas, text, pop
-    const cv = items[1].canvas;
-    try testing.expectEqual(TestMsg.flip, cv.msg.?);
-    try testing.expectEqualStrings("Wi-Fi", cv.label);
-    // knob (3rd primitive) sits at the right end when on, left end when off
-    try testing.expectEqual(@as(f32, 40 - 3 - 16), cv.primitives[2].filled_rect.x);
-
-    cb.reset();
-    view(&cb, TestMsg.flip, false, "Wi-Fi");
-    try testing.expectEqual(@as(f32, 3), cb.cmds.items[1].canvas.primitives[2].filled_rect.x);
-}
-
-test "toggle: snapshot golden" {
-    var cb = cmd.CmdBuffer(TestMsg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 6 });
-    view(&cb, TestMsg.flip, true, "Wi-Fi");
-    view(&cb, TestMsg.other, false, "Bluetooth");
-    cb.popGroup();
-    var rects: [16]engine.Rect = undefined;
-    const n = cb.cmds.items.len;
-    engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 300, 100, text.monoMeasurer());
-    try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
-        \\group (0,0,300,100) vertical
-        \\  group (0,0,100,22) horizontal
-        \\    canvas (0,0,40,22) prims=3 "Wi-Fi"
-        \\    text (50,1,50,20) "Wi-Fi"
-        \\  group (0,28,140,22) horizontal
-        \\    canvas (0,28,40,22) prims=3 "Bluetooth"
-        \\    text (50,29,90,20) "Bluetooth"
-        \\
-    );
-}

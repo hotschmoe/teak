@@ -20,17 +20,7 @@ pub const Wrap = text_wrap.Wrap;
 const DEFAULT_FONT = text.DEFAULT_FONT;
 const TextureHandle = text.TextureHandle;
 
-// ── Shared (Msg-independent) types ─────────────────────────────────
-
 pub const Direction = enum { vertical, horizontal };
-
-// ── Accessibility semantics ────────────────────────────────────────
-//
-// Cmds already imply a role for their own kind (button, text_input, slider,
-// ...). Higher-level patterns built from groups and buttons (tabs, lists,
-// trees, tables, menus, dialogs, live status) carry an `A11yHint` so the
-// a11y tree (`input/a11y.zig`) and the platform mirrors (Win32 UIA, web DOM)
-// can expose them. Pure data; the default (`semantic = .none`) changes nothing.
 
 pub const A11ySemantic = enum {
     none,
@@ -431,19 +421,6 @@ pub const ScrollStyle = struct {
     id: u32 = 0,
 };
 
-// ── Overlay (HARDLINE §2 escape hatch 5) ───────────────────────────
-//
-// Absolute-positioned floating region. Content between push_overlay /
-// pop_overlay draws above non-overlay content and hit-tests before it.
-// Position is explicit (app fills .x/.y from prev-frame anchor or mouse
-// coords — same pattern as the slider). Width/height = 0 means measured
-// from children; >0 = forced size.
-//
-// Promoted to a Msg-generic type so `backdrop_msg` (a click-outside-to-
-// close hook) can carry a Msg without smuggling a function pointer
-// (HARDLINE §3). Existing call sites use anonymous struct literals
-// (`cb.pushOverlay(.{ .x = ... })`) so the type lift is transparent.
-
 pub fn OverlayStyle(comptime Msg: type) type {
     return struct {
         pub const MsgT = Msg;
@@ -538,13 +515,6 @@ pub fn leafMsg(c: anytype) ?@TypeOf(c).MsgT {
     };
 }
 
-// ── Image rendering (functional gap #2) ─────────────────────────────
-//
-// Carries a TextureHandle that the Gpu backend resolves to a real
-// resource (wgpu texture, WebGPU texture, ...). The app uploads the
-// image via the Gpu surface's `uploadImage` (returns a TextureHandle),
-// stashes the handle in Model, and emits `image` with it each frame.
-
 pub const ImageStyle = struct {
     /// Intrinsic size in pixels. The render pass scales the texture
     /// to fit this rect. Width=0 or height=0 = the cmd takes no space
@@ -567,15 +537,6 @@ pub const ImageCmd = struct {
     handle: TextureHandle,
     style: ImageStyle = .{},
 };
-
-// ── Virtual list (functional gap #6) ────────────────────────────────
-//
-// Container that *claims* `total_count * item_extent` of main-axis
-// space (for the scroll container to size correctly) but only contains
-// cmds for the visible window. The app computes visible_start /
-// visible_end from the parent scroll offset and only emits cmds for
-// rows in that range. push_virtual_list is intended to sit directly
-// inside a push_scroll.
 
 pub const VirtualListStyle = struct {
     direction: Direction = .vertical,
@@ -607,15 +568,6 @@ pub const VirtualListStyle = struct {
     id: u32 = 0,
 };
 
-// ── Rich text (functional gap #8) ───────────────────────────────────
-//
-// Mixed-style text: a base content string carved into runs by `spans`.
-// Each span colors / weights / sizes a contiguous byte range. Layout
-// measures by walking the spans (so font-size changes affect total
-// width). Render emits one TextDraw per visible span. The spans slice
-// lives in the per-frame arena — typically built by walking a rich_zig
-// `Text` value into `RichTextSpan`s.
-
 /// A styled byte range of a `rich_text` (defined in `text.zig` so `text_wrap`
 /// can measure runs without importing the Cmd types).
 pub const RichTextSpan = text.RichTextSpan;
@@ -635,13 +587,6 @@ pub const RichTextCmd = struct {
     text_align: TextAlign = .start,
 };
 
-// ── Mixed-font text builder ────────────────────────────────────────
-//
-// Ergonomic constructor for RichTextCmd: an app declares a list of
-// styled parts and the framework computes byte offsets + spans in the
-// arena. Closes ergonomic gap 7 — mixing mono columns + sans labels in
-// one paragraph no longer requires hand-rolling spans.
-
 pub const MixedPart = struct {
     text: []const u8,
     /// null falls back to the theme's `typography.body` at emit time.
@@ -651,21 +596,6 @@ pub const MixedPart = struct {
     bold: bool = false,
     italic: bool = false,
 };
-
-// ── Canvas (charts + custom 2D drawing, consumer issue #3) ─────────
-//
-// A fixed-size leaf that draws a list of pure-data 2D primitives through
-// the EXISTING solid-quad pipeline — no shader / GPU-backend changes.
-// Axis-aligned prims are plain quads; polyline segments are emitted as
-// 4-corner quads (see render/vertex.zig `emitQuadCorners`). Coordinates
-// on every primitive are canvas-LOCAL logical pixels (f32), origin at the
-// canvas rect's top-left; the render pass translates them to window
-// space and clips to the canvas rect. No callbacks, no closures, no
-// text-in-canvas in v1 — apps compose regular `text` cmds around it.
-//
-// HARDLINE: `CanvasPrimitive` is a data tagged union (like `Cmd` itself);
-// it carries no function pointers. The `primitives` slice is built by
-// `view` into the per-frame arena (typically via `core/chart.zig`).
 
 /// A point in canvas-local logical pixels.
 pub const CanvasPoint = struct {
@@ -966,13 +896,6 @@ pub fn CanvasCmd(comptime Msg: type) type {
     };
 }
 
-// ── 3D scene (kerf: depth-tested mesh inside the UI) ────────────────
-//
-// A fixed-size leaf the Gpu fills with a rendered 3D scene (see
-// `core/scene.zig`, docs/features/scene3d.md). Like `image`, it is layout
-// + a draw record: the render pass emits a `SceneDraw`; the Gpu renders the
-// mesh offscreen and composites it at the leaf's rect.
-
 pub const SceneStyle = struct {
     /// Intrinsic size in logical pixels; the scene is rendered at exactly
     /// this size (times the display scale), so it is never resampled.
@@ -1015,12 +938,6 @@ pub fn SceneCmd(comptime Msg: type) type {
         view: scene.view.View = .{},
     };
 }
-
-// ── Generic Cmd + CmdBuffer over Msg ───────────────────────────────
-//
-// Per proto 2 Option A: CmdBuffer is generic over the composed AppMsg.
-// Components emit commands using the composed Msg; this keeps routing
-// explicit rather than hiding it behind a per-component wrapper.
 
 /// Keyboard grouping of list-row buttons (see docs/features/focus.md).
 pub const Roving = enum {
@@ -1214,20 +1131,6 @@ pub fn Cmd(comptime Msg: type) type {
     };
 }
 
-// ── Cmd-buffer balance validation ──────────────────────────────────
-//
-// Every push_* Cmd (push_group / push_scroll / push_overlay /
-// push_virtual_list) must be closed by the matching pop_*. A missing
-// pop, a stray pop, or a *crossed* pair (push_group … pop_overlay) is
-// otherwise a silent bug: LayoutEngine's FixedStack only panics on
-// overflow/underflow, and a balanced-but-crossed buffer doesn't even
-// trip that — it just produces wrong rects. `validateBalance` walks the
-// flat buffer once and names the first imbalance so it surfaces as an
-// actionable message instead of a mystery layout glitch.
-//
-// Pure, O(n), zero allocation. Intended for debug builds / tests / the
-// host loop's per-frame guard (see docs/features/layout.md).
-
 /// The container kinds that bracket a region of the flat buffer.
 /// `pushFormRow` / `popFormRow` are sugar over `push_group` / `pop_group`
 /// (they emit exactly those Cmds), so a form row shows up here as
@@ -1408,13 +1311,6 @@ pub fn formatBalanceError(err: BalanceError, buf: []u8) []const u8 {
     } catch buf[0..0];
 }
 
-// ── Form row (ergonomic gap 4) ─────────────────────────────────────
-//
-// Composite [label, content, units] horizontal layout with an optional
-// validation message stacked below it. push/pop pair so the app can
-// emit any cmds it wants in the middle (text_input, slider, mixedText,
-// etc.) — the framework brackets the label + units + validation.
-
 pub const FormRowOpts = struct {
     /// Label to the left of the content (theme.text_color). Empty
     /// string skips the label cmd.
@@ -1497,8 +1393,6 @@ pub fn CmdBuffer(comptime Msg: type) type {
             _ = self.arena.reset(.retain_capacity);
             self.form_row_depth = 0;
         }
-
-        // ── Convenience emitters ───────────────────────────────────
 
         pub fn pushGroup(self: *Self, style: GroupStyle) void {
             self.cmds.append(self.backing, self.box(.push_group, style)) catch oom();
@@ -1816,8 +1710,6 @@ pub fn CmdBuffer(comptime Msg: type) type {
             })) catch oom();
         }
 
-        // ── Overlay / virtual list / image / rich text ─────────────
-
         pub fn pushOverlay(self: *Self, style: OverlayStyle(Msg)) void {
             self.cmds.append(self.backing, self.box(.push_overlay, style)) catch oom();
         }
@@ -2012,17 +1904,13 @@ pub fn CmdBuffer(comptime Msg: type) type {
         ///     horizontal: [label] [content] [units]
         ///     [validation]
         pub fn pushFormRow(self: *Self, opts: FormRowOpts) void {
-            // Cap of 8 in-flight form rows; deeper nesting is a bug, not
-            // a growth trigger. Assert mirrors the layout stacks: loud
-            // crash in Debug/ReleaseSafe, zero cost in ReleaseFast.
+            // Form-row nesting is bounded at eight.
             if (self.form_row_depth >= self.form_row_stack.len) @panic("teak: pushFormRow nested deeper than 8 (form_row_stack capacity)");
-            // Outer vertical (content row + validation message).
             self.cmds.append(self.backing, self.box(.push_group, .{
                 .direction = .vertical,
                 .padding = 0,
                 .gap = opts.validation_gap,
             })) catch oom();
-            // Inner horizontal (label + content + units).
             self.cmds.append(self.backing, self.box(.push_group, .{
                 .direction = .horizontal,
                 .padding = 0,
@@ -2110,662 +1998,4 @@ pub fn CmdBuffer(comptime Msg: type) type {
             } }) catch oom();
         }
     };
-}
-
-// ── Tests ──────────────────────────────────────────────────────────
-
-test "CmdBuffer emits correct sequence for simple counter view" {
-    const testing = std.testing;
-
-    const Msg = union(enum) {
-        inc,
-        dec,
-        reset,
-    };
-
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{});
-    cb.text("Count: 0");
-    cb.pushGroup(.{ .direction = .horizontal });
-    cb.button(.inc, "+");
-    cb.button(.dec, "-");
-    cb.popGroup();
-    cb.button(.reset, "Reset");
-    cb.popGroup();
-
-    try testing.expectEqual(@as(usize, 8), cb.cmds.items.len);
-    try testing.expectEqual(.push_group, std.meta.activeTag(cb.cmds.items[0]));
-    try testing.expectEqual(Msg.inc, cb.cmds.items[3].button.msg);
-    try testing.expectEqual(Msg.reset, cb.cmds.items[6].button.msg);
-    // Plain `button` leaves the button interactive.
-    try testing.expect(!cb.cmds.items[3].button.disabled);
-}
-
-test "CmdBuffer.buttonDisabled sets disabled, plain button leaves it false" {
-    const testing = std.testing;
-
-    const Msg = union(enum) { go };
-
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.button(.go, "Add");
-    cb.buttonDisabled(.go, "Add");
-
-    try testing.expect(!cb.cmds.items[0].button.disabled);
-    try testing.expect(cb.cmds.items[1].button.disabled);
-    try testing.expectEqualStrings("Add", cb.cmds.items[1].button.label);
-}
-
-test "CmdBuffer emits text_input command" {
-    const testing = std.testing;
-
-    const Msg = union(enum) { focus };
-
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.textInput(.focus, "hello", 2);
-
-    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
-    try testing.expectEqual(.text_input, std.meta.activeTag(cb.cmds.items[0]));
-    try testing.expectEqualStrings("hello", cb.cmds.items[0].text_input.content);
-    try testing.expectEqual(@as(usize, 2), cb.cmds.items[0].text_input.cursor);
-    try testing.expectEqual(Msg.focus, cb.cmds.items[0].text_input.focus_msg);
-    // Plain `textInput` leaves the input interactive.
-    try testing.expect(!cb.cmds.items[0].text_input.disabled);
-}
-
-test "CmdBuffer.textInputDisabled sets disabled, plain textInput leaves it false" {
-    const testing = std.testing;
-
-    const Msg = union(enum) { focus };
-
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.textInput(.focus, "hi", 2);
-    cb.textInputDisabled(.focus, "hi", 2);
-
-    try testing.expect(!cb.cmds.items[0].text_input.disabled);
-    try testing.expect(cb.cmds.items[1].text_input.disabled);
-    try testing.expectEqualStrings("hi", cb.cmds.items[1].text_input.content);
-}
-
-test "CmdBuffer reset clears commands" {
-    const testing = std.testing;
-
-    const Msg = union(enum) { a };
-
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.text("hello");
-    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
-
-    cb.reset();
-    try testing.expectEqual(@as(usize, 0), cb.cmds.items.len);
-}
-
-test "Cmd exposes Msg type via MsgT" {
-    const Msg = union(enum) { a, b };
-    try std.testing.expectEqual(Msg, Cmd(Msg).MsgT);
-}
-
-test "CmdBuffer.mixedText: bakes content + per-part spans from theme defaults" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    const mono_font: FontSpec = .{ .size_px = 14, .family = .mono };
-    const muted: [4]f32 = .{ 0.6, 0.6, 0.6, 1.0 };
-
-    cb.mixedText(&.{
-        .{ .text = "Length: ", .color = muted },
-        .{ .text = "42.0", .font = mono_font },
-        .{ .text = " mm", .color = muted },
-    });
-
-    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
-    const rt = cb.cmds.items[0].rich_text;
-    try testing.expectEqualStrings("Length: 42.0 mm", rt.content);
-    try testing.expectEqual(@as(usize, 3), rt.spans.len);
-
-    try testing.expectEqual(@as(u32, 0), rt.spans[0].start);
-    try testing.expectEqual(@as(u32, 8), rt.spans[0].end);
-    try testing.expectEqual(muted, rt.spans[0].color);
-    // Part 0 has no font override -> theme default (sans body 14).
-    try testing.expectEqual(text.FontFamily.sans, rt.spans[0].font.family);
-
-    try testing.expectEqual(@as(u32, 8), rt.spans[1].start);
-    try testing.expectEqual(@as(u32, 12), rt.spans[1].end);
-    try testing.expectEqual(text.FontFamily.mono, rt.spans[1].font.family);
-
-    try testing.expectEqual(@as(u32, 12), rt.spans[2].start);
-    try testing.expectEqual(@as(u32, 15), rt.spans[2].end);
-}
-
-test "CmdBuffer.mixedText: bold + italic flags propagate to span" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.mixedText(&.{
-        .{ .text = "hello ", .bold = true },
-        .{ .text = "world", .italic = true },
-    });
-
-    const rt = cb.cmds.items[0].rich_text;
-    try testing.expect(rt.spans[0].bold);
-    try testing.expect(!rt.spans[0].italic);
-    try testing.expect(!rt.spans[1].bold);
-    try testing.expect(rt.spans[1].italic);
-}
-
-test "CmdBuffer.pushFormRow: emits vertical, horizontal, label" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushFormRow(.{ .label = "Mass", .units = "kg" });
-    cb.textInput(.focus, "10", 2);
-    cb.popFormRow();
-
-    // Expected sequence:
-    //   0: push_group (outer vertical)
-    //   1: push_group (inner horizontal)
-    //   2: text "Mass"
-    //   3: text_input
-    //   4: text "kg" (units)
-    //   5: pop_group (inner horizontal)
-    //   6: pop_group (outer vertical)
-    try testing.expectEqual(@as(usize, 7), cb.cmds.items.len);
-    try testing.expectEqual(Direction.vertical, cb.cmds.items[0].push_group.direction);
-    try testing.expectEqual(Direction.horizontal, cb.cmds.items[1].push_group.direction);
-    try testing.expectEqualStrings("Mass", cb.cmds.items[2].text.content);
-    try testing.expectEqual(.text_input, std.meta.activeTag(cb.cmds.items[3]));
-    try testing.expectEqualStrings("kg", cb.cmds.items[4].text.content);
-    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[5]));
-    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[6]));
-}
-
-test "CmdBuffer.pushFormRow with validation: validation text sits below content row" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushFormRow(.{
-        .label = "Speed",
-        .units = "m/s",
-        .validation = "must be positive",
-    });
-    cb.textInput(.focus, "-5", 2);
-    cb.popFormRow();
-
-    // Validation comes AFTER the inner pop_group (between inner pop and
-    // outer pop) so it stacks vertically under the content row.
-    // Sequence:
-    //   0: push_group (vertical)
-    //   1: push_group (horizontal)
-    //   2: text "Speed"
-    //   3: text_input
-    //   4: text "m/s"
-    //   5: pop_group (horizontal)
-    //   6: text "must be positive"  (danger color)
-    //   7: pop_group (vertical)
-    try testing.expectEqual(@as(usize, 8), cb.cmds.items.len);
-    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[5]));
-    try testing.expectEqualStrings("must be positive", cb.cmds.items[6].text.content);
-    // Validation uses danger color.
-    try testing.expectEqual(cb.theme.danger_color, cb.cmds.items[6].text.color);
-    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[7]));
-}
-
-test "CmdBuffer.pushFormRow: no label/units/validation → minimal bracket" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushFormRow(.{});
-    cb.textInput(.focus, "", 0);
-    cb.popFormRow();
-
-    // 4 cmds: outer push, inner push, text_input, inner pop, outer pop = 5
-    try testing.expectEqual(@as(usize, 5), cb.cmds.items.len);
-    try testing.expectEqual(.push_group, std.meta.activeTag(cb.cmds.items[0]));
-    try testing.expectEqual(.push_group, std.meta.activeTag(cb.cmds.items[1]));
-    try testing.expectEqual(.text_input, std.meta.activeTag(cb.cmds.items[2]));
-    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[3]));
-    try testing.expectEqual(.pop_group, std.meta.activeTag(cb.cmds.items[4]));
-}
-
-test "CmdBuffer.pushFormRow: nested form rows track their own state" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushFormRow(.{ .label = "Outer", .units = "u_o" });
-    cb.pushFormRow(.{ .label = "Inner", .units = "u_i" });
-    cb.textInput(.focus, "", 0);
-    cb.popFormRow(); // inner — should append "u_i"
-    cb.popFormRow(); // outer — should append "u_o"
-
-    // Find the units text cmds and verify the ORDER is inner then outer.
-    var units_seen: [2][]const u8 = .{ "", "" };
-    var u_idx: usize = 0;
-    for (cb.cmds.items) |c| {
-        if (c == .text and (std.mem.eql(u8, c.text.content, "u_i") or std.mem.eql(u8, c.text.content, "u_o"))) {
-            units_seen[u_idx] = c.text.content;
-            u_idx += 1;
-        }
-    }
-    try testing.expectEqualStrings("u_i", units_seen[0]);
-    try testing.expectEqualStrings("u_o", units_seen[1]);
-}
-
-test "CmdBuffer.reset clears in-flight form row depth" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushFormRow(.{ .label = "Mass" });
-    try testing.expectEqual(@as(u8, 1), cb.form_row_depth);
-
-    cb.reset();
-    try testing.expectEqual(@as(u8, 0), cb.form_row_depth);
-}
-
-test "CmdBuffer.mixedText: empty parts list still emits a (zero-content) rich_text" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.mixedText(&.{});
-
-    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
-    const rt = cb.cmds.items[0].rich_text;
-    try testing.expectEqual(@as(usize, 0), rt.content.len);
-    try testing.expectEqual(@as(usize, 0), rt.spans.len);
-}
-
-test "validateBalance: balanced buffer returns null" {
-    const testing = std.testing;
-    const Msg = union(enum) { inc };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{});
-    cb.text("hi");
-    cb.pushGroup(.{ .direction = .horizontal });
-    cb.button(.inc, "+");
-    cb.popGroup();
-    cb.popGroup();
-
-    try testing.expectEqual(@as(?BalanceError, null), validateBalance(cb.cmds.items));
-}
-
-test "validateBalance: every container kind, nested + balanced, returns null" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{});
-    cb.pushScroll(.{});
-    cb.pushVirtualList(.{ .total_count = 3, .item_extent = 10, .visible_end = 3 });
-    cb.text("row");
-    cb.popVirtualList();
-    cb.popScroll();
-    cb.pushOverlay(.{ .x = 10, .y = 10 });
-    cb.text("tip");
-    cb.popOverlay();
-    cb.popGroup();
-
-    try testing.expectEqual(@as(?BalanceError, null), validateBalance(cb.cmds.items));
-}
-
-test "validateBalance: unclosed push reports kind + index of the push" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{}); // 0
-    cb.text("x"); // 1
-    cb.pushOverlay(.{}); // 2 — never popped (innermost still-open push)
-    cb.text("y"); // 3
-    // No pops: both the group (0) and overlay (2) stay open; the
-    // innermost open push (the overlay at 2) is the one reported.
-
-    const err = validateBalance(cb.cmds.items).?;
-    try testing.expectEqual(BalanceError.Tag.unclosed_push, err.tag);
-    try testing.expectEqual(BalanceKind.overlay, err.open_kind);
-    try testing.expectEqual(@as(usize, 2), err.open_index);
-}
-
-test "validateBalance: stray pop reports kind + index of the pop" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{}); // 0
-    cb.popGroup(); // 1
-    cb.popScroll(); // 2 — stray, nothing open
-
-    const err = validateBalance(cb.cmds.items).?;
-    try testing.expectEqual(BalanceError.Tag.stray_pop, err.tag);
-    try testing.expectEqual(BalanceKind.scroll, err.close_kind);
-    try testing.expectEqual(@as(usize, 2), err.close_index);
-}
-
-test "validateBalance: crossed pair reports both open push and wrong pop" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{}); // 0
-    cb.pushGroup(.{}); // 1
-    cb.popOverlay(); // 2 — closes a group with the wrong pop
-
-    const err = validateBalance(cb.cmds.items).?;
-    try testing.expectEqual(BalanceError.Tag.mismatched_pop, err.tag);
-    try testing.expectEqual(BalanceKind.group, err.open_kind);
-    try testing.expectEqual(@as(usize, 1), err.open_index);
-    try testing.expectEqual(BalanceKind.overlay, err.close_kind);
-    try testing.expectEqual(@as(usize, 2), err.close_index);
-}
-
-test "validateBalance: reports the FIRST imbalance, innermost unclosed" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Two unclosed pushes; the innermost (last opened) is reported.
-    cb.pushGroup(.{}); // 0
-    cb.pushScroll(.{}); // 1 — innermost open at end
-    cb.text("x"); // 2
-
-    const err = validateBalance(cb.cmds.items).?;
-    try testing.expectEqual(BalanceError.Tag.unclosed_push, err.tag);
-    try testing.expectEqual(BalanceKind.scroll, err.open_kind);
-    try testing.expectEqual(@as(usize, 1), err.open_index);
-}
-
-test "validateBalance: balanced form row (sugar over push/pop_group) returns null" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushFormRow(.{ .label = "Mass", .units = "kg", .validation = "bad" });
-    cb.textInput(.focus, "10", 2);
-    cb.popFormRow();
-
-    try testing.expectEqual(@as(?BalanceError, null), validateBalance(cb.cmds.items));
-}
-
-test "validateBalance: form row missing its pop is caught as unclosed group" {
-    const testing = std.testing;
-    const Msg = union(enum) { focus };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // pushFormRow emits push_group (outer, idx 0) + push_group (inner,
-    // idx 1) + label text. Without popFormRow both groups stay open; the
-    // innermost (idx 1) is reported.
-    cb.pushFormRow(.{ .label = "Mass" });
-    cb.textInput(.focus, "10", 2);
-
-    const err = validateBalance(cb.cmds.items).?;
-    try testing.expectEqual(BalanceError.Tag.unclosed_push, err.tag);
-    try testing.expectEqual(BalanceKind.group, err.open_kind);
-    try testing.expectEqual(@as(usize, 1), err.open_index);
-}
-
-test "validateBalance: nesting past MAX_BALANCE_DEPTH is depth_overflow" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // One more push than the validator's stack can hold. No pops, so the
-    // (MAX+1)-th push overflows at index MAX_BALANCE_DEPTH.
-    var i: usize = 0;
-    while (i < MAX_BALANCE_DEPTH + 1) : (i += 1) cb.pushGroup(.{});
-
-    const err = validateBalance(cb.cmds.items).?;
-    try testing.expectEqual(BalanceError.Tag.depth_overflow, err.tag);
-    try testing.expectEqual(@as(usize, MAX_BALANCE_DEPTH), err.open_index);
-}
-
-test "formatBalanceError: each tag renders an actionable line" {
-    const testing = std.testing;
-    var buf: [128]u8 = undefined;
-
-    try testing.expectEqualStrings(
-        "push_overlay at cmd #17 was never popped",
-        formatBalanceError(.{ .tag = .unclosed_push, .open_kind = .overlay, .open_index = 17 }, &buf),
-    );
-    try testing.expectEqualStrings(
-        "pop_group at cmd #9 has no matching push",
-        formatBalanceError(.{ .tag = .stray_pop, .close_kind = .group, .close_index = 9 }, &buf),
-    );
-    try testing.expectEqualStrings(
-        "push_group at cmd #4 was closed by pop_overlay at cmd #12",
-        formatBalanceError(.{
-            .tag = .mismatched_pop,
-            .open_kind = .group,
-            .open_index = 4,
-            .close_kind = .overlay,
-            .close_index = 12,
-        }, &buf),
-    );
-    try testing.expectEqualStrings(
-        "push_scroll at cmd #33 exceeds the max container nesting depth (64)",
-        formatBalanceError(.{ .tag = .depth_overflow, .open_kind = .scroll, .open_index = 33 }, &buf),
-    );
-}
-
-test "CmdBuffer.canvas emits a canvas cmd carrying its primitives" {
-    const testing = std.testing;
-    const Msg = union(enum) { poke };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    const prims = [_]CanvasPrimitive{
-        .{ .hline = .{ .y = 10 } },
-        .{ .polyline = .{ .points = &.{ .{ .x = 0, .y = 0 }, .{ .x = 10, .y = 10 } } } },
-    };
-    cb.canvas(.{ .width = 300, .height = 120 }, &prims);
-
-    try testing.expectEqual(@as(usize, 1), cb.cmds.items.len);
-    const cv = cb.cmds.items[0].canvas;
-    try testing.expectEqual(@as(f32, 300), cv.style.width);
-    try testing.expectEqual(@as(usize, 2), cv.primitives.len);
-    // Plain `canvas` is non-interactive (no click msg) and unlabeled.
-    try testing.expectEqual(@as(?Msg, null), cv.msg);
-    try testing.expectEqual(@as(usize, 0), cv.label.len);
-}
-
-test "CmdBuffer.canvasInteractive sets pointer + id; other emitters leave them off" {
-    const testing = std.testing;
-    const Msg = union(enum) { poke };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.canvas(.{}, &.{});
-    cb.canvasInteractive(.{ .width = 300, .height = 200 }, &.{}, 7, "viewport");
-    cb.pushScroll(.{ .id = 3 });
-    cb.popScroll();
-
-    try testing.expect(!cb.cmds.items[0].canvas.pointer);
-    try testing.expectEqual(@as(u32, 0), cb.cmds.items[0].canvas.id);
-    const cv = cb.cmds.items[1].canvas;
-    try testing.expect(cv.pointer);
-    try testing.expectEqual(@as(u32, 7), cv.id);
-    try testing.expectEqualStrings("viewport", cv.label);
-    try testing.expectEqual(@as(?Msg, null), cv.msg);
-    try testing.expectEqual(@as(u32, 3), cb.cmds.items[2].push_scroll.id);
-}
-
-test "CmdBuffer.canvasClickable / canvasLabeled set msg + label" {
-    const testing = std.testing;
-    const Msg = union(enum) { poke };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.canvasLabeled(.{}, &.{}, "history");
-    cb.canvasClickable(.poke, .{}, &.{}, "plot");
-
-    try testing.expectEqualStrings("history", cb.cmds.items[0].canvas.label);
-    try testing.expectEqual(@as(?Msg, null), cb.cmds.items[0].canvas.msg);
-    try testing.expectEqual(@as(?Msg, Msg.poke), cb.cmds.items[1].canvas.msg);
-    try testing.expectEqualStrings("plot", cb.cmds.items[1].canvas.label);
-}
-
-test "CmdBuffer.pushFormRow: documented depth of 8 is reachable without tripping the assert" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // form_row_stack is 8 deep. Push 8 form rows, all in flight
-    // simultaneously, then pop them all back out. This exercises the
-    // full bound on both sides; if pushFormRow's assert fired at the
-    // boundary or popFormRow's bookkeeping was off, this would crash.
-    const DEPTH: u8 = 8;
-    var i: u8 = 0;
-    while (i < DEPTH) : (i += 1) {
-        cb.pushFormRow(.{ .label = "row" });
-    }
-    try std.testing.expectEqual(DEPTH, cb.form_row_depth);
-
-    i = 0;
-    while (i < DEPTH) : (i += 1) cb.popFormRow();
-    try std.testing.expectEqual(@as(u8, 0), cb.form_row_depth);
-}
-
-test "SceneCmd.eql compares view content (items by value)" {
-    const SC = SceneCmd(void);
-    const items_a = [_]scene.view.Item{.{ .mesh = 1, .id = 4 }};
-    const items_b = [_]scene.view.Item{.{ .mesh = 1, .id = 4 }};
-    const a: SC = .{ .view = .{ .items = &items_a } };
-    var b: SC = .{ .view = .{ .items = &items_b } };
-    try std.testing.expect(eql.deepEql(SC, a, b));
-    b.view.grid = .{};
-    try std.testing.expect(!eql.deepEql(SC, a, b));
-}
-
-test "CmdBuffer.scene3d emits a scene3d cmd with defaults" {
-    const testing = std.testing;
-    const Msg = union(enum) { poke };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.scene3d(.{ .mesh = 5, .key = 12, .style = .{ .width = 480, .height = 360 } });
-    cb.scene3d(.{ .id = 2, .pointer = true, .msg = .poke, .label = "view" });
-
-    const a = cb.cmds.items[0].scene3d;
-    try testing.expectEqual(@as(u32, 5), a.mesh);
-    try testing.expectEqual(@as(u64, 12), a.key);
-    try testing.expectEqual(@as(f32, 480), a.style.width);
-    try testing.expectEqual(@as(u32, 0), a.id);
-    try testing.expect(!a.pointer);
-    try testing.expectEqual(scene.MESH_HANDLE_NONE, cb.cmds.items[1].scene3d.mesh);
-    const b = cb.cmds.items[1].scene3d;
-    try testing.expectEqual(@as(u32, 2), b.id);
-    try testing.expect(b.pointer);
-    try testing.expectEqual(@as(?Msg, Msg.poke), b.msg);
-}
-
-test "SceneCmd: deepEql compares content (label by value) and the revision key" {
-    const testing = std.testing;
-    const Msg = union(enum) { poke };
-    const S = SceneCmd(Msg);
-    var label_a = [_]u8{ 'a', 'b' };
-    var label_b = [_]u8{ 'a', 'b' };
-    const x: S = .{ .label = &label_a, .key = 1 };
-    var y: S = .{ .label = &label_b, .key = 1 };
-    try testing.expect(eql.deepEql(S, x, y)); // different addresses, same content
-    y.key = 2;
-    try testing.expect(!eql.deepEql(S, x, y)); // geometry behind the handle changed
-    y.key = 1;
-    y.camera.eye[1] = 4;
-    try testing.expect(!eql.deepEql(S, x, y));
-    y.camera.eye[1] = 0;
-    y.msg = .poke;
-    try testing.expect(!eql.deepEql(S, x, y));
-}
-
-test "CanvasPrimitive.eql: batches compare by key (or by bytes when key is 0)" {
-    const testing = std.testing;
-    const V = CanvasPrimitive.TriVertex;
-    var a = [_]V{ .{ .x = 0, .y = 0, .r = 1, .g = 0, .b = 0, .a = 1 }, .{ .x = 1, .y = 0, .r = 1, .g = 0, .b = 0, .a = 1 }, .{ .x = 0, .y = 1, .r = 1, .g = 0, .b = 0, .a = 1 } };
-    var b = a; // distinct storage, equal content
-    const pa: CanvasPrimitive = .{ .triangles = .{ .verts = &a, .key = 7 } };
-    const pb: CanvasPrimitive = .{ .triangles = .{ .verts = &b, .key = 7 } };
-    try testing.expect(pa.eql(pb));
-
-    // Same key => trusted equal even if bytes differ (that is the contract).
-    b[0].x = 5;
-    try testing.expect(pa.eql(pb));
-    // A new key => different.
-    const pc: CanvasPrimitive = .{ .triangles = .{ .verts = &b, .key = 8 } };
-    try testing.expect(!pa.eql(pc));
-
-    // key 0 => deep compare.
-    const p0a: CanvasPrimitive = .{ .triangles = .{ .verts = &a } };
-    const p0b: CanvasPrimitive = .{ .triangles = .{ .verts = &b } };
-    try testing.expect(!p0a.eql(p0b));
-    b[0].x = 0;
-    try testing.expect(p0a.eql(p0b));
-
-    // Length mismatch is always unequal.
-    const short: CanvasPrimitive = .{ .triangles = .{ .verts = a[0..2], .key = 7 } };
-    try testing.expect(!pa.eql(short));
-
-    // Lines: style participates, key as above.
-    const segs = [_][4]f32{.{ 0, 0, 1, 1 }};
-    const l1: CanvasPrimitive = .{ .lines = .{ .segs = &segs, .key = 3 } };
-    const l2: CanvasPrimitive = .{ .lines = .{ .segs = &segs, .key = 3, .thickness = 2 } };
-    try testing.expect(l1.eql(l1));
-    try testing.expect(!l1.eql(l2));
-    try testing.expect(!l1.eql(pa));
-}
-
-test "validateBalance: nesting at MAX_BALANCE_DEPTH passes, one deeper is depth_overflow (every optimize mode)" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    var i: usize = 0;
-    while (i < MAX_BALANCE_DEPTH) : (i += 1) cb.pushGroup(.{});
-    i = 0;
-    while (i < MAX_BALANCE_DEPTH) : (i += 1) cb.popGroup();
-    try testing.expect(validateBalance(cb.cmds.items) == null);
-
-    // One more level: reported with the offending cmd index, not a crash.
-    cb.reset();
-    i = 0;
-    while (i <= MAX_BALANCE_DEPTH) : (i += 1) cb.pushGroup(.{});
-    const err = validateBalance(cb.cmds.items).?;
-    try testing.expectEqual(BalanceError.Tag.depth_overflow, err.tag);
-    try testing.expectEqual(@as(usize, MAX_BALANCE_DEPTH), err.open_index);
-    var buf: [128]u8 = undefined;
-    const msg = formatBalanceError(err, &buf);
-    try testing.expect(std.mem.indexOf(u8, msg, "cmd #64") != null);
 }

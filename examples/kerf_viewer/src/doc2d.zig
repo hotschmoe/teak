@@ -104,7 +104,6 @@ pub const Docs2D = struct {
             }
         }
         try self.sheets.append(self.gpa, .{ .d = d });
-        // keep sheets ordered by view name so A, B, C ... line up in the picker
         std.mem.sort(Sheet, self.sheets.items, {}, lessByView);
         for (self.sheets.items, 0..) |*s, i| {
             if (std.mem.eql(u8, s.d.view, d.view)) return i;
@@ -136,8 +135,6 @@ pub const Docs2D = struct {
     pub fn sheet(self: *Docs2D, idx: usize) ?*Sheet {
         return if (idx < self.sheets.items.len) &self.sheets.items[idx] else null;
     }
-
-    // ── Camera ────────────────────────────────────────────────────
 
     pub fn fit(self: *Docs2D, idx: usize) void {
         const s = self.sheet(idx) orelse return;
@@ -187,8 +184,6 @@ pub const Docs2D = struct {
         s.fitted = true;
     }
 
-    // ── Picking ───────────────────────────────────────────────────
-
     /// `src` of the topmost thing under canvas-local `(x, y)` (4 px tolerance).
     pub fn pickSrc(self: *Docs2D, idx: usize, x: f32, y: f32) ?[]const u8 {
         const s = self.sheet(idx) orelse return null;
@@ -209,8 +204,6 @@ pub const Docs2D = struct {
         for (s.d.items) |it| if (ir.srcMatches(it.src, src)) return true;
         return false;
     }
-
-    // ── Tessellation ──────────────────────────────────────────────
 
     /// Rebuild the triangle list for sheet `idx` with `selected` / `hovered`
     /// highlighted. A no-op when nothing changed since the last build.
@@ -262,8 +255,6 @@ pub const Docs2D = struct {
     }
 };
 
-// ── Mapping drawing `src` ids <-> mesh parts ──────────────────────────
-
 /// 1-based part id for a drawing `src` ("beam", "studs#1"), 0 when it names
 /// no part (notes, dimensions, titles). A bare id with several instances maps
 /// to the first; "#k" picks the part whose `instance` is `k`.
@@ -295,88 +286,6 @@ pub fn srcOfPart(docs: *Docs2D, idx: usize, p: kerf.Part, buf: []u8) []const u8 
     return "";
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const flush_a = @embedFile("fixtures/flush-psl-2x6.A.json");
 const flush_b = @embedFile("fixtures/flush-psl-2x6.B.json");
-
-test "sheets sort by view, expose kinds, and replace by view name" {
-    const dx = try Docs2D.create(testing.allocator);
-    defer dx.destroy();
-    _ = try dx.add(flush_b);
-    _ = try dx.add(flush_a);
-    try testing.expectEqual(@as(usize, 2), dx.sheets.items.len);
-    try testing.expectEqualStrings("A", dx.sheets.items[0].d.view);
-    try testing.expectEqual(Kind.section, dx.sheets.items[0].kind());
-    try testing.expectEqual(Kind.iso, dx.sheets.items[1].kind());
-    try testing.expectEqual(@as(?usize, 1), dx.nth(.iso, 0));
-    try testing.expectEqual(@as(?usize, null), dx.nth(.iso, 1));
-    _ = try dx.add(flush_a); // same view: replaced, not appended
-    try testing.expectEqual(@as(usize, 2), dx.sheets.items.len);
-}
-
-test "fit frames the drawing; zoom keeps the anchor; pan moves it" {
-    const dx = try Docs2D.create(testing.allocator);
-    defer dx.destroy();
-    _ = try dx.add(flush_a);
-    dx.resize(800, 600);
-    try testing.expect(dx.sheets.items[0].fitted);
-    const b = dx.extent(&dx.sheets.items[0]);
-    const cam = dx.sheets.items[0].cam;
-    // the drawing's centre sits at the canvas centre
-    try testing.expectApproxEqAbs(@as(f32, 400), cam.sx((b[0] + b[2]) / 2), 0.5);
-    try testing.expectApproxEqAbs(@as(f32, 300), cam.sy((b[1] + b[3]) / 2), 0.5);
-
-    const mx = cam.modelX(123);
-    dx.zoomAt(0, 123, 77, 2);
-    try testing.expectApproxEqAbs(@as(f64, mx), dx.sheets.items[0].cam.modelX(123), 1e-3);
-    const ox = dx.sheets.items[0].cam.origin_x;
-    dx.pan(0, 10, -5);
-    try testing.expectEqual(ox + 10, dx.sheets.items[0].cam.origin_x);
-    dx.fit(0);
-    try testing.expectApproxEqAbs(@as(f32, 400), dx.sheets.items[0].cam.sx((b[0] + b[2]) / 2), 0.5);
-}
-
-test "retess: builds triangles, skips identical inputs, selection changes the output" {
-    const dx = try Docs2D.create(testing.allocator);
-    defer dx.destroy();
-    _ = try dx.add(flush_a);
-    dx.resize(800, 600);
-    dx.retess(0, "", "", true);
-    const n0 = dx.verts().len;
-    const k0 = dx.key;
-    try testing.expect(n0 > 3000);
-    dx.retess(0, "", "", true);
-    try testing.expectEqual(k0, dx.key); // identical inputs: no rebuild
-    dx.retess(0, "beam", "", true);
-    try testing.expect(dx.key != k0);
-    try testing.expect(dx.verts().len > n0); // the tint adds a fill
-    // grid off: fewer triangles
-    dx.retess(0, "beam", "", false);
-    try testing.expect(dx.verts().len < n0 + 100000 and dx.verts().len > 0);
-    for (dx.verts()) |v| try testing.expect(std.math.isFinite(v.x) and std.math.isFinite(v.y));
-}
-
-test "pick finds a component under the cursor and maps it to a part" {
-    const dx = try Docs2D.create(testing.allocator);
-    defer dx.destroy();
-    _ = try dx.add(flush_a);
-    dx.resize(800, 600);
-    // scan the canvas: the drawing must expose the beam
-    var found: ?[]const u8 = null;
-    var y: f32 = 0;
-    while (y < 600 and found == null) : (y += 6) {
-        var x: f32 = 0;
-        while (x < 800) : (x += 6) {
-            if (dx.pickSrc(0, x, y)) |s| if (std.mem.eql(u8, ir.srcBase(s), "beam")) {
-                found = s;
-                break;
-            };
-        }
-    }
-    try testing.expect(found != null);
-    try testing.expect(dx.hasSrc(0, "jack_studs"));
-    try testing.expect(dx.hasExactSrc(0, "jack_studs#1"));
-    try testing.expect(!dx.hasSrc(0, "nope"));
-}

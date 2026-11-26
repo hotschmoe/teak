@@ -69,22 +69,7 @@ const Sampled = struct {
     }
 };
 
-// ── Image cache (app-driven, growable, no eviction) ────────────────────────────────
-//
-// The app uploads an RGBA8 image once via `uploadImage`, stashes the
-// returned handle, and emits `cmd.image(handle, ...)` each frame; it
-// frees the slot with `releaseImage`. The table grows on demand up to
-// 65536 live images; `uploadImage` returns TEXTURE_HANDLE_NONE (with a
-// log line) only at that ceiling, and the renderer falls back to the
-// tinted-placeholder quad emitted by `render/build.zig`.
-
 const ImageCache = GrowSlotTable(Sampled, IMAGE_MAX_SLOTS);
-
-// ── Text: glyph atlas ──────────────────────────────────────────────
-//
-// Glyph shaping, packing and instance building live in `text_stage.zig`
-// (shared with the native core). This file owns the GPU side: R8 page
-// textures, the instance buffer and one instanced draw per page per layer.
 
 /// One atlas page on the GPU; the CPU copy lives in the `TextStage`.
 const AtlasPage = struct {
@@ -149,8 +134,6 @@ const WebRaster = struct {
         const bmp = zgpu.rasterCluster(utf8, css, size_px, &self.cluster_px);
         if (bmp.truncated) return null;
         const m = bmp.metrics;
-        // zunk: pixel (0,0) is at (pen + bearing_x, baseline - bearing_y); the atlas
-        // convention is y down from the baseline.
         return .{
             .pixels = bmp.pixels,
             .width = m.width,
@@ -164,7 +147,6 @@ const WebRaster = struct {
 const TextStage = text_stage.TextStage(WebRaster);
 
 pub const Gpu = struct {
-    // Solid pipeline.
     pipeline: zgpu.RenderPipeline,
     /// Built lazily for the current `vert_buf` (it is also bound as storage).
     bind_group: ?zgpu.BindGroup,
@@ -185,7 +167,6 @@ pub const Gpu = struct {
     samples: u32,
     msaa: ?MsaaTarget,
 
-    // Text pipeline (instanced glyph quads from the atlas).
     glyph_pipeline: zgpu.RenderPipeline,
     glyph_bgl: zgpu.BindGroupLayout,
     /// {logical size, device scale, text gamma}; see shaders/glyph.wgsl.
@@ -201,9 +182,6 @@ pub const Gpu = struct {
     glyph_buf: ?zgpu.Buffer,
     glyph_buf_size: u32,
 
-    // Image pipeline. Shares `text_bgl` + `sampler` with the text path
-    // since both bind {uniform, texture, sampler}. Only the shader differs
-    // — `image.wgsl` modulates the texture by the tint (real RGBA), while
     /// Created on first use (an image or a scene composite): most apps never draw either, and each
     /// pipeline costs shader compile time before the first frame.
     image_pipeline: ?zgpu.RenderPipeline,
@@ -214,9 +192,6 @@ pub const Gpu = struct {
     image_vert_buf: ?zgpu.Buffer,
     image_vert_buf_size: u32,
 
-    // 3D scenes: `scene` renders offscreen; the main pass draws each
-    // target as an image-pipeline quad. Composite bind groups are cached
-    // per slot and rebuilt when the slot's target is recreated.
     /// Created on first mesh upload / scene draw (two more shaders' worth of start-up).
     scene: ?web_scene.Renderer,
     scene_msaa: bool,
@@ -231,10 +206,6 @@ pub const Gpu = struct {
     scene_vert_buf: ?zgpu.Buffer,
     scene_vert_buf_size: u32,
 
-    // Overlay layering: `setOverlayStart` records where the overlay layer
-    // begins in each input list; the upload loops translate that into
-    // staged-record indices (`*_ov`) so the main pass draws all base content
-    // before the overlay's. null = no split (draw by kind).
     overlay_split: ?OverlaySplit,
     image_ov: usize,
     scene_ov: usize,
@@ -256,8 +227,6 @@ pub const Gpu = struct {
         const samples: u32 = if (options.msaa) scene_common.msaa_samples else 1;
         const shader = zgpu.createShaderModule(SHADER_SOLID);
 
-        // binding 0: screen size; binding 1: the solid vertex buffer again,
-        // read-only, so SDF quads can fetch their records (render/sdf.zig).
         const bgl = zgpu.createBindGroupLayout(&.{
             zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX, .uniform)
                 .withMinSize(8),
@@ -277,9 +246,6 @@ pub const Gpu = struct {
 
         const uniform_buf = zgpu.createBuffer(8, zgpu.BufferUsage.UNIFORM | zgpu.BufferUsage.COPY_DST);
 
-        // Text + image pipelines: 3-entry BGL {uniform, texture, sampler},
-        // same vertex layout as the solid pipeline; only the fragment
-        // shader differs.
         const text_bgl = zgpu.createBindGroupLayout(&.{
             zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX, .uniform)
                 .withMinSize(8),
@@ -288,8 +254,6 @@ pub const Gpu = struct {
         });
         const text_pl = zgpu.createPipelineLayout(&.{text_bgl});
 
-        // Glyph pipeline: {uniform, R8 atlas page}, one instance per glyph. The
-        // instance is read as raw 32-bit words (unpacked in glyph.wgsl).
         const glyph_bgl = zgpu.createBindGroupLayout(&.{
             zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX | zgpu.ShaderVisibility.FRAGMENT, .uniform)
                 .withMinSize(16),
@@ -483,11 +447,8 @@ pub const Gpu = struct {
 
     pub fn uploadVertices(self: *Gpu, verts: []const Vertex) void {
         self.vert_count = @intCast(verts.len);
-        // Also bound read-only in the fragment stage: SDF quads read their records from it.
         writeVertsAs(zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.STORAGE, &self.vert_buf, &self.vert_buf_size, verts);
     }
-
-    // ── Main pass ──────────────────────────────────────────────────
 
     fn releaseMsaa(self: *Gpu) void {
         if (self.msaa) |m| {
@@ -519,8 +480,6 @@ pub const Gpu = struct {
 
     pub fn renderFrame(self: *Gpu, clear_color: ClearColor) void {
         const pass = if (self.samples > 1)
-            // Draw into the multisampled target, resolve into the canvas,
-            // discard the samples.
             zgpu.beginRenderPassDesc(.{
                 .color = self.msaaView(),
                 .resolve = zgpu.canvasView(),
@@ -530,11 +489,6 @@ pub const Gpu = struct {
         else
             zgpu.beginRenderPassDesc(.{ .clear = clear_color });
 
-        // Base layer first, then the overlay: within a layer, solids,
-        // images, scene composites (same pipeline: a scene is an image the
-        // GPU rendered this frame), then text on top. Drawing the overlay's
-        // solids after the base's TEXT is what lets an opaque popup hide the
-        // text beneath it. Matches gpu/wgpu_core.zig's draw order.
         const solid = overlay.Range.of(self.splitOf("verts", self.vert_count), self.vert_count);
         const imgs = overlay.Range.of(self.image_ov, self.image_draws.items.len);
         const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
@@ -596,8 +550,6 @@ pub const Gpu = struct {
         }
     }
 
-    // ── Sampled textures (text glyph runs, images) ─────────────────
-
     /// Bind group for sampling `view` through the text/image pipelines:
     /// {screen-size uniform, texture, sampler}.
     fn textureBindGroup(self: *Gpu, view: zgpu.TextureView) zgpu.BindGroup {
@@ -613,14 +565,11 @@ pub const Gpu = struct {
         return .{ .texture = texture, .view = view, .bind_group = self.textureBindGroup(view) };
     }
 
-    // ── Text: shaped glyphs -> atlas -> instanced quads ────────────
-
     /// Per-frame text staging (call after `uploadVertices`, before
     /// `renderFrame`): `text_stage` shapes and packs, this uploads the dirty
     /// atlas rects and the instances. Atlas exhaustion is reported through
     /// `text.dropped` (the web build has no logger).
     pub fn uploadText(self: *Gpu, draws: []const TextDraw) void {
-        // CSS px -> canvas device px; the atlas is rasterized at the device size.
         const canvas = zgpu.canvasSize();
         const scale: f32 = if (self.width > 0) @as(f32, @floatFromInt(canvas.w)) / @as(f32, @floatFromInt(self.width)) else 1;
         if (scale != self.text.scale) {
@@ -679,7 +628,6 @@ pub const Gpu = struct {
         const bytes: u32 = total * stride;
         if (self.glyph_buf == null or bytes > self.glyph_buf_size) {
             if (self.glyph_buf) |old| zgpu.bufferDestroy(old);
-            // Grow geometrically so a scrolling frame does not reallocate every frame.
             self.glyph_buf_size = @max(bytes + bytes / 2, 4096);
             self.glyph_buf = zgpu.createBuffer(self.glyph_buf_size, zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.COPY_DST);
         }
@@ -788,8 +736,6 @@ pub const Gpu = struct {
         writeVerts(&self.image_vert_buf, &self.image_vert_buf_size, self.image_verts.items);
     }
 
-    // ── 3D scenes ──────────────────────────────────────────────────
-
     /// Upload mesh geometry; the returned handle goes into
     /// `SceneDraw.mesh`. `MESH_HANDLE_NONE` on invalid data or a full
     /// table. Release meshes between frames (see `releaseImage`).
@@ -833,7 +779,6 @@ pub const Gpu = struct {
         if (draws.len == 0) return;
         self.ensureImagePipeline();
 
-        // Logical (CSS) pixels -> device pixels of the canvas.
         const canvas = zgpu.canvasSize();
         self.scene_scale = if (self.width > 0)
             @as(f32, @floatFromInt(canvas.w)) / @as(f32, @floatFromInt(self.width))

@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# Web half of the visual QA sweep: drives each example's `zig build web` dist/ in headless
-# Chromium (tools/qa/web.mjs) at 1x and 2x. usage: web.py [example|all] [out-dir]
 import json,subprocess,sys,os
 R=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','..'))
 OUT=sys.argv[2] if len(sys.argv)>2 else '/tmp/qa'

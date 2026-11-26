@@ -1,11 +1,5 @@
-// Instanced glyph quads sampled from an R8 coverage atlas page.
-// One instance = one glyph (see GlyphInstance in src/gpu/glyph_atlas.zig).
-// The instance is read as raw 32-bit words (Float32x2, Uint32x2, Uint32,
-// Uint32x2, Uint32) and unpacked here: zunk's vertex formats are 32-bit only,
-// and the same shader then serves the native and web backends.
-// Positions are physical (device) pixels; `screen` is the LOGICAL size and
-// `scale` device px per logical px, so the clip-space divisor is screen*scale.
 
+// Instanced glyph quads sampled from an R8 coverage atlas page.
 struct Uniforms {
     screen_size: vec2f,
     scale: f32,
@@ -47,8 +41,6 @@ fn vs_main(
     let clip_xy = vec2i(bitcast<i32>(clip_words.x << 16u) >> 16u, bitcast<i32>(clip_words.x) >> 16u);
     let clip_wh = vec2u(clip_words.y & 0xffffu, clip_words.y >> 16u);
     let c = corners[vi];
-    // flags: bits 0-1 mode (0 = coverage bitmap, 1 = signed distance field, 2 = RGBA colour texels),
-    // bits 16-31 quad scale in 1/256 units (SDF glyphs are drawn at any size).
     let mode = flags & 3u;
     let k = select(1.0, f32(flags >> 16u) / 256.0, mode == 1u);
     let px = pos + c * vec2f(size) * k;
@@ -69,12 +61,9 @@ fn vs_main(
 @fragment
 fn fs_main(in: VOut) -> @location(0) vec4f {
     // Both samples are taken before any discard (derivatives need uniform control flow).
-    // Coverage bitmaps: the quad is pixel-aligned, so `local` hits texel centres: exact fetch.
     let texel = vec2i(in.origin) + vec2i(floor(in.local));
     let texel_rgba = textureLoad(atlas, texel, 0);
     let cov_bitmap = texel_rgba.r;
-    // Distance fields: bilinear sample, then a one-pixel-wide smoothstep around the edge value,
-    // sized by the screen-space derivative so the edge stays crisp at any scale.
     let uv = (vec2f(in.origin) + in.local) / vec2f(textureDimensions(atlas));
     let d = textureSample(atlas, samp, uv).r;
     let w = max(fwidth(d) * 0.7, 0.0005);
@@ -85,7 +74,6 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
             discard;
         }
     }
-    // Mode 2: an RGBA page of colour glyphs (emoji): the texel's own colour, instance alpha as opacity.
     if (in.mode == 2u) {
         return vec4f(texel_rgba.rgb, texel_rgba.a * in.color.a);
     }

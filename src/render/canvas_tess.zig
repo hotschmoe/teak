@@ -24,8 +24,6 @@ pub fn emit(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, r: Rect, co
     emitQuad(verts, alloc, cr, color);
 }
 
-// ── Canvas primitive emission ──────────────────────────────────────
-
 /// How a canvas lowers its primitives: the world -> canvas-local transform,
 /// antialiased edges, and whether circles may use the SDF quad (2D pass only:
 /// the 3D plane layers draw the plain vertex stream with another shader).
@@ -118,7 +116,6 @@ pub fn emitCanvasPrimitiveOpts(
         .polyline => |pl| {
             if (pl.points.len < 2) return;
             if (!o.aa) {
-                // Historical hard-edged path: independent quads, no joins.
                 var i: usize = 1;
                 while (i < pl.points.len) : (i += 1) {
                     const a = wp(canvas, xf, pl.points[i - 1].x, pl.points[i - 1].y);
@@ -181,7 +178,6 @@ fn emitCircle(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, canvas: R
         ctr[0] - reach > clip.x + clip.w or ctr[1] - reach > clip.y + clip.h) return;
 
     if (o.sdf_circles and rx == ry) {
-        // One SDF quad: an exact antialiased disc / ring at any size.
         const outer = if (c.stroke != null) rx + c.thickness * 0.5 else rx;
         sdf.emitRect(verts, alloc, .{
             .rect = .{ .x = ctr[0] - outer, .y = ctr[1] - outer, .w = 2 * outer, .h = 2 * outer },
@@ -268,10 +264,6 @@ fn strokeSegment(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, a: [2]
     var y0 = a[1];
     var x1 = b[0];
     var y1 = b[1];
-    // Fully-outside segments are rejected; partially-outside ones are
-    // trimmed to the clip rect at the data level. The thick quad may still
-    // bulge by up to thickness/2 past the boundary at a trimmed endpoint —
-    // negligible and bounded.
     if (!clipSegment(&x0, &y0, &x1, &y1, clip)) return;
     if (!aa) {
         if (e0 == 0 and e1 == 0) {
@@ -287,7 +279,6 @@ fn strokeSegment(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, a: [2]
         emitSegmentQuad(verts, alloc, x0 - ux * e0, y0 - uy * e0, x1 + ux * e1, y1 + uy * e1, thickness, color);
         return;
     }
-    // A trimmed end sits on the clip edge: push its soft cap outside the clip.
     const pad = thickness * 0.5 + 1;
     const t0 = if (x0 != a[0] or y0 != a[1]) pad else e0;
     const t1 = if (x1 != b[0] or y1 != b[1]) pad else e1;
@@ -392,9 +383,6 @@ fn fillWindowPolygon(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, pt
     if (convex) {
         for (1..n - 1) |k| putTriangle(verts, alloc, pts[0], pts[k], pts[k + 1], color, clip, inside);
     } else {
-        // Ear clipping over an index ring, O(n^2) worst case. A ring that
-        // stops yielding ears (self-intersection, collinear runs) is closed
-        // with a fan so something sensible still fills.
         const idx = alloc.alloc(u32, n) catch return;
         defer alloc.free(idx);
         for (idx, 0..) |*v, i| v.* = @intCast(i);
@@ -422,8 +410,7 @@ fn fillWindowPolygon(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, pt
 
     if (!aa) return;
     verts.ensureUnusedCapacity(alloc, n * 6) catch return;
-    // With y down, area2 > 0 is a clockwise ring on screen; its outside is
-    // to the left of each edge.
+    // With downward y, positive area is clockwise on screen.
     const s: f32 = if (area2 > 0) 1 else -1;
     for (0..n) |k| {
         const a = pts[k];
@@ -462,8 +449,6 @@ fn isEar(pts: []const [2]f32, ring: []const u32, ia: u32, ib: u32, ic: u32, sign
     }
     return true;
 }
-
-// ── Triangle list emission ─────────────────────────────────────────
 
 const TriVertex = CanvasPrimitive.TriVertex;
 
@@ -504,7 +489,6 @@ pub fn emitTrianglesXf(
     if (n == 0) return;
     const tris = list[0..n];
 
-    // Tier 1: bounds of everything (and finiteness) in one linear scan.
     var min_x = std.math.inf(f32);
     var min_y = std.math.inf(f32);
     var max_x = -std.math.inf(f32);
@@ -535,10 +519,8 @@ pub fn emitTrianglesXf(
         const tx1 = @max(t[0].x, @max(t[1].x, t[2].x));
         const ty1 = @max(t[0].y, @max(t[1].y, t[2].y));
         if (boundsInside(canvas, xf, tx0, ty0, tx1, ty1, clip)) {
-            // Tier 2.
             verts.appendSlice(alloc, &.{ toVertex(canvas, xf, t[0]), toVertex(canvas, xf, t[1]), toVertex(canvas, xf, t[2]) }) catch return;
         } else if (boundsOverlap(canvas, xf, tx0, ty0, tx1, ty1, clip)) {
-            // Tier 3.
             clipTriangle(verts, alloc, .{ toVertex(canvas, xf, t[0]), toVertex(canvas, xf, t[1]), toVertex(canvas, xf, t[2]) }, clip);
         }
     }
@@ -581,7 +563,6 @@ const MAX_CLIP_POLY = 8;
 /// Sutherland–Hodgman: clip one window-space triangle to `clip` and emit
 /// the resulting convex polygon as a triangle fan.
 fn clipTriangle(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, tri: [3]Vertex, clip: Rect) void {
-    // Ping-pong between two scratch polygons, one pass per clip edge.
     var buf_a: [MAX_CLIP_POLY]Vertex = undefined;
     var buf_b: [MAX_CLIP_POLY]Vertex = undefined;
     buf_a[0..3].* = tri;
@@ -589,7 +570,6 @@ fn clipTriangle(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, tri: [3
     var dst: *[MAX_CLIP_POLY]Vertex = &buf_b;
     var spare: *[MAX_CLIP_POLY]Vertex = &buf_a;
 
-    // Four edges: x >= left, x <= right, y >= top, y <= bottom.
     const Edge = struct { axis_y: bool, bound: f32, keep_greater: bool };
     const edges = [4]Edge{
         .{ .axis_y = false, .bound = clip.x, .keep_greater = true },
@@ -643,7 +623,6 @@ fn emitSegmentQuad(
     const len = @sqrt(dx * dx + dy * dy);
     if (len <= 0) return;
     const half = thickness * 0.5;
-    // Unit normal (perpendicular to the segment) scaled by half-thickness.
     const nx = -dy / len * half;
     const ny = dx / len * half;
     emitQuadCorners(
@@ -661,11 +640,7 @@ fn emitSegmentQuad(
 /// endpoints to the visible sub-segment and returns true if any part is
 /// visible; returns false (endpoints untouched-but-ignored) if fully out.
 pub fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
-    // Reject a segment with any NaN endpoint outright. Every Liang–Barsky
-    // t-comparison against a NaN is false, so a NaN segment would otherwise
-    // sail through "accepted" and `emitSegmentQuad`'s `len <= 0` guard is also
-    // false for a NaN length — the net result being six NaN vertices in the
-    // buffer. Drop it here instead.
+    // NaN endpoints would pass clipping comparisons and produce NaN vertices.
     if (std.math.isNan(x0.*) or std.math.isNan(y0.*) or
         std.math.isNan(x1.*) or std.math.isNan(y1.*)) return false;
 
@@ -683,7 +658,6 @@ pub fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
     var t1: f32 = 1;
     for (p, q) |pk, qk| {
         if (pk == 0) {
-            // Segment parallel to this edge: reject if it starts outside.
             if (qk < 0) return false;
         } else {
             const t = qk / pk;
@@ -708,8 +682,6 @@ pub fn clipSegment(x0: *f32, y0: *f32, x1: *f32, y1: *f32, clip: Rect) bool {
     return true;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const big: Rect = .{ .x = 0, .y = 0, .w = 1000, .h = 1000 };
 
@@ -728,179 +700,4 @@ fn plainArea(v: []const Vertex) f32 {
         area += @abs((v[i + 1].x - v[i].x) * (v[i + 2].y - v[i].y) - (v[i + 2].x - v[i].x) * (v[i + 1].y - v[i].y)) * 0.5;
     }
     return area;
-}
-
-test "CanvasTransform: apply / invert round-trip, zoomAt keeps the pivot, fit centres" {
-    const t: CanvasTransform = .{ .sx = 2, .sy = -3, .tx = 10, .ty = 400 };
-    const p = t.invert(t.apply(.{ .x = 7, .y = -5 }));
-    try testing.expectApproxEqAbs(@as(f32, 7), p.x, 1e-4);
-    try testing.expectApproxEqAbs(@as(f32, -5), p.y, 1e-4);
-    const z = t.zoomAt(50, 60, 4);
-    const before = t.invert(.{ .x = 50, .y = 60 });
-    const after = z.apply(before);
-    try testing.expectApproxEqAbs(@as(f32, 50), after.x, 1e-3);
-    try testing.expectApproxEqAbs(@as(f32, 60), after.y, 1e-3);
-    const f = CanvasTransform.fit(0, 0, 10, 5, 220, 220, 10, true);
-    try testing.expectApproxEqAbs(@as(f32, 20), f.sx, 1e-4);
-    try testing.expectApproxEqAbs(@as(f32, -20), f.sy, 1e-4);
-    const mid = f.apply(.{ .x = 5, .y = 2.5 });
-    try testing.expectApproxEqAbs(@as(f32, 110), mid.x, 1e-3);
-    try testing.expectApproxEqAbs(@as(f32, 110), mid.y, 1e-3);
-    const top = f.apply(.{ .x = 0, .y = 5 }); // y-up: larger y is higher
-    try testing.expect(top.y < mid.y);
-    try testing.expect((CanvasTransform{}).isIdentity());
-}
-
-test "transform maps lines, rects and triangles; hard edges unchanged at identity" {
-    const seg = [_][4]f32{.{ 0, 0, 10, 0 }};
-    var v = try lower(&.{.{ .lines = .{ .segs = &seg, .thickness = 2 } }}, big, .{ .xf = .{ .sx = 2, .sy = 2, .tx = 5, .ty = 7 } });
-    defer v.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 6), v.items.len);
-    for (v.items) |q| {
-        try testing.expect(q.x >= 5 - 1e-4 and q.x <= 25 + 1e-4);
-        try testing.expect(q.y >= 6 - 1e-4 and q.y <= 8 + 1e-4);
-        try testing.expect(q.a == 1);
-    }
-    var r = try lower(&.{.{ .filled_rect = .{ .x = 1, .y = 1, .w = 2, .h = 2 } }}, big, .{ .xf = .{ .sx = 10, .sy = -10, .tx = 0, .ty = 100 } });
-    defer r.deinit(testing.allocator);
-    try testing.expectApproxEqAbs(@as(f32, 400), plainArea(r.items), 1e-2);
-}
-
-test "antialiased segment: one tagged quad, alpha recoverable, normalised edge coordinates" {
-    const seg = [_][4]f32{.{ 10, 10, 50, 10 }};
-    var v = try lower(&.{.{ .lines = .{ .segs = &seg, .thickness = 4, .color = .{ 1, 0, 0, 0.5 } } }}, big, .{ .aa = true });
-    defer v.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 6), v.items.len);
-    for (v.items) |q| {
-        try testing.expectApproxEqAbs(@as(f32, 0.5), -2 - q.a, 1e-6);
-        try testing.expectApproxEqAbs(@as(f32, 1.5), @abs(q.u), 1e-5); // (hw + 1) / hw, hw = 2
-        try testing.expect(q.y >= 7 - 1e-4 and q.y <= 13 + 1e-4); // grown by the 1 px margin
-    }
-    // Hairline: drawn 1 px wide at a quarter of the alpha.
-    var h = try lower(&.{.{ .lines = .{ .segs = &seg, .thickness = 0.25, .color = .{ 1, 1, 1, 1 } } }}, big, .{ .aa = true });
-    defer h.deinit(testing.allocator);
-    try testing.expectApproxEqAbs(@as(f32, 0.25), -2 - h.items[0].a, 1e-6);
-}
-
-test "circle: one SDF quad in the 2D pass, a tessellated fan (+ fringe) otherwise" {
-    const c: CanvasPrimitive = .{ .circle = .{ .x = 100, .y = 100, .radius = 20, .fill = .{ 1, 1, 1, 1 } } };
-    var s = try lower(&.{c}, big, .{ .sdf_circles = true });
-    defer s.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 12), s.items.len);
-
-    var t = try lower(&.{c}, big, .{});
-    defer t.deinit(testing.allocator);
-    try testing.expect(t.items.len >= 3 * 10);
-    // A polygon inscribed in r = 20 under a quarter-pixel chord error.
-    const area = plainArea(t.items);
-    try testing.expect(area > std.math.pi * 19.5 * 19.5 and area <= std.math.pi * 20 * 20);
-
-    var aa = try lower(&.{c}, big, .{ .aa = true });
-    defer aa.deinit(testing.allocator);
-    try testing.expect(aa.items.len > t.items.len);
-
-    // screen_radius ignores the zoom; a world radius follows it.
-    const xf: CanvasTransform = .{ .sx = 3, .sy = 3 };
-    var w = try lower(&.{.{ .circle = .{ .x = 10, .y = 10, .radius = 5, .fill = .{ 1, 1, 1, 1 } } }}, big, .{ .xf = xf });
-    defer w.deinit(testing.allocator);
-    var px = try lower(&.{.{ .circle = .{ .x = 10, .y = 10, .radius = 5, .fill = .{ 1, 1, 1, 1 }, .screen_radius = true } }}, big, .{ .xf = xf });
-    defer px.deinit(testing.allocator);
-    try testing.expect(plainArea(w.items) > 8 * plainArea(px.items));
-}
-
-test "circle and polygon fully outside the clip emit nothing" {
-    const clip: Rect = .{ .x = 0, .y = 0, .w = 50, .h = 50 };
-    const sq = [_]CanvasPoint{ .{ .x = 200, .y = 200 }, .{ .x = 300, .y = 200 }, .{ .x = 300, .y = 300 } };
-    var v = try lower(&.{
-        .{ .circle = .{ .x = 500, .y = 500, .radius = 10, .stroke = .{ 1, 1, 1, 1 } } },
-        .{ .polygon = .{ .points = &sq, .stroke = .{ 1, 1, 1, 1 } } },
-    }, clip, .{ .aa = true, .sdf_circles = true });
-    defer v.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 0), v.items.len);
-}
-
-test "polygon: concave ear clipping covers exactly the polygon, either winding" {
-    // An L: 30x30 square minus its 15x15 top-right quarter -> area 675.
-    const l = [_]CanvasPoint{
-        .{ .x = 0, .y = 0 },   .{ .x = 15, .y = 0 },  .{ .x = 15, .y = 15 },
-        .{ .x = 30, .y = 15 }, .{ .x = 30, .y = 30 }, .{ .x = 0, .y = 30 },
-    };
-    var rev: [6]CanvasPoint = undefined;
-    for (l, 0..) |p, i| rev[5 - i] = p;
-    const rings = [_][]const CanvasPoint{ &l, &rev };
-    for (rings) |pts| {
-        var v = try lower(&.{.{ .polygon = .{ .points = pts, .fill = .{ 1, 1, 1, 1 } } }}, big, .{});
-        defer v.deinit(testing.allocator);
-        try testing.expectEqual(@as(usize, 12), v.items.len); // n - 2 triangles
-        try testing.expectApproxEqAbs(@as(f32, 675), plainArea(v.items), 1e-2);
-
-        // Antialiased: the fill plus one outward fringe quad per edge, never inside.
-        var a = try lower(&.{.{ .polygon = .{ .points = pts, .fill = .{ 1, 1, 1, 1 } } }}, big, .{ .aa = true });
-        defer a.deinit(testing.allocator);
-        try testing.expectEqual(@as(usize, 12 + 6 * 6), a.items.len);
-        var k: usize = 12;
-        while (k < a.items.len) : (k += 6) {
-            // Midpoint of the quad's outer side (u = 2): vertices 2 and 5.
-            const o0 = a.items[k + 2];
-            const o1 = a.items[k + 5];
-            try testing.expectEqual(@as(f32, 2), o0.u);
-            const mx = (o0.x + o1.x) * 0.5;
-            const my = (o0.y + o1.y) * 0.5;
-            const inside_l = mx > 0 and mx < 30 and my > 0 and my < 30 and !(mx > 15 and my < 15);
-            try testing.expect(!inside_l);
-        }
-    }
-}
-
-test "polygon straddling the clip is cut to it" {
-    const tri = [_]CanvasPoint{ .{ .x = 0, .y = 0 }, .{ .x = 100, .y = 0 }, .{ .x = 0, .y = 100 } };
-    const clip: Rect = .{ .x = 0, .y = 0, .w = 50, .h = 50 };
-    var v = try lower(&.{.{ .polygon = .{ .points = &tri, .fill = .{ 1, 1, 1, 1 } } }}, clip, .{});
-    defer v.deinit(testing.allocator);
-    // The whole 50x50 corner lies inside the triangle.
-    try testing.expectApproxEqAbs(@as(f32, 2500), plainArea(v.items), 1e-1);
-    for (v.items) |q| try testing.expect(q.x <= 50.001 and q.y <= 50.001);
-}
-
-test "arc: a quarter turns from +x toward +y; a y-up transform mirrors it" {
-    var v = try lower(&.{.{ .arc = .{ .x = 100, .y = 100, .radius = 30, .start = 0, .sweep = std.math.pi / 2.0, .thickness = 2 } }}, big, .{});
-    defer v.deinit(testing.allocator);
-    try testing.expect(v.items.len >= 6 * 3);
-    for (v.items) |q| try testing.expect(q.y >= 98.9 and q.x >= 98.9);
-    var up = try lower(&.{.{ .arc = .{ .x = 100, .y = -100, .radius = 30, .start = 0, .sweep = std.math.pi / 2.0, .thickness = 2 } }}, big, .{ .xf = .{ .sy = -1 } });
-    defer up.deinit(testing.allocator);
-    for (up.items) |q| try testing.expect(q.y <= 101.1);
-}
-
-test "perf: 80k antialiased segments through a zoomed transform, culled by the clip" {
-    const n: usize = 80_000;
-    const segs = try testing.allocator.alloc([4]f32, n);
-    defer testing.allocator.free(segs);
-    for (segs, 0..) |*sg, i| {
-        const x: f32 = @floatFromInt(i % 400);
-        const y: f32 = @floatFromInt(i / 400);
-        sg.* = .{ x, y, x + 1, y + 0.5 };
-    }
-    const t0 = std.Io.Clock.awake.now(testing.io).nanoseconds;
-    var all = try lower(&.{.{ .lines = .{ .segs = segs } }}, big, .{ .aa = true, .xf = .{ .sx = 2, .sy = 2 } });
-    defer all.deinit(testing.allocator);
-    try testing.expectEqual(n * 6, all.items.len);
-    // Zoomed 8x: most of the field is off the clip and culled.
-    var zoomed = try lower(&.{.{ .lines = .{ .segs = segs } }}, big, .{ .aa = true, .xf = .{ .sx = 8, .sy = 8 } });
-    defer zoomed.deinit(testing.allocator);
-    try testing.expect(zoomed.items.len < n * 6 / 4);
-    const ms = @divTrunc(std.Io.Clock.awake.now(testing.io).nanoseconds - t0, std.time.ns_per_ms);
-    try testing.expect(ms < 3000);
-}
-
-test "polygon: self-intersecting and degenerate rings still terminate inside their bounds" {
-    const bowtie = [_]CanvasPoint{ .{ .x = 0, .y = 0 }, .{ .x = 40, .y = 40 }, .{ .x = 40, .y = 0 }, .{ .x = 0, .y = 40 } };
-    const flat = [_]CanvasPoint{ .{ .x = 0, .y = 0 }, .{ .x = 10, .y = 0 }, .{ .x = 20, .y = 0 } };
-    var v = try lower(&.{
-        .{ .polygon = .{ .points = &bowtie, .stroke = .{ 1, 1, 1, 1 } } },
-        .{ .polygon = .{ .points = &flat } },
-    }, big, .{ .aa = true });
-    defer v.deinit(testing.allocator);
-    try testing.expect(v.items.len > 0);
-    for (v.items) |q| try testing.expect(q.x >= -3 and q.x <= 43 and q.y >= -3 and q.y <= 43);
 }

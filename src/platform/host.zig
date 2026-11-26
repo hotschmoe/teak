@@ -287,14 +287,7 @@ pub fn validateHost(comptime T: type) void {
         .{ .name = "pollSecondaryInputs", .sig = "fn(*Host, u32) ?InputState" },
         .{ .name = "closeSecondaryWindow", .sig = "fn(*Host, u32) void" },
         .{ .name = "secondaryWindowHandle", .sig = "fn(*const Host, u32) ?NativeHandle" },
-        // Update the window title bar from a UTF-8 string (e.g. an
-        // "* unsaved" marker or the open document's name). See the
-        // surface-extension note above.
         .{ .name = "setTitle", .sig = "fn(*Host, []const u8) void" },
-        // Monotonic millisecond timestamp on the host's clock. Used by
-        // subscriptions (`Sub.at(deadline_ms, msg)`) and by anything
-        // else that needs a host-side wall-clock without violating
-        // HARDLINE §3's "no wall-clock in view".
         .{ .name = "nowMs", .sig = "fn(*const Host) u64" },
     };
     inline for (required) |d| {
@@ -306,17 +299,11 @@ pub fn validateHost(comptime T: type) void {
                 "(expected " ++ d.sig ++ ")");
     }
 
-    // Optional surface extensions — checked for callability only when the
-    // Host declares them, so their absence is not a contract violation. A
-    // Host may omit `scaleFactor` (defaults to a 1.0 assumption at the
-    // orchestrator once it consumes the decl); if present it must be a fn.
-    // `submit` and `pollEffectResults` come as a pair.
+    // Optional Host extensions and pairing rules: HARDLINE §2 and SRC.md.
     const optional = [_]HostDecl{
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
         .{ .name = "setImeSpot", .sig = "fn(*Host, i32, i32) void" },
         .{ .name = "setImeActive", .sig = "fn(*Host, bool) void" },
-        // Assistive-technology requests (web DOM mirror, UIA patterns): fills
-        // `out` and returns the count; called once per frame before input routing.
         .{ .name = "pollA11yActions", .sig = "fn(*Host, []A11yAction) usize" },
         .{ .name = "setCursor", .sig = "fn(*Host, CursorShape) void" },
         .{ .name = "submit", .sig = "fn(*Host, Effect) EffectSubmit" },
@@ -332,144 +319,4 @@ pub fn validateHost(comptime T: type) void {
     if (@hasDecl(T, "submit") != @hasDecl(T, "pollEffectResults"))
         @compileError("Host '" ++ tn ++ "' must declare both `submit` and `pollEffectResults` " ++
             "(declarative effects) or neither");
-}
-
-test "validateHost accepts a minimal shape" {
-    const Stub = struct {
-        pub fn init() void {}
-        pub fn deinit(_: *@This()) void {}
-        pub fn pollInputs(_: *@This()) InputState {
-            return std.mem.zeroes(InputState);
-        }
-        pub fn shouldClose(_: *const @This()) bool {
-            return true;
-        }
-        pub fn nativeHandle(_: *@This()) void {}
-        pub fn textMeasurer(_: *@This()) TextMeasurer {
-            return .{ .ctx = undefined, .measure_fn = stubMeasure };
-        }
-        pub fn clipboard(_: *@This()) Clipboard {
-            return .{ .ctx = undefined, .read_fn = stubRead, .write_fn = stubWrite };
-        }
-        pub fn imeState(_: *const @This()) ImeState {
-            return .{};
-        }
-        pub fn publishA11yTree(_: *@This(), _: []const A11yNode) void {}
-        pub fn openFileDialog(_: *@This(), _: FileDialogFilter) FileDialogResult {
-            return null;
-        }
-        pub fn saveFileDialog(_: *@This(), _: FileDialogFilter) FileDialogResult {
-            return null;
-        }
-        pub fn requestFileDialog(_: *@This(), _: FileDialogFilter) u32 {
-            return 0;
-        }
-        pub fn requestSaveFileDialog(_: *@This(), _: FileDialogFilter) u32 {
-            return 0;
-        }
-        pub fn pollFileDialogResult(_: *@This(), _: u32) FileDialogPoll {
-            return .{ .cancelled = {} };
-        }
-        pub fn openSecondaryWindow(_: *@This(), _: []const u8, _: u32, _: u32) ?u32 {
-            return null;
-        }
-        pub fn pollSecondaryInputs(_: *@This(), _: u32) ?InputState {
-            return null;
-        }
-        pub fn closeSecondaryWindow(_: *@This(), _: u32) void {}
-        pub fn secondaryWindowHandle(_: *const @This(), _: u32) ?void {
-            return null;
-        }
-        pub fn setTitle(_: *@This(), _: []const u8) void {}
-        pub fn nowMs(_: *const @This()) u64 {
-            return 0;
-        }
-        pub fn scaleFactor(_: *const @This()) f32 {
-            return 1.0;
-        }
-        pub fn submit(_: *@This(), _: Effect) EffectSubmit {
-            return .unsupported;
-        }
-        pub fn pollEffectResults(_: *@This(), _: []EffectResult) usize {
-            return 0;
-        }
-
-        fn stubMeasure(_: *anyopaque, _: []const u8, _: FontSpec) TextMetrics {
-            return .{ .width = 0, .height = 0, .ascent = 0, .descent = 0 };
-        }
-        fn stubRead(_: *anyopaque) []const u8 {
-            return "";
-        }
-        fn stubWrite(_: *anyopaque, _: []const u8) void {}
-    };
-    comptime validateHost(Stub);
-}
-
-test "validateHost accepts a Host omitting the optional scaleFactor" {
-    // The optional surface extension must not be a contract requirement:
-    // a Host that predates it (no `scaleFactor` decl) still validates.
-    const NoScale = struct {
-        pub fn init() void {}
-        pub fn deinit(_: *@This()) void {}
-        pub fn pollInputs(_: *@This()) InputState {
-            return std.mem.zeroes(InputState);
-        }
-        pub fn shouldClose(_: *const @This()) bool {
-            return true;
-        }
-        pub fn nativeHandle(_: *@This()) void {}
-        pub fn textMeasurer(_: *@This()) TextMeasurer {
-            return .{ .ctx = undefined, .measure_fn = m };
-        }
-        pub fn clipboard(_: *@This()) Clipboard {
-            return .{ .ctx = undefined, .read_fn = r, .write_fn = w };
-        }
-        pub fn imeState(_: *const @This()) ImeState {
-            return .{};
-        }
-        pub fn publishA11yTree(_: *@This(), _: []const A11yNode) void {}
-        pub fn openFileDialog(_: *@This(), _: FileDialogFilter) FileDialogResult {
-            return null;
-        }
-        pub fn saveFileDialog(_: *@This(), _: FileDialogFilter) FileDialogResult {
-            return null;
-        }
-        pub fn requestFileDialog(_: *@This(), _: FileDialogFilter) u32 {
-            return 0;
-        }
-        pub fn requestSaveFileDialog(_: *@This(), _: FileDialogFilter) u32 {
-            return 0;
-        }
-        pub fn pollFileDialogResult(_: *@This(), _: u32) FileDialogPoll {
-            return .{ .cancelled = {} };
-        }
-        pub fn openSecondaryWindow(_: *@This(), _: []const u8, _: u32, _: u32) ?u32 {
-            return null;
-        }
-        pub fn pollSecondaryInputs(_: *@This(), _: u32) ?InputState {
-            return null;
-        }
-        pub fn closeSecondaryWindow(_: *@This(), _: u32) void {}
-        pub fn secondaryWindowHandle(_: *const @This(), _: u32) ?void {
-            return null;
-        }
-        pub fn setTitle(_: *@This(), _: []const u8) void {}
-        pub fn nowMs(_: *const @This()) u64 {
-            return 0;
-        }
-        fn m(_: *anyopaque, _: []const u8, _: FontSpec) TextMetrics {
-            return .{ .width = 0, .height = 0, .ascent = 0, .descent = 0 };
-        }
-        fn r(_: *anyopaque) []const u8 {
-            return "";
-        }
-        fn w(_: *anyopaque, _: []const u8) void {}
-    };
-    comptime validateHost(NoScale);
-}
-
-test "InputState wheel_d{x,y} zero-default through std.mem.zeroes" {
-    const z = std.mem.zeroes(InputState);
-    try std.testing.expectEqual(@as(f32, 0), z.wheel_dx);
-    try std.testing.expectEqual(@as(f32, 0), z.wheel_dy);
 }

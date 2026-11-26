@@ -1,13 +1,5 @@
-// Solid quads, antialiased canvas edges (color.a <= -1.5, see
-// src/render/vertex.zig `aaVertex`), plus signed-distance rounded rects (per-corner radii, inside
-// border stroke, gradient fill, soft drop shadow) in the same stream so
-// painter's order holds. Plain solids have color.a >= 0 and return their
-// vertex colour untouched. An SDF quad is tagged color.a = -1; its `r` is the
-// vertex index of a 6-vertex "header" whose r g b a u v fields hold the
-// 36-float record (layout: src/render/sdf.zig `rec`), read back through the
-// vertex buffer bound as read-only storage. uv is the pixel offset from the
-// rect centre (the SDF coordinate).
 
+// Solid quads, antialiased edges and SDF quads; see SRC.md.
 struct VertexOutput {
     @builtin(position) pos: vec4f,
     @location(0) color: vec4f,
@@ -32,8 +24,6 @@ fn vs_main(
         (pos.x / uniforms.screen_size.x) * 2.0 - 1.0,
         1.0 - (pos.y / uniforms.screen_size.y) * 2.0,
     );
-    // Mode, flat per primitive: >= 0 SDF header index (a == -1), -1 plain
-    // solid (a >= 0), -2 antialiased edge (a <= -1.5, alpha = -2 - a).
     var mode = -1.0;
     if (color.a < -1.5) {
         mode = -2.0;
@@ -43,8 +33,6 @@ fn vs_main(
     return VertexOutput(vec4f(clip, 0.0, 1.0), color, uv, mode);
 }
 
-// Record float `k` of the header starting at vertex `h` (8 floats per
-// vertex; r g b a u v are floats 2..7 of each of the six header vertices).
 fn rec(h: u32, k: u32) -> f32 {
     return vdata[(h + k / 6u) * 8u + 2u + k % 6u];
 }
@@ -53,8 +41,6 @@ fn rec4(h: u32, k: u32) -> vec4f {
     return vec4f(rec(h, k), rec(h, k + 1u), rec(h, k + 2u), rec(h, k + 3u));
 }
 
-// Signed distance to a rounded box centred at the origin. r = (br, tr, bl, tl)
-// so (x>0, y>0) picks r.x; y grows downward.
 fn sd_round_box(p: vec2f, b: vec2f, r4: vec4f) -> f32 {
     let r2 = select(r4.zw, r4.xy, p.x > 0.0);
     let r = select(r2.y, r2.x, p.y > 0.0);
@@ -72,12 +58,8 @@ fn erf_approx(x: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    // Derivatives before any branch (uniform control flow): logical pixels
-    // per device pixel, so antialiasing is one device pixel at any DPR.
+    // Derivatives must be taken in uniform control flow.
     let fw = max(max(fwidth(in.uv.x), fwidth(in.uv.y)), 1e-4);
-    // Antialiased-edge coordinates: uv is normalised so the shape's edge is
-    // at |uv.x| = 1 across and |uv.y| = 1 along; the screen-space gradient
-    // turns that into a distance in device pixels.
     let gx = max(length(vec2f(dpdx(in.uv.x), dpdy(in.uv.x))), 1e-6);
     let gy = max(length(vec2f(dpdx(in.uv.y), dpdy(in.uv.y))), 1e-6);
     if (in.sdf < -1.5) {
@@ -112,7 +94,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
     let d = sd_round_box(p, half_size, rad);
     let cov = clamp(0.5 - d / fw, 0.0, 1.0);
-    // 1 inside the inner edge of the border stroke, 0 on the stroke.
     var inner = 1.0;
     if (bw > 0.0) {
         inner = clamp(0.5 - (d + bw) / fw, 0.0, 1.0);
@@ -127,7 +108,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let spread = rec(h, 27u);
         let off = vec2f(rec(h, 28u), rec(h, 29u));
         let ds = sd_round_box(p - off, max(half_size + vec2f(spread), vec2f(0.0)), max(rad + vec4f(spread), vec4f(0.0)));
-        // Gaussian-blurred edge, drawn outside the rect only (CSS box-shadow).
         let sa = scol.a * (0.5 - 0.5 * erf_approx(ds / (sigma * 1.41421356))) * (1.0 - cov);
         pm = pm + vec4f(scol.rgb * sa, sa) * (1.0 - pm.a);
     }
@@ -135,9 +115,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         discard;
     }
     var out = vec4f(pm.rgb / pm.a, pm.a);
-    // Soft shadows and gradients span many nearly equal levels; a sub-level
-    // blue-noise-ish dither (interleaved gradient noise) hides the 8-bit
-    // banding that would otherwise show as contour lines.
     let n = (fract(52.9829189 * fract(dot(in.pos.xy, vec2f(0.06711056, 0.00583715)))) - 0.5) / 255.0;
     if (gk > 0.5) {
         out = vec4f(out.rgb + vec3f(n), out.a);

@@ -1,24 +1,5 @@
 #!/usr/bin/env node
-// Web startup profile: serve a zunk `dist/`, load it in headless Chromium and print where the time to first
-// frame goes, from the `zunk:*` performance marks the generated JS emits plus Navigation / Resource Timing.
-//
-//   cd tools && npm ci
-//   node tools/web-startup.mjs <dist-dir> [--runs 3] [--baseline <dist-dir>] [--chrome PATH]
-//
-// With --baseline, both dists are measured alternately (fresh browser per sample, so every sample is a
-// cold start and machine noise hits both equally) and the table shows medians side by side.
-// `first-cb` is a probe that needs no marks (a wrapped requestAnimationFrame: the end of the first frame
-// callback), so older builds can be compared too.
-//
-// Phases (ms from navigation start, median of the runs):
-//   html       document response end
-//   wasm-get   wasm response end (download; compile overlaps it with instantiateStreaming)
-//   wasm-ready streaming compile + instantiate finished
-//   gpu-ready  navigator.gpu adapter + device acquired
-//   init       exports.init() (teak Host/Gpu/Runtime construction: shaders, pipelines, fonts, first layout)
-//   first-frame the first frame callback returned
-//   pipelines  JS-side createShaderModule / createRenderPipeline time and counts (inside init)
-// Env: WEBSHOT_ANGLE=vulkan on hosts whose SwiftShader needs it (see webshot.mjs).
+// Web startup profile; see SRC.md.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';

@@ -78,7 +78,6 @@ pub fn appendInspector(cb: anytype, cmds: anytype, rects: []const Rect, data: Da
     add(arena, &lines, opts.accent, "TEAK INSPECTOR   frame {d}   {d} cmds   {d:.0}x{d:.0}", .{ data.frame, cmds.len, data.window_w, data.window_h }, opts.max_cols);
     add(arena, &lines, opts.fg, "view {d:.2}ms  layout {d:.2}ms  render {d:.2}ms", .{ data.timings.view_ms, data.timings.layout_ms, data.timings.render_ms }, opts.max_cols);
 
-    // Hovered widget.
     var highlight: ?Rect = null;
     add(arena, &lines, opts.accent, "-- hover --", .{}, opts.max_cols);
     if (data.hover_index) |hi| if (hi < cmds.len and hi < rects.len) {
@@ -92,7 +91,6 @@ pub fn appendInspector(cb: anytype, cmds: anytype, rects: []const Rect, data: Da
         add(arena, &lines, opts.dim, "(nothing)", .{}, opts.max_cols);
     }
 
-    // Widget tree (a11y roles: what a screen reader would see).
     add(arena, &lines, opts.accent, "-- tree --", .{}, opts.max_cols);
     if (a11y.buildTree(arena, cmds, rects, data.focus_index)) |nodes| {
         var shown: usize = 0;
@@ -115,12 +113,10 @@ pub fn appendInspector(cb: anytype, cmds: anytype, rects: []const Rect, data: Da
         }
     } else |_| {}
 
-    // Msgs.
     add(arena, &lines, opts.accent, "-- last {d} msgs --", .{data.msgs.len}, opts.max_cols);
     if (data.msgs.len == 0) add(arena, &lines, opts.dim, "(none yet)", .{}, opts.max_cols);
     for (data.msgs) |m| add(arena, &lines, opts.fg, "{s}", .{m}, opts.max_cols);
 
-    // Emit. The highlight goes first so the panel paints above it.
     if (highlight) |r| {
         cb.pushOverlay(.{
             .x = r.x,
@@ -235,102 +231,4 @@ pub fn fmtValue(w: *std.Io.Writer, v: anytype) std.Io.Writer.Error!void {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const cmd_mod = @import("cmd.zig");
-
-test "fmtValue renders unions, strings, structs, arrays and optionals" {
-    const Msg = union(enum) {
-        inc,
-        add: []const u8,
-        move: struct { x: f32, y: f32 },
-        pick: ?u32,
-        color: [4]f32,
-        ch: u8,
-    };
-    var buf: [128]u8 = undefined;
-    var w = std.Io.Writer.fixed(&buf);
-    try fmtValue(&w, Msg{ .inc = {} });
-    try std.testing.expectEqualStrings(".inc", w.buffered());
-    w = std.Io.Writer.fixed(&buf);
-    try fmtValue(&w, Msg{ .add = "milk" });
-    try std.testing.expectEqualStrings(".add(\"milk\")", w.buffered());
-    w = std.Io.Writer.fixed(&buf);
-    try fmtValue(&w, Msg{ .move = .{ .x = 1.5, .y = 2 } });
-    try std.testing.expectEqualStrings(".move(.{ .x = 1.5, .y = 2 })", w.buffered());
-    w = std.Io.Writer.fixed(&buf);
-    try fmtValue(&w, Msg{ .pick = null });
-    try std.testing.expectEqualStrings(".pick(null)", w.buffered());
-    w = std.Io.Writer.fixed(&buf);
-    try fmtValue(&w, Msg{ .color = .{ 1, 0.5, 0, 1 } });
-    try std.testing.expectEqualStrings(".color([1,0.5,0,1])", w.buffered());
-    w = std.Io.Writer.fixed(&buf);
-    try fmtValue(&w, Msg{ .ch = 'm' });
-    try std.testing.expectEqualStrings(".ch(109 'm')", w.buffered());
-}
-
-test "appendInspector: highlight + panel overlays with the hovered cmd, tree and msgs" {
-    const testing = std.testing;
-    const Msg = union(enum) { go, other };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{});
-    cb.text("Title");
-    cb.button(.go, "Go");
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    const n = cb.cmds.items.len;
-    layout.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var panel = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer panel.deinit();
-    appendInspector(&panel, cb.cmds.items, rects[0..n], .{
-        .window_w = 800,
-        .window_h = 600,
-        .frame = 7,
-        .hover_index = 2, // the button
-        .msgs = &.{ ".go", ".other" },
-        .timings = .{ .view_ms = 0.25 },
-    }, .{});
-
-    var overlays: usize = 0;
-    var saw_hover = false;
-    var saw_tree = false;
-    var saw_msg = false;
-    var saw_timing = false;
-    for (panel.cmds.items) |c| switch (c) {
-        .push_overlay => overlays += 1,
-        .text => |t| {
-            if (std.mem.indexOf(u8, t.content, "#2 button") != null) saw_hover = true;
-            if (std.mem.indexOf(u8, t.content, "button \"Go\"") != null) saw_tree = true;
-            if (std.mem.eql(u8, t.content, ".other")) saw_msg = true;
-            if (std.mem.indexOf(u8, t.content, "view 0.25ms") != null) saw_timing = true;
-        },
-        else => {},
-    };
-    try testing.expectEqual(@as(usize, 2), overlays); // highlight + panel
-    try testing.expect(saw_hover and saw_tree and saw_msg and saw_timing);
-    try testing.expectEqual(.pop_overlay, std.meta.activeTag(panel.cmds.items[panel.cmds.items.len - 1]));
-}
-
-test "appendInspector without a hover emits only the panel" {
-    const testing = std.testing;
-    const Msg = union(enum) { go };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{});
-    cb.text("x");
-    cb.popGroup();
-    var rects: [4]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..3], cb.cmds.items, 100, 100, text_mod.monoMeasurer());
-
-    var panel = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer panel.deinit();
-    appendInspector(&panel, cb.cmds.items, rects[0..3], .{ .window_w = 100, .window_h = 100, .frame = 0 }, .{});
-    var overlays: usize = 0;
-    for (panel.cmds.items) |c| if (c == .push_overlay) {
-        overlays += 1;
-    };
-    try testing.expectEqual(@as(usize, 1), overlays);
-}

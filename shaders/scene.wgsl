@@ -1,6 +1,5 @@
 // 3D scene shader: flat-shaded lit triangles and camera-facing line quads.
 // Uniform layout must match `Globals` in src/gpu/scene_common.zig (208 B).
-// Per-item placement comes from the instance stream (`scene_pass.Packed`, 80 B).
 
 struct Globals {
     view_proj: mat4x4f,
@@ -32,7 +31,6 @@ fn cut_away(world: vec3f) -> bool {
     return g.misc.z > 0.5 && dot(g.clip.xyz, world) + g.clip.w > 0.0;
 }
 
-// ── Triangles ──────────────────────────────────────────────────────
 
 struct MeshOut {
     @builtin(position) pos: vec4f,
@@ -42,9 +40,6 @@ struct MeshOut {
     @location(3) @interpolate(flat) flags: u32,
 };
 
-// Instance stream: rows of the 3x4 transform, tint, (id, flags).
-// Normals use the linear part (rotation + uniform scale); `normalize` in
-// the fragment stage absorbs the scale.
 @vertex
 fn vs_mesh(
     @location(0) pos: vec3f,
@@ -69,7 +64,6 @@ fn fs_mesh(in: MeshOut) -> @location(0) vec4f {
     if (g.misc.x > 0.5 || (in.flags & FLAG_UNLIT) != 0u) { return vec4f(rgb, 1.0); }
     var n = normalize(in.normal);
     let to_eye = g.eye.xyz - in.world;
-    // Two-sided: light the side that faces the camera.
     if (dot(n, to_eye) < 0.0) { n = -n; }
     var travel = g.light_dir.xyz;
     if (dot(travel, travel) < 1e-8) { travel = -to_eye; }
@@ -77,10 +71,6 @@ fn fs_mesh(in: MeshOut) -> @location(0) vec4f {
     return vec4f(rgb * (AMBIENT + (1.0 - AMBIENT) * diffuse), 1.0);
 }
 
-// ── Plane layers ───────────────────────────────────────────────────
-// Plane-local 2D triangles (the canvas tessellator's output) placed by the
-// plane frame in the instance stream; `layer` biases depth so coplanar
-// sheets stack deterministically.
 
 struct PlaneOut {
     @builtin(position) pos: vec4f,
@@ -111,11 +101,6 @@ fn fs_plane(in: PlaneOut) -> @location(0) vec4f {
     return in.color;
 }
 
-// ── Sprites ────────────────────────────────────────────────────────
-// One instance per sprite, six vertices per quad. `screen_px` camera-facing
-// sprites keep a constant pixel size; the others are world-space quads on
-// the camera axes (billboard), the camera's right projected on XZ (axis
-// locked) or the world XY plane (fixed).
 
 @group(1) @binding(0) var sprite_tex: texture_2d<f32>;
 @group(1) @binding(1) var sprite_samp: sampler;
@@ -168,11 +153,6 @@ fn fs_sprite(in: SpriteOut) -> @location(0) vec4f {
     return t;
 }
 
-// ── Section caps ───────────────────────────────────────────────────
-// Stencil parity: the item's faces (cut-away half discarded) are drawn with
-// colour writes off and stencil `invert`; a pixel's stencil is then odd iff
-// the view ray enters the kept half inside the closed solid. The cap quad on
-// the plane is drawn where stencil != 0 (and clears it again).
 
 @fragment
 fn fs_stencil(in: MeshOut) -> @location(0) vec4f {
@@ -190,7 +170,6 @@ fn vs_cap(@location(0) pos: vec3f, @location(1) color: vec4f) -> CapOut {
     return CapOut(g.view_proj * vec4f(pos, 1.0), color);
 }
 
-// A drafting-style hatch: diagonal stripes in screen space, slightly darker.
 @fragment
 fn fs_cap(in: CapOut) -> @location(0) vec4f {
     let t = fract((in.pos.x + in.pos.y) / 7.0);
@@ -198,10 +177,6 @@ fn fs_cap(in: CapOut) -> @location(0) vec4f {
     return vec4f(mix(in.color.rgb, in.color.rgb * 0.7, stripe), 1.0);
 }
 
-// ── Lines ──────────────────────────────────────────────────────────
-// One instance per segment; six vertices expand it into a quad of
-// constant pixel width, extended by half a width at each end so
-// polylines join without gaps. Instance attributes are a LineVertex pair.
 
 struct LineOut {
     @builtin(position) pos: vec4f,
@@ -223,15 +198,12 @@ fn vs_line(
     var end_of = array<u32, 6>(0, 0, 1, 1, 0, 1);
     var side_of = array<f32, 6>(-1, 1, -1, -1, 1, 1);
 
-    // The item's transform arrives through a stride-0 instance stream, so
-    // every segment of the item reads the same record.
     let world_a = place(m0, m1, m2, pos_a);
     let world_b = place(m0, m1, m2, pos_b);
     var a = g.view_proj * vec4f(world_a, 1.0);
     var b = g.view_proj * vec4f(world_b, 1.0);
 
-    // Clip the segment to the near plane (z >= 0) before the perspective
-    // divide, so an endpoint behind the camera cannot explode.
+    // Clip against the near plane before perspective division.
     var visible = true;
     if (a.z < 0.0 && b.z < 0.0) {
         visible = false;

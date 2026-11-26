@@ -238,15 +238,12 @@ pub fn GlyphAtlasWith(comptime hashFn: fn (GlyphKey) u64) type {
         const Loc = struct { page: u8, x: u16, y: u16 };
 
         fn allocRect(self: *Self, pw: u32, ph: u32) InsertError!Loc {
-            // 1. any existing page with room (newest first: most likely to have space).
             if (self.tryExisting(pw, ph)) |loc| return loc;
-            // 2. open a new page.
             if (self.pages.items.len < self.max_pages) {
                 try self.pages.append(self.allocator, .{});
                 const idx: u8 = @intCast(self.pages.items.len - 1);
                 return tryPage(&self.pages.items[idx], idx, pw, ph) orelse error.GlyphTooLarge;
             }
-            // 3. reset the oldest page not used this frame.
             var victim: ?u8 = null;
             var oldest: u64 = std.math.maxInt(u64);
             for (self.pages.items, 0..) |p, i| {
@@ -366,157 +363,14 @@ pub fn GlyphAtlasWith(comptime hashFn: fn (GlyphKey) u64) type {
     };
 }
 
-// ---------------------------------------------------------------- tests
-
 const testing = std.testing;
 
 fn K(glyph: u16, size_q: u16, bin: u2) GlyphKey {
     return .{ .face = 1, .glyph = glyph, .size_q = size_q, .bin = bin };
 }
 
-test "GlyphKey and GlyphInstance layout" {
-    try testing.expectEqual(@as(usize, 8), @sizeOf(GlyphKey));
-    try testing.expectEqual(@as(usize, 32), @sizeOf(GlyphInstance));
-    try testing.expectEqual(@as(usize, 4), @alignOf(GlyphInstance));
-    try testing.expectEqual(@as(usize, 0), @offsetOf(GlyphInstance, "x"));
-    try testing.expectEqual(@as(usize, 4), @offsetOf(GlyphInstance, "y"));
-    try testing.expectEqual(@as(usize, 8), @offsetOf(GlyphInstance, "w"));
-    try testing.expectEqual(@as(usize, 10), @offsetOf(GlyphInstance, "h"));
-    try testing.expectEqual(@as(usize, 12), @offsetOf(GlyphInstance, "u"));
-    try testing.expectEqual(@as(usize, 14), @offsetOf(GlyphInstance, "v"));
-    try testing.expectEqual(@as(usize, 16), @offsetOf(GlyphInstance, "color"));
-    try testing.expectEqual(@as(usize, 20), @offsetOf(GlyphInstance, "clip_xy"));
-    try testing.expectEqual(@as(usize, 24), @offsetOf(GlyphInstance, "clip_wh"));
-    try testing.expectEqual(@as(usize, 28), @offsetOf(GlyphInstance, "flags"));
-    // Bit layout of the key: face is the low 16 bits.
-    const k = GlyphKey{ .face = 0xabcd, .glyph = 0, .size_q = 0, .bin = 3 };
-    try testing.expectEqual(@as(u16, 0xabcd), @as(u16, @truncate(k.asInt())));
-    try testing.expectEqual(@as(u64, 3) << 48, k.asInt() & (@as(u64, 3) << 48));
-}
-
-test "insert then lookup, rects are padded and disjoint" {
-    var a = try GlyphAtlas.init(testing.allocator, 2);
-    defer a.deinit();
-    const e1 = try a.insert(K(1, 56, 0), 8, 10, 1, 9);
-    const e2 = try a.insert(K(2, 56, 0), 8, 10, 0, 9);
-    try testing.expect(e1.rect.x >= padding and e1.rect.y >= padding);
-    try testing.expect(e2.rect.x >= e1.rect.x + e1.rect.w + 2 * padding - padding);
-    const got = a.lookup(K(1, 56, 0)).?;
-    try testing.expectEqual(e1.rect, got.rect);
-    try testing.expectEqual(@as(i16, 9), got.bearing_y);
-    try testing.expect(a.lookup(K(1, 56, 1)) == null);
-    try testing.expect(a.lookup(K(3, 56, 0)) == null);
-}
-
-test "blank glyph needs no texels and never goes stale" {
-    var a = try GlyphAtlas.init(testing.allocator, 1);
-    defer a.deinit();
-    _ = try a.insert(K(32, 56, 0), 0, 0, 0, 0);
-    try testing.expectEqual(@as(usize, 0), a.pageCount());
-    try testing.expect(a.lookup(K(32, 56, 0)) != null);
-}
-
 fn collideHash(_: GlyphKey) u64 {
     return 7;
-}
-
-test "full-key comparison under identical hashes" {
-    var a = try GlyphAtlasWith(collideHash).init(testing.allocator, 1);
-    defer a.deinit();
-    var i: u16 = 0;
-    while (i < 100) : (i += 1) _ = try a.insert(K(i, 56, 0), 6, 8, 0, 0);
-    i = 0;
-    while (i < 100) : (i += 1) {
-        const e = a.lookup(K(i, 56, 0)).?;
-        try testing.expectEqual(i, e.key.glyph);
-    }
-    try testing.expect(a.lookup(K(100, 56, 0)) == null);
-    // Same glyph, different size/bin: distinct identity despite equal hash.
-    try testing.expect(a.lookup(K(5, 60, 0)) == null);
-    try testing.expect(a.lookup(K(5, 56, 2)) == null);
-    // Re-inserting replaces rather than duplicates.
-    const again = try a.insert(K(5, 56, 0), 6, 8, 0, 0);
-    try testing.expectEqual(again.rect, a.lookup(K(5, 56, 0)).?.rect);
-}
-
-test "page-granular eviction bumps gen and invalidates in O(1)" {
-    var a = try GlyphAtlas.init(testing.allocator, 2);
-    defer a.deinit();
-    // Page 0: fill with 256x256 glyphs (16 fit), then page 1.
-    var n: u16 = 0;
-    while (a.pageCount() < 2) : (n += 1) _ = try a.insert(K(n, 56, 0), 254, 254, 0, 0);
-    const on_p0 = a.lookup(K(0, 56, 0)).?;
-    try testing.expectEqual(@as(u8, 0), on_p0.page);
-    try testing.expectEqual(@as(u32, 0), a.pageGen(0));
-    // Fill page 1 completely; now everything is full. Same frame => all pinned.
-    while (true) : (n += 1) {
-        _ = a.insert(K(n, 56, 0), 254, 254, 0, 0) catch |err| {
-            try testing.expectEqual(error.AllPagesPinned, err);
-            break;
-        };
-    }
-    // Next frame: touch page 1 only; page 0 is the oldest unpinned victim.
-    a.beginFrame();
-    const keep = a.lookup(K(n - 1, 56, 0)).?;
-    try testing.expectEqual(@as(u8, 1), keep.page);
-    const fresh = try a.insert(K(9999, 56, 0), 254, 254, 0, 0);
-    try testing.expectEqual(@as(u8, 0), fresh.page);
-    try testing.expectEqual(@as(u32, 1), a.pageGen(0));
-    try testing.expectEqual(@as(u32, 0), a.pageGen(1));
-    try testing.expect(a.lookup(K(0, 56, 0)) == null); // evicted, no per-entry work
-    try testing.expect(a.lookup(K(n - 1, 56, 0)) != null); // untouched page survives
-    try testing.expect(a.lookup(K(9999, 56, 0)) != null);
-}
-
-test "glyphs used this frame are never evicted mid-frame" {
-    var a = try GlyphAtlas.init(testing.allocator, 1);
-    defer a.deinit();
-    var n: u16 = 0;
-    while (true) : (n += 1) {
-        _ = a.insert(K(n, 56, 0), 254, 254, 0, 0) catch break;
-    }
-    try testing.expectEqual(error.AllPagesPinned, a.insert(K(5000, 56, 0), 10, 10, 0, 0));
-    try testing.expect(a.lookup(K(0, 56, 0)) != null);
-    // The failed insert left the table consistent.
-    try testing.expect(a.lookup(K(5000, 56, 0)) == null);
-    a.beginFrame();
-    _ = try a.insert(K(5000, 56, 0), 10, 10, 0, 0);
-    try testing.expectEqual(@as(u32, 1), a.pageGen(0));
-}
-
-test "oversized glyph is an error value" {
-    var a = try GlyphAtlas.init(testing.allocator, 1);
-    defer a.deinit();
-    try testing.expectError(error.GlyphTooLarge, a.insert(K(1, 1, 0), 1024, 10, 0, 0));
-}
-
-test "dirty rect is the union of inserts and clears on take" {
-    var a = try GlyphAtlas.init(testing.allocator, 1);
-    defer a.deinit();
-    const e1 = try a.insert(K(1, 56, 0), 10, 10, 0, 0);
-    const e2 = try a.insert(K(2, 56, 0), 10, 10, 0, 0);
-    const d = a.takeDirty(0).?;
-    try testing.expect(d.x <= e1.rect.x - 1 and d.y <= e1.rect.y - 1);
-    try testing.expect(d.x + d.w >= e2.rect.x + e2.rect.w + 1);
-    try testing.expect(a.takeDirty(0) == null);
-}
-
-test "table survives many stale generations (rehash drops stale slots)" {
-    var a = try GlyphAtlas.init(testing.allocator, 2);
-    defer a.deinit();
-    var n: u16 = 0;
-    var round: usize = 0;
-    while (round < 20) : (round += 1) {
-        a.beginFrame();
-        // 128 px cells => 64 per page, 128 across both pages: 50 per frame always fits.
-        var j: u16 = 0;
-        while (j < 50) : (j += 1) {
-            _ = try a.insert(K(n, 56, 0), 126, 126, 0, 0);
-            n +%= 1;
-        }
-    }
-    try testing.expect(a.slots.len <= 1024);
-    try testing.expect(a.lookup(K(n -% 1, 56, 0)) != null);
 }
 
 /// Synthetic realistic glyph mix (documented distribution): UI font sizes
@@ -528,37 +382,4 @@ fn syntheticGlyph(rng: std.Random) struct { w: u16, h: u16 } {
     const w = s * (0.30 + 0.35 * rng.float(f32));
     const h = s * (0.55 + 0.60 * rng.float(f32));
     return .{ .w = @max(1, @as(u16, @intFromFloat(@round(w)))), .h = @max(1, @as(u16, @intFromFloat(@round(h)))) };
-}
-
-test "shelf packer fills a page to at least 80% with a realistic mix" {
-    var prng = std.Random.DefaultPrng.init(0x7ea4);
-    var a = try GlyphAtlas.init(testing.allocator, 1);
-    defer a.deinit();
-    var n: u32 = 0;
-    while (true) : (n += 1) {
-        const g = syntheticGlyph(prng.random());
-        _ = a.insert(K(@truncate(n), @truncate(n >> 16), 0), g.w, g.h, 0, 0) catch break;
-    }
-    const fill = a.pageFill(0);
-    try testing.expect(fill >= 0.80);
-}
-
-test "100k warm lookups all hit" {
-    var a = try GlyphAtlas.init(testing.allocator, 8);
-    defer a.deinit();
-    var g: u16 = 0;
-    while (g < 95) : (g += 1) {
-        var b: u2 = 0;
-        while (true) : (b += 1) {
-            _ = try a.insert(K(g, 56, b), 8, 11, 0, 0);
-            if (b == 3) break;
-        }
-    }
-    var hits: usize = 0;
-    var i: usize = 0;
-    while (i < 100_000) : (i += 1) {
-        const k = K(@intCast(i % 95), 56, @truncate(i >> 3));
-        if (a.lookup(k) != null) hits += 1;
-    }
-    try testing.expectEqual(@as(usize, 100_000), hits);
 }

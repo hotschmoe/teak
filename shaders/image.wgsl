@@ -1,3 +1,4 @@
+// RGBA image: multiply texture color by tint.
 struct VertexOutput {
     @builtin(position) pos: vec4f,
     @location(0) color: vec4f,
@@ -27,10 +28,6 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    // RGBA image: multiply texture color by tint. `color` is the
-    // ImageCmd.style.tint passed through the vertex stream — {1,1,1,1}
-    // for passthrough, {1,1,1,0.5} for half-opacity, {0.5,1,0.5,1} for
-    // a green-shifted tint.
     let t = textureSample(tex, samp, in.uv);
     return t * in.color;
 }

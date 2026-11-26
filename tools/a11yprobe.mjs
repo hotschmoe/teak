@@ -1,17 +1,5 @@
 #!/usr/bin/env node
-// Web accessibility probe: serve a zunk `dist/`, load it in headless Chromium
-// (software WebGPU), read the browser's accessibility tree through puppeteer
-// (`page.accessibility.snapshot`), assert roles / names / values, and DRIVE the
-// app purely through the DOM mirror (DOM click, DOM focus, typing into the
-// mirrored textbox, setting its value like assistive technology does).
-//
-//   cd tools && npm ci
-//   node tools/a11yprobe.mjs todo  examples/todo/dist
-//   node tools/a11yprobe.mjs notes examples/notes/dist
-//   node tools/a11yprobe.mjs dump  <dist>            # print the tree, no assertions
-//        [--chrome /path] [--wait-ms 3500]
-//
-// Exit: 0 ok, 1 a check failed / page error, 2 usage. See docs/features/a11y.md.
+// Web accessibility probe; see SRC.md.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -63,7 +51,6 @@ const failures = [];
 const check = (cond, msg) => { if (!cond) { failures.push(msg); console.log(`  FAIL ${msg}`); } else console.log(`  ok   ${msg}`); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Flatten the browser accessibility tree into [{role, name, value, focused, checked, level, ...}]. */
 async function tree(page) {
   const snap = await page.accessibility.snapshot({ interestingOnly: false });
   const out = [];
@@ -79,7 +66,6 @@ const dump = (nodes) => nodes.forEach((n) => {
   if (n.role === 'InlineTextBox') return;
   console.log(`${' '.repeat(n.depth * 2)}${n.role} "${n.name || ''}"${n.value !== undefined ? ` value=${JSON.stringify(n.value)}` : ''}${n.focused ? ' FOCUSED' : ''}${n.checked !== undefined ? ` checked=${n.checked}` : ''}${n.multiline ? ' multiline' : ''}`);
 });
-/** Poll until `pred(nodes)` is truthy (the app republishes a frame or two after an action). */
 async function until(page, pred, what, timeout = 6000) {
   const t0 = Date.now();
   let nodes;
@@ -161,7 +147,7 @@ try {
     await page.keyboard.type('hello from the DOM', { delay: 25 });
     t = await until(page, (n) => n.some((x) => x.role === 'textbox' && (x.value || x.name) === 'hello from the DOM'), 'chat text mirrored');
     check(t.some((n) => n.role === 'textbox' && (n.value || n.name) === 'hello from the DOM'), 'chat textbox value after typing');
-    // Send through the AT path: activate the mirrored button (Enter in a mirrored <textarea> is a native newline).
+    // Enter in a mirrored textarea inserts a newline rather than activating the button.
     await mirror(page, "[...root.querySelectorAll('button')].find(b => /Send/.test(b.textContent)).click(); return 1;");
     t = await until(page, (n) => n.some((x) => x.role === 'StaticText' && /hello from the DOM/.test(x.name || '')), 'message sent');
     check(t.some((n) => n.role === 'StaticText' && /hello from the DOM/.test(n.name || '')), 'sent message appears in the chat log');

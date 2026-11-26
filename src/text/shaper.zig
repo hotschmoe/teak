@@ -65,8 +65,6 @@ fn mapGlyph(primary: *const Font, primary_id: u16, family: teak.FontFamily, cp: 
         const alt = f.glyphIndex(cp);
         if (alt != 0) return .{ .glyph = alt, .face_id = id, .face = f };
     }
-    // Other registered families, then the app's explicit chain and the system
-    // last-resort list (text/fallback.zig). Tofu only when nothing has it.
     var fam_i: u8 = 0;
     while (fam_i < 3) : (fam_i += 1) {
         const fam: teak.FontFamily = @fromBackingInt(@intCast(fam_i));
@@ -199,7 +197,6 @@ fn shapeRtl(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     var map: [RTL_BUF]Map = undefined;
     var n_map: usize = 0;
     var vlen: usize = 0;
-    // Walk graphemes from the end so the first visual cluster is the last logical.
     var end = text.len;
     while (end > 0) {
         const start = teak.unicode.prevGrapheme(text, end);
@@ -233,8 +230,6 @@ fn shapeRtl(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
             }
         }
     }
-    // An output-full result covers a visual prefix; the source tail cannot be
-    // resumed, so report it consumed (documented limit: `out` holds the run).
     return .{ .count = r.count, .width = r.width, .consumed = text.len };
 }
 
@@ -256,8 +251,6 @@ fn shapeLogical(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResul
     var count: usize = 0;
     var pos: usize = 0;
     var x: f32 = 0;
-    // The last base glyph is finalised when the next base is known (kerning);
-    // combining marks emitted after it do not disturb that.
     var have_pending = false;
     var pending_idx: usize = 0;
     var pending_raw: f32 = 0;
@@ -267,9 +260,6 @@ fn shapeLogical(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResul
     var pending_cp: u21 = 0; // the base's code point (0 = a ligature / unknown)
 
     while (pos < text.len) {
-        // Default-ignorable code points (ZWJ, variation selectors, ...) draw
-        // nothing and take no space; skipping them avoids tofu in emoji
-        // sequences.
         const d = decode(text, pos);
         if (fallback.isInvisible(d.cp)) {
             pos += d.len;
@@ -277,8 +267,6 @@ fn shapeLogical(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResul
         }
         const u = nextUnit(primary, primary_id, text, pos, font, ligatures);
         if (u.mark) {
-            // Prefer the precomposed letter (NFC) when the face has it: e + U+0301 -> U+00E9. Works
-            // even when the face lacks the combining mark itself, and needs no mark placement.
             if (have_pending and pending_cp != 0) {
                 if (compose_table.compose(pending_cp, u.cp)) |composed| {
                     const g = pending_face.?.glyphIndex(composed);
@@ -292,9 +280,6 @@ fn shapeLogical(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResul
                     }
                 }
             }
-            // Zero advance, centred over the base (the font's own vertical
-            // placement is kept). A mark the face lacks is dropped rather than
-            // drawn as a missing-glyph box.
             if (u.glyph != 0) {
                 if (count == out.len) {
                     if (have_pending) x += finish(&out[pending_idx], pending_raw, font.snapsAdvance());

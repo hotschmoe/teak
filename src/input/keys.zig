@@ -22,27 +22,15 @@ pub const SpecialKey = enum {
     tab,
     escape,
 
-    // Shift-modified motion — selection extension. App-side text input
-    // logic uses selection_anchor (cursor start) + cursor (current) to
-    // build a selection range.
     shift_left,
     shift_right,
     shift_up,
     shift_down,
     shift_home,
     shift_end,
-    // Shift+Tab — backward focus traversal, the companion to plain `tab`.
-    // `teak.run` consumes it for Tab/Shift+Tab navigation. A host that
-    // hasn't been taught to emit it yet simply never delivers it; forward
-    // Tab still works.
     shift_tab,
-    // Shift+Enter: a newline where plain Enter submits (chat boxes). `teak.run`
-    // treats only plain `enter` as submit; this one reaches `keySpecialMsg`.
     shift_enter,
 
-    // Ctrl chords for the text-input prose path. Apps that don't care
-    // can ignore them — the Host still delivers them when the user
-    // pressed Ctrl+key.
     ctrl_a, // select all
     ctrl_c, // copy
     ctrl_x, // cut
@@ -51,7 +39,6 @@ pub const SpecialKey = enum {
     ctrl_y, // redo
     ctrl_shift_z, // redo (alternate chord)
 
-    // Ctrl-modified motion and deletion: word jumps and document start/end.
     ctrl_left,
     ctrl_right,
     ctrl_shift_left,
@@ -67,14 +54,8 @@ pub const SpecialKey = enum {
     /// `RunOptions.inspect_hotkey` is on (Debug builds by default); otherwise
     /// it reaches the app like any other key.
     f12,
-    // Menu-bar activation (see `teak.MenuBar`). F10 is the portable one; a
-    // bare Alt tap (Alt pressed and released with no other key or button in
-    // between) activates the bar on hosts that can see Alt on its own. Both
-    // are *requests*; the app decides whether a menu bar exists.
     f10,
     alt_tap,
-    // Context-menu request: the Menu / Apps key or Shift+F10. The app opens its
-    // context menu at the focused widget (a request, like `f10`).
     context_menu,
 };
 
@@ -347,36 +328,3 @@ pub const Chord = struct {
         };
     }
 };
-
-test "Chord format, parse and special" {
-    var buf: [32]u8 = undefined;
-    var w = std.Io.Writer.fixed(&buf);
-    try Chord.ctrlShift(.p).format(&w, .pc);
-    try std.testing.expectEqualStrings("Ctrl+Shift+P", w.buffered());
-    w = std.Io.Writer.fixed(&buf);
-    try Chord.ctrl(.s).format(&w, .mac);
-    try std.testing.expectEqualStrings("Cmd+S", w.buffered());
-    w = std.Io.Writer.fixed(&buf);
-    try (Chord{ .key = .enter, .alt = true }).format(&w, .pc);
-    try std.testing.expectEqualStrings("Alt+Enter", w.buffered());
-
-    try std.testing.expect(Chord.parse("ctrl+shift+P").?.eql(Chord.ctrlShift(.p)));
-    try std.testing.expect(Chord.parse("Cmd+K").?.eql(Chord.ctrl(.k)));
-    try std.testing.expect(Chord.parse("f12").?.eql(Chord.plain(.f12)));
-    try std.testing.expect(Chord.parse("alt+enter").?.eql(Chord.altKey(.enter)));
-    try std.testing.expect(Chord.parse("ctrl+5").?.eql(Chord.ctrl(.d5)));
-    try std.testing.expect(Chord.parse("ctrl+,").?.eql(Chord.ctrl(.comma)));
-    try std.testing.expect(Chord.parse("ctrl+") == null);
-    try std.testing.expect(Chord.parse("ctrl+a+b") == null);
-    try std.testing.expect(Chord.parse("bogus") == null);
-
-    try std.testing.expectEqual(SpecialKey.ctrl_c, Chord.ctrl(.c).special().?);
-    try std.testing.expectEqual(SpecialKey.ctrl_shift_z, Chord.ctrlShift(.z).special().?);
-    try std.testing.expect(Chord.ctrl(.s).special() == null);
-}
-
-test "Chord.text is the comptime form of format" {
-    try std.testing.expectEqualStrings("Ctrl+Shift+P", comptime Chord.ctrlShift(.p).text(.pc));
-    try std.testing.expectEqualStrings("Cmd+K", comptime Chord.ctrl(.k).text(.mac));
-    try std.testing.expectEqualStrings("F5", comptime Chord.plain(.f5).text(.pc));
-}

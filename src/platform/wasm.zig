@@ -131,50 +131,7 @@ const MAX_FILE_DIALOG_SLOTS: usize = 4;
 /// Allocator for transient request encodings (HTTP header text).
 const request_allocator = std.heap.wasm_allocator;
 
-// ── A11y DOM-mirror wire format (v2) ───────────────────────────────
-//
-// `publishA11yTree` ships the a11y snapshot (only when it changed: the run
-// loop diffs) to the JS side over two parallel buffers: a fixed-stride record
-// array (one record per node, parents before children) and a UTF-8 string
-// heap holding every label and value back-to-back. The zunk shim mirrors the
-// tree into a hidden, properly NESTED DOM subtree of ARIA elements, so
-// screen readers can navigate and operate canvas-rendered widgets, and
-// reports what the user does there back through `pollA11yActions`.
-//
-// Per-node record layout (little-endian; `extern struct`, 64 bytes):
-//
-//   offset  size  field
-//        0     4  cmd_index      u32  index into the source Cmd buffer (action target)
-//        4     4  role           u32  WIRE ROLE CODE (see `wireRole`, = zunk's table)
-//        8     4  label_offset   u32  byte offset into the string heap
-//       12     4  label_len      u32
-//       16    16  bounds x,y,w,h i32  rounded window-pixel rect
-//       32     4  state          f32  checkbox/radio 0/1, slider and progressbar [0, 1]
-//       36     4  flags          u32  see A11Y_FLAG_*
-//       40     4  value_offset   u32  editable text / value in the string heap
-//       44     4  value_len      u32
-//       48     4  sel_start      u32  selection inside the value (bytes)
-//       52     4  sel_end        u32
-//       56     4  parent         u32  record index of the enclosing node, 0xFFFFFFFF = root
-//       60     4  level          u32  heading level / tree depth, 0 = unspecified
-//
-// Wire role codes (ARIA names): 0 generic, 1 region, 2 text, 3 text (rich),
-// 4 button, 5 textbox, 6 checkbox, 7 radio, 8 slider, 9 separator, 10 img,
-// 11 dialog, 12 textbox (multiline), 13 combobox, 14 listbox, 15 option,
-// 16 menu, 17 menuitem, 18 tablist, 19 tab, 20 tree, 21 treeitem, 22 table,
-// 23 row, 24 cell, 25 progressbar, 26 status, 27 alert, 28 list, 29 listitem,
-// 30 toolbar, 31 heading, 32 menubar, 33 columnheader, 34 link.
-//
-// Fixed-size buffers (wasm-freestanding has no default heap; single-threaded;
-// JS reads them synchronously inside the extern call): 512 nodes x 64 bytes
-// = 32 KB of records, 32 KB string heap. Nodes past the cap and strings that
-// do not fit are dropped (the record stays, unlabeled).
-//
-// Actions come back the other way: `pollA11yActions` calls
-// `__zunk_poll_a11y_actions(recs, cap, strings, str_cap) -> count` once per
-// frame; each 16-byte record is `{kind u32, cmd_index u32, str_off u32,
-// str_len u32}` (kind = `a11y.ActionKind` order). The run loop turns them
-// into ordinary input.
+// The zunk accessibility wire contract is described in SRC.md.
 
 const MAX_A11Y_NODES: usize = 512;
 const A11Y_STRING_HEAP_BYTES: usize = 32 * 1024;
@@ -261,9 +218,7 @@ fn wireRole(n: A11yNode) u32 {
     };
 }
 
-// Module-scoped backing store for the two wire buffers. Single-host
-// wasm process — one publish-tree call at a time, single-threaded,
-// reused every frame. Zero per-frame allocation.
+// The single-threaded wasm Host reuses these buffers synchronously.
 var g_a11y_records: [MAX_A11Y_NODES * A11Y_RECORD_BYTES]u8 align(@alignOf(A11yRecord)) = undefined;
 var g_a11y_strings: [A11Y_STRING_HEAP_BYTES]u8 = undefined;
 
@@ -318,8 +273,6 @@ fn serializeA11yTree(nodes: []const A11yNode) struct { records_len: u32, strings
     }
     return .{ .records_len = @intCast(count * A11Y_RECORD_BYTES), .strings_len = strings_used };
 }
-
-// ── A11y actions back from the page ────────────────────────────────
 
 const MAX_A11Y_ACTIONS: usize = 16;
 const A11Y_ACTION_BYTES: usize = 16;
@@ -449,9 +402,6 @@ pub const Host = struct {
             self.fx_polled = false;
         }
 
-        // Zunk reports held state AND per-frame press/release edges (a click
-        // that begins and ends inside one frame sets both), so there is no
-        // local edge derivation. Wheel is CSS pixels, positive = down/right.
         const mouse = zinput.getMouse();
         const mods = zinput.getModifiers();
         const q = &self.queue;
@@ -463,8 +413,6 @@ pub const Host = struct {
         q.released = buttonEdges(zinput.isMouseButtonReleased);
         q.wheel(mouse.wheel_x, mouse.wheel);
         {
-            // Touch points are client coordinates; teak's web canvas fills
-            // the page, so they match the canvas' CSS pixels.
             var pts: [2][2]f32 = undefined;
             const tn = @min(zinput.getTouchCount(), 2);
             for (0..tn) |i| {
@@ -474,8 +422,6 @@ pub const Host = struct {
             if (self.touch.step(q, pts[0..tn]) and self.touch.pinching) q.mods.ctrl = true;
         }
 
-        // Cmd (meta) acts as Ctrl for the chord keys (Cmd+V pastes on macOS);
-        // the reported `mods` keep the real state.
         const reported = q.mods;
         q.mods.ctrl = reported.ctrl or reported.meta;
         if (zinput.isKeyPressed(.alt)) q.altDown();
@@ -487,8 +433,6 @@ pub const Host = struct {
         }
         if (zinput.isKeyReleased(.alt)) q.altUp();
         q.mods = reported;
-        // Zunk delivers whole UTF-8 code points and no control codes or
-        // Ctrl/Cmd chords; `pushText` re-validates and drops anything else.
         q.pushText(zinput.getTypedChars());
         self.pollIme(q);
 
@@ -655,11 +599,6 @@ pub const Host = struct {
         return decodeA11yActions(count, out);
     }
 
-    // Browser file dialogs go through the showOpenFilePicker API which
-    // is async and gesture-gated — incompatible with the synchronous
-    // `openFileDialog` shape. The sync variants stay no-op; apps that
-    // need cross-platform file picking should use the async
-    // `requestFileDialog` / `pollFileDialogResult` pair below.
     pub fn openFileDialog(_: *Host, _: FileDialogFilter) FileDialogResult {
         return null;
     }
@@ -714,8 +653,7 @@ pub const Host = struct {
         self.file_dialog_slots[slot_idx].state = .pending;
         self.file_dialog_slots[slot_idx].path_len = 0;
         const id: u32 = @intCast(slot_idx + 1);
-        // Unconditional: a has-decl check on the private externs is always false for non-`pub`
-        // decls, which silently dropped every request (audit-enforced).
+        // Private externs cannot be discovered by a public has-decl check.
         {
             externs.__zunk_request_file_dialog(
                 id,
@@ -748,12 +686,6 @@ pub const Host = struct {
         slot.path_len = copy_len;
         slot.state = .resolved_ok;
     }
-
-    // ── Declarative effects (zunk.web.fx) ──────────────────────────
-    //
-    // `submit` starts the work and returns; results (and unsolicited pastes /
-    // drops) are fetched by `pollInputs` and handed out here. The completion
-    // slices stay valid until the next `pollInputs`.
 
     pub fn submit(_: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
@@ -894,271 +826,4 @@ comptime {
     teak.validateHost(Host);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
 //
-// These tests exercise the pure serialization helper
-// (`serializeA11yTree`) without touching the JS bridge. Wired into
-// `zig build test` via the `platform-wasm` test target — the tests
-// reference only the helper, so zunk's `extern "env"` declarations
-// stay un-instantiated and the host-target compile links cleanly
-// without a wasm runtime.
-
-test "serializeA11yTree: layout matches wire format" {
-    const testing = std.testing;
-
-    const nodes = [_]A11yNode{
-        .{
-            .role = .button,
-            .cmd_index = 7,
-            .bounds = .{ .x = 10, .y = 20, .w = 100, .h = 30 },
-            .label = "Save",
-            .focused = true,
-        },
-        .{
-            .role = .checkbox,
-            .cmd_index = 9,
-            .bounds = .{ .x = 0, .y = 50, .w = 80, .h = 20 },
-            .label = "Agree",
-            .state = 1.0,
-        },
-    };
-
-    const lens = serializeA11yTree(&nodes);
-
-    try testing.expectEqual(@as(u32, 2 * A11Y_RECORD_BYTES), lens.records_len);
-    try testing.expectEqual(@as(u32, "Save".len + "Agree".len), lens.strings_len);
-
-    const records: [*]const A11yRecord = @ptrCast(&g_a11y_records);
-
-    // Record 0: focused button.
-    try testing.expectEqual(@as(u32, 7), records[0].cmd_index);
-    try testing.expectEqual(@as(u32, 4), records[0].role); // wire code: button
-    try testing.expectEqual(@as(u32, 0), records[0].label_offset);
-    try testing.expectEqual(@as(u32, 4), records[0].label_len);
-    try testing.expectEqual(@as(i32, 10), records[0].bounds_x);
-    try testing.expectEqual(@as(i32, 20), records[0].bounds_y);
-    try testing.expectEqual(@as(i32, 100), records[0].bounds_w);
-    try testing.expectEqual(@as(i32, 30), records[0].bounds_h);
-    try testing.expectEqual(A11Y_FLAG_FOCUSED, records[0].flags & A11Y_FLAG_FOCUSED);
-
-    // Record 1: checked, non-focused checkbox stacked after.
-    try testing.expectEqual(@as(u32, 9), records[1].cmd_index);
-    try testing.expectEqual(@as(u32, 6), records[1].role); // wire code: checkbox
-    try testing.expectEqual(@as(u32, 4), records[1].label_offset);
-    try testing.expectEqual(@as(u32, 5), records[1].label_len);
-    try testing.expectEqual(@as(f32, 1.0), records[1].state);
-    try testing.expectEqual(@as(u32, 0), records[1].flags & A11Y_FLAG_FOCUSED);
-
-    // String heap holds the labels back-to-back at the recorded offsets.
-    try testing.expectEqualStrings("Save", g_a11y_strings[0..4]);
-    try testing.expectEqualStrings("Agree", g_a11y_strings[4..9]);
-}
-
-test "serializeA11yTree: drops nodes past MAX_A11Y_NODES" {
-    const testing = std.testing;
-
-    var nodes: [MAX_A11Y_NODES + 8]A11yNode = undefined;
-    for (&nodes, 0..) |*n, i| {
-        n.* = .{
-            .role = .text,
-            .cmd_index = @intCast(i),
-            .bounds = .{ .x = 0, .y = 0, .w = 1, .h = 1 },
-        };
-    }
-
-    const lens = serializeA11yTree(&nodes);
-
-    try testing.expectEqual(@as(u32, MAX_A11Y_NODES * A11Y_RECORD_BYTES), lens.records_len);
-    try testing.expectEqual(@as(u32, 0), lens.strings_len);
-
-    const records: [*]const A11yRecord = @ptrCast(&g_a11y_records);
-    try testing.expectEqual(@as(u32, MAX_A11Y_NODES - 1), records[MAX_A11Y_NODES - 1].cmd_index);
-}
-
-test "serializeA11yTree: oversized label is skipped, record still emitted" {
-    const testing = std.testing;
-
-    var huge: [A11Y_STRING_HEAP_BYTES + 1]u8 = undefined;
-    @memset(&huge, 'x');
-
-    const nodes = [_]A11yNode{
-        .{
-            .role = .text,
-            .cmd_index = 1,
-            .bounds = .{ .x = 0, .y = 0, .w = 10, .h = 10 },
-            .label = &huge,
-        },
-    };
-
-    const lens = serializeA11yTree(&nodes);
-    try testing.expectEqual(@as(u32, A11Y_RECORD_BYTES), lens.records_len);
-    try testing.expectEqual(@as(u32, 0), lens.strings_len);
-
-    const records: [*]const A11yRecord = @ptrCast(&g_a11y_records);
-    try testing.expectEqual(@as(u32, 1), records[0].cmd_index);
-    try testing.expectEqual(@as(u32, 0), records[0].label_len);
-}
-
-test "wasm key table reaches every SpecialKey through the shared policy" {
-    var seen = std.EnumSet(SpecialKey).empty;
-    const mod_sets = [_]teak.Modifiers{ .{}, .{ .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = true } };
-    for (mod_sets) |mods| {
-        for (key_mappings) |m| {
-            if (teak.resolveKey(m.to, mods)) |sk| seen.insert(sk);
-        }
-    }
-    for (std.enums.values(SpecialKey)) |sk| {
-        if (sk == .alt_tap) continue; // synthesized by InputQueue.altUp, not a table key
-        try std.testing.expect(seen.contains(sk));
-    }
-}
-
-test "effectResult maps every completion kind to the contract type" {
-    const blobs: [4][]const u8 = .{ "b0", "b1", "b2", "" };
-    const base: fx.Completion = .{ .kind = .http, .id = 5, .a = 201, .b = 0, .c = 0, .d = 0, .blobs = blobs };
-
-    const http = effectResult(base).http;
-    try std.testing.expectEqual(@as(u32, 5), http.id);
-    try std.testing.expectEqual(@as(u16, 201), http.status);
-    try std.testing.expectEqualStrings("b0", http.body);
-    try std.testing.expectEqualStrings("b1", http.err);
-
-    var failed = base;
-    failed.a = 0;
-    try std.testing.expectEqual(@as(u16, 0), effectResult(failed).http.status);
-
-    var opened = base;
-    opened.kind = .file_opened;
-    const f = effectResult(opened).file_opened;
-    try std.testing.expectEqualStrings("b0", f.name);
-    try std.testing.expectEqualStrings("b1", f.mime);
-    try std.testing.expectEqualStrings("b2", f.bytes);
-
-    var storage = base;
-    storage.kind = .storage_value;
-    storage.a = 0;
-    try std.testing.expect(effectResult(storage).storage_value.value == null);
-    storage.a = 1;
-    try std.testing.expectEqualStrings("b0", effectResult(storage).storage_value.value.?);
-
-    var q = base;
-    q.kind = .query_value;
-    q.a = 0;
-    try std.testing.expect(effectResult(q).query_value.value == null);
-
-    var ms: [8]u8 = undefined;
-    std.mem.writeInt(i64, &ms, 1_700_000_000_000, .little);
-    var clock = base;
-    clock.kind = .clock;
-    clock.a = -300;
-    clock.blobs[0] = &ms;
-    const t = effectResult(clock).clock;
-    try std.testing.expectEqual(@as(i64, 1_700_000_000_000), t.unix_ms);
-    try std.testing.expectEqual(@as(i32, -300), t.utc_offset_min);
-
-    var paste = base;
-    paste.kind = .pasted_text;
-    try std.testing.expectEqualStrings("b0", effectResult(paste).pasted_text.text);
-}
-
-test "dropOf: image metadata and a thumbnail that matches its width" {
-    const thumb: [4 * 3 * 2]u8 = @splat(7); // 3 x 2 RGBA
-    const img = dropOf(.{ .kind = .dropped, .id = 0, .a = 1, .b = 1568, .c = 900, .d = 3, .blobs = .{ "s.png", "image/png", "PNG", &thumb } });
-    try std.testing.expectEqual(teak.DropKind.image, img.kind);
-    try std.testing.expectEqual(@as(u32, 1568), img.width);
-    try std.testing.expectEqual(@as(u32, 900), img.height);
-    try std.testing.expectEqual(@as(u32, 3), img.thumb_w);
-    try std.testing.expectEqual(@as(u32, 2), img.thumb_h);
-    try std.testing.expectEqual(@as(usize, 24), img.thumb_rgba.len);
-
-    // A preview whose size does not fit its width is dropped, not guessed.
-    const bad = dropOf(.{ .kind = .dropped, .id = 0, .a = 1, .b = 8, .c = 8, .d = 3, .blobs = .{ "", "image/png", "PNG", thumb[0..10] } });
-    try std.testing.expectEqual(@as(usize, 0), bad.thumb_rgba.len);
-    try std.testing.expectEqual(@as(u32, 0), bad.thumb_h);
-
-    const file = dropOf(.{ .kind = .dropped, .id = 0, .a = 0, .b = 0, .c = 0, .d = 0, .blobs = .{ "a.json", "application/json", "{}", "" } });
-    try std.testing.expectEqual(teak.DropKind.file, file.kind);
-    try std.testing.expectEqual(@as(u32, 0), file.width);
-    const text = dropOf(.{ .kind = .dropped, .id = 0, .a = 2, .b = 0, .c = 0, .d = 0, .blobs = .{ "", "text/plain", "hi", "" } });
-    try std.testing.expectEqual(teak.DropKind.text, text.kind);
-}
-
-test "IME events: a composition shows as preedit, the commit is typed and clears it" {
-    var h = Host{ .width = 10, .height = 10 };
-    var q: InputQueue = .{};
-    q.beginFrame();
-    h.applyImeEvent(&q, .start, "", 0);
-    try std.testing.expect(h.imeState().active);
-    h.applyImeEvent(&q, .update, "\u{306B}\u{307B}", 3);
-    try std.testing.expectEqualStrings("\u{306B}\u{307B}", h.imeState().text);
-    try std.testing.expectEqual(@as(usize, 3), h.imeState().cursor);
-    h.applyImeEvent(&q, .commit, "\u{65E5}\u{672C}", 0);
-    try std.testing.expect(!h.imeState().active);
-    try std.testing.expectEqual(@as(usize, 0), h.imeState().text.len);
-    const st = q.finish(false, 10, 10);
-    try std.testing.expectEqualStrings("\u{65E5}\u{672C}", st.chars);
-}
-
-test "IME events: a cancelled composition types nothing; an oversized preedit is cut on a boundary" {
-    var h = Host{ .width = 10, .height = 10 };
-    var q: InputQueue = .{};
-    q.beginFrame();
-    h.applyImeEvent(&q, .update, "\u{3042}", 3);
-    h.applyImeEvent(&q, .commit, "", 0);
-    try std.testing.expect(!h.imeState().active);
-    var big: [ime_text_cap + 2]u8 = undefined;
-    for (0..big.len / 3) |i| @memcpy(big[i * 3 ..][0..3], "\u{3042}");
-    h.applyImeEvent(&q, .update, big[0 .. big.len / 3 * 3], 0);
-    try std.testing.expect(h.imeState().text.len <= ime_text_cap and h.imeState().text.len % 3 == 0);
-    const st = q.finish(false, 10, 10);
-    try std.testing.expectEqual(@as(usize, 0), st.chars.len);
-}
-
-test "serializeA11yTree: v2 fields (value, selection, parent, flags, wire roles)" {
-    const testing = std.testing;
-    const nodes = [_]A11yNode{
-        .{ .role = .tablist, .cmd_index = 0, .bounds = .{ .w = 100, .h = 20 }, .label = "Parts" },
-        .{ .role = .tab, .cmd_index = 1, .bounds = .{ .w = 50, .h = 20 }, .label = "A", .selected = true, .parent = 0 },
-        .{ .role = .text_input, .cmd_index = 2, .bounds = .{}, .value = "hello", .sel_start = 1, .sel_end = 3, .focused = true, .disabled = true, .parent = 0 },
-        .{ .role = .treeitem, .cmd_index = 3, .bounds = .{}, .label = "src", .expanded = false, .level = 2, .parent = 0 },
-        .{ .role = .status, .cmd_index = 4, .bounds = .{}, .live = .polite },
-        .{ .role = .overlay, .cmd_index = 5, .bounds = .{}, .modal = true },
-        .{ .role = .overlay, .cmd_index = 6, .bounds = .{} },
-    };
-    const lens = serializeA11yTree(&nodes);
-    try testing.expectEqual(@as(u32, nodes.len * A11Y_RECORD_BYTES), lens.records_len);
-    const r: [*]const A11yRecord = @ptrCast(&g_a11y_records);
-    try testing.expectEqual(@as(u32, 18), r[0].role); // tablist
-    try testing.expectEqual(@as(u32, 0xFFFFFFFF), r[0].parent);
-    try testing.expectEqual(@as(u32, 19), r[1].role); // tab
-    try testing.expect(r[1].flags & A11Y_FLAG_SELECTED != 0);
-    try testing.expectEqual(@as(u32, 0), r[1].parent);
-    try testing.expectEqual(@as(u32, 5), r[2].role); // textbox
-    try testing.expectEqualStrings("hello", g_a11y_strings[r[2].value_offset..][0..r[2].value_len]);
-    try testing.expectEqual(@as(u32, 1), r[2].sel_start);
-    try testing.expectEqual(@as(u32, 3), r[2].sel_end);
-    try testing.expect(r[2].flags & (A11Y_FLAG_FOCUSED | A11Y_FLAG_DISABLED) == (A11Y_FLAG_FOCUSED | A11Y_FLAG_DISABLED));
-    try testing.expectEqual(@as(u32, 21), r[3].role); // treeitem
-    try testing.expect(r[3].flags & A11Y_FLAG_EXPANDABLE != 0 and r[3].flags & A11Y_FLAG_EXPANDED == 0);
-    try testing.expectEqual(@as(u32, 2), r[3].level);
-    try testing.expect(r[4].flags & A11Y_FLAG_LIVE_POLITE != 0);
-    try testing.expectEqual(@as(u32, 11), r[5].role); // modal overlay -> dialog
-    try testing.expect(r[5].flags & A11Y_FLAG_MODAL != 0);
-    try testing.expectEqual(@as(u32, 1), r[6].role); // plain overlay -> region
-}
-
-test "decodeA11yActions: maps wire records, rejects bad kinds and out-of-range text" {
-    const testing = std.testing;
-    @memcpy(g_a11y_action_text[0..5], "hello");
-    g_a11y_action_recs[0] = .{ .kind = 0, .cmd_index = 3, .str_off = 0, .str_len = 0 }; // activate
-    g_a11y_action_recs[1] = .{ .kind = 2, .cmd_index = 4, .str_off = 0, .str_len = 5 }; // set_value
-    g_a11y_action_recs[2] = .{ .kind = 99, .cmd_index = 5, .str_off = 0, .str_len = 0 }; // bad kind
-    g_a11y_action_recs[3] = .{ .kind = 2, .cmd_index = 6, .str_off = 2040, .str_len = 100 }; // out of range
-    var out: [8]teak.A11yAction = undefined;
-    const n = decodeA11yActions(4, &out);
-    try testing.expectEqual(@as(usize, 2), n);
-    try testing.expectEqual(teak.A11yActionKind.activate, out[0].kind);
-    try testing.expectEqual(@as(u32, 3), out[0].cmd_index);
-    try testing.expectEqual(teak.A11yActionKind.set_value, out[1].kind);
-    try testing.expectEqualStrings("hello", out[1].text);
-}

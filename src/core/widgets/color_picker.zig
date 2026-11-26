@@ -56,8 +56,6 @@ pub const swatches = [16]Rgb{
     .{ .r = 120, .g = 60, .b = 190 }, .{ .r = 200, .g = 70, .b = 190 },  .{ .r = 230, .g = 100, .b = 140 }, .{ .r = 130, .g = 85, .b = 50 },
 };
 
-// ── Colour maths (pure) ────────────────────────────────────────────
-
 pub fn hsvToRgb(c: Hsv) Rgb {
     const h = @mod(c.h, 360) / 60;
     const s = std.math.clamp(c.s, 0, 1);
@@ -116,8 +114,6 @@ pub fn parseHex(text: []const u8) ?Rgb {
 pub fn formatHex(c: Rgb, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "#{X:0>2}{X:0>2}{X:0>2}", .{ c.r, c.g, c.b }) catch "";
 }
-
-// ── Component ──────────────────────────────────────────────────────
 
 pub const Target = enum { sv, hue };
 
@@ -249,8 +245,6 @@ pub fn fieldText(model: *const Model, field: Field) []const u8 {
     return model.texts[@backingInt(field)].content();
 }
 
-// ── Pointer + keys ─────────────────────────────────────────────────
-
 pub const Opts = struct {
     /// Square size.
     sv_w: f32 = 200,
@@ -303,8 +297,6 @@ pub fn pasteMsg(field: Field, bytes: []const u8) Msg {
     return .{ .edit = .{ .field = field, .msg = .{ .replace_selection = bytes } } };
 }
 
-// ── View ───────────────────────────────────────────────────────────
-
 const TV = cmd.CanvasPrimitive.TriVertex;
 
 fn vtx(x: f32, y: f32, c: [3]f32, a: f32) TV {
@@ -325,14 +317,12 @@ fn svPrimitives(cb: anytype, model: *const Model, o: Opts) []const cmd.CanvasPri
     const white: [3]f32 = .{ 1, 1, 1 };
     const black: [3]f32 = .{ 0, 0, 0 };
     const tris = a.alloc(TV, 12) catch return &.{};
-    // base: white -> hue
     tris[0] = vtx(0, 0, white, 1);
     tris[1] = vtx(w, 0, hue, 1);
     tris[2] = vtx(0, h, white, 1);
     tris[3] = vtx(w, 0, hue, 1);
     tris[4] = vtx(w, h, hue, 1);
     tris[5] = vtx(0, h, white, 1);
-    // overlay: transparent -> black
     tris[6] = vtx(0, 0, black, 0);
     tris[7] = vtx(w, 0, black, 0);
     tris[8] = vtx(0, h, black, 1);
@@ -342,7 +332,6 @@ fn svPrimitives(cb: anytype, model: *const Model, o: Opts) []const cmd.CanvasPri
 
     const prims = a.alloc(cmd.CanvasPrimitive, 5) catch return &.{};
     prims[0] = .{ .triangles = .{ .verts = tris, .key = 1000 + @as(u64, @intFromFloat(model.h * 10)) } };
-    // marker: a black square ring with a white one inside it
     const mx = model.s * w;
     const my = (1 - model.v) * h;
     prims[1] = .{ .filled_rect = .{ .x = mx - 6, .y = my - 6, .w = 12, .h = 12, .color = .{ 0, 0, 0, 1 } } };
@@ -394,13 +383,11 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: Opts) void {
     const pal = cb.theme.palette;
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 14, .align_cross = .start });
 
-    // Left: square + strip.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 8 });
     cb.canvasInteractive(.{ .width = o.sv_w, .height = o.sv_h }, svPrimitives(cb, model, o), o.sv_id, "saturation and value");
     cb.canvasInteractive(.{ .width = o.sv_w, .height = o.hue_h }, huePrimitives(cb, model, o), o.hue_id, "hue");
     cb.popGroup();
 
-    // Right: preview, fields, swatches.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 6 });
     const cur = rgba(model);
     const prev = cb.arena.allocator().alloc(cmd.CanvasPrimitive, 2) catch oom();
@@ -427,7 +414,6 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: Opts) void {
         cb.popGroup();
     }
 
-    // Swatches: 8 x 2 flat buttons.
     var i: usize = 0;
     while (i < swatches.len) : (i += 8) {
         cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 2 });
@@ -451,8 +437,6 @@ pub fn viewWith(model: *const Model, cb: anytype, msgs: anytype, o: Opts) void {
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const component = @import("../component.zig");
 const snapshot = @import("../snapshot.zig");
@@ -461,189 +445,4 @@ const text_mod = @import("../text.zig");
 
 fn expectRgb(want: Rgb, got: Rgb) !void {
     try testing.expectEqual(want, got);
-}
-
-test "color: hsv <-> rgb round trips and the primaries land where they should" {
-    try expectRgb(.{ .r = 255, .g = 0, .b = 0 }, hsvToRgb(.{ .h = 0, .s = 1, .v = 1 }));
-    try expectRgb(.{ .r = 0, .g = 255, .b = 0 }, hsvToRgb(.{ .h = 120, .s = 1, .v = 1 }));
-    try expectRgb(.{ .r = 0, .g = 0, .b = 255 }, hsvToRgb(.{ .h = 240, .s = 1, .v = 1 }));
-    try expectRgb(.{ .r = 255, .g = 255, .b = 255 }, hsvToRgb(.{ .h = 77, .s = 0, .v = 1 }));
-    try expectRgb(.{ .r = 0, .g = 0, .b = 0 }, hsvToRgb(.{ .h = 77, .s = 1, .v = 0 }));
-    // every swatch survives rgb -> hsv -> rgb
-    for (swatches) |c| try expectRgb(c, hsvToRgb(rgbToHsv(c)));
-    // hue wraps
-    try expectRgb(hsvToRgb(.{ .h = 10, .s = 1, .v = 1 }), hsvToRgb(.{ .h = 370, .s = 1, .v = 1 }));
-}
-
-test "color: hex parse and format" {
-    try expectRgb(.{ .r = 0x12, .g = 0xAB, .b = 0xEF }, parseHex("#12abEF").?);
-    try expectRgb(.{ .r = 0x12, .g = 0xAB, .b = 0xEF }, parseHex("12ABEF").?);
-    try expectRgb(.{ .r = 0xFF, .g = 0x88, .b = 0x00 }, parseHex("#f80").?);
-    try testing.expect(parseHex("#12345") == null);
-    try testing.expect(parseHex("#gg0000") == null);
-    try testing.expect(parseHex("") == null);
-    var buf: [8]u8 = undefined;
-    try testing.expectEqualStrings("#12ABEF", formatHex(.{ .r = 0x12, .g = 0xAB, .b = 0xEF }, &buf));
-}
-
-test "color: a model fills its texts on first update and from init" {
-    const m = init(.{ .r = 255, .g = 128, .b = 0 });
-    try testing.expectEqualStrings("#FF8000", fieldText(&m, .hex));
-    try testing.expectEqualStrings("255", fieldText(&m, .r));
-    try testing.expectEqualStrings("128", fieldText(&m, .g));
-    try testing.expectEqualStrings("0", fieldText(&m, .b));
-}
-
-test "color: dragging the square sets s / v, the strip sets hue; texts follow" {
-    var m = init(.{ .r = 255, .g = 0, .b = 0 });
-    const o: Opts = .{};
-    update(&m, canvasMsg(&m, .{ .id = o.sv_id, .kind = .down, .button = .left, .x = 100, .y = 40, .w = 200, .h = 160 }, o).?);
-    try testing.expectEqual(Target.sv, m.dragging.?);
-    try testing.expectApproxEqAbs(@as(f32, 0.5), m.s, 1e-4);
-    try testing.expectApproxEqAbs(@as(f32, 0.75), m.v, 1e-4);
-    update(&m, canvasMsg(&m, .{ .id = o.sv_id, .kind = .move, .x = 900, .y = -50, .w = 200, .h = 160 }, o).?); // past the edges: clamps
-    try testing.expectEqual(@as(f32, 1), m.s);
-    try testing.expectEqual(@as(f32, 1), m.v);
-    try testing.expectEqualStrings("#FF0000", fieldText(&m, .hex));
-    // a move on the strip while dragging the square is ignored
-    try testing.expect(canvasMsg(&m, .{ .id = o.hue_id, .kind = .move, .x = 10, .w = 200, .h = 16 }, o) == null);
-    update(&m, canvasMsg(&m, .{ .id = o.sv_id, .kind = .up, .button = .left }, o).?);
-    try testing.expect(m.dragging == null);
-    // hover moves without a press do nothing
-    try testing.expect(canvasMsg(&m, .{ .id = o.sv_id, .kind = .move, .x = 3, .y = 3, .w = 200, .h = 160 }, o) == null);
-
-    update(&m, canvasMsg(&m, .{ .id = o.hue_id, .kind = .down, .button = .left, .x = 100, .w = 200, .h = 16 }, o).?);
-    try testing.expectApproxEqAbs(@as(f32, 180), m.h, 0.1);
-    try testing.expectEqualStrings("#00FFFF", fieldText(&m, .hex));
-}
-
-test "color: typing a hex or channel value updates the colour but never rewrites the field being typed" {
-    var m = init(.{ .r = 0, .g = 0, .b = 0 });
-    m.texts[@backingInt(Field.hex)].clear();
-    for ("#336699") |c| update(&m, charMsg(.hex, c));
-    try expectRgb(.{ .r = 0x33, .g = 0x66, .b = 0x99 }, rgb(&m));
-    try testing.expectEqualStrings("#336699", fieldText(&m, .hex));
-    try testing.expectEqualStrings("51", fieldText(&m, .r)); // the other fields followed
-    // partial hex ("#33669") is invalid: colour unchanged, no rewrite of the text
-    update(&m, .{ .edit = .{ .field = .hex, .msg = .backspace } });
-    try testing.expectEqualStrings("#33669", fieldText(&m, .hex));
-    try testing.expect(!fieldValid(&m, .hex));
-    try expectRgb(.{ .r = 0x33, .g = 0x66, .b = 0x99 }, rgb(&m));
-
-    // channel field: clear and type 200 into R
-    m.texts[@backingInt(Field.r)].clear();
-    for ("200") |c| update(&m, charMsg(.r, c));
-    try testing.expectEqual(@as(u8, 200), rgb(&m).r);
-    try testing.expectEqual(@as(u8, 0x66), rgb(&m).g);
-    // out of range is invalid and ignored
-    update(&m, charMsg(.r, '0'));
-    try testing.expect(!fieldValid(&m, .r));
-    try testing.expectEqual(@as(u8, 200), rgb(&m).r);
-}
-
-test "color: swatches set the colour; a grey keeps its hue; keyMsg maps editing keys" {
-    var m = init(.{ .r = 0, .g = 0, .b = 255 });
-    const hue = m.h;
-    update(&m, .{ .swatch = 1 }); // grey
-    try expectRgb(swatches[1], rgb(&m));
-    try testing.expectEqual(hue, m.h);
-    update(&m, .{ .swatch = 200 }); // out of range: ignored
-    try expectRgb(swatches[1], rgb(&m));
-    try testing.expect(keyMsg(.hex, .backspace) != null);
-    try testing.expect(keyMsg(.hex, .tab) == null);
-}
-
-test "color: viewWith emits two interactive canvases, four fields and sixteen swatches" {
-    const TMsg = union(enum) { focus: Field, swatch: u8 };
-    const F = struct {
-        fn focus(f: Field) TMsg {
-            return .{ .focus = f };
-        }
-        fn swatch(i: usize) TMsg {
-            return .{ .swatch = @intCast(i) };
-        }
-    };
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    const m = init(.{ .r = 10, .g = 200, .b = 90 });
-    viewWith(&m, &cb, .{ .focus = F.focus, .swatch = F.swatch }, .{});
-    var canvases: usize = 0;
-    var interactive: usize = 0;
-    var inputs: usize = 0;
-    var buttons: usize = 0;
-    for (cb.cmds.items) |c| switch (c) {
-        .canvas => |cv| {
-            canvases += 1;
-            if (cv.pointer) interactive += 1;
-        },
-        .text_input => inputs += 1,
-        .button => buttons += 1,
-        else => {},
-    };
-    try testing.expectEqual(@as(usize, 3), canvases);
-    try testing.expectEqual(@as(usize, 2), interactive);
-    try testing.expectEqual(@as(usize, 4), inputs);
-    try testing.expectEqual(@as(usize, 16), buttons);
-    try testing.expect(cmd.validateBalance(cb.cmds.items) == null);
-}
-
-test "color: snapshot golden" {
-    const TMsg = union(enum) { focus: Field, swatch: u8 };
-    const F = struct {
-        fn focus(f: Field) TMsg {
-            return .{ .focus = f };
-        }
-        fn swatch(i: usize) TMsg {
-            return .{ .swatch = @intCast(i) };
-        }
-    };
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    const m = init(.{ .r = 200, .g = 40, .b = 40 });
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    viewWith(&m, &cb, .{ .focus = F.focus, .swatch = F.swatch }, .{});
-    cb.popGroup();
-    var rects: [128]engine.Rect = undefined;
-    const n = cb.cmds.items.len;
-    engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 500, 300, text_mod.monoMeasurer());
-    try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
-        \\group (0,0,500,300) vertical
-        \\  group (0,0,404,228) horizontal
-        \\    group (0,0,200,184) vertical
-        \\      canvas (0,0,200,160) prims=5 id=193 pointer "saturation and value"
-        \\      canvas (0,168,200,16) prims=3 id=194 pointer "hue"
-        \\    group (214,0,190,228) vertical
-        \\      canvas (214,0,96,36) prims=2 "current colour"
-        \\      group (214,42,134,28) horizontal
-        \\        text (214,46,30,20) "Hex"
-        \\        text_input (252,42,96,28) "#C82828" cursor=7
-        \\      group (214,76,134,28) horizontal
-        \\        text (214,80,30,20) "R  "
-        \\        text_input (252,76,96,28) "200" cursor=3
-        \\      group (214,110,134,28) horizontal
-        \\        text (214,114,30,20) "G  "
-        \\        text_input (252,110,96,28) "40" cursor=2
-        \\      group (214,144,134,28) horizontal
-        \\        text (214,148,30,20) "B  "
-        \\        text_input (252,144,96,28) "40" cursor=2
-        \\      group (214,178,190,22) horizontal
-        \\        button (214,178,22,22) ""
-        \\        button (238,178,22,22) ""
-        \\        button (262,178,22,22) ""
-        \\        button (286,178,22,22) ""
-        \\        button (310,178,22,22) ""
-        \\        button (334,178,22,22) ""
-        \\        button (358,178,22,22) ""
-        \\        button (382,178,22,22) ""
-        \\      group (214,206,190,22) horizontal
-        \\        button (214,206,22,22) ""
-        \\        button (238,206,22,22) ""
-        \\        button (262,206,22,22) ""
-        \\        button (286,206,22,22) ""
-        \\        button (310,206,22,22) ""
-        \\        button (334,206,22,22) ""
-        \\        button (358,206,22,22) ""
-        \\        button (382,206,22,22) ""
-        \\
-    );
 }

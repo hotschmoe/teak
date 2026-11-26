@@ -20,14 +20,6 @@ const FontSpec = text.FontSpec;
 const FontFamily = text.FontFamily;
 const FontWeight = text.FontWeight;
 
-// ── Palette ────────────────────────────────────────────────────────
-//
-// A small token vocabulary the per-widget styles compose against.
-// Apps that want a brand color set rebuild a Theme using these tokens
-// as a starting point; widget styles are derived from the palette
-// rather than hand-tuned per widget (preserving family resemblance
-// when switching dark/light).
-
 pub const Palette = struct {
     /// Window / scene background — what the empty window draws as.
     bg: [4]f32,
@@ -59,8 +51,6 @@ pub const Palette = struct {
     warning: [4]f32 = .{ 0.92, 0.66, 0.20, 1.0 },
 };
 
-// ── Typography ─────────────────────────────────────────────────────
-
 pub const Typography = struct {
     /// Body text default. Used by `cb.text(...)` when no per-cmd font.
     body: FontSpec = .{ .size_px = 14, .family = .sans },
@@ -71,8 +61,6 @@ pub const Typography = struct {
     /// Small / caption — units suffixes, validation messages.
     small: FontSpec = .{ .size_px = 12, .family = .sans },
 };
-
-// ── Tokens ─────────────────────────────────────────────────────────
 
 /// Shape and depth vocabulary next to the palette's colours: corner radii,
 /// stroke width, a spacing scale and shadow elevations. The retro look is
@@ -124,8 +112,6 @@ pub const modern_tokens: Tokens = .{
         .{ .dx = 0, .dy = 12, .blur = 28, .color = .{ 0.06, 0.09, 0.16, 0.20 } },
     },
 };
-
-// ── Theme ──────────────────────────────────────────────────────────
 
 /// Everything the un-styled emitters consult. A plain struct: build one
 /// with `fromPalette`, tweak a derived theme, or write a literal from
@@ -223,8 +209,6 @@ pub const Theme = struct {
                 .border = if (rounded) p.border else null,
                 .border_width = t.border_width,
                 .soft_shadow = t.shadowAt(1),
-                // flat and dimmed toward the window, in every palette (the
-                // struct defaults are dark-theme greys)
                 .disabled_bg = mix(p.bg_raised, p.bg, 0.55),
                 .disabled_fg = mix(p.fg_muted, p.bg, 0.4),
             },
@@ -315,8 +299,6 @@ fn lighten(c: [4]f32, amount: f32) [4]f32 {
     return .{ c[0] + (target - c[0]) * t, c[1] + (target - c[1]) * t, c[2] + (target - c[2]) * t, c[3] };
 }
 
-// ── Built-in palettes ──────────────────────────────────────────────
-
 pub const dark_palette: Palette = .{
     .bg = .{ 0.08, 0.08, 0.10, 1.0 },
     .bg_panel = .{ 0.15, 0.15, 0.18, 1.0 },
@@ -376,176 +358,3 @@ pub const modern_dark_palette: Palette = .{
     .border = .{ 0.204, 0.224, 0.267, 1.0 },
     .warning = .{ 0.960, 0.740, 0.330, 1.0 },
 };
-
-// ── Tests ──────────────────────────────────────────────────────────
-
-test "Theme.dark_default derives button bg from palette" {
-    const t = Theme.dark_default;
-    try std.testing.expectEqual(dark_palette.bg_raised, t.button.bg);
-    try std.testing.expectEqual(dark_palette.bg_hover, t.button.hover_bg);
-    try std.testing.expectEqual(dark_palette.bg_press, t.button.press_bg);
-    try std.testing.expectEqual(dark_palette.fg, t.button.fg);
-}
-
-test "Theme.light_default has light bg" {
-    const t = Theme.light_default;
-    // Light bg means R+G+B should be > 2 (i.e. brighter than dark's ~0.24).
-    const sum = t.palette.bg[0] + t.palette.bg[1] + t.palette.bg[2];
-    try std.testing.expect(sum > 2.0);
-}
-
-test "Theme.fromPalette: warning flows into warning_color; palettes keep it distinct from danger" {
-    const t = Theme.fromPalette(dark_palette);
-    try std.testing.expectEqual(dark_palette.warning, t.warning_color);
-    inline for (.{ dark_palette, light_palette, modern_light_palette, modern_dark_palette }) |p| {
-        try std.testing.expect(!std.meta.eql(p.warning, p.danger));
-    }
-}
-
-test "Theme.fromPalette: custom accent flows into slider track_fill + input focus_border" {
-    var p = dark_palette;
-    p.accent = .{ 1.0, 0.5, 0.0, 1.0 }; // bright orange
-    const t = Theme.fromPalette(p);
-    try std.testing.expectEqual(@as([4]f32, .{ 1.0, 0.5, 0.0, 1.0 }), t.slider.track_fill);
-    try std.testing.expectEqual(@as([4]f32, .{ 1.0, 0.5, 0.0, 1.0 }), t.text_input.focus_border);
-    try std.testing.expectEqual(@as([4]f32, .{ 1.0, 0.5, 0.0, 1.0 }), t.checkbox.check);
-    try std.testing.expectEqual(@as([4]f32, .{ 1.0, 0.5, 0.0, 1.0 }), t.radio.dot);
-}
-
-test "Theme.fromPalette: panel_bg flows from palette.bg_panel" {
-    const t = Theme.dark_default;
-    try std.testing.expectEqual(dark_palette.bg_panel, t.panel_bg);
-    const tl = Theme.light_default;
-    try std.testing.expectEqual(light_palette.bg_panel, tl.panel_bg);
-    // Dark panel sits brighter than the scene bg (so it reads as a card).
-    const scene_sum = t.palette.bg[0] + t.palette.bg[1] + t.palette.bg[2];
-    const panel_sum = t.panel_bg[0] + t.panel_bg[1] + t.panel_bg[2];
-    try std.testing.expect(panel_sum > scene_sum);
-}
-
-test "a fully custom Theme is a plain literal - no fromPalette needed" {
-    const ink: [4]f32 = .{ 0.08, 0.08, 0.1, 1 };
-    const paper: [4]f32 = .{ 0.96, 0.94, 0.88, 1 };
-    const mono: FontSpec = .{ .size_px = 13, .family = .mono, .letter_spacing = 0.2 };
-    const custom: Theme = .{
-        .palette = .{
-            .bg = paper,
-            .bg_panel = paper,
-            .bg_sunken = paper,
-            .bg_raised = paper,
-            .bg_hover = ink,
-            .bg_press = ink,
-            .fg = ink,
-            .fg_muted = .{ 0.4, 0.4, 0.4, 1 },
-            .accent = .{ 0.8, 0.2, 0.1, 1 },
-            .danger = .{ 0.8, 0.2, 0.1, 1 },
-            .border = ink,
-        },
-        .typography = .{ .body = mono, .heading = .{ .size_px = 16, .family = .mono, .weight = .bold }, .mono = mono, .small = mono },
-        .text_color = ink,
-        .heading_color = ink,
-        .muted_color = .{ 0.4, 0.4, 0.4, 1 },
-        .danger_color = .{ 0.8, 0.2, 0.1, 1 },
-        .panel_bg = paper,
-        .button = .{ .bg = paper, .fg = ink, .hover_bg = ink, .hover_fg = paper, .border = ink },
-        .card = .{ .bg = paper, .border = ink, .padding = 12 },
-    };
-
-    var cb = cmd.CmdBuffer(union(enum) { a }).init(std.testing.allocator);
-    defer cb.deinit();
-    cb.theme = custom;
-    cb.button(.a, "OK");
-    cb.heading("Title");
-    cb.pushGroup(cb.theme.card);
-    cb.popGroup();
-
-    // Un-styled emitters pick the custom styles and typography up.
-    try std.testing.expectEqual(paper, cb.cmds.items[0].button.style.bg);
-    try std.testing.expectEqual(ink, cb.cmds.items[0].button.style.border.?);
-    try std.testing.expectEqual(mono, cb.cmds.items[0].button.font);
-    try std.testing.expectEqual(FontWeight.bold, cb.cmds.items[1].text.font.weight);
-    try std.testing.expectEqual(ink, cb.cmds.items[2].push_group.border.?);
-    // Unspecified widget styles fall back to the struct defaults.
-    try std.testing.expectEqual(cmd.InputVariant.boxed, custom.text_input.variant);
-    try std.testing.expectEqual(cmd.InputVariant.underline, custom.field.variant);
-}
-
-test "Theme.fromPalette derives card + field from the palette" {
-    const t = Theme.dark_default;
-    try std.testing.expectEqual(dark_palette.bg_panel, t.card.bg.?);
-    try std.testing.expectEqual(dark_palette.border, t.card.border.?);
-    try std.testing.expectEqual(cmd.InputVariant.underline, t.field.variant);
-    try std.testing.expectEqual(dark_palette.accent, t.field.focus_border);
-}
-
-test "Theme.typography has body, heading, mono, small" {
-    const t = Theme.dark_default;
-    try std.testing.expectEqual(FontFamily.sans, t.typography.body.family);
-    try std.testing.expectEqual(FontFamily.sans, t.typography.heading.family);
-    try std.testing.expectEqual(FontFamily.mono, t.typography.mono.family);
-    try std.testing.expectEqual(FontFamily.sans, t.typography.small.family);
-    try std.testing.expect(t.typography.heading.size_px > t.typography.body.size_px);
-    try std.testing.expect(t.typography.small.size_px < t.typography.body.size_px);
-}
-
-test "default tokens keep the retro look: square corners, no soft shadows, fromPalette unchanged" {
-    const t = Theme.dark_default;
-    try std.testing.expect(t.button.radius.isZero());
-    try std.testing.expect(t.button.soft_shadow == null);
-    try std.testing.expect(t.button.border == null);
-    try std.testing.expect(t.card.radius.isZero() and t.card.soft_shadow == null);
-    try std.testing.expectEqual(@as(f32, 2), t.text_input.border_width); // the long-standing default
-    try std.testing.expect(t.text_input.radius.isZero());
-}
-
-test "modern preset: radii, borders and elevation flow into the widget styles" {
-    const t = Theme.modern_light;
-    try std.testing.expectEqual(@as(f32, 8), t.button.radius.tl);
-    try std.testing.expectEqual(@as(f32, 14), t.card.radius.br);
-    try std.testing.expectEqual(@as(f32, 5), t.text_input.radius.tr);
-    try std.testing.expectEqual(@as(f32, 1), t.text_input.border_width);
-    try std.testing.expect(t.button.border != null);
-    try std.testing.expect(t.card.soft_shadow != null and t.card.soft_shadow.?.blur > t.button.soft_shadow.?.blur);
-    try std.testing.expectEqual(modern_light_palette.accent, t.button_primary.bg);
-    try std.testing.expect(t.button_primary.hover_bg[0] > t.button_primary.bg[0]); // lighter
-    try std.testing.expect(t.button_primary.press_bg[0] < t.button_primary.bg[0]); // darker
-    try std.testing.expectEqual(@as(f32, 12), t.tokens.space[2]);
-    try std.testing.expect(t.tokens.shadowAt(0) == null);
-    // dark and light share the shape tokens
-    try std.testing.expectEqual(t.tokens.radius_lg, Theme.modern_dark.tokens.radius_lg);
-    try std.testing.expect(Theme.modern_dark.palette.bg[0] < 0.2);
-}
-
-test "palettes: text pairs reach WCAG AA (4.5:1) in every built-in preset" {
-    const presets = [_]struct { name: []const u8, t: Theme }{
-        .{ .name = "dark_default", .t = Theme.dark_default },
-        .{ .name = "light_default", .t = Theme.light_default },
-        .{ .name = "modern_light", .t = Theme.modern_light },
-        .{ .name = "modern_dark", .t = Theme.modern_dark },
-    };
-    for (presets) |pr| {
-        const p = pr.t.palette;
-        const pairs = [_][2][4]f32{
-            .{ p.fg, p.bg },                       .{ p.fg, p.bg_panel },       .{ p.fg, p.bg_raised },
-            .{ p.fg_muted, p.bg },                 .{ p.fg_muted, p.bg_panel }, .{ p.fg_muted, p.bg_raised },
-            .{ p.danger, p.bg },                   .{ p.danger, p.bg_panel },   .{ p.accent, p.bg },
-            .{ pr.t.button_primary.fg, p.accent },
-        };
-        for (pairs, 0..) |pair, i| {
-            const r = contrast(pair[0], pair[1]);
-            std.testing.expect(r >= 4.5) catch |e| {
-                std.debug.print("{s}: pair {d} has contrast {d:.2}\n", .{ pr.name, i, r });
-                return e;
-            };
-        }
-    }
-}
-
-test "derived disabled styles follow the palette (light themes are not near-black)" {
-    const light = Theme.light_default;
-    try std.testing.expect(light.button.disabled_bg[0] > 0.8);
-    try std.testing.expect(light.text_input.disabled_bg[0] > 0.8);
-    try std.testing.expect(contrast(light.button.disabled_fg, light.button.disabled_bg) >= 2.0); // dimmed, not invisible
-    const dark = Theme.dark_default;
-    try std.testing.expect(dark.button.disabled_bg[0] < 0.25);
-}

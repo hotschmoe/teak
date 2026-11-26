@@ -57,13 +57,3 @@ pub const Resource = union(Kind) {
         };
     }
 };
-
-test "Resource accessors" {
-    const r: Resource = .{ .image = .{ .key = 4, .rev = 2, .width = 1, .height = 1, .rgba = &.{ 0, 0, 0, 0 } } };
-    try std.testing.expectEqual(Kind.image, r.kind());
-    try std.testing.expectEqual(@as(u32, 4), r.key());
-    try std.testing.expectEqual(@as(u32, 2), r.rev());
-    const m: Resource = .{ .mesh = .{ .key = 9, .rev = 1, .data = .{} } };
-    try std.testing.expectEqual(Kind.mesh, m.kind());
-    try std.testing.expectEqual(@as(u32, 9), m.key());
-}

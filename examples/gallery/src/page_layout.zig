@@ -52,7 +52,6 @@ fn propertyPanel(m: *const Model, cb: anytype) void {
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 14, .align_cross = .start });
 
-    // Column 1: tabs + progress.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 400, .align_cross = .stretch });
     ui.card(cb, "Tabs", 0, 0);
     model.Tabs.viewWith(&m.tabs, cb, &tab_labels, .{ .selectMsg = tabSelect }, .{ .min_width = 96, .height = 28 });
@@ -91,7 +90,6 @@ pub fn view(m: *const Model, cb: anytype) void {
     ui.endCard(cb);
     cb.popGroup();
 
-    // Column 2: split pane.
     cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 14, .width = 560, .align_cross = .stretch });
     ui.card(cb, "Split pane (drag the divider)", 0, 0);
     W.split.begin(&m.split, cb, split_opts);

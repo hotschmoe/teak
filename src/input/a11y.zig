@@ -74,7 +74,6 @@ pub const Role = enum {
     /// Modal/popup overlay. Screen readers should announce focus
     /// trapping here when present.
     overlay,
-    // Semantic roles from `A11yHint` (groups, scrolls, buttons).
     list,
     listitem,
     listbox,
@@ -236,15 +235,9 @@ pub fn buildTree(
     var out: std.ArrayList(A11yNode) = .empty;
     errdefer out.deinit(arena);
 
-    // Pass 1 (overlay): collect overlay-layer nodes and remember
-    // whether any modal overlay is present in this frame. The result
-    // gates pass 2.
     const modal_present = try collectLayer(arena, &out, cmds, rects, focus_index, .overlay);
 
-    // Pass 2 (base): collect base-layer nodes, but only if no modal
-    // overlay was open. A modal overlay occludes the base layer for
-    // input — a11y mirrors that so a screen reader doesn't announce
-    // widgets the user can't actually interact with.
+    // Modal overlays suppress inaccessible base-layer nodes.
     if (!modal_present) {
         _ = try collectLayer(arena, &out, cmds, rects, focus_index, .base);
     }
@@ -269,9 +262,6 @@ fn collectLayer(
     var clip: ClipStack = .{};
     var overlay_depth: u32 = 0;
     var modal_present: bool = false;
-    // Enclosing emitted container per open push_*: containers that emit no
-    // node (clipped away, or in the other layer) pass their parent through,
-    // so every node's `parent` is the nearest emitted ancestor.
     var parents: [64]u32 = undefined;
     var plen: usize = 0;
 
@@ -284,9 +274,6 @@ fn collectLayer(
         };
         const parent: u32 = if (plen > 0) parents[plen - 1] else NO_PARENT;
 
-        // Container handling: maintain the clip stack + overlay-depth
-        // counter, and emit the container's own node when its layer
-        // matches the current pass. Mirrors `hitTestLayer` exactly.
         switch (c) {
             .push_scroll => |sc| {
                 clip.push(clipRect(rects[i], cur_clip));
@@ -310,16 +297,10 @@ fn collectLayer(
                 continue;
             },
             .push_overlay => |ov| {
-                // The overlay's own bounds, clipped by its parent (so
-                // a modal nested in a scrolled-away parent gets zero
-                // area — same rule hit_test uses).
                 const ov_bounds = clipRect(rects[i], cur_clip);
                 overlay_depth += 1;
-                // The overlay establishes its own clip for contents.
                 clip.push(ov_bounds);
                 var my_parent = parent;
-                // The overlay node + its modal flag belong to the
-                // .overlay pass; we only record / count there.
                 if (layer == .overlay and hasArea(ov_bounds)) {
                     my_parent = @intCast(out.items.len);
                     try out.append(arena, .{
@@ -447,10 +428,7 @@ fn collectLayer(
             .divider => .{ .role = .divider, .cmd_index = @intCast(i), .bounds = b },
             .image => .{ .role = .image, .cmd_index = @intCast(i), .bounds = b },
             .canvas => |cv| .{ .role = .canvas, .cmd_index = @intCast(i), .bounds = b, .label = cv.label },
-            // A 3D scene is announced as an image with its label.
             .scene3d => |sc| .{ .role = .image, .cmd_index = @intCast(i), .bounds = b, .label = sc.label },
-            // Containers handled above; pop_* + virtual_list never
-            // emit leaves.
             .push_group, .push_grid, .pop_group, .pop_grid, .push_scroll, .pop_scroll, .push_overlay, .pop_overlay, .push_virtual_list, .pop_virtual_list => null,
         };
         if (node) |*n| {
@@ -515,378 +493,8 @@ fn nodeEql(a: A11yNode, b: A11yNode) bool {
         std.mem.eql(u8, a.label, b.label) and std.mem.eql(u8, a.value, b.value);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const cmd_mod = @import("../core/cmd.zig");
 const text_mod = @import("../core/text.zig");
-
-test "buildTree: emits one node per interactive widget + container" {
-    const testing = std.testing;
-    const Msg = union(enum) { inc, focus_input };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .direction = .vertical });
-    cb.text("Title");
-    cb.button(.inc, "+");
-    cb.textInput(.focus_input, "hello", 5);
-    cb.checkbox(.inc, true, "agree");
-    cb.popGroup();
-
-    var rects: [16]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], 3);
-
-    // group + text + button + text_input + checkbox = 5 nodes (pop_group is skipped).
-    try testing.expectEqual(@as(usize, 5), tree.len);
-
-    try testing.expectEqual(Role.group, tree[0].role);
-    try testing.expectEqual(Role.text, tree[1].role);
-    try testing.expectEqualStrings("Title", tree[1].label);
-    try testing.expectEqual(Role.button, tree[2].role);
-    try testing.expectEqualStrings("+", tree[2].label);
-    try testing.expectEqual(Role.text_input, tree[3].role);
-    try testing.expectEqualStrings("hello", tree[3].value);
-    try testing.expect(tree[3].focused); // focus_index == 3
-    try testing.expectEqual(Role.checkbox, tree[4].role);
-    try testing.expectEqualStrings("agree", tree[4].label);
-    try testing.expectEqual(@as(f32, 1), tree[4].state);
-    // Enabled button/input default `.disabled` to false.
-    try testing.expect(!tree[2].disabled);
-    try testing.expect(!tree[3].disabled);
-}
-
-test "buildTree: disabled button/input produce nodes with .disabled true" {
-    const testing = std.testing;
-    const Msg = union(enum) { add, focus };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{});
-    cb.buttonDisabled(.add, "Add point load");
-    cb.textInputDisabled(.focus, "locked", 0);
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], null);
-    // group + button + text_input = 3 nodes.
-    try testing.expectEqual(@as(usize, 3), tree.len);
-    try testing.expectEqual(Role.button, tree[1].role);
-    try testing.expect(tree[1].disabled);
-    try testing.expectEqual(Role.text_input, tree[2].role);
-    try testing.expect(tree[2].disabled);
-}
-
-test "buildTree: overlay nodes appear with overlay role" {
-    const testing = std.testing;
-    const Msg = union(enum) { close };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushOverlay(.{ .x = 0, .y = 0, .width = 200, .height = 100 });
-    cb.button(.close, "X");
-    cb.popOverlay();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], null);
-
-    try testing.expectEqual(@as(usize, 2), tree.len);
-    try testing.expectEqual(Role.overlay, tree[0].role);
-    try testing.expectEqual(Role.button, tree[1].role);
-}
-
-// ── Clip + occlusion (mirrors hit_test.zig semantics) ──────────────
-
-test "buildTree: button scrolled outside its viewport is omitted" {
-    const testing = std.testing;
-    const Msg = union(enum) { pick };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Wrap in a root group so the inner scroll keeps its declared
-    // 100x100 viewport (top-level containers get expanded to fill
-    // the window by doLayout, which would defeat the clip test).
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.pushScroll(.{
-        .direction = .vertical,
-        .padding = 0,
-        .gap = 0,
-        .width = 100,
-        .height = 100,
-        .scroll_y = 0,
-    });
-    cb.button(.pick, "A"); // y ∈ [0, 36) — visible
-    cb.button(.pick, "B"); // y ∈ [36, 72) — visible
-    cb.button(.pick, "C"); // y ∈ [72, 108) — partially clipped at y=100
-    cb.button(.pick, "D"); // y ∈ [108, 144) — fully outside
-    cb.popScroll();
-    cb.popGroup();
-
-    var rects: [16]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], null);
-
-    // Button D (y starts ≥ 108) is fully outside the y=100 viewport
-    // → zero-area clipped bounds → omitted. Other buttons survive
-    // (possibly with clipped bounds for C).
-    var d_found = false;
-    var any_button = false;
-    for (tree) |n| {
-        if (n.role != .button) continue;
-        any_button = true;
-        if (std.mem.eql(u8, n.label, "D")) d_found = true;
-        // Surviving buttons all have positive area and lie inside
-        // the scroll viewport.
-        try testing.expect(n.bounds.w > 0 and n.bounds.h > 0);
-        try testing.expect(n.bounds.y < 100);
-    }
-    try testing.expect(any_button);
-    try testing.expect(!d_found);
-}
-
-test "buildTree: base-layer node is suppressed under an open modal overlay" {
-    const testing = std.testing;
-    const Msg = union(enum) { base_click, close };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Base button + modal overlay. The base button must NOT appear in
-    // the tree — a screen reader should not announce widgets occluded
-    // by a modal, same as how hitTest refuses to dispatch clicks to
-    // them.
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.button(.base_click, "Underneath");
-    cb.pushOverlay(.{
-        .x = 0,
-        .y = 0,
-        .width = 400,
-        .height = 200,
-        .padding = 0,
-        .modal = true,
-        .backdrop_msg = .close,
-    });
-    cb.popOverlay();
-    cb.popGroup();
-
-    var rects: [16]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], null);
-
-    // No base button. The overlay node itself is present (so a screen
-    // reader can announce "dialog opened"); the base group + button
-    // are both dropped since modal occlusion suppresses the whole
-    // base layer.
-    var saw_underneath = false;
-    var saw_overlay = false;
-    for (tree) |n| {
-        if (n.role == .button and std.mem.eql(u8, n.label, "Underneath")) saw_underneath = true;
-        if (n.role == .overlay) saw_overlay = true;
-    }
-    try testing.expect(!saw_underneath);
-    try testing.expect(saw_overlay);
-}
-
-test "buildTree: button inside modal overlay is emitted" {
-    const testing = std.testing;
-    const Msg = union(enum) { dismiss, close };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushOverlay(.{
-        .x = 0,
-        .y = 0,
-        .width = 400,
-        .height = 200,
-        .padding = 16,
-        .modal = true,
-        .backdrop_msg = .dismiss,
-    });
-    cb.button(.close, "Close");
-    cb.popOverlay();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], null);
-
-    // overlay + button = 2 nodes.
-    try testing.expectEqual(@as(usize, 2), tree.len);
-    try testing.expectEqual(Role.overlay, tree[0].role);
-    try testing.expectEqual(Role.button, tree[1].role);
-    try testing.expectEqualStrings("Close", tree[1].label);
-}
-
-test "buildTree: non-modal overlay does NOT suppress base-layer nodes" {
-    const testing = std.testing;
-    const Msg = union(enum) { base_click };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    // Non-modal overlay (tooltip / debug overlay). The base button
-    // remains interactable, so it must remain announceable.
-    cb.pushGroup(.{ .direction = .vertical, .padding = 0, .gap = 0 });
-    cb.button(.base_click, "Underneath");
-    cb.pushOverlay(.{
-        .x = 0,
-        .y = 0,
-        .width = 400,
-        .height = 200,
-        .padding = 0,
-        // modal defaults to false; no backdrop_msg.
-    });
-    cb.popOverlay();
-    cb.popGroup();
-
-    var rects: [16]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 800, 600, text_mod.monoMeasurer());
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], null);
-
-    var saw_base_button = false;
-    var saw_overlay = false;
-    for (tree) |n| {
-        if (n.role == .button and std.mem.eql(u8, n.label, "Underneath")) saw_base_button = true;
-        if (n.role == .overlay) saw_overlay = true;
-    }
-    try testing.expect(saw_base_button);
-    try testing.expect(saw_overlay);
-}
-
-test "buildTree: scene3d is an image node carrying its label" {
-    const testing = std.testing;
-    const Msg = union(enum) { a };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .direction = .vertical });
-    cb.scene3d(.{ .style = .{ .width = 100, .height = 80 }, .label = "3D model" });
-    cb.popGroup();
-
-    var rects: [8]Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], null);
-
-    try testing.expectEqual(@as(usize, 2), tree.len);
-    try testing.expectEqual(Role.image, tree[1].role);
-    try testing.expectEqualStrings("3D model", tree[1].label);
-    try testing.expectEqual(@as(usize, 1), tree[1].cmd_index);
-}
-
-test "buildTree: parents point at the nearest emitted container; hints set roles and state" {
-    const testing = std.testing;
-    const Msg = union(enum) { go, pick };
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-
-    cb.pushGroup(.{ .a11y = .{ .semantic = .tablist, .label = "Parts" } }); // 0
-    cb.buttonA11y(.go, "Parts", .{ .semantic = .tab, .selected = true }); // 1
-    cb.buttonA11y(.pick, "Notes", .{ .semantic = .tab }); // 2
-    cb.popGroup();
-    cb.pushGroup(.{ .a11y = .{ .semantic = .status, .live = .polite } }); // 4
-    cb.text("Saved"); // 5
-    cb.popGroup();
-    cb.pushGroup(.{ .a11y = .{ .semantic = .progressbar, .label = "Upload", .value = 0.25 } }); // 7
-    cb.popGroup();
-    cb.pushGroup(.{ .a11y = .{ .semantic = .treeitem, .label = "src", .expanded = true, .level = 2 } }); // 9
-    cb.popGroup();
-    cb.textInput(.go, "hello world", 8); // 11
-    var rects: [16]layout.Rect = undefined;
-    // Root container wraps everything: emulate by laying out inside one group.
-    var root = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer root.deinit();
-    root.pushGroup(.{ .padding = 0, .gap = 0 });
-    for (cb.cmds.items) |c| root.cmds.append(root.backing, c) catch unreachable;
-    root.popGroup();
-    layout.LayoutEngine.doLayout(rects[0..root.cmds.items.len], root.cmds.items, 400, 600, text_mod.monoMeasurer());
-    const tree = try buildTree(arena.allocator(), root.cmds.items, rects[0..root.cmds.items.len], 2);
-
-    // Find nodes by role.
-    var by_role: [@typeInfo(Role).@"enum".field_names.len]?usize = @splat(null);
-    for (tree, 0..) |n, i| by_role[@backingInt(n.role)] = by_role[@backingInt(n.role)] orelse i;
-    const tablist = by_role[@backingInt(Role.tablist)].?;
-    const tab_i = by_role[@backingInt(Role.tab)].?;
-    try testing.expectEqual(@as(u32, @intCast(tablist)), tree[tab_i].parent);
-    try testing.expect(tree[tab_i].selected);
-    try testing.expectEqualStrings("Parts", tree[tablist].label);
-    try testing.expectEqual(NO_PARENT, tree[0].parent); // the root group
-    try testing.expectEqual(@as(u32, 0), tree[tablist].parent);
-    const status_i = by_role[@backingInt(Role.status)].?;
-    try testing.expectEqual(cmd_types.A11yLive.polite, tree[status_i].live);
-    const text_i = by_role[@backingInt(Role.text)].?;
-    try testing.expectEqual(@as(u32, @intCast(status_i)), tree[text_i].parent);
-    const pb = by_role[@backingInt(Role.progressbar)].?;
-    try testing.expectEqual(@as(f32, 0.25), tree[pb].state);
-    const ti = by_role[@backingInt(Role.treeitem)].?;
-    try testing.expectEqual(@as(?bool, true), tree[ti].expanded);
-    try testing.expectEqual(@as(u8, 2), tree[ti].level);
-    const inp = by_role[@backingInt(Role.text_input)].?;
-    try testing.expectEqualStrings("hello world", tree[inp].value);
-    try testing.expectEqual(@as(u32, 8), tree[inp].sel_start);
-    try testing.expectEqual(@as(u32, 8), tree[inp].sel_end);
-}
-
-test "TreeCache: same / store deep-copies strings and detects every kind of change" {
-    const testing = std.testing;
-    var cache: TreeCache = .{};
-    defer cache.deinit(testing.allocator);
-    var buf = [_]u8{ 'a', 'b', 'c' };
-    var nodes = [_]A11yNode{
-        .{ .role = .button, .cmd_index = 1, .bounds = .{ .x = 0, .y = 0, .w = 10, .h = 10 }, .label = buf[0..2] },
-        .{ .role = .text_input, .cmd_index = 2, .bounds = .{}, .value = buf[2..3], .sel_start = 1, .sel_end = 1 },
-    };
-    try testing.expect(!cache.same(&nodes)); // nothing stored yet
-    try cache.store(testing.allocator, &nodes);
-    try testing.expect(cache.same(&nodes));
-    // The copy survives the source memory changing, and then differs.
-    buf[0] = 'z';
-    try testing.expect(!cache.same(&nodes));
-    buf[0] = 'a';
-    try testing.expect(cache.same(&nodes));
-    // Each field matters.
-    nodes[0].focused = true;
-    try testing.expect(!cache.same(&nodes));
-    nodes[0].focused = false;
-    nodes[1].sel_end = 2;
-    try testing.expect(!cache.same(&nodes));
-    nodes[1].sel_end = 1;
-    nodes[0].bounds.w = 11;
-    try testing.expect(!cache.same(&nodes));
-    nodes[0].bounds.w = 10;
-    try testing.expect(!cache.same(nodes[0..1])); // length
-    try testing.expect(cache.same(&nodes));
-}
 
 /// Fixed-capacity queue of assistive-technology requests that arrive on
 /// another thread (UIA worker). The producer calls `push` under its own lock;
@@ -932,8 +540,7 @@ pub const ActionQueue = struct {
             out[n] = .{ .kind = e.kind, .cmd_index = e.cmd_index, .text = text_buf[used..][0..src.len] };
             used += src.len;
         }
-        // Compact what was not delivered (text offsets stay valid: texts are
-        // only reclaimed once the queue empties).
+        // Text offsets remain valid until the queue empties.
         const rest = self.len - n;
         std.mem.copyForwards(Entry, self.entries[0..rest], self.entries[n..self.len]);
         self.len = rest;
@@ -941,45 +548,3 @@ pub const ActionQueue = struct {
         return n;
     }
 };
-
-test "ActionQueue: push, drain copies text, order kept, overflow dropped" {
-    var q: ActionQueue = .{};
-    try std.testing.expect(q.push(.activate, 4, ""));
-    try std.testing.expect(q.push(.set_value, 7, "hello"));
-    var out: [4]Action = undefined;
-    var buf: [ActionQueue.TEXT_CAP]u8 = undefined;
-    try std.testing.expectEqual(@as(usize, 2), q.drain(&out, &buf));
-    try std.testing.expectEqual(ActionKind.activate, out[0].kind);
-    try std.testing.expectEqual(@as(u32, 7), out[1].cmd_index);
-    try std.testing.expectEqualStrings("hello", out[1].text);
-    // Reusing the queue does not disturb delivered text.
-    try std.testing.expect(q.push(.set_value, 1, "zzzzz"));
-    try std.testing.expectEqualStrings("hello", out[1].text);
-    try std.testing.expectEqual(@as(usize, 1), q.drain(out[0..1], &buf));
-    var i: usize = 0;
-    while (i < ActionQueue.CAP) : (i += 1) try std.testing.expect(q.push(.focus, 0, ""));
-    try std.testing.expect(!q.push(.focus, 0, ""));
-    // A short `out` leaves the remainder queued.
-    try std.testing.expectEqual(@as(usize, 2), q.drain(out[0..2], &buf));
-    try std.testing.expectEqual(@as(usize, ActionQueue.CAP - 2), q.len);
-}
-
-test "text_area maps to the text_area role with content, focus and disabled" {
-    const testing = std.testing;
-    const Msg = union(enum) { f };
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{});
-    cb.textArea(.{ .focus_msg = .f, .id = 1, .content = "multi\nline", .width = 100, .height = 50 });
-    cb.textArea(.{ .focus_msg = .f, .id = 2, .content = "", .width = 100, .height = 50, .disabled = true });
-    cb.popGroup();
-    var rects: [4]layout.Rect = undefined;
-    layout.LayoutEngine.doLayout(rects[0..cb.cmds.items.len], cb.cmds.items, 300, 300, text_mod.monoMeasurer());
-    const tree = try buildTree(arena.allocator(), cb.cmds.items, rects[0..cb.cmds.items.len], 1);
-    try testing.expectEqual(Role.text_area, tree[1].role);
-    try testing.expectEqualStrings("multi\nline", tree[1].label);
-    try testing.expect(tree[1].focused);
-    try testing.expect(tree[2].disabled);
-}

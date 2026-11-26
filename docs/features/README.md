@@ -17,7 +17,7 @@ skimming ten of them builds the same mental map for each.
 
 **Status**: <`pub` in `src/teak.zig` | internal | `pub` but not re-exported>
 **Source**: `src/<path>.zig`
-**Tests**: `src/<path>.zig` test block | `test/integration_test.zig` | n/a
+**Checks**: describe relevant real-program paths in `zig build test -j4` or `zig build test-heavy -j4`.
 
 ## Contract
 
@@ -56,7 +56,7 @@ tests; names the gaps.
 | Host interface (window + input) | [host.md](host.md) |
 | Gpu interface (frame structure, MSAA, scenes, images) | [gpu.md](gpu.md) |
 | Headless native runs: scripted input -> PNG | [headless.md](headless.md) |
-| Visual regression (golden screenshots, `zig build vreg`) | [visual-regression.md](visual-regression.md) |
+| Visual inspection (screenshots without golden comparisons) | [visual-regression.md](visual-regression.md) |
 | Hit-test + hover-test | [hit-test.md](hit-test.md) |
 | Layout engine | [layout.md](layout.md) |
 | Focus traversal | [focus.md](focus.md) |

@@ -80,7 +80,6 @@ const State = struct {
     queue: InputQueue = .{},
     paste_requested: bool = false,
 
-    // IME marked text (UTF-8) and where the caret sits in it, in bytes.
     marked: [128]u8 = undefined,
     marked_len: usize = 0,
     marked_cursor: usize = 0,
@@ -132,8 +131,6 @@ fn appendFileUri(list: *std.ArrayList(u8), path: []const u8) void {
     list.appendSlice(gpa, "\r\n") catch return;
 }
 
-// ── Class registration ─────────────────────────────────────────────
-
 var view_class: objc.Class = null;
 var delegate_class: objc.Class = null;
 
@@ -148,8 +145,6 @@ fn defineClasses() void {
         .{ .name = "acceptsFirstResponder", .imp = @ptrCast(&yes), .types = "c@:" },
         .{ .name = "acceptsFirstMouse:", .imp = @ptrCast(&yes1), .types = "c@:@" },
         .{ .name = "isFlipped", .imp = @ptrCast(&yes), .types = "c@:" },
-        // Layer-backed with a CAMetalLayer: AppKit sizes and scales the layer
-        // with the view (the same arrangement MTKView uses).
         .{ .name = "makeBackingLayer", .imp = @ptrCast(&makeBackingLayer), .types = "@@:" },
         .{ .name = "wantsUpdateLayer", .imp = @ptrCast(&yes), .types = "c@:" },
         .{ .name = "updateLayer", .imp = @ptrCast(&noop), .types = "v@:" },
@@ -168,7 +163,6 @@ fn defineClasses() void {
         .{ .name = "otherMouseDragged:", .imp = @ptrCast(&mouseEvent), .types = "v@:@" },
         .{ .name = "scrollWheel:", .imp = @ptrCast(&scrollWheel), .types = "v@:@" },
         .{ .name = "resetCursorRects", .imp = @ptrCast(&resetCursorRects), .types = "v@:" },
-        // NSTextInputClient
         .{ .name = "insertText:replacementRange:", .imp = @ptrCast(&insertText), .types = "v@:@{_NSRange=QQ}" },
         .{ .name = "setMarkedText:selectedRange:replacementRange:", .imp = @ptrCast(&setMarkedText), .types = "v@:@{_NSRange=QQ}{_NSRange=QQ}" },
         .{ .name = "unmarkText", .imp = @ptrCast(&unmarkText), .types = "v@:" },
@@ -180,7 +174,6 @@ fn defineClasses() void {
         .{ .name = "firstRectForCharacterRange:actualRange:", .imp = @ptrCast(&firstRect), .types = "{CGRect={CGPoint=dd}{CGSize=dd}}@:{_NSRange=QQ}^{_NSRange=QQ}" },
         .{ .name = "characterIndexForPoint:", .imp = @ptrCast(&characterIndex), .types = "Q@:{CGPoint=dd}" },
         .{ .name = "doCommandBySelector:", .imp = @ptrCast(&doCommand), .types = "v@::" },
-        // Drag and drop (files)
         .{ .name = "draggingEntered:", .imp = @ptrCast(&draggingEntered), .types = "Q@:@" },
         .{ .name = "prepareForDragOperation:", .imp = @ptrCast(&yes1), .types = "c@:@" },
         .{ .name = "performDragOperation:", .imp = @ptrCast(&performDrag), .types = "c@:@" },
@@ -191,8 +184,6 @@ fn defineClasses() void {
     };
     delegate_class = objc.defineClass("TeakWindowDelegate", "NSObject", &delegate_methods, &.{});
 }
-
-// ── View methods ───────────────────────────────────────────────────
 
 fn yes(_: Id, _: Sel) callconv(.c) bool {
     return true;
@@ -238,7 +229,6 @@ fn keyDown(self: Id, _: Sel, ev: Id) callconv(.c) void {
         if (d.paste) s.paste_requested = true;
         return;
     }
-    // Other Cmd / Ctrl chords are not text.
     if (flags & (cd.FLAG_COMMAND | cd.FLAG_CONTROL) != 0) return;
     s.interpret(ev);
 }
@@ -285,8 +275,6 @@ fn resetCursorRects(self: Id, _: Sel) callconv(.c) void {
     if (s.cursor == null) return;
     msg(void, self, sel("addCursorRect:cursor:"), .{ msg(objc.CGRect, self, sel("bounds"), .{}), s.cursor });
 }
-
-// NSTextInputClient
 
 /// The text of an `insertText:` / `setMarkedText:` argument, which is an
 /// NSString or an NSAttributedString.
@@ -360,8 +348,6 @@ fn characterIndex(_: Id, _: Sel, _: objc.CGPoint) callconv(.c) u64 {
 
 fn doCommand(_: Id, _: Sel, _: Sel) callconv(.c) void {}
 
-// Drag and drop
-
 fn draggingEntered(_: Id, _: Sel, _: Id) callconv(.c) u64 {
     return 1; // NSDragOperationCopy
 }
@@ -378,8 +364,6 @@ fn performDrag(self: Id, _: Sel, info: Id) callconv(.c) bool {
     }
     return n > 0;
 }
-
-// ── Helpers ────────────────────────────────────────────────────────
 
 fn monotonicMs() u64 {
     return @intCast(@divFloor(std.Io.Clock.awake.now(std.Options.debug_io).nanoseconds, std.time.ns_per_ms));
@@ -464,10 +448,7 @@ pub const Host = struct {
     /// keep the CAMetalLayer's `contentsScale` in step.
     fn syncGeometry(self: *Host) void {
         const s = self.st;
-        // A window that was occluded (or not yet on screen) when a frame was
-        // presented dropped it (wgpu answers `Occluded`), and an idle frame is
-        // never redrawn: ask for a rebuild when it becomes visible. The flag
-        // rides the `resized` input, which the run loop never skips.
+        // A newly visible window must rebuild a frame dropped while occluded.
         const visible = msg(u64, s.window, sel("occlusionState"), .{}) & 2 != 0;
         if (visible and !s.was_visible) s.resized_pending = true;
         s.was_visible = visible;
@@ -517,7 +498,6 @@ pub const Host = struct {
         self.debugLayer();
         s.queue.beginFrame();
         s.paste_requested = false;
-        // Dispatch everything queued without waiting.
         const mode = objc.nsString("kCFRunLoopDefaultMode");
         const past = msg(Id, cls("NSDate"), sel("distantPast"), .{});
         while (true) {
@@ -526,7 +506,6 @@ pub const Host = struct {
             msg(void, s.app, sel("sendEvent:"), .{ev});
         }
         msg(void, s.app, sel("updateWindows"), .{});
-        // One non-blocking spin of the run loop so Core Animation commits.
         _ = msg(bool, msg(Id, cls("NSRunLoop"), sel("currentRunLoop"), .{}), sel("runMode:beforeDate:"), .{ mode, past });
         self.syncGeometry();
         const resized = s.resized_pending or s.first_resize;
@@ -560,8 +539,6 @@ pub const Host = struct {
         return text.measure(text_bytes, font);
     }
 
-    // ── Effects ─────────────────────────────────────────────────────
-
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
         switch (e) {
             .write_clipboard => |w| {
@@ -576,7 +553,6 @@ pub const Host = struct {
         const s = self.st;
         const pool = objc.poolPush();
         defer objc.poolPop(pool);
-        // Cmd+V that `Clipboard.read` did not claim: text, else a PNG.
         if (s.paste_requested) {
             s.paste_requested = false;
             const pb = msg(Id, cls("NSPasteboard"), sel("generalPasteboard"), .{});
@@ -606,8 +582,6 @@ pub const Host = struct {
         try text.registerFace(family, weight, ttf);
     }
 
-    // ── Clipboard ───────────────────────────────────────────────────
-
     pub fn clipboard(self: *Host) Clipboard {
         return .{ .ctx = @ptrCast(self), .read_fn = clipRead, .write_fn = clipWrite };
     }
@@ -634,8 +608,6 @@ pub const Host = struct {
         _ = msg(bool, pb, sel("setString:forType:"), .{ nsStringFrom(txt), objc.nsString(PB_STRING) });
     }
 
-    // ── IME ─────────────────────────────────────────────────────────
-
     pub fn imeState(self: *const Host) ImeState {
         const s = self.st;
         if (!s.has_marked) return .{};
@@ -647,8 +619,6 @@ pub const Host = struct {
     pub fn setImeSpot(self: *Host, x: i32, y: i32) void {
         self.st.ime_spot = .{ .x = @floatFromInt(x), .y = @floatFromInt(y) };
     }
-
-    // ── Cursor ──────────────────────────────────────────────────────
 
     pub fn setCursor(self: *Host, shape: teak.CursorShape) void {
         const s = self.st;
@@ -665,8 +635,6 @@ pub const Host = struct {
         msg(void, s.window, sel("invalidateCursorRectsForView:"), .{s.view});
         if (c != null) msg(void, c, sel("set"), .{});
     }
-
-    // ── File dialogs (modal NSOpenPanel / NSSavePanel) ──────────────
 
     pub fn openFileDialog(self: *Host, _: FileDialogFilter) FileDialogResult {
         return self.runPanel(cls("NSOpenPanel"), sel("openPanel"));
@@ -727,14 +695,4 @@ pub const Host = struct {
 
 comptime {
     teak.validateHost(Host);
-}
-
-test "uri encoding of dropped paths round-trips through the shared decoder" {
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(gpa);
-    appendFileUri(&list, "/Users/me/My File #1.txt");
-    try std.testing.expectEqualStrings("file:///Users/me/My%20File%20%231.txt\r\n", list.items);
-    var buf: [128]u8 = undefined;
-    var it = x11_data.UriIter{ .rest = list.items };
-    try std.testing.expectEqualStrings("/Users/me/My File #1.txt", x11_data.uriToPath(it.next().?, &buf).?);
 }

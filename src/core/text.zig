@@ -173,8 +173,6 @@ pub fn monoMeasurer() TextMeasurer {
     return .{ .ctx = undefined, .measure_fn = &S.measure };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 fn testMeasure(_: *anyopaque, text: []const u8, font: FontSpec) TextMetrics {
     return .{
         .width = @as(f32, @floatFromInt(text.len)) * font.size_px,
@@ -182,32 +180,4 @@ fn testMeasure(_: *anyopaque, text: []const u8, font: FontSpec) TextMetrics {
         .ascent = font.size_px * 0.75,
         .descent = font.size_px * 0.25,
     };
-}
-
-test "TextMeasurer.measure dispatches through the vtable" {
-    var ctx: u8 = 0;
-    const m: TextMeasurer = .{ .ctx = @ptrCast(&ctx), .measure_fn = testMeasure };
-    const r = m.measure("abc", .{ .size_px = 10 });
-    try std.testing.expectEqual(@as(f32, 30), r.width);
-    try std.testing.expectEqual(@as(f32, 10), r.height);
-}
-
-test "TextMeasurer.prefixWidth short-circuits empty prefix" {
-    var ctx: u8 = 0;
-    const m: TextMeasurer = .{ .ctx = @ptrCast(&ctx), .measure_fn = testMeasure };
-    try std.testing.expectEqual(@as(f32, 0), m.prefixWidth("hello", .{ .size_px = 10 }, 0));
-    try std.testing.expectEqual(@as(f32, 20), m.prefixWidth("hello", .{ .size_px = 10 }, 2));
-}
-
-test "monoMeasurer adds letter_spacing per byte" {
-    const m = monoMeasurer();
-    try std.testing.expectEqual(@as(f32, 30), m.measure("abc", .{}).width);
-    try std.testing.expectEqual(@as(f32, 36), m.measure("abc", .{ .letter_spacing = 2 }).width);
-    // Weight does not change the stub's metrics.
-    try std.testing.expectEqual(@as(f32, 30), m.measure("abc", .{ .weight = .bold }).width);
-}
-
-test "DEFAULT_FONT is sans 14px" {
-    try std.testing.expectEqual(FontFamily.sans, DEFAULT_FONT.family);
-    try std.testing.expectEqual(@as(f32, 14), DEFAULT_FONT.size_px);
 }

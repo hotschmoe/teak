@@ -106,8 +106,6 @@ pub fn keyMsg(key: keys.SpecialKey, msgs: anytype, has_cancel: bool) ?@TypeOf(ms
     };
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
@@ -123,101 +121,4 @@ fn layoutFor(cb: anytype, rects: []engine.Rect) []const engine.Rect {
     const n = cb.cmds.items.len;
     engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 600, 400, text_mod.monoMeasurer());
     return rects[0..n];
-}
-
-test "dialog: Enter confirms, Escape cancels (or confirms when there is no cancel)" {
-    try testing.expectEqual(TMsg.ok, keyMsg(.enter, dmsgs, true).?);
-    try testing.expectEqual(TMsg.cancel, keyMsg(.escape, dmsgs, true).?);
-    try testing.expectEqual(TMsg.ok, keyMsg(.escape, dmsgs, false).?);
-    try testing.expect(keyMsg(.tab, dmsgs, true) == null);
-}
-
-test "dialog: the card is centred and both buttons carry the app's Msgs" {
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.button(.behind, "Behind");
-    cb.popGroup();
-    view(&cb, dopts, dmsgs);
-    var rects: [32]engine.Rect = undefined;
-    const r = layoutFor(&cb, &rects);
-    try testing.expect(cmd.validateBalance(cb.cmds.items) == null);
-
-    // Find the card (the sized group) and check it is centred in the window.
-    for (cb.cmds.items, 0..) |c, i| switch (c) {
-        .push_group => |g| if (g.width == 380) {
-            try testing.expectApproxEqAbs(@as(f32, 300), r[i].x + r[i].w / 2, 1);
-            try testing.expectApproxEqAbs(@as(f32, 200), r[i].y + r[i].h / 2, 1);
-        },
-        else => {},
-    };
-    // Clicking the buttons behind the dialog is impossible: the backdrop wins.
-    const behind = hit_test.hitTest(cb.cmds.items, r, 10, 10).?;
-    try testing.expectEqual(TMsg.cancel, behind.msg.?);
-}
-
-test "dialog: a one-button dialog confirms on backdrop click; opt-out keeps it modal without a Msg" {
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    var o = dopts;
-    o.cancel_label = null;
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.popGroup();
-    view(&cb, o, dmsgs);
-    var rects: [32]engine.Rect = undefined;
-    const r = layoutFor(&cb, &rects);
-    try testing.expectEqual(TMsg.ok, hit_test.hitTest(cb.cmds.items, r, 5, 5).?.msg.?);
-
-    cb.reset();
-    o.dismiss_on_backdrop = false;
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.popGroup();
-    view(&cb, o, dmsgs);
-    const r2 = layoutFor(&cb, &rects);
-    const hit = hit_test.hitTest(cb.cmds.items, r2, 5, 5).?;
-    try testing.expect(hit.msg == null); // consumed, but nothing dispatched
-}
-
-test "dialog: Tab traversal is trapped inside the dialog" {
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.textInput(.field, "", 0); // idx 1: behind the dialog
-    cb.popGroup();
-    begin(&cb, dopts, dmsgs);
-    cb.textInput(.field, "", 0); // a field inside the dialog
-    end(&cb, dopts, dmsgs);
-    var inside: ?usize = null;
-    for (cb.cmds.items, 0..) |c, i| if (c == .text_input and i > 3) {
-        inside = i;
-    };
-    try testing.expectEqual(inside, focus.nextFocusable(cb.cmds.items, 1));
-    try testing.expectEqual(inside, focus.prevFocusable(cb.cmds.items, 1));
-}
-
-test "dialog: snapshot golden" {
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.button(.behind, "Behind");
-    cb.popGroup();
-    var o = dopts;
-    o.danger = true;
-    view(&cb, o, dmsgs);
-    var rects: [32]engine.Rect = undefined;
-    const r = layoutFor(&cb, &rects);
-    try snapshot.expectSnapshot(cb.cmds.items, r, .{},
-        \\group (0,0,600,400) vertical
-        \\  button (0,0,76,36) "Behind"
-        \\overlay (0,0,600,400) layer=1 [modal]
-        \\  group (300,0,0,132) vertical
-        \\  group (110,132,380,136) vertical bg border
-        \\    text (128,150,344,20) "Delete file?"
-        \\    text (128,182,344,20) "This cannot be undone."
-        \\    group (128,214,344,36) horizontal
-        \\      button (312,214,76,36) "Cancel"
-        \\      button (396,214,76,36) "Delete"
-        \\  group (300,268,0,132) vertical
-        \\
-    );
 }

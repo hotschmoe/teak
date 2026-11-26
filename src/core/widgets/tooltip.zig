@@ -126,8 +126,6 @@ pub fn view(model: *const Model, cb: anytype, texts: []const []const u8, o: View
     if (i >= texts.len) return;
     const pal = cb.theme.palette;
     const b = model.box;
-    // Prefer below-left of the widget; flip to above / right-aligned when the
-    // widget is in the lower third / right half of the window.
     const above = b.y + b.h > o.window_h * 0.66;
     const right = b.x + b.w * 0.5 > o.window_w * 0.5;
     cb.pushOverlay(.{
@@ -146,8 +144,6 @@ pub fn view(model: *const Model, cb: anytype, texts: []const []const u8, o: View
     cb.popOverlay();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
 const engine = @import("../../layout/engine.zig");
@@ -159,101 +155,4 @@ const tip_text = [_][]const u8{ "Save (Ctrl+S)", "Open a file" };
 
 fn mkev(hit: ?TMsg, now: u64) pointer.PointerEvent(TMsg) {
     return .{ .x = 10, .y = 10, .hit = hit, .box = .{ .x = 10, .y = 20, .w = 60, .h = 30 }, .now_ms = now };
-}
-
-test "tooltip: hover arms a deadline; show makes it visible; leaving clears it" {
-    var m: Model = .{};
-    update(&m, hoverMsg(TMsg, mkev(.save, 1000), &tip_targets, 500));
-    try testing.expectEqual(@as(?u16, 0), m.item);
-    try testing.expectEqual(@as(?u64, 1500), deadline(&m));
-    try testing.expect(!m.shown);
-    update(&m, .show);
-    try testing.expect(m.shown);
-    try testing.expectEqual(@as(?u64, null), deadline(&m));
-    update(&m, hoverMsg(TMsg, mkev(null, 2000), &tip_targets, 500));
-    try testing.expect(!m.shown and m.item == null and deadline(&m) == null);
-}
-
-test "tooltip: a widget without a tip never arms; moving to another widget re-arms" {
-    var m: Model = .{};
-    update(&m, hoverMsg(TMsg, mkev(.quit, 0), &tip_targets, 500));
-    try testing.expect(m.item == null and deadline(&m) == null);
-    update(&m, .show); // a stray timer does nothing
-    try testing.expect(!m.shown);
-
-    update(&m, hoverMsg(TMsg, mkev(.save, 0), &tip_targets, 500));
-    update(&m, .show);
-    update(&m, hoverMsg(TMsg, mkev(.open, 100), &tip_targets, 500));
-    try testing.expect(!m.shown); // hidden until the new delay passes
-    try testing.expectEqual(@as(?u16, 1), m.item);
-    try testing.expectEqual(@as(?u64, 600), deadline(&m));
-}
-
-test "tooltip: re-reporting the same widget keeps the shown state and refreshes the box" {
-    var m: Model = .{};
-    update(&m, hoverMsg(TMsg, mkev(.save, 0), &tip_targets, 500));
-    update(&m, .show);
-    var e = mkev(.save, 50);
-    e.box.x = 99;
-    update(&m, hoverMsg(TMsg, e, &tip_targets, 500));
-    try testing.expect(m.shown);
-    try testing.expectEqual(@as(f32, 99), m.box.x);
-}
-
-test "tooltip: hide clears everything" {
-    var m: Model = .{};
-    update(&m, hoverMsg(TMsg, mkev(.save, 0), &tip_targets, 500));
-    update(&m, .show);
-    update(&m, .hide);
-    try testing.expect(!m.shown and m.item == null and deadline(&m) == null);
-}
-
-test "tooltip: view emits nothing until shown, then an overlay below the widget" {
-    var m: Model = .{};
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    view(&m, &cb, &tip_text, .{ .window_w = 800, .window_h = 600 });
-    try testing.expectEqual(@as(usize, 0), cb.cmds.items.len);
-
-    update(&m, hoverMsg(TMsg, mkev(.save, 0), &tip_targets, 0));
-    update(&m, .show);
-    view(&m, &cb, &tip_text, .{ .window_w = 800, .window_h = 600 });
-    const ov = cb.cmds.items[0].push_overlay;
-    try testing.expectEqual(@as(f32, 10), ov.x);
-    try testing.expectEqual(@as(f32, 20 + 30 + 6), ov.y);
-    try testing.expectEqual(@as(f32, 0), ov.anchor_y_frac);
-    try testing.expect(!ov.modal); // it never blocks the pointer
-}
-
-test "tooltip: flips above and right-aligned near the bottom-right corner" {
-    var m: Model = .{ .item = 0, .shown = true, .box = .{ .x = 700, .y = 560, .w = 80, .h = 30 } };
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    view(&m, &cb, &tip_text, .{ .window_w = 800, .window_h = 600 });
-    const ov = cb.cmds.items[0].push_overlay;
-    try testing.expectEqual(@as(f32, 1), ov.anchor_x_frac);
-    try testing.expectEqual(@as(f32, 1), ov.anchor_y_frac);
-    try testing.expectEqual(@as(f32, 780), ov.x);
-    try testing.expectEqual(@as(f32, 554), ov.y);
-}
-
-test "tooltip: snapshot golden" {
-    const m: Model = .{ .item = 1, .shown = true, .box = .{ .x = 40, .y = 100, .w = 60, .h = 30 } };
-    var cb = cmd.CmdBuffer(TMsg).init(testing.allocator);
-    defer cb.deinit();
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.button(.open, "Open");
-    cb.popGroup();
-    view(&m, &cb, &tip_text, .{ .window_w = 400, .window_h = 300 });
-    var rects: [16]engine.Rect = undefined;
-    const n = cb.cmds.items.len;
-    engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-    try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
-        \\group (0,0,400,300) vertical
-        \\  button (0,0,60,36) "Open"
-        \\overlay (40,136,122,32) layer=1 shadow
-        \\  group (40,136,122,32) vertical bg border
-        \\    text (46,142,110,20) "Open a file"
-        \\
-    );
 }

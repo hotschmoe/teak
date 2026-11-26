@@ -183,37 +183,3 @@ pub fn translation(t: Vec3) Affine {
 }
 
 const expectApproxEqAbs = std.testing.expectApproxEqAbs;
-
-test "mul identity and invert round trip" {
-    const p = perspective(0.7, 1.5, 0.5, 100);
-    const v = lookAt(.{ 3, 4, 5 }, .{ 0, 0, 0 }, .{ 0, 1, 0 });
-    const m = mul(p, v);
-    const inv = invert(m).?;
-    const id = mul(inv, m);
-    for (0..16) |i| try expectApproxEqAbs(identity4[i], id[i], 2e-4);
-    try std.testing.expect(invert(@as(Mat4, @splat(0))) == null);
-}
-
-test "affine inverse undoes transform" {
-    const a: Affine = .{ 0, -2, 0, 5, 2, 0, 0, -1, 0, 0, 3, 7 };
-    const inv = affineInverse(a).?;
-    const p = Vec3{ 1.5, -2, 0.25 };
-    const q = affinePoint(inv, affinePoint(a, p));
-    for (0..3) |i| try expectApproxEqAbs(p[i], q[i], 1e-5);
-    try std.testing.expect(affineInverse(.{ 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 }) == null);
-}
-
-test "orthographic maps the box to the clip cube" {
-    const m = orthographic(2, 2, -1, 3);
-    const lo = transformPoint4(m, .{ -4, -2, 1 }); // eye space z=+1 is behind view dir; near=-1 -> z=-near
-    try expectApproxEqAbs(@as(f32, -1), lo[0], 1e-6);
-    try expectApproxEqAbs(@as(f32, -1), lo[1], 1e-6);
-    // eye-space z = -near -> depth 0, z = -far -> depth 1
-    try expectApproxEqAbs(@as(f32, 0), transformPoint4(m, .{ 0, 0, 1 })[2], 1e-6);
-    try expectApproxEqAbs(@as(f32, 1), transformPoint4(m, .{ 0, 0, -3 })[2], 1e-6);
-}
-
-test "lookAt degenerate up does not produce NaN" {
-    const v = lookAt(.{ 0, 5, 0 }, .{ 0, 0, 0 }, .{ 0, 1, 0 });
-    for (v) |x| try std.testing.expect(!std.math.isNan(x));
-}

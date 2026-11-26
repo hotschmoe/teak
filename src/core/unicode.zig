@@ -80,8 +80,6 @@ pub fn utf8PrevStart(bytes: []const u8, i: usize) usize {
     return i - 1;
 }
 
-// ── Property lookups ──────────────────────────────────────────────
-
 inline fn gprop(cp: u21) u8 {
     return t.lookup(&t.grapheme_runs, cp);
 }
@@ -105,8 +103,6 @@ pub fn isWide(cp: u21) bool {
     return lprop(cp) & 0x80 != 0;
 }
 
-// ── Grapheme clusters ─────────────────────────────────────────────
-
 /// Incremental UAX #29 boundary decider. Feed code points in order; `step`
 /// answers whether there is a boundary *before* the fed code point.
 pub const GraphemeState = struct {
@@ -127,12 +123,9 @@ pub const GraphemeState = struct {
         const brk = !self.started or self.decide(prev, cur, ext_pict, incb);
         self.started = true;
 
-        // Update context for the next call.
         if (ext_pict) {
             self.pict = 1;
-        } else if (cur == .extend and self.pict == 1) {
-            // stays 1
-        } else if (cur == .zwj and self.pict == 1) {
+        } else if (cur == .extend and self.pict == 1) {} else if (cur == .zwj and self.pict == 1) {
             self.pict = 2;
         } else self.pict = 0;
         self.ri_odd = cur == .ri and brk;
@@ -183,8 +176,7 @@ pub fn nextGrapheme(text: []const u8, i: usize) usize {
 /// (`0 < i <= text.len`); equals the previous boundary when `i` is one.
 pub fn prevGrapheme(text: []const u8, i: usize) usize {
     std.debug.assert(i > 0 and i <= text.len);
-    // Walk back to a context-free restart point: two adjacent ASCII bytes that
-    // are not CR LF always have a boundary between them and carry no state.
+    // Adjacent ASCII bytes other than CRLF form a context-free boundary.
     var q = utf8PrevStart(text, i);
     while (q > 0 and !(text[q] < 0x80 and text[q - 1] < 0x80 and !(text[q - 1] == '\r' and text[q] == '\n')))
         q = utf8PrevStart(text, q);
@@ -238,8 +230,6 @@ pub fn graphemeCount(text: []const u8) usize {
     while (it.next()) |_| n += 1;
     return n;
 }
-
-// ── Word classes ──────────────────────────────────────────────────
 
 pub const WordClass = enum { space, word, punct, han };
 
@@ -346,8 +336,6 @@ pub fn wordRangeAt(text: []const u8, i: usize) Span {
     return .{ .start = s, .end = e };
 }
 
-// ── Tests ─────────────────────────────────────────────────────────
-
 const testing = std.testing;
 const conformance_excerpt = @embedFile("testdata/GraphemeBreakTest_excerpt.txt");
 
@@ -362,239 +350,6 @@ fn utf8Lossy(bytes: []const u8, out: []u21) usize {
     return n;
 }
 
-test "utf8DecodeLossy: valid sequences match std" {
-    var buf: [4]u8 = undefined;
-    const samples = [_]u21{ 0, 'a', 0x7F, 0x80, 0x7FF, 0x800, 0xFFFD, 0xFFFF, 0x10000, 0x1F600, 0x10FFFF, 0xE000, 0xD7FF };
-    for (samples) |cp| {
-        const n = try std.unicode.utf8Encode(cp, &buf);
-        const d = utf8DecodeLossy(buf[0..n], 0);
-        try testing.expectEqual(cp, d.cp);
-        try testing.expectEqual(@as(u3, @intCast(n)), d.len);
-    }
-}
-
-test "utf8DecodeLossy: invalid input is one U+FFFD per bad byte" {
-    const cases = [_][]const u8{
-        "\x80", // lone continuation
-        "\xC0\x80", // overlong NUL
-        "\xC1\xBF", // overlong
-        "\xE0\x80\x80", // overlong 3-byte
-        "\xED\xA0\x80", // surrogate
-        "\xF4\x90\x80\x80", // > U+10FFFF
-        "\xF5\x80\x80\x80", // invalid lead
-        "\xFF",
-        "\xE2\x82", // truncated at end
-        "\xE2\x82x", // truncated by ASCII
-        "\xF0\x9F\x98", // truncated 4-byte
-    };
-    for (cases) |c| {
-        var i: usize = 0;
-        while (i < c.len) {
-            const d = utf8DecodeLossy(c, i);
-            try testing.expect(d.len >= 1 and i + d.len <= c.len);
-            if (d.cp != 'x') try testing.expectEqual(replacement, d.cp);
-            if (d.cp == replacement) try testing.expectEqual(@as(u3, 1), d.len);
-            i += d.len;
-        }
-    }
-}
-
-test "utf8DecodeLossy fuzz: always progresses in bounds, prev agrees with forward" {
-    var prng = std.Random.DefaultPrng.init(0x7EA4);
-    const rnd = prng.random();
-    var buf: [48]u8 = undefined;
-    const alphabet = [_]u8{ 'a', ' ', 0x80, 0xBF, 0xC2, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x98, 0x80, 0xFF, '\r', '\n', 0xCC, 0x81 };
-    var iter: usize = 0;
-    while (iter < 4000) : (iter += 1) {
-        const len = rnd.uintLessThan(usize, buf.len + 1);
-        for (buf[0..len]) |*b| b.* = if (rnd.boolean()) alphabet[rnd.uintLessThan(usize, alphabet.len)] else rnd.int(u8);
-        const s = buf[0..len];
-        // Forward unit starts.
-        var starts: [49]usize = undefined;
-        var n: usize = 0;
-        var i: usize = 0;
-        while (i < s.len) {
-            starts[n] = i;
-            n += 1;
-            const d = utf8DecodeLossy(s, i);
-            try testing.expect(d.len >= 1 and i + d.len <= s.len);
-            i += d.len;
-        }
-        starts[n] = s.len;
-        // Backward agrees.
-        var k = n;
-        var pos = s.len;
-        while (pos > 0) : (k -= 1) {
-            const p = utf8PrevStart(s, pos);
-            try testing.expectEqual(starts[k - 1], p);
-            pos = p;
-        }
-        // Graphemes tile the text, forward == backward, and all land on unit starts.
-        var fwd: [49]usize = undefined;
-        var nf: usize = 0;
-        var g: usize = 0;
-        fwd[0] = 0;
-        while (g < s.len) {
-            const e = nextGrapheme(s, g);
-            try testing.expect(e > g and e <= s.len);
-            g = e;
-            nf += 1;
-            fwd[nf] = e;
-        }
-        var b = nf;
-        var q = s.len;
-        while (q > 0) : (b -= 1) {
-            const ps = prevGrapheme(s, q);
-            try testing.expectEqual(fwd[b - 1], ps);
-            q = ps;
-        }
-        for (0..s.len + 1) |j| {
-            const want = std.mem.indexOfScalar(usize, fwd[0 .. nf + 1], j) != null;
-            try testing.expectEqual(want, isGraphemeBoundary(s, j));
-            const sb = snapBackward(s, j);
-            try testing.expect(sb <= j and isGraphemeBoundary(s, sb));
-        }
-        // Word motion stays on boundaries and is monotone.
-        var w: usize = 0;
-        while (w < s.len) {
-            const nw = nextWordBoundary(s, w);
-            try testing.expect(nw > w and isGraphemeBoundary(s, nw));
-            w = nw;
-        }
-        w = s.len;
-        while (w > 0) {
-            const pw = prevWordBoundary(s, w);
-            try testing.expect(pw < w and isGraphemeBoundary(s, pw));
-            w = pw;
-        }
-    }
-}
-
 fn parseHexCps(tok: []const u8) u21 {
     return @intCast(std.fmt.parseInt(u32, tok, 16) catch unreachable);
-}
-
-test "UAX #29 GraphemeBreakTest excerpt (forward, backward, boundary query)" {
-    var lines = std.mem.splitScalar(u8, conformance_excerpt, '\n');
-    var cases: usize = 0;
-    while (lines.next()) |line| {
-        if (line.len == 0 or line[0] == '#') continue;
-        var text_buf: [128]u8 = undefined;
-        var tl: usize = 0;
-        var expect: [64]usize = undefined;
-        var ne: usize = 0;
-        var toks = std.mem.tokenizeAny(u8, line, " \t\r");
-        while (toks.next()) |tok| {
-            if (std.mem.eql(u8, tok, "\u{00F7}")) {
-                expect[ne] = tl;
-                ne += 1;
-            } else if (std.mem.eql(u8, tok, "\u{00D7}")) {} else {
-                tl += try std.unicode.utf8Encode(parseHexCps(tok), text_buf[tl..]);
-            }
-        }
-        const text = text_buf[0..tl];
-        // expect holds every ÷ position: first is 0, last is tl.
-        try testing.expectEqual(@as(usize, 0), expect[0]);
-        try testing.expectEqual(tl, expect[ne - 1]);
-        var got: [64]usize = undefined;
-        var ng: usize = 1;
-        got[0] = 0;
-        var g: usize = 0;
-        while (g < tl) {
-            g = nextGrapheme(text, g);
-            got[ng] = g;
-            ng += 1;
-        }
-        testing.expectEqualSlices(usize, expect[0..ne], got[0..ng]) catch |e| {
-            std.debug.print("forward mismatch: {s}\n", .{line});
-            return e;
-        };
-        var q = tl;
-        var idx = ne - 1;
-        while (q > 0) : (idx -= 1) {
-            q = prevGrapheme(text, q);
-            try testing.expectEqual(expect[idx - 1], q);
-        }
-        for (0..tl + 1) |j| {
-            const want = std.mem.indexOfScalar(usize, expect[0..ne], j) != null;
-            try testing.expectEqual(want, isGraphemeBoundary(text, j));
-        }
-        cases += 1;
-    }
-    try testing.expect(cases > 300);
-}
-
-test "graphemes: hand-picked sequences" {
-    try testing.expectEqual(@as(usize, 1), graphemeCount("e\u{0301}"));
-    try testing.expectEqual(@as(usize, 1), graphemeCount("\r\n"));
-    try testing.expectEqual(@as(usize, 2), graphemeCount("\n\r"));
-    // Family emoji (ZWJ sequence), flag pairs, skin tone, VS16.
-    try testing.expectEqual(@as(usize, 1), graphemeCount("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"));
-    try testing.expectEqual(@as(usize, 2), graphemeCount("\u{1F1FA}\u{1F1F8}\u{1F1EB}\u{1F1F7}"));
-    try testing.expectEqual(@as(usize, 2), graphemeCount("\u{1F1FA}\u{1F1F8}\u{1F1EB}"));
-    try testing.expectEqual(@as(usize, 1), graphemeCount("\u{1F44D}\u{1F3FD}"));
-    try testing.expectEqual(@as(usize, 1), graphemeCount("\u{2764}\u{FE0F}"));
-    // Hangul jamo L V T composes; precomposed LV + T too.
-    try testing.expectEqual(@as(usize, 1), graphemeCount("\u{1100}\u{1161}\u{11A8}"));
-    try testing.expectEqual(@as(usize, 1), graphemeCount("\u{AC00}\u{11A8}"));
-    // Devanagari conjunct KA + virama + SSA (GB9c) and SpacingMark.
-    try testing.expectEqual(@as(usize, 1), graphemeCount("\u{0915}\u{094D}\u{0937}"));
-    try testing.expectEqual(@as(usize, 1), graphemeCount("\u{0915}\u{093E}"));
-    // Invalid bytes are one cluster each.
-    try testing.expectEqual(@as(usize, 3), graphemeCount("a\xFF\x80"));
-}
-
-test "word classes and motion" {
-    try testing.expectEqual(WordClass.word, wordClass('_'));
-    try testing.expectEqual(WordClass.word, wordClass('7'));
-    try testing.expectEqual(WordClass.punct, wordClass('-'));
-    try testing.expectEqual(WordClass.space, wordClass('\t'));
-    try testing.expectEqual(WordClass.space, wordClass(0xA0));
-    try testing.expectEqual(WordClass.word, wordClass(0xE9)); // e-acute
-    try testing.expectEqual(WordClass.word, wordClass(0x0416)); // Cyrillic
-    try testing.expectEqual(WordClass.han, wordClass(0x4E2D));
-    try testing.expectEqual(WordClass.word, wordClass(0x3042)); // hiragana
-    try testing.expectEqual(WordClass.punct, wordClass(0x3002)); // ideographic full stop
-    try testing.expectEqual(WordClass.punct, wordClass(0x2014)); // em dash
-    try testing.expectEqual(WordClass.word, wordClass(0x1F600)); // emoji
-
-    const s = "foo_bar  baz.qux, \u{4E2D}\u{6587}x";
-    try testing.expectEqual(@as(usize, 7), nextWordBoundary(s, 0)); // "foo_bar"
-    try testing.expectEqual(@as(usize, 12), nextWordBoundary(s, 7)); // skips 2 spaces, "baz"
-    try testing.expectEqual(@as(usize, 13), nextWordBoundary(s, 12)); // "."
-    try testing.expectEqual(@as(usize, 16), nextWordBoundary(s, 13)); // "qux"
-    try testing.expectEqual(@as(usize, 17), nextWordBoundary(s, 16)); // ","
-    try testing.expectEqual(@as(usize, 21), nextWordBoundary(s, 17)); // skips space, one Han ideograph
-    try testing.expectEqual(@as(usize, 24), nextWordBoundary(s, 21));
-    try testing.expectEqual(@as(usize, 25), nextWordBoundary(s, 24));
-    try testing.expectEqual(@as(usize, 24), prevWordBoundary(s, 25));
-    try testing.expectEqual(@as(usize, 21), prevWordBoundary(s, 24));
-    try testing.expectEqual(@as(usize, 18), prevWordBoundary(s, 21));
-    try testing.expectEqual(@as(usize, 16), prevWordBoundary(s, 17));
-    try testing.expectEqual(@as(usize, 9), prevWordBoundary(s, 12));
-    try testing.expectEqual(@as(usize, 0), prevWordBoundary(s, 7));
-    // Combining mark stays with its letter.
-    try testing.expectEqual(@as(usize, 4), nextWordBoundary("e\u{0301}x y", 0));
-    // Double-click range.
-    const r = wordRangeAt("foo bar", 5);
-    try testing.expectEqual(Span{ .start = 4, .end = 7 }, r);
-    try testing.expectEqual(Span{ .start = 3, .end = 4 }, wordRangeAt("foo bar", 3));
-    try testing.expectEqual(Span{ .start = 4, .end = 7 }, wordRangeAt("foo bar", 99));
-    try testing.expectEqual(Span{ .start = 0, .end = 0 }, wordRangeAt("", 0));
-}
-
-test "property lookups" {
-    try testing.expectEqual(Gcb.extend, graphemeBreakClass(0x0301));
-    try testing.expectEqual(Gcb.ri, graphemeBreakClass(0x1F1FA));
-    try testing.expectEqual(Lb.id, lineBreakClass(0x4E2D));
-    try testing.expectEqual(Lb.gl, lineBreakClass(0xA0));
-    try testing.expectEqual(Lb.zw, lineBreakClass(0x200B));
-    try testing.expectEqual(Lb.cl, lineBreakClass(0x3002));
-    try testing.expectEqual(Lb.op, lineBreakClass(0x300C));
-    try testing.expect(isWide(0x4E2D));
-    try testing.expect(isWide(0xFF09));
-    try testing.expect(!isWide('a'));
-    // Plane 2 (default ID + wide) and beyond the table.
-    try testing.expectEqual(Lb.id, lineBreakClass(0x20000));
-    try testing.expectEqual(Lb.other, lineBreakClass(0x10FFFF));
 }

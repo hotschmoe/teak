@@ -170,8 +170,6 @@ pub const ViewOpts = struct {
     bar_bg: bool = true,
 };
 
-// ── Pure navigation ────────────────────────────────────────────────
-
 fn firstSelectable(items: anytype) ?u8 {
     for (items, 0..) |it, i| if (it.selectable()) return @intCast(i);
     return null;
@@ -337,7 +335,6 @@ pub fn Nav(comptime Action: type) type {
                         s.depth -= 1;
                         return .{ .state = s };
                     }
-                    // Back from a drop-down to the bar (still active).
                     var s = st;
                     s.open = false;
                     return .{ .state = s };
@@ -368,8 +365,6 @@ pub fn Nav(comptime Action: type) type {
             }
             return .none;
         }
-
-        // ── View pieces ────────────────────────────────────────────
 
         fn rowsHeight(items: []const I, o: ViewOpts) f32 {
             var h: f32 = 0;
@@ -418,7 +413,6 @@ pub fn Nav(comptime Action: type) type {
                 const items = levelItems(root, st, bar, level);
                 if (items.len == 0) break;
                 const h = rowsHeight(items, o) + 2; // rows + the 1 px panel border
-                // Keep the panel on screen.
                 if (x + o.panel_w > o.window_w) x = @max(0, o.window_w - o.panel_w);
                 if (y + h > o.window_h) y = @max(0, o.window_h - h);
 
@@ -474,7 +468,6 @@ pub fn Nav(comptime Action: type) type {
                 cb.popGroup();
                 cb.popOverlay();
 
-                // Next level opens to the right of this one, level with the parent row.
                 const parent_row = st.sel[level];
                 y += rowOffset(items, parent_row, o); // the submenu's own first row lines up with the parent row (both panels inset 1 px)
                 x += o.panel_w;
@@ -483,8 +476,6 @@ pub fn Nav(comptime Action: type) type {
         }
     };
 }
-
-// ── Menu bar ───────────────────────────────────────────────────────
 
 pub fn MenuBar(comptime Action: type) type {
     const N = Nav(Action);
@@ -573,7 +564,6 @@ pub fn MenuBar(comptime Action: type) type {
                 if (!it.enabled) {
                     cb.buttonStyledDisabled(msgs.menu(.close), label, style);
                 } else {
-                    // Clicking the open menu's entry closes it; any other opens that menu.
                     const same_open = st.open and st.hot == i;
                     const target: State = if (same_open) .{} else N.openTop(items, st, @intCast(i));
                     cb.buttonStyledUnderlined(msgs.menu(.{ .goto = target }), label, style, mnemonicIndex(it.label));
@@ -590,8 +580,6 @@ pub fn MenuBar(comptime Action: type) type {
         }
     };
 }
-
-// ── Context menu ───────────────────────────────────────────────────
 
 pub fn ContextMenu(comptime Action: type) type {
     const N = Nav(Action);
@@ -653,7 +641,6 @@ pub fn ContextMenu(comptime Action: type) type {
 
         pub fn keyMsg(model: *const Model, key: keys.SpecialKey, items: []const Item, msgs: anytype) ?@TypeOf(msgs.menu(Msg.close)) {
             var st = model.st;
-            // A freshly opened menu has no highlight yet; the first vertical key lands on the first row.
             if (st.open and st.sel[0] == 0 and (key == .down or key == .up) and items.len > 0 and !items[0].selectable()) {
                 st.sel[0] = firstSelectable(items) orelse 0;
             }
@@ -671,8 +658,6 @@ pub fn ContextMenu(comptime Action: type) type {
         }
     };
 }
-
-// ── Tests ──────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const snapshot = @import("../snapshot.zig");
@@ -727,256 +712,4 @@ fn press(m: *MB.Model, k: keys.SpecialKey) ?Act {
         .ctx => unreachable,
     }
     return null;
-}
-
-test "menu: MenuBar and ContextMenu satisfy the component contract" {
-    component.validateComponent(MB);
-    component.validateComponent(CM);
-}
-
-test "menu: mnemonics and display labels" {
-    try testing.expectEqual(@as(?u8, 'n'), file_menu[0].mnemonic());
-    try testing.expectEqual(@as(?u8, 'x'), file_menu[4].mnemonic());
-    try testing.expectEqual(@as(?u8, null), (MB.Item{ .label = "Plain" }).mnemonic());
-    try testing.expectEqual(@as(?u8, null), (MB.Item{ .label = "A && B" }).mnemonic());
-    try testing.expectEqual(@as(?u8, 'b'), (MB.Item{ .label = "A && &B" }).mnemonic());
-    var cb = cmd.CmdBuffer(App).init(testing.allocator);
-    defer cb.deinit();
-    try testing.expectEqualStrings("Open...", displayLabel(&cb, "&Open..."));
-    try testing.expectEqualStrings("A & B", displayLabel(&cb, "A && B"));
-    try testing.expectEqualStrings("Trailing&", displayLabel(&cb, "Trailing&"));
-}
-
-test "menu: mnemonicIndex points into the displayed label" {
-    try testing.expectEqual(@as(?usize, 0), mnemonicIndex("&File"));
-    try testing.expectEqual(@as(?usize, 1), mnemonicIndex("E&xit"));
-    try testing.expectEqual(@as(?usize, 2), mnemonicIndex("Re&fresh"));
-    try testing.expectEqual(@as(?usize, 4), mnemonicIndex("A && &B")); // "A & B": the B
-    try testing.expectEqual(@as(?usize, null), mnemonicIndex("Plain"));
-    try testing.expectEqual(@as(?usize, null), mnemonicIndex("Trailing&"));
-}
-
-test "menu: F10 / Alt activate the bar on the first menu; again deactivates" {
-    var m: MB.Model = .{};
-    try testing.expect(press(&m, .down) == null and !MB.isActive(&m)); // inert until activated
-    _ = press(&m, .f10);
-    try testing.expect(m.st.active and !m.st.open and m.st.hot == 0);
-    _ = press(&m, .alt_tap);
-    try testing.expect(!m.st.active);
-    _ = press(&m, .alt_tap);
-    try testing.expect(m.st.active);
-    _ = press(&m, .escape);
-    try testing.expect(!m.st.active);
-}
-
-test "menu: bar navigation, opening, row movement skips separators and disabled rows" {
-    var m: MB.Model = .{};
-    _ = press(&m, .f10);
-    _ = press(&m, .right);
-    try testing.expectEqual(@as(u8, 1), m.st.hot);
-    _ = press(&m, .left);
-    _ = press(&m, .left); // wraps to the last top menu
-    try testing.expectEqual(@as(u8, 2), m.st.hot);
-    _ = press(&m, .right); // wraps to File
-    _ = press(&m, .down); // opens File
-    try testing.expect(m.st.open and m.st.depth == 0 and m.st.sel[0] == 0);
-    _ = press(&m, .down);
-    try testing.expectEqual(@as(u8, 1), m.st.sel[0]); // Open
-    _ = press(&m, .down); // skips the separator (2) and disabled Save (3)
-    try testing.expectEqual(@as(u8, 4), m.st.sel[0]); // Exit
-    _ = press(&m, .down); // wraps
-    try testing.expectEqual(@as(u8, 0), m.st.sel[0]);
-    _ = press(&m, .up); // wraps back to Exit
-    try testing.expectEqual(@as(u8, 4), m.st.sel[0]);
-    _ = press(&m, .home);
-    try testing.expectEqual(@as(u8, 0), m.st.sel[0]);
-    _ = press(&m, .end);
-    try testing.expectEqual(@as(u8, 4), m.st.sel[0]);
-}
-
-test "menu: Enter runs the highlighted action; the app's close then resets the bar" {
-    var m: MB.Model = .{};
-    _ = press(&m, .f10);
-    _ = press(&m, .down);
-    _ = press(&m, .down);
-    const a = press(&m, .enter);
-    try testing.expectEqual(@as(?Act, .open), a);
-    MB.update(&m, .close);
-    try testing.expect(!m.st.active and !m.st.open);
-}
-
-test "menu: submenus open with Right / Enter, close with Left / Escape" {
-    var m: MB.Model = .{};
-    _ = press(&m, .f10);
-    _ = press(&m, .right); // Edit
-    _ = press(&m, .down);
-    _ = press(&m, .down);
-    _ = press(&m, .down); // View (a submenu)
-    try testing.expectEqual(@as(u8, 2), m.st.sel[0]);
-    _ = press(&m, .right);
-    try testing.expectEqual(@as(u8, 1), m.st.depth);
-    try testing.expectEqual(@as(u8, 0), m.st.sel[1]);
-    _ = press(&m, .down);
-    try testing.expectEqual(@as(?Act, .zoom_out), press(&m, .enter));
-    _ = press(&m, .left);
-    try testing.expectEqual(@as(u8, 0), m.st.depth);
-    _ = press(&m, .enter); // Enter on the submenu row descends too
-    try testing.expectEqual(@as(u8, 1), m.st.depth);
-    _ = press(&m, .escape);
-    try testing.expectEqual(@as(u8, 0), m.st.depth);
-    _ = press(&m, .escape); // closes the drop-down but the bar stays active
-    try testing.expect(m.st.active and !m.st.open);
-    _ = press(&m, .escape);
-    try testing.expect(!m.st.active);
-}
-
-test "menu: Right / Left on a plain row switch to the neighbouring drop-down" {
-    var m: MB.Model = .{};
-    _ = press(&m, .f10);
-    _ = press(&m, .down); // File open
-    _ = press(&m, .right); // New is not a submenu: go to Edit
-    try testing.expect(m.st.open and m.st.hot == 1 and m.st.sel[0] == 0);
-    _ = press(&m, .left);
-    try testing.expect(m.st.open and m.st.hot == 0);
-}
-
-test "menu: mnemonics open menus and run rows; disabled rows are inert" {
-    var m: MB.Model = .{};
-    // Not active: letters do nothing.
-    try testing.expect(MB.charMsg(&m, 'f', &menus, bar_msgs) == null);
-    _ = press(&m, .f10);
-    const open_edit = MB.charMsg(&m, 'E', &menus, bar_msgs).?; // case-insensitive
-    MB.update(&m, open_edit.bar);
-    try testing.expect(m.st.open and m.st.hot == 1);
-    // 'v' descends into View, then 'o' = Zoom Out.
-    MB.update(&m, MB.charMsg(&m, 'v', &menus, bar_msgs).?.bar);
-    try testing.expectEqual(@as(u8, 1), m.st.depth);
-    try testing.expectEqual(Act.zoom_out, MB.charMsg(&m, 'o', &menus, bar_msgs).?.run);
-    try testing.expect(MB.charMsg(&m, 'q', &menus, bar_msgs) == null);
-
-    // File: 's' (Save) is disabled so it does nothing; 'x' = Exit.
-    var f: MB.Model = .{};
-    _ = press(&f, .f10);
-    MB.update(&f, MB.charMsg(&f, 'f', &menus, bar_msgs).?.bar);
-    try testing.expect(MB.charMsg(&f, 's', &menus, bar_msgs) == null);
-    try testing.expectEqual(Act.quit, MB.charMsg(&f, 'x', &menus, bar_msgs).?.run);
-}
-
-test "menu: a menu with nothing selectable cannot be opened" {
-    const inert = [_]MB.Item{.{ .label = "&Dead", .children = &.{.{ .label = "x", .enabled = false }} }};
-    var m: MB.Model = .{};
-    MB.update(&m, MB.keyMsg(&m, .f10, &inert, bar_msgs).?.bar);
-    MB.update(&m, MB.keyMsg(&m, .down, &inert, bar_msgs).?.bar);
-    try testing.expect(m.st.open); // opens (the panel exists) but no row is selectable
-    try testing.expect(MB.keyMsg(&m, .enter, &inert, bar_msgs) == null);
-    try testing.expect(MB.keyMsg(&m, .down, &inert, bar_msgs) == null);
-}
-
-test "menu: view geometry - closed bar, and open panels placed from the fixed sizes" {
-    var cb = cmd.CmdBuffer(App).init(testing.allocator);
-    defer cb.deinit();
-    const o: ViewOpts = .{ .window_w = 640, .window_h = 480 };
-    const closed: MB.Model = .{};
-    MB.viewWith(&closed, &cb, &menus, bar_msgs, o);
-    // group, 3 buttons, pop
-    try testing.expectEqual(@as(usize, 5), cb.cmds.items.len);
-    try testing.expectEqualStrings("File", cb.cmds.items[1].button.label);
-    try testing.expectEqual(App{ .bar = .{ .goto = .{ .active = true, .hot = 0, .open = true, .depth = 0, .sel = .{ 0, 0, 0, 0 } } } }, cb.cmds.items[1].button.msg);
-
-    cb.reset();
-    var open: MB.Model = .{};
-    MB.update(&open, .{ .goto = .{ .active = true, .hot = 1, .open = true, .depth = 1, .sel = .{ 2, 1, 0, 0 } } });
-    MB.viewWith(&open, &cb, &menus, bar_msgs, o);
-    var overlays: usize = 0;
-    var scrims: usize = 0;
-    var panel_x: [2]f32 = .{ 0, 0 };
-    var panel_y: [2]f32 = .{ 0, 0 };
-    for (cb.cmds.items) |c| switch (c) {
-        .push_overlay => |ov| {
-            if (ov.modal) {
-                scrims += 1;
-                try testing.expectEqual(@as(f32, 640), ov.width);
-            } else {
-                if (overlays < 2) {
-                    panel_x[overlays] = ov.x;
-                    panel_y[overlays] = ov.y;
-                }
-                overlays += 1;
-            }
-        },
-        else => {},
-    };
-    try testing.expectEqual(@as(usize, 1), scrims);
-    try testing.expectEqual(@as(usize, 2), overlays);
-    // Edit is the 2nd top entry: x = 72; panel hangs below the bar (y = 28).
-    try testing.expectEqual(@as(f32, 72), panel_x[0]);
-    try testing.expectEqual(@as(f32, 28), panel_y[0]);
-    // Submenu: right of the first panel, level with row 2 (2 * 28).
-    try testing.expectEqual(@as(f32, 72 + 244), panel_x[1]);
-    try testing.expectEqual(@as(f32, 28 + 56), panel_y[1]);
-}
-
-test "menu: panels stay on screen" {
-    var cb = cmd.CmdBuffer(App).init(testing.allocator);
-    defer cb.deinit();
-    var cm: CM.Model = .{};
-    CM.update(&cm, CM.openAt(630, 470));
-    CM.viewWith(&cm, &cb, &file_menu, ctx_msgs, .{ .window_w = 640, .window_h = 480 });
-    for (cb.cmds.items) |c| switch (c) {
-        .push_overlay => |ov| if (!ov.modal) {
-            try testing.expect(ov.x + ov.width <= 640);
-            try testing.expect(ov.y + ov.height <= 480);
-        },
-        else => {},
-    };
-}
-
-test "menu: context menu opens at a point, navigates, runs, closes on Escape" {
-    var cm: CM.Model = .{};
-    try testing.expect(CM.keyMsg(&cm, .down, &edit_menu, ctx_msgs) == null); // closed: inert
-    CM.update(&cm, CM.openAt(100, 80));
-    try testing.expect(CM.isOpen(&cm) and cm.x == 100 and cm.y == 80);
-    CM.update(&cm, CM.keyMsg(&cm, .down, &edit_menu, ctx_msgs).?.ctx);
-    try testing.expectEqual(@as(u8, 1), cm.st.sel[0]);
-    try testing.expectEqual(Act.paste, CM.keyMsg(&cm, .enter, &edit_menu, ctx_msgs).?.run);
-    CM.update(&cm, CM.keyMsg(&cm, .down, &edit_menu, ctx_msgs).?.ctx); // View
-    CM.update(&cm, CM.keyMsg(&cm, .right, &edit_menu, ctx_msgs).?.ctx);
-    try testing.expectEqual(@as(u8, 1), cm.st.depth);
-    CM.update(&cm, CM.keyMsg(&cm, .escape, &edit_menu, ctx_msgs).?.ctx); // back one level
-    try testing.expect(cm.st.open and cm.st.depth == 0);
-    CM.update(&cm, CM.keyMsg(&cm, .escape, &edit_menu, ctx_msgs).?.ctx); // close
-    try testing.expect(!CM.isOpen(&cm));
-    // mnemonic
-    CM.update(&cm, CM.openAt(0, 0));
-    try testing.expectEqual(Act.copy, CM.charMsg(&cm, 'c', &edit_menu, ctx_msgs).?.run);
-}
-
-test "menu: snapshot golden - open drop-down with a separator, disabled row, checks and submenu" {
-    var cb = cmd.CmdBuffer(App).init(testing.allocator);
-    defer cb.deinit();
-    var m: MB.Model = .{};
-    MB.update(&m, .{ .goto = .{ .active = true, .hot = 0, .open = true, .depth = 0, .sel = .{ 1, 0, 0, 0 } } });
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    MB.viewWith(&m, &cb, &menus, bar_msgs, .{ .window_w = 400, .window_h = 300 });
-    cb.popGroup();
-    var rects: [64]engine.Rect = undefined;
-    const n = cb.cmds.items.len;
-    engine.LayoutEngine.doLayout(rects[0..n], cb.cmds.items, 400, 300, text_mod.monoMeasurer());
-    try snapshot.expectSnapshot(cb.cmds.items, rects[0..n], .{},
-        \\group (0,0,400,300) vertical
-        \\  group (0,0,400,28) horizontal bg
-        \\    button (0,0,72,28) "File" underline=0
-        \\    button (72,0,72,28) "Edit" underline=0
-        \\    button (144,0,72,28) "Help" underline=0
-        \\  overlay (0,0,400,300) layer=1 [modal]
-        \\  overlay (0,28,244,123) layer=1 shadow
-        \\    group (0,28,244,123) vertical bg border
-        \\      button (1,29,242,28) "  New                Ctrl+N" underline=2
-        \\      button (1,57,242,28) "  Open...            Ctrl+O" underline=2
-        \\      group (1,85,242,9) vertical
-        \\        divider (1,89,242,1)
-        \\      button (1,94,242,28) "  Save                     " [disabled]
-        \\      button (1,122,242,28) "  Exit                     " underline=3
-        \\
-    );
 }

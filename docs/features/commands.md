@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `Command`, `CommandList`, `CommandPalette`, `PaletteViewOpts`, `Key`, `Chord`, `ShortcutPlatform` (the rest under `teak.commands`).
 **Source**: `src/core/commands.zig`, `src/input/keys.zig` (`Key`, `Chord`), `src/platform/input_queue.zig` (`pushShortcut`), hooks in `src/run.zig` (`routeChords`), host key maps in `x11.zig` / `win32.zig` / `wasm.zig`.
-**Tests**: `src/core/commands.zig`, `src/input/keys.zig`, `src/platform/input_queue.zig`, `src/run_test.zig` ("commands: ..."), `examples/kerf_viewer` (palette + shortcuts).
+**Example**: `examples/kerf_viewer` uses the palette and shortcuts.
 
 ## The table
 

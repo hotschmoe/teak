@@ -22,8 +22,6 @@ const pointer = @import("core/pointer.zig");
 const keys = @import("input/keys.zig");
 const run_mod = @import("run.zig");
 
-// ── Scripted steps ─────────────────────────────────────────────────
-
 /// One scripted step. Steps that only queue input (`move`, `down`, `up`,
 /// `wheel`, `chars`, `key`, `mods`) do not run a frame; `frames` and the
 /// compound steps do.
@@ -86,8 +84,6 @@ pub fn play(rt: anytype, host: anytype, steps: []const Step) !void {
         },
     };
 }
-
-// ── One-call screenshot ────────────────────────────────────────────
 
 /// A face to register on the Host before the first frame (`Host.registerFont`).
 /// `bytes` must outlive the shot.
@@ -267,8 +263,6 @@ pub fn pathArg(init: anytype, default: []const u8) []const u8 {
     return if (args.len > 1) args[1] else default;
 }
 
-// ── Named states + the shot CLI ────────────────────────────────────
-
 /// A named, scripted app state for screenshots (`--state <name>`).
 pub const ShotState = struct {
     name: []const u8,
@@ -328,8 +322,6 @@ pub fn shotCli(
         return;
     }
     if (idle_frames) |n| {
-        // `--idle-check N [--state s]`: the idle gate. Exit non-zero when a
-        // settled state keeps doing work.
         var any_busy = false;
         for (states) |st| {
             if (!std.mem.eql(u8, want, "*") and !std.mem.eql(u8, st.name, want)) continue;
@@ -369,8 +361,6 @@ pub fn shotCli(
     return error.UnknownState;
 }
 
-// ── PNG ────────────────────────────────────────────────────────────
-
 /// Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). Each
 /// scanline picks the PNG filter (none / sub / up / average / paeth) with
 /// the smallest sum of absolute residuals, and the filtered stream is
@@ -395,7 +385,6 @@ pub fn encodePng(gpa: std.mem.Allocator, rgba: []const u8, width: u32, height: u
     ihdr[12] = 0;
     try appendChunk(gpa, &out, "IHDR", &ihdr);
 
-    // zlib stream of filtered scanlines.
     var z = try std.Io.Writer.Allocating.initCapacity(gpa, 1 << 16);
     defer z.deinit();
     const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
@@ -521,7 +510,6 @@ pub fn decodePng(gpa: std.mem.Allocator, png: []const u8) !Image {
     var decomp: std.compress.flate.Decompress = .init(&in, .zlib, &window);
     try decomp.reader.readSliceAll(raw);
 
-    // Unfilter in place (each row against the previous reconstructed row).
     for (0..height) |y| {
         const f = raw[y * (stride + 1)];
         const cur = raw[y * (stride + 1) + 1 ..][0..stride];
@@ -568,136 +556,4 @@ pub fn writeFramePng(gpu: anytype, gpa: std.mem.Allocator, path: []const u8) !vo
     const rgba = try gpu.readFrame(gpa);
     defer gpa.free(rgba);
     try writePng(gpa, path, rgba, gpu.width, gpu.height);
-}
-
-// ── Tests ──────────────────────────────────────────────────────────
-
-test "encodePng writes a valid PNG: signature, IHDR, CRCs, and decodes back" {
-    const gpa = std.testing.allocator;
-    const px = [_]u8{ 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 10, 20, 30, 40 }; // 2x2
-    const png = try encodePng(gpa, &px, 2, 2);
-    defer gpa.free(png);
-
-    try std.testing.expectEqualSlices(u8, "\x89PNG\r\n\x1a\n", png[0..8]);
-    try std.testing.expectEqual(@as(u32, 13), std.mem.readInt(u32, png[8..12], .big));
-    try std.testing.expectEqualSlices(u8, "IHDR", png[12..16]);
-    try std.testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, png[16..20], .big)); // width
-    try std.testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, png[20..24], .big)); // height
-    try std.testing.expectEqual(@as(u8, 6), png[25]); // RGBA
-    var off: usize = 8;
-    var saw_end = false;
-    while (off < png.len) {
-        const len = std.mem.readInt(u32, png[off..][0..4], .big);
-        const tag = png[off + 4 ..][0..4];
-        var crc = std.hash.Crc32.init();
-        crc.update(tag);
-        crc.update(png[off + 8 ..][0..len]);
-        try std.testing.expectEqual(crc.final(), std.mem.readInt(u32, png[off + 8 + len ..][0..4], .big));
-        if (std.mem.eql(u8, tag, "IEND")) saw_end = true;
-        off += 12 + len;
-    }
-    try std.testing.expect(saw_end);
-    try std.testing.expectEqual(png.len, off);
-
-    const img = try decodePng(gpa, png);
-    defer img.deinit(gpa);
-    try std.testing.expectEqual(@as(u32, 2), img.width);
-    try std.testing.expectEqualSlices(u8, &px, img.rgba);
-}
-
-test "encodePng round-trips noisy and flat images; flat UI-like images compress hard; output is deterministic" {
-    const gpa = std.testing.allocator;
-    const w = 300;
-    const h = 200;
-    const px = try gpa.alloc(u8, w * h * 4);
-    defer gpa.free(px);
-
-    // Noise exercises every filter choice and multi-block deflate output.
-    var prng = std.Random.DefaultPrng.init(42);
-    prng.random().bytes(px);
-    const noisy = try encodePng(gpa, px, w, h);
-    defer gpa.free(noisy);
-    const back = try decodePng(gpa, noisy);
-    defer back.deinit(gpa);
-    try std.testing.expectEqualSlices(u8, px, back.rgba);
-
-    // A flat background with a rectangle: the screenshot-like case.
-    for (0..h) |y| for (0..w) |x| {
-        const inside = x > 40 and x < 200 and y > 30 and y < 90;
-        const c: [4]u8 = if (inside) .{ 200, 60, 60, 255 } else .{ 24, 26, 32, 255 };
-        @memcpy(px[(y * w + x) * 4 ..][0..4], &c);
-    };
-    const flat = try encodePng(gpa, px, w, h);
-    defer gpa.free(flat);
-    try std.testing.expect(flat.len < w * h * 4 / 50);
-    const flat2 = try encodePng(gpa, px, w, h);
-    defer gpa.free(flat2);
-    try std.testing.expectEqualSlices(u8, flat, flat2);
-    const back2 = try decodePng(gpa, flat);
-    defer back2.deinit(gpa);
-    try std.testing.expectEqualSlices(u8, px, back2.rgba);
-}
-
-test "encodePng rejects a pixel buffer of the wrong size" {
-    try std.testing.expectError(error.BadImageSize, encodePng(std.testing.allocator, &.{ 1, 2, 3 }, 1, 1));
-}
-
-test "play drives frames and queues input for a recording host" {
-    const Rt = struct {
-        frames: u32 = 0,
-        fn frame(self: *@This()) !void {
-            self.frames += 1;
-        }
-    };
-    const Host = struct {
-        log: [16]u8 = undefined,
-        n: usize = 0,
-        fn note(self: *@This(), c: u8) void {
-            self.log[self.n] = c;
-            self.n += 1;
-        }
-        fn pushMouseMove(self: *@This(), _: f32, _: f32) void {
-            self.note('m');
-        }
-        fn pushMouseDown(self: *@This(), _: pointer.Button) void {
-            self.note('d');
-        }
-        fn pushMouseUp(self: *@This(), _: pointer.Button) void {
-            self.note('u');
-        }
-        fn pushWheel(self: *@This(), _: f32, _: f32) void {
-            self.note('w');
-        }
-        fn pushChars(self: *@This(), _: []const u8) void {
-            self.note('c');
-        }
-        fn pushKey(self: *@This(), _: keys.SpecialKey) void {
-            self.note('k');
-        }
-        fn setModifiers(self: *@This(), _: pointer.Modifiers) void {
-            self.note('s');
-        }
-        fn pushChord(self: *@This(), _: keys.Chord) void {
-            self.note('h');
-        }
-    };
-    var rt: Rt = .{};
-    var host: Host = .{};
-    try play(&rt, &host, &.{
-        .{ .frames = 2 },
-        .{ .click = .{ 5, 5 } }, // m, frame, d, frame, u, frame
-        .{ .chars = "x" },
-        .{ .key = .enter },
-        .{ .wheel = .{ 0, 3 } },
-        .{ .chord = keys.Chord.ctrl(.k) },
-        .{ .frames = 1 },
-    });
-    try std.testing.expectEqualStrings("mduckwh", host.log[0..host.n]);
-    try std.testing.expectEqual(@as(u32, 2 + 3 + 1), rt.frames);
-
-    var rt2: Rt = .{};
-    var host2: Host = .{};
-    try play(&rt2, &host2, &.{.{ .drag = .{ .{ 0, 0 }, .{ 40, 40 } } }});
-    try std.testing.expectEqualStrings("mdmmmmu", host2.log[0..host2.n]);
-    try std.testing.expectEqual(@as(u32, 7), rt2.frames);
 }

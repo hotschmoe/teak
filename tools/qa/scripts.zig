@@ -172,7 +172,6 @@ const kerf_viewer: Spec = .{ .clear_decl = "paper", .states = &.{
 
 const g_dark: Step = .{ .click = .{ 88, 720 } };
 const g_light: Step = .{ .click = .{ 88, 752 } };
-// page buttons: retro layout, then the dark / light layout (the sidebar shifts a few px)
 const gr = [_]f32{ 78, 110, 142, 174, 206, 238 };
 const gd = [_]f32{ 85, 119, 153, 187, 221, 255 };
 fn gpage(comptime y: f32) Step {

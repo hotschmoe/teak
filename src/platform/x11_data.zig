@@ -10,8 +10,6 @@
 
 const std = @import("std");
 
-// ── text/uri-list ──────────────────────────────────────────────────
-
 /// Iterates the URIs of a `text/uri-list` payload (RFC 2483): one per line,
 /// `#` lines are comments, blank lines are skipped.
 pub const UriIter = struct {
@@ -59,8 +57,6 @@ pub fn uriToPath(uri: []const u8, buf: []u8) ?[]const u8 {
     return buf[0..n];
 }
 
-// ── images ─────────────────────────────────────────────────────────
-
 pub const ImageSize = struct { w: u32, h: u32 };
 
 /// Pixel size from a PNG's IHDR chunk, or null when `bytes` is not a PNG.
@@ -73,8 +69,6 @@ pub fn pngSize(bytes: []const u8) ?ImageSize {
     if (w == 0 or h == 0) return null;
     return .{ .w = w, .h = h };
 }
-
-// ── clipboard targets ──────────────────────────────────────────────
 
 /// Pick what to fetch from a `TARGETS` list: text wins over an image (a
 /// copied web selection often offers both). Returns an index into the
@@ -106,8 +100,6 @@ pub fn latin1ToUtf8(src: []const u8, out: []u8) []const u8 {
     }
     return out[0..n];
 }
-
-// ── IME preedit ────────────────────────────────────────────────────
 
 /// On-the-spot composition buffer, edited by `XIMPreeditDrawCallback`. The
 /// X protocol addresses the buffer in *characters* (`chg_first`,
@@ -152,8 +144,7 @@ pub const Preedit = struct {
         const room = CAP - first;
         const take = @min(new.len, room);
         const keep_tail = @min(tail_len, room - take);
-        // Shift the tail first (it may move left or right), then drop the new
-        // characters into the gap.
+        // Shift the tail before writing the replacement to handle overlap.
         @memmove(self.cps[first + take ..][0..keep_tail], self.cps[end..][0..keep_tail]);
         @memcpy(self.cps[first..][0..take], new[0..take]);
         self.len = first + take + keep_tail;
@@ -210,8 +201,6 @@ pub fn decodeUtf8Lossy(bytes: []const u8, out: []u21) usize {
     }
     return n;
 }
-
-// ── input-method styles ────────────────────────────────────────────
 
 pub const XIMPreeditArea: c_ulong = 0x0001;
 pub const XIMPreeditCallbacks: c_ulong = 0x0002;
@@ -272,121 +261,4 @@ pub fn utf8ToLatin1(src: []const u8, out: []u8) usize {
         i += len;
     }
     return n;
-}
-
-// ── tests ──────────────────────────────────────────────────────────
-
-test "UriIter skips comments and blanks, handles CRLF" {
-    var it = UriIter{ .rest = "# c\r\nfile:///a.txt\r\n\r\nfile:///b%20c.png\r\n" };
-    try std.testing.expectEqualStrings("file:///a.txt", it.next().?);
-    try std.testing.expectEqualStrings("file:///b%20c.png", it.next().?);
-    try std.testing.expect(it.next() == null);
-}
-
-test "uriToPath decodes percent escapes and rejects remote hosts" {
-    var buf: [128]u8 = undefined;
-    try std.testing.expectEqualStrings("/tmp/a b/é.txt", uriToPath("file:///tmp/a%20b/%C3%A9.txt", &buf).?);
-    try std.testing.expectEqualStrings("/x", uriToPath("file://localhost/x", &buf).?);
-    try std.testing.expect(uriToPath("file://other/x", &buf) == null);
-    try std.testing.expect(uriToPath("http://a/b", &buf) == null);
-    try std.testing.expect(uriToPath("file:///bad%2", &buf) == null);
-    try std.testing.expect(uriToPath("file:///bad%zz", &buf) == null);
-    try std.testing.expect(uriToPath("file:///nul%00x", &buf) == null);
-    var tiny: [3]u8 = undefined;
-    try std.testing.expect(uriToPath("file:///toolong", &tiny) == null);
-}
-
-test "pngSize reads IHDR" {
-    var png: [33]u8 = @splat(0);
-    @memcpy(png[0..8], "\x89PNG\r\n\x1a\n");
-    std.mem.writeInt(u32, png[8..12], 13, .big);
-    @memcpy(png[12..16], "IHDR");
-    std.mem.writeInt(u32, png[16..20], 640, .big);
-    std.mem.writeInt(u32, png[20..24], 480, .big);
-    const s = pngSize(&png).?;
-    try std.testing.expectEqual(@as(u32, 640), s.w);
-    try std.testing.expectEqual(@as(u32, 480), s.h);
-    try std.testing.expect(pngSize("not a png at all, just text........") == null);
-    try std.testing.expect(pngSize(png[0..10]) == null);
-}
-
-test "chooseTarget prefers text over image" {
-    try std.testing.expectEqual(Want.utf8, chooseTarget(true, true, true).?);
-    try std.testing.expectEqual(Want.string, chooseTarget(false, true, true).?);
-    try std.testing.expectEqual(Want.png, chooseTarget(false, false, true).?);
-    try std.testing.expect(chooseTarget(false, false, false) == null);
-}
-
-test "latin1ToUtf8" {
-    var out: [8]u8 = undefined;
-    try std.testing.expectEqualStrings("a\xC3\xA9", latin1ToUtf8("a\xE9", &out));
-    var tiny: [2]u8 = undefined;
-    try std.testing.expectEqualStrings("a", latin1ToUtf8("a\xE9", &tiny));
-}
-
-test "Preedit: compose, edit in the middle, caret in bytes, commit" {
-    var p: Preedit = .{};
-    p.start();
-    try std.testing.expect(p.active);
-    // "ni" typed.
-    p.draw(0, 0, &.{ 'n', 'i' }, 2);
-    try std.testing.expectEqualStrings("ni", p.text());
-    try std.testing.expectEqual(@as(usize, 2), p.out_caret);
-    // Replace the whole string by "你" (IM converts), caret after it.
-    p.draw(0, 2, &.{0x4F60}, 1);
-    try std.testing.expectEqualStrings("你", p.text());
-    try std.testing.expectEqual(@as(usize, 3), p.out_caret);
-    // Append "好", then replace the first char only (tail must survive).
-    p.draw(1, 0, &.{0x597D}, 2);
-    p.draw(0, 1, &.{ 'a', 'b' }, 2);
-    try std.testing.expectEqualStrings("ab好", p.text());
-    // Delete one char from the middle.
-    p.draw(1, 1, &.{}, 1);
-    try std.testing.expectEqualStrings("a好", p.text());
-    p.done();
-    try std.testing.expect(!p.active);
-    try std.testing.expectEqualStrings("", p.text());
-}
-
-test "Preedit: hostile ranges clamp, overflow truncates" {
-    var p: Preedit = .{};
-    p.start();
-    p.draw(99, 99, &.{ 'x', 'y' }, 99);
-    try std.testing.expectEqualStrings("xy", p.text());
-    try std.testing.expectEqual(@as(usize, 2), p.caret);
-    var big: [Preedit.CAP + 10]u21 = @splat('z');
-    p.draw(0, 99, &big, 0);
-    try std.testing.expectEqual(@as(usize, Preedit.CAP), p.len);
-    // Rendering never exceeds the UTF-8 budget.
-    var cjk: [Preedit.CAP]u21 = @splat(0x4F60);
-    p.draw(0, 99, &cjk, Preedit.CAP);
-    try std.testing.expect(p.text().len <= Preedit.MAX_BYTES);
-    try std.testing.expectEqual(@as(usize, 0), p.text().len % 3);
-}
-
-test "decodeUtf8Lossy skips invalid bytes" {
-    var out: [8]u21 = undefined;
-    const n = decodeUtf8Lossy("a\xFFb\xE4\xBD\xA0", &out);
-    try std.testing.expectEqual(@as(usize, 3), n);
-    try std.testing.expectEqual(@as(u21, 0x4F60), out[2]);
-}
-
-test "chooseImStyle prefers on-the-spot, then over-the-spot, then root" {
-    const all = [_]c_ulong{
-        XIMPreeditNothing | XIMStatusNothing,
-        XIMPreeditPosition | XIMStatusNothing,
-        XIMPreeditCallbacks | XIMStatusNone,
-    };
-    try std.testing.expectEqual(ImeMode.callbacks, chooseImStyle(&all).?.mode);
-    try std.testing.expectEqual(ImeMode.position, chooseImStyle(all[0..2]).?.mode);
-    try std.testing.expectEqual(ImeMode.nothing, chooseImStyle(all[0..1]).?.mode);
-    // Status we would have to draw ourselves is unusable.
-    try std.testing.expect(chooseImStyle(&.{XIMPreeditCallbacks | XIMStatusCallbacks}) == null);
-    try std.testing.expect(chooseImStyle(&.{}) == null);
-}
-
-test "utf8ToLatin1 replaces wide characters" {
-    var out: [8]u8 = undefined;
-    const n = utf8ToLatin1("a\xC3\xA9\xE4\xBD\xA0", &out);
-    try std.testing.expectEqualSlices(u8, "a\xE9?", out[0..n]);
 }

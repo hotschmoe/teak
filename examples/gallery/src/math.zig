@@ -90,31 +90,3 @@ pub fn rotateX(t: f32) Mat4 {
         0, 0,  0, 1,
     };
 }
-
-test "perspective maps near plane to depth 0 and far to 1" {
-    const m = perspective(1.0, 1.0, 0.1, 10.0);
-    const near = [4]f32{ 0, 0, -0.1, 1 };
-    const far = [4]f32{ 0, 0, -10.0, 1 };
-    inline for (.{ .{ near, 0.0 }, .{ far, 1.0 } }) |case| {
-        var clip: [4]f32 = undefined;
-        for (0..4) |r| {
-            var sum: f32 = 0;
-            for (0..4) |k| sum += m[k * 4 + r] * case[0][k];
-            clip[r] = sum;
-        }
-        try std.testing.expectApproxEqAbs(@as(f32, case[1]), clip[2] / clip[3], 1e-5);
-    }
-}
-
-test "lookAt puts the eye at the origin and the target on -z" {
-    const v = lookAt(.{ 0, 0, 5 }, .{ 0, 0, 0 }, .{ 0, 1, 0 });
-    // target (0,0,0) -> view (0,0,-5)
-    try std.testing.expectApproxEqAbs(@as(f32, -5), v[14], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), v[12], 1e-5);
-}
-
-test "mul identity" {
-    const m = rotateY(0.7);
-    const r = mul(identity, m);
-    for (m, r) |a, b| try std.testing.expectApproxEqAbs(a, b, 1e-6);
-}

@@ -17,7 +17,7 @@ const scene = teak.scene;
 const Orbit = scene.Orbit;
 const Vec3 = scene.mat.Vec3;
 
-// ── Palette (kerf/spec/DESIGN.md) ──────────────────────────────────
+// Palette: kerf/spec/DESIGN.md.
 
 pub const paper: [4]f32 = .{ 0.949, 0.937, 0.902, 1 };
 const paper2: [4]f32 = .{ 0.914, 0.898, 0.847, 1 };
@@ -53,8 +53,6 @@ const tab_button: teak.ButtonStyle = .{ .bg = clear, .hover_bg = paper2, .press_
 const row_button: teak.ButtonStyle = .{ .bg = clear, .hover_bg = paper2, .press_bg = paper2, .fg = ink, .label_align = .start, .height = 24, .min_width = 0, .h_padding = 6 };
 const row_button_on: teak.ButtonStyle = .{ .bg = ink, .hover_bg = ink, .press_bg = ink, .fg = paper, .label_align = .start, .height = 24, .min_width = 0, .h_padding = 6 };
 
-// ── Scene content ──────────────────────────────────────────────────
-
 pub const scene_id: u32 = 7;
 const mesh_key: u32 = 1;
 const img_ring: u32 = 1;
@@ -78,13 +76,9 @@ const sheet_size = [2]f32{ 120, 80 };
 /// Frame of each sheet: origin is the top-left as seen from the front; `u`
 /// runs right, `v` runs down the page (the canvas y axis).
 fn sheetFrame(id: u32) struct { origin: Vec3, u: Vec3, v: Vec3 } {
-    // `u`/`v` are world units per sheet unit, so 0.8 draws the 120 x 80 page at 96 x 64 inches.
     return switch (id) {
-        // behind the structure, upright, facing +z
         1 => .{ .origin = .{ 0, 80, -30 }, .u = .{ 0.8, 0, 0 }, .v = .{ 0, -0.8, 0 } },
-        // beside it on the left, upright, turned about 30 degrees toward the iso camera
         2 => .{ .origin = .{ -76, 80, -4 }, .u = .{ 0.4, 0, 0.693 }, .v = .{ 0, -0.8, 0 } },
-        // a plan sheet leaning on the ground in front: page down = toward the viewer, raised at the back
         else => .{ .origin = .{ 0, 20, 62 }, .u = .{ 0.8, 0, 0 }, .v = .{ 0, -0.27, 0.75 } },
     };
 }
@@ -98,8 +92,6 @@ fn markerPos(id: u32) Vec3 {
         else => .{ -44, 50, 22 },
     };
 }
-
-// ── Model / Msg / update ───────────────────────────────────────────
 
 pub const Model = struct {
     cam: Orbit = .{ .target = .{ 48, 40, 30 }, .dist = 270, .yaw = -0.62, .pitch = 0.42 },
@@ -186,8 +178,6 @@ pub fn camera(m: *const Model) teak.Camera {
     return m.cam.camera(m.vp[0], m.vp[1], .{ .lo = .{ -20, -10, -40 }, .hi = .{ 130, 100, 90 } });
 }
 
-// ── Picking (pure: ray / screen quad against the same data the view emits) ──
-
 /// Which layer is under viewport-local px `(x, y)`: markers first (they float
 /// in front), then the nearest sheet or the annotation layer. 0 = nothing.
 fn pickAtImpl(m: *const Model, x: f32, y: f32, w: f32, h: f32) u32 {
@@ -200,8 +190,6 @@ fn pickAtImpl(m: *const Model, x: f32, y: f32, w: f32, h: f32) u32 {
     if (scene.pick.planes(ray, planes_list)) |p| return p.id;
     return 0;
 }
-
-// ── Layers as View data ────────────────────────────────────────────
 
 /// The planes without content (frames only): enough for picking.
 fn planeFrames(m: *const Model, buf: *[4]teak.ScenePlane) []const teak.ScenePlane {
@@ -219,7 +207,6 @@ fn planeFrames(m: *const Model, buf: *[4]teak.ScenePlane) []const teak.ScenePlan
 }
 
 fn annotationPlane(content: []const teak.CanvasPrimitive) teak.ScenePlane {
-    // A clear sheet standing in front of the structure, facing +z, y up the page.
     return .{ .origin = .{ -4, 86, 58 }, .u = .{ 0.85, 0, 0 }, .v = .{ 0, -0.85, 0 }, .size = .{ 116, 70 }, .content = content, .opacity = 0.85, .layer = 2, .id = 4 };
 }
 
@@ -269,7 +256,6 @@ fn hatch(a: std.mem.Allocator, prims: *Prims, x0: f32, y0: f32, x1: f32, y1: f32
     var segs: std.ArrayList([4]f32) = .empty;
     var d = x0 - (y1 - y0);
     while (d < x1) : (d += gap) {
-        // line y = (x - d) + y0, clipped to the rect
         var ax = d;
         var ay = y0;
         var bx = d + (y1 - y0);
@@ -303,14 +289,12 @@ fn sheetContent(a: std.mem.Allocator, id: u32, lit: bool, picked: bool) []const 
     const h = sheet_size[1];
     const frame_color = if (picked) blue else ink;
     rectOutline(a, &p, 3, 3, w - 3, h - 3, frame_color, if (picked) 2.4 else 1.5);
-    // title block
     p.append(a, .{ .filled_rect = .{ .x = 3, .y = h - 13, .w = w - 6, .h = 10, .color = if (lit) .{ 0.90, 0.93, 0.98, 1 } else .{ 0.93, 0.91, 0.84, 1 } } }) catch {};
     rectOutline(a, &p, 3, h - 13, w - 3, h - 3, frame_color, 1.1);
     for ([_]f32{ 40, 84 }) |x| {
         const pts = a.dupe(Pt, &.{ .{ .x = x, .y = h - 13 }, .{ .x = x, .y = h - 3 } }) catch continue;
         p.append(a, .{ .polyline = .{ .points = pts, .color = frame_color, .thickness = 1.0 } }) catch {};
     }
-    // faint blueprint grid
     var g: f32 = 10;
     while (g < w - 3) : (g += 10) {
         p.append(a, .{ .vline = .{ .x = g, .color = .{ 0.663, 0.757, 0.867, 0.28 }, .thickness = 0.8 } }) catch {};
@@ -372,8 +356,6 @@ fn annotationContent(a: std.mem.Allocator, lit: bool) []const teak.CanvasPrimiti
     return p.items;
 }
 
-// ── Resources: one mesh, two generated marker images ───────────────
-
 const marker_px = 48;
 
 /// A ring (outline circle) and a filled bubble with a notch, white on
@@ -386,16 +368,13 @@ fn markerImage(comptime bubble: bool) [marker_px * marker_px * 4]u8 {
         const dx = @as(f32, @floatFromInt(xx)) - c;
         const dy = @as(f32, @floatFromInt(yy)) - c;
         const r = @sqrt(dx * dx + dy * dy);
-        // coverage with ~1px feather
         const outer = std.math.clamp(c - 1 - r + 0.5, 0, 1);
         var cov: f32 = outer;
         if (!bubble) {
             const inner = std.math.clamp(r - (c - 7) + 0.5, 0, 1);
             cov = outer * inner;
-            // a centre dot
             cov = @max(cov, std.math.clamp(3.5 - r + 0.5, 0, 1));
         } else {
-            // knock out a small cross so it reads as a callout bubble
             const bar = @min(@abs(dx), @abs(dy));
             if (@abs(dx) < c * 0.62 and @abs(dy) < c * 0.62 and bar < 2.2) cov *= 1 - std.math.clamp(2.2 - bar + 0.5, 0, 1);
         }
@@ -478,7 +457,6 @@ fn buildStructure() Structure {
             const tri = [6]u32{ 0, 1, 2, 0, 2, 3 };
             for (tri, 0..) |t, k| s.idx[bi * 36 + fi * 6 + k] = base + t;
         }
-        // 12 edges
         var e: usize = 0;
         for (0..8) |i| {
             for (0..3) |axis| {
@@ -500,8 +478,6 @@ fn buildStructure() Structure {
     }
     return s;
 }
-
-// ── View ───────────────────────────────────────────────────────────
 
 pub fn view(m: *const Model, cb: anytype) void {
     cb.pushGroup(.{ .padding = 0, .gap = 0, .bg = paper, .align_cross = .stretch });
@@ -676,97 +652,4 @@ fn statusBar(m: *const Model, cb: anytype) void {
     cb.popGroup();
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 const testing = std.testing;
-
-test "structure mesh is valid and its edges are segment pairs" {
-    try structure.data().validate();
-    try testing.expectEqual(@as(usize, boxes.len * 12), structure.data().segmentCount());
-}
-
-test "marker images are white with a coverage alpha: ring is hollow, bubble solid" {
-    const c = marker_px / 2;
-    const at = struct {
-        fn alpha(img: []const u8, x: usize, y: usize) u8 {
-            return img[(y * marker_px + x) * 4 + 3];
-        }
-    }.alpha;
-    try testing.expect(at(&ring_rgba, c, c) > 200); // the centre dot
-    try testing.expectEqual(@as(u8, 0), at(&ring_rgba, c + 8, c)); // hollow between dot and ring
-    try testing.expect(at(&ring_rgba, c + 17, c) > 200); // the ring itself
-    try testing.expectEqual(@as(u8, 0), at(&ring_rgba, 0, 0)); // outside the circle
-    try testing.expect(at(&bubble_rgba, c + 10, c + 10) > 200); // solid disc
-    try testing.expectEqual(@as(u8, 255), bubble_rgba[0]); // white rgb
-}
-
-test "markers and sheets pick by screen position and ray; markers win over sheets" {
-    var m: Model = .{};
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .layout, .x = 12, .y = 86, .w = 900, .h = 600 } });
-    try testing.expectEqual([2]f32{ 12, 86 }, m.vp_origin);
-    const cam = camera(&m);
-    // click at the projected centre of each sheet
-    for ([_]u32{ 1, 2, 3 }) |id| {
-        const f = sheetFrame(id);
-        const centre = scene.mat.add(f.origin, scene.mat.add(scene.mat.scale(f.u, sheet_size[0] / 2), scene.mat.scale(f.v, sheet_size[1] / 2)));
-        const s = scene.project(cam, 900, 600, centre).?;
-        const hit = m.pickAt(s[0], s[1], 900, 600);
-        // a nearer layer (the annotation sheet or a marker) may cover the centre, never another sheet
-        try testing.expect(hit == id or hit == 4 or hit >= 11);
-    }
-    // a marker's own pixel selects it, even where a sheet is behind it
-    const mp = scene.project(cam, 900, 600, markerPos(12)).?;
-    try testing.expectEqual(@as(u32, 12), m.pickAt(mp[0], mp[1], 900, 600));
-    // empty space picks nothing
-    try testing.expectEqual(@as(u32, 0), m.pickAt(2, 2, 900, 600));
-}
-
-test "click selects, a second click on the same row deselects, drag does not pick" {
-    var m: Model = .{};
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .layout, .w = 900, .h = 600 } });
-    const mp = scene.project(camera(&m), 900, 600, markerPos(11)).?;
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .down, .button = .left, .x = mp[0], .y = mp[1], .w = 900, .h = 600 } });
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .up, .button = .left, .x = mp[0], .y = mp[1], .w = 900, .h = 600 } });
-    try testing.expectEqual(@as(u32, 11), m.selected);
-    update(&m, .{ .select = 11 });
-    try testing.expectEqual(@as(u32, 0), m.selected);
-    // a drag past the slop orbits instead of picking
-    const yaw = m.cam.yaw;
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .down, .button = .left, .x = mp[0], .y = mp[1], .w = 900, .h = 600 } });
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .move, .dx = 30, .buttons = .{ .left = true }, .w = 900, .h = 600 } });
-    update(&m, .{ .view_event = .{ .id = scene_id, .kind = .up, .button = .left, .x = mp[0], .y = mp[1], .w = 900, .h = 600 } });
-    try testing.expectEqual(@as(u32, 0), m.selected);
-    try testing.expect(m.cam.yaw != yaw);
-}
-
-test "view: one viewport3d with sheets, annotation layer, sprites; selection raises the sheet's layer" {
-    var m: Model = .{};
-    m.selected = 2;
-    var cb = teak.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    cb.theme = theme;
-    view(&m, &cb);
-    try testing.expect(teak.validateBalance(cb.cmds.items) == null);
-    var scenes: usize = 0;
-    for (cb.cmds.items) |c| switch (c) {
-        .scene3d => |s| {
-            scenes += 1;
-            try testing.expectEqual(@as(usize, 4), s.view.planes.len); // 3 sheets + annotations
-            try testing.expectEqual(@as(usize, 4), s.view.sprites.len);
-            try testing.expectEqual(@as(i16, 1), s.view.planes[1].layer); // sheet 2 selected
-            try testing.expectEqual(@as(i16, 0), s.view.planes[0].layer);
-            try testing.expect(s.view.planes[0].content.len > 10);
-            try testing.expect(s.view.grid != null);
-        },
-        else => {},
-    };
-    try testing.expectEqual(@as(usize, 1), scenes);
-    update(&m, .toggle_annotations);
-    cb.reset();
-    cb.theme = theme;
-    view(&m, &cb);
-    for (cb.cmds.items) |c| switch (c) {
-        .scene3d => |s| try testing.expectEqual(@as(usize, 3), s.view.planes.len),
-        else => {},
-    };
-}

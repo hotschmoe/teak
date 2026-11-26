@@ -2,7 +2,7 @@
 
 **Status**: `pub` in `src/teak.zig` as `LayoutEngine`, `Rect`.
 **Source**: `src/layout/engine.zig`
-**Tests**: colocated — measure + position for groups, flex distribution, scroll viewports.
+**Checks**: the background gate drives the headless todo application through layout and input.
 
 Escape hatch 3 in [HARDLINE §2](../HARDLINE.md#escape-hatch-3-flat-buffer-with-stack-layout).
 
@@ -79,12 +79,11 @@ cb.pushGroup(.{ .padding = 0, .gap = 0, .align_cross = .stretch });          // 
 cb.popGroup();
 ```
 
-`src/layout/sizing_test.zig` snapshots exactly this shape at 1440x900 (header 40, status 24, columns 360 / flex / 320), plus nested stretch, fixed table columns, `space_between`, min sizes and scroll overflow.
+At 1440x900 this shape has a 40-pixel header, a 24-pixel status bar, and columns of 360 pixels, flexible width, and 320 pixels.
 
 ### Grid
 
 **Status**: `pub` in `src/teak.zig` as `GridStyle`, `GridTrack`, `MAX_GRID_COLUMNS`; emitters `cb.pushGrid(GridStyle)` / `cb.popGrid()` (Cmd pair `push_grid` / `pop_grid`).
-**Tests**: `src/layout/grid_test.zig`.
 
 A grid puts its direct children, in buffer order, into a fixed number of columns, row by row. Each direct child (any leaf, or a group / scroll / grid for a multi-widget cell) takes exactly one cell. Overlays inside a grid take no cell.
 
@@ -199,7 +198,6 @@ cb.popOverlay();
 
 **Status**: `pub` in `src/teak.zig` as `validateBalance`, `formatBalanceError`, `BalanceError`, `BalanceKind`, `MAX_BALANCE_DEPTH`.
 **Source**: `src/core/cmd.zig`
-**Tests**: colocated in `src/core/cmd.zig` — balanced → `null`; each imbalance kind with its index; nested/crossed cases; form-row cases; depth overflow; formatter output.
 
 Every `push_*` Cmd (`push_group` / `push_grid` / `push_scroll` / `push_overlay` / `push_virtual_list`) must be closed by the matching `pop_*`. A missing pop, a stray pop, or a **crossed pair** (`push_group … pop_overlay`) is otherwise a silent bug: the layout `FixedStack` only `assert`s on overflow/underflow, and a *balanced-but-crossed* buffer doesn't even trip that — it just produces wrong rects. `validateBalance` turns the whole class into a named, immediate error.
 

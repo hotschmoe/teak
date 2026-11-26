@@ -1,19 +1,5 @@
 #!/usr/bin/env node
-// Web IME acceptance test: drive an input-method composition into a teak app in
-// headless Chromium through the DevTools protocol and screenshot each stage.
-//
-//   cd tools && npm ci
-//   node tools/web-ime-test.mjs <dist-dir> <out-prefix> --click X,Y [--composition TEXT] [--commit TEXT]
-//        [--wait-ms 2500] [--width 1280 --height 800] [--chrome PATH]
-//
-// Stages (PNG per stage, `<out-prefix>-<stage>.png`):
-//   focused   the app is idle with a focused text field (the hidden <textarea> holds DOM focus)
-//   preedit   after Input.imeSetComposition: the preedit shows inline, underlined, at the caret
-//   committed after Input.insertText: the preedit is replaced by the committed text, once
-//   cancel    a second composition cancelled with an empty imeSetComposition + Escape: nothing inserted
-// Checks: no page errors; the hidden field exists and is focused; the three stages differ pixel-wise
-// (preedit drawn; commit changes the content; cancel returns to the committed image).
-// Exit: 0 ok, 1 check failed, 2 usage.
+// Web IME acceptance test; see SRC.md.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -66,7 +52,6 @@ const browser = await puppeteer.launch({
     '--use-webgpu-adapter=swiftshader', `--use-angle=${process.env.WEBSHOT_ANGLE || 'swiftshader'}`],
 });
 const problems = [];
-// Number of pixels that differ between two PNGs (decoded in a scratch page).
 async function pixelDiff(browser, a, b) {
   const scratch = await browser.newPage();
   try {
