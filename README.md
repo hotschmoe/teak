@@ -153,6 +153,7 @@ examples/fonts/            IBM Plex Mono at three weights + tracking (web .fonts
 examples/tables/            DataTable / VarList / TreeList / Scroller at 100k rows
 examples/gallery/           every widget in one place
 examples/notes/             multi-line TextArea editor
+examples/sysmon/            hardware monitor (CPU, memory, disk, network, processes, temperatures) for Linux and Windows
 tools/audit.zig            HARDLINE drift audit (zig build audit)
 test/integration_test.zig  round-trip pipeline + wasm canary
 shaders/quad.wgsl          colored-rectangle shader (shared by both GPU backends)

@@ -197,7 +197,7 @@ Overlay hits take precedence over the base layer. A modal overlay containing the
 
 ## src/run.zig
 
-Input is routed using the previous frame's commands and rectangles, which describe what the user actually saw. Idle frames can redraw the cached frame solely for caret blinking without rerunning view or layout. A live secondary window reuses GPU scratch buffers, so the primary frame must rebuild while one is open; resource-table changes also force staging even if commands compare equal. Snapshot output is written on the first frame and content or window transitions, not on cosmetic blink ticks. Outstanding effects and a listening control channel keep input polling active at frame rate, because the Host cannot wake on the control socket itself.
+Input is routed using the previous frame's commands and rectangles, which describe what the user actually saw. Idle frames can redraw the cached frame solely for caret blinking without rerunning view or layout. A live secondary window reuses GPU scratch buffers, so the primary frame must rebuild while one is open; resource-table changes also force staging even if commands compare equal. Snapshot output is written on the first frame and content or window transitions, not on cosmetic blink ticks. Outstanding effects and a listening control channel keep input polling active at frame rate, because the Host cannot wake on the control socket itself. `Runtime.post` is how the owner of a hand-written loop delivers a Msg from outside (a sampler, a socket); the frame after a post always builds.
 
 Keyboard navigation keeps text focus in the Model and uses loop navigation focus for non-text controls. Enter invokes `submitMsg` when provided except in a focused text area, where it remains a newline key. Modal backdrops can consume clicks without producing messages. Pointer capture ends on the last release and is dropped if its canvas disappears. Effect reconciliation forgets no-longer-listed effects before issuing new ones. Long window titles compare against the stored truncated prefix so they do not trigger a title update every frame. A user-closed secondary window is suppressed from reopening until the application's window intent changes. See HARDLINE §1 and §2.
 
@@ -326,6 +326,12 @@ Moment diagrams use the parabola of a uniformly loaded simple span. When a diagr
 ## examples/scene_layers/src/app.zig
 
 Sheet frame vectors use world units per sheet unit; a factor of 0.8 displays a 120×80 page at 96×64 inches. See `kerf/spec/DESIGN.md` for the palette.
+
+## examples/sysmon
+
+The App never reads the OS: `ui_main.zig` owns a `sys.Sampler`, reads the machine once a second and hands the reading to the Runtime with `Runtime.post`; the Model copies it. `sys.zig` holds the data types and turns two readings of cumulative counters into rates, so a backend only reports what the OS gives it. Process CPU is a share of the whole machine (one busy core of twenty is 5%). Processes are kept sorted by pid so a table row keeps its index while the process set is unchanged; when it changes, the table is reloaded and the selection is carried over by pid.
+
+Linux reads `/proc` and `/sys/class/hwmon` through raw syscalls and allocates nothing; kernel threads are skipped (no address space), and only whole disks are summed because a partition's sectors are already in its disk's row. Windows uses `NtQuerySystemInformation` (per-core times, the process list), `GlobalMemoryStatusEx` and `K32GetPerformanceInfo`, `IOCTL_DISK_PERFORMANCE` on `\\.\PhysicalDriveN` opened with no access rights, and `GetIfTable2` without the filter-layer rows that repeat an adapter's counters; struct layouts are asserted at compile time. On both systems network traffic is summed over the adapters backed by hardware (a `device` link in sysfs, a physical connector on Windows) so a bridge, a virtual switch or a container's interface is not counted on top of the card behind it; a machine with no such adapter, as some virtual machines are, counts every adapter but the loopback. Windows reports no temperatures: they need WMI or vendor drivers. There is no GPU page: utilisation is vendor-specific on both systems. The headless shot feeds synthetic samples by default so the picture is the same everywhere; `--live` uses the real sampler.
 
 ## examples/tables/src/app.zig
 

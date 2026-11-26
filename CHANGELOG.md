@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Linux: idle hosts block instead of spinning
+
+- The Linux `Host` forwards `waitEvents`, and the Wayland host implements it, so an idle app sleeps in `poll` instead of running the loop flat out (a whole core before; 0% after on X11).
+
+### Msgs from the loop owner
+
+- `Runtime.post(msg)`: the code that owns a hand-written loop delivers a Msg from outside (a sampler, a socket, a worker mailbox); it goes through `update` and the next frame builds. See `docs/features/run.md`.
+- `DataTable.Model.reload(n, src)` and `select(row)`: a live table whose row set changes keeps its sort, widths, focus and scroll.
+- `ButtonStyle.flat()`: `DataTable` and `TreeList` cells are square and borderless under every theme (they inherited rounded, bordered buttons from `Theme.modern_dark`).
+
+### examples/sysmon
+
+- A hardware monitor for Linux and Windows: CPU (total and per logical processor), memory, disk and network rates, a sortable process table, and temperatures on Linux.
+
 ## 0.2.0 (2026-10-27)
 
 All changes are additions; exhaustive switches over `CanvasPrimitive` (`circle`/`arc`/`polygon`), `DataTable.Msg` (`resort`) and `Cmd` (`push_grid`/`pop_grid`) need the new arms.
