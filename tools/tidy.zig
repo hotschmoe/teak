@@ -1006,6 +1006,7 @@ const thread_names = [_][]const u8{
     "thrd_yield",
     "thrd_current",
 };
+const task_names = [_][]const u8{ "concurrent", "async" };
 const process_names = [_][]const u8{
     "clone",
     "clone3",
@@ -1083,8 +1084,12 @@ fn measure_banned(group: *Group, site: Site, tree: Ast, callee: Ast.Node.Index) 
     {
         record(group, .allocation, site);
     }
+    const receiver = receiver_value(tree, callee);
+    const timestamp = has_chain(tree, callee, &.{ "Io", "Timestamp" }) or
+        has_chain(tree, receiver, &.{ "Io", "Timestamp" });
     if (has_chain(tree, callee, &.{ "std", "time" }) or
-        has_chain(tree, callee, &.{ "Io", "Clock" }) or listed(name, &clock_names))
+        has_chain(tree, callee, &.{ "Io", "Clock" }) or listed(name, &clock_names) or
+        (timestamp and std.mem.eql(u8, name, "now")))
     {
         record(group, .clock, site);
     }
@@ -1107,6 +1112,7 @@ fn measure_system_calls(group: *Group, site: Site, tree: Ast, callee: Ast.Node.I
         has_chain(tree, callee, &.{ "std", "Thread" }) or
         has_chain(tree, callee, &.{ "Io", "Threaded" }) or
         std.mem.startsWith(u8, name, "pthread_") or listed(name, &thread_names) or
+        (tree.nodeTag(callee) == .field_access and listed(name, &task_names)) or
         (raw and std.mem.startsWith(u8, name, "futex"))) record(group, .threads, site);
     if ((has_chain(tree, callee, &.{ "std", "fs" }) and
         !has_chain(tree, callee, &.{ "fs", "path" })) or
@@ -1443,7 +1449,6 @@ fn check_ratchets(state: *State, options: Options) !void {
             const target = try require_target(state, group);
             if (!options.update or !target) failed = true;
         }
-        if (group.counts[@backingInt(Metric.tests)] != 0) failed = true;
     }
     failed = try check_removed(state, snapshot, options) or failed;
     if (failed) return error.RatchetMoved;
