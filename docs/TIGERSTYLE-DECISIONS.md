@@ -35,9 +35,13 @@ up within one module, not at the end.
 - on Linux, the X11 and Wayland wire protocols spoken over a socket, and (only for an optional GPU
   backend) libvulkan and the vendor's driver.
 
+Ours, and therefore not a dependency to remove: any package in the owner's own repositories
+(`hotschmoe/*`). Today that is rich_zig (written by the owner) and webzocket (the owner's fork). See
+amendment 1 at the end.
+
 Everything else is a dependency and has to be owned or removed: libX11, libwayland-client, libxkbcommon,
-libwayland-cursor, wgpu-native, stb_truetype, HarfBuzz, webzocket, rich_zig, bash, PowerShell, Python, Node
-and its packages, third-party CI actions. Chromium stays as the thing under test in the background gate.
+libwayland-cursor, wgpu-native, stb_truetype, HarfBuzz, bash, PowerShell, Python, Node and its packages,
+third-party CI actions. Chromium stays as the thing under test in the background gate.
 
 The Linux rule in one sentence: a teak app must be able to open a window and draw with no `dlopen` at all
 (CPU backend over shared memory); a GPU backend may load libvulkan at run time, and must never be required.
@@ -256,7 +260,37 @@ In order, with the plan's phase names:
 
 1. Phase 0 in both repositories: tidy with ratchets, in the blocking gate; these decisions and the rule
    sheet in each repository; a tag on each master so "before the rewrite" has a name.
-2. Z1 in zunk: owned replacements for webzocket and rich_zig.
+2. Zunk: generative testing of the build path (Z3) first, since it needs nothing else. Z1 as first
+   written is withdrawn (amendment 1).
 3. Phase 1 in teak: close the seam (options struct in place of environment reads, clocks and files behind
    the Host, text caches as passed-in state, a recorder that captures everything the Host delivers).
 4. Phase 2 in teak: the simulator. Nothing in phase 4 starts until its checkpoint passes.
+
+## Amendment 1 (2026-11-26): webzocket and rich_zig are ours
+
+The first version of D2 listed webzocket and rich_zig as dependencies to replace, and a first agent was
+started on step Z1 to write in-tree replacements. That was my mistake: both are fetched from
+`github.com/hotschmoe/...`, and the owner pointed out that those are their own repositories. The agent was
+stopped before it changed any tracked file.
+
+**Decision.**
+- Both stay as zunk's packages. "We must own all dependencies" is already true of them.
+- Being ours, they are inside the rules, not outside them. tidy reports on each (report only, no ratchet
+  in their repositories until the owner wants one there), so the distance from the rule sheet is a number.
+- They are not rewritten as part of this effort. The request was teak and zunk.
+- Where zunk's simulation needs something from them, the change is made in them. The known case is step
+  Z4: the dev server has to run on one thread over an injected IO interface, so webzocket has to be usable
+  without owning the socket or a thread. If it is not, that is a change to webzocket, not a reason to go
+  around it.
+- Console output (rich_zig) is a sink. Zunk's logic must not depend on it for anything the simulator
+  checks; the JSON report path already bypasses it.
+
+**Turned down.**
+- Carrying on with in-tree replacements because zunk uses a small part of each (about four call sites and
+  about 110 print calls against roughly 30,000 lines). It would shrink what has to meet the rules, and it
+  would mean the owner's own libraries are not good enough for the owner's own tool. If they fall short,
+  they get fixed.
+- Rewriting both now, to the full rule sheet. Not asked for, and larger than zunk itself.
+
+**Open point for the owner.** webzocket is a fork. Owning it means its upstream is no longer a source of
+changes we take without reading; whether to keep merging from upstream is the owner's call.

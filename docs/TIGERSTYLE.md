@@ -50,8 +50,9 @@ tidy ratchets: its counts may go down, never up. The decisions behind each rule 
 
 ## Dependencies
 
-- None, apart from the Zig toolchain and what D2 names as platform. Tools and scripts are Zig programs run
-  by `zig build`.
+- None, apart from the Zig toolchain, what D2 names as platform, and packages from the owner's own
+  repositories (`hotschmoe/*`), which are ours and held to this sheet. Tools and scripts are Zig programs
+  run by `zig build`.
 
 ## Tests and comments (the owner's rules, `ENGINEERING.md`)
 
