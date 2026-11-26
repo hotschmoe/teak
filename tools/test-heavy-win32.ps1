@@ -20,4 +20,13 @@ foreach ($example in @('chrome', 'effects')) {
         } finally { $env:PATH = $previousPath }
     } finally { Pop-Location }
 }
+Push-Location (Join-Path $root 'examples/sysmon')
+try {
+    & $zig build run -j4
+    if ($LASTEXITCODE -ne 0) { throw 'sysmon sampler canary failed' }
+    & $zig build shot -j4 -- (Join-Path $out 'sysmon-live.png') --live
+    if ($LASTEXITCODE -ne 0) { throw 'sysmon live shot failed' }
+    & $zig build shot -j4 -- (Join-Path $out 'sysmon-processes.png') --live --page processes
+    if ($LASTEXITCODE -ne 0) { throw 'sysmon process shot failed' }
+} finally { Pop-Location }
 Write-Host "Win32 artifacts: $out"
