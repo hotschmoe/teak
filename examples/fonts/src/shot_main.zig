@@ -11,6 +11,9 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{
+        .clear_color = .{ 0.08, 0.08, 0.1, 1.0 },
+    });
     try teak.headless.shotCli(App, Host, Gpu, init, "fonts.png", .{
         .width = 1000,
         .height = 520,
@@ -19,7 +22,7 @@ pub fn main(init: std.process.Init) !void {
             .{ .family = .mono, .weight = .medium, .bytes = @embedFile("plex-Medium") },
             .{ .family = .mono, .weight = .bold, .bytes = @embedFile("plex-Bold") },
         },
-        .run = .{ .clear_color = .{ 0.08, 0.08, 0.1, 1.0 } },
+        .run = options,
     }, &.{
         .{ .name = "initial", .steps = &.{.{ .frames = 2 }} },
     });

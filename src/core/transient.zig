@@ -20,7 +20,7 @@ pub const TransientState = struct {
     /// Frame counter, incremented once per built frame.
     frame_counter: u32 = 0,
     /// Caret phase: true = the text cursor is drawn. Set by the run loop
-    /// from the Host clock (`RunOptions.blink_half_ms`), so the blink keeps
+    /// from the Host clock (`Options.blink_half_ms`), so the blink keeps
     /// its rate when idle frames are skipped. Always true when blink is off.
     blink_on: bool = true,
     mouse_x: f32 = 0,

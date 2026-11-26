@@ -27,6 +27,7 @@ pub const TextDraw = text.TextDraw;
 /// Options a backend's `initWithOptions` accepts (it also keeps a plain
 /// `init(handle, w, h)` that behaves like `.{}`).
 pub const InitOptions = struct {
+    gpu_fallback: bool = false,
     /// 4x multisampling of the main UI pass, so rotated quads and canvas
     /// triangles are antialiased. Costs one extra full-size colour target.
     /// Off by default: axis-aligned UI is pixel-exact without it.

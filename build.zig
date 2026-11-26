@@ -61,11 +61,11 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tools/teak_drive.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "control_socket", .module = b.createModule(.{
+        .imports = &.{ .{ .name = "control_socket", .module = b.createModule(.{
             .root_source_file = b.path("src/platform/control_socket.zig"),
             .target = target,
             .optimize = optimize,
-        }) }},
+        }) }, .{ .name = "teak", .module = mod } },
     });
     const drive_exe = b.addExecutable(.{ .name = "teak-drive", .root_module = drive_mod });
     b.step("drive", "Build zig-out/bin/teak-drive (agent driver CLI + MCP server)")

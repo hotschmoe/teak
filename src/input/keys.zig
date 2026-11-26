@@ -51,7 +51,7 @@ pub const SpecialKey = enum {
     ctrl_delete,
 
     /// F12. `teak.run` consumes it to toggle the dev inspector panel when
-    /// `RunOptions.inspect_hotkey` is on (Debug builds by default); otherwise
+    /// `Options.inspect_hotkey` is on (Debug builds by default); otherwise
     /// it reaches the app like any other key.
     f12,
     f10,

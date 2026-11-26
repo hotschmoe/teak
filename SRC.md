@@ -4,8 +4,9 @@
 
 The rewrite's owned `assert` uses an ordinary conditional panic, including in
 ReleaseFast and ReleaseSmall (D6). Keeping it at the source root makes it usable
-by future core modules without a dependency on tools. Tidy imports it through a
-build module; it is deliberately absent from `src/teak.zig` and the public API.
+by core modules without a dependency on tools. Tidy imports it through a build
+module; `teak.assert` shares the implementation with the separate text module
+without importing the same source file into two modules.
 The assertion primitive cannot assert its own implementation without recursion;
 its one function has no assertion calls and contributes two to the existing
 `src/*.zig` deficit. No operating error is asserted.
@@ -111,7 +112,10 @@ lines and functions, longest function, assertion deficit, usize fields, recursio
 (files, lines, functions, assertions, sized fields) are printed by `--table` and
 not stored, because growth is not a regression. Normal runs require exact equality
 for every stored number. A decrease fails
-until `-- --update` records it; an increase is refused even by update. Updates
+until `-- --update` records it; an increase is refused even by update. The one
+legitimate raise is a count that was always there and has become visible (tidy
+learned to see it, or an implicit operation was made explicit): the stored number
+is then edited by hand and the commit says why. Updates
 validate the entire snapshot before writing. A new group can only be added by
 update at zero long lines/functions, deficit, usize fields, recursion, literal
 infinite loops, camelCase and tests (longest function at most 70). Other inventory
@@ -382,6 +386,9 @@ Overlay hits take precedence over the base layer. A modal overlay containing the
 
 ## src/run.zig
 
+The entry point supplies `Options`; runtime initialization never resolves environment
+overrides. Clock acquisition, file sinks and recorder behavior remain as before.
+
 Input is routed using the previous frame's commands and rectangles, which describe what the user actually saw. Idle frames can redraw the cached frame solely for caret blinking without rerunning view or layout. A live secondary window reuses GPU scratch buffers, so the primary frame must rebuild while one is open; resource-table changes also force staging even if commands compare equal. Snapshot output is written on the first frame and content or window transitions, not on cosmetic blink ticks. Outstanding effects and a listening control channel keep input polling active at frame rate, because the Host cannot wake on the control socket itself. `Runtime.post` is how the owner of a hand-written loop delivers a Msg from outside (a sampler, a socket); the frame after a post always builds.
 
 Keyboard navigation keeps text focus in the Model and uses loop navigation focus for non-text controls. Enter invokes `submitMsg` when provided except in a focused text area, where it remains a newline key. Modal backdrops can consume clicks without producing messages. Pointer capture ends on the last release and is dropped if its canvas disappears. Effect reconciliation forgets no-longer-listed effects before issuing new ones. Long window titles compare against the stored truncated prefix so they do not trigger a title update every frame. A user-closed secondary window is suppressed from reopening until the application's window intent changes. See HARDLINE §1 and §2.
@@ -456,6 +463,11 @@ The grid fades before its far plane. Gizmo rotation is recovered by normalizing 
 
 ## src/platform/native_effects.zig
 
+Storage roots, picker choice, open/download overrides and dynamic `TEAK_<NAME>` parameters
+come from the startup options. Query parameters retain argv precedence and Windows
+case-insensitive environment names. Changes to the process environment after startup no
+longer change effects. File and command-line access remain for later seam work.
+
 Hosts with native clipboards intercept clipboard effects before the shared service. Windows UTC offsets combine the base bias with the active standard or daylight adjustment; current rules are used for the queried instant. Completed effects are delivered asynchronously by the Host.
 
 ## src/core/unicode.zig
@@ -476,7 +488,41 @@ An overlong input line is discarded through its newline. Replies are single line
 
 ## src/platform/file_picker.zig
 
-The dialog subprocess needs an allocating `Io` and inherits the environment, including display, session-bus and XDG variables needed by the desktop toolkit. Zenity and kdialog return status 1 for cancellation and 0 with the selected path on stdout.
+The dialog subprocess needs an allocating `Io` and receives the entry point's captured
+environment, including display, session-bus and XDG variables needed by the desktop toolkit.
+Its local `Io` starts with an empty environment; the child receives an explicit map.
+Zenity and kdialog return status 1 for cancellation and 0 with the selected path on stdout.
+
+## src/options.zig
+
+`from_environment` is the sole environment reader in `src/`. It runs once from each native
+entry point, applies overrides to consumer defaults and captures name/value pairs for dynamic
+query parameters and picker children. Options own no allocator or mutable process handle.
+Strings borrow the process initialization map; the entry array lives in its startup arena.
+Both must outlive hosts, runtimes, reload images and effect workers. More than 65,536 entries
+returns `EnvironmentTooLarge`; allocation failure is returned. Web and simulated callers use
+explicit options without invoking the builder. Empty values retain the previous per-variable
+semantics, including presence-only Cocoa debug and Wayland viewport switches.
+
+## src/text/face.zig
+
+Native Host startup configures the existing face registry with the supplied font settings.
+Primary font overrides are resolved at startup so lazy measurement cannot read the environment
+or retain an options global. Default discovery stays lazy when no primary override is supplied.
+Default font search order and failure fallback stay unchanged.
+Registry ownership and caches remain for the later phase 1 step.
+
+## src/text/fallback.zig
+
+Startup configuration borrows up to four colon-separated fallback paths from Options.
+Font bytes are still loaded lazily into the existing cache. Discovery and cache ownership
+remain unchanged beyond removing the environment lookup.
+
+## src/dev.zig
+
+ABI version 2 passes Options into `envOpen`; each environment instance owns its copy and
+reuses it across reloads. The loader builds the options once. Plugins no longer receive or
+install a process environment in std globals. The environment fingerprint includes Options.
 
 ## src/core/widgets/split.zig
 

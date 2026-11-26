@@ -9,6 +9,7 @@ const cfg = @import("qa_cfg");
 const scripts = @import("scripts.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{});
     const spec = comptime scripts.specFor(cfg.example);
     var out_dir: []const u8 = ".";
     var scale: f32 = 1;
@@ -27,6 +28,9 @@ pub fn main(init: std.process.Init) !void {
     }
     var buf: [256]u8 = undefined;
     for (spec.states) |st| {
+        var run_options = options;
+        run_options.clear_color = st.clear orelse
+            scripts.clearColor(App, spec) orelse options.clear_color;
         if (list) {
             std.debug.print("{s}\n", .{st.name});
             continue;
@@ -38,7 +42,7 @@ pub fn main(init: std.process.Init) !void {
             .height = spec.height,
             .scale = scale,
             .msaa = st.msaa,
-            .run = .{ .clear_color = st.clear orelse scripts.clearColor(App, spec) orelse (teak.RunOptions{}).clear_color },
+            .run = run_options,
             .steps = st.steps,
         });
         std.debug.print("wrote {s}\n", .{path});

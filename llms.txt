@@ -152,9 +152,9 @@ pub fn resources(*const Model) []const Resource       // declarative GPU meshes/
 IME composition (`Host.imeState`) is folded into `TransientState` every
 frame with no opt-in. A static read-only app is just Model/Msg/update/view.
 
-### RunOptions
+### Options
 ```zig
-pub const RunOptions = struct {
+pub const Options = struct {
     clear_color: ?[4]f32 = null,  // scene clear each frame; null = theme.palette.bg (follows themeFor)
     blink_half_ms: u32 = 500, // caret blink half-period in Host-clock ms (0 = no blink); idle wakes at each toggle
     snapshot_path: ?[]const u8 = null,   // live snapshot sink; TEAK_SNAPSHOT env wins (see below)
@@ -172,6 +172,16 @@ pub const RunOptions = struct {
 pub const SecondaryWindowSpec = struct { title: []const u8, width: u32, height: u32 };
 ```
 
+`options_from_environment(init: std.process.Init, defaults: Options) !Options` captures
+environment overrides once in each native entry point. Pass its result to `Host.init`
+and `run` / `Runtime.init`; web and simulated callers pass explicit defaults. Options
+also carries `font_path`, `windows_directory`, `fallback_fonts`, `backend`,
+`wayland_display`, `scale`, `gdk_scale`, `picker`, `open_path`, `output_directory`,
+`config_home`, `home`, `app_data`, `cocoa_debug`, `wayland_no_viewport`, `gpu_fallback`
+and borrowed `environment` entries. Keep the startup map and arena alive for the process.
+Environment precedence in this reference applies at that builder, never inside the runtime.
+See `docs/migration-options.md`.
+
 ## Public API reference
 
 Everything below is a `pub const` re-export from `src/teak.zig` (`teak.NAME`).
@@ -184,6 +194,9 @@ hit_test focus keys a11y render vertex host input_queue gpu runtime headless dev
 ### Version (`teak.version`)
 `teak.version: []const u8` — library semver, derived from `build.zig.zon` `.version` (plus `+<meta>` when built with
 `-Dversion-meta=<meta>`); the single source is documented in docs/VERSIONING.md.
+
+### Assertions (`teak.assert`)
+`teak.assert(condition: bool) void` — check a programmer invariant in every optimize mode.
 
 ### Commands & CmdBuffer (`teak.cmd` → core/cmd.zig)
 ```zig
@@ -379,7 +392,7 @@ focusMsgAt(cmds, index: usize) ?Msg           // the Msg the leaf at index would
 nextNavigable(cmds, current) ?usize           // same walk over EVERY keyboard-operable leaf (button, checkbox, radio, slider, text field)
 prevNavigable(cmds, current) ?usize
 ```
-Keyboard navigation (`RunOptions.keyboard_nav`, default on): Tab / Shift+Tab walk `nextNavigable` (disabled skipped, modal overlay traps).
+Keyboard navigation (`Options.keyboard_nav`, default on): Tab / Shift+Tab walk `nextNavigable` (disabled skipped, modal overlay traps).
 A text leaf gets its focus Msg dispatched (the Model owns text focus); any other leaf becomes the run loop's own focus: a ring in
 `palette.accent` / `tokens.focus_ring_width` is drawn around it, Space / Enter dispatch the Msg a click would, Left/Right/Up/Down move
 and select inside a radio group, arrows / Home / End / PageUp / PageDown set a slider through `sliderMsg`. Optional App hook
@@ -557,7 +570,7 @@ EffectSubmit = enum { accepted, busy, unsupported }   // Host.submit's answer
 delisted (a late result for an unlisted id is dropped = cancellation). Results flow `effectMsg` -> `update`
 (`last_msg` names them). Effect slices live for the `submit` call; result slices until the `update` returns.
 Keep the request in `Model` (`effects()` returns a slice of it). 32 ids at once.
-Native: HTTP on worker threads, storage under `$XDG_CONFIG_HOME/teak/<app>/` (`RunOptions.app_name` or the window title), downloads to `$TEAK_OUT`,
+Native: HTTP on worker threads, storage under `$XDG_CONFIG_HOME/teak/<app>/` (`Options.app_name` or the window title), downloads to `$TEAK_OUT`,
 `open_file` / `download{pick=true}` open a native dialog (zenity or kdialog, or `$TEAK_PICKER`) on a worker thread (`file_cancelled` / `downloaded{ok=false}` on cancel or when none is installed),
 `TEAK_OPEN=path` bypasses the dialog for `open_file`, `query_param` reads `--name=value` / `TEAK_<NAME>`.
 
@@ -936,7 +949,7 @@ indexAt(text, x, y, font, max_w, mode, max_lines, m) usize  // inverse of caretP
 ```
 
 ### Accessibility (`teak.A11yNode`, `teak.A11yHint`; docs/features/a11y.md)
-Published automatically (`RunOptions.a11y = true`) to `Host.publishA11yTree` only when the tree changed; AT requests come back
+Published automatically (`Options.a11y = true`) to `Host.publishA11yTree` only when the tree changed; AT requests come back
 through the optional `Host.pollA11yActions` and become a click / focus Msg / typed keys (no second mutation path).
 ```zig
 A11yHint = struct { semantic: A11ySemantic = .none, label: []const u8 = "", value: f32 = 0 /*progressbar*/, level: u8 = 0,
@@ -1062,10 +1075,10 @@ headless.latencyAfterClick(rt, host, gpa, x, y) !LatencyReport   // the same mea
 
 ### Application loop (`teak.run` / `teak.runtime` → run.zig)
 ```zig
-run(comptime App: type, gpa, host: anytype, gpu: anytype, opts: RunOptions) !void
+run(comptime App: type, gpa, host: anytype, gpu: anytype, opts: Options) !void
 Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
     // the loop body `run` is built on, for hosts that own the loop (web rAF):
-    //   Runtime.init(gpa, *Host, *Gpu, RunOptions) !Runtime   (keep it in one place; don't move it)
+    //   Runtime.init(gpa, *Host, *Gpu, Options) !Runtime   (keep it in one place; don't move it)
     //   rt.frame() !void   // ONE iteration: poll, route, subs, view, layout, render
     //   rt.deinit()
     //   rt.lastFrameStats() FrameStats   // timing of the last frame() (loop clock; never seen by update/view)
@@ -1074,7 +1087,8 @@ Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
     //                                    //   next frame builds; call between frames on the loop thread (run.md, examples/sysmon)
     //   rt.quiet / rt.idleTimeoutMs()    // for a hand-written loop's Host.waitEvents
     // run == init + `while (!host.shouldClose() and !rt.exitRequested()) try rt.frame()` + deinit.
-RunOptions          // see "The App contract" above
+Options             // see "The App contract" above
+options_from_environment(init, defaults) !Options // native entry point only; borrowed startup data
 SecondaryWindowSpec // see above
 FrameStats = struct { index: u64, frame_ms, work_ms, update_ms, view_ms, layout_ms, build_ms, gpu_ms: f32,
                       cmds: u32, vertices: u32, quiet, presented, rebuilt: bool }
@@ -1118,8 +1132,8 @@ More worked examples and idioms: **docs/cookbook.md**.
 - **`validateBalance(cmds)`** guards push/pop balance; `teak.run` calls it in
   Debug builds and panics with a named cmd index on an unbalanced buffer.
 - **Live `TEAK_SNAPSHOT` streaming (implemented).** `teak.run` mirrors each
-  changed frame's snapshot to a file — set `RunOptions.snapshot_path` or the
-  `TEAK_SNAPSHOT` env var (env wins, read once at `run` start). Writes are
+  changed frame's snapshot to a file — set `Options.snapshot_path` or the
+  `TEAK_SNAPSHOT` env var (env wins in the entry-point builder). Writes are
   atomic (`<path>.tmp` then rename) and change-gated (idle frames never touch
   disk); the header's `last_msg` names the transition that caused the change,
   including sub-fired Msgs. An agent driving a running app greps/diffs the
@@ -1137,6 +1151,7 @@ More worked examples and idioms: **docs/cookbook.md**.
 - `docs/cookbook.md` — worked recipes/idioms for building on Teak.
 - `docs/pitfalls.md` — common traps.
 - `docs/features/run.md` — `teak.run` loop + optional App hooks + secondary window.
+- `docs/migration-options.md` — entry-point environment capture and Options signatures.
 - `docs/features/subscriptions.md` — declarative timers (`Sub`/`subscribe`); `run` wiring.
 - `docs/features/widgets.md` — disabled state, NumericField, Dropdown, Combobox, setTitle, and the primitive-built widgets (toggle, progress, tabs, split pane, tooltip, toast, dialog, menu bar, context menu).
 - `docs/features/components.md` — comptime component composition.

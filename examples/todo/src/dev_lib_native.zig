@@ -8,11 +8,13 @@ const gpu_native = @import("teak-gpu-native");
 const App = @import("app.zig");
 
 const Init = struct {
-    pub fn host(_: std.mem.Allocator) !platform.Host {
-        return platform.Host.init("Teak — Todo (dev)", 720, 600);
+    pub fn host(_: std.mem.Allocator, options: teak.Options) !platform.Host {
+        return platform.Host.init("Teak — Todo (dev)", 720, 600, options);
     }
-    pub fn gpu(h: *platform.Host) !gpu_native.Gpu {
-        return gpu_native.Gpu.init(h.nativeHandle(), 720, 600);
+    pub fn gpu(h: *platform.Host, options: teak.Options) !gpu_native.Gpu {
+        return gpu_native.Gpu.initWithOptions(h.nativeHandle(), 720, 600, .{
+            .gpu_fallback = options.gpu_fallback,
+        });
     }
 };
 

@@ -13,8 +13,13 @@ const Host = @import("teak-platform-headless").Host;
 const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{});
     var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_impl.deinit();
-    try teak.headless.serve(App, Host, Gpu, gpa_impl.allocator(), .{ .width = 720, .height = 600 });
+    try teak.headless.serve(App, Host, Gpu, gpa_impl.allocator(), .{
+        .width = 720,
+        .height = 600,
+        .run = options,
+    });
 }

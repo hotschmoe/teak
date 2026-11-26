@@ -8,7 +8,7 @@
 //! app. The wire protocol is one JSON object per line over a Unix socket the
 //! Host owns (`Host.controlListen` / `controlRecv` / `controlSend`; see
 //! `platform/control_socket.zig`). The runtime enables it with
-//! `RunOptions.control_path` or the `TEAK_CONTROL=<socket path>` env var, and
+//! `Options.control_path` supplied by the entry point, and
 //! only when the Host implements the optional control surface. Otherwise
 //! nothing here runs.
 //!
@@ -180,33 +180,20 @@ pub const State = struct {
     }
 };
 
-/// Owned dupe of environment variable `name` if set and non-empty.
-fn envVar(gpa: std.mem.Allocator, name: []const u8) ?[]u8 {
-    if (comptime !fs_capable) return null;
-    const threaded = std.Options.debug_threaded_io orelse return null;
-    var map = threaded.environ.process_environ.createMap(gpa) catch return null;
-    defer map.deinit();
-    const v = map.get(name) orelse return null;
-    if (v.len == 0) return null;
-    return gpa.dupe(u8, v) catch null;
-}
-
 /// The Host implements the whole optional control surface.
 fn hasControl(comptime Host: type) bool {
     return @hasDecl(Host, "controlListen") and @hasDecl(Host, "controlRecv") and
         @hasDecl(Host, "controlSend") and @hasDecl(Host, "injectInput");
 }
 
-/// Resolve options + environment (env wins) and start whatever is asked for.
+/// Start the requested control services from the supplied options.
 /// Failures degrade to "feature off" with a log line, never a crash.
 pub fn start(st: *State, host: anytype, opts: anytype) void {
     if (comptime !fs_capable) return;
     const gpa = st.gpa;
 
     if (comptime hasControl(@TypeOf(host.*))) {
-        const env = envVar(gpa, "TEAK_CONTROL");
-        defer if (env) |e| gpa.free(e);
-        if (env orelse opts.control_path) |path| {
+        if (opts.control_path) |path| {
             if (host.controlListen(path)) {
                 st.active = true;
                 st.log_msgs = true;
@@ -215,20 +202,11 @@ pub fn start(st: *State, host: anytype, opts: anytype) void {
     }
 
     if (opts.inspect) st.inspect = true;
-    if (envVar(gpa, "TEAK_INSPECT")) |v| {
-        defer gpa.free(v);
-        st.inspect = !std.mem.eql(u8, v, "0");
-    }
     if (st.inspect) st.log_msgs = true;
 
-    const rec_env = envVar(gpa, "TEAK_RECORD");
-    if (rec_env orelse (if (opts.record_path) |p| gpa.dupe(u8, p) catch null else null)) |p| {
-        st.rec_path = p;
-    }
+    if (opts.record_path) |p| st.rec_path = gpa.dupe(u8, p) catch null;
 
-    const rp_env = envVar(gpa, "TEAK_REPLAY");
-    defer if (rp_env) |e| gpa.free(e);
-    if (rp_env orelse opts.replay_path) |path| {
+    if (opts.replay_path) |path| {
         if (comptime !@hasDecl(@TypeOf(host.*), "injectInput")) {
             std.log.warn("teak: replay disabled — this Host cannot inject input", .{});
         } else if (std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, gpa, .limited(64 * 1024 * 1024))) |data| {

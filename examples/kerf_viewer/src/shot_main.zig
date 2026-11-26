@@ -86,9 +86,10 @@ const states = [_]teak.headless.ShotState{
 };
 
 pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{ .clear_color = App.paper });
     try teak.headless.shotCli(App, Host, Gpu, init, "kerf_viewer.png", .{
         .width = 1280,
         .height = 800,
-        .run = .{ .clear_color = App.paper },
+        .run = options,
     }, &states);
 }

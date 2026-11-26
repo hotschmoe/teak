@@ -212,7 +212,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             var instance_desc = std.mem.zeroes(c.WGPUInstanceDescriptor);
             const instance = c.wgpuCreateInstance(&instance_desc) orelse return error.InstanceCreateFailed;
             const surface = try Surface.createSurface(instance, handle);
-            const ctx = try wgpu_c.requestDevice(instance, surface);
+            const ctx = try wgpu_c.requestDevice(instance, surface, options.gpu_fallback);
             return initFromDevice(instance, surface, ctx, width, height, options);
         }
 
@@ -225,7 +225,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// window system.
         pub fn initOffscreen(width: u32, height: u32, options: InitOptions) !Self {
             const instance = wgpu_c.createInstance(c.WGPUInstanceBackend_Primary) orelse return error.InstanceCreateFailed;
-            const ctx = try wgpu_c.requestDevice(instance, null);
+            const ctx = try wgpu_c.requestDevice(instance, null, options.gpu_fallback);
             var gpu = try initFromDevice(instance, null, ctx, width, height, options);
             errdefer gpu.deinit();
             try gpu.recreateOffscreen(gpu.width, gpu.height);

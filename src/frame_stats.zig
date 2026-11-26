@@ -123,33 +123,6 @@ pub fn writeSummary(w: *std.Io.Writer, frames: u64, s: Summary, m: PhaseMeans) s
     try w.print("mean ms   work {d:.3}  update {d:.3}  view {d:.3}  layout {d:.3}  build {d:.3}  gpu {d:.3}\n", .{ m.work_ms, m.update_ms, m.view_ms, m.layout_ms, m.build_ms, m.gpu_ms });
 }
 
-/// Owned dupe of environment variable `name` if set and non-empty. Read
-/// through the globally-available `Io` handle (no libc), like the snapshot
-/// sink's `TEAK_SNAPSHOT`. Always null on wasm/freestanding.
-pub fn envVar(gpa: std.mem.Allocator, name: []const u8) ?[]u8 {
-    if (comptime !fs_capable) return null;
-    const threaded = std.Options.debug_threaded_io orelse return null;
-    var map = threaded.environ.process_environ.createMap(gpa) catch return null;
-    defer map.deinit();
-    const v = map.get(name) orelse return null;
-    if (v.len == 0) return null;
-    return gpa.dupe(u8, v) catch null;
-}
-
-/// `name` as a flag: unset -> null, "0" -> false, anything else -> true.
-pub fn envFlag(gpa: std.mem.Allocator, name: []const u8) ?bool {
-    const v = envVar(gpa, name) orelse return null;
-    defer gpa.free(v);
-    return !std.mem.eql(u8, v, "0");
-}
-
-/// `name` as an unsigned integer; unset or unparsable -> null.
-pub fn envInt(gpa: std.mem.Allocator, name: []const u8) ?u64 {
-    const v = envVar(gpa, name) orelse return null;
-    defer gpa.free(v);
-    return std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t\r\n"), 10) catch null;
-}
-
 /// CSV sink: one line per frame to `<path>`, then the summary to stderr and
 /// `<path>.summary.txt` at `deinit`. Lines are buffered and flushed every
 /// 16 KiB so a frame rarely touches the disk. A write failure disables the
@@ -168,12 +141,11 @@ pub const Sink = struct {
 
     const flush_at = 16 * 1024;
 
-    /// Open `path` (env `TEAK_FRAME_STATS` wins over `opt_path`). Any
+    /// Open the supplied path. Any
     /// failure yields a disabled sink.
     pub fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8) Sink {
         if (comptime !fs_capable) return .{};
-        const env = envVar(gpa, "TEAK_FRAME_STATS");
-        const path = env orelse (gpa.dupe(u8, opt_path orelse return .{}) catch return .{});
+        const path = gpa.dupe(u8, opt_path orelse return .{}) catch return .{};
         if (path.len == 0) {
             gpa.free(path);
             return .{};

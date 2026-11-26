@@ -20,12 +20,12 @@ zig build dev --watch            # libapp.so + the loader; rebuilds on every sou
 | `App`, `Runtime(App)`: view / update / layout / frame diff | the `Host` (window, input queue, control socket, effects service) |
 | the Model *values* are copied across (below) | the `Gpu` (device, surface, glyph + texture caches) |
 
-The first library creates the `Env` (`Init.host` / `Init.gpu`); every later one only starts a new `Runtime` over it, so the window never flickers and the control channel (`TEAK_CONTROL`) stays connected. The loader executable contains no teak types: just `std.DynLib` and a C ABI (`teak_dev_*`).
+The first library creates the `Env` (`Init.host` / `Init.gpu`); every later one only starts a new `Runtime` over it, so the window never flickers and the control channel (`TEAK_CONTROL`) stays connected. The loader captures `teak.Options` once and passes them through the C ABI (`teak_dev_*`); the Env retains its own copy. See [migration-options.md](../migration-options.md) for ABI version 2 and factory signatures.
 
 ## The swap (between two frames)
 
 1. Copy the changed file to a fresh name and `dlopen` it (a same-path `dlopen` returns the old mapping). The mtime must be stable for 30 ms, so a half-written file is never loaded.
-2. Reject (keep running the old build) on: not a teak plugin, ABI mismatch, or a different **Host/Gpu/RunOptions fingerprint** (teak itself was rebuilt: restart the loader).
+2. Reject (keep running the old build) on: not a teak plugin, ABI mismatch, or a different **Host/Gpu/Options fingerprint** (teak itself was rebuilt: restart the loader).
 3. Start the new `Runtime` over the same `Env`. If `typeFingerprint(App.Model)` matches, `memcpy` the Model and the hover / press / focus `TransientState` from the old runtime; otherwise the new Model starts from its defaults and the loader prints `reloaded: the Model type changed, state reset to defaults`.
 4. Stop the old runtime with the old code. Old libraries are never unloaded: a Model can hold slices of string literals that live in the old image.
 

@@ -29,6 +29,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const face_mod = @import("face.zig");
+const assert = @import("teak").assert;
 
 const Font = face_mod.Font;
 
@@ -139,11 +140,14 @@ fn loadSys(s: *Sys, path: []const u8) void {
     s.font = font;
 }
 
-fn checkEnv() void {
+pub fn checkEnv(paths: ?[]const u8) void {
     if (comptime builtin.target.cpu.arch.isWasm()) return;
+    if (env_checked) return;
+    assert(!env_sys[0].tried);
     env_checked = true;
-    const raw = std.c.getenv("TEAK_FALLBACK_FONTS") orelse return;
-    var it = std.mem.splitScalar(u8, std.mem.span(raw), ':');
+    env_paths = @splat("");
+    const raw = paths orelse return;
+    var it = std.mem.splitScalar(u8, raw, ':');
     var n: usize = 0;
     while (it.next()) |p| {
         if (p.len == 0) continue;
@@ -151,6 +155,7 @@ fn checkEnv() void {
         env_paths[n] = p;
         n += 1;
     }
+    assert(n <= max_env and (n == 0 or env_paths[n - 1].len > 0));
 }
 
 /// The first fallback face with a glyph for `cp`, loading system candidates on
@@ -162,7 +167,7 @@ pub fn glyphFor(cp: u21) ?Hit {
             if (g != 0) return .{ .glyph = g, .face_id = first_id + @as(u16, @intCast(k)), .face = f };
         }
     }
-    if (!env_checked) checkEnv();
+    if (!env_checked) checkEnv(null);
     for (&env_sys, 0..) |*s, k| {
         if (env_paths[k].len == 0) break;
         if (!s.tried) loadSys(s, env_paths[k]);

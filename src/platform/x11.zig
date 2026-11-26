@@ -624,7 +624,8 @@ pub const Host = struct {
     /// Created cursors per `CursorShape` (0 = not created yet).
     cursors: [std.enums.values(teak.CursorShape).len]c_ulong,
 
-    pub fn init(title: []const u8, width: u32, height: u32) !Host {
+    pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
+        text.face.configure(options);
         var lib = std.DynLib.open("libX11.so.6") catch return error.X11LoadFailed;
         errdefer lib.close();
         const x = try Xlib.load(&lib);
@@ -633,7 +634,7 @@ pub const Host = struct {
         errdefer _ = x.XCloseDisplay(display);
 
         const xrm: ?[]const u8 = if (x.XResourceManagerString(display)) |rm| std.mem.span(rm) else null;
-        const scale = pickScale(envSlice("TEAK_SCALE"), envSlice("GDK_SCALE"), xrm);
+        const scale = pickScale(options.scale, options.gdk_scale, xrm);
 
         const screen = x.XDefaultScreen(display);
         const root = x.XRootWindow(display, screen);
@@ -670,7 +671,7 @@ pub const Host = struct {
         _ = x.XMapWindow(display, window);
         _ = x.XFlush(display);
 
-        const effects = try native_effects.Service.create(title);
+        const effects = try native_effects.Service.create(title, options);
 
         return .{
             .lib = lib,
@@ -1444,17 +1445,11 @@ pub const Host = struct {
     /// kdialog), blocking like Win32's. Null on cancel or with no picker.
     /// The path lives in `dialog_buf` until the next dialog call.
     pub fn openFileDialog(self: *Host, f: FileDialogFilter) FileDialogResult {
-        return file_picker.pickSync(&self.dialog_buf, .open, f.pattern, pickerEnv());
+        return file_picker.pickSync(&self.dialog_buf, .open, f.pattern, self.effects.options);
     }
 
     pub fn saveFileDialog(self: *Host, f: FileDialogFilter) FileDialogResult {
-        return file_picker.pickSync(&self.dialog_buf, .save, f.pattern, pickerEnv());
-    }
-
-    fn pickerEnv() ?[]const u8 {
-        const v = std.c.getenv("TEAK_PICKER") orelse return null;
-        const s = std.mem.span(v);
-        return if (s.len == 0) null else s;
+        return file_picker.pickSync(&self.dialog_buf, .save, f.pattern, self.effects.options);
     }
 
     /// Open another top-level window on the same display (`w` x `h`
@@ -1737,11 +1732,6 @@ fn physicalOf(logical_px: u32, scale: f32) u32 {
 /// Device pixels -> logical extent (never 0).
 fn logicalOf(device_px: u32, scale: f32) u32 {
     return @max(1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(device_px)) / scale))));
-}
-
-fn envSlice(name: [*:0]const u8) ?[]const u8 {
-    const v = std.c.getenv(name) orelse return null;
-    return std.mem.span(v);
 }
 
 /// Parse a scale override ("2", "1.5"); null when absent, malformed or

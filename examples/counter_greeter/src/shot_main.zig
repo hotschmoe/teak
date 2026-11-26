@@ -11,9 +11,11 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{});
     try teak.headless.shotCli(App, Host, Gpu, init, "counter_greeter.png", .{
         .width = 900,
         .height = 500,
+        .run = options,
     }, &.{
         .{ .name = "initial", .steps = &.{.{ .frames = 2 }} },
         .{

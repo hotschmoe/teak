@@ -5,7 +5,7 @@
 //! docs/features/headless.md.
 //!
 //! ```zig
-//! var host = try Host.init(gpa, 1280, 800);   // teak-platform-headless
+//! var host = try Host.init(gpa, 1280, 800, .{});   // teak-platform-headless
 //! var gpu = try Gpu.initOffscreen(1280, 800, .{ .msaa = true }); // teak-gpu-headless
 //! var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, .{});
 //! try teak.headless.play(&rt, &host, &.{
@@ -110,7 +110,7 @@ pub const ShotOptions = struct {
     /// Extra frames after the script so animations / one-frame input
     /// latency settle before the capture.
     settle: u32 = 3,
-    run: run_mod.RunOptions = .{},
+    run: run_mod.Options = .{},
 };
 
 /// Run `App` headlessly: build the Host and offscreen Gpu, play the
@@ -124,10 +124,14 @@ pub fn shot(
     path: []const u8,
     o: ShotOptions,
 ) !void {
-    var host = try Host.init(gpa, o.width, o.height);
+    var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = envScale(o.scale) });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+        .msaa = o.msaa,
+        .scale = envScale(o.scale, o.run.scale),
+        .gpu_fallback = o.run.gpu_fallback,
+    });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
@@ -216,10 +220,14 @@ pub fn idleCheck(
     o: ShotOptions,
     frames: u32,
 ) !IdleReport {
-    var host = try Host.init(gpa, o.width, o.height);
+    var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = envScale(o.scale) });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+        .msaa = o.msaa,
+        .scale = envScale(o.scale, o.run.scale),
+        .gpu_fallback = o.run.gpu_fallback,
+    });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
@@ -328,10 +336,14 @@ pub fn latencyCheck(
     x: f32,
     y: f32,
 ) !LatencyReport {
-    var host = try Host.init(gpa, o.width, o.height);
+    var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = envScale(o.scale) });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+        .msaa = o.msaa,
+        .scale = envScale(o.scale, o.run.scale),
+        .gpu_fallback = o.run.gpu_fallback,
+    });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
@@ -347,12 +359,9 @@ fn parsePair(s: []const u8) ?[2]f32 {
     return .{ x, y };
 }
 
-/// `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
-/// headless run, so any example's `zig build shot` can be taken at 2x without
-/// code changes. Unset or invalid: `default`.
-pub fn envScale(default: f32) f32 {
-    const v = std.c.getenv("TEAK_SCALE") orelse return default;
-    const parsed = std.fmt.parseFloat(f32, std.mem.span(v)) catch return default;
+/// Headless scale parsing retains the [0.25, 16] range.
+pub fn envScale(default: f32, value: ?[]const u8) f32 {
+    const parsed = std.fmt.parseFloat(f32, value orelse return default) catch return default;
     return if (parsed >= 0.25 and parsed <= 16) parsed else default;
 }
 
@@ -363,10 +372,7 @@ pub const ServeOptions = struct {
     /// Real milliseconds slept between frames, so an idle headless app does
     /// not spin a core. The Host clock stays fake (16 ms per frame).
     frame_sleep_ms: u32 = 4,
-    /// `control_path` / `record_path` / `replay_path` / `inspect` here are
-    /// overridden by `TEAK_CONTROL` / `TEAK_RECORD` / `TEAK_REPLAY` /
-    /// `TEAK_INSPECT`.
-    run: run_mod.RunOptions = .{},
+    run: run_mod.Options = .{},
 };
 
 /// Run `App` headlessly until the Host closes (the control channel's `quit`
@@ -380,9 +386,12 @@ pub fn serve(
     gpa: std.mem.Allocator,
     o: ServeOptions,
 ) !void {
-    var host = try Host.init(gpa, o.width, o.height);
+    var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+        .msaa = o.msaa,
+        .gpu_fallback = o.run.gpu_fallback,
+    });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();

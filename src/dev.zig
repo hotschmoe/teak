@@ -32,7 +32,7 @@ const std = @import("std");
 const run_mod = @import("run.zig");
 
 /// Bump when the exported C ABI below changes.
-pub const abi_version: u32 = 1;
+pub const abi_version: u32 = 2;
 
 /// A 64-bit hash of a type's SHAPE: its name, size, and (recursively) the
 /// names, types and offsets of its fields. Pointers hash their own type name
@@ -82,6 +82,7 @@ pub fn Env(comptime Host: type, comptime Gpu: type) type {
     return struct {
         host: Host,
         gpu: Gpu,
+        options: run_mod.Options,
     };
 }
 
@@ -89,8 +90,12 @@ pub fn Env(comptime Host: type, comptime Gpu: type) type {
 ///
 /// ```zig
 /// const Init = struct {
-///     pub fn host(gpa: std.mem.Allocator) !Host { return Host.init(gpa, 720, 600); }
-///     pub fn gpu(host: *Host) !Gpu { return Gpu.initOffscreen(720, 600, .{}); }
+///     pub fn host(gpa: std.mem.Allocator, o: teak.Options) !Host {
+///         return Host.init(gpa, 720, 600, o);
+///     }
+///     pub fn gpu(host: *Host, o: teak.Options) !Gpu {
+///         return Gpu.initOffscreen(720, 600, .{ .gpu_fallback = o.gpu_fallback });
+///     }
 /// };
 /// comptime { teak.dev.Plugin(App, Host, Gpu, Init).exportAll(); }
 /// ```
@@ -101,7 +106,8 @@ pub fn Plugin(comptime App: type, comptime Host: type, comptime Gpu: type, compt
         const gpa = std.heap.c_allocator;
 
         pub const app_fingerprint: u64 = typeFingerprint(App.Model);
-        pub const env_fingerprint: u64 = typeFingerprint(Host) ^ (typeFingerprint(Gpu) *% 31) ^ typeFingerprint(run_mod.RunOptions);
+        pub const env_fingerprint: u64 = typeFingerprint(Host) ^
+            (typeFingerprint(Gpu) *% 31) ^ typeFingerprint(run_mod.Options);
 
         fn abi() callconv(.c) u32 {
             return abi_version;
@@ -113,21 +119,14 @@ pub fn Plugin(comptime App: type, comptime Host: type, comptime Gpu: type, compt
             return env_fingerprint;
         }
 
-        /// Each image has its own copy of std's globals, so the process
-        /// environment (TEAK_CONTROL, TEAK_INSPECT ...) must be handed over.
-        fn setEnviron(block: [*:null]const ?[*:0]const u8) callconv(.c) void {
-            const t = std.Options.debug_threaded_io orelse return;
-            t.environ = .{ .process_environ = .{ .block = .{ .slice = std.mem.span(block) } } };
-            t.environ_initialized = false;
-        }
-
-        fn envOpen() callconv(.c) ?*anyopaque {
+        fn envOpen(options: *const run_mod.Options) callconv(.c) ?*anyopaque {
             const e = gpa.create(E) catch return null;
-            e.host = Init.host(gpa) catch {
+            e.options = options.*;
+            e.host = Init.host(gpa, e.options) catch {
                 gpa.destroy(e);
                 return null;
             };
-            e.gpu = Init.gpu(&e.host) catch {
+            e.gpu = Init.gpu(&e.host, e.options) catch {
                 e.host.deinit();
                 gpa.destroy(e);
                 return null;
@@ -148,7 +147,7 @@ pub fn Plugin(comptime App: type, comptime Host: type, comptime Gpu: type, compt
         fn start(env: *anyopaque) callconv(.c) ?*anyopaque {
             const e: *E = @ptrCast(@alignCast(env));
             const rt = gpa.create(Rt) catch return null;
-            rt.* = Rt.init(gpa, &e.host, &e.gpu, .{}) catch {
+            rt.* = Rt.init(gpa, &e.host, &e.gpu, e.options) catch {
                 gpa.destroy(rt);
                 return null;
             };
@@ -190,7 +189,6 @@ pub fn Plugin(comptime App: type, comptime Host: type, comptime Gpu: type, compt
 
         pub fn exportAll() void {
             @export(&abi, .{ .name = "teak_dev_abi" });
-            @export(&setEnviron, .{ .name = "teak_dev_set_environ" });
             @export(&appFp, .{ .name = "teak_dev_app_fingerprint" });
             @export(&envFp, .{ .name = "teak_dev_env_fingerprint" });
             @export(&envOpen, .{ .name = "teak_dev_env_open" });
@@ -211,7 +209,7 @@ const Image = struct {
     lib: std.DynLib,
     app_fp: u64,
     env_fp: u64,
-    env_open: *const fn () callconv(.c) ?*anyopaque,
+    env_open: *const fn (*const run_mod.Options) callconv(.c) ?*anyopaque,
     env_close: *const fn (*anyopaque) callconv(.c) void,
     env_closed: *const fn (*anyopaque) callconv(.c) bool,
     start: *const fn (*anyopaque) callconv(.c) ?*anyopaque,
@@ -221,12 +219,11 @@ const Image = struct {
     quiet: *const fn (*anyopaque) callconv(.c) bool,
     wait: *const fn (*anyopaque, u32) callconv(.c) void,
 
-    fn open(path: [:0]const u8, environ: ?[*:null]const ?[*:0]const u8) !Image {
+    fn open(path: [:0]const u8) !Image {
         var lib = try std.DynLib.open(path);
         errdefer lib.close();
         const abi_fn = lib.lookup(*const fn () callconv(.c) u32, "teak_dev_abi") orelse return error.NotATeakPlugin;
         if (abi_fn() != abi_version) return error.AbiMismatch;
-        if (environ) |env| if (lib.lookup(*const fn ([*:null]const ?[*:0]const u8) callconv(.c) void, "teak_dev_set_environ")) |f| f(env);
         const fp = lib.lookup(*const fn () callconv(.c) u64, "teak_dev_app_fingerprint") orelse return error.NotATeakPlugin;
         const efp = lib.lookup(*const fn () callconv(.c) u64, "teak_dev_env_fingerprint") orelse return error.NotATeakPlugin;
         return .{
@@ -265,8 +262,7 @@ pub const Loader = struct {
     /// Copies of the library are written here under unique names.
     tmp_dir: []const u8,
     generation: u32 = 0,
-    /// The loader's own process environment, forwarded into each image.
-    environ: ?[*:null]const ?[*:0]const u8 = null,
+    options: run_mod.Options,
     image: Image = undefined,
     env: *anyopaque = undefined,
     rt: *anyopaque = undefined,
@@ -277,11 +273,23 @@ pub const Loader = struct {
     note: [160]u8 = undefined,
     note_len: usize = 0,
 
-    pub fn init(gpa: std.mem.Allocator, io: std.Io, path: []const u8, tmp_dir: []const u8, environ: ?[*:null]const ?[*:0]const u8) !Loader {
-        var self: Loader = .{ .io = io, .gpa = gpa, .path = path, .tmp_dir = tmp_dir, .environ = environ };
+    pub fn init(
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        path: []const u8,
+        tmp_dir: []const u8,
+        options: run_mod.Options,
+    ) !Loader {
+        var self: Loader = .{
+            .io = io,
+            .gpa = gpa,
+            .path = path,
+            .tmp_dir = tmp_dir,
+            .options = options,
+        };
         self.image = try self.openCopy();
         self.last_mtime = self.mtime() orelse 0;
-        self.env = self.image.env_open() orelse return error.EnvOpenFailed;
+        self.env = self.image.env_open(&self.options) orelse return error.EnvOpenFailed;
         self.rt = self.image.start(self.env) orelse return error.StartFailed;
         return self;
     }
@@ -311,7 +319,7 @@ pub const Loader = struct {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const dst = try std.fmt.bufPrintSentinel(&buf, "{s}/teak-dev-{d}-{d}.so", .{ self.tmp_dir, self.generation, std.os.linux.getpid() }, 0);
         try std.Io.Dir.copyFile(std.Io.Dir.cwd(), self.path, std.Io.Dir.cwd(), dst, self.io, .{});
-        const img = try Image.open(dst, self.environ);
+        const img = try Image.open(dst);
         self.loaded += 1;
         return img;
     }
@@ -371,7 +379,7 @@ pub const Loader = struct {
 
 /// The loader executable's whole job: `pub fn main(init)` calls this with the
 /// library path (default `zig-out/lib/libapp.so`).
-pub fn runLoader(init: std.process.Init, default_path: []const u8) !void {
+pub fn runLoader(init: std.process.Init, default_path: []const u8, options: run_mod.Options) !void {
     const gpa = std.heap.c_allocator;
     var args = init.minimal.args.iterate();
     _ = args.next();
@@ -380,7 +388,7 @@ pub fn runLoader(init: std.process.Init, default_path: []const u8) !void {
 
     var tmp_buf: [64]u8 = undefined;
     const tmp = std.fmt.bufPrint(&tmp_buf, "/tmp", .{}) catch unreachable;
-    var loader = try Loader.init(gpa, io, path, tmp, init.minimal.environ.block.slice.ptr);
+    var loader = try Loader.init(gpa, io, path, tmp, options);
     defer loader.deinit();
     std.debug.print("[teak dev] running {s}; rebuild it (zig build dev --watch) to reload\n", .{path});
 

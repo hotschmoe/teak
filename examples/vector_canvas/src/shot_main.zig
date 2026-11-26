@@ -8,9 +8,11 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const options = try teak.options_from_environment(init, .{});
     try teak.headless.shotCli(App, Host, Gpu, init, "vector_canvas.png", .{
         .width = 1280,
         .height = 800,
+        .run = options,
     }, &.{
         .{ .name = "fit", .steps = &.{.{ .frames = 3 }} },
         .{ .name = "zoomed", .steps = &.{

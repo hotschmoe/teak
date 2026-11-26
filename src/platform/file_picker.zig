@@ -18,6 +18,7 @@
 //! only part that spawns.
 
 const std = @import("std");
+const teak = @import("teak");
 const Io = std.Io;
 
 pub const Kind = enum { open, save };
@@ -117,12 +118,13 @@ pub fn parseChoice(stdout: []const u8) ?[]const u8 {
 /// no picker program is installed.
 pub fn pick(
     a: std.mem.Allocator,
-    env_picker: ?[]const u8,
+    options: teak.Options,
     kind: Kind,
     accept: []const u8,
     title: []const u8,
     name: []const u8,
 ) PickError!?[]u8 {
+    const env_picker = options.picker;
     const candidates = [_]struct { tool: Tool, program: []const u8 }{
         .{ .tool = .zenity, .program = env_picker orelse "zenity" },
         .{ .tool = .kdialog, .program = "kdialog" },
@@ -130,16 +132,20 @@ pub fn pick(
     const n: usize = if (env_picker != null) 1 else candidates.len;
     // The dialog process needs allocating Io and the desktop environment.
     var threaded: Io.Threaded = .init(a, .{
-        .environ = if (std.Options.debug_threaded_io) |t| t.environ.process_environ else .empty,
+        .environ = .empty,
     });
     defer threaded.deinit();
     const io = threaded.io();
+    var environment = std.process.Environ.Map.init(a);
+    defer environment.deinit();
+    for (options.environment) |entry| try environment.put(entry.name, entry.value);
     for (candidates[0..n]) |c| {
         var arena = std.heap.ArenaAllocator.init(a);
         defer arena.deinit();
         const argv = try buildArgv(arena.allocator(), c.tool, c.program, kind, accept, title, name);
         const res = std.process.run(a, io, .{
             .argv = argv,
+            .environ_map = &environment,
             .stdout_limit = .limited(64 * 1024),
             .stderr_limit = .limited(64 * 1024),
         }) catch |e| switch (e) {
@@ -187,11 +193,18 @@ pub fn patternToAccept(pattern: []const u8, out: []u8) []const u8 {
 /// picker (blocking the caller, like Win32's `GetOpenFileNameW`) and copy
 /// the chosen path into `buf`. Null on cancel, when no picker program is
 /// installed, or when the path does not fit `buf`.
-pub fn pickSync(buf: []u8, kind: Kind, pattern: []const u8, env_picker: ?[]const u8) ?[]const u8 {
+pub fn pickSync(buf: []u8, kind: Kind, pattern: []const u8, options: teak.Options) ?[]const u8 {
     var acc: [256]u8 = undefined;
     const accept = patternToAccept(pattern, &acc);
     const title = if (kind == .open) "Open" else "Save As";
-    const chosen = (pick(std.heap.page_allocator, env_picker, kind, accept, title, "") catch return null) orelse return null;
+    const chosen = (pick(
+        std.heap.page_allocator,
+        options,
+        kind,
+        accept,
+        title,
+        "",
+    ) catch return null) orelse return null;
     defer std.heap.page_allocator.free(chosen);
     if (chosen.len > buf.len) return null;
     @memcpy(buf[0..chosen.len], chosen);

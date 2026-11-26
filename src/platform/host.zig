@@ -187,7 +187,7 @@ const HostDecl = struct { name: []const u8, sig: []const u8 };
 ///   completely different flow).
 /// - Optional `waitEvents(timeout_ms: u32) void` (NOT checked by
 ///   `validateHost`): event-driven idle. `teak.run` calls it after a frame
-///   that did nothing (`Runtime.quiet`, see `RunOptions.idle_skip`); the Host
+///   that did nothing (`Runtime.quiet`, see `Options.idle_skip`); the Host
 ///   should block until an input event arrives (including resize / expose,
 ///   which must surface as `InputState.resized`), an async effect result is
 ///   ready, or `timeout_ms` elapses — then return. Hosts without it keep
