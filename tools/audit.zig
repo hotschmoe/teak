@@ -12,7 +12,6 @@ const gen_api = @import("gen_api.zig");
 const Io = std.Io;
 const Dir = Io.Dir;
 
-
 const FRAMEWORK_CORE_DIRS = [_][]const u8{
     "src/core",
     "src/layout",
@@ -182,7 +181,6 @@ fn auditMigrationLinks(gpa: std.mem.Allocator, io: Io) usize {
     return bad;
 }
 
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -221,7 +219,6 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("\nHARDLINE audit PASSED. Automated half of §5 is clean.\n", .{});
     std.debug.print("Manual review still required: validator coverage + feature-doc completeness.\n", .{});
 }
-
 
 const Hit = struct {
     path: []const u8,
@@ -270,7 +267,6 @@ fn reportRule(rule: Rule, hits: []const Hit) usize {
     }
     return hits.len;
 }
-
 
 fn scanDir(
     gpa: std.mem.Allocator,
@@ -342,7 +338,6 @@ fn stripLineComment(line: []const u8) []const u8 {
     if (std.mem.indexOf(u8, line, "//")) |idx| return line[0..idx];
     return line;
 }
-
 
 fn auditModuleVars(gpa: std.mem.Allocator, io: Io, dirs: []const []const u8) ![]Hit {
     var hits: std.ArrayList(Hit) = .empty;
@@ -437,7 +432,6 @@ fn scanFileForModuleVars(
     }
 }
 
-
 fn auditViewSignatures(gpa: std.mem.Allocator, io: Io, dirs: []const []const u8) ![]Hit {
     var hits: std.ArrayList(Hit) = .empty;
     errdefer {
@@ -527,7 +521,6 @@ fn scanFileForViewSig(
         }
     }
 }
-
 
 fn isIdentChar(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or

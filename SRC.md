@@ -255,6 +255,8 @@ The view is layer-backed by a CAMetalLayer sized and scaled by AppKit. If a pres
 
 Commands are driven over frames: a click separates press and release because the runtime routes input against the previous frame's layout. Text is sent in 32-byte batches to stay within the 64-byte per-frame input queue. Selector offsets are relative to the node centre and allow interactions with specific regions of a widget.
 
+The control socket starts listening during runtime initialization, but commands stay queued in the transport until the first frame has been built. Selectors and frame queries then see laid-out commands even when the client connects immediately. Replay still injects input on frame zero so recorded frame numbers retain their meaning.
+
 ## src/input/keys.zig
 
 Shift-modified motion extends selection; Shift+Tab traverses focus backward. Plain Enter may submit, while Shift+Enter remains a newline key delivered to the app. Ctrl-modified motion and deletion operate by word or document boundary. F10 and a bare Alt tap request menu-bar activation; the Menu key and Shift+F10 request a context menu at the focused widget. The application decides whether to act on these requests.

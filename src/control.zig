@@ -274,7 +274,7 @@ pub fn beforePoll(rt: anytype) void {
     const st = &rt.ctl;
     replayTick(rt);
     if (comptime !hasControl(@TypeOf(rt.host.*))) return;
-    if (!st.active) return;
+    if (!st.active or !rt.built_once) return;
     while (true) {
         if (st.busy) {
             stepAct(rt);

@@ -103,7 +103,6 @@ pub fn generate(gpa: std.mem.Allocator, io: std.Io) !Out {
     return .{ .api = api, .full = full };
 }
 
-
 fn writeDecl(arena: std.mem.Allocator, o: *std.Io.Writer, tree: Ast, d: Ast.Node.Index) !void {
     try writeDoc(o, tree, d, "");
     if (tree.nodeTag(d) == .fn_decl) {
@@ -119,8 +118,7 @@ fn writeDecl(arena: std.mem.Allocator, o: *std.Io.Writer, tree: Ast, d: Ast.Node
     if (containerKind(tree, init_node)) |kind| {
         try o.print("- `{s} {s}`\n", .{ kind, name });
         try writeMembers(arena, o, tree, init_node, "  ");
-    } else if (importPath(tree, init_node) != null) {
-    } else {
+    } else if (importPath(tree, init_node) != null) {} else {
         try o.print("- `{s}`\n", .{oneLine(arena, srcOf(tree, d))});
     }
 }
@@ -192,7 +190,6 @@ fn writeDoc(o: *std.Io.Writer, tree: Ast, node: Ast.Node.Index, indent: []const 
         first = false;
     }
 }
-
 
 fn isPub(tree: Ast, d: Ast.Node.Index) bool {
     const t = tree.firstToken(d);
@@ -296,7 +293,6 @@ fn readZ(arena: std.mem.Allocator, io: std.Io, path: []const u8) ![:0]const u8 {
     z[bytes.len] = 0;
     return z[0..bytes.len :0];
 }
-
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
