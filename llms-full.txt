@@ -268,7 +268,7 @@ ButtonStyle = struct { bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg: [4]
                        hover_fg, press_fg: ?[4]f32 = null, border: ?[4]f32 = null, border_width = 1,
                        press_offset_y: f32 = 0, label_align: TextAlign = .start,
                        h_padding: f32 = 8, min_width: f32 = 60, height: f32 = 36, flex: f32 = 0 }
-                       // corners are square (no corner_radius: the quad renderer has no rounding)
+                       // style.flat(): the same style as a square, borderless, shadowless cell (rows of a table or tree)
 ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false, underline: ?u16 = null }
 TextCmd = struct { content: []const u8, font: FontSpec, color: [4]f32 }
 TextInputStyle = struct { bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg,
@@ -786,6 +786,7 @@ DataTable(comptime cfg: struct { max_rows = 131072, max_cols = 16 }) type
   Model: n_rows, order/rank (display<->data permutation), sort_col/sort_desc, widths, selection (bitset by DATA row),
          cursor/anchor, focused, mods, sc: Scroller, view_h;  setRows(n) / setColumns(cols) / isSelected(row) / selectedRows(out)
          resort(src) /*re-apply current sort after the data changed; keeps direction, selection, scroll*/
+         reload(n, src) /*the row SET changed: keeps sort, widths, focus, scroll; drops selection*/ / select(row) /*re-select by data row*/
   Msg = union(enum) { sort: u8, grip: {col, dx}, row: u32 /*display idx*/, key: Key, wheel: f32, viewport: {vw,vh,cw,ch}, mods: Modifiers, frame: u32, char: u8, blur, resort }
   update(model, msg, src)   // src.compare(col: u8, a: u32, b: u32) std.math.Order  (stable index sort); src.cell(arena, col: u8, row: u32) []const u8
   view(model, cb, cols: []const DataTableColumn, src, msgs /*.sort(col) .row(display)*/, ViewOpts{ id, grip_base, row_h = 22, header_h = 26, char_w = 8, ... })
@@ -1072,6 +1073,9 @@ Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
     //   rt.deinit()
     //   rt.lastFrameStats() FrameStats   // timing of the last frame() (loop clock; never seen by update/view)
     //   rt.exitRequested() bool          // exit_after_frames reached
+    //   rt.post(msg)                     // a Msg from the loop owner (sampler, socket, worker mailbox): through update now,
+    //                                    //   next frame builds; call between frames on the loop thread (run.md, examples/sysmon)
+    //   rt.quiet / rt.idleTimeoutMs()    // for a hand-written loop's Host.waitEvents
     // run == init + `while (!host.shouldClose() and !rt.exitRequested()) try rt.frame()` + deinit.
 RunOptions          // see "The App contract" above
 SecondaryWindowSpec // see above
@@ -1406,6 +1410,9 @@ Signatures and `///` doc comments of every public declaration reachable from
 > Colors, size and alignment of a button.
 - `teak.ButtonStyle` = `cmd.ButtonStyle`
   - fields: `bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg, hover_fg, press_fg, border, border_width, press_offset_y, label_align, h_padding, min_width, height, radius, gradient, soft_shadow, flex, ellipsis`
+  > This style as one cell of a grid of rows: square, no border, gradient,
+  > shadow or press offset, whatever shape the theme gives its buttons.
+  - `pub fn flat(self: ButtonStyle) ButtonStyle`
 > Per-corner radii for SDF surfaces.
 - `teak.Radii`: `pub const Radii = cmd.Radii`
 > Soft box shadow.
@@ -2123,6 +2130,9 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `content, font, color, wrap, max_lines, text_align`
 - `struct ButtonStyle`
   - fields: `bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg, hover_fg, press_fg, border, border_width, press_offset_y, label_align, h_padding, min_width, height, radius, gradient, soft_shadow, flex, ellipsis`
+  > This style as one cell of a grid of rows: square, no border, gradient,
+  > shadow or press offset, whatever shape the theme gives its buttons.
+  - `pub fn flat(self: ButtonStyle) ButtonStyle`
 - `struct TextInputStyle`
   - fields: `bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg, disabled_border, selection_bg, variant, border_width, flex, min_width, height, radius`
 - `struct CheckboxStyle`
@@ -3825,7 +3835,8 @@ viewport-agnostic snapshot back.
 > which must surface as `InputState.resized`), an async effect result is
 > ready, or `timeout_ms` elapses — then return. Hosts without it keep
 > polling at their own pace (the skipped frames are still nearly free).
-> X11: `XPending` + `poll` on the connection fd; Win32:
+> X11: `XPending` + `poll` on the connection fd; Wayland:
+> `prepare_read` + `poll` on the display fd; Win32:
 > `MsgWaitForMultipleObjects`; web: n/a (rAF drives `frame`).
 > - `openSecondaryWindow(title, w, h)` returns an opaque window handle
 > for a second top-level window sharing this Host's event source.

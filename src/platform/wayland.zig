@@ -1127,6 +1127,25 @@ pub const Host = struct {
         return .{ .pending = {} };
     }
 
+    pub fn waitEvents(self: *Host, timeout_ms: u32) void {
+        const s = self.st;
+        const api = &client.api;
+        if (api.display_prepare_read(s.display) != 0) return;
+        _ = api.display_flush(s.display);
+        var wait = timeout_ms;
+        if (s.repeat.active and s.repeat.rate != 0) {
+            const now = monotonicMs();
+            wait = @min(wait, @as(u32, @intCast(@min(s.repeat.next_ms -| now, std.math.maxInt(u32)))));
+        }
+        if (s.xfer != null) wait = @min(wait, 10);
+        for (s.writes) |slot| {
+            if (slot != null) wait = @min(wait, 10);
+        }
+        var pfd = [1]PollFd{.{ .fd = api.display_get_fd(s.display), .events = POLLIN, .revents = 0 }};
+        _ = poll(&pfd, 1, @intCast(@min(wait, std.math.maxInt(c_int))));
+        api.display_cancel_read(s.display);
+    }
+
     pub fn nowMs(_: *const Host) u64 {
         return monotonicMs();
     }

@@ -29,7 +29,7 @@ case "${1:-}" in
     set +e
     (
       set -e
-      for example in chrome effects fonts gallery kerf_viewer notes scene3d scene_layers tables vector_canvas viewport; do
+      for example in chrome effects fonts gallery kerf_viewer notes scene3d scene_layers sysmon tables vector_canvas viewport; do
         run_example "$example"
       done
       "$root/tools/drive-e2e.sh"

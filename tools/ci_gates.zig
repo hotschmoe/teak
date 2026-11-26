@@ -339,19 +339,24 @@ fn runExample(
             return r;
         }
 
-        const web = try std.process.run(arena, io, .{
-            .argv = &.{ o.zig, "build", "-Dweb-optimize=ReleaseSmall", "web" },
-            .cwd = .{ .path = dir },
-        });
-        if (!exitedOk(web.term)) {
-            r.ok = false;
-            r.bin_ok = false;
-            r.err = try std.fmt.allocPrint(arena, "web build failed: {s}", .{clip(web.stderr)});
-            return r;
+        const web_main = try std.fmt.allocPrint(arena, "{s}/src/web_main.zig", .{dir});
+        if (std.Io.Dir.cwd().access(io, web_main, .{})) |_| {
+            const web = try std.process.run(arena, io, .{
+                .argv = &.{ o.zig, "build", "-Dweb-optimize=ReleaseSmall", "web" },
+                .cwd = .{ .path = dir },
+            });
+            if (!exitedOk(web.term)) {
+                r.ok = false;
+                r.bin_ok = false;
+                r.err = try std.fmt.allocPrint(arena, "web build failed: {s}", .{clip(web.stderr)});
+                return r;
+            }
+            const wasm = try wasmPath(arena, io, dir, ex);
+            r.wasm_bytes = try fileSize(io, wasm);
+            r.brotli_bytes = try brotliLen(arena, io, o.node, wasm);
+        } else |_| {
+            std.debug.print("[gates] {s}: no web target, wasm size not measured\n", .{ex});
         }
-        const wasm = try wasmPath(arena, io, dir, ex);
-        r.wasm_bytes = try fileSize(io, wasm);
-        r.brotli_bytes = try brotliLen(arena, io, o.node, wasm);
         r.ran_size = true;
 
         r.native_unbudgeted = ecfg.native_exe == 0;

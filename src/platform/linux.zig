@@ -182,6 +182,12 @@ pub const Host = struct {
         }
     }
 
+    pub fn waitEvents(self: *Host, timeout_ms: u32) void {
+        switch (self.impl) {
+            inline else => |*h| h.waitEvents(timeout_ms),
+        }
+    }
+
     pub fn nowMs(self: *const Host) u64 {
         return switch (self.impl) {
             inline else => |*h| h.nowMs(),

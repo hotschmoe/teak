@@ -12,6 +12,7 @@
   its budget fails. Wasm brotli (ReleaseSmall, quality 11) is the portable
   budget. Native exe size and idle memory are budgeted per host triple: a host
   with no entry has them reported and skipped. Only `aarch64-linux` is seeded.
+  An example without `src/web_main.zig` (the hardware monitor) has no wasm size.
 - `teak.headless.latencyCheck` / `latencyAfterClick`: a scripted click must
   be presented on the next frame (budget 1, the designed hit-test latency).
   A view that never sits still is `unstable`; a click that changes nothing
@@ -23,6 +24,20 @@
   A one-shot subscription that fires and finishes passes. A subscription
   still firing at the end fails unless the state is `expect_busy` (gallery
   toasts, and all of scene3d). `--idle-check` still requires `settled()`.
+
+### Linux: idle hosts block instead of spinning
+
+- The Linux `Host` forwards `waitEvents`, and the Wayland host implements it, so an idle app sleeps in `poll` instead of running the loop flat out (a whole core before; 0% after on X11).
+
+### Msgs from the loop owner
+
+- `Runtime.post(msg)`: the code that owns a hand-written loop delivers a Msg from outside (a sampler, a socket, a worker mailbox); it goes through `update` and the next frame builds. See `docs/features/run.md`.
+- `DataTable.Model.reload(n, src)` and `select(row)`: a live table whose row set changes keeps its sort, widths, focus and scroll.
+- `ButtonStyle.flat()`: `DataTable` and `TreeList` cells are square and borderless under every theme (they inherited rounded, bordered buttons from `Theme.modern_dark`).
+
+### examples/sysmon
+
+- A hardware monitor for Linux and Windows: CPU (total and per logical processor), memory, disk and network rates, a sortable process table, and temperatures on Linux.
 
 ## 0.2.0 (2026-10-27)
 
