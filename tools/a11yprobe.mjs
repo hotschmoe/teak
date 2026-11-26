@@ -82,6 +82,8 @@ const mirror = (page, js) => page.evaluate(`(() => { const root = document.getEl
 
 try {
   const page = await browser.newPage();
+  // Without this a headless page on a CI runner is not the focused page, and the accessibility tree reports no focused node.
+  await (await page.createCDPSession()).send('Emulation.setFocusEmulationEnabled', { enabled: true });
   await page.setViewport({ width: 1280, height: 800 });
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') console.log(`[console.${m.type()}] ${m.text()}`); });
   page.on('pageerror', (e) => { failures.push(`pageerror: ${e.message || e}`); console.log(`[pageerror] ${e.stack || e}`); });
