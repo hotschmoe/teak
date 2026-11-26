@@ -24,6 +24,10 @@
 
 ### Repository
 
+- `zig build tidy` measures TigerStyle with the Zig parser and runs in the blocking
+  gate. Exact per-directory ratchets live in `tools/tidy_ratchet.zon`; `-- --table`
+  prints Markdown and `-- --update` only tightens numbers. It also checks zero test
+  declarations and agreement between every manifest's minimum Zig version.
 - `tools/node_modules` was a tracked symlink to an absolute path on one machine: it dangled on every other checkout until `npm ci --prefix tools` replaced it, which then showed as a change to a tracked file. It is untracked now (the path is already git-ignored). The stray probe `tools/_n.mjs` is gone from the tree.
 
 ### Background gates (#141)

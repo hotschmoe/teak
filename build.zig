@@ -28,6 +28,27 @@ pub fn build(b: *std.Build) void {
     const blocking_run = b.addSystemCommand(&.{ "bash", "tools/test-e2e.sh", "blocking" });
     blocking_run.setCwd(b.path("."));
     blocking.dependOn(&blocking_run.step);
+    const tidy_exe = b.addExecutable(.{
+        .name = "teak-tidy",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/tidy.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "assert", .module = b.createModule(.{
+                .root_source_file = b.path("src/assert.zig"),
+                .target = b.graph.host,
+                .optimize = optimize,
+            }) }},
+        }),
+    });
+    const tidy_run = b.addRunArtifact(tidy_exe);
+    tidy_run.setCwd(b.path("."));
+    tidy_run.has_side_effects = true;
+    tidy_run.stdio = .inherit;
+    tidy_run.addPassthruArgs();
+    b.step("tidy", "Measure TigerStyle ratchets (-- --table or -- --update)")
+        .dependOn(&tidy_run.step);
+    blocking_run.step.dependOn(&tidy_run.step);
     const heavy = b.step("test-heavy", "Run background end-to-end checks");
     const heavy_run = if (b.graph.host.result.os.tag == .windows)
         b.addSystemCommand(&.{ "powershell.exe", "-NoProfile", "-File", "tools/test-heavy-win32.ps1" })
