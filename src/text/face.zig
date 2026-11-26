@@ -17,34 +17,17 @@
 //! the consuming target links libc.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const teak = @import("teak");
 const assert = teak.assert;
 
 pub const c = @import("stb-c");
 const fallback = @import("fallback.zig");
 
-/// Font search order. `TEAK_FONT` (absolute path) overrides everything;
-/// otherwise the first readable candidate wins. DejaVuSansMono leads
-/// because a monospace face matches the framework's measurement
-/// heritage and keeps columns aligned.
-const FONT_CANDIDATES = [_][]const u8{
-    "C:\\Windows\\Fonts\\consola.ttf",
-    "C:\\Windows\\Fonts\\cour.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    // macOS (collections load through `stbtt_GetFontOffsetForIndex`).
-    "/System/Library/Fonts/Menlo.ttc",
-    "/System/Library/Fonts/Monaco.ttf",
-    "/System/Library/Fonts/Courier.ttc",
-    "/System/Library/Fonts/SFNSMono.ttf",
-    "/Library/Fonts/Courier New.ttf",
+pub const Source = struct {
+    options: teak.Options,
+    primary: *const fn (std.mem.Allocator, teak.Options) anyerror![]u8,
+    extra: *const fn (std.mem.Allocator, teak.Options, u16) anyerror!?[]u8,
 };
-
-const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
 
 /// A TTF face. `info` holds pointers into `data`, which must outlive it:
 /// either owned here (a system font; freed by `deinit`) or borrowed from the
@@ -78,9 +61,10 @@ pub const Font = struct {
     /// Load the fallback face: the bytes given to `setFallbackBytes` if any
     /// (the web Host embeds one), else the system font (`TEAK_FONT`, then the
     /// candidate list).
-    pub fn loadSystem(allocator: std.mem.Allocator, options: teak.Options) !Font {
+    pub fn loadSystem(allocator: std.mem.Allocator, source: ?Source) !Font {
         if (fallback_bytes) |bytes| return fromBytes(bytes);
-        const data = try readFontFile(allocator, options);
+        const provider = source orelse return error.FontNotFound;
+        const data = try provider.primary(allocator, provider.options);
         errdefer allocator.free(data);
         var font = try fromBytes(data);
         font.allocator = allocator;
@@ -179,6 +163,7 @@ const family_count = std.enums.values(teak.FontFamily).len;
 const weight_count = std.enums.values(teak.FontWeight).len;
 
 const Registry = struct {
+    source: ?Source = null,
     faces: [family_count][weight_count]?Font = @splat(@splat(null)),
     /// System fallback, loaded on first use. `fallback_tried` stops a missing
     /// font from being searched for again every frame.
@@ -200,9 +185,6 @@ pub fn setFallbackBytes(ttf: []const u8) void {
     fallback_bytes = ttf;
     epoch += 1;
 }
-
-/// freestanding (wasm) has no libc and no file system: only embedded faces.
-const has_files = builtin.os.tag != .freestanding;
 
 /// Register `ttf` as the face for (`family`, `weight`), replacing an earlier
 /// one. The bytes are borrowed: keep them alive (an `@embedFile` slice is).
@@ -276,8 +258,8 @@ pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
 
     if (!registry.fallback_tried) {
         registry.fallback_tried = true;
-        registry.fallback = Font.loadSystem(std.heap.page_allocator, .{}) catch null;
-        if (comptime has_files) {
+        registry.fallback = Font.loadSystem(std.heap.page_allocator, registry.source) catch null;
+        if (registry.source != null) {
             if (registry.fallback == null) std.log.warn("teak: no font found (register one or set TEAK_FONT); text will not draw", .{});
         }
     }
@@ -290,82 +272,24 @@ pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
     return null;
 }
 
-/// Windows system fonts tried in order, relative to `<WINDIR>\Fonts`:
-/// Consolas (monospace, Vista+), then Courier New, Lucida Console, and the
-/// proportional UI faces as a last resort.
-const WINDOWS_FONT_FILES = [_][]const u8{ "consola.ttf", "cour.ttf", "lucon.ttf", "segoeui.ttf", "arial.ttf" };
-
-/// The `i`th Windows font candidate under `windir` (e.g. `C:\Windows`) written
-/// into `buf`; null past the end of the list or when `buf` is too small.
-/// Pure so the probe order is testable on any OS.
-pub fn windowsFontCandidate(buf: []u8, windir: []const u8, i: usize) ?[]const u8 {
-    if (i >= WINDOWS_FONT_FILES.len) return null;
-    return std.fmt.bufPrint(buf, "{s}\\Fonts\\{s}", .{ std.mem.trimEnd(u8, windir, "\\/"), WINDOWS_FONT_FILES[i] }) catch null;
-}
-
-const readFontFile = if (has_files) readFontFileLibc else readFontFileNone;
-
-fn readFontFileNone(_: std.mem.Allocator, _: teak.Options) ![]u8 {
-    return error.FontNotFound;
-}
-
-fn readFontFileLibc(allocator: std.mem.Allocator, options: teak.Options) ![]u8 {
-    if (options.font_path) |env_path| {
-        if (env_path.len > 0) {
-            if (readAbsolute(allocator, env_path)) |bytes| return bytes else |_| {}
-        }
-    }
-    if (builtin.os.tag == .windows) {
-        const windir = options.windows_directory orelse "C:\\Windows";
-        var buf: [1024]u8 = undefined;
-        var i: usize = 0;
-        while (windowsFontCandidate(&buf, windir, i)) |path| : (i += 1) {
-            if (readAbsolute(allocator, path)) |bytes| return bytes else |_| {}
-        }
-        return error.FontNotFound;
-    }
-    for (FONT_CANDIDATES) |path| {
-        if (readAbsolute(allocator, path)) |bytes| return bytes else |_| {}
-    }
-    return error.FontNotFound;
-}
-
-pub fn configure(options: teak.Options) void {
+pub fn configure(source: Source) void {
     assert(registry.fallback == null or registry.fallback_tried);
-    defer assert((options.font_path == null and options.windows_directory == null) or
+    defer assert((source.options.font_path == null and source.options.windows_directory == null) or
         registry.fallback_tried);
-    fallback.checkEnv(options.fallback_fonts);
-    if (options.font_path == null and options.windows_directory == null) return;
+    if (registry.source == null) registry.source = source;
+    if (source.options.font_path == null and source.options.windows_directory == null) return;
     if (!registry.fallback_tried) {
         registry.fallback_tried = true;
-        registry.fallback = Font.loadSystem(std.heap.page_allocator, options) catch null;
+        registry.fallback = Font.loadSystem(std.heap.page_allocator, source) catch null;
     }
 }
 
-/// Read an absolute path via libc stdio. The module already links libc
-/// (stb needs it), and Zig's `std.fs`/`std.Io` file API now requires
-/// threading an `Io` handle from `main` — impractical for a font load
-/// deep inside backend init — so libc `fopen`/`fread` is the pragmatic,
-/// churn-proof choice. Reads in chunks; no `fseek`/`fstat` dependency.
-pub fn readAbsolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var path_buf: [4096]u8 = undefined;
-    if (path.len + 1 > path_buf.len) return error.PathTooLong;
-    @memcpy(path_buf[0..path.len], path);
-    path_buf[path.len] = 0;
-    const path_z: [*:0]const u8 = @ptrCast(&path_buf);
-
-    const file = std.c.fopen(path_z, "rb") orelse return error.OpenFailed;
-    defer _ = std.c.fclose(file);
-
-    var list: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer list.deinit(allocator);
-    var chunk: [64 * 1024]u8 = undefined;
-    while (true) {
-        const n = std.c.fread(&chunk, 1, chunk.len, file);
-        if (n == 0) break;
-        if (list.items.len + n > MAX_FONT_BYTES) return error.FontTooLarge;
-        try list.appendSlice(allocator, chunk[0..n]);
-    }
-    if (list.items.len == 0) return error.EmptyFont;
-    return try list.toOwnedSlice(allocator);
+pub fn load_fallback(index: u16) !?Font {
+    const source = registry.source orelse return null;
+    const allocator = std.heap.page_allocator;
+    const data = (try source.extra(allocator, source.options, index)) orelse return null;
+    errdefer allocator.free(data);
+    var font = try Font.fromBytes(data);
+    font.allocator = allocator;
+    return font;
 }

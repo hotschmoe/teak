@@ -274,6 +274,8 @@ src/                                          -- the library, consumable as a Zi
     linux.zig                                 -- The Linux host: one binary, two backends
     native_drops.zig                          -- Turning pasted / dropped bytes into the EffectResults the web host produces, for native hosts
     native_effects.zig                        -- Declarative-effects service for native hosts (Linux/X11 and Windows): what Host.submit /
+    native_fonts.zig                          -- Native font discovery and byte loaders
+    native_io.zig                             -- Native file operations and statistics clock
     objc.zig                                  -- A minimal Objective-C runtime binding for the macOS host, loaded with std.DynLib instead of
     wasm.zig                                  -- Wasm host backed by zunk's web.input + web.app modules
     wayland.zig                               -- Wayland host backend: the platform/host.zig contract on top of xdg-shell, the Linux counterpart

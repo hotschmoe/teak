@@ -877,7 +877,7 @@ pub const Host = struct {
     dialog_buf: [4096]u8 = undefined,
 
     pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
-        text.face.configure(options);
+        @import("native_fonts.zig").configure(text, options);
         client.load() catch return error.WaylandLoadFailed;
         // A disconnected clipboard reader must not terminate the process.
         _ = signal(13, @ptrFromInt(1)); // SIGPIPE -> SIG_IGN
@@ -1142,6 +1142,9 @@ pub const Host = struct {
         _ = poll(&pfd, 1, @intCast(@min(wait, std.math.maxInt(c_int))));
         api.display_cancel_read(s.display);
     }
+
+    pub const files = @import("native_io.zig").files;
+    pub const now_ns = @import("native_io.zig").now_ns;
 
     pub fn nowMs(_: *const Host) u64 {
         return monotonicMs();

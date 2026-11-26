@@ -625,7 +625,7 @@ pub const Host = struct {
     cursors: [std.enums.values(teak.CursorShape).len]c_ulong,
 
     pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
-        text.face.configure(options);
+        @import("native_fonts.zig").configure(text, options);
         var lib = std.DynLib.open("libX11.so.6") catch return error.X11LoadFailed;
         errdefer lib.close();
         const x = try Xlib.load(&lib);
@@ -1593,6 +1593,9 @@ pub const Host = struct {
         }};
         _ = std.posix.poll(&fds, @intCast(@min(timeout_ms, std.math.maxInt(i32)))) catch {};
     }
+
+    pub const files = @import("native_io.zig").files;
+    pub const now_ns = @import("native_io.zig").now_ns;
 
     pub fn nowMs(_: *const Host) u64 {
         const now = std.Io.Clock.awake.now(std.Options.debug_io);

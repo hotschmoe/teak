@@ -34,7 +34,6 @@
 //! within the same tick.
 
 const std = @import("std");
-const builtin = @import("builtin");
 
 const a11y = @import("input/a11y.zig");
 const snapshot = @import("core/snapshot.zig");
@@ -47,9 +46,6 @@ const inspector = @import("core/inspector.zig");
 
 /// Compact one-line rendering of a Msg (see `inspector.fmtValue`).
 pub const fmtValue = inspector.fmtValue;
-
-/// The target has a host filesystem + environment (not wasm/freestanding).
-const fs_capable = builtin.os.tag != .freestanding;
 
 /// Msgs kept for the `msglog` command and the inspector.
 pub const ring_n = 32;
@@ -80,6 +76,7 @@ const Act = union(enum) {
 /// Loop-owned bookkeeping for the control channel and record/replay. Holds no
 /// application state.
 pub const State = struct {
+    files: ?teak.FileIo = null,
     gpa: std.mem.Allocator,
     /// The socket is listening: commands are served.
     active: bool = false,
@@ -151,9 +148,9 @@ pub const State = struct {
 
     /// Write the recording so far to its file.
     pub fn flushRecording(self: *State) void {
-        if (comptime !fs_capable) return;
+        const files = self.files orelse return;
         const path = self.rec_path orelse return;
-        std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = path, .data = self.rec_buf.items }) catch
+        files.write(files.ctx, path, self.rec_buf.items, .replace) catch
             std.log.warn("teak: could not write recording \"{s}\"", .{path});
         self.rec_lines_unflushed = 0;
     }
@@ -189,7 +186,7 @@ fn hasControl(comptime Host: type) bool {
 /// Start the requested control services from the supplied options.
 /// Failures degrade to "feature off" with a log line, never a crash.
 pub fn start(st: *State, host: anytype, opts: anytype) void {
-    if (comptime !fs_capable) return;
+    if (comptime @hasDecl(@TypeOf(host.*), "files")) st.files = host.files();
     const gpa = st.gpa;
 
     if (comptime hasControl(@TypeOf(host.*))) {
@@ -204,12 +201,13 @@ pub fn start(st: *State, host: anytype, opts: anytype) void {
     if (opts.inspect) st.inspect = true;
     if (st.inspect) st.log_msgs = true;
 
+    if (st.files == null) return;
     if (opts.record_path) |p| st.rec_path = gpa.dupe(u8, p) catch null;
 
     if (opts.replay_path) |path| {
         if (comptime !@hasDecl(@TypeOf(host.*), "injectInput")) {
             std.log.warn("teak: replay disabled — this Host cannot inject input", .{});
-        } else if (std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, gpa, .limited(64 * 1024 * 1024))) |data| {
+        } else if (st.files.?.read(st.files.?.ctx, gpa, path, 64 * 1024 * 1024)) |data| {
             st.replay_data = data;
         } else |_| {
             std.log.warn("teak: replay disabled — could not read \"{s}\"", .{path});
@@ -546,7 +544,12 @@ fn frameContains(rt: anytype, needle: []const u8) bool {
 fn takeScreenshot(rt: anytype, path: []const u8) !void {
     const Gpu = @TypeOf(rt.gpu.*);
     if (comptime !@hasDecl(Gpu, "readFrame")) return error.NoOffscreenGpu;
-    try headless_run.writeFramePng(rt.gpu, rt.ctl.gpa, path);
+    const files = rt.ctl.files orelse return error.FilesUnavailable;
+    const rgba = try rt.gpu.readFrame(rt.ctl.gpa);
+    defer rt.ctl.gpa.free(rgba);
+    const png = try headless_run.encodePng(rt.ctl.gpa, rgba, rt.gpu.width, rt.gpu.height);
+    defer rt.ctl.gpa.free(png);
+    try files.write(files.ctx, path, png, .replace);
 }
 
 fn cmdInfo(rt: anytype) void {

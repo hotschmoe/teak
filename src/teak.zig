@@ -504,6 +504,8 @@ pub const FileDialogFilter = host.FileDialogFilter;
 pub const FileDialogPoll = host.FileDialogPoll;
 /// Compile-time check that a type satisfies the `Host` contract.
 pub const validateHost = host.validateHost;
+/// See docs/features/host.md#runtime-file-capability.
+pub const FileIo = host.FileIo;
 
 /// Background clear color passed to the Gpu.
 pub const ClearColor = gpu.ClearColor;

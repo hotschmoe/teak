@@ -156,6 +156,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const teak = @import("teak.zig");
 
 const cmd = @import("core/cmd.zig");
 const eql = @import("core/eql.zig");
@@ -281,65 +282,42 @@ pub const Options = struct {
     hud: bool = false,
 };
 
-/// The target has a host filesystem to mirror snapshots into. Freestanding
-/// (wasm) has none — and never instantiates `run` anyway — so gating the
-/// sink on this compiles the file/env machinery out there entirely. run.zig
-/// sits outside the framework-core dirs, so the `builtin` reference is
-/// allowed here (HARDLINE §3 scopes the conditional-compilation ban to core).
-const snapshot_fs_capable = builtin.os.tag != .freestanding;
-
-/// Live-snapshot sink: mirrors each changed frame's `snapshot.write` text to
-/// a file for an out-of-band agent to read. Loop-orchestration state only
-/// (like `press_target` / the title buffer) — it holds no *application*
-/// state and only reflects what the pure passes already produced.
-///
-/// File I/O goes through `std.Options.debug_io` (the globally-available `Io`
-/// std itself uses for diagnostics) and `std.Io.Dir` rather than libc, so the
-/// sink works in every build that reaches `run` — including the library test
-/// runner, which links no libc. Compiled out on `!snapshot_fs_capable`.
+/// See SRC.md for snapshot serialization and Host-owned atomic replacement.
 const SnapshotSink = struct {
+    files: ?teak.FileIo = null,
     /// Actively mirroring. Flips to false permanently on the first write
     /// failure (a broken sink must never crash or throttle the app).
     enabled: bool = false,
     /// One-shot latch so the disable-warning is logged at most once.
     failed: bool = false,
     gpa: std.mem.Allocator = undefined,
-    /// Destination path and its `<dest>.tmp` sibling (both owned; non-empty
-    /// exactly when the sink allocated its resources).
     dest: []const u8 = &.{},
-    tmp: []const u8 = &.{},
     /// Reused serialization buffer — bulk-managed like verts/text_draws, so
     /// steady-state frames allocate nothing.
     buf: std.Io.Writer.Allocating = undefined,
 
     /// Allocate the reusable buffers for the supplied path. Any failure
     /// yields a disabled no-op sink rather than an error.
-    fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8) SnapshotSink {
-        if (comptime !snapshot_fs_capable) return .{};
+    fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8, files: ?teak.FileIo) SnapshotSink {
+        if (files == null) return .{};
 
         const chosen = opt_path orelse return .{};
         if (chosen.len == 0) return .{};
 
         const dest = gpa.dupe(u8, chosen) catch return .{};
-        const tmp = std.fmt.allocPrint(gpa, "{s}.tmp", .{chosen}) catch {
-            gpa.free(dest);
-            return .{};
-        };
         return .{
+            .files = files,
             .enabled = true,
             .gpa = gpa,
             .dest = dest,
-            .tmp = tmp,
             .buf = std.Io.Writer.Allocating.init(gpa),
         };
     }
 
     fn deinit(self: *SnapshotSink) void {
-        if (comptime !snapshot_fs_capable) return;
         if (self.dest.len == 0) return; // never activated — nothing allocated
         self.buf.deinit();
         self.gpa.free(self.dest);
-        self.gpa.free(self.tmp);
     }
 
     /// Serialize the primary frame (and, when open, the secondary window
@@ -356,7 +334,6 @@ const SnapshotSink = struct {
         sec_cmds: anytype,
         sec_rects: []const Rect,
     ) void {
-        if (comptime !snapshot_fs_capable) return;
         if (!self.enabled) return;
 
         self.buf.clearRetainingCapacity();
@@ -367,11 +344,8 @@ const SnapshotSink = struct {
             snapshot.write(w, sec_cmds, sec_rects, .{}) catch return self.fail();
         }
 
-        // Rename a sibling file so readers never observe a partial snapshot.
-        const io = std.Options.debug_io;
-        const dir = std.Io.Dir.cwd();
-        dir.writeFile(io, .{ .sub_path = self.tmp, .data = self.buf.written() }) catch return self.fail();
-        dir.rename(self.tmp, dir, self.dest, io) catch return self.fail();
+        const files = self.files.?;
+        files.write(files.ctx, self.dest, self.buf.written(), .atomic) catch return self.fail();
     }
 
     fn fail(self: *SnapshotSink) void {
@@ -716,6 +690,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
             var ctl = control.State.init(gpa);
             control.start(&ctl, host, opts);
+            const files = if (@hasDecl(Host, "files")) host.files() else null;
             return .{
                 .ctl = ctl,
                 .gpa = gpa,
@@ -726,8 +701,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .model = if (@hasDecl(App.Model, "init")) App.Model.init() else .{},
                 .bufs = .{ CmdBufT.init(gpa), CmdBufT.init(gpa) },
                 .secondary = SecondaryDriver(CmdBufT).init(gpa),
-                .snap = SnapshotSink.init(gpa, opts.snapshot_path),
-                .stats_sink = frame_stats.Sink.init(gpa, opts.stats_path),
+                .snap = SnapshotSink.init(gpa, opts.snapshot_path, files),
+                .stats_sink = frame_stats.Sink.init(gpa, opts.stats_path, files),
                 .continuous = opts.continuous,
                 .hud = opts.hud,
                 .exit_after_frames = opts.exit_after_frames,
@@ -747,13 +722,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             return self.exit_after_frames != 0 and self.frames_run >= self.exit_after_frames;
         }
 
-        /// Monotonic loop-clock nanoseconds: a high-resolution clock where
-        /// the target has one, else the Host clock (`nowMs`, whole ms).
+        /// See docs/features/host.md for the now_ns and nowMs clock contract.
         fn clockNs(self: *const Self) u64 {
-            if (comptime frame_stats.fs_capable) {
-                const now = std.Io.Clock.awake.now(std.Options.debug_io);
-                return @intCast(@max(now.nanoseconds, 0));
-            }
+            if (comptime @hasDecl(Host, "now_ns")) return self.host.now_ns();
             return self.host.nowMs() *| std.time.ns_per_ms;
         }
 

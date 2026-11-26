@@ -112,10 +112,12 @@ lines and functions, longest function, assertion deficit, usize fields, recursio
 (files, lines, functions, assertions, sized fields) are printed by `--table` and
 not stored, because growth is not a regression. Normal runs require exact equality
 for every stored number. A decrease fails
-until `-- --update` records it; an increase is refused even by update. The one
-legitimate raise is a count that was always there and has become visible (tidy
-learned to see it, or an implicit operation was made explicit): the stored number
-is then edited by hand and the commit says why. Updates
+until `-- --update` records it; an increase is refused even by update. A raise
+is legitimate in three cases: a count that was always there has become visible
+(tidy learned to see it, or an implicit operation was made explicit); a call moved
+from one group into another, lowering the first by at least as much; or a long
+function in old code was split, which adds a function to the assertion average.
+The stored number is then edited by hand and the commit says why. Updates
 validate the entire snapshot before writing. A new group can only be added by
 update at zero long lines/functions, deficit, usize fields, recursion, literal
 infinite loops, camelCase and tests (longest function at most 70). Other inventory
@@ -387,7 +389,14 @@ Overlay hits take precedence over the base layer. A modal overlay containing the
 ## src/run.zig
 
 The entry point supplies `Options`; runtime initialization never resolves environment
-overrides. Clock acquisition, file sinks and recorder behavior remain as before.
+overrides. Every time reading comes from the Host: optional `now_ns` supplies
+monotonic nanoseconds for statistics, otherwise `nowMs() *| ns_per_ms` supplies
+whole-millisecond precision. Native and headless Hosts preserve the previous awake-clock
+statistics; headless animation/subscription time remains the independent fake `nowMs`.
+Snapshot serialization stays here; `Host.files()` receives the destination and bytes in
+atomic mode. Missing file capability silently disables snapshots, recording, replay and
+statistics, as the web target did before. The control screenshot path encodes PNG bytes
+without calling the entry-point file writer, then uses the same Host capability.
 
 Input is routed using the previous frame's commands and rectangles, which describe what the user actually saw. Idle frames can redraw the cached frame solely for caret blinking without rerunning view or layout. A live secondary window reuses GPU scratch buffers, so the primary frame must rebuild while one is open; resource-table changes also force staging even if commands compare equal. Snapshot output is written on the first frame and content or window transitions, not on cosmetic blink ticks. Outstanding effects and a listening control channel keep input polling active at frame rate, because the Host cannot wake on the control socket itself. `Runtime.post` is how the owner of a hand-written loop delivers a Msg from outside (a sampler, a socket); the frame after a post always builds.
 
@@ -425,9 +434,18 @@ The view is layer-backed by a CAMetalLayer sized and scaled by AppKit. If a pres
 
 ## src/headless_run.zig
 
+This module is an entry-point toolkit around Runtime, not code below Runtime. Its direct
+I/O stays: `/proc/self/status` for process memory, stdout for CLI results, PNG output,
+and the serve loop's real sleep. None of those helpers is called by Runtime or control;
+control uses only the pure PNG encoder. Gpu readback is through the supplied Gpu.
+
 `idleCheck` samples process memory after the idle window and before the offscreen Gpu is released, so the figure includes the driver. Committed bytes are `RssAnon + VmSwap`: private pages, including swapped ones. `latencyAfterClick` compares hashes of the frame snapshot without its transient header, so hover, press and caret phase do not count as a change; the snapshot is taken before the next `frame()` because command bytes die when the frame arena resets. A control that already presents a new view on mouse-down reports one frame and still receives the release. `--gates-json` only measures; pass and fail policy belongs to `tools/ci_gates.zig`.
 
 ## src/control.zig
+
+Record/replay uses the supplied FileIo. Replay reads at startup with a 64 MiB limit.
+Recording still replaces the complete accumulated stream every 32 nonempty input lines,
+on control `quit`, and during shutdown; it deliberately does not append or change coverage.
 
 Commands are driven over frames: a click separates press and release because the runtime routes input against the previous frame's layout. Text is sent in 32-byte batches to stay within the 64-byte per-frame input queue. Selector offsets are relative to the node centre and allow interactions with specific regions of a widget.
 
@@ -454,6 +472,11 @@ Sorting is stable for equal rows in either direction. The header stays fixed out
 Cache entries compare text and every font field; the hash selects a slot but is not identity. The cache is cleared when the face table changes, and runs longer than `max_text` bypass it. Native builds use a larger two-way table; wasm uses a small table and an all-zero initial representation to avoid occupying the data section. Short ASCII runs bypass hashing and cache lookup.
 
 ## src/platform/host.zig
+
+`FileIo` is a platform-neutral capability, not a file handle. Optional `Host.files()`
+returns a context plus read/write functions; reads return caller-allocator-owned bytes,
+and writes consume borrowed bytes synchronously. No capability or native implementation
+is installed implicitly. The optional `now_ns` clock is separate from logical `nowMs`.
 
 Optional Host surfaces are validated only when declared. A missing scale factor defaults to 1.0; effect submission and result polling are paired. The Host clock supplies subscriptions and other time-dependent services without reading time in `view`. Accessibility actions are polled before input routing. See HARDLINE §2 hatch 4 and §3.
 
@@ -506,23 +529,59 @@ semantics, including presence-only Cocoa debug and Wayland viewport switches.
 
 ## src/text/face.zig
 
-Native Host startup configures the existing face registry with the supplied font settings.
-Primary font overrides are resolved at startup so lazy measurement cannot read the environment
-or retain an options global. Default discovery stays lazy when no primary override is supplied.
-Default font search order and failure fallback stay unchanged.
-Registry ownership and caches remain for the later phase 1 step.
+Native Host startup supplies a Source containing captured options and two byte loaders.
+Text owns parsing and the existing caches; it never opens a file or chooses a system path.
+Primary overrides resolve at startup; default loading stays lazy. Embedded fallback bytes
+take precedence over the source. Without either, only registered faces are available.
+Source options borrow the entry point's startup storage. Registry/cache ownership stays
+for the later phase 1 step. The first configured source remains until release, preserving
+the old first-configuration fallback paths across Hosts; explicit primary overrides still
+apply on the first primary load.
 
 ## src/text/fallback.zig
 
-Startup configuration borrows up to four colon-separated fallback paths from Options.
-Font bytes are still loaded lazily into the existing cache. Discovery and cache ownership
-remain unchanged beyond removing the environment lookup.
+The cache retains four explicit faces, four source-supplied override slots and twenty
+source-supplied system slots, preserving face ids and search order. It asks the configured
+source for bytes on the first miss and remembers failed slots. Embedded web faces work
+without a source. Discovery belongs to native_fonts; parsing and cache ownership stay here.
 
 ## src/dev.zig
+
+The loader is an entry point around the loop. Its image open/close, mtime polling, copy
+and debounce/poll sleeps stay here; Runtime never invokes it. Plugins still obtain all
+loop I/O through their injected Host. Loading shared libraries can itself create threads
+inside the OS or dependency implementation; Teak starts no thread in this module.
 
 ABI version 2 passes Options into `envOpen`; each environment instance owns its copy and
 reuses it across reloads. The loader builds the options once. Plugins no longer receive or
 install a process environment in std globals. The environment fingerprint includes Options.
+
+## src/frame_stats.zig
+
+The sink formats bytes and retains samples without filesystem access. It creates/truncates
+the CSV through FileIo at startup, appends buffered rows at 16 KiB and shutdown, and
+replaces the summary at shutdown. The stderr summary remains a diagnostic. Failures
+disable CSV writing after one warning. Existing growable buffers and sample allocation
+remain outside this seam change.
+
+## src/platform/native_io.zig
+
+Native/headless Hosts export one shared implementation of the optional file and statistics
+clock functions. Reads enforce the caller's positive byte limit. Replace truncates; atomic
+writes a sibling `.tmp` then renames it; append writes at the existing file length without
+creating a missing file. Each operation closes its handles before returning. Paths remain
+relative to cwd unless absolute. Atomic temporary paths use a stack buffer sized to
+std.Io.Dir.max_path_bytes and return NoSpaceLeft if the sibling does not fit.
+The awake statistics clock preserves the previous clamp of negative readings to zero.
+
+## src/platform/native_fonts.zig
+
+All native font discovery lives here: Options.font_path, Windows directory candidates,
+the ordered Unix/macOS primary probes, four nonempty colon-separated fallback overrides,
+and twenty system fallback paths. Reads share native_io and retain the 32 MiB font limit.
+Missing primary candidates continue to the next path; allocation failure returns to the
+text caller. Empty files fail. Unlike the former libc fread loop, read errors are returned
+rather than treated as end-of-file. Fonts remain lazy except for explicit primary overrides.
 
 ## src/core/widgets/split.zig
 
