@@ -294,3 +294,24 @@ stopped before it changed any tracked file.
 
 **Open point for the owner.** webzocket is a fork. Owning it means its upstream is no longer a source of
 changes we take without reading; whether to keep merging from upstream is the owner's call.
+
+## Amendment 2 (2026-11-26): the owner's rulings after the first rewrite session
+
+Four questions were put to the owner with a recommendation each; the owner agreed with all four.
+
+- **Assertion average.** tidy leaves a function whose body is a single statement out of the
+  two-assertions-per-function average. Files held individually in the ratchet must be at zero deficit, so the
+  rule is at full strength where new code is written. Turned down: the strict count over every function,
+  which is met in practice by filler assertions in getters.
+- **rich_zig in teak's root manifest.** Accepted for now as a lazy dependency used only by
+  `zig build sim`, because the simulator builds examples/counter_greeter and that example's app module
+  imports it. To be removed by moving the terminal library out of the example's app module. Turned down:
+  dropping the example from the simulator.
+- **zunk CI.** Runs for pull requests into any branch, so stacked pull requests are tested on Linux, macOS
+  and Windows. Turned down: master only, which left stacked work untested on two of the three systems.
+- **webzocket upstream.** This closes the open point of amendment 1. The fork's upstream is no longer
+  merged wholesale. webzocket is treated as the owner's own code; a protocol or security fix from upstream
+  is read and brought over by hand. Turned down: tracking upstream, which would keep undoing any work to
+  bring the package inside the rules.
+
+Stacked pull requests are merged in order with merge commits, not squashed.
