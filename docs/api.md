@@ -261,7 +261,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - `pub fn fit(x0: f32, y0: f32, x1: f32, y1: f32, w: f32, h: f32, margin: f32, y_up: bool) CanvasTransform`
 > One draw op inside a canvas (polyline, rect, circle, arc, polygon, lines, triangles, ...).
 - `teak.CanvasPrimitive` = `cmd.CanvasPrimitive`
-  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text, circle, arc, polygon`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text, circle, arc, polygon, geometry`
   > Center (`x`, `y`) and `radius` in canvas-local units (so they follow
   > `CanvasStyle.transform`), unless `screen_radius`: then the radius is
   > in screen px and the circle keeps its size at every zoom (node dots).
@@ -279,6 +279,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   > particular rule (split it at the crossings for exact results).
   > `stroke` draws the closed outline, `thickness` screen px.
   - `struct Polygon`
+  - `struct Geometry`
   - `struct Polyline`
   - `struct FilledRect`
   - `struct HLine`
@@ -393,7 +394,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.SceneView`: `pub const SceneView = scene.View`
 > A declared GPU resource (image or mesh) keyed by an app-chosen key.
 - `teak.Resource` = `resources.Resource`
-  - fields: `mesh, image`
+  - fields: `mesh, image, canvas_geometry`
   - `pub fn kind(self: Resource) Kind`
   - `pub fn key(self: Resource) u32`
   - `pub fn rev(self: Resource) u32`
@@ -403,6 +404,9 @@ Signatures and `///` doc comments of every public declaration reachable from
 > A declared image resource.
 - `teak.ImageResource` = `resources.ImageResource`
   - fields: `key, rev, width, height, rgba`
+> A declared canvas-geometry resource (primitives tessellated once, transformed on the GPU).
+- `teak.CanvasGeometryResource` = `resources.CanvasGeometryResource`
+  - fields: `key, rev, antialias, prims`
 > Intrinsic size and flex of a `scene3d` leaf.
 - `teak.SceneStyle` = `cmd.SceneStyle`
   - fields: `width, height, flex`
@@ -683,11 +687,14 @@ Signatures and `///` doc comments of every public declaration reachable from
 > An image draw record produced by the render pass.
 - `teak.ImageDraw` = `render.ImageDraw`
   - fields: `rect_x, rect_y, rect_w, rect_h, handle, tint, clip_x, clip_y, clip_w, clip_h`
+> One retained canvas-geometry draw (`handle` is the app key until `stageDraws`).
+- `teak.CanvasGeomDraw` = `render.CanvasGeomDraw`
+  - fields: `handle, sx, sy, tx, ty, clip_x, clip_y, clip_w, clip_h`
 > Render cmds + rects + transient state into vertices and draw records.
 - `teak.buildFrame`: `pub const buildFrame = render.buildFrame`
 > Vertex/draw-list offsets separating the base layer from the overlay layer.
 - `teak.OverlaySplit` = `render.OverlaySplit`
-  - fields: `verts, text, images, scenes`
+  - fields: `verts, text, images, scenes, geoms`
 > Run-loop resource bookkeeping for hand-written host loops (web): `sync`
 > the table with `App.resources(model)`, then `stageDraws` instead of
 > `uploadImages`. `teak.run` does both for you.
@@ -962,7 +969,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `x, y`
 > One 2D draw op inside a canvas. All coordinates are canvas-local.
 - `union CanvasPrimitive`
-  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text, circle, arc, polygon`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text, circle, arc, polygon, geometry`
   > Center (`x`, `y`) and `radius` in canvas-local units (so they follow
   > `CanvasStyle.transform`), unless `screen_radius`: then the radius is
   > in screen px and the circle keeps its size at every zoom (node dots).
@@ -980,6 +987,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   > particular rule (split it at the crossings for exact results).
   > `stroke` draws the closed outline, `thickness` screen px.
   - `struct Polygon`
+  - `struct Geometry`
   - `struct Polyline`
   - `struct FilledRect`
   - `struct HLine`
@@ -2127,13 +2135,15 @@ per-frame `SceneDraw` record the render pass hands to the Gpu.
 Declarative GPU resources (HARDLINE §2 escape hatch 8).
 
 - `enum Kind`
-  - fields: `mesh, image`
+  - fields: `mesh, image, canvas_geometry`
 - `struct MeshResource`
   - fields: `key, rev, data`
 - `struct ImageResource`
   - fields: `key, rev, width, height, rgba`
+- `struct CanvasGeometryResource`
+  - fields: `key, rev, antialias, prims`
 - `union Resource`
-  - fields: `mesh, image`
+  - fields: `mesh, image, canvas_geometry`
   - `pub fn kind(self: Resource) Kind`
   - `pub fn key(self: Resource) u32`
   - `pub fn rev(self: Resource) u32`
@@ -2475,12 +2485,17 @@ Accessibility tree builder.
 > Where the overlay layer (HARDLINE §2 hatch 5: base z=0, overlay z=1)
 > starts inside each staged list, as counts of what the base layer
 > produced. A Gpu that honours it draws base solids, images, scene
-> composites and text first, THEN the overlay's solids, images, composites
-> and text, so an opaque overlay panel hides base-layer text and images
-> beneath it. Without a split (all lists drawn by kind) the base layer's
-> text and images would show through overlay quads.
+> composites, retained canvas geometry and text first, THEN the overlay's,
+> so an opaque overlay panel hides base-layer text, images and retained
+> geometry beneath it. Within a layer a retained draw sits above that
+> layer's immediate canvas primitives.
 - `struct OverlaySplit`
-  - fields: `verts, text, images, scenes`
+  - fields: `verts, text, images, scenes, geoms`
+> One retained canvas-geometry draw. `handle` is the app key until
+> `stageDraws` remaps it. `tx` / `ty` include the canvas origin; the clip
+> is the canvas rect intersected with the scroll clip, in window logical px.
+- `struct CanvasGeomDraw`
+  - fields: `handle, sx, sy, tx, ty, clip_x, clip_y, clip_w, clip_h`
 > Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits
 > solid-fill quads into `verts`, textured glyph records into
 > `text_draws`, textured image records into `image_draws`, and 3D scene

@@ -2,11 +2,12 @@
 //! 20 000 nodes, supports, moment diagrams) on one pan / zoom canvas.
 //!
 //! The geometry is built ONCE, in world units (metres, y up), into Model-owned
-//! slices. `view` hands the same slices to the canvas every frame; pan and zoom
-//! change only `CanvasStyle.transform`, so the view does no per-primitive work
-//! and everything off the canvas is culled while lowering. Lines, circles,
-//! arcs and polygons are antialiased (`CanvasStyle.antialias`). The `key` on
-//! the big batches tells the frame diff the geometry did not change.
+//! slices, and declared as four `.canvas_geometry` resources (braces, members,
+//! overlays, nodes). The run loop tessellates each once; pan and zoom change
+//! only `CanvasStyle.transform`, which the shader applies. Toggling antialias
+//! bumps the geometry `rev` (the flag is baked). Hiding braces omits that
+//! draw and does not re-upload. Retained draws sit above the canvas
+//! background, in resource order.
 //!
 //! Input (one `pointerMsg` hook): drag pans, the wheel zooms about the cursor,
 //! the canvas reports its size (`layout`) so the first frame can fit the frame.
@@ -123,7 +124,7 @@ pub const Icons = struct {
 };
 
 pub fn resources(m: *const Model) []const teak.Resource {
-    return if (m.icons) |ic| &ic.list else &.{};
+    return if (m.icons != null) m.listed else &.{};
 }
 
 pub const Model = struct {
@@ -135,6 +136,10 @@ pub const Model = struct {
     xf: ?teak.CanvasTransform = null,
     antialias: bool = true,
     show_braces: bool = true,
+    /// Braces and members as `lines` batches; on the heap so resources outlive the copy out of `init`.
+    batches: *[2]teak.CanvasPrimitive = undefined,
+    /// Three toolbar images, then four canvas geometries (keys are per kind).
+    listed: *[7]teak.Resource = undefined,
 
     pub fn init() Model {
         const a = std.heap.page_allocator;
@@ -142,7 +147,27 @@ pub const Model = struct {
         g.* = Geometry.build(a) catch @panic("oom");
         const ic = a.create(Icons) catch @panic("oom");
         ic.build(a);
-        return .{ .geo = g, .icons = ic };
+        const batches = a.create([2]teak.CanvasPrimitive) catch @panic("oom");
+        batches[0] = .{ .lines = .{ .segs = g.braces, .color = .{ 0.35, 0.42, 0.55, 1 }, .thickness = 1, .key = 1 } };
+        batches[1] = .{ .lines = .{ .segs = g.members, .color = .{ 0.75, 0.82, 0.95, 1 }, .thickness = 1.5, .key = 2 } };
+        const listed = a.create([7]teak.Resource) catch @panic("oom");
+        var m = Model{ .geo = g, .icons = ic, .batches = batches, .listed = listed };
+        m.syncResources();
+        return m;
+    }
+
+    /// Antialiasing is baked into the buffers, so each setting is its own `rev`.
+    fn syncResources(m: *Model) void {
+        const ic = m.icons orelse return;
+        const rev: u32 = if (m.antialias) 2 else 1;
+        const aa = m.antialias;
+        m.listed[0] = ic.list[0];
+        m.listed[1] = ic.list[1];
+        m.listed[2] = ic.list[2];
+        m.listed[3] = .{ .canvas_geometry = .{ .key = 1, .rev = rev, .antialias = aa, .prims = m.batches[0..1] } };
+        m.listed[4] = .{ .canvas_geometry = .{ .key = 2, .rev = rev, .antialias = aa, .prims = m.batches[1..2] } };
+        m.listed[5] = .{ .canvas_geometry = .{ .key = 3, .rev = rev, .antialias = aa, .prims = m.geo.overlays } };
+        m.listed[6] = .{ .canvas_geometry = .{ .key = 4, .rev = rev, .antialias = aa, .prims = m.geo.nodes } };
     }
 };
 
@@ -175,7 +200,10 @@ pub fn update(m: *Model, msg: Msg) void {
             m.xf = xf.zoomAt(z.x, z.y, want / xf.sx);
         },
         .fit => m.xf = fitXf(m),
-        .toggle_aa => m.antialias = !m.antialias,
+        .toggle_aa => {
+            m.antialias = !m.antialias;
+            m.syncResources();
+        },
         .toggle_braces => m.show_braces = !m.show_braces,
     }
 }
@@ -207,19 +235,21 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.text(std.fmt.allocPrint(arena, "{d} members, {d} nodes, {d:.1} px/m", .{ g.memberCount(), g.nodes.len, scale }) catch "");
     cb.popGroup();
 
-    // Preserve painter order; the Model owns the slices.
+    // Painter's order: braces, members, overlays, node dots.
     var prims: [4]teak.CanvasPrimitive = undefined;
     var n: usize = 0;
     if (m.show_braces) {
-        prims[n] = .{ .lines = .{ .segs = g.braces, .color = .{ 0.35, 0.42, 0.55, 1 }, .thickness = 1, .key = 1 } };
+        prims[n] = .{ .geometry = .{ .key = 1 } };
         n += 1;
     }
-    prims[n] = .{ .lines = .{ .segs = g.members, .color = .{ 0.75, 0.82, 0.95, 1 }, .thickness = 1.5, .key = 2 } };
+    prims[n] = .{ .geometry = .{ .key = 2 } };
     n += 1;
-    const all = arena.alloc(teak.CanvasPrimitive, n + g.overlays.len + g.nodes.len) catch return;
-    @memcpy(all[0..n], prims[0..n]);
-    @memcpy(all[n..][0..g.overlays.len], g.overlays);
-    @memcpy(all[n + g.overlays.len ..], g.nodes);
+    prims[n] = .{ .geometry = .{ .key = 3 } };
+    n += 1;
+    prims[n] = .{ .geometry = .{ .key = 4 } };
+    n += 1;
+    const shown = arena.alloc(teak.CanvasPrimitive, n) catch return;
+    @memcpy(shown, prims[0..n]);
 
     cb.canvasInteractive(.{
         .width = 0,
@@ -228,6 +258,6 @@ pub fn view(m: *const Model, cb: anytype) void {
         .bg = .{ 0.07, 0.08, 0.1, 1 },
         .transform = m.xf orelse .{},
         .antialias = m.antialias,
-    }, if (m.xf == null) &.{} else all, CANVAS_ID, "frame");
+    }, if (m.xf == null) &.{} else shown, CANVAS_ID, "frame");
     cb.popGroup();
 }

@@ -3,19 +3,23 @@
 **Status**: `pub` in `src/teak.zig` (`CanvasCmd`, `CanvasStyle`, `CanvasTransform`,
 `CanvasPrimitive`, `CanvasPoint`, `canvasLocalPoint`, `lineChartPrimitives`,
 `LineChartOpts`, `emitQuadCorners`, `CanvasEvent`, `CanvasEventKind`, `Buttons`,
-`Modifiers`, `Button`)
+`Modifiers`, `Button`, `CanvasGeometryResource`, `CanvasGeomDraw`)
 **Source**: `src/core/cmd.zig` (variant + emitters), `src/core/chart.zig`
-(chart helper), `src/layout/engine.zig`, `src/input/hit_test.zig`,
-`src/render/{vertex,build}.zig`, `src/input/a11y.zig`,
+(chart helper), `src/core/resources.zig` (`.canvas_geometry`),
+`src/layout/engine.zig`, `src/input/hit_test.zig`,
+`src/render/{vertex,build,canvas_tess,canvas_geom}.zig`,
+`shaders/canvas_geom.wgsl`, `src/input/a11y.zig`,
 `src/core/snapshot.zig`, `src/run.zig` (`cmdsEqual` frame-diff arm),
 `src/platform/win32.zig` (UIA role map), `src/teak.zig` (re-exports)
 **Checks**: the background gate runs the vector-canvas example.
 
 A `canvas` is a fixed-size leaf widget that draws a list of pure-data 2D
-primitives (gridlines, polylines, filled rects, markers) through the
-**existing solid-quad pipeline** — no shader or GPU-backend change. It
-exists so engineering-calc apps can draw line charts and other custom 2D
-graphics that don't decompose into the standard widgets.
+primitives (gridlines, polylines, filled rects, markers). Immediate
+primitives lower through the solid-quad pipeline. A `.geometry` primitive
+does not: it draws a `.canvas_geometry` resource the GPU already holds
+(see "Retained geometry"). It exists so engineering-calc apps can draw
+line charts and other custom 2D graphics that don't decompose into the
+standard widgets.
 
 ## Contract
 
@@ -65,6 +69,7 @@ pub const CanvasPrimitive = union(enum) {
     circle:      struct { x, y, radius: f32, fill: ?[4]f32, stroke: ?[4]f32 = null, thickness = 1, screen_radius = false },
     arc:         struct { x, y, radius, start = 0, sweep = pi: f32, color, thickness, screen_radius = false },
     polygon:     struct { points: []const CanvasPoint, fill: ?[4]f32, stroke: ?[4]f32 = null, thickness = 1 },
+    geometry:    struct { key: u32 },  // retained .canvas_geometry resource; 0 draws nothing
 };
 pub const TriVertex = struct { x, y, r, g, b, a: f32 };   // CanvasPrimitive.TriVertex
 ```
@@ -131,11 +136,12 @@ polygon and polyline points, triangle vertices, text positions); stroke
 `thickness`, `marker.size`, `screen_radius` circles and text size stay in
 screen px, so lines keep their weight at every zoom.
 
-This is the efficient way to draw large static geometry: build it ONCE in
-world units into Model-owned slices, hand the same slices to the canvas each
-frame, and pan / zoom by changing only the transform. `view` does no
-per-primitive work, the batch `key`s keep the frame diff cheap, and segments,
-circles and polygons that fall outside the canvas are culled while lowering.
+Build large static geometry once in world units into Model-owned slices and
+pan / zoom by changing only the transform. For a drawing that stays still,
+declare those slices as a `.canvas_geometry` resource (see "Retained geometry") so the
+GPU keeps the buffer. Immediate primitives can use the same slices and the
+same transform: `view` does no per-primitive work, the batch `key`s keep
+the frame diff cheap, and lowering culls what falls outside the canvas.
 Helpers for `update`:
 
 ```zig
@@ -145,12 +151,15 @@ m.xf = m.xf.zoomAt(ev.x, ev.y, @exp(-ev.dy * 0.0015));                  // wheel
 const world = m.xf.invert(.{ .x = ev.x, .y = ev.y });                   // pick
 ```
 
-`examples/vector_canvas` draws an 80 100-member frame (20 301 node circles,
-supports, moment-diagram polygons, release arcs) this way. `zig build bench`
-has a `canvas` row: lowering 80k antialiased segments + 20k circles, all on
-screen, takes about 1.8 ms of CPU (ReleaseFast, desktop x64); zoomed in, the
-culled frame is cheaper. Every changed frame still re-lowers the whole
-canvas on the CPU (there is no GPU-side retained vertex buffer yet).
+Immediate primitives still lower on the CPU every changed frame, and
+lowering culls segments, circles and polygons that fall outside the canvas.
+`zig build bench` has a `canvas` row for that path: 80k antialiased
+segments + 20k circles, all on screen, take about 1.8 ms of CPU
+(ReleaseFast, desktop x64); zoomed in, the culled frame is cheaper. A
+drawing that does not change except for pan and zoom should be a retained
+resource instead (see "Retained geometry"). `examples/vector_canvas` keeps its
+80 100 members, 20 301 node circles, supports, moment polygons and release
+arcs that way.
 
 ### Antialiasing
 
@@ -165,6 +174,94 @@ proportionally lower alpha. With antialiasing, polylines join their segments
 (ends extended into the turn), so thick polylines no longer notch at corners.
 Off keeps the historical hard-edged quads pixel for pixel. 3D plane layers
 (`scene_layers`) ignore the flag: their shader has no coverage mode.
+Retained geometry bakes the flag (see below); it does not read
+`CanvasStyle.antialias` at draw time.
+
+### Retained geometry (`canvas_geometry`)
+
+Declare static world-space primitives as a hatch-8 resource and point the
+canvas at the key. The run loop tessellates them once, with no transform
+baked in, and uploads the buffer. Pan and zoom change only
+`CanvasStyle.transform`; the shader applies it.
+
+```zig
+pub fn resources(m: *const Model) []const teak.Resource {
+    return &.{
+        .{ .canvas_geometry = .{
+            .key = 1,
+            .rev = m.geom_rev,
+            .antialias = m.aa,
+            .prims = m.members, // Model-owned; valid for the frame, like image pixels
+        } },
+    };
+}
+
+// one entry in the canvas primitive list:
+.{ .geometry = .{ .key = 1 } },
+```
+
+`CanvasPrimitive.geometry` is `{ key: u32 }`. `key = 0` draws nothing.
+Each frame `buildFrame` emits one `CanvasGeomDraw` per reference
+(`handle` is the app key until `stageDraws` maps it to a backend handle):
+`sx`, `sy`, `tx`, `ty` (the canvas origin is already in `tx` / `ty`) and
+the canvas clip. The GPU draws the retained buffer with that uniform
+(`shaders/canvas_geom.wgsl`). Keys are per kind, so geometry key 1 and
+image key 1 are different resources.
+
+**When to use it.** The drawing is large and stable: a frame, a hatch
+field, a map. Build the slices once. Hide a layer by omitting its
+`.geometry` primitive; that does not re-upload. `examples/vector_canvas`
+keeps four resources (braces, members, overlays, nodes). On its fit view
+with every frame rebuilt the steady frame build dropped from about 23 ms
+to about 0.05 ms (ReleaseFast, x86_64, lavapipe); the tessellation, about
+25 ms, is paid on the frame that uploads. The GPU now transforms every
+retained vertex each frame with nothing culled on the CPU: free on a
+hardware GPU, but a software rasterizer spends as long there as it did
+before. Leave a chart, a polyline that changes every frame, or a
+few dozen segments on the immediate path: a `rev` bump tessellates again.
+
+**What is stored.** Polylines, `lines`, circles, arcs, polygons,
+triangles, markers and filled rects. Stroke `thickness`, `marker.size`
+and `screen_radius` stay in screen pixels and expand in the vertex shader
+(endpoints plus half-width, not pre-baked corners), so a line keeps its
+weight at every zoom. Joins are exact for a uniform scale, including a
+y-flip (`|sx| == |sy|`); `|sx| != |sy|` only approximates them. `hline`,
+`vline`, `text` and a nested `.geometry` are skipped. `antialias` is
+baked: toggling it without a new `rev` leaves the old edges. A world
+arc has no pixel size until the transform is known, so it is not chorded:
+the shader draws it analytically (like a circle) and it stays round at
+every zoom. A `screen_radius` arc is chorded once, at its pixel radius.
+3D plane layers ignore `.geometry` (no coverage shader), the same as
+canvas `text`.
+
+**Painter's order.** `OverlaySplit.geoms` is the count of retained draws
+in the base layer, the same kind of split as `images` and `scenes`.
+Within a layer the pass draws solids, then images, then scene composites,
+then retained geometry, then text. A retained draw therefore sits with
+the image and scene composites, above that layer's immediate primitives
+(the canvas background and any polyline, rect or batch lowered on the
+CPU) and below that layer's text. Retained draws are not interleaved
+with those immediate primitives: a `.geometry` ref between two polylines
+still paints above both. Order among retained draws is emission order.
+An opaque overlay still covers them, because the overlay's solids are
+drawn after the base layer's text.
+
+**Clip.** The vertex shader clips a stroke's centerline to the canvas
+rect the way the immediate path does (`canvas_tess.clipSegment`). A
+trimmed antialiased end is then extended by `thickness/2 + 1`, and the
+quad grows one more pixel. Immediate solids have no scissor, so that
+bulge is painted just outside the rect on both paths. Hard fills,
+circles and world arcs are discarded on the rect; antialiased strokes
+and polygon fringes keep a 3 px fragment pad so the bulge survives (a
+stroke thicker than about 1.5 px is cut slightly tighter at the canvas
+edge than on the immediate path).
+
+**Residency.** Same rules as meshes and images: 0 is reserved, a failed
+upload is handle 0 and is not retried until `rev` changes, and an empty
+tessellation stays resident so its rev is not retried (it draws nothing).
+The geometry cache holds 1024 buffers; past that the upload is dropped.
+Snapshot and a11y are unchanged: a geometry ref counts as one primitive
+(`prims=N`), and the canvas is still one node.
 
 ### Emitters
 
@@ -188,7 +285,8 @@ cb.canvasInteractive(style, primitives, id, label);  // pointer surface (pan / z
   stays axis-aligned). Primitives clip to the canvas rect intersected with
   the surrounding scroll/overlay clip: axis-aligned prims via the standard
   `clipRect`, polyline segments via a Liang–Barsky data-space clip (fully
-  out-of-bounds segments emit nothing).
+  out-of-bounds segments emit nothing). A `.geometry` primitive emits no
+  vertices; it records a `CanvasGeomDraw` (see "Retained geometry").
 - **Hit-test**: non-interactive by default. A non-null `msg` makes it an
   interactive leaf; `hit_test.canvasLocalPoint(rect, mx, my)` converts a
   click into canvas-local coordinates (mirrors `sliderValueAt`) so the app
@@ -292,9 +390,9 @@ if (teak.canvasLocalPoint(rects[hit.index], mouse_x, mouse_y)) |p| {
 
 ## Invariants
 
-- Renders entirely through the colored-quad pipeline; no textured/GPU
-  changes. `emitQuad`'s axis-aligned contract is unchanged — rotated quads
-  go through the new `emitQuadCorners`.
+- Immediate primitives render through the colored-quad pipeline.
+  `emitQuad`'s axis-aligned contract is unchanged — rotated quads go
+  through `emitQuadCorners`. A `.geometry` primitive adds no vertices.
 - Primitives never draw outside the canvas rect beyond a bounded
   half-thickness bulge at a Liang–Barsky-trimmed polyline endpoint.
 - The `msg` is data only; the canvas carries no callback (HARDLINE §3).
@@ -313,4 +411,5 @@ if (teak.canvasLocalPoint(rects[hit.index], mouse_x, mouse_y)) |p| {
   independent quad); thick lines show small gaps/overlaps at sharp corners.
   With it, joins are extended (square-capped at turns sharper than 90
   degrees); translucent strokes darken slightly where segments overlap.
-- Lowering is CPU work every changed frame (see "World transform").
+- Immediate primitives lower on the CPU every changed frame (see
+  "World transform"). Retained geometry does not, until its `rev` changes.

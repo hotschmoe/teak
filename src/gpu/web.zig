@@ -41,6 +41,8 @@ pub const InitOptions = teak.gpu.InitOptions;
 const SHADER_SOLID = @import("teak-shaders").quad_wgsl;
 const SHADER_GLYPH = @import("teak-shaders").glyph_wgsl;
 const SHADER_IMAGE = @import("teak-shaders").image_wgsl;
+const SHADER_CANVAS_GEOM = @import("teak-shaders").canvas_geom_wgsl;
+const canvas_geom = teak.render.canvas_geom;
 
 /// Allocator for the growable image tables.
 const image_gpa = std.heap.wasm_allocator;
@@ -70,6 +72,22 @@ const Sampled = struct {
 };
 
 const ImageCache = GrowSlotTable(Sampled, IMAGE_MAX_SLOTS);
+
+const GEOM_MAX_SLOTS: u32 = 1024;
+const GeomBuf = struct {
+    buf: ?zgpu.Buffer,
+    count: u32,
+    fn release(self: GeomBuf) void {
+        if (self.buf) |b| zgpu.bufferDestroy(b);
+    }
+};
+const GeomCache = GrowSlotTable(GeomBuf, GEOM_MAX_SLOTS);
+
+const GeomStaged = struct {
+    buf: zgpu.Buffer,
+    count: u32,
+    bind_group: zgpu.BindGroup,
+};
 
 /// One atlas page on the GPU; the CPU copy lives in the `TextStage`.
 const AtlasPage = struct {
@@ -209,6 +227,15 @@ pub const Gpu = struct {
     overlay_split: ?OverlaySplit,
     image_ov: usize,
     scene_ov: usize,
+    geom_ov: usize,
+
+    geom_pipeline: ?zgpu.RenderPipeline,
+    geom_bgl: ?zgpu.BindGroupLayout,
+    geom_screen_buf: zgpu.Buffer,
+    geom_uni_buf: ?zgpu.Buffer,
+    geom_uni_size: u32,
+    geoms: GeomCache,
+    geom_draws: std.ArrayList(GeomStaged),
 
     /// The multisampled colour target of the main pass; always the canvas's
     /// pixel size, recreated when the canvas is resized.
@@ -245,6 +272,7 @@ pub const Gpu = struct {
         const pipeline = uiPipeline(pl, shader, &layouts, samples);
 
         const uniform_buf = zgpu.createBuffer(8, zgpu.BufferUsage.UNIFORM | zgpu.BufferUsage.COPY_DST);
+        const geom_screen_buf = zgpu.createBuffer(@sizeOf(canvas_geom.ScreenUniform), zgpu.BufferUsage.UNIFORM | zgpu.BufferUsage.COPY_DST);
 
         const text_bgl = zgpu.createBindGroupLayout(&.{
             zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX, .uniform)
@@ -342,6 +370,14 @@ pub const Gpu = struct {
             .overlay_split = null,
             .image_ov = 0,
             .scene_ov = 0,
+            .geom_ov = 0,
+            .geom_pipeline = null,
+            .geom_bgl = null,
+            .geom_screen_buf = geom_screen_buf,
+            .geom_uni_buf = null,
+            .geom_uni_size = 0,
+            .geoms = .{},
+            .geom_draws = .empty,
         };
         self.writeScreenSize();
         return self;
@@ -393,6 +429,13 @@ pub const Gpu = struct {
         zgpu.destroySampler(self.glyph_sampler);
         zgpu.destroySampler(self.sampler);
         if (self.image_vert_buf) |ib| zgpu.bufferDestroy(ib);
+        for (self.geom_draws.items) |d| zgpu.release(d.bind_group);
+        self.geom_draws.deinit(image_gpa);
+        var geoms_it = self.geoms.iterator();
+        while (geoms_it.next()) |e| e.release();
+        self.geoms.deinit(image_gpa);
+        if (self.geom_uni_buf) |b| zgpu.bufferDestroy(b);
+        zgpu.bufferDestroy(self.geom_screen_buf);
         if (self.vert_buf) |vb| zgpu.bufferDestroy(vb);
         if (self.bind_group) |bg| zgpu.release(bg);
         zgpu.bufferDestroy(self.uniform_buf);
@@ -409,6 +452,21 @@ pub const Gpu = struct {
         const screen_size = [2]f32{ @floatFromInt(self.width), @floatFromInt(self.height) };
         zgpu.bufferWriteTyped(f32, self.uniform_buf, 0, &screen_size);
         self.writeGlyphUniform();
+        self.writeGeomScreen();
+    }
+
+    fn writeGeomScreen(self: *Gpu) void {
+        const canvas = zgpu.canvasSize();
+        const scale: f32 = if (self.width > 0 and canvas.w > 0)
+            @as(f32, @floatFromInt(canvas.w)) / @as(f32, @floatFromInt(self.width))
+        else
+            1;
+        const u = [_]canvas_geom.ScreenUniform{.{
+            .screen_x = @floatFromInt(self.width),
+            .screen_y = @floatFromInt(self.height),
+            .scale = scale,
+        }};
+        zgpu.bufferWriteTyped(canvas_geom.ScreenUniform, self.geom_screen_buf, 0, &u);
     }
 
     fn writeGlyphUniform(self: *Gpu) void {
@@ -435,8 +493,9 @@ pub const Gpu = struct {
 
     /// Where the overlay layer starts in this frame's lists (from
     /// `render.buildFrame`). Call before `uploadVertices` / `uploadText` /
-    /// `uploadImages` / `renderScenes`; the main pass then draws all base
-    /// content (solids, images, scenes, text) before the overlay's.
+    /// `uploadImages` / `uploadCanvasGeoms` / `renderScenes`; the main pass
+    /// then draws all base content (solids, images, scenes, retained
+    /// geometry, text) before the overlay's.
     pub fn setOverlayStart(self: *Gpu, split: OverlaySplit) void {
         self.overlay_split = split;
     }
@@ -492,12 +551,14 @@ pub const Gpu = struct {
         const solid = overlay.Range.of(self.splitOf("verts", self.vert_count), self.vert_count);
         const imgs = overlay.Range.of(self.image_ov, self.image_draws.items.len);
         const scns = overlay.Range.of(self.scene_ov, self.scene_draw_count);
+        const geoms = overlay.Range.of(self.geom_ov, self.geom_draws.items.len);
         inline for (.{ "base", "overlay" }) |layer| {
             self.drawSolids(pass, @field(overlay.Range, layer)(solid));
             if (self.image_pipeline) |ip| {
                 drawQuads(pass, ip, self.image_vert_buf, @intCast(self.image_verts.items.len), self.image_draws.items, @field(overlay.Range, layer)(imgs));
                 drawQuads(pass, ip, self.scene_vert_buf, self.scene_vert_count, self.scene_draws[0..self.scene_draw_count], @field(overlay.Range, layer)(scns));
             }
+            self.drawGeoms(pass, @field(overlay.Range, layer)(geoms));
             self.drawGlyphs(pass, if (comptime std.mem.eql(u8, layer, "base")) 0 else 1);
         }
 
@@ -756,6 +817,127 @@ pub const Gpu = struct {
             zgpu.VertexBufferLayout.fromSlice(@sizeOf(Vertex), .vertex, &attrs),
         };
         self.image_pipeline = uiPipeline(self.text_pl, zgpu.createShaderModule(SHADER_IMAGE), &layouts, self.samples);
+    }
+
+    /// Tessellate `prims` in world space and upload the buffer. 0 means
+    /// the upload failed; an empty tessellation still gets a handle.
+    pub fn uploadCanvasGeometry(self: *Gpu, prims: []const teak.CanvasPrimitive, antialias: bool) u32 {
+        const verts = canvas_geom.tessellate(image_gpa, prims, antialias) catch return 0;
+        defer image_gpa.free(verts);
+        if (verts.len == 0) {
+            return self.geoms.insert(image_gpa, .{ .buf = null, .count = 0 }) orelse 0;
+        }
+        if (verts.len > std.math.maxInt(u32)) return 0;
+        const count: u32 = @intCast(verts.len);
+        const bytes = std.math.mul(u32, count, @sizeOf(canvas_geom.GeomVertex)) catch return 0;
+        const buf = zgpu.createBuffer(bytes, zgpu.BufferUsage.VERTEX | zgpu.BufferUsage.COPY_DST);
+        zgpu.bufferWriteTyped(canvas_geom.GeomVertex, buf, 0, verts);
+        return self.geoms.insert(image_gpa, .{ .buf = buf, .count = count }) orelse {
+            zgpu.bufferDestroy(buf);
+            std.log.warn("teak: canvas geometry cache full ({d}); upload dropped", .{GEOM_MAX_SLOTS});
+            return 0;
+        };
+    }
+
+    pub fn releaseCanvasGeometry(self: *Gpu, handle: u32) void {
+        if (self.geoms.remove(image_gpa, handle)) |e| e.release();
+    }
+
+    /// Stage this frame's retained draws: one bind group per draw at its uniform slot.
+    pub fn uploadCanvasGeoms(self: *Gpu, draws: []const teak.CanvasGeomDraw) void {
+        for (self.geom_draws.items) |d| zgpu.release(d.bind_group);
+        self.geom_draws.clearRetainingCapacity();
+        var mark: overlay.Marker = .{ .start = self.splitOf("geoms", draws.len) };
+        defer self.geom_ov = mark.finish(self.geom_draws.items.len);
+        if (draws.len == 0) return;
+        if (!self.ensureGeomPipeline()) return;
+        self.writeGeomScreen();
+
+        if (draws.len > std.math.maxInt(u32) / canvas_geom.draw_uniform_align) return;
+        const need: u32 = @intCast(draws.len * canvas_geom.draw_uniform_align);
+        if (self.geom_uni_buf == null or need > self.geom_uni_size) {
+            if (self.geom_uni_buf) |old| zgpu.bufferDestroy(old);
+            self.geom_uni_size = need;
+            self.geom_uni_buf = zgpu.createBuffer(need, zgpu.BufferUsage.UNIFORM | zgpu.BufferUsage.COPY_DST);
+        }
+        const uni = self.geom_uni_buf orelse return;
+        const bgl = self.geom_bgl orelse return;
+
+        for (draws, 0..) |d, di| {
+            mark.visit(di, self.geom_draws.items.len);
+            const slot = self.geoms.get(d.handle) orelse continue;
+            const buf = slot.buf orelse continue;
+            if (slot.count == 0) continue;
+            const index: u32 = @intCast(self.geom_draws.items.len);
+            const u = [_]canvas_geom.DrawUniform{.{
+                .sx = d.sx,
+                .sy = d.sy,
+                .tx = d.tx,
+                .ty = d.ty,
+                .clip_x = d.clip_x,
+                .clip_y = d.clip_y,
+                .clip_w = d.clip_w,
+                .clip_h = d.clip_h,
+            }};
+            const off: u32 = index * canvas_geom.draw_uniform_align;
+            zgpu.bufferWriteTyped(canvas_geom.DrawUniform, uni, off, &u);
+            const bg = zgpu.createBindGroup(bgl, &.{
+                zgpu.BindGroupEntry.initBuffer(0, self.geom_screen_buf, 0, @sizeOf(canvas_geom.ScreenUniform)),
+                zgpu.BindGroupEntry.initBuffer(1, uni, off, @sizeOf(canvas_geom.DrawUniform)),
+            });
+            self.geom_draws.append(image_gpa, .{ .buf = buf, .count = slot.count, .bind_group = bg }) catch {
+                zgpu.release(bg);
+                break;
+            };
+        }
+    }
+
+    fn ensureGeomPipeline(self: *Gpu) bool {
+        if (self.geom_pipeline != null) return true;
+        const G = canvas_geom.GeomVertex;
+        const attrs = [_]zgpu.VertexAttribute{
+            .{ .shader_location = 0, .format = .float32x2, .offset = 0 },
+            .{ .shader_location = 1, .format = .float32x2, .offset = @offsetOf(G, "ax") },
+            .{ .shader_location = 2, .format = .float32x2, .offset = @offsetOf(G, "bx") },
+            .{ .shader_location = 3, .format = .float32x2, .offset = @offsetOf(G, "cx") },
+            .{ .shader_location = 4, .format = .float32x2, .offset = @offsetOf(G, "dx") },
+            .{ .shader_location = 5, .format = .float32x2, .offset = @offsetOf(G, "r") },
+            .{ .shader_location = 6, .format = .float32x2, .offset = @offsetOf(G, "b") },
+            .{ .shader_location = 7, .format = .float32x2, .offset = @offsetOf(G, "sr") },
+            .{ .shader_location = 8, .format = .float32x2, .offset = @offsetOf(G, "sb") },
+            .{ .shader_location = 9, .format = .float32x2, .offset = @offsetOf(G, "e0") },
+        };
+        const layouts = [_]zgpu.VertexBufferLayout{
+            zgpu.VertexBufferLayout.fromSlice(@sizeOf(G), .vertex, &attrs),
+        };
+        const bgl = zgpu.createBindGroupLayout(&.{
+            zgpu.BindGroupLayoutEntry.initBuffer(0, zgpu.ShaderVisibility.VERTEX | zgpu.ShaderVisibility.FRAGMENT, .uniform)
+                .withMinSize(@sizeOf(canvas_geom.ScreenUniform)),
+            zgpu.BindGroupLayoutEntry.initBuffer(1, zgpu.ShaderVisibility.VERTEX | zgpu.ShaderVisibility.FRAGMENT, .uniform)
+                .withMinSize(@sizeOf(canvas_geom.DrawUniform)),
+        });
+        const pipeline = uiPipeline(
+            zgpu.createPipelineLayout(&.{bgl}),
+            zgpu.createShaderModule(SHADER_CANVAS_GEOM),
+            &layouts,
+            self.samples,
+        );
+        self.geom_bgl = bgl;
+        self.geom_pipeline = pipeline;
+        return true;
+    }
+
+    fn drawGeoms(self: *Gpu, pass: zgpu.RenderPassEncoder, range: struct { usize, usize }) void {
+        const from, const to = range;
+        if (to <= from) return;
+        const pipeline = self.geom_pipeline orelse return;
+        zgpu.renderPassSetPipeline(pass, pipeline);
+        for (self.geom_draws.items[from..to]) |rec| {
+            zgpu.renderPassSetBindGroup(pass, 0, rec.bind_group);
+            const bytes: u64 = @as(u64, rec.count) * @sizeOf(canvas_geom.GeomVertex);
+            zgpu.renderPassSetVertexBuffer(pass, 0, rec.buf, 0, bytes);
+            zgpu.renderPassDraw(pass, rec.count, 1, 0, 0);
+        }
     }
 
     pub fn uploadMesh(self: *Gpu, data: teak.MeshData) teak.MeshHandle {

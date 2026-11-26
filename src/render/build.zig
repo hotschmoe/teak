@@ -29,6 +29,7 @@ const emitCanvasPrimitive = canvas_tess.emitCanvasPrimitive;
 const clipSegment = canvas_tess.clipSegment;
 const emitTriangles = canvas_tess.emitTriangles;
 pub const sdf = @import("sdf.zig");
+pub const canvas_geom = @import("canvas_geom.zig");
 
 /// Image draw record. Parallel to TextDraw — the GPU backend consumes
 /// these in `uploadImages` and emits 6 textured vertices per draw using
@@ -51,16 +52,33 @@ pub const ImageDraw = struct {
 /// Where the overlay layer (HARDLINE §2 hatch 5: base z=0, overlay z=1)
 /// starts inside each staged list, as counts of what the base layer
 /// produced. A Gpu that honours it draws base solids, images, scene
-/// composites and text first, THEN the overlay's solids, images, composites
-/// and text, so an opaque overlay panel hides base-layer text and images
-/// beneath it. Without a split (all lists drawn by kind) the base layer's
-/// text and images would show through overlay quads.
+/// composites, retained canvas geometry and text first, THEN the overlay's,
+/// so an opaque overlay panel hides base-layer text, images and retained
+/// geometry beneath it. Within a layer a retained draw sits above that
+/// layer's immediate canvas primitives.
 pub const OverlaySplit = struct {
     /// Vertices in `verts` produced by the base layer.
     verts: u32 = 0,
     text: u32 = 0,
     images: u32 = 0,
     scenes: u32 = 0,
+    /// Retained `.canvas_geometry` draws in the base layer.
+    geoms: u32 = 0,
+};
+
+/// One retained canvas-geometry draw. `handle` is the app key until
+/// `stageDraws` remaps it. `tx` / `ty` include the canvas origin; the clip
+/// is the canvas rect intersected with the scroll clip, in window logical px.
+pub const CanvasGeomDraw = struct {
+    handle: u32,
+    sx: f32,
+    sy: f32,
+    tx: f32,
+    ty: f32,
+    clip_x: f32,
+    clip_y: f32,
+    clip_w: f32,
+    clip_h: f32,
 };
 
 const BORDER_WIDTH: f32 = 2;
@@ -368,6 +386,7 @@ pub fn buildFrame(
     scene_draws: *std.ArrayList(SceneDraw),
     scene_items: *std.ArrayList(SceneItem),
     scene_sprites: *std.ArrayList(SceneSprite),
+    geom_draws: *std.ArrayList(CanvasGeomDraw),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
@@ -380,15 +399,17 @@ pub fn buildFrame(
     scene_draws.clearRetainingCapacity();
     scene_items.clearRetainingCapacity();
     scene_sprites.clearRetainingCapacity();
+    geom_draws.clearRetainingCapacity();
 
-    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites, alloc, cmds, rects, transient, measurer, .base);
+    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites, geom_draws, alloc, cmds, rects, transient, measurer, .base);
     const split: OverlaySplit = .{
         .verts = @intCast(verts.items.len),
         .text = @intCast(text_draws.items.len),
         .images = @intCast(image_draws.items.len),
         .scenes = @intCast(scene_draws.items.len),
+        .geoms = @intCast(geom_draws.items.len),
     };
-    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites, alloc, cmds, rects, transient, measurer, .overlay);
+    buildLayer(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites, geom_draws, alloc, cmds, rects, transient, measurer, .overlay);
     return split;
 }
 
@@ -411,7 +432,9 @@ pub fn buildVertices(
     defer items.deinit(alloc);
     var sprites: std.ArrayList(SceneSprite) = .empty;
     defer sprites.deinit(alloc);
-    _ = buildFrame(verts, text_draws, image_draws, &scenes, &items, &sprites, alloc, cmds, rects, transient, measurer);
+    var geoms: std.ArrayList(CanvasGeomDraw) = .empty;
+    defer geoms.deinit(alloc);
+    _ = buildFrame(verts, text_draws, image_draws, &scenes, &items, &sprites, &geoms, alloc, cmds, rects, transient, measurer);
 }
 
 const Layer = enum { base, overlay };
@@ -423,6 +446,7 @@ fn buildLayer(
     scene_draws: *std.ArrayList(SceneDraw),
     scene_items: *std.ArrayList(SceneItem),
     scene_sprites: *std.ArrayList(SceneSprite),
+    geom_draws: *std.ArrayList(CanvasGeomDraw),
     alloc: std.mem.Allocator,
     cmds: anytype,
     rects: []const Rect,
@@ -887,6 +911,19 @@ fn buildLayer(
                         const tx = rect.x + t.x * xf.sx + xf.tx;
                         const ty = rect.y + t.y * xf.sy + xf.ty;
                         emitText(text_draws, alloc, t.content, t.font, t.color, .{ .x = tx, .y = ty, .w = m.width, .h = m.height }, canvas_clip);
+                    } else if (prim == .geometry) {
+                        if (prim.geometry.key == 0) continue;
+                        geom_draws.append(alloc, .{
+                            .handle = prim.geometry.key,
+                            .sx = xf.sx,
+                            .sy = xf.sy,
+                            .tx = rect.x + xf.tx,
+                            .ty = rect.y + xf.ty,
+                            .clip_x = canvas_clip.x,
+                            .clip_y = canvas_clip.y,
+                            .clip_w = canvas_clip.w,
+                            .clip_h = canvas_clip.h,
+                        }) catch {};
                     } else canvas_tess.emitCanvasPrimitiveOpts(verts, alloc, rect, prim, canvas_clip, opts);
                 }
             },
@@ -908,6 +945,7 @@ const TestFrame = struct {
     scenes: std.ArrayList(SceneDraw) = .empty,
     items: std.ArrayList(SceneItem) = .empty,
     sprites: std.ArrayList(SceneSprite) = .empty,
+    geoms: std.ArrayList(CanvasGeomDraw) = .empty,
     split: OverlaySplit = .{},
 
     fn deinit(self: *TestFrame, alloc: std.mem.Allocator) void {
@@ -917,6 +955,7 @@ const TestFrame = struct {
         self.scenes.deinit(alloc);
         self.items.deinit(alloc);
         self.sprites.deinit(alloc);
+        self.geoms.deinit(alloc);
     }
 };
 
@@ -926,7 +965,7 @@ fn buildTestFrame(alloc: std.mem.Allocator, cb: anytype) !TestFrame {
     defer alloc.free(rects);
     layout.LayoutEngine.doLayout(rects, cb.cmds.items, 1000, 1000, text_mod.monoMeasurer());
     var f: TestFrame = .{};
-    f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, &f.items, &f.sprites, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
+    f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, &f.items, &f.sprites, &f.geoms, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
     return f;
 }
 

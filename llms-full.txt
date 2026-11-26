@@ -98,7 +98,7 @@ someone else's paradigm. When a change bumps HARDLINE, the change yields.
 6. Subscriptions (`Sub`) — declarative, data-only timers (+ `animation_frame`).
 7. Declarative effects (`effects` / `effectMsg`) — data the Host performs
    (HTTP, files, storage, clock, clipboard); results return as Msgs.
-8. Resources (`resources`) — declarative GPU meshes/images by (key, rev).
+8. Resources (`resources`) — declarative GPU meshes, images and canvas geometry by (key, rev).
 
 ## The App contract (`teak.run`)
 
@@ -299,7 +299,12 @@ CanvasPrimitive = union(enum) { polyline, filled_rect, hline, vline, marker, tex
     arc: struct { x, y, radius, start = 0, sweep = pi /*radians, 0 = +x, toward +y*/, color, thickness, screen_radius },
     polygon: struct { points: []const CanvasPoint /*closed, any simple polygon*/, fill: ?[4]f32, stroke: ?[4]f32 = null, thickness },
     triangles: struct { verts: []const TriVertex /*x,y,r,g,b,a*/, key: u64 = 0 },       // per-vertex RGBA triangle list
-    lines: struct { segs: []const [4]f32, color, thickness, key: u64 = 0 } }            // canvas-local px
+    lines: struct { segs: []const [4]f32, color, thickness, key: u64 = 0 },             // canvas-local px
+    geometry: struct { key: u32 } }   // retained CanvasGeometryResource; 0 draws nothing
+    // use it for large static world geometry (pan/zoom does not re-tessellate).
+    // hline/vline/text/nested geometry are skipped. antialias is baked (bump rev).
+    // within a layer: solids, images, scenes, retained geometry, text
+    // (OverlaySplit.geoms). Above that layer's immediate primitives, below its text.
 // triangles/lines: CPU-clipped to canvas+scroll clip; `key` = content revision for the frame diff
 // (same non-zero key+len => treated equal; 0 => bytes compared). Bump it when the batch changes.
 CanvasPoint = struct { x: f32, y: f32 }
@@ -664,15 +669,19 @@ TransientState = struct { hover_index, press_index, focus_index: ?usize = null,
 
 ### Render (`teak.render`, `teak.vertex`)
 ```zig
-buildFrame(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites: *std.ArrayList(...), alloc, cmds, rects,
+buildFrame(verts, text_draws, image_draws, scene_draws, scene_items, scene_sprites, geom_draws: *std.ArrayList(...), alloc, cmds, rects,
            transient: TransientState, measurer: TextMeasurer) OverlaySplit   // what teak.run uses
-OverlaySplit = struct { verts, text, images, scenes: u32 }   // counts the BASE layer produced = where the overlay starts
+OverlaySplit = struct { verts, text, images, scenes, geoms: u32 }   // counts the BASE layer produced = where the overlay starts
 buildVertices(verts, text_draws, image_draws, alloc, cmds, rects, transient, measurer) void  // = buildFrame, scenes skipped
 ResourceTable = struct { sync(self, gpu, []const Resource) bool /*changed*/, deinit(self, gpu), handleOf(kind, key) u32 }
-stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw, data: SceneData{items: []SceneItem, sprites: []SceneSprite}) void  // remap keys (incl. item keys), uploadImages, renderScenes
+stageDraws(gpu, ?*ResourceTable, images: []ImageDraw, scenes: []SceneDraw, data: SceneData{items: []SceneItem, sprites: []SceneSprite}, geoms: []CanvasGeomDraw) void
+                                      // remap keys (incl. item + geometry keys), uploadImages, renderScenes, uploadCanvasGeoms
                                       // (hand-written web loops call these; teak.run does it for you)
 ImageDraw = struct { rect_x, rect_y, rect_w, rect_h: f32, handle: TextureHandle,
                      tint: [4]f32, clip_x, clip_y, clip_w, clip_h: f32 }
+CanvasGeomDraw = struct { handle: u32 /*app key until stageDraws*/, sx, sy, tx, ty, clip_x, clip_y, clip_w, clip_h: f32 }
+                                      // tx/ty include the canvas origin. After scene composites, before text,
+                                      // above that layer's immediate primitives (canvas background is a solid).
 Vertex = extern struct { x, y, r, g, b, a, u, v: f32 }
 emitQuad(verts, alloc, rect: Rect, color: [4]f32) void
 emitQuadCorners(verts, alloc, c0, c1, c2, c3: [2]f32, color: [4]f32) void   // rotated quads
@@ -696,7 +705,9 @@ SceneStyle = struct { width: f32 = 320, height: f32 = 240, flex: f32 = 0 }
 SceneCmd(Msg) = struct { style, mesh: MeshHandle /*or resource key*/, camera: Camera, clear: [4]f32,
                          edge_color: [4]f32, edge_px: f32 = 1.5, key: u64 /*bump with mesh rev*/,
                          id: u32 = 0, pointer: bool = false, msg: ?Msg, label: []const u8 }
-Resource = union(enum) { mesh: MeshResource{key,rev,data: MeshData}, image: ImageResource{key,rev,width,height,rgba} }
+Resource = union(enum) { mesh: MeshResource{key,rev,data: MeshData}, image: ImageResource{key,rev,width,height,rgba},
+                         canvas_geometry: CanvasGeometryResource{key, rev, antialias: bool = false, prims: []const CanvasPrimitive} }
+                         // canvas geometry is tessellated once (antialias baked); pan/zoom changes only the draw's transform
 ```
 Flat-shaded two-sided lighting (one directional light + ambient), depth-tested, feature lines
 as camera-facing pixel-width quads (colour = vertex colour * `edge_color`). The Gpu renders each
@@ -1456,7 +1467,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - `pub fn fit(x0: f32, y0: f32, x1: f32, y1: f32, w: f32, h: f32, margin: f32, y_up: bool) CanvasTransform`
 > One draw op inside a canvas (polyline, rect, circle, arc, polygon, lines, triangles, ...).
 - `teak.CanvasPrimitive` = `cmd.CanvasPrimitive`
-  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text, circle, arc, polygon`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text, circle, arc, polygon, geometry`
   > Center (`x`, `y`) and `radius` in canvas-local units (so they follow
   > `CanvasStyle.transform`), unless `screen_radius`: then the radius is
   > in screen px and the circle keeps its size at every zoom (node dots).
@@ -1474,6 +1485,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   > particular rule (split it at the crossings for exact results).
   > `stroke` draws the closed outline, `thickness` screen px.
   - `struct Polygon`
+  - `struct Geometry`
   - `struct Polyline`
   - `struct FilledRect`
   - `struct HLine`
@@ -1588,7 +1600,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.SceneView`: `pub const SceneView = scene.View`
 > A declared GPU resource (image or mesh) keyed by an app-chosen key.
 - `teak.Resource` = `resources.Resource`
-  - fields: `mesh, image`
+  - fields: `mesh, image, canvas_geometry`
   - `pub fn kind(self: Resource) Kind`
   - `pub fn key(self: Resource) u32`
   - `pub fn rev(self: Resource) u32`
@@ -1598,6 +1610,9 @@ Signatures and `///` doc comments of every public declaration reachable from
 > A declared image resource.
 - `teak.ImageResource` = `resources.ImageResource`
   - fields: `key, rev, width, height, rgba`
+> A declared canvas-geometry resource (primitives tessellated once, transformed on the GPU).
+- `teak.CanvasGeometryResource` = `resources.CanvasGeometryResource`
+  - fields: `key, rev, antialias, prims`
 > Intrinsic size and flex of a `scene3d` leaf.
 - `teak.SceneStyle` = `cmd.SceneStyle`
   - fields: `width, height, flex`
@@ -1878,11 +1893,14 @@ Signatures and `///` doc comments of every public declaration reachable from
 > An image draw record produced by the render pass.
 - `teak.ImageDraw` = `render.ImageDraw`
   - fields: `rect_x, rect_y, rect_w, rect_h, handle, tint, clip_x, clip_y, clip_w, clip_h`
+> One retained canvas-geometry draw (`handle` is the app key until `stageDraws`).
+- `teak.CanvasGeomDraw` = `render.CanvasGeomDraw`
+  - fields: `handle, sx, sy, tx, ty, clip_x, clip_y, clip_w, clip_h`
 > Render cmds + rects + transient state into vertices and draw records.
 - `teak.buildFrame`: `pub const buildFrame = render.buildFrame`
 > Vertex/draw-list offsets separating the base layer from the overlay layer.
 - `teak.OverlaySplit` = `render.OverlaySplit`
-  - fields: `verts, text, images, scenes`
+  - fields: `verts, text, images, scenes, geoms`
 > Run-loop resource bookkeeping for hand-written host loops (web): `sync`
 > the table with `App.resources(model)`, then `stageDraws` instead of
 > `uploadImages`. `teak.run` does both for you.
@@ -2157,7 +2175,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `x, y`
 > One 2D draw op inside a canvas. All coordinates are canvas-local.
 - `union CanvasPrimitive`
-  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text, circle, arc, polygon`
+  - fields: `polyline, filled_rect, hline, vline, marker, triangles, lines, text, circle, arc, polygon, geometry`
   > Center (`x`, `y`) and `radius` in canvas-local units (so they follow
   > `CanvasStyle.transform`), unless `screen_radius`: then the radius is
   > in screen px and the circle keeps its size at every zoom (node dots).
@@ -2175,6 +2193,7 @@ Signatures and `///` doc comments of every public declaration reachable from
   > particular rule (split it at the crossings for exact results).
   > `stroke` draws the closed outline, `thickness` screen px.
   - `struct Polygon`
+  - `struct Geometry`
   - `struct Polyline`
   - `struct FilledRect`
   - `struct HLine`
@@ -3322,13 +3341,15 @@ per-frame `SceneDraw` record the render pass hands to the Gpu.
 Declarative GPU resources (HARDLINE §2 escape hatch 8).
 
 - `enum Kind`
-  - fields: `mesh, image`
+  - fields: `mesh, image, canvas_geometry`
 - `struct MeshResource`
   - fields: `key, rev, data`
 - `struct ImageResource`
   - fields: `key, rev, width, height, rgba`
+- `struct CanvasGeometryResource`
+  - fields: `key, rev, antialias, prims`
 - `union Resource`
-  - fields: `mesh, image`
+  - fields: `mesh, image, canvas_geometry`
   - `pub fn kind(self: Resource) Kind`
   - `pub fn key(self: Resource) u32`
   - `pub fn rev(self: Resource) u32`
@@ -3670,12 +3691,17 @@ Accessibility tree builder.
 > Where the overlay layer (HARDLINE §2 hatch 5: base z=0, overlay z=1)
 > starts inside each staged list, as counts of what the base layer
 > produced. A Gpu that honours it draws base solids, images, scene
-> composites and text first, THEN the overlay's solids, images, composites
-> and text, so an opaque overlay panel hides base-layer text and images
-> beneath it. Without a split (all lists drawn by kind) the base layer's
-> text and images would show through overlay quads.
+> composites, retained canvas geometry and text first, THEN the overlay's,
+> so an opaque overlay panel hides base-layer text, images and retained
+> geometry beneath it. Within a layer a retained draw sits above that
+> layer's immediate canvas primitives.
 - `struct OverlaySplit`
-  - fields: `verts, text, images, scenes`
+  - fields: `verts, text, images, scenes, geoms`
+> One retained canvas-geometry draw. `handle` is the app key until
+> `stageDraws` remaps it. `tx` / `ty` include the canvas origin; the clip
+> is the canvas rect intersected with the scroll clip, in window logical px.
+- `struct CanvasGeomDraw`
+  - fields: `handle, sx, sy, tx, ty, clip_x, clip_y, clip_w, clip_h`
 > Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits
 > solid-fill quads into `verts`, textured glyph records into
 > `text_draws`, textured image records into `image_draws`, and 3D scene

@@ -129,12 +129,19 @@ pub const Table = struct {
         for (data.items) |*it| it.mesh = self.handleOf(.mesh, it.mesh);
         for (data.sprites) |*sp| sp.image = self.handleOf(.image, sp.image);
     }
+
+    /// Same for retained canvas geometry. An unknown key becomes the none
+    /// handle and the Gpu skips the draw.
+    pub fn remapGeoms(self: *Table, draws: []render.CanvasGeomDraw) void {
+        for (draws) |*d| d.handle = self.handleOf(.canvas_geometry, d.handle);
+    }
 };
 
 fn upload(gpu: anytype, r: Resource) u32 {
     return switch (r) {
         .mesh => |m| gpu.uploadMesh(m.data),
         .image => |im| gpu.uploadImage(im.rgba, im.width, im.height),
+        .canvas_geometry => |g| gpu.uploadCanvasGeometry(g.prims, g.antialias),
     };
 }
 
@@ -143,6 +150,7 @@ fn release(gpu: anytype, kind: Kind, handle: u32) void {
     switch (kind) {
         .mesh => gpu.releaseMesh(handle),
         .image => gpu.releaseImage(handle),
+        .canvas_geometry => gpu.releaseCanvasGeometry(handle),
     }
 }
 
@@ -157,13 +165,16 @@ pub fn stageDraws(
     images: []render.ImageDraw,
     scenes: []render.SceneDraw,
     data: render.SceneData,
+    geoms: []render.CanvasGeomDraw,
 ) void {
     if (table) |t| {
         t.remapImages(images);
         t.remapScenes(scenes, data);
+        t.remapGeoms(geoms);
     }
     gpu.uploadImages(images);
     if (comptime @hasDecl(@TypeOf(gpu.*), "renderScenes")) gpu.renderScenes(scenes, data);
+    if (comptime @hasDecl(@TypeOf(gpu.*), "uploadCanvasGeoms")) gpu.uploadCanvasGeoms(geoms);
 }
 
 const StubGpu = struct {
@@ -183,6 +194,12 @@ const StubGpu = struct {
         self.free(h);
     }
     pub fn releaseImage(self: *StubGpu, h: u32) void {
+        self.free(h);
+    }
+    pub fn uploadCanvasGeometry(self: *StubGpu, _: anytype, _: bool) u32 {
+        return self.alloc();
+    }
+    pub fn releaseCanvasGeometry(self: *StubGpu, h: u32) void {
         self.free(h);
     }
     fn alloc(self: *StubGpu) u32 {

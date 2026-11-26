@@ -50,11 +50,13 @@ face (DejaVuSansMono by default; override with `TEAK_FONT`) and ignores
 
 ## Frame structure
 
-1. `uploadVertices` / `uploadText` / `uploadImages` stage the UI draws.
+1. `uploadVertices` / `uploadText` / `uploadImages` / `uploadCanvasGeoms` stage the UI draws. `stageDraws` calls `uploadCanvasGeoms` when the Gpu declares it.
 2. `renderScenes` (optional extension) renders each 3D scene into an offscreen colour + depth (+4x MSAA) target of the scene's pixel size and stages one composite quad per scene. Native submits its own command buffer; web records into zunk's frame encoder, so the scene is complete before the main pass samples it.
-3. `renderFrame` / `renderToWindow`: the main pass draws, in this order, solid quads, images, scene composites, text. Scene composites reuse the image pipeline and the image clip rules (`render/vertex.zig: clippedTexturedQuad`), and are snapped to the device pixel grid so the target maps 1:1 onto screen pixels.
+3. `renderFrame` / `renderToWindow`: the main pass draws, in this order, solid quads, images, scene composites, retained canvas geometry, text. Scene composites reuse the image pipeline and the image clip rules (`render/vertex.zig: clippedTexturedQuad`), and are snapped to the device pixel grid so the target maps 1:1 onto screen pixels. Retained geometry uses `shaders/canvas_geom.wgsl` (see below).
 
-**Overlay layering.** The render pass builds two layers (base z=0, overlay z=1; HARDLINE §2 hatch 5) into the same lists and `buildFrame` returns an `OverlaySplit` (how many vertices / text / image / scene draws the base layer produced). A Gpu with the optional `setOverlayStart(*Gpu, OverlaySplit)` extension (both backends; `teak.run` calls it before each frame's uploads) draws in this order: base solids, base images, base scene composites, base text, THEN overlay solids, images, composites, text. That is what lets an opaque popup (an overlay with an opaque backdrop) hide the base layer's text, images and scenes beneath it; drawing all text last would show base text through the panel. The staging loops translate the split from input-draw indices to staged-record indices (`gpu/overlay.zig`, `Marker`) because skipped draws shift them. Backends or loops without it draw by kind, as before.
+**Overlay layering.** The render pass builds two layers (base z=0, overlay z=1; HARDLINE §2 hatch 5) into the same lists and `buildFrame` returns an `OverlaySplit` (how many vertices / text / image / scene / retained-geometry draws the base layer produced; the geometry field is `geoms`). A Gpu with the optional `setOverlayStart(*Gpu, OverlaySplit)` extension (both backends; `teak.run` calls it before each frame's uploads) draws, per layer: solids, images, scene composites, retained geometry, text — base layer first, then the overlay. Retained draws sit with the image and scene composites in that split, above the layer's immediate primitives (a canvas background is a solid) and below its text. That is what lets an opaque popup (an overlay with an opaque backdrop) hide the base layer's text, images, scenes and retained geometry beneath it; drawing all text last would show base text through the panel. The staging loops translate the split from input-draw indices to staged-record indices (`gpu/overlay.zig`, `Marker`) because skipped draws shift them. Backends or loops without it draw by kind, as before.
+
+**Retained canvas geometry.** `uploadCanvasGeometry` tessellates a `.canvas_geometry` resource in world space and stores the vertex buffer (1024 slots; a full cache logs and returns 0). `uploadCanvasGeoms` writes one transform-and-clip uniform per draw. The pipeline is created on first use. Screen size (logical width, height, device pixels per logical pixel) is its own uniform; the per-draw uniform is 32 bytes at a 256-byte stride (`canvas_geom.draw_uniform_align`). Native binds that stride as a dynamic offset. The web pass cannot take a dynamic offset, so each staged draw gets its own bind group at that offset into one uniform buffer. Both backends share `shaders/canvas_geom.wgsl`. The draw contract, what is skipped, and when to use a resource are in [canvas.md](canvas.md).
 
 A scene slot is only re-rendered when its `scene_common.signature` (camera, clear colour, edge style, mesh version, target size) changes; a scene next to an animating widget costs nothing per frame.
 
@@ -80,12 +82,15 @@ A Gpu type must expose these declarations:
 | `resize` | `fn(*Gpu, u32, u32) void` | Reconfigure the surface. Called when `InputState.resized` is true. |
 | `setScale` *(optional; wgpu_core)* | `fn(*Gpu, f32) void` | Change device pixels per logical pixel at runtime (the window moved to a monitor with another DPI). The run loop calls it when `Host.scaleFactor()` changes; the initial value is `InitOptions.scale`. |
 | `uploadVertices` | `fn(*Gpu, []const Vertex) void` | Copy the current frame's colored-quad vertex buffer to the GPU. Called each frame after `buildVertices`. |
-| `renderFrame` | `fn(*Gpu, ClearColor) void` | Encode + submit + present one frame using the last uploaded vertices, text draws, and image draws. |
+| `renderFrame` | `fn(*Gpu, ClearColor) void` | Encode + submit + present one frame using the last uploaded vertices, text draws, image draws, and retained-geometry draws. |
 | `rasterizeText` | `fn(*Gpu, []const u8, FontSpec, [4]f32, u32, u32) TextureHandle` | **Web only; no longer required** (native backends draw text from the glyph atlas in `uploadText`). Rasterize a string into a cached texture and return an opaque handle. |
 | `uploadText` | `fn(*Gpu, []const TextDraw) void` | Per-frame: ingest the renderer's `TextDraw` list and build the textured-quad buffer that `renderFrame` will draw. |
 | `uploadImage` | `fn(*Gpu, []const u8, u32, u32) TextureHandle` | Upload an RGBA8 image (`width * height * 4` bytes) and return an opaque handle the app stashes in `ImageCmd.handle`. App-driven cache; cached for the lifetime of the Gpu. Implemented on both native and web (web wires zunk v0.6.0+ texture upload). |
 | `uploadImages` | `fn(*Gpu, []const ImageDraw) void` | Per-frame counterpart to `uploadText` for images. Walks `ImageDraw`s and records a draw entry per visible image. |
-| `setOverlayStart` | `fn(*Gpu, OverlaySplit) void` | *Optional.* Where the overlay layer starts in each staged list; call before `uploadVertices` / `uploadText` / `uploadImages` / `renderScenes` each frame (see "Overlay layering"). |
+| `setOverlayStart` | `fn(*Gpu, OverlaySplit) void` | *Optional.* Where the overlay layer starts in each staged list; call before `uploadVertices` / `uploadText` / `uploadImages` / `uploadCanvasGeoms` / `renderScenes` each frame (see "Overlay layering"). |
+| `uploadCanvasGeometry` | `fn(*Gpu, []const CanvasPrimitive, bool) u32` | Tessellate one `.canvas_geometry` resource (`prims`, `antialias`) and upload it. A non-zero handle even when the tessellation is empty. 0 on failure, not retried until `rev` changes. A Gpu that serves `resources` must declare it (the upload switch type-checks every kind). |
+| `releaseCanvasGeometry` | `fn(*Gpu, u32) void` | Free an `uploadCanvasGeometry` buffer. Required on a Gpu that serves `resources`, same as `releaseMesh`. |
+| `uploadCanvasGeoms` | `fn(*Gpu, []const CanvasGeomDraw) void` | Stage this frame's retained draws (transform + clip). `stageDraws` calls it when the Gpu declares it. |
 | `releaseImage` | `fn(*Gpu, TextureHandle) void` | Free an `uploadImage` texture; the slot is reused by the next upload. The handle is dead afterwards (no generation counter). The image table grows on demand (up to 65536 live images, then `uploadImage` logs and returns none); there is no eviction because handles are app-owned. |
 | `uploadMesh` | `fn(*Gpu, MeshData) MeshHandle` | *Optional scene block.* Copy mesh geometry to GPU buffers (128-slot table). `MESH_HANDLE_NONE` on invalid data (`MeshData.validate`) or a full table. |
 | `releaseMesh` | `fn(*Gpu, MeshHandle) void` | *Optional scene block.* Free a mesh. On web, call between frames (a mesh destroyed while a recorded-but-unpresented frame still uses it invalidates the submit). |
@@ -95,7 +100,7 @@ A Gpu type must expose these declarations:
 | `closeSecondarySurface` | `fn(*Gpu, u32) void` | Release the surface for the given secondary id. No-op on invalid ids. |
 | `resizeWindow` | `fn(*Gpu, u32, u32, u32) void` | Reconfigure a window's surface. `id = 0` is the primary (same effect as `resize`). |
 
-`ClearColor = [4]f32` (RGBA, 0..1). `validateGpu` comptime-asserts every required decl above. `rasterizeText` / `uploadText` / `uploadImage` / `uploadImages` / `renderToWindow` / `openSecondarySurface` / `closeSecondarySurface` / `resizeWindow` are HARDLINE §4(d) surface extensions added during / after the `functional_gaps_yolo` push. `releaseImage` is required. The scene block (`uploadMesh` + `releaseMesh` + `renderScenes`) is an *optional* extension checked only when declared (like `Host.scaleFactor`): the scene trio must come together, each a function; `teak.run` calls them only when present. Compile-error format:
+`ClearColor = [4]f32` (RGBA, 0..1). `validateGpu` comptime-asserts every required decl above. `rasterizeText` / `uploadText` / `uploadImage` / `uploadImages` / `renderToWindow` / `openSecondarySurface` / `closeSecondarySurface` / `resizeWindow` are HARDLINE §4(d) surface extensions added during / after the `functional_gaps_yolo` push. `releaseImage` is required. The scene block (`uploadMesh` + `releaseMesh` + `renderScenes`) is an *optional* extension checked only when declared (like `Host.scaleFactor`): the scene trio must come together, each a function; `teak.run` calls them only when present. `uploadCanvasGeometry`, `releaseCanvasGeometry` and `uploadCanvasGeoms` are not in the `validateGpu` list. A Gpu passed to the resources table still has to declare the first two, because the upload switch type-checks every resource kind, and `stageDraws` calls `uploadCanvasGeoms` only when it is declared. Compile-error format:
 
 ```
 Gpu 'MyGpu' is missing declaration 'uploadVertices'
@@ -104,7 +109,7 @@ Gpu 'MyGpu' is missing declaration 'uploadVertices'
 ## Invariants
 
 - **Single owner.** One Gpu per app, created after the Host.
-- **Fixed pipelines.** Backends build their pipelines at `init` (solid, text, image, and the two scene pipelines). Shader, vertex layout, target format are all baked in. Swapping shaders at runtime is out of scope.
+- **Fixed pipelines.** Backends build the solid, text, image and two scene pipelines at `init` (the web image pipeline and the retained-geometry pipeline wait until first use). Shader, vertex layout, target format are all baked in. Swapping shaders at runtime is out of scope.
 - **Vertex format is shared.** Both backends consume `teak.Vertex` (8 × f32 interleaved: pos, color, uv). Changing `Vertex` is a coordinated change across `render/vertex.zig`, `shaders/quad.wgsl`, and both backends.
 - **`uploadVertices` is a replace, not an append.** Each call overwrites the buffer. Old frames' data is gone.
 - **`renderFrame` is atomic.** One clear + the staged draws + one present. Scene targets are rendered earlier by `renderScenes`, never inside the main pass.
@@ -113,7 +118,7 @@ Gpu 'MyGpu' is missing declaration 'uploadVertices'
 ## Non-goals / known limits
 
 - **No depth in the main pass.** The UI is 2D; painter's order gives z-ordering. Depth exists only inside scene targets (32-bit float, `less`).
-- **Scenes composite with the images**: within a layer (base or overlay) above the solid quads and below the text. An overlay with an opaque backdrop hides base-layer scenes, images and text.
+- **Scenes composite with the images, and retained canvas geometry follows them**: within a layer (base or overlay) the order is solids, images, scene composites, retained geometry, text. An overlay with an opaque backdrop hides the base layer's scenes, images, retained geometry and text.
 - **At most 16 scenes per frame**, 128 meshes, 64 images; extras are dropped / refused.
 - **No post-process passes.** Adding one would expand the contract to a `beginFrame` / `endFrame` pair — not planned.
 - **No query objects / timestamps.** Profiling happens externally.
