@@ -15,6 +15,9 @@
 
 ### Changed
 
+- The zunk pin moves to master 620957e: a bounded wasm reader, import names escaped in the
+  generated JS, and the dev server as one state machine. Web output for the examples is
+  unchanged.
 - Runtime statistics time and file sinks now use optional Host `now_ns` and `files`
   capabilities. Native/headless behavior and flush cadences are preserved. Font discovery
   and reads live in the native Host layer; text receives byte loaders and keeps parsing
