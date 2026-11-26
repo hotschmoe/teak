@@ -467,7 +467,8 @@ fn measure_lines(group: *Group, path: *const Path, source: []const u8, tree: Ast
         offset += @intCast(line.len + 1);
         const site: Site = .{ .path = path.*, .line = number };
         record(group, .lines, site);
-        const columns = std.unicode.utf8CountCodepoints(line) catch line.len;
+        const text = std.mem.trimEnd(u8, line, "\r");
+        const columns = std.unicode.utf8CountCodepoints(text) catch text.len;
         if (columns > 100) record(group, if (literal) .literal_long_lines else .long_lines, site);
     }
     assert(number <= source.len);
