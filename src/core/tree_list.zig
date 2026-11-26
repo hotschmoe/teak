@@ -273,7 +273,7 @@ pub fn TreeList(comptime cap: usize) type {
                     cb.pushGroup(.{ .direction = .horizontal, .padding = 0, .gap = 0, .width = opts.indent * @as(f32, @floatFromInt(depth)), .height = opts.row_h });
                     cb.popGroup();
                 }
-                var cs = cb.theme.button;
+                var cs = cb.theme.button.flat();
                 cs.bg = pal.bg_panel;
                 cs.hover_bg = pal.bg_hover;
                 cs.fg = pal.fg_muted;
@@ -284,7 +284,7 @@ pub fn TreeList(comptime cap: usize) type {
                 const kids = node + 1 < m.n_nodes and src.depth(node + 1) > depth;
                 const glyph: []const u8 = if (!kids) " " else if (m.isExpanded(node)) "\u{25BE}" else "\u{25B8}";
                 if (kids) cb.buttonNav(msgs.toggle(node), glyph, cs, .{ .tab_stop = false }) else cb.buttonNav(msgs.select(node), glyph, cs, .{ .tab_stop = false });
-                var ls = cb.theme.button;
+                var ls = cb.theme.button.flat();
                 ls.bg = if (selected) mix(pal.bg_panel, pal.accent, if (m.focused) 0.55 else 0.3) else pal.bg_panel;
                 ls.hover_bg = if (selected) ls.bg else pal.bg_hover;
                 ls.press_bg = ls.hover_bg;

@@ -354,6 +354,47 @@ conforming Gpu. See [scene3d.md](scene3d.md).
 duplicated in every example's `ui_main.zig`) and correctly diff the
 `disabled` field.
 
+### Msgs from the loop owner (`Runtime.post`)
+
+Some apps are fed by something that is neither user input nor one of the
+declarative effects: a hardware sampler, a serial port, a socket, a child
+process, a worker thread. `update` must not read those (it never performs
+I/O), and the Host cannot know about them. The code that owns the loop can:
+
+```zig
+var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, .{});
+defer rt.deinit();
+var due_ms: u64 = 0;
+while (!host.shouldClose() and !rt.exitRequested()) {
+    const now = host.nowMs();
+    if (now >= due_ms) {
+        sampler.sample(now, sample);            // the outside world, read here
+        rt.post(.{ .sample = sample });         // ...and handed over as data
+        due_ms = now + 1000;
+    }
+    try rt.frame();
+    if (rt.quiet and !host.shouldClose())
+        host.waitEvents(@min(rt.idleTimeoutMs(), @as(u32, @intCast(due_ms -| host.nowMs()))));
+}
+```
+
+`post(msg)` runs the Msg through `update` at once, by the same path as a
+routed input Msg (it is named in `last_msg` and in the control channel's Msg
+log), and marks the next `frame` as one that must build, so a posted Msg is
+never swallowed by the idle skip. Rules:
+
+- Call it between frames, on the thread that calls `frame`. A worker thread
+  hands its results to the loop thread (a mailbox the loop drains) and the
+  loop posts them.
+- A pointer or slice in the Msg has to stay valid only until `post`
+  returns; `update` copies what it keeps, as with effect results.
+- This is why such an entry point calls `Runtime` itself instead of
+  `teak.run`: `run` is exactly this loop without the first `if`. Include
+  your own next deadline in the `waitEvents` timeout, as above.
+
+The worked example is `examples/sysmon` (a hardware monitor: `ui_main.zig`
+samples once a second and posts the reading).
+
 ## HARDLINE
 
 `run` is the host-loop **orchestrator**, and it stays on the right side
@@ -375,6 +416,9 @@ of the dependency arrow:
 - No wall-clock reads, no hidden state: animation (cursor blink) is
   driven by the `TransientState.frame_counter`, advanced once per frame,
   exactly as the renderer expects.
+- `Runtime.post` is an input source at the host boundary, like a device:
+  it cannot read the Model and it adds no second mutation path, because
+  the Msg it carries goes through the App's `update`.
 
 ## Tests
 
@@ -438,8 +482,10 @@ built frame with the new phase (`TransientState.blink_on`) — no view or layout
 `waitEvents(timeout_ms)` (documented in `platform/host.zig`) with the time to
 the nearer of the next due `Sub` (`sub.nextDueMs`) and the next caret toggle
 (16 ms while an effect is outstanding, else at most 1 s). Implemented by the
-X11 (`XPending` + `poll` on the connection fd), Win32
-(`MsgWaitForMultipleObjectsEx`) and headless Hosts; Expose / WM_PAINT surface as
+X11 (`XPending` + `poll` on the connection fd), Wayland (`prepare_read` +
+`poll` on the display fd, woken early for key repeat and clipboard transfers), Win32
+(`MsgWaitForMultipleObjectsEx`) and headless Hosts, and forwarded by the Linux
+Host to whichever backend is live; the macOS Host has none yet and polls; Expose / WM_PAINT surface as
 `InputState.resized` so an uncovered window repaints. The web loop stays
 rAF-driven but skips the same work: a quiet rAF tick costs about 0.2 ms
 in headless Chromium (median, including the JS tick), against 0.8 ms median

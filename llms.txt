@@ -266,7 +266,7 @@ ButtonStyle = struct { bg, hover_bg, press_bg, fg, disabled_bg, disabled_fg: [4]
                        hover_fg, press_fg: ?[4]f32 = null, border: ?[4]f32 = null, border_width = 1,
                        press_offset_y: f32 = 0, label_align: TextAlign = .start,
                        h_padding: f32 = 8, min_width: f32 = 60, height: f32 = 36, flex: f32 = 0 }
-                       // corners are square (no corner_radius: the quad renderer has no rounding)
+                       // style.flat(): the same style as a square, borderless, shadowless cell (rows of a table or tree)
 ButtonCmd(Msg) = struct { msg, label, style, font, disabled: bool = false, underline: ?u16 = null }
 TextCmd = struct { content: []const u8, font: FontSpec, color: [4]f32 }
 TextInputStyle = struct { bg, fg, border, focus_border, cursor, disabled_bg, disabled_fg,
@@ -783,6 +783,7 @@ DataTable(comptime cfg: struct { max_rows = 131072, max_cols = 16 }) type
   Model: n_rows, order/rank (display<->data permutation), sort_col/sort_desc, widths, selection (bitset by DATA row),
          cursor/anchor, focused, mods, sc: Scroller, view_h;  setRows(n) / setColumns(cols) / isSelected(row) / selectedRows(out)
          resort(src) /*re-apply current sort after the data changed; keeps direction, selection, scroll*/
+         reload(n, src) /*the row SET changed: keeps sort, widths, focus, scroll; drops selection*/ / select(row) /*re-select by data row*/
   Msg = union(enum) { sort: u8, grip: {col, dx}, row: u32 /*display idx*/, key: Key, wheel: f32, viewport: {vw,vh,cw,ch}, mods: Modifiers, frame: u32, char: u8, blur, resort }
   update(model, msg, src)   // src.compare(col: u8, a: u32, b: u32) std.math.Order  (stable index sort); src.cell(arena, col: u8, row: u32) []const u8
   view(model, cb, cols: []const DataTableColumn, src, msgs /*.sort(col) .row(display)*/, ViewOpts{ id, grip_base, row_h = 22, header_h = 26, char_w = 8, ... })
@@ -1044,9 +1045,15 @@ headless.shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa, steps
 headless.writeFramePng(gpu, gpa, path) !void;  pathArg(init, default) []const u8
 headless.encodePng(gpa, rgba, w, h) ![]u8      // deflate-compressed + per-row PNG filters, deterministic (tens of KB)
 headless.decodePng(gpa, png_bytes) !Image{width,height,rgba}   // 8-bit RGB/RGBA, any filter
-headless.shotCli(App, Host, Gpu, init, default_path, ShotOptions, states: []const ShotState{name, steps}) !void
-    // a whole shot_main.zig: `[out.png] [--state name] [--list] [--idle-check N]`; ShotOptions.fonts registers embedded TTFs
-headless.idleCheck(App, Host, Gpu, gpa, ShotOptions, frames) !IdleReport{ frames, busy, presented, first_busy, rewoke, busy_at_end }  // idle gate: settled() = quiet by the end, no re-wake
+headless.shotCli(App, Host, Gpu, init, default_path, ShotOptions, states: []const ShotState{name, steps, msaa?}) !void
+    // a whole shot_main.zig: `[out.png] [--state name] [--list] [--idle-check N] [--gates-json]`; ShotOptions.fonts registers embedded TTFs
+    // --gates-json [--idle-frames N] [--state name|*] [--latency-check x,y --latency-state name] prints one JSON object on stdout and exits 0
+headless.requestsGate(args) bool   // --gates-json / --idle-check / --latency-check
+headless.idleCheck(App, Host, Gpu, gpa, ShotOptions, frames) !IdleReport{ frames, busy, presented, blinks, first_busy, rewoke, busy_at_end, rss_bytes, committed_bytes }
+    // settled() = quiet by the end, no re-wake; fullyQuiet() = busy == 0 and presented == blinks (caret presents only); memory is Linux only (VmRSS, RssAnon+VmSwap)
+headless.latencyCheck(App, Host, Gpu, gpa, ShotOptions, x, y) !LatencyReport{ frames, unstable, unchanged, x, y }  // pass(budget): click -> presented frame
+headless.latencyAfterClick(rt, host, gpa, x, y) !LatencyReport   // the same measurement on a Runtime you already built
+// Background gate: `zig build gates` (last stage of `zig build test-heavy`) -> zig-out/gates/ci-gates.json against tools/ci_gates_budgets.json (+10%; no budget for the host triple = reported and skipped). Non-strict idle is quiet at the end of the window; `--idle-check` still requires settled() (no re-wake).
 // Visual regression: `zig build vreg [-- --update | --web | --examples a,b | --state s | --tol N --budget N]`
 //   compares every example's states with test/golden/ (docs/features/visual-regression.md)
 // Host: pushMouseMove/Down/Up, pushWheel, pushChars, pushKey, setModifiers, close, injectEffectResult(EffectResult),
@@ -1063,6 +1070,9 @@ Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
     //   rt.deinit()
     //   rt.lastFrameStats() FrameStats   // timing of the last frame() (loop clock; never seen by update/view)
     //   rt.exitRequested() bool          // exit_after_frames reached
+    //   rt.post(msg)                     // a Msg from the loop owner (sampler, socket, worker mailbox): through update now,
+    //                                    //   next frame builds; call between frames on the loop thread (run.md, examples/sysmon)
+    //   rt.quiet / rt.idleTimeoutMs()    // for a hand-written loop's Host.waitEvents
     // run == init + `while (!host.shouldClose() and !rt.exitRequested()) try rt.frame()` + deinit.
 RunOptions          // see "The App contract" above
 SecondaryWindowSpec // see above

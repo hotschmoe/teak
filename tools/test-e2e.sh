@@ -26,11 +26,18 @@ case "${1:-}" in
   blocking)
     for example in counter_greeter todo tree; do run_example "$example"; done ;;
   heavy)
-    for example in chrome effects fonts gallery kerf_viewer notes scene3d scene_layers tables vector_canvas viewport; do
-      run_example "$example"
-    done
-    "$root/tools/drive-e2e.sh"
-    (cd "$root/examples/todo" && "$zig" build web -j4)
-    WEBSHOT_ANGLE="${WEBSHOT_ANGLE:-vulkan}" node "$root/tools/a11yprobe.mjs" todo "$root/examples/todo/dist" ;;
+    set +e
+    (
+      set -e
+      for example in chrome effects fonts gallery kerf_viewer notes scene3d scene_layers sysmon tables vector_canvas viewport; do
+        run_example "$example"
+      done
+      "$root/tools/drive-e2e.sh"
+      (cd "$root/examples/todo" && "$zig" build web -j4)
+      WEBSHOT_ANGLE="${WEBSHOT_ANGLE:-vulkan}" node "$root/tools/a11yprobe.mjs" todo "$root/examples/todo/dist"
+    )
+    status=$?
+    (cd "$root" && "$zig" build gates -j4) || status=1
+    exit "$status" ;;
   *) echo 'usage: tools/test-e2e.sh blocking|heavy' >&2; exit 2 ;;
 esac

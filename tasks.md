@@ -8,7 +8,7 @@ per-phase sections below for what shipped earlier.
 
 ## Next up (open)
 
-Snapshot refreshed 2026-11-26 (after PR #170). Shipped items live in `CHANGELOG.md`;
+Snapshot refreshed 2026-11-26 (after PR #174). Shipped items live in `CHANGELOG.md`;
 this section is only what is still open. Rebuild the PR list with
 `gh pr list --state open`; the matrix of what exists vs. what competitors
 ship is [docs/PARITY.md](docs/PARITY.md).
@@ -17,10 +17,7 @@ ship is [docs/PARITY.md](docs/PARITY.md).
 
 | PR | What |
 |---|---|
-| #169 | zunk pin moved to current zunk master |
-| #171 | Linux host blocks when idle (`waitEvents` on the Linux and Wayland hosts) |
-| #172 | Background gates for idle, input latency, idle memory and binary size (#141) |
-| #173 | `examples/sysmon` hardware monitor, `Runtime.post` (stacked on #171) |
+| #175 | Canvas: GPU-retained static geometry (#159). Held: no hardware GPU measurement yet, and it widens the Gpu interface. |
 
 ### Open issues worth knowing
 
@@ -28,7 +25,8 @@ ship is [docs/PARITY.md](docs/PARITY.md).
 |---|---|
 | #150 | Multi-window: secondary windows on X11 / Wayland / macOS, more than one from `teak.run` |
 | #159 | Canvas: GPU-retained static geometry (transform in the shader) |
-| #139 - #142 | Directions from the egoist review: OS text engines, CPU raster / direct GPU backends, CI gates (idle, latency, memory, size), app shell |
+| #141 | CI gates: the runner landed (#172); `x86_64-linux` memory and native-size budgets are not seeded, so CI gates idle, latency and wasm size only |
+| #139, #140, #142 | Directions from the egoist review: OS text engines, CPU raster / direct GPU backends, app shell |
 
 ### Open by area (not yet in a PR, or deliberately deferred)
 
@@ -36,7 +34,7 @@ ship is [docs/PARITY.md](docs/PARITY.md).
 - **Text:** subpixel LCD AA (none); bundled CJK face (none); native colour emoji (web only, #71).
 - **Graphics:** SVG icons via `teak.svg` (subset: no gradients / text / filters); grid layout has fixed columns only (no cell spans, no row tracks). Canvas antialiasing, circles / arcs / polygons and a world transform landed (#125); a GPU-retained canvas vertex buffer (re-lower nothing on pan) is the next step if CPU lowering shows up in profiles (#159).
 - **Input / a11y:** X11 AT-SPI and macOS AX are not built (Win32 UIA and the web mirror are).
-- **Tooling:** hot reload is native (Linux) dev builds only; the visual-regression goldens and their tool were retired with the 2026-11-18 test policy (blocking gate = three CLI canaries; everything else is `zig build test-heavy`); CI gates for idle / latency / memory / size are in PR #172.
+- **Tooling:** hot reload is native (Linux) dev builds only; the visual-regression goldens and their tool were retired with the 2026-11-18 test policy (blocking gate = three CLI canaries; everything else is `zig build test-heavy`); idle / latency / memory / size gates run in the background gate (`zig build gates`, #141); native size and RSS budgets are per host triple and `x86_64-linux` is not seeded yet.
 - **QA findings left open** (`docs/qa-2026-10.md`, "Open"): `ButtonStyle.label_align` defaults to `.start` for hand-built styles; the tree example is noisy (two bordered buttons per row).
 - **API cleanup:** `handleClipboard` / `keyNeedsClipboard` and the `linkWin32Wgpu` build alias are removed (`docs/migration-clipboard.md`); `hoverMsg` / `contextMsg` / `canvasMsg` / `textMsg` / `sliderMsg` migrate onto `pointerMsg` in stages (`docs/features/pointer-msg.md`); moving big `Cmd` payloads out of line is a measured proposal (`docs/features/cmd-size.md`), not scheduled.
 - **Carried from earlier phases:** dropdown open-scroll-to-reveal on toggle (`.toggle` carries no viewport geometry).

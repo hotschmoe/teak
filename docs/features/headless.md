@@ -73,7 +73,12 @@ writeFramePng(gpu, gpa, path) !void      // gpu.readFrame -> PNG
 writePng(gpa, path, rgba, w, h) !void
 encodePng(gpa, rgba, w, h) ![]u8         // dependency-free; deflate-compressed with per-row PNG filters, deterministic
 pathArg(init, default) []const u8        // argv[1] of main(init: std.process.Init)
-idleCheck(App, Host, Gpu, gpa, ShotOptions, frames) !IdleReport{ frames, busy, presented, first_busy, rewoke, busy_at_end }
+idleCheck(App, Host, Gpu, gpa, ShotOptions, frames) !IdleReport{ frames, busy, presented, blinks, first_busy, rewoke, busy_at_end, rss_bytes, committed_bytes }
+    // settled()     = quiet by the end of the window and no re-wake
+    // fullyQuiet()  = busy == 0 and every present was a caret blink (presented == blinks)
+latencyCheck(App, Host, Gpu, gpa, ShotOptions, x, y) !LatencyReport{ frames, unstable, unchanged, x, y }
+    // pass(budget) = the click changed the view and that view was presented `budget` frames later
+latencyAfterClick(rt, host, gpa, x, y) !LatencyReport   // same measurement on a Runtime you already built
 ```
 
 **Idle gate.** A settled UI must stop working: `idleCheck` plays a state's script, settles, then runs `frames`
@@ -81,6 +86,13 @@ input-free frames and counts the ones that were not the loop's quiet skip (`Fram
 binary takes `--idle-check N [--state name | --state '*']`, prints `idle <state>: busy/N frames busy, P presented`
 and exits non-zero when a state is still busy at the end of the window or wakes up again after going quiet (a finite
 transition and a caret blink pass; an indeterminate progress bar or a never-ending animation fails, as it should). Example: `zig build shot -- --idle-check 120 --state '*'`.
+`zig build gates` uses a looser bar for states that are not strict: the window only has to end quiet, so a one-shot `Sub.at` that fires and finishes (a tooltip deadline) passes, and a subscription still firing at the end fails unless that state is `expect_busy`. Strict states still have to be `fullyQuiet`. The `--idle-check` flag keeps `settled()` (a re-wake fails it).
+
+`IdleReport.blinks` counts quiet frames that still presented. The loop only presents while quiet to flip the caret, so `fullyQuiet` (no busy frame, and `presented == blinks`) is the resting-screen check: zero presents when nothing is focused, caret blinks allowed when an input is. `settled` stays the looser check a finite animation must pass. On Linux, RSS (`VmRSS`) and committed bytes (`RssAnon + VmSwap`) are read from `/proc/self/status` at the end of the window while the offscreen Gpu is still alive; elsewhere both are 0.
+
+**Input latency.** `latencyCheck` plays the script, waits until two consecutive frames hash the same (a snapshot of the cmd buffer, no hover / press / caret header), then clicks `(x, y)`. The budget is 1: hit-testing uses the previous frame, so the Msg and the new view are presented by the `frame()` that delivers the click. A press-activated control that already presents a new buffer on mouse-down is also 1. A view that never sits still comes back `unstable`; a click that changes nothing comes back `unchanged`.
+
+**All four gates.** `zig build gates` is the last stage of the background gate (`zig build test-heavy -j4`); it never blocks a PR. It runs, per example, a ReleaseSmall `shot -- --gates-json` (idle + latency + memory), a ReleaseSmall `ui-install` (unstripped native exe size) and a ReleaseSmall `web` build (wasm, brotli quality 11). It writes `zig-out/gates/ci-gates.json`. Budgets and which states are strict or exempt live in `tools/ci_gates_budgets.json`. A number more than 10% over its budget fails. Native size and idle memory are platform- and GPU-specific, so they are budgeted per host triple (`platforms."<arch>-<os>"`); wasm brotli is portable. A budget of 0, or a host triple with no entry, is reported as `SKIPPED (no budget)` and does not fail. Only `aarch64-linux` is seeded, so the x86_64 CI runner gates idle, latency and wasm size and reports the rest. `scene3d` is exempt (`expect_busy: ["*"]`) because its orbit subscribes every frame; that is the app, not a gate to satisfy by deleting the sub. `--update-budgets` rewrites the numbers for the host that just ran; run it on the machine that will enforce them.
 
 Prefer the lower-level pieces when you want to inspect state between steps:
 
