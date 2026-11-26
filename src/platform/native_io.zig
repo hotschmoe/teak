@@ -1,3 +1,4 @@
+//! See SRC.md, src/platform/native_io.zig.
 const std = @import("std");
 const FileIo = @import("teak").FileIo;
 const assert = @import("teak").assert;

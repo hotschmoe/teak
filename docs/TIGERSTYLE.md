@@ -20,6 +20,9 @@ tidy ratchets: its counts may go down, never up. The decisions behind each rule 
   type. Units and qualifiers go last: `timeout_ms`, `width_px`, `count_max`.
 - No abbreviations that need a glossary.
 
+A method that implements an existing interface (a Host, Gpu or App hook) keeps that
+interface's spelling until the interface itself is renamed; tidy counts these.
+
 ## Assertions
 
 - Use the owned `assert`, which is checked in every optimize mode. Not `std.debug.assert`.

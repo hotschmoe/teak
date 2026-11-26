@@ -24,12 +24,16 @@ run_example() {
 }
 case "${1:-}" in
   blocking)
-    for example in counter_greeter todo tree; do run_example "$example"; done ;;
+    for example in todo counter_greeter tree gallery tables notes probe; do
+      frames=128
+      seed=1
+      (cd "$root" && "$zig" build sim -j4 -- --app "$example" --seed "$seed" --frames "$frames")
+    done ;;
   heavy)
     set +e
     (
       set -e
-      for example in chrome effects fonts gallery kerf_viewer notes scene3d scene_layers sysmon tables vector_canvas viewport; do
+      for example in counter_greeter todo tree chrome effects fonts gallery kerf_viewer notes scene3d scene_layers sysmon tables vector_canvas viewport; do
         run_example "$example"
       done
       "$root/tools/drive-e2e.sh"
@@ -38,6 +42,7 @@ case "${1:-}" in
     )
     status=$?
     (cd "$root" && "$zig" build gates -j4) || status=1
+    (cd "$root" && "$zig" build sim-heavy -j4) || status=1
     exit "$status" ;;
   *) echo 'usage: tools/test-e2e.sh blocking|heavy' >&2; exit 2 ;;
 esac

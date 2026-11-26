@@ -84,6 +84,10 @@ pub const InputState = struct {
 
 ## Backends
 
+`InputState.focus_lost` defaults to false. A Host that emits it must clear held buttons and
+edges for that poll. Runtime cancels group drags and armed presses before routing the frame.
+SimHost emits this signal; native backend translation has not yet been wired to it.
+
 Three Hosts implement the contract; all satisfy `validateHost`.
 
 - **macOS** (`cocoa.zig`, `objc.zig`, `cocoa_data.zig`) — Cocoa through the Objective-C runtime, with libobjc / AppKit / QuartzCore loaded by `std.DynLib` (no SDK, no frameworks linked, no Objective-C source; the two classes AppKit needs us to subclass — `TeakView` (NSView + NSTextInputClient) and `TeakWindowDelegate` — are registered at run time with Zig methods). Window = NSWindow + a layer-hosting NSView whose layer is a `CAMetalLayer` (`nativeHandle()` is the layer; `gpu/surface_cocoa.zig` wraps it in a `WGPUSurfaceSourceMetalLayer`). Sizes and pointer coordinates are logical points, `scaleFactor()` is `backingScaleFactor` (pass it as `InitOptions.scale`; a display change after start-up is not re-applied yet). Events are pulled non-blocking with `nextEventMatchingMask:`; text goes through `interpretKeyEvents:` so committed text and IME marked text arrive via NSTextInputClient (`imeState`, `setImeSpot` positions the candidate window); Cmd is the primary modifier (Cmd+A/C/X/V/Z, Cmd+Shift+Z redo, Option+arrows/Backspace by word, Cmd+Left/Right line start/end, Cmd+Up/Down document start/end, Cmd+Q/W close); wheel uses precise deltas as pixels and lines x16 for a mouse wheel. Clipboard = NSPasteboard (text; a PNG pastes as an image drop), dropped files via `NSFilenamesPboardType` (same `Drop` shape as the other hosts), cursors via `NSCursor` + cursor rects, `openFileDialog`/`saveFileDialog` via modal NSOpenPanel/NSSavePanel (filters ignored), `setTitle`. No secondary windows or a11y yet. Verified on GitHub macOS runners (offscreen Metal render + a launched window); see CI.

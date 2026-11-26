@@ -13,6 +13,8 @@ Signatures and `///` doc comments of every public declaration reachable from
 > time; `-Dversion-meta=<str>` appends `+<str>`. See docs/VERSIONING.md.
 - `teak.version`: `pub const version: []const u8 = @import("build_options").version`
 - `teak.assert`: `pub const assert = @import("assert.zig").assert`
+> See docs/features/sim.md.
+- `teak.sim`: module `src/sim/sim.zig`; see below
 > The flat `Cmd` union, `CmdBuffer` and balance validation.
 - `teak.cmd`: module `src/core/cmd.zig`; see below
 > Comptime component composition (`Components`, `validateComponent`).
@@ -724,7 +726,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.expectSnapshot`: `pub const expectSnapshot = snapshot.expectSnapshot`
 > Per-frame input snapshot returned by `Host.pollInputs`.
 - `teak.InputState` = `host.InputState`
-  - fields: `mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, chords, resized, width, height`
+  - fields: `focus_lost, mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, chords, resized, width, height`
 > Event accumulator turning native events into an `InputState`.
 - `teak.InputQueue` = `input_queue.InputQueue`
   - fields: `mouse_x, mouse_y, buttons, pressed, released, mods, wheel_dx, wheel_dy, chars, chars_len, keys, keys_len, chords, chords_len, pending_high, dropped, alt_clean`
@@ -870,6 +872,15 @@ Signatures and `///` doc comments of every public declaration reachable from
 - `teak.monoMeasurer`: `pub const monoMeasurer = text.monoMeasurer`
 
 ## Modules
+
+### `teak.sim` (`src/sim/sim.zig`)
+
+See SRC.md, src/sim.
+
+- `pub const verify = true`
+- `pub const Host = @import("host.zig").Host`
+- `pub const Gpu = @import("gpu.zig").Gpu`
+- `pub const Metrics = @import("metrics.zig").Metrics`
 
 ### `teak.cmd` (`src/core/cmd.zig`)
 
@@ -2614,7 +2625,7 @@ viewport-agnostic snapshot back.
 > = ~48 px on Win32). Zero when no wheel events arrived this frame. A
 > trackpad pinch on the web arrives as a wheel event with `mods.ctrl` set.
 - `struct InputState`
-  - fields: `mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, chords, resized, width, height`
+  - fields: `focus_lost, mouse_x, mouse_y, buttons, button_down, button_up, mouse_down, mouse_up, mods, wheel_dx, wheel_dy, chars, keys, chords, resized, width, height`
 > Comptime contract. A Host must expose these declarations; `init`
 > signatures vary per backend and are NOT validated (some hosts take a
 > title, some take a canvas selector, etc.).

@@ -191,6 +191,20 @@ text_area sub anim theme text_field numeric_field dropdown data_table var_list t
 debug_overlay inspector snapshot chart svg table pointer cursor effects scene resources layout scroll_extent
 hit_test focus keys a11y render vertex host input_queue gpu runtime headless dev control input_record`.
 
+### Simulation (`teak.sim` -> sim/sim.zig)
+
+`zig build sim -- --app todo --seed 1 --frames 1000` runs the real Runtime with a
+virtual Host and recording Gpu twice, comparing Model/Cmd/rect/vertex hashes each frame.
+`--replay zig-out/sim/<app>-<seed>.jsonl` replays complete simulator inputs; `--seeds 200`
+runs consecutive seeds. `zig build sim-heavy` is the budgeted background campaign.
+Exported factories: `sim.Host(sim.Metrics(Font))`; backend: `sim.Gpu`.
+`sim.runner.simulate(App, HostType, allocator, config)` accepts caller-owned frame and
+fingerprint buffers plus Progress. No OS, wgpu, effects results or pixel output.
+Apps: todo, counter_greeter, tree, gallery, tables, notes, probe. Tree can fail because it
+does not clamp the upper scroll offset. Hashing follows plain pointers/slices by contents,
+excludes addresses/padding and rejects unbounded/function/opaque pointers. Undefined Model
+capacity remains a limitation. See docs/features/sim.md and SRC.md for checker blind spots.
+
 ### Version (`teak.version`)
 `teak.version: []const u8` — library semver, derived from `build.zig.zon` `.version` (plus `+<meta>` when built with
 `-Dversion-meta=<meta>`); the single source is documented in docs/VERSIONING.md.

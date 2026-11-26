@@ -147,6 +147,7 @@ pub const InjectEvent = union(enum) {
 /// = ~48 px on Win32). Zero when no wheel events arrived this frame. A
 /// trackpad pinch on the web arrives as a wheel event with `mods.ctrl` set.
 pub const InputState = struct {
+    focus_lost: bool = false,
     mouse_x: f32,
     mouse_y: f32,
     buttons: Buttons,
