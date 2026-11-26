@@ -185,6 +185,9 @@ pub const Host = struct {
         }
     }
 
+    pub const files = @import("native_io.zig").files;
+    pub const now_ns = @import("native_io.zig").now_ns;
+
     pub fn nowMs(self: *const Host) u64 {
         return switch (self.impl) {
             inline else => |*h| h.nowMs(),

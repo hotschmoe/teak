@@ -26,10 +26,7 @@
 //!
 //! The state is module state, like the face table (single-threaded UI).
 
-const std = @import("std");
-const builtin = @import("builtin");
 const face_mod = @import("face.zig");
-const assert = @import("teak").assert;
 
 const Font = face_mod.Font;
 
@@ -37,30 +34,7 @@ const Font = face_mod.Font;
 pub const max_explicit = 4;
 const max_env = 4;
 
-/// System candidates, probed in order. TrueType/OpenType collections work
-/// (stb reads the first font of a `.ttc`).
-const system_candidates = [_][]const u8{
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-    "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
-    "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
-    "/usr/share/fonts/noto/NotoEmoji-Regular.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-    "/usr/share/fonts/gnu-free/FreeSans.ttf",
-    "/usr/share/fonts/truetype/unifont/unifont.ttf",
-    "/usr/share/fonts/opentype/unifont/unifont.otf",
-};
+pub const system_count = 20;
 
 const Sys = struct {
     tried: bool = false,
@@ -69,9 +43,7 @@ const Sys = struct {
 
 var explicit: [max_explicit]?Font = @splat(null);
 var env_sys: [max_env]Sys = @splat(.{});
-var sys: [system_candidates.len]Sys = @splat(.{});
-var env_checked = false;
-var env_paths: [max_env][]const u8 = @splat("");
+var sys: [system_count]Sys = @splat(.{});
 
 /// First id used by fallback faces (just above the system default face).
 pub const first_id: u16 = face_mod.fallback_face_id + 1;
@@ -100,7 +72,6 @@ pub fn release() void {
         s.* = .{};
     }
     explicit = @splat(null);
-    env_checked = false;
 }
 
 pub const Hit = struct { glyph: u16, face_id: u16, face: *const Font };
@@ -128,34 +99,9 @@ pub fn isInvisible(cp: u21) bool {
     };
 }
 
-fn loadSys(s: *Sys, path: []const u8) void {
+fn loadSys(s: *Sys, index: u16) void {
     s.tried = true;
-    if (comptime builtin.target.cpu.arch.isWasm()) return; // no filesystem, no libc
-    const data = face_mod.readAbsolute(std.heap.page_allocator, path) catch return;
-    var font = Font.fromBytes(data) catch {
-        std.heap.page_allocator.free(data);
-        return;
-    };
-    font.allocator = std.heap.page_allocator;
-    s.font = font;
-}
-
-pub fn checkEnv(paths: ?[]const u8) void {
-    if (comptime builtin.target.cpu.arch.isWasm()) return;
-    if (env_checked) return;
-    assert(!env_sys[0].tried);
-    env_checked = true;
-    env_paths = @splat("");
-    const raw = paths orelse return;
-    var it = std.mem.splitScalar(u8, raw, ':');
-    var n: usize = 0;
-    while (it.next()) |p| {
-        if (p.len == 0) continue;
-        if (n == max_env) break;
-        env_paths[n] = p;
-        n += 1;
-    }
-    assert(n <= max_env and (n == 0 or env_paths[n - 1].len > 0));
+    s.font = face_mod.load_fallback(index) catch return;
 }
 
 /// The first fallback face with a glyph for `cp`, loading system candidates on
@@ -167,17 +113,15 @@ pub fn glyphFor(cp: u21) ?Hit {
             if (g != 0) return .{ .glyph = g, .face_id = first_id + @as(u16, @intCast(k)), .face = f };
         }
     }
-    if (!env_checked) checkEnv(null);
     for (&env_sys, 0..) |*s, k| {
-        if (env_paths[k].len == 0) break;
-        if (!s.tried) loadSys(s, env_paths[k]);
+        if (!s.tried) loadSys(s, @intCast(k));
         if (s.font) |*f| {
             const g = f.glyphIndex(cp);
             if (g != 0) return .{ .glyph = g, .face_id = first_id + max_explicit + @as(u16, @intCast(k)), .face = f };
         }
     }
     for (&sys, 0..) |*s, k| {
-        if (!s.tried) loadSys(s, system_candidates[k]);
+        if (!s.tried) loadSys(s, @intCast(max_env + k));
         if (s.font) |*f| {
             const g = f.glyphIndex(cp);
             if (g != 0) return .{ .glyph = g, .face_id = sys_base + @as(u16, @intCast(k)), .face = f };

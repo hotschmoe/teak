@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Runtime statistics time and file sinks now use optional Host `now_ns` and `files`
+  capabilities. Native/headless behavior and flush cadences are preserved. Font discovery
+  and reads live in the native Host layer; text receives byte loaders and keeps parsing
+  and caches. See [migration-host-io.md](docs/migration-host-io.md).
+
 - Replace `RunOptions` with `Options`. Native entry points capture environment overrides once
   with `options_from_environment(init, defaults)` and pass settings to hosts and the runtime;
   headless tools and hot reload use the same path. Web callers pass explicit defaults.

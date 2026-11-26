@@ -252,9 +252,10 @@ the primary window is unaffected on the other backends.
 ### Frame timing and benchmarking (`FrameStats`)
 
 Every `frame()` call fills a plain-data `teak.FrameStats` record, timed by the
-loop itself (never by `view`; HARDLINE §1/§3): native targets use a monotonic
-high-resolution clock, wasm/freestanding the Host clock (`Host.nowMs`, whole
-milliseconds). The numbers never reach `update` or `view`; they leave the loop
+loop itself (never by `view`; HARDLINE §1/§3), using optional `Host.now_ns()`.
+Without it, the fallback is `Host.nowMs() *| std.time.ns_per_ms`, at whole-millisecond
+precision. Native and headless statistics retain the previous monotonic awake clock;
+headless `nowMs` remains fake. The numbers never reach `update` or `view`; they leave the loop
 only as data: `Runtime.lastFrameStats()`, the CSV sink, or the HUD.
 
 | Field | Meaning |
@@ -301,8 +302,16 @@ the GUI as data instead of pixels. The write is atomic (`<path>.tmp` then
 rename, so a reader never sees a torn file) and change-gated (idle frames
 never touch disk); an unwritable path disables the sink after one
 `std.log.warn` and never crashes or slows the app. On a target with no host
-filesystem (wasm/freestanding) the sink compiles out. Depth:
+file capability (`Host.files`, omitted by web) the sink stays disabled. The runtime hands
+serialized bytes to FileIo in `.atomic` mode and never opens a file itself. Depth:
 [snapshot.md](snapshot.md).
+
+Recording, replay, CSV statistics and the summary use the same optional FileIo capability.
+Replay reads the complete source at startup, bounded at 64 MiB. Recording replaces the
+complete stream every 32 nonempty input records, on control `quit`, and at shutdown.
+CSV statistics create/truncate at startup and append at 16 KiB or shutdown; the summary
+replaces `<path>.summary.txt` at shutdown and is also printed to stderr. Web keeps these
+features unavailable. See [host.md](host.md#runtime-file-capability).
 
 ### What the loop does each frame
 

@@ -1018,6 +1018,13 @@ validateHost(comptime T: type) void   // comptime contract: deinit, pollInputs, 
                                        //   nativeHandle, textMeasurer, clipboard, imeState,
                                        //   publishA11yTree, open/save/request/pollFileDialog,
                                        //   secondary-window decls, setTitle, nowMs (scaleFactor, setCursor optional)
+FileIo = struct { ctx: ?*anyopaque, read: *const fn(ctx, allocator, path, limit: u32) anyerror![]u8,
+                  write: *const fn(ctx, path, bytes, mode: WriteMode) anyerror!void }
+    // WriteMode: replace, atomic (.tmp + rename), append (existing file).
+    // Optional Host.files() FileIo supplies runtime files; omitted by web; no implicit fallback.
+    // Optional Host.now_ns() u64 supplies monotonic statistics time; else nowMs() *| ns_per_ms.
+    // Read bytes belong to the supplied allocator; positive limit; writes borrow bytes until return.
+    // Consumer migration: docs/migration-host-io.md
 ```
 
 ### Gpu interface (`teak.gpu` → gpu/context.zig)
@@ -1094,7 +1101,7 @@ FrameStats = struct { index: u64, frame_ms, work_ms, update_ms, view_ms, layout_
                       cmds: u32, vertices: u32, quiet, presented, rebuilt: bool }
     // frame_ms = present-to-present (0 when not presented / first present); build_ms = buildFrame + uploads
     // (0 when the frame diff skipped); gpu_ms = Gpu.renderFrame (submit + present). Native: high-res clock;
-    // wasm: Host.nowMs (whole ms). CSV sink (TEAK_FRAME_STATS) compiles out on wasm.
+    // Host.now_ns, else Host.nowMs (whole ms). File sinks use Host.files; unavailable on web.
 FrameStatsSummary = struct { count: usize, mean_ms, min_ms, p50_ms, p95_ms, p99_ms, max_ms: f32 }
 summarizeFrameMs(samples: []f32) FrameStatsSummary   // sorts in place; nearest-rank percentiles
 // Bench: TEAK_CONTINUOUS=1 TEAK_FRAME_STATS=frames.csv TEAK_EXIT_AFTER_FRAMES=600 zig build ui
@@ -2012,6 +2019,10 @@ Signatures and `///` doc comments of every public declaration reachable from
   - fields: `pending, ok, cancelled`
 > Compile-time check that a type satisfies the `Host` contract.
 - `teak.validateHost`: `pub const validateHost = host.validateHost`
+> See docs/features/host.md#runtime-file-capability.
+- `teak.FileIo` = `host.FileIo`
+  - fields: `ctx, read, write`
+  - `enum WriteMode`
 > Background clear color passed to the Gpu.
 - `teak.ClearColor`: `pub const ClearColor = gpu.ClearColor`
 > Compile-time check that a type satisfies the `Gpu` contract.
@@ -3742,6 +3753,9 @@ loop, zunk's rAF callbacks). It does NOT own the render loop — the
 application drives `pollInputs` each frame and hands a
 viewport-agnostic snapshot back.
 
+- `struct FileIo`
+  - fields: `ctx, read, write`
+  - `enum WriteMode`
 - `pub const SpecialKey = @import("../input/keys.zig").SpecialKey`
 - `pub const Chord = @import("../input/keys.zig").Chord`
 - `pub const Buttons = pointer.Buttons`
@@ -4235,7 +4249,7 @@ See docs/features/agent-driver.md.
 > Loop-owned bookkeeping for the control channel and record/replay. Holds no
 > application state.
 - `struct State`
-  - fields: `gpa, active, log_msgs, frame_no, width, height, busy, acts, act_i, pool, note, line_buf, ring, ring_len, ring_total, rec_path, rec_buf, rec_lines_unflushed, tracker, replay_data, replay_pos, inspect, dirty, app_len, timings`
+  - fields: `files, gpa, active, log_msgs, frame_no, width, height, busy, acts, act_i, pool, note, line_buf, ring, ring_len, ring_total, rec_path, rec_buf, rec_lines_unflushed, tracker, replay_data, replay_pos, inspect, dirty, app_len, timings`
   - `pub fn init(gpa: std.mem.Allocator) State`
   - `pub fn deinit(self: *State) void`
   > Replay file fully consumed (or none loaded).
@@ -4268,8 +4282,6 @@ See docs/features/agent-driver.md.
 
 Frame timing and perf counters for the run loop: `FrameStats`, the percentile summary, and the `TEAK_FRAME_STATS` CSV sink
 
-> The target has a host filesystem + environment (not wasm/freestanding).
-- `pub const fs_capable = builtin.os.tag != .freestanding`
 > What one `Runtime.frame` call cost. Plain data; every duration is in
 > milliseconds of the loop clock (a monotonic high-resolution clock on
 > native, `Host.nowMs` — whole milliseconds — on wasm/freestanding).
@@ -4296,15 +4308,14 @@ Frame timing and perf counters for the run loop: `FrameStats`, the percentile su
 > 16 KiB so a frame rarely touches the disk. A write failure disables the
 > sink after one warning; it never crashes the app.
 - `struct Sink`
-  - fields: `enabled, gpa, path, file, buf, samples, sums, presented, frames`
+  - fields: `enabled, gpa, path, files, buf, samples, sums, presented, frames`
   > Open the supplied path. Any
   > failure yields a disabled sink.
-  - `pub fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8) Sink`
+  - `pub fn init(gpa: std.mem.Allocator, opt_path: ?[]const u8, files_opt: ?FileIo) Sink`
   - `pub fn record(self: *Sink, s: FrameStats) void`
   > The phase means over the presented frames so far.
   - `pub fn means(self: *const Sink) PhaseMeans`
-  > Flush the CSV, write the summary (stderr + `<path>.summary.txt`),
-  > close the file.
+  > See SRC.md for the CSV and summary flush policy.
   - `pub fn deinit(self: *Sink) void`
 
 ### `teak.input_record` (`src/input_record.zig`)

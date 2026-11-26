@@ -99,7 +99,7 @@ pub const Host = struct {
     injected_len: usize = 0,
 
     pub fn init(gpa: std.mem.Allocator, width: u32, height: u32, options: teak.Options) !Host {
-        text.face.configure(options);
+        @import("native_fonts.zig").configure(text, options);
         return .{ .gpa = gpa, .width = width, .height = height };
     }
 
@@ -329,6 +329,9 @@ pub const Host = struct {
     }
 
     /// Fake monotonic clock: 16 ms per frame.
+    pub const files = @import("native_io.zig").files;
+    pub const now_ns = @import("native_io.zig").now_ns;
+
     pub fn nowMs(self: *const Host) u64 {
         return self.clock_ms;
     }

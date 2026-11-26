@@ -1018,6 +1018,13 @@ validateHost(comptime T: type) void   // comptime contract: deinit, pollInputs, 
                                        //   nativeHandle, textMeasurer, clipboard, imeState,
                                        //   publishA11yTree, open/save/request/pollFileDialog,
                                        //   secondary-window decls, setTitle, nowMs (scaleFactor, setCursor optional)
+FileIo = struct { ctx: ?*anyopaque, read: *const fn(ctx, allocator, path, limit: u32) anyerror![]u8,
+                  write: *const fn(ctx, path, bytes, mode: WriteMode) anyerror!void }
+    // WriteMode: replace, atomic (.tmp + rename), append (existing file).
+    // Optional Host.files() FileIo supplies runtime files; omitted by web; no implicit fallback.
+    // Optional Host.now_ns() u64 supplies monotonic statistics time; else nowMs() *| ns_per_ms.
+    // Read bytes belong to the supplied allocator; positive limit; writes borrow bytes until return.
+    // Consumer migration: docs/migration-host-io.md
 ```
 
 ### Gpu interface (`teak.gpu` → gpu/context.zig)
@@ -1094,7 +1101,7 @@ FrameStats = struct { index: u64, frame_ms, work_ms, update_ms, view_ms, layout_
                       cmds: u32, vertices: u32, quiet, presented, rebuilt: bool }
     // frame_ms = present-to-present (0 when not presented / first present); build_ms = buildFrame + uploads
     // (0 when the frame diff skipped); gpu_ms = Gpu.renderFrame (submit + present). Native: high-res clock;
-    // wasm: Host.nowMs (whole ms). CSV sink (TEAK_FRAME_STATS) compiles out on wasm.
+    // Host.now_ns, else Host.nowMs (whole ms). File sinks use Host.files; unavailable on web.
 FrameStatsSummary = struct { count: usize, mean_ms, min_ms, p50_ms, p95_ms, p99_ms, max_ms: f32 }
 summarizeFrameMs(samples: []f32) FrameStatsSummary   // sorts in place; nearest-rank percentiles
 // Bench: TEAK_CONTINUOUS=1 TEAK_FRAME_STATS=frames.csv TEAK_EXIT_AFTER_FRAMES=600 zig build ui
