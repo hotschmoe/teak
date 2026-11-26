@@ -29,7 +29,8 @@ pub fn main(init: std.process.Init) !void {
     var buf: [256]u8 = undefined;
     for (spec.states) |st| {
         var run_options = options;
-        run_options.clear_color = st.clear orelse scripts.clearColor(App, spec) orelse options.clear_color;
+        run_options.clear_color = st.clear orelse
+            scripts.clearColor(App, spec) orelse options.clear_color;
         if (list) {
             std.debug.print("{s}\n", .{st.name});
             continue;

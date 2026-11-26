@@ -106,7 +106,8 @@ pub fn Plugin(comptime App: type, comptime Host: type, comptime Gpu: type, compt
         const gpa = std.heap.c_allocator;
 
         pub const app_fingerprint: u64 = typeFingerprint(App.Model);
-        pub const env_fingerprint: u64 = typeFingerprint(Host) ^ (typeFingerprint(Gpu) *% 31) ^ typeFingerprint(run_mod.Options);
+        pub const env_fingerprint: u64 = typeFingerprint(Host) ^
+            (typeFingerprint(Gpu) *% 31) ^ typeFingerprint(run_mod.Options);
 
         fn abi() callconv(.c) u32 {
             return abi_version;
@@ -272,8 +273,20 @@ pub const Loader = struct {
     note: [160]u8 = undefined,
     note_len: usize = 0,
 
-    pub fn init(gpa: std.mem.Allocator, io: std.Io, path: []const u8, tmp_dir: []const u8, options: run_mod.Options) !Loader {
-        var self: Loader = .{ .io = io, .gpa = gpa, .path = path, .tmp_dir = tmp_dir, .options = options };
+    pub fn init(
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        path: []const u8,
+        tmp_dir: []const u8,
+        options: run_mod.Options,
+    ) !Loader {
+        var self: Loader = .{
+            .io = io,
+            .gpa = gpa,
+            .path = path,
+            .tmp_dir = tmp_dir,
+            .options = options,
+        };
         self.image = try self.openCopy();
         self.last_mtime = self.mtime() orelse 0;
         self.env = self.image.env_open(&self.options) orelse return error.EnvOpenFailed;

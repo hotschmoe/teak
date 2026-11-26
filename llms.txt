@@ -195,6 +195,9 @@ hit_test focus keys a11y render vertex host input_queue gpu runtime headless dev
 `teak.version: []const u8` — library semver, derived from `build.zig.zon` `.version` (plus `+<meta>` when built with
 `-Dversion-meta=<meta>`); the single source is documented in docs/VERSIONING.md.
 
+### Assertions (`teak.assert`)
+`teak.assert(condition: bool) void` — check a programmer invariant in every optimize mode.
+
 ### Commands & CmdBuffer (`teak.cmd` → core/cmd.zig)
 ```zig
 Cmd(comptime Msg: type) type          // tagged union: push_group/pop_group, push_scroll/pop_scroll,

@@ -127,7 +127,11 @@ pub fn shot(
     var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = envScale(o.scale, o.run.scale), .gpu_fallback = o.run.gpu_fallback });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+        .msaa = o.msaa,
+        .scale = envScale(o.scale, o.run.scale),
+        .gpu_fallback = o.run.gpu_fallback,
+    });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
@@ -219,7 +223,11 @@ pub fn idleCheck(
     var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = envScale(o.scale, o.run.scale), .gpu_fallback = o.run.gpu_fallback });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+        .msaa = o.msaa,
+        .scale = envScale(o.scale, o.run.scale),
+        .gpu_fallback = o.run.gpu_fallback,
+    });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
@@ -331,7 +339,11 @@ pub fn latencyCheck(
     var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .scale = envScale(o.scale, o.run.scale), .gpu_fallback = o.run.gpu_fallback });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+        .msaa = o.msaa,
+        .scale = envScale(o.scale, o.run.scale),
+        .gpu_fallback = o.run.gpu_fallback,
+    });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();
@@ -376,7 +388,10 @@ pub fn serve(
 ) !void {
     var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{ .msaa = o.msaa, .gpu_fallback = o.run.gpu_fallback });
+    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+        .msaa = o.msaa,
+        .gpu_fallback = o.run.gpu_fallback,
+    });
     defer gpu.deinit();
     var rt = try run_mod.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, o.run);
     defer rt.deinit();

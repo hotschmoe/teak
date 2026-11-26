@@ -10,6 +10,8 @@
 /// time; `-Dversion-meta=<str>` appends `+<str>`. See docs/VERSIONING.md.
 pub const version: []const u8 = @import("build_options").version;
 
+pub const assert = @import("assert.zig").assert;
+
 /// The flat `Cmd` union, `CmdBuffer` and balance validation.
 pub const cmd = @import("core/cmd.zig");
 /// Comptime component composition (`Components`, `validateComponent`).

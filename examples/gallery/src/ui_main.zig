@@ -16,7 +16,9 @@ pub fn main(init: std.process.Init) !void {
     var host = try platform.Host.init("Teak gallery", 1280, 800, options);
     defer host.deinit();
 
-    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 1280, 800, .{ .gpu_fallback = options.gpu_fallback });
+    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 1280, 800, .{
+        .gpu_fallback = options.gpu_fallback,
+    });
     defer gpu.deinit();
 
     try teak.run(App, gpa, &host, &gpu, options);

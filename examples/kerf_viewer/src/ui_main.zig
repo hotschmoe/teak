@@ -9,7 +9,10 @@ const gpu_native = @import("teak-gpu-native");
 const App = @import("app.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const options = try teak.options_from_environment(init, .{ .clear_color = App.paper, .app_name = "kerf_viewer" });
+    const options = try teak.options_from_environment(init, .{
+        .clear_color = App.paper,
+        .app_name = "kerf_viewer",
+    });
     var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_impl.deinit();
     const gpa = gpa_impl.allocator();
@@ -17,7 +20,10 @@ pub fn main(init: std.process.Init) !void {
     var host = try platform.Host.init("Kerf mesh viewer", 1280, 800, options);
     defer host.deinit();
 
-    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 1280, 800, .{ .msaa = true, .gpu_fallback = options.gpu_fallback });
+    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 1280, 800, .{
+        .msaa = true,
+        .gpu_fallback = options.gpu_fallback,
+    });
     defer gpu.deinit();
 
     try teak.run(App, gpa, &host, &gpu, options);

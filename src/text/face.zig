@@ -19,6 +19,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const teak = @import("teak");
+const assert = teak.assert;
 
 pub const c = @import("stb-c");
 const fallback = @import("fallback.zig");
@@ -330,6 +331,9 @@ fn readFontFileLibc(allocator: std.mem.Allocator, options: teak.Options) ![]u8 {
 }
 
 pub fn configure(options: teak.Options) void {
+    assert(registry.fallback == null or registry.fallback_tried);
+    defer assert((options.font_path == null and options.windows_directory == null) or
+        registry.fallback_tried);
     fallback.checkEnv(options.fallback_fonts);
     if (options.font_path == null and options.windows_directory == null) return;
     if (!registry.fallback_tried) {

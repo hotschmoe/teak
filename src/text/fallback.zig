@@ -29,6 +29,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const face_mod = @import("face.zig");
+const assert = @import("teak").assert;
 
 const Font = face_mod.Font;
 
@@ -142,6 +143,7 @@ fn loadSys(s: *Sys, path: []const u8) void {
 pub fn checkEnv(paths: ?[]const u8) void {
     if (comptime builtin.target.cpu.arch.isWasm()) return;
     if (env_checked) return;
+    assert(!env_sys[0].tried);
     env_checked = true;
     env_paths = @splat("");
     const raw = paths orelse return;
@@ -153,6 +155,7 @@ pub fn checkEnv(paths: ?[]const u8) void {
         env_paths[n] = p;
         n += 1;
     }
+    assert(n <= max_env and (n == 0 or env_paths[n - 1].len > 0));
 }
 
 /// The first fallback face with a glyph for `cp`, loading system candidates on

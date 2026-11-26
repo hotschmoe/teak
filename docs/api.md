@@ -12,6 +12,7 @@ Signatures and `///` doc comments of every public declaration reachable from
 > Library version (semver), derived from `build.zig.zon` `.version` at build
 > time; `-Dversion-meta=<str>` appends `+<str>`. See docs/VERSIONING.md.
 - `teak.version`: `pub const version: []const u8 = @import("build_options").version`
+- `teak.assert`: `pub const assert = @import("assert.zig").assert`
 > The flat `Cmd` union, `CmdBuffer` and balance validation.
 - `teak.cmd`: module `src/core/cmd.zig`; see below
 > Comptime component composition (`Components`, `validateComponent`).
@@ -2989,7 +2990,7 @@ library behind a stable loader executable. See docs/features/hot-reload.md.
   - fields: `unchanged, kept_model, reset_model, rejected`
 - `struct Loader`
   - fields: `io, gpa, path, tmp_dir, generation, options, image, env, rt, last_mtime, loaded, note, note_len`
-  - `pub fn init(gpa: std.mem.Allocator, io: std.Io, path: []const u8, tmp_dir: []const u8, options: run_mod.Options) !Loader`
+  - `pub fn init( gpa: std.mem.Allocator, io: std.Io, path: []const u8, tmp_dir: []const u8, options: run_mod.Options, ) !Loader`
   - `pub fn deinit(self: *Loader) void`
   - `pub fn lastNote(self: *const Loader) []const u8`
   > Check the file and swap when it changed. Call between frames.

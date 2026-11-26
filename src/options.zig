@@ -1,5 +1,6 @@
 const std = @import("std");
 const Options = @import("run.zig").Options;
+const assert = @import("assert.zig").assert;
 
 pub const Entry = struct {
     name: []const u8,
@@ -16,7 +17,9 @@ pub fn from_environment(init: std.process.Init, defaults: Options) !Options {
     var iterator = init.environ_map.iterator();
     var index: u32 = 0;
     for (entries) |*entry| {
-        const pair = iterator.next() orelse @panic("environment count changed");
+        const next = iterator.next();
+        assert(next != null);
+        const pair = next.?;
         assert(index < count);
         assert(index < entries.len);
         entry.* = .{ .name = pair.key_ptr.*, .value = pair.value_ptr.* };
@@ -70,8 +73,4 @@ pub fn from_environment(init: std.process.Init, defaults: Options) !Options {
         options.exit_after_frames = parsed catch options.exit_after_frames;
     }
     return options;
-}
-
-fn assert(condition: bool) void {
-    if (!condition) @panic("options invariant");
 }

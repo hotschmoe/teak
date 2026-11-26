@@ -97,7 +97,11 @@ pub const DeviceContext = struct {
 
 /// Pick an adapter (compatible with `surface` when given; headless
 /// otherwise) and open a device + queue on it.
-pub fn requestDevice(instance: c.WGPUInstance, surface: ?c.WGPUSurface, gpu_fallback: bool) error{ AdapterFailed, DeviceFailed }!DeviceContext {
+pub fn requestDevice(
+    instance: c.WGPUInstance,
+    surface: ?c.WGPUSurface,
+    gpu_fallback: bool,
+) error{ AdapterFailed, DeviceFailed }!DeviceContext {
     var adapter: c.WGPUAdapter = null;
     var adapter_opts = std.mem.zeroes(c.WGPURequestAdapterOptions);
     adapter_opts.compatibleSurface = surface orelse null;

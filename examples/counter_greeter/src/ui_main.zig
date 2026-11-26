@@ -22,7 +22,10 @@ pub fn main(init: std.process.Init) !void {
     var host = try platform.Host.init("Teak — Counter + Greeter", 900, 500, options);
     defer host.deinit();
 
-    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 900, 500, .{ .scale = host.scaleFactor(), .gpu_fallback = options.gpu_fallback });
+    var gpu = try gpu_native.Gpu.initWithOptions(host.nativeHandle(), 900, 500, .{
+        .scale = host.scaleFactor(),
+        .gpu_fallback = options.gpu_fallback,
+    });
     defer gpu.deinit();
 
     try teak.run(App, gpa, &host, &gpu, options);

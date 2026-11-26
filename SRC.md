@@ -4,8 +4,9 @@
 
 The rewrite's owned `assert` uses an ordinary conditional panic, including in
 ReleaseFast and ReleaseSmall (D6). Keeping it at the source root makes it usable
-by future core modules without a dependency on tools. Tidy imports it through a
-build module; it is deliberately absent from `src/teak.zig` and the public API.
+by core modules without a dependency on tools. Tidy imports it through a build
+module; `teak.assert` shares the implementation with the separate text module
+without importing the same source file into two modules.
 The assertion primitive cannot assert its own implementation without recursion;
 its one function has no assertion calls and contributes two to the existing
 `src/*.zig` deficit. No operating error is asserted.
@@ -111,7 +112,10 @@ lines and functions, longest function, assertion deficit, usize fields, recursio
 (files, lines, functions, assertions, sized fields) are printed by `--table` and
 not stored, because growth is not a regression. Normal runs require exact equality
 for every stored number. A decrease fails
-until `-- --update` records it; an increase is refused even by update. Updates
+until `-- --update` records it; an increase is refused even by update. The one
+legitimate raise is a count that was always there and has become visible (tidy
+learned to see it, or an implicit operation was made explicit): the stored number
+is then edited by hand and the commit says why. Updates
 validate the entire snapshot before writing. A new group can only be added by
 update at zero long lines/functions, deficit, usize fields, recursion, literal
 infinite loops, camelCase and tests (longest function at most 70). Other inventory

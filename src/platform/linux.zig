@@ -58,7 +58,9 @@ pub const Host = struct {
                 }
                 return .{ .impl = .{ .x11 = try x11.Host.init(title, width, height, options) } };
             },
-            .x11 => return .{ .impl = .{ .x11 = try x11.Host.init(title, width, height, options) } },
+            .x11 => return .{
+                .impl = .{ .x11 = try x11.Host.init(title, width, height, options) },
+            },
         }
     }
 

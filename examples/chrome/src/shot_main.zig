@@ -53,7 +53,9 @@ fn parseArgs(init: std.process.Init) Opts {
 
 pub fn main(init: std.process.Init) !void {
     const o = parseArgs(init);
-    const defaults: teak.Options = .{ .clear_color = if (o.stress == 0 and o.anim != null) App.paper else null };
+    const defaults: teak.Options = .{
+        .clear_color = if (o.stress == 0 and o.anim != null) App.paper else null,
+    };
     const options = try teak.options_from_environment(init, defaults);
     if (o.stress > 0) return stress(init, o, options);
     if (o.anim) |n| {
@@ -126,7 +128,12 @@ fn stress(init: std.process.Init, o: Opts, options: teak.Options) !void {
 
     var host = try Host.init(gpa, w, h, options);
     defer host.deinit();
-    var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false, .scale = o.scale, .max_atlas_pages = o.max_pages, .gpu_fallback = options.gpu_fallback });
+    var gpu = try Gpu.initOffscreen(w, h, .{
+        .msaa = false,
+        .scale = o.scale,
+        .max_atlas_pages = o.max_pages,
+        .gpu_fallback = options.gpu_fallback,
+    });
     defer gpu.deinit();
     var run_options = options;
     run_options.idle_skip = false;

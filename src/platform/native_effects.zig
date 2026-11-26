@@ -90,7 +90,11 @@ pub const Service = struct {
     pub fn create(app_name: []const u8, options: teak.Options) !*Service {
         const self = try gpa.create(Service);
         errdefer gpa.destroy(self);
-        self.* = .{ .io = std.Options.debug_io, .app_name = try slug(app_name), .options = options };
+        self.* = .{
+            .io = std.Options.debug_io,
+            .app_name = try slug(app_name),
+            .options = options,
+        };
         return self;
     }
 
@@ -345,8 +349,14 @@ pub const Service = struct {
     fn storageGet(self: *Service, id: u32, key: []const u8) void {
         const arena = newArena() orelse return;
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const value: ?[]const u8 = if (storagePath(&path_buf, self.app_name, key, self.options)) |path|
-            Io.Dir.cwd().readFileAlloc(self.io, path, arena.allocator(), .limited(max_body_bytes)) catch null
+        const path = storagePath(&path_buf, self.app_name, key, self.options);
+        const value: ?[]const u8 = if (path) |storage_path|
+            Io.Dir.cwd().readFileAlloc(
+                self.io,
+                storage_path,
+                arena.allocator(),
+                .limited(max_body_bytes),
+            ) catch null
         else
             null;
         self.push(arena, .{ .storage_value = .{ .id = id, .value = value } });
@@ -406,7 +416,14 @@ pub const Service = struct {
             self.unlock();
             freeArena(job.arena);
         }
-        const chosen: ?[]u8 = file_picker.pick(gpa, self.options, job.kind, job.accept, job.title, job.name) catch |e| blk: {
+        const chosen: ?[]u8 = file_picker.pick(
+            gpa,
+            self.options,
+            job.kind,
+            job.accept,
+            job.title,
+            job.name,
+        ) catch |e| blk: {
             if (e == error.NoPicker and !self.picker_warned) {
                 self.picker_warned = true;
                 warn("teak: no file dialog available (install zenity or kdialog, or set TEAK_OPEN)", .{});
@@ -579,7 +596,12 @@ fn describeError(e: anyerror) []const u8 {
 
 /// Where the value of `key` lives: `<config>/teak/<app>/<escaped key>`.
 /// Null for an empty key or when no config dir can be found.
-fn storagePath(buf: []u8, app_name: []const u8, key: []const u8, options: teak.Options) ?[]const u8 {
+fn storagePath(
+    buf: []u8,
+    app_name: []const u8,
+    key: []const u8,
+    options: teak.Options,
+) ?[]const u8 {
     if (key.len == 0) return null;
     const base = configDir(buf[0 .. std.fs.max_path_bytes / 2], options) orelse return null;
     var w: Io.Writer = .fixed(buf[base.len..]);

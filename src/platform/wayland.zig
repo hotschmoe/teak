@@ -938,7 +938,9 @@ pub const Host = struct {
             wl.wp_fractional_scale_v1_add_listener(f, &fractional_listener, s);
         }
         if (s.viewporter) |vp| {
-            if (!options.wayland_no_viewport) s.viewport = wl.wp_viewporter_get_viewport(vp, s.surface);
+            if (!options.wayland_no_viewport) {
+                s.viewport = wl.wp_viewporter_get_viewport(vp, s.surface);
+            }
         }
         wl.wl_surface_commit(s.surface);
 

@@ -197,7 +197,14 @@ pub fn pickSync(buf: []u8, kind: Kind, pattern: []const u8, options: teak.Option
     var acc: [256]u8 = undefined;
     const accept = patternToAccept(pattern, &acc);
     const title = if (kind == .open) "Open" else "Save As";
-    const chosen = (pick(std.heap.page_allocator, options, kind, accept, title, "") catch return null) orelse return null;
+    const chosen = (pick(
+        std.heap.page_allocator,
+        options,
+        kind,
+        accept,
+        title,
+        "",
+    ) catch return null) orelse return null;
     defer std.heap.page_allocator.free(chosen);
     if (chosen.len > buf.len) return null;
     @memcpy(buf[0..chosen.len], chosen);

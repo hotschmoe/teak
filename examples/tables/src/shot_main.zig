@@ -34,7 +34,9 @@ fn parseArgs(init: std.process.Init) Opts {
 }
 
 pub fn main(init: std.process.Init) !void {
-    var options = try teak.options_from_environment(init, .{ .clear_color = .{ 0.08, 0.09, 0.11, 1 } });
+    var options = try teak.options_from_environment(init, .{
+        .clear_color = .{ 0.08, 0.09, 0.11, 1 },
+    });
     const args = init.minimal.args.toSlice(init.arena.allocator()) catch &.{};
     if (teak.headless.requestsGate(args)) {
         return teak.headless.shotCli(App, Host, Gpu, init, "tables.png", .{

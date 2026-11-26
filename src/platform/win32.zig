@@ -2011,6 +2011,10 @@ pub const Host = struct {
 
     pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
         text.face.configure(options);
+        return init_window(title, width, height, options);
+    }
+
+    fn init_window(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
         // DPI awareness must be set before creating windows.
         _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         g_scale = dpiScale(GetDpiForSystem());

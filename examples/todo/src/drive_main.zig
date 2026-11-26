@@ -17,5 +17,9 @@ pub fn main(init: std.process.Init) !void {
     const options = try teak.options_from_environment(init, .{});
     var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_impl.deinit();
-    try teak.headless.serve(App, Host, Gpu, gpa_impl.allocator(), .{ .width = 720, .height = 600, .run = options });
+    try teak.headless.serve(App, Host, Gpu, gpa_impl.allocator(), .{
+        .width = 720,
+        .height = 600,
+        .run = options,
+    });
 }

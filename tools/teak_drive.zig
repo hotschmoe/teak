@@ -313,7 +313,13 @@ fn spawnApp(init: std.process.Init, launch: LaunchOptions) !Launched {
     return error.AppDidNotStart;
 }
 
-fn launchCmd(init: std.process.Init, out: *Io.Writer, errw: *Io.Writer, args: []const []const u8, options: teak.Options) !void {
+fn launchCmd(
+    init: std.process.Init,
+    out: *Io.Writer,
+    errw: *Io.Writer,
+    args: []const []const u8,
+    options: teak.Options,
+) !void {
     const gpa = init.gpa;
     var x11 = false;
     var display: ?[]const u8 = null;
@@ -337,7 +343,12 @@ fn launchCmd(init: std.process.Init, out: *Io.Writer, errw: *Io.Writer, args: []
         std.process.exit(2);
     }
     const path = sock_arg orelse try std.fmt.allocPrint(gpa, "/tmp/teak-drive-{d}.sock", .{std.os.linux.getpid()});
-    var l = spawnApp(init, .{ .arguments = args[i..], .socket = path, .display = display, .options = options }) catch |e| {
+    var l = spawnApp(init, .{
+        .arguments = args[i..],
+        .socket = path,
+        .display = display,
+        .options = options,
+    }) catch |e| {
         try errw.print("teak-drive: could not start {s}: {s}\n", .{ args[i], @errorName(e) });
         std.process.exit(1);
     };
@@ -408,6 +419,25 @@ const Mcp = struct {
     cl: ?Client = null,
     shots: u32 = 0,
     launches: u32 = 0,
+
+    fn start_app(
+        self: *Mcp,
+        arguments: []const []const u8,
+        socket: []const u8,
+        directory: ?[]const u8,
+        display: ?[]const u8,
+    ) !void {
+        teak.assert(self.app == null and self.cl == null);
+        self.app = try spawnApp(self.init, .{
+            .arguments = arguments,
+            .socket = socket,
+            .directory = directory,
+            .display = display,
+            .options = self.options,
+        });
+        self.cl = try Client.connect(socket);
+        teak.assert(self.app != null and self.cl != null);
+    }
 
     fn stopApp(self: *Mcp) void {
         if (self.cl) |*c| {
@@ -744,8 +774,7 @@ fn toolLaunch(mcp: *Mcp, args: std.json.ObjectMap, res: *ToolResult) !void {
     const sock = try std.fmt.allocPrint(gpa, "/tmp/teak-drive-{d}-{d}.sock", .{ std.os.linux.getpid(), mcp.launches });
     defer gpa.free(sock);
     const display = getStr(args, "display");
-    mcp.app = try spawnApp(mcp.init, .{ .arguments = argv.items, .socket = sock, .directory = cwd, .display = display, .options = mcp.options });
-    mcp.cl = try Client.connect(sock);
+    try mcp.start_app(argv.items, sock, cwd, display);
 
     var reply = try mcp.ask("{\"cmd\":\"info\"}");
     defer reply.deinit();

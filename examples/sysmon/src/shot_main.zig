@@ -66,7 +66,11 @@ fn wantsSharedCli(init: std.process.Init) bool {
 pub fn main(init: std.process.Init) !void {
     var options = try teak.options_from_environment(init, .{});
     if (wantsSharedCli(init)) {
-        return teak.headless.shotCli(App, Host, Gpu, init, "sysmon.png", .{ .width = 1100, .height = 720, .run = options }, &.{
+        return teak.headless.shotCli(App, Host, Gpu, init, "sysmon.png", .{
+            .width = 1100,
+            .height = 720,
+            .run = options,
+        }, &.{
             .{ .name = "performance", .steps = &.{.{ .frames = 2 }} },
             .{ .name = "processes", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 183, 25 } }, .{ .move = .{ 600, 400 } } } },
             .{ .name = "sensors", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 300, 25 } }, .{ .move = .{ 600, 400 } } } },

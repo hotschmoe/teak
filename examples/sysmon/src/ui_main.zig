@@ -21,7 +21,9 @@ pub fn main(init: std.process.Init) !void {
 
     var host = try Host.init("System Monitor", 1100, 720, options);
     defer host.deinit();
-    var gpu = try Gpu.initWithOptions(host.nativeHandle(), 1100, 720, .{ .gpu_fallback = options.gpu_fallback });
+    var gpu = try Gpu.initWithOptions(host.nativeHandle(), 1100, 720, .{
+        .gpu_fallback = options.gpu_fallback,
+    });
     defer gpu.deinit();
 
     var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, options);

@@ -10,7 +10,9 @@ const Gpu = @import("teak-gpu-headless").Gpu;
 const App = @import("app.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const options = try teak.options_from_environment(init, .{ .clear_color = .{ 0.07, 0.08, 0.1, 1 } });
+    const options = try teak.options_from_environment(init, .{
+        .clear_color = .{ 0.07, 0.08, 0.1, 1 },
+    });
     try teak.headless.shotCli(App, Host, Gpu, init, "scene3d.png", .{
         .width = 1280,
         .height = 800,

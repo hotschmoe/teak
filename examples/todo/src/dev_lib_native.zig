@@ -12,7 +12,9 @@ const Init = struct {
         return platform.Host.init("Teak — Todo (dev)", 720, 600, options);
     }
     pub fn gpu(h: *platform.Host, options: teak.Options) !gpu_native.Gpu {
-        return gpu_native.Gpu.initWithOptions(h.nativeHandle(), 720, 600, .{ .gpu_fallback = options.gpu_fallback });
+        return gpu_native.Gpu.initWithOptions(h.nativeHandle(), 720, 600, .{
+            .gpu_fallback = options.gpu_fallback,
+        });
     }
 };
 
