@@ -291,9 +291,9 @@ pub const LayoutEngine = struct {
     /// its max-content width (one line per hard break) here; the real width
     /// comes from pass 2.
     fn measurePassImpl(rects: []Rect, cmds: anytype, measurer: TextMeasurer) bool {
+        @memset(rects[0..cmds.len], .{});
         var stack: FixedStack(GroupContext, MAX_DEPTH) = .{};
         var needs_wrap = false;
-
         for (cmds, 0..) |c, i| {
             switch (c) {
                 .push_group => |grp| {

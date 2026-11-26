@@ -12,6 +12,9 @@ pub const version: []const u8 = @import("build_options").version;
 
 pub const assert = @import("assert.zig").assert;
 
+/// See docs/features/sim.md.
+pub const sim = @import("sim/sim.zig");
+
 /// The flat `Cmd` union, `CmdBuffer` and balance validation.
 pub const cmd = @import("core/cmd.zig");
 /// Comptime component composition (`Components`, `validateComponent`).

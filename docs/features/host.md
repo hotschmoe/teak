@@ -34,6 +34,7 @@ A Host type must expose these declarations:
 | `closeSecondaryWindow` | `fn(*Host, u32) void` | Destroy a secondary window and free its slot. No-op on invalid ids. |
 | `secondaryWindowHandle` | `fn(*const Host, u32) ?NativeHandle` | Return the native handle of a secondary window so the app can hand it to `gpu.openSecondarySurface`. |
 | `nowMs` | `fn(*const Host) u64` | Monotonic millisecond timestamp on the host's clock. Used by `Sub.at(deadline_ms, msg)` and anything else needing a host-side wall clock without violating HARDLINE §3's "no wall-clock in `view`". |
+| `stats_now_ns` *(optional)* | `fn(*const Host) u64` | Statistics clock override. The simulator returns its virtual clock in ns; hosts without this keep the runtime's native statistics clock. |
 | `submit` + `pollEffectResults` *(optional pair)* | `fn(*Host, Effect) EffectSubmit` / `fn(*Host, []EffectResult) usize` | Declarative effects ([effects.md](effects.md), HARDLINE hatch 7): `submit` starts one effect (slices valid only during the call), `pollEffectResults` fills `buf` with finished results and unsolicited drops / pastes (slices valid until the next `pollInputs`). Declare both or neither; a Host without them answers every effect as unsupported. |
 | `registerFont` *(X11, Win32; not in `validateHost`)* | `fn(*Host, FontFamily, FontWeight, []const u8) !void` | Register a TTF (typically `@embedFile`) as the face for a family and weight, shared with the Gpu rasterizer. Win32 accepts and ignores it. See [text.md](text.md#custom-fonts-ibm-plex-mono-and-friends). |
 | `setCursor` *(optional)* | `fn(*Host, CursorShape) void` | Show an OS mouse cursor. `teak.run` calls it only when the shape changes; the shape comes from the hovered cmd (button/checkbox/radio/slider pointer, text_input ibeam, canvas its `cursor`, else arrow) and the App's optional `cursorFor(model, HoverKind) ?CursorShape`. X11: libXcursor theme names (dlopened) with `cursorfont` fallback; Win32: `IDC_*` re-applied in `WM_SETCURSOR`; web: CSS `cursor` via zunk `app.setCursor`. Win32 has no grab cursor (hand / four-way arrow). Disabled widgets do not hit-test, so they show the arrow. |
@@ -80,6 +81,10 @@ pub const InputState = struct {
 `src/platform/input_queue.zig`, re-exported as `teak.InputQueue`. Win32 (primary + secondary windows) and X11 fold OS events into one: `beginFrame()` at the top of a poll, `pointerMoved` / `buttonDown` / `buttonUp` / `wheel` / `pushNav` / `pushCodepoint` / `pushUtf16Unit` (surrogate pairing for `WM_CHAR`) while pumping, `finish(resized, w, h)` to produce the `InputState` and clear the edges. The wasm host is poll-based but reuses the key policy and the text queue.
 
 ## Backends
+
+`InputState.focus_lost` defaults to false. A Host that emits it must clear held buttons and
+edges for that poll. Runtime cancels group drags and armed presses before routing the frame.
+SimHost emits this signal; native backend translation has not yet been wired to it.
 
 Three Hosts implement the contract; all satisfy `validateHost`.
 

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- `teak.sim`: seeded Runtime simulation with virtual input/time, embedded font metrics,
+  recording GPU, deterministic hashes, view/idle/layout/hit/focus/resource checks,
+  coverage counters and input-prefix replay. `zig build sim` selects the example app;
+  `sim-heavy` supplies budgeted seed campaigns. See [simulation](docs/features/sim.md)
+  for limits and the known tree scroll failure. The new interface-name/platform-I/O
+  tidy conflicts remain unresolved; this is not yet a green blocking gate.
+
 ### Changed
 
 - Replace `RunOptions` with `Options`. Native entry points capture environment overrides once
@@ -10,6 +19,11 @@
   See [migration-options.md](docs/migration-options.md). Hot-reload ABI is now version 2.
 
 ### Fixed
+
+- Layout initializes structural command rectangles instead of leaving undefined values.
+- Modifier-only messages no longer let Runtime report quiet after changing Model.
+- Runtime accepts a Host statistics clock override and an explicit focus-loss cancellation
+  signal; simulation no longer uses the wall clock for frame statistics.
 
 - Agent control channel: a command sent as soon as the socket appeared could be served before the first frame existed, so selectors found no nodes (`no visible node matches the selector`). Commands now wait in the socket until a frame has been built. This was the intermittent `tools/drive-e2e.sh` failure in the background gate.
 

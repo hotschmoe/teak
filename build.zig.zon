@@ -4,6 +4,11 @@
     .fingerprint = 0x2d83032a9a6b7feb, // Changing this has security and trust implications.
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
+        .sim_rich_zig = .{
+            .url = "git+https://github.com/hotschmoe/rich_zig.git#8936c396c7bb13a003ee7f488072a55d928f331f",
+            .hash = "rich_zig-2.1.0-cZcAnKhZDAAex8HYaphWHqrjR0PgvL2qyyeR4BgQsHVn",
+            .lazy = true,
+        },
         // wgpu-native prebuilts — per-OS × per-arch, fetched lazily only
         // when a consumer calls `teak.linkNativeWgpu` for that target.
         // Pure-library consumers never pay for these. All four are

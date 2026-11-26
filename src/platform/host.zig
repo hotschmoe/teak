@@ -139,6 +139,7 @@ pub const InjectEvent = union(enum) {
 /// = ~48 px on Win32). Zero when no wheel events arrived this frame. A
 /// trackpad pinch on the web arrives as a wheel event with `mods.ctrl` set.
 pub const InputState = struct {
+    focus_lost: bool = false,
     mouse_x: f32,
     mouse_y: f32,
     buttons: Buttons,
@@ -302,6 +303,7 @@ pub fn validateHost(comptime T: type) void {
 
     // Optional Host extensions and pairing rules: HARDLINE §2 and SRC.md.
     const optional = [_]HostDecl{
+        .{ .name = "stats_now_ns", .sig = "fn(*const Host) u64" },
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },
         .{ .name = "setImeSpot", .sig = "fn(*Host, i32, i32) void" },
         .{ .name = "setImeActive", .sig = "fn(*Host, bool) void" },

@@ -23,6 +23,7 @@ pub fn build(b: *std.Build) void {
     version_options.addOption([]const u8, "version", versionString(b));
     version_options.addOption([]const u8, "manifest_version", @import("build.zig.zon").version);
     mod.addOptions("build_options", version_options);
+    if (b.pkg_hash.len == 0) add_sim(b, b.graph.host, version_options);
 
     const blocking = b.step("test", "Run the blocking end-to-end checks");
     const blocking_run = b.addSystemCommand(&.{ "bash", "tools/test-e2e.sh", "blocking" });
@@ -132,7 +133,6 @@ pub fn build(b: *std.Build) void {
         b.step("bench", "CPU pipeline benchmark (view/layout/hit/render/cmdsEqual + text)").dependOn(&bench_run.step);
     }
 
-    // HARDLINE drift audit: docs/HARDLINE.md §5.
     const audit_exe = b.addExecutable(.{
         .name = "teak-audit",
         .root_module = b.createModule(.{
@@ -180,6 +180,101 @@ pub fn build(b: *std.Build) void {
     gates_run.addPassthruArgs();
     b.step("gates", "Background gates: idle, latency, idle memory, binary size (JSON in zig-out/gates/)")
         .dependOn(&gates_run.step);
+}
+
+fn add_sim(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    version_options: *std.Build.Step.Options,
+) void {
+    @import("src/assert.zig").assert(b.pkg_hash.len == 0);
+    @import("src/assert.zig").assert(target.result.os.tag != .freestanding);
+    const teak_mod = b.createModule(.{
+        .root_source_file = b.path("src/teak.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+    });
+    teak_mod.addOptions("build_options", version_options);
+    const text_mod = b.createModule(.{
+        .root_source_file = b.path("src/text/text.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+        .link_libc = true,
+        .imports = &.{.{ .name = "teak", .module = teak_mod }},
+    });
+    configureTextShaper(b, b, text_mod, false, target, .ReleaseSafe);
+    const c_mod = translateC(
+        b,
+        b.path("src/gpu/vendor/stb_truetype.h"),
+        null,
+        target,
+        .ReleaseSafe,
+    );
+    text_mod.addImport("stb-c", c_mod);
+    text_mod.addIncludePath(b.path("src/gpu/vendor"));
+    text_mod.addCSourceFile(.{
+        .file = b.path("src/gpu/vendor/stb_truetype_impl.c"),
+        .flags = &.{"-std=c99"},
+    });
+    const main_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/sim/main.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-text", .module = text_mod },
+        },
+    });
+    const options = b.addOptions();
+    const commit = b.option([]const u8, "commit", "Commit identifying simulation replays");
+    options.addOption([]const u8, "commit", commit orelse "unknown");
+    main_mod.addOptions("sim-options", options);
+    add_sim_apps(b, target, teak_mod, main_mod);
+    const exe = b.addExecutable(.{ .name = "teak-sim", .root_module = main_mod });
+    const install = b.addInstallArtifact(exe, .{});
+    const run_sim = b.addRunArtifact(exe);
+    run_sim.setCwd(b.path("."));
+    run_sim.has_side_effects = true;
+    run_sim.stdio = .inherit;
+    run_sim.addPassthruArgs();
+    run_sim.step.dependOn(&install.step);
+    b.step("sim", "Seeded Runtime simulation without a GPU").dependOn(&run_sim.step);
+    const heavy = b.step("sim-heavy", "Random seeds within a simulation time budget");
+    for ([_][]const u8{
+        "todo", "counter_greeter", "tree", "gallery", "tables", "notes", "probe",
+    }) |app| {
+        const run_heavy = b.addRunArtifact(exe);
+        run_heavy.setCwd(b.path("."));
+        run_heavy.has_side_effects = true;
+        run_heavy.stdio = .inherit;
+        run_heavy.addArgs(&.{ "--app", app, "--seeds", "100000", "--budget-ms", "15000" });
+        heavy.dependOn(&run_heavy.step);
+    }
+}
+
+fn add_sim_apps(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    teak_mod: *std.Build.Module,
+    main_mod: *std.Build.Module,
+) void {
+    @import("src/assert.zig").assert(b.pkg_hash.len == 0);
+    @import("src/assert.zig").assert(main_mod != teak_mod);
+    const rich = b.lazyDependency("sim_rich_zig", .{
+        .target = target,
+        .optimize = .ReleaseSafe,
+    }) orelse return;
+    for ([_][]const u8{ "todo", "counter_greeter", "tree", "gallery", "tables", "notes" }) |app| {
+        const module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("examples/{s}/src/app.zig", .{app})),
+            .target = target,
+            .optimize = .ReleaseSafe,
+            .imports = &.{.{ .name = "teak", .module = teak_mod }},
+        });
+        if (std.mem.eql(u8, app, "counter_greeter"))
+            module.addImport("rich_zig", rich.module("rich_zig"));
+        main_mod.addImport(app, module);
+    }
 }
 
 fn resolvedTarget(b: *std.Build) std.Build.ResolvedTarget {

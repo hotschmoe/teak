@@ -662,6 +662,9 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Count of Msgs dispatched so far; a frame that leaves it unchanged
         /// changed no state.
         dispatch_count: u64 = 0,
+        click_dispatches: u64 = 0,
+        text_dispatches: u64 = 0,
+        tab_moves: u64 = 0,
         /// `post` delivered a Msg since the last frame: that frame must build.
         posted: bool = false,
         /// Pointer position / buttons of the previous frame, to tell a still
@@ -750,6 +753,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Monotonic loop-clock nanoseconds: a high-resolution clock where
         /// the target has one, else the Host clock (`nowMs`, whole ms).
         fn clockNs(self: *const Self) u64 {
+            if (comptime @hasDecl(Host, "stats_now_ns")) return self.host.stats_now_ns();
             if (comptime frame_stats.fs_capable) {
                 const now = std.Io.Clock.awake.now(std.Options.debug_io);
                 return @intCast(@max(now.nanoseconds, 0));
@@ -835,6 +839,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (self.host_scale != 0 and sf != self.host_scale) self.gpu.setScale(sf);
                 self.host_scale = sf;
             }
+            const dispatched_before = self.dispatch_count;
             if (input.resized) {
                 self.gpu.resize(input.width, input.height);
                 if (@hasDecl(App, "windowMsg")) {
@@ -847,9 +852,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (App.modsMsg(&self.model, input.mods)) |m| self.dispatch(m);
             }
 
-            // Input must target the previous frame, which is still on screen.
             const prev = self.current;
-            const dispatched_before = self.dispatch_count;
+            if (input.focus_lost) self.cancel_pointer(input, prev);
             self.routeA11yActions(prev);
             self.routeMouse(input, prev);
             self.routeDrag(input, prev);
@@ -1071,6 +1075,20 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
         }
 
+        fn cancel_pointer(self: *Self, input: Input, prev: u1) void {
+            @import("assert.zig").assert(input.focus_lost);
+            @import("assert.zig").assert(prev == self.current);
+            if (comptime has_drag) {
+                if (self.drag.phase == .active)
+                    self.sendDrag(.cancel, input, self.bufs[prev].cmds.items,
+                        self.rects[prev].items);
+                self.drag.phase = .idle;
+            }
+            self.press_target = null;
+            self.slider_grab = null;
+            self.canvas_ptr = .{};
+        }
+
         /// Press target + click dispatch against the previous frame.
         fn routeMouse(self: *Self, input: Input, prev: u1) void {
             const prev_cmds = self.bufs[prev].cmds.items;
@@ -1092,7 +1110,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                             const c = prev_cmds[hit.index];
                             if (focus.isNavigable(c)) self.nav = if (focus.isTextLeaf(c)) null else self.navCapture(prev_cmds, hit.index);
                         }
-                        if (hit.msg) |m| self.dispatch(m);
+                        if (hit.msg) |m| {
+                            self.dispatch(m);
+                            self.click_dispatches += 1;
+                        }
                     }
                 }
                 self.press_target = null;
@@ -1480,20 +1501,24 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             var swallow = swallow_in;
             const prev_cmds = self.bufs[prev].cmds.items;
             for (input.chars) |ch| {
-                if (swallow.text) continue; // a command claimed this chord (Ctrl/Alt never types)
+                if (swallow.text) continue;
                 var handled = false;
                 if (@hasDecl(App, "keyCharMsg")) {
                     if (App.keyCharMsg(&self.model, ch)) |m| {
+                        const target = focusIndex(App, &self.model, prev_cmds);
                         self.dispatch(m);
+                        if (target) |index| {
+                            if (focus.isTextLeaf(prev_cmds[index])) self.text_dispatches += 1;
+                        }
                         handled = true;
                     }
                 }
                 if (!handled and ch == ' ') _ = self.navActivate(prev_cmds);
             }
             for (input.keys) |k| {
-                if (swallow.take(k)) continue; // a command claimed this chord
+                if (swallow.take(k)) continue;
                 if (comptime has_pm or @hasDecl(App, "contextMsg")) {
-                    if (k == .context_menu and self.sendContextKey(input, prev)) continue; // consumed
+                    if (k == .context_menu and self.sendContextKey(input, prev)) continue;
                 }
                 if (k == .f12 and self.opts.inspect_hotkey) {
                     control.toggleInspect(&self.ctl);
@@ -1626,6 +1651,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 break :blk null;
             };
             const target = (if (forward) focus.nextNavigable(cmds, cur) else focus.prevNavigable(cmds, cur)) orelse return false;
+            if (cur != target) self.tab_moves += 1;
             if (focus.isTextLeaf(cmds[target])) {
                 self.nav = null;
                 if (focus.focusMsgAt(cmds, target)) |fm| self.dispatch(fm);

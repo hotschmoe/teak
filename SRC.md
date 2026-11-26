@@ -1,5 +1,218 @@
 # Source notes
 
+## src/sim
+
+`teak.sim` drives `Runtime(App, Host(Metrics(Font)), Gpu)` on one thread. Two fresh runtimes
+and two fresh generators start from the same seed in one process. No environment options,
+control socket, recorder, snapshot or statistics sink are enabled. Only the platform entry
+point draws a seed, measures throughput and reads/writes traces. Simulation builds ReleaseSafe.
+`--frames M` means M workload frames followed by 32 settling frames; the default is 1,000.
+`-Dcommit=...` supplies provenance without running git at configure time. Reproduction requires
+the same code and toolchain; cross-target reproducibility is not certified.
+
+Use `zig build sim -- --app todo --seed 1`, `--frames 256`, or `--seeds 200` for consecutive
+seeds beginning at the supplied seed. `--save zig-out/sim/run.jsonl` saves a successful run.
+Failures print app, seed, zero-based frame, pass, checker and commit, then save the input prefix
+to `zig-out/sim/<app>-<seed>.jsonl`. Replay with `zig build sim -- --replay <file>`. A separate
+workload-length header permits replay of even a one-frame failing prefix. Traces contain time,
+size, scale, pointer/buttons, text, keys, modifiers, shortcuts and focus loss. This is a new
+simulator format, not an extension of input_record.zig or a golden-output check.
+
+OS backends, event translation, IME, accessibility action delivery, secondary windows, GPU
+pixels/drivers, glyph atlases, native shaping, backend faults, effect responses and allocation
+failure remain outside this version. Live background checks remain necessary. Uninitialized
+inactive Model capacity is a hash limitation: reflection does not know an app's active lengths
+and is not an oracle for undefined values. No custom eql method or revision key suppresses
+data in this hash. The runtime and existing app views still use their existing allocators and
+growing frame arenas; static allocation for those modules is not claimed.
+The CLI targets the build host even when the library target is cross-compiled. Replay leaves
+generator-kind/event counters at zero because no workload is generated; outcome counters
+still observe the recorded inputs.
+Incremental/skipped frames are not compared with a fresh render. Repeating a hash establishes
+repeatability, not visual correctness. Expensive checker work uses sim.verify, always on;
+the runner rejects a verification-disabled build.
+
+## src/sim/host.zig
+
+Only Frame.advance_ms advances time, once per poll. Clipboard bytes, input queues, font state
+and effect captures are owned. Every accepted effect is copied, including HTTP headers and
+payload strings/bytes, then checked at shutdown against its submission digest. No effect is
+performed or answered. effects_issued counts accepted requests; effects_unanswered counts
+requests expecting a result. Fire-and-forget requests are captured too. Bounds are 1,024
+captures, 65,536 payload bytes, 1,024 headers and 8,192 clipboard bytes. Full storage skips the
+operation and increments limits. Input bounds are checked before using InputQueue so its
+logging overflow path cannot run. Unsupported dialogs/windows return cancellation/failure
+and increment unsupported; IME is inactive. The Host must keep its address after capture.
+
+Required Host/Gpu method names retain their contract spellings. These conflict with the new
+snake_case ratchet; there are no forwarding aliases and no authorized ratchet increase. New
+platform CLI I/O sites remain visible to tidy too. These conflicts must be resolved before
+calling the complete blocking gate green.
+
+## src/sim/metrics.zig
+
+Metrics owns a Font.fromBytes face built from embedded IBMPlexMonoDefault.ttf, the existing
+ASCII subset used by the web host. No native global face registry, font discovery, fallback
+or measurement cache is used. Advances/vertical metrics come from the existing stb reader.
+Measurement is deliberately unshaped: glyph advances, tracking and snapping, missing glyphs
+through .notdef, and one regular face for every family/weight. Unicode workloads exercise
+editing/wrapping/bidi, not Arabic shaping or native fallback. Replacing stb belongs to phase 3.
+
+## src/sim/gpu.zig
+
+The recording protocol is overlay -> vertices -> text -> images -> scenes, then presentation.
+Presentation can reuse a staged frame; presentation before any upload fails. Overlay splits
+and scene ranges must fit. Handles contain a generation and slot: every use/release checks
+both generation and resource kind, including cached draws on repeated presentations. Stale,
+double-released and wrong-kind handles fail. Shutdown requires created == released. Bounds
+are 1,024 resources and 1,024 handles of each draw kind. Overflow is counted; draw overflow
+fails. Vertices, text, images, scenes and the typed call transcript are folded by content.
+There are no pixels, GPU allocations, texture atlases, real surfaces or backend faults.
+
+## src/sim/hash.zig
+
+Comptime visitors execute through an explicit 1,024-job stack without runtime recursion.
+A 16-million-visit bound returns HashLimit. Structs exclude padding/comptime fields; tagged
+unions include tag and active payload; optionals include presence; arrays/slices include
+length and contents. Single-item plain-data pointers are dereferenced: addresses and sharing
+identity never enter the hash. Many-item/C pointers, functions and opaque values are compile
+errors. Cycles exhaust the visit bound. Integers are canonical little-endian; float bits
+retain negative zero and NaN payloads. Packed structs include declared backing bits. No eql
+override is honored. Full-width integer/float arrays have an equivalent bulk path on little-
+endian targets. All visited values, including unused array capacity, must be initialized.
+Wyhash is diagnostic hashing, with the usual possibility of collisions.
+Vectors, error sets and error unions are not supported by this first walker and fail to
+compile rather than being omitted. The exercised example Models do not need those kinds.
+
+## src/sim/input.zig
+
+A frame holds at most 48 events and a virtual time delta. Text selects a fixed UTF-8 corpus:
+ASCII task/space, é日, Hebrew שלום, and e plus a combining acute. Events own no external
+pointer. The entry point reserves frame and fingerprint buffers before simulation.
+
+## src/sim/workload.zig
+
+SplitMix64 is owned state. A named table chooses actions; gesture continuations complete
+before another action. Clicks have separate down/up frames. Drags move across two frames
+and then release or lose focus. Text clicks/releases a visible text field before typing when
+one is available. Targets are biased 90% toward suitable visible previous-frame rectangles;
+other targets include empty space. Candidate storage holds 2,048 points and truncation is
+counted. Three quarters of targeted clicks prefer less-visited flat command indices; the
+remaining quarter samples uniformly. No hashed or persistent widget identity is introduced.
+Raw buttons include middle/right; modifiers include Shift/Ctrl/Alt/Meta. Bursts currently
+contain 12–39 Tab events; mixed text/pointer bursts remain a workload gap.
+Idle jumps cover 1–300,000 ms. Sizes include 0x0, 1x1, 24x12, 320x240, 1280x800, 1600x1000;
+scale spans 0.5–3.0. InputQueue's normal aggregation and characters-before-special-keys
+routing apply. Per-event chronology within a poll has no separate oracle.
+
+| Action | Weight | Action | Weight |
+|---|---:|---|---:|
+| move | 10 | click | 24 |
+| drag | 8 | wheel | 8 |
+| tab | 7 | shift_tab | 4 |
+| enter | 10 | escape | 3 |
+| arrow | 7 | edit | 5 |
+| shortcut | 5 | text_ascii | 15 |
+| text_multibyte | 3 | text_rtl | 3 |
+| text_combining | 3 | burst | 4 |
+| idle | 5 | resize | 4 |
+| scale | 2 | focus_loss | 2 |
+| press | 2 | release | 2 |
+| modifiers | 2 | | |
+
+## src/sim/check.zig
+
+No-stop catches returned errors and uses the CLI panic handler to save input. There is no
+hang watchdog or artifact guarantee after an external kill. Determinism compares each
+frame's Model, commands, rectangles, vertices, Gpu state/transcript and generated input
+digest independently across fresh runtimes and generators. Quiet frames still get checkers.
+
+View purity hashes Model, emits/hashes a fresh view, checks Model again, emits a second view
+and compares commands/themes and Model. Runtime commands are not used as the second view:
+post-layout Msgs may legitimately have changed Model since the runtime emitted that view.
+
+Layout checks all rectangles, including structural commands, for finite coordinates and
+finite/non-negative sizes. Scroll offsets must be finite/non-negative and no greater than
+content minus viewport, with 0.02 px arithmetic tolerance. Text areas allow the existing 2 px
+horizontal caret margin. Upper bounds defer while layout_dirty: extent Msgs have updated
+Model, but the shown commands deliberately belong to the preceding state. Containment is
+omitted because overlays, scrolled content, explicit overflow, virtual lists and transformed
+canvases invalidate blanket containment.
+
+Hit-test probes the pointer, four rotating rectangle centres, and points 0.125 px beyond
+their left/right/bottom bounds. A returned index must exist and contain the point, using the
+library's inclusive edges. Topmost painter order and clip ownership have no independent oracle.
+
+Focus checks text/navigation indices against an independent leaf classification. For frozen
+commands, forward/reverse traversal must visit the independently enumerated Tab stops exactly
+once and wrap in the modal scope. This checks traversal functions, not a complete runtime
+cycle while an app changes view. Modal-scope selection uses the framework helper and is not
+independently checked.
+
+## src/sim/runner.zig
+
+Resources are checked after frames and Runtime shutdown. The 32-frame settling tail starts
+with focus loss. After that final input, eight consecutive frames without a listed subscription
+or pending effect must reach quiet; after the first quiet frame they must stay quiet. A listed
+subscription or pending effect resets that deadline and increments idle_exempt. Accepted
+fire-and-forget effects are not pending. idle_grace counts eligible busy frames before the
+deadline; idle_checked counts observed quiet frames. If eligibility starts near the run's end,
+the counters can expose an incomplete observation. Blink presentations are permitted: quiet
+describes scheduling. This is bounded observation, not infinite liveness. The deadline starts
+when eligibility begins, not at workload end: a subscription may stop in the final tail frames.
+
+Click/text/Tab counters come from actual runtime dispatch/traversal sites. Text counts bytes
+dispatched to a focused text leaf. Scroll changes ignore zero-offset structural regions;
+creating a scroll command does not fake coverage. Group drag start and focus-loss cancellation
+use actual runtime drag state. Canvas/text selection capture cancellation is not checked.
+skipped_unchanged counts busy frames reusing vertices; quiet skips are separate. A zero
+counter is printed for review, not automatically failed: the generic runner cannot know an
+app's reachability.
+
+Todo has no scroll-offset handler, effects or resources. Counter_greeter has no scrolling,
+group drag, resources or effects. Tree has no text/group drag/resources/effects. Tables has
+no text leaf, group drag, resources or effects. Notes has text/scrolling but no group drag,
+resources or effects. Gallery has text/scrolling/resources but no group drag/effects; no text
+or resource activity in its default run would be a workload gap. Limits normally remain zero
+in the examples; probe pressures capture storage. Dialog/secondary/IME results are out of scope.
+
+## src/sim/probe.zig
+
+A small real Runtime app complements the examples: one button changes all nine effects and
+alternates two resources. HTTP/clipboard strings borrow mutable Model storage, so retaining
+caller slices instead of copying them fails capture lifetime validation. No response is
+synthesized. Its single Tab stop cannot move focus to another widget. Text, scrolling and
+group drag are unreachable. This is an end-to-end app, not canned assertions about mocks.
+
+## src/sim/trace.zig
+
+Versioned JSON Lines encodes the header and used events, excluding unused capacity. Startup
+parsing validates sample indices, finite coordinates/scales, dimensions and capacities before
+polling the Host. Replay runs recorded inputs twice and does not compare archived expected
+hashes. Cross-commit replay can demonstrate a fix, but is not a compatibility guarantee.
+
+## src/sim/sim.zig
+
+The namespace exports Host/Metrics factories, Gpu, input, workload, checkers, hashing, runner,
+trace and probe. Consumers supply their App and allocator to runner.simulate, preallocate
+frames/fingerprints and provide Progress for diagnostics. Host(Metrics(Font)) takes the
+existing teak-text Font provider. No app wrapper or hidden TEA state is installed.
+
+## src/platform/sim/main.zig
+
+The blocking script runs 128 workload frames per app, with seed 1 except tree's seed 14.
+Tree's default seed 1 is retained as a known ScrollRange failure, not suppressed by a checker.
+The former three CLI canaries move to the background script, keeping eight blocking paths
+including the wasm compile canary. Real OS/GPU paths remain background work.
+
+The entry point owns startup allocations, seed generation, throughput, trace I/O and the
+panic diagnostic pointer. None enters SimHost. Bounds are 100,000 workload frames plus the
+settling tail and 128 MiB of trace data. Initialization has an empty first frame reserved
+so an App.init panic is replayable. Tables' Model.init allocates three page_allocator objects
+without teardown; an explicit cleanup callback frees those objects after Runtime teardown.
+No example is adapted for simulation. Counter_greeter uses its exact existing rich_zig pin,
+lazily wired only by the root build.
+
 ## src/assert.zig
 
 The rewrite's owned `assert` uses an ordinary conditional panic, including in
@@ -348,6 +561,10 @@ Accessibility hints let composite patterns built from primitive commands expose 
 
 ## src/layout/engine.zig
 
+The measure pass initializes every output rectangle, including structural pop commands that
+own no geometry. Those entries previously retained allocation poison/uninitialized bytes,
+which whole-frame comparisons and the simulator's rectangle checks could consume.
+
 Layout uses bottom-up measurement and top-down positioning; frames with wrapped text or shrinkable nodes also resolve widths top-down and remeasure heights bottom-up. Container accumulators carry child totals between passes, avoiding rescans. Flex consumes main-axis leftover before justification, and cross-axis stretch uses the container's inner extent. Overlays do not contribute to parent measurement. Virtual lists claim their full logical extent even when only a visible window is emitted. A flex scroll starts with zero main-axis size unless explicitly sized so overflow remains possible. Layout stack overflow, underflow and empty reads panic in every optimization mode; the passes attach the command index when checking bounds. See `docs/features/layout.md`.
 
 Grid passes rescan direct children while skipping subtrees via `Rect.end`, visiting each command only a bounded number of times; column scratch has fixed capacity and rows use one running accumulator. Positioned scroll children are offset and clipped by render and hit-test, while overlays do not advance the parent cursor. Rich-text measurement uses each span's font and defaults for uncovered bytes.
@@ -385,6 +602,15 @@ Zunk supplies both held input state and per-frame edges, including both edges fo
 Overlay hits take precedence over the base layer. A modal overlay containing the pointer consumes the click even when no interactive leaf or backdrop message claims it; nested modals respect the parent clip, and later overlays win in painter order. Hover must claim the modal backdrop too: the Host compares the press target with the release hover before dispatching the hit, so omitting the backdrop there prevents click-outside handling. Decorative canvas and scene leaves pass clicks through unless they expose a click message or pointer surface. Disabled controls are non-interactive. Command-tag switches are exhaustive so new variants require classification.
 
 ## src/run.zig
+
+The idle dispatch baseline precedes window/modifier hooks. Previously a modifier-only Msg
+could change Model and still report quiet because its dispatch happened before the baseline.
+The simulator checks that a quiet frame dispatched no Msg, including during the workload.
+
+Host.stats_now_ns optionally replaces the statistics clock; other hosts retain the existing
+clock path. InputState.focus_lost cancels an active group drag through its ordinary Msg,
+clears armed presses/sliders and drops capture. The simulator emits it; native event translation
+has not been changed. click_dispatches, text_dispatches and tab_moves only observe routing.
 
 The entry point supplies `Options`; runtime initialization never resolves environment
 overrides. Clock acquisition, file sinks and recorder behavior remain as before.
