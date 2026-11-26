@@ -18,7 +18,7 @@
   TO UPDATE: when you add/rename a `pub const` in src/teak.zig, add the new
   name here — put it in the "Public API reference" section with its real
   signature and a one-clause purpose. Re-run `zig build audit` until green.
-  Requires Zig 0.17.0+.
+  Requires Zig 0.17.1+.
 -->
 
 ## Companion files

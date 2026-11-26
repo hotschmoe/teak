@@ -2,7 +2,7 @@
     .name = .counter_greeter,
     .version = "0.0.0",
     .fingerprint = 0xb3afed8cd41407ac, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.17.0",
+    .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .teak = .{ .path = "../.." },
         // rich_zig: pinned to a tagged release so this example is
