@@ -1,0 +1,270 @@
+{
+  "schema": 1,
+  "alert_over_pct": 10,
+  "idle_frames": 125,
+  "latency_budget_frames": 1,
+  "notes": "Policy is described in SRC.md (tools/ci_gates.zig). wasm_brotli_bytes is the portable budget. platforms.<arch>-<os> budgets apply only on that host triple; a host with no entry has its native exe size and idle memory reported and skipped. Seed a triple with zig build gates -- --update-budgets on the machine that will enforce it.",
+  "examples": {
+    "chrome": {
+      "strict_states": [
+        "initial",
+        "plain"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 47,
+        "y": 253
+      },
+      "wasm_brotli_bytes": 138392,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 950808,
+          "rss_bytes": 179286016,
+          "committed_bytes": 116895744
+        }
+      }
+    },
+    "counter_greeter": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 70,
+        "y": 134
+      },
+      "wasm_brotli_bytes": 126637,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 937216,
+          "rss_bytes": 119779328,
+          "committed_bytes": 67743744
+        }
+      }
+    },
+    "effects": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 60,
+        "y": 101
+      },
+      "wasm_brotli_bytes": 125801,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 1347264,
+          "rss_bytes": 97697792,
+          "committed_bytes": 45662208
+        }
+      }
+    },
+    "fonts": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": null,
+      "wasm_brotli_bytes": 215501,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 1315888,
+          "rss_bytes": 137334784,
+          "committed_bytes": 85037056
+        }
+      }
+    },
+    "gallery": {
+      "strict_states": [
+        "controls",
+        "controls_dark"
+      ],
+      "expect_busy": [
+        "toasts",
+        "toast_sliding"
+      ],
+      "latency": {
+        "state": "controls",
+        "x": 88,
+        "y": 110
+      },
+      "wasm_brotli_bytes": 192679,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 1154688,
+          "rss_bytes": 175566848,
+          "committed_bytes": 113045504
+        }
+      }
+    },
+    "kerf_viewer": {
+      "strict_states": [],
+      "expect_busy": [],
+      "latency": {
+        "state": "section_selected",
+        "x": 492,
+        "y": 92
+      },
+      "wasm_brotli_bytes": 264306,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 1872736,
+          "rss_bytes": 192749568,
+          "committed_bytes": 129835008
+        }
+      }
+    },
+    "notes": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 60,
+        "y": 765
+      },
+      "wasm_brotli_bytes": 132087,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 976144,
+          "rss_bytes": 200003584,
+          "committed_bytes": 137744384
+        }
+      }
+    },
+    "scene3d": {
+      "strict_states": [],
+      "expect_busy": [
+        "*"
+      ],
+      "latency": null,
+      "wasm_brotli_bytes": 105195,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 946048,
+          "rss_bytes": 178565120,
+          "committed_bytes": 116043776
+        }
+      }
+    },
+    "scene_layers": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 1100,
+        "y": 108
+      },
+      "wasm_brotli_bytes": 135938,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 969968,
+          "rss_bytes": 195031040,
+          "committed_bytes": 132640768
+        }
+      }
+    },
+    "tables": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 140,
+        "y": 27
+      },
+      "wasm_brotli_bytes": 138320,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 2838320,
+          "rss_bytes": 141881344,
+          "committed_bytes": 77787136
+        }
+      }
+    },
+    "todo": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "three_items",
+        "x": 80,
+        "y": 171
+      },
+      "wasm_brotli_bytes": 123470,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 905104,
+          "rss_bytes": 123564032,
+          "committed_bytes": 71528448
+        }
+      }
+    },
+    "tree": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "initial",
+        "x": 75,
+        "y": 117
+      },
+      "wasm_brotli_bytes": 120266,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 916240,
+          "rss_bytes": 105459712,
+          "committed_bytes": 53555200
+        }
+      }
+    },
+    "vector_canvas": {
+      "strict_states": [
+        "fit"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "fit",
+        "x": 180,
+        "y": 24
+      },
+      "wasm_brotli_bytes": 156035,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 966208,
+          "rss_bytes": 239751168,
+          "committed_bytes": 177491968
+        }
+      }
+    },
+    "viewport": {
+      "strict_states": [
+        "initial"
+      ],
+      "expect_busy": [],
+      "latency": {
+        "state": "zoomed_panned",
+        "x": 620,
+        "y": 140
+      },
+      "wasm_brotli_bytes": 126928,
+      "platforms": {
+        "aarch64-linux": {
+          "native_exe_bytes": 912496,
+          "rss_bytes": 171917312,
+          "committed_bytes": 109264896
+        }
+      }
+    }
+  }
+}

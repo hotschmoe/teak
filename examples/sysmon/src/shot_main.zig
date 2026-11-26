@@ -5,6 +5,10 @@
 //!
 //! By default the App is fed sixty synthetic samples, so the picture is the
 //! same on every machine. --live feeds it real readings from this machine.
+//!
+//! The flags every example's shot binary shares (--list, --state, --all,
+//! --idle-check, --gates-json) go to teak.headless.shotCli, with no sample
+//! posted: the monitor before its first reading, which must sit idle.
 
 const std = @import("std");
 const teak = @import("teak");
@@ -47,7 +51,26 @@ fn nowMs(io: std.Io) u64 {
     return @intCast(@divFloor(std.Io.Clock.awake.now(io).nanoseconds, std.time.ns_per_ms));
 }
 
+const shared_flags = [_][]const u8{ "--list", "--state", "--all", "--idle-check", "--gates-json" };
+
+fn wantsSharedCli(init: std.process.Init) bool {
+    const args = init.minimal.args.toSlice(init.arena.allocator()) catch return false;
+    for (args) |a| {
+        for (shared_flags) |f| {
+            if (std.mem.eql(u8, a, f)) return true;
+        }
+    }
+    return false;
+}
+
 pub fn main(init: std.process.Init) !void {
+    if (wantsSharedCli(init)) {
+        return teak.headless.shotCli(App, Host, Gpu, init, "sysmon.png", .{ .width = 1100, .height = 720 }, &.{
+            .{ .name = "performance", .steps = &.{.{ .frames = 2 }} },
+            .{ .name = "processes", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 183, 25 } }, .{ .move = .{ 600, 400 } } } },
+            .{ .name = "sensors", .steps = &.{ .{ .frames = 2 }, .{ .click = .{ 300, 25 } }, .{ .move = .{ 600, 400 } } } },
+        });
+    }
     const o = parseArgs(init);
     const gpa = init.gpa;
     const w: u32 = 1100;

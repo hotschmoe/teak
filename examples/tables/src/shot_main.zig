@@ -34,6 +34,22 @@ fn parseArgs(init: std.process.Init) Opts {
 }
 
 pub fn main(init: std.process.Init) !void {
+    const args = init.minimal.args.toSlice(init.arena.allocator()) catch &.{};
+    if (teak.headless.requestsGate(args)) {
+        return teak.headless.shotCli(App, Host, Gpu, init, "tables.png", .{
+            .width = 1100,
+            .height = 700,
+            .msaa = false,
+            .run = .{ .clear_color = .{ 0.08, 0.09, 0.11, 1 } },
+        }, &.{
+            .{ .name = "initial", .steps = &.{.{ .frames = 4 }} },
+            .{ .name = "list", .steps = &.{
+                .{ .frames = 2 },
+                .{ .click = .{ 140, 27 } },
+                .{ .frames = 2 },
+            } },
+        });
+    }
     const o = parseArgs(init);
     const gpa = init.gpa;
     const w: u32 = 1100;

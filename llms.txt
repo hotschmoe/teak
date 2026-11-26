@@ -1048,9 +1048,15 @@ headless.shot(App, Host, Gpu, gpa, path, ShotOptions{ width, height, msaa, steps
 headless.writeFramePng(gpu, gpa, path) !void;  pathArg(init, default) []const u8
 headless.encodePng(gpa, rgba, w, h) ![]u8      // deflate-compressed + per-row PNG filters, deterministic (tens of KB)
 headless.decodePng(gpa, png_bytes) !Image{width,height,rgba}   // 8-bit RGB/RGBA, any filter
-headless.shotCli(App, Host, Gpu, init, default_path, ShotOptions, states: []const ShotState{name, steps}) !void
-    // a whole shot_main.zig: `[out.png] [--state name] [--list] [--idle-check N]`; ShotOptions.fonts registers embedded TTFs
-headless.idleCheck(App, Host, Gpu, gpa, ShotOptions, frames) !IdleReport{ frames, busy, presented, first_busy, rewoke, busy_at_end }  // idle gate: settled() = quiet by the end, no re-wake
+headless.shotCli(App, Host, Gpu, init, default_path, ShotOptions, states: []const ShotState{name, steps, msaa?}) !void
+    // a whole shot_main.zig: `[out.png] [--state name] [--list] [--idle-check N] [--gates-json]`; ShotOptions.fonts registers embedded TTFs
+    // --gates-json [--idle-frames N] [--state name|*] [--latency-check x,y --latency-state name] prints one JSON object on stdout and exits 0
+headless.requestsGate(args) bool   // --gates-json / --idle-check / --latency-check
+headless.idleCheck(App, Host, Gpu, gpa, ShotOptions, frames) !IdleReport{ frames, busy, presented, blinks, first_busy, rewoke, busy_at_end, rss_bytes, committed_bytes }
+    // settled() = quiet by the end, no re-wake; fullyQuiet() = busy == 0 and presented == blinks (caret presents only); memory is Linux only (VmRSS, RssAnon+VmSwap)
+headless.latencyCheck(App, Host, Gpu, gpa, ShotOptions, x, y) !LatencyReport{ frames, unstable, unchanged, x, y }  // pass(budget): click -> presented frame
+headless.latencyAfterClick(rt, host, gpa, x, y) !LatencyReport   // the same measurement on a Runtime you already built
+// Background gate: `zig build gates` (last stage of `zig build test-heavy`) -> zig-out/gates/ci-gates.json against tools/ci_gates_budgets.json (+10%; no budget for the host triple = reported and skipped). Non-strict idle is quiet at the end of the window; `--idle-check` still requires settled() (no re-wake).
 // Visual regression: `zig build vreg [-- --update | --web | --examples a,b | --state s | --tol N --budget N]`
 //   compares every example's states with test/golden/ (docs/features/visual-regression.md)
 // Host: pushMouseMove/Down/Up, pushWheel, pushChars, pushKey, setModifiers, close, injectEffectResult(EffectResult),

@@ -169,7 +169,7 @@ src/                                          -- the library, consumable as a Zi
     anim.zig                                  -- Model-driven animation: tweens, easing curves and interpolation
     bidi.zig                                  -- UAX #9 Unicode Bidirectional Algorithm (Unicode 16): pure, std only
     bidi_text.zig                             -- Bidi-aware geometry of one laid-out line (UAX #9 L1/L2 over bidi.zig)
-    chart.zig                                 -- teak.chart — pure line-chart primitive builder
+    chart.zig                                 -- teak.chart — pure chart primitive builders: line (optionally filled), bar and scatter
     cmd.zig                                   -- Cmd union, CmdBuffer + emitters, arena, validateBalance, OverlayStyle/leafMsg
     combobox.zig                              -- Searchable select ("combobox"): a text input that filters an app-owned option list shown in the
     commands.zig                              -- Command registry, keyboard shortcuts and the command palette
@@ -192,8 +192,8 @@ src/                                          -- the library, consumable as a Zi
     scroller.zig                              -- Scroll position with smooth wheel and kinetic (fling) motion, as plain data
     snapshot.zig                              -- teak.snapshot — LLM-readable serialization of a rendered frame
     sub.zig                                   -- Subscriptions — declarative timers / external-event listeners
-    svg.zig                                   -- SVG icons: a small, pure SVG subset rasterized on the CPU into RGBA pixels
     surface.zig                               -- Surface decoration data shared by the style structs: per-corner radii, soft drop shadows and
+    svg.zig                                   -- SVG icons: a small, pure SVG subset rasterized on the CPU into RGBA pixels that the app hands
     table.zig                                 -- Fixed-column monospace tables, as pure helpers
     text.zig                                  -- Text measurement and rasterization types
     text_area.zig                             -- TextArea(cap): the canonical multi-line editor component -- an Editor plus scroll state, driven
@@ -218,8 +218,8 @@ src/                                          -- the library, consumable as a Zi
       color_picker.zig                        -- Colour picker: a saturation / value square, a hue strip, a hex field, R / G / B fields and a
       date.zig                                -- Calendar dates: pure proleptic-Gregorian maths, ISO 8601 parse / format, no allocation and no
       date_field.zig                          -- Date field: an ISO text field (YYYY-MM-DD) with a calendar popover
-      drag_value.zig                          -- Drag value: a number you change by dragging horizontally across it (the
       dialog.zig                              -- Modal dialog helper: a centred card over a dimmed window with a title, a message (or app
+      drag_value.zig                          -- Drag value: a number you change by dragging horizontally across it (the egui DragValue / ImGui
       menu.zig                                -- Menus: a menu bar with drop-down menus and nested submenus, and a context (right-click) menu
       progress.zig                            -- Progress bar: determinate (a fraction) and indeterminate (a block sliding across the track)
       spinner.zig                             -- Number spinner: a NumericField with step buttons, plus arrow-key and wheel stepping
@@ -311,36 +311,36 @@ examples/                                     -- each its own build.zig; consume
   tables/                                     -- Tables at scale: a 100 000-row sortable / resizable / selectable table, a variable-height list
   todo/                                       -- dynamic-content stress: N rows from Model.items, Msg-with-index, scroll-clipped list
   tree/                                       -- recursive view emission with expand/collapse over a flat pre-order node array
-  vector_canvas/                              -- Vector canvas: a structural-frame-sized drawing (about 80 000 members,
+  vector_canvas/                              -- Vector canvas: a structural-frame-sized drawing (about 80 000 members, 20 000 nodes, supports
   viewport/                                   -- Viewport example: a pan / zoom canvas and a scrollable list with a scrollbar — the two
 
 shaders/
   glyph.wgsl                                  -- Instanced glyph quads sampled from an R8 coverage atlas page
-  image.wgsl                                  -- RGBA image: multiply texture color by tint. `color` is the
-  quad.wgsl                                   -- Solid quads, plus signed-distance rounded rects (per-corner radii, inside
+  image.wgsl                                  -- RGBA image: multiply texture color by tint
+  quad.wgsl                                   -- Solid quads, antialiased edges and SDF quads; see SRC.md
   scene.wgsl                                  -- 3D scene shader: flat-shaded lit triangles and camera-facing line quads
-  scene_grid.wgsl                             -- Infinite ground grid for 3D scenes: a fullscreen triangle whose fragment
+  scene_grid.wgsl                             -- Infinite ground grid for 3D scenes; see SRC.md
 
 tools/
-  a11yprobe.mjs                               -- Web accessibility probe: serve a zunk `dist/`, load it in headless Chromium
+  a11yprobe.mjs                               -- Web accessibility probe; see SRC.md
   audit.zig                                   -- HARDLINE drift audit. Walks `src/` and flags the greppable rules
-  drive-e2e.sh                                -- Drive the headless todo app over its control socket
-  gate.sh                                     -- Run the blocking end-to-end gate
-  test-e2e.sh                                 -- Run blocking or background example canaries
+  ci_gates.zig                                -- Background gates for every example: idle, input latency, idle memory and
+  drive-e2e.sh                                -- 
+  gate.sh                                     -- 
   gen_api.zig                                 -- Generated API reference: walks `src/teak.zig` with `std.zig.Ast`, follows
   gen_compose.py                              -- generates src/text/compose_table.zig (Unicode compose sequences)
   gen_tree.py                                 -- regenerates the Module Structure tree in CLAUDE.md / AGENTS.md from the files on disk
   gen_unicode.zig                             -- Generator for `src/core/unicode_tables.zig`
   gen_wayland.zig                             -- Generator for `src/platform/wayland/protocols.zig`
-  hot_reload_check.sh                         -- End-to-end hot-reload check on examples/todo (headless backend, Linux)
   release.sh                                  -- Cut a release: bump the ONE version (build.zig.zon .version), commit, tag v<version>, push
   showcase.py                                 -- HarfBuzz notes shot: only when the script fonts were found (tools/showcase.sh)
-  showcase.sh                                 -- Regenerate docs/images/showcase/ (see docs/showcase.md). Run after the last merges
+  showcase.sh                                 -- Regenerate docs/images/showcase/; see SRC.md
   teak_drive.zig                              -- teak-drive: drive a running teak app from a shell or from an LLM agent
-  web-frame-bench.mjs                         -- rAF cost of a web example under scrolling: serve a zunk `dist/`, load it in headless Chromium
-  web-ime-test.mjs                            -- Web IME acceptance test: drive an input-method composition into a teak app in
-  web-startup.mjs                             -- Web startup profile: serve a zunk `dist/`, load it in headless Chromium and print where the
-  webshot.mjs                                 -- Web smoke test: serve a zunk `dist/`, load it in headless Chromium with
+  test-e2e.sh                                 -- ) [[ -n "$output" ]]
+  web-frame-bench.mjs                         -- Frame-time benchmark for web examples; see SRC.md
+  web-ime-test.mjs                            -- Web IME acceptance test; see SRC.md
+  web-startup.mjs                             -- Web startup profile; see SRC.md
+  webshot.mjs                                 -- Web smoke test; see SRC.md
 ```
 <!-- module-tree:end -->
 

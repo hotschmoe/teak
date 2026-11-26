@@ -67,6 +67,14 @@ Line-break and bidirectional classes apply Unicode file defaults before explicit
 
 The static-variable check uses column-zero declarations to distinguish module state from indented locals. Public exports are checked against `llms.txt` by substring, deliberately allowing wording to vary. Generated API docs are checked against `tools/gen_api.zig`; module trees must list non-test source files.
 
+## tools/ci_gates.zig
+
+`zig build gates` is the last stage of the background gate and never blocks a PR. For each example with a `src/shot_main.zig` it runs a ReleaseSmall `shot -- --gates-json` (idle per state, one click latency, memory of the first state), then `ui-install` and `web` for the unstripped native exe size and the wasm size under Node's brotli at quality 11. It writes `zig-out/gates/ci-gates.json`.
+
+Idle is looser here than the `--idle-check` flag. An `expect_busy` state (`"*"` exempts the example) is reported and never fails. Every other state must be quiet at the end of the 125-frame window, so a one-shot timer that fires and finishes passes while a subscription still firing fails. A strict state must also be fully quiet: no busy frame, and every present a caret blink. Without `strict_states` the strict set is `initial`, or the first state. `scene3d` is exempt because its orbit subscribes every frame on purpose.
+
+The latency budget is one frame: input is routed against the previous frame, so the Msg and the new view land in the `frame()` that delivers the click. A measured value fails when it exceeds its budget by more than `alert_over_pct`, in integer arithmetic (110 against 100 at 10% passes, 111 fails). Wasm brotli is the portable budget. Native exe size, RSS and committed bytes depend on the host triple and the Vulkan driver, so they live under `platforms."<arch>-<os>"`; a zero budget or a host triple with no entry is reported as skipped and never fails. `--update-budgets` writes the measured numbers for the host that ran, so budgets must be seeded on the machine that enforces them.
+
 ## tools/win32_live/driver.zig
 
 A synthetic Alt tap and shared input queue allow the background driver to take foreground; topmost ordering avoids runner setup windows. A black screen capture falls back to the compositor's window pixels. The drag source offers only its real COM interfaces: claiming IMarshal corrupts cross-process drag. OLE requires actual relative mouse events, and a synthetic button press would capture input in the app instead of its drag loop.
@@ -144,6 +152,14 @@ The tree uses one Tab stop at its first row. Arrow keys move focus between rows,
 ## examples/chrome/src/shot_main.zig
 
 Screenshot states advance 40 frames to settle the quick-keys popover; its mid-slide state uses deterministic 16 ms frames. Clear colour follows the selected theme. Stress labels are formatted before timing to exclude allocation.
+
+## examples/tables/src/shot_main.zig
+
+The screenshot path forces `idle_skip = false` for its timing run. Gate measurements go through `shotCli` with the default loop and an untouched Model: `initial` is the table tab and `list` is one click on the List tab.
+
+## examples/scene_layers/src/shot_main.zig
+
+The default PNG is one scripted shot. Gate measurements use named states: `initial` is the resting frame and `row` repeats the screenshot's click.
 
 ## examples/kerf_viewer/src/shot_main.zig
 
@@ -230,6 +246,10 @@ Line clipping trims centre lines to the clip rectangle; a thick quad can extend 
 ## src/platform/cocoa.zig
 
 The view is layer-backed by a CAMetalLayer sized and scaled by AppKit. If a presented frame was dropped while a window was occluded, becoming visible requests a rebuild through the resize input because idle frames otherwise do not redraw. The non-blocking event pump lets Core Animation commit. Unclaimed Cmd+V becomes a text or PNG paste, while other Cmd or Ctrl chords do not enter text. Marked IME text is kept as UTF-8 with a byte-indexed caret and is never truncated within a code point.
+
+## src/headless_run.zig
+
+`idleCheck` samples process memory after the idle window and before the offscreen Gpu is released, so the figure includes the driver. Committed bytes are `RssAnon + VmSwap`: private pages, including swapped ones. `latencyAfterClick` compares hashes of the frame snapshot without its transient header, so hover, press and caret phase do not count as a change; the snapshot is taken before the next `frame()` because command bytes die when the frame arena resets. A control that already presents a new view on mouse-down reports one frame and still receives the release. `--gates-json` only measures; pass and fail policy belongs to `tools/ci_gates.zig`.
 
 ## src/control.zig
 

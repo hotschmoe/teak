@@ -2885,11 +2885,13 @@ docs/features/headless.md.
 > the settle frames, how many did real work (`busy`: not the loop's quiet
 > skip) and how many presented (caret blink redraws present but stay quiet).
 - `struct IdleReport`
-  - fields: `frames, busy, presented, first_busy, rewoke, busy_at_end`
+  - fields: `frames, busy, presented, blinks, first_busy, rewoke, busy_at_end, rss_bytes, committed_bytes`
   > The UI went quiet within the window and stayed quiet: a finite
   > transition (a sliding popover) passes, a never-ending animation or a
   > self-sustaining Msg does not.
   - `pub fn settled(r: IdleReport) bool`
+  > No frame did work and every present was a caret blink; stricter than `settled`.
+  - `pub fn fullyQuiet(r: IdleReport) bool`
 > The idle gate (#141): play `o.steps`, settle, then run `frames` frames
 > with no input and report how many still did work. A healthy UI goes
 > quiet and stays quiet (`IdleReport.settled`); a busy tail or a re-wake is
@@ -2897,6 +2899,18 @@ docs/features/headless.md.
 > progress bar legitimately does). Uses the
 > same Host / Gpu as `shot`; no PNG is written.
 - `pub fn idleCheck( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, o: ShotOptions, frames: u32, ) !IdleReport`
+> One scripted click: frames from the event that changed the view to the
+> frame that presented it. The designed budget is 1 (docs/features/headless.md).
+- `struct LatencyReport`
+  - fields: `frames, unstable, unchanged, x, y`
+  - `pub fn pass(r: LatencyReport, budget: u32) bool`
+> Move to `(x, y)`, wait for two identical frames, click, and count frames
+> until a changed view is presented. `host` needs `pushMouseMove` /
+> `pushMouseDown` / `pushMouseUp`.
+- `pub fn latencyAfterClick(rt: anytype, host: anytype, gpa: std.mem.Allocator, x: f32, y: f32) !LatencyReport`
+> Play `o.steps`, settle, then `latencyAfterClick`. Same Host / Gpu as
+> `idleCheck`; no PNG is written.
+- `pub fn latencyCheck( comptime App: type, comptime Host: type, comptime Gpu: type, gpa: std.mem.Allocator, o: ShotOptions, x: f32, y: f32, ) !LatencyReport`
 > `TEAK_SCALE` (a positive float, e.g. `2`) overrides the HiDPI scale of a
 > headless run, so any example's `zig build shot` can be taken at 2x without
 > code changes. Unset or invalid: `default`.
@@ -2914,6 +2928,10 @@ docs/features/headless.md.
 > A named, scripted app state for screenshots (`--state <name>`).
 - `struct ShotState`
   - fields: `name, steps, msaa`
+> True when `args` asks a shot binary for a measurement instead of a PNG
+> (`--gates-json`, `--idle-check` or `--latency-check`), for a `main` that
+> only hands measurements to `shotCli`.
+- `pub fn requestsGate(args: []const [:0]const u8) bool`
 > The whole `shot_main.zig` for an example: parses
 > `[out.png] [--state <name>] [--list] [--all <dir> --prefix <p>]` from argv, plays that state's
 > script (`o.steps` is ignored; the first of `states` is the default),
@@ -2921,6 +2939,8 @@ docs/features/headless.md.
 > stdout and exits. `--all <dir> --prefix <p>` renders every state to
 > `<dir>/<p>-<state>.actual.png` in one process and prints the names:
 > `tools/vreg` uses it so each example needs a single `zig build` call.
+> `--gates-json` prints one JSON object of measurements (idle per state,
+> optional latency, memory of the first state) for `tools/ci_gates.zig`.
 - `pub fn shotCli( comptime App: type, comptime Host: type, comptime Gpu: type, init: anytype, default_path: []const u8, o: ShotOptions, states: []const ShotState, ) !void`
 > Encode tightly packed RGBA8 as a PNG (8-bit RGBA, no interlace). Each
 > scanline picks the PNG filter (none / sub / up / average / paeth) with

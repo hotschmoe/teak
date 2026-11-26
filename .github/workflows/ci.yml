@@ -31,3 +31,9 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1
       - run: npm ci --prefix tools --no-audit --no-fund
       - run: zig build test-heavy -j4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-gates
+          path: zig-out/gates/ci-gates.json
+          if-no-files-found: ignore

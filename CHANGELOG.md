@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Background gates (#141)
+
+- `zig build gates` measures idle, input latency, idle memory and binary size
+  for every example and writes `zig-out/gates/ci-gates.json`. It is the last
+  stage of the background gate (`zig build test-heavy`) and never blocks a PR;
+  the scheduled `heavy` CI job uploads the JSON.
+- Budgets live in `tools/ci_gates_budgets.json`; a value more than 10% over
+  its budget fails. Wasm brotli (ReleaseSmall, quality 11) is the portable
+  budget. Native exe size and idle memory are budgeted per host triple: a host
+  with no entry has them reported and skipped. Only `aarch64-linux` is seeded.
+  An example without `src/web_main.zig` (the hardware monitor) has no wasm size.
+- `teak.headless.latencyCheck` / `latencyAfterClick`: a scripted click must
+  be presented on the next frame (budget 1, the designed hit-test latency).
+  A view that never sits still is `unstable`; a click that changes nothing
+  is `unchanged`.
+- `IdleReport` counts caret presents (`blinks`, `fullyQuiet`) and, on Linux,
+  samples RSS and committed bytes (`RssAnon + VmSwap`) at the end of the idle
+  window while the offscreen Gpu is alive. `settled()` is unchanged.
+- The gates runner calls a non-strict state idle when the window ends quiet.
+  A one-shot subscription that fires and finishes passes. A subscription
+  still firing at the end fails unless the state is `expect_busy` (gallery
+  toasts, and all of scene3d). `--idle-check` still requires `settled()`.
+
 ### Linux: idle hosts block instead of spinning
 
 - The Linux `Host` forwards `waitEvents`, and the Wayland host implements it, so an idle app sleeps in `poll` instead of running the loop flat out (a whole core before; 0% after on X11).
