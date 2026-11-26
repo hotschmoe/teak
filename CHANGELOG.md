@@ -29,6 +29,15 @@
 
 ### Repository
 
+- Sync tidy's portable implementation with zunk, retaining Teak's source scope and
+  helper names. One-statement functions no longer affect the assertion average;
+  multiline literal long lines are reported separately. Held files now include
+  the owned assert, entry-point options and native font loaders.
+- Tidy inventories persistent mutable globals and process calls, and detects
+  libc/raw file APIs, dynamic library loads, sleeps and environment writes.
+  Pure `std.fs.path` helpers no longer count as file IO. Ratchets were reconciled
+  for these accounting changes without editing library or example code.
+
 - `zig build tidy` measures TigerStyle with the Zig parser and runs in the blocking
   gate. Exact per-directory ratchets live in `tools/tidy_ratchet.zon`; `-- --table`
   prints Markdown and `-- --update` only tightens numbers. It also checks zero test
