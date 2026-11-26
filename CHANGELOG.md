@@ -2,25 +2,23 @@
 
 ## Unreleased
 
-### CI gates (#141)
+### Background gates (#141)
 
+- `zig build gates` measures idle, input latency, idle memory and binary size
+  for every example and writes `zig-out/gates/ci-gates.json`. It is the last
+  stage of the background gate (`zig build test-heavy`) and never blocks a PR;
+  the scheduled `heavy` CI job uploads the JSON.
+- Budgets live in `tools/ci_gates_budgets.json`; a value more than 10% over
+  its budget fails. Wasm brotli (ReleaseSmall, quality 11) is the portable
+  budget. Native exe size and idle memory are budgeted per host triple: a host
+  with no entry has them reported and skipped. Only `aarch64-linux` is seeded.
 - `teak.headless.latencyCheck` / `latencyAfterClick`: a scripted click must
   be presented on the next frame (budget 1, the designed hit-test latency).
   A view that never sits still is `unstable`; a click that changes nothing
   is `unchanged`.
-- `IdleReport` now counts caret presents (`blinks`, `fullyQuiet`) and samples
-  RSS / committed bytes at the end of the idle window, while the offscreen
-  Gpu is still alive. `settled()` is unchanged. Committed bytes are
-  `Committed_AS` when the kernel prints it, otherwise `RssAnon + VmSwap`.
-- `zig build gates` runs idle, latency, memory and binary size for every
-  example and writes `zig-out/gates/ci-gates.json`. Budgets are
-  `tools/ci_gates_budgets.json` (fail above +10%). Wasm brotli (quality 11,
-  ReleaseSmall) is the portable number. Native exe size and RSS are per host
-  triple and GPU; a missing budget is recorded and does not fail. The native
-  exe is unstripped ReleaseSmall. `scene3d` is `expect_busy` because its
-  orbit subscribes every frame on purpose.
-- GitHub Actions job `ci-gates` (lavapipe + brotli). x86_64 native/RSS budgets
-  are unset until that runner's numbers are committed.
+- `IdleReport` counts caret presents (`blinks`, `fullyQuiet`) and, on Linux,
+  samples RSS and committed bytes (`RssAnon + VmSwap`) at the end of the idle
+  window while the offscreen Gpu is alive. `settled()` is unchanged.
 - The gates runner calls a non-strict state idle when the window ends quiet.
   A one-shot subscription that fires and finishes passes. A subscription
   still firing at the end fails unless the state is `expect_busy` (gallery
