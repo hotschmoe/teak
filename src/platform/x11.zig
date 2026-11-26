@@ -1269,7 +1269,7 @@ pub const Host = struct {
         self.startTransfer(.paste_targets, a.clipboard, a.targets, CurrentTime, 0);
     }
 
-    /// Blocking text read for the app's `handleClipboard` Ctrl+V path: our own
+    /// Blocking text read for the run loop's Ctrl+V path: our own
     /// content when we own the selection, else a bounded (250 ms) UTF8_STRING
     /// round trip that pumps only the selection events it needs.
     fn syncRead(self: *Host) []const u8 {

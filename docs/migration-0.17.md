@@ -1,13 +1,13 @@
 # Migrating to Zig 0.17
 
-Teak (and zunk, rich_zig and webzocket) now require **Zig 0.17.0**. Zig 0.16 is
+Teak (and zunk, rich_zig and webzocket) now require **Zig 0.17.1** (0.17.0 when this guide was written). Zig 0.16 is
 no longer supported. There is no API change in teak's public surface; the
 changes below are in how you build and in any build-time reflection you wrote
 yourself.
 
 ## For consumers
 
-- **`build.zig.zon`**: set `.minimum_zig_version = "0.17.0"`. Re-pin `teak`,
+- **`build.zig.zon`**: set `.minimum_zig_version = "0.17.1"`. Re-pin `teak`,
   `zunk` and (if you use it) `rich_zig` to commits that contain their 0.17
   migration.
 - **`build.zig`**: `b.args` is gone. Replace

@@ -36,7 +36,7 @@ the change yields, not the doc. If you believe the doc is wrong, invoke
 
 zunk is a **hash-pinned dependency** in `build.zig.zon`; co-develop with `zig build <step> --fork=../zunk`.
 
-Requires **Zig 0.17.0+**.
+Requires **Zig 0.17.1+**.
 
 The binding testing and comment policy is in [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md). Run the blocking end-to-end gate from the repository root with `zig build test -j4`; run the background gate with `zig build test-heavy -j4`. The blocking gate uses Bash. On Linux, the background gate needs Vulkan, Chromium, Node and the tools npm dependencies (`npm ci --prefix tools`); on Windows it drives native windows through PowerShell. Do not add unit tests or golden-output tests.
 

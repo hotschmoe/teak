@@ -217,22 +217,6 @@ pub fn linkNativeWgpu(
     }
 }
 
-pub const Win32WgpuOptions = struct {};
-
-/// Deprecated alias for `linkNativeWgpu`, kept for consumers still calling
-/// the Windows-specific name. Asserts a Windows target — cross-OS
-/// consumers should switch to `linkNativeWgpu`.
-pub fn linkWin32Wgpu(
-    b: *std.Build,
-    exe: *std.Build.Step.Compile,
-    _: Win32WgpuOptions,
-) void {
-    if (exe.root_module.resolved_target.?.result.os.tag != .windows) {
-        @panic("teak.linkWin32Wgpu: target must be Windows (use teak.linkNativeWgpu for cross-OS)");
-    }
-    linkNativeWgpu(b, exe, .{});
-}
-
 fn linkWindows(
     b: *std.Build,
     exe: *std.Build.Step.Compile,

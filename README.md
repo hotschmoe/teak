@@ -43,7 +43,7 @@ Examples: `chrome`, `counter_greeter`, `effects`, `fonts`, `gallery`, `kerf_view
 
 ## Build commands
 
-Requires **Zig 0.17.0+**.
+Requires **Zig 0.17.1+**.
 
 On Linux the background gate needs Vulkan, Chromium, Node and the tools dependencies (`npm ci --prefix tools`). On Windows it drives native windows through PowerShell.
 

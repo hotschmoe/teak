@@ -32,14 +32,11 @@
 //! only the ones the app needs:
 //!   - `keyCharMsg(*const Model, u8) ?Msg`            — typed character
 //!   - `keySpecialMsg(*const Model, SpecialKey) ?Msg` — arrows/enter/etc
-//!   - `keyNeedsClipboard(SpecialKey) bool`           — pairs with…
 //!   - `clipboardText(*const Model, SpecialKey) ?[]const u8` — what Ctrl+C /
 //!     Ctrl+X copy (a pure query; the loop writes it to the Host clipboard)
 //!   - `clipboardMsg(*const Model, SpecialKey, paste: []const u8) ?Msg` — the
 //!     Msg for Ctrl+C / Ctrl+X / Ctrl+V (`paste` is the clipboard text for
 //!     Ctrl+V, "" otherwise; an empty paste is not delivered)
-//!   - `handleClipboard(*Model, SpecialKey, Clipboard) void` — DEPRECATED
-//!     (mutates the Model outside `update`); cut/copy/paste
 //!   - `wheelMsg(*const Model, f32) ?Msg`             — vertical wheel
 //!   - `canvasMsg(*const Model, CanvasEvent) ?Msg`    — pointer input over
 //!     interactive canvases and scenes (`CanvasCmd.pointer`,
@@ -1553,19 +1550,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     self.routeClipboard(k);
                     continue;
                 }
-                // Deprecated state-mutating adapter; see CHANGELOG.
-                const clipboard_capable = comptime (@hasDecl(App, "keyNeedsClipboard") and @hasDecl(App, "handleClipboard"));
-                if (clipboard_capable and App.keyNeedsClipboard(k)) {
-                    App.handleClipboard(&self.model, k, self.host.clipboard());
-                } else {
-                    if (@hasDecl(App, "keySpecialMsg")) {
-                        if (App.keySpecialMsg(&self.model, k)) |m| {
-                            self.dispatch(m);
-                            continue;
-                        }
+                if (@hasDecl(App, "keySpecialMsg")) {
+                    if (App.keySpecialMsg(&self.model, k)) |m| {
+                        self.dispatch(m);
+                        continue;
                     }
-                    _ = self.navKey(prev_cmds, prev, k);
                 }
+                _ = self.navKey(prev_cmds, prev, k);
             }
         }
 
@@ -2295,7 +2286,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
         /// Hand the host's finished effect results (and unsolicited drops /
         /// pastes) to the app. Runs after key routing so a Ctrl+V handled by
-        /// `handleClipboard` has already claimed its paste. A result whose id
+        /// `clipboardMsg` has already claimed its paste. A result whose id
         /// is no longer listed was cancelled by the app: dropped.
         fn deliverEffectResults(self: *Self) void {
             if (comptime !(has_effect_msg and host_effects)) return;
