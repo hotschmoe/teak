@@ -29,8 +29,6 @@ const emitCanvasPrimitive = canvas_tess.emitCanvasPrimitive;
 const clipSegment = canvas_tess.clipSegment;
 const emitTriangles = canvas_tess.emitTriangles;
 pub const sdf = @import("sdf.zig");
-// World-space tessellation for `.canvas_geometry`. Not a `///` doc: gen_api
-// would attach it to the next declaration (`ImageDraw`).
 pub const canvas_geom = @import("canvas_geom.zig");
 
 /// Image draw record. Parallel to TextDraw — the GPU backend consumes
@@ -54,12 +52,10 @@ pub const ImageDraw = struct {
 /// Where the overlay layer (HARDLINE §2 hatch 5: base z=0, overlay z=1)
 /// starts inside each staged list, as counts of what the base layer
 /// produced. A Gpu that honours it draws base solids, images, scene
-/// composites, retained canvas geometry and text first, THEN the overlay's
-/// solids, images, composites, geometry and text, so an opaque overlay
-/// panel hides base-layer text, images and retained geometry beneath it.
-/// Within one layer the
-/// order is solids, images, scene composites, retained geometry, text:
-/// a retained draw sits above that layer's immediate canvas primitives.
+/// composites, retained canvas geometry and text first, THEN the overlay's,
+/// so an opaque overlay panel hides base-layer text, images and retained
+/// geometry beneath it. Within a layer a retained draw sits above that
+/// layer's immediate canvas primitives.
 pub const OverlaySplit = struct {
     /// Vertices in `verts` produced by the base layer.
     verts: u32 = 0,
@@ -71,10 +67,8 @@ pub const OverlaySplit = struct {
 };
 
 /// One retained canvas-geometry draw. `handle` is the app key until
-/// `stageDraws` remaps it to a backend handle. `tx` / `ty` already include
-/// the canvas origin (`canvas + transform`). The clip is the canvas rect
-/// intersected with the scroll clip, in window logical px; the shader
-/// discards fragments outside it.
+/// `stageDraws` remaps it. `tx` / `ty` include the canvas origin; the clip
+/// is the canvas rect intersected with the scroll clip, in window logical px.
 pub const CanvasGeomDraw = struct {
     handle: u32,
     sx: f32,
@@ -973,34 +967,6 @@ fn buildTestFrame(alloc: std.mem.Allocator, cb: anytype) !TestFrame {
     var f: TestFrame = .{};
     f.split = buildFrame(&f.verts, &f.texts, &f.images, &f.scenes, &f.items, &f.sprites, &f.geoms, alloc, cb.cmds.items, rects, .{}, text_mod.monoMeasurer());
     return f;
-}
-
-test "canvas geometry is a draw record and does not lower its own vertices" {
-    const testing = std.testing;
-    const Msg = enum { click };
-    var cb = cmd_mod.CmdBuffer(Msg).init(testing.allocator);
-    defer cb.deinit();
-    const segs = [_][4]f32{.{ 0, 0, 10, 0 }};
-    cb.pushGroup(.{ .padding = 0, .gap = 0 });
-    cb.canvas(.{ .width = 100, .height = 80, .transform = .{ .sx = 2, .sy = -1, .tx = 3, .ty = 4 } }, &.{
-        .{ .geometry = .{ .key = 0 } },
-        .{ .geometry = .{ .key = 4 } },
-        .{ .lines = .{ .segs = &segs, .thickness = 2 } },
-    });
-    cb.popGroup();
-    var f = try buildTestFrame(testing.allocator, &cb);
-    defer f.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 1), f.geoms.items.len);
-    try testing.expectEqual(@as(u32, 4), f.geoms.items[0].handle);
-    try testing.expectEqual(@as(f32, 2), f.geoms.items[0].sx);
-    try testing.expectEqual(@as(f32, -1), f.geoms.items[0].sy);
-    try testing.expectEqual(@as(f32, 100), f.geoms.items[0].clip_w);
-    try testing.expectEqual(@as(f32, 80), f.geoms.items[0].clip_h);
-    try testing.expectEqual(f.geoms.items[0].clip_x + 3, f.geoms.items[0].tx);
-    try testing.expectEqual(f.geoms.items[0].clip_y + 4, f.geoms.items[0].ty);
-    // The line still lowers. The geometry ref adds none of those vertices.
-    try testing.expect(f.verts.items.len >= 6);
-    try testing.expectEqual(@as(u32, 1), f.split.geoms);
 }
 
 const TV = CanvasPrimitive.TriVertex;

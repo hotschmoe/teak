@@ -10,16 +10,25 @@
   `CanvasStyle.transform`; `shaders/canvas_geom.wgsl` applies it. Stroke
   widths and `screen_radius` stay in screen pixels. `antialias` is baked
   (toggling it is a new `rev`). `hline`, `vline`, `text` and a nested
-  `.geometry` are skipped. World arcs are chorded once at 44 px per world
-  unit.
+  `.geometry` are skipped. World arcs are drawn analytically in the
+  shader, so they stay round at every zoom.
 - Painter's order: `OverlaySplit.geoms` splits retained draws the way
   `images` and `scenes` split those lists. Within a layer the pass draws
   solids, images, scene composites, retained geometry, then text, so a
   retained draw sits above that canvas's immediate primitives and below
   the layer's text. Both the native and web backends draw it.
+- Breaking for hand-written loops and custom Gpus: `buildFrame` takes a
+  `geom_draws` list after `scene_sprites`, `stageDraws` takes the staged
+  `[]CanvasGeomDraw` last, exhaustive switches over `CanvasPrimitive` and
+  `Resource` need the `geometry` / `canvas_geometry` arms, and a Gpu that
+  serves `resources` must declare `uploadCanvasGeometry` and
+  `releaseCanvasGeometry`.
 - `examples/vector_canvas` keeps four retained buffers. On the fit view
-  (ReleaseFast, lavapipe, aarch64) steady `build_ms` went from about 24 ms
-  to about 0.3 ms. The four vector_canvas goldens match.
+  with every frame rebuilt (`TEAK_CONTINUOUS=1`, ReleaseFast, x86_64,
+  lavapipe) steady `build_ms` went from about 23 ms to about 0.05 ms; the
+  frame that uploads pays about 25 ms once. `gpu_ms` on that software
+  rasterizer is no lower (it runs the vertex stage on the CPU); a hardware
+  GPU was not measured.
 
 ## 0.2.0 (2026-10-27)
 

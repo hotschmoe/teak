@@ -136,11 +136,9 @@ pub const Model = struct {
     xf: ?teak.CanvasTransform = null,
     antialias: bool = true,
     show_braces: bool = true,
-    /// Heap lines primitives (braces, members) so geometry resources keep
-    /// pointing at them after `Model` is copied out of `init`.
+    /// Braces and members as `lines` batches; on the heap so resources outlive the copy out of `init`.
     batches: *[2]teak.CanvasPrimitive = undefined,
-    /// Three toolbar images (keys 1–3) plus four canvas-geometry batches
-    /// (keys 1–4; keys are per kind). Heap, same reason.
+    /// Three toolbar images, then four canvas geometries (keys are per kind).
     listed: *[7]teak.Resource = undefined,
 
     pub fn init() Model {
@@ -158,8 +156,7 @@ pub const Model = struct {
         return m;
     }
 
-    /// Republish the geometry resources. `rev` is 2 while antialiasing is
-    /// on and 1 while it is off, so toggling it re-tessellates once.
+    /// Antialiasing is baked into the buffers, so each setting is its own `rev`.
     fn syncResources(m: *Model) void {
         const ic = m.icons orelse return;
         const rev: u32 = if (m.antialias) 2 else 1;
@@ -238,7 +235,7 @@ pub fn view(m: *const Model, cb: anytype) void {
     cb.text(std.fmt.allocPrint(arena, "{d} members, {d} nodes, {d:.1} px/m", .{ g.memberCount(), g.nodes.len, scale }) catch "");
     cb.popGroup();
 
-    // Preserve painter order; the Model owns the slices.
+    // Painter's order: braces, members, overlays, node dots.
     var prims: [4]teak.CanvasPrimitive = undefined;
     var n: usize = 0;
     if (m.show_braces) {

@@ -91,9 +91,6 @@ const Sampled = struct {
 
 const ImageCache = GrowSlotTable(Sampled, IMAGE_MAX_SLOTS);
 
-/// Retained canvas-geometry buffers. One slot per uploaded resource;
-/// 0 stays the none handle. Empty tessellations are resident (null
-/// buffer, zero verts) so a rev is not retried.
 const GEOM_MAX_SLOTS: u32 = 1024;
 const GeomBuf = struct {
     buf: c.WGPUBuffer,
@@ -104,8 +101,6 @@ const GeomBuf = struct {
 };
 const GeomCache = GrowSlotTable(GeomBuf, GEOM_MAX_SLOTS);
 
-/// One staged retained draw: a buffer range plus the dynamic-offset slot
-/// of its transform / clip uniform.
 const GeomStaged = struct {
     buf: c.WGPUBuffer,
     count: u32,
@@ -219,23 +214,12 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         scene_ov: usize,
         geom_ov: usize,
 
-        // ── Retained canvas geometry ───────────────────────────────
-        //
-        // Tessellated once in `uploadCanvasGeometry`. Each frame's draws
-        // carry a transform and a clip; the vertex shader applies them.
-        // The pipeline is created on first use so a shader problem does
-        // not stop apps that never retain geometry.
         geom_pipeline: c.WGPURenderPipeline,
         geom_bgl: c.WGPUBindGroupLayout,
-        /// Logical size + device scale. Rewritten with the solid uniform
-        /// in `writeScreenSize` (primary, secondary, and offscreen).
         geom_screen_buf: c.WGPUBuffer,
-        /// Per-draw uniforms, 256-byte slots (`canvas_geom.draw_uniform_align`).
         geom_uni_buf: c.WGPUBuffer,
         geom_uni_size: u64,
-        /// One bind group; binding 1 has a dynamic offset into `geom_uni_buf`.
         geom_bg: c.WGPUBindGroup,
-        geom_bg_buf: c.WGPUBuffer,
         geoms: GeomCache,
         geom_draws: std.ArrayList(GeomStaged),
 
@@ -545,7 +529,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
                 .geom_uni_buf = null,
                 .geom_uni_size = 0,
                 .geom_bg = null,
-                .geom_bg_buf = null,
                 .geoms = .{},
                 .geom_draws = .empty,
                 .secondary_surfaces = @splat(.{
@@ -1272,12 +1255,8 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             self.writeVerts("image-vert-buf", &self.image_vert_buf, &self.image_vert_buf_size, self.image_verts.items);
         }
 
-        /// Upload mesh geometry; the returned handle goes into
-        /// `SceneDraw.mesh`. `MESH_HANDLE_NONE` on invalid data or a full
-        /// table. See `wgpu_scene.Renderer.uploadMesh`.
-        /// Tessellate `prims` in world space and upload the buffer. The
-        /// handle is non-zero even when the tessellation is empty (nothing
-        /// to draw, and the rev is not retried). 0 means the upload failed.
+        /// Tessellate `prims` in world space and upload the buffer. 0 means
+        /// the upload failed; an empty tessellation still gets a handle.
         pub fn uploadCanvasGeometry(self: *Self, prims: []const teak.CanvasPrimitive, antialias: bool) u32 {
             const alloc = std.heap.page_allocator;
             const verts = canvas_geom.tessellate(alloc, prims, antialias) catch return 0;
@@ -1300,9 +1279,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             if (self.geoms.remove(image_gpa, handle)) |e| e.release();
         }
 
-        /// Stage this frame's retained draws and write one uniform slot
-        /// each (transform + clip). The screen size lives in
-        /// `geom_screen_buf`, rewritten by `writeScreenSize`.
+        /// Stage this frame's retained draws: one transform + clip uniform slot each.
         pub fn uploadCanvasGeoms(self: *Self, draws: []const teak.CanvasGeomDraw) void {
             self.geom_draws.clearRetainingCapacity();
             var mark: overlay.Marker = .{ .start = self.splitOf("geoms", draws.len) };
@@ -1310,12 +1287,12 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             if (draws.len == 0) return;
 
             const slots: u64 = @as(u64, draws.len) * canvas_geom.draw_uniform_align;
-            const before = self.geom_uni_buf;
+            const size_before = self.geom_uni_size;
             wgpu_c.ensureBuffer(self.device, "geom-uniforms", c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst, &self.geom_uni_buf, &self.geom_uni_size, slots);
             if (self.geom_uni_buf == null) return;
-            if (self.geom_bg == null or self.geom_bg_buf != self.geom_uni_buf or before != self.geom_uni_buf) {
-                self.rebuildGeomBindGroup();
-            }
+            // The size, not the pointer, says the buffer was replaced: a new buffer can reuse the old address.
+            if (self.geom_bg == null or self.geom_uni_size != size_before) self.rebuildGeomBindGroup();
+            if (self.geom_bg == null) return;
 
             for (draws, 0..) |d, di| {
                 mark.visit(di, self.geom_draws.items.len);
@@ -1358,7 +1335,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             desc.entryCount = entries.len;
             desc.entries = &entries;
             self.geom_bg = c.wgpuDeviceCreateBindGroup(self.device, &desc);
-            self.geom_bg_buf = uni;
         }
 
         fn ensureGeomPipeline(self: *Self) bool {
@@ -1434,8 +1410,6 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         fn drawGeoms(self: *Self, pass: c.WGPURenderPassEncoder, range: struct { usize, usize }) void {
             const from, const to = range;
             if (to <= from) return;
-            if (!self.ensureGeomPipeline()) return;
-            if (self.geom_bg == null or self.geom_bg_buf != self.geom_uni_buf) self.rebuildGeomBindGroup();
             const bg = self.geom_bg orelse return;
             c.wgpuRenderPassEncoderSetPipeline(pass, self.geom_pipeline);
             for (self.geom_draws.items[from..to]) |rec| {
@@ -1447,6 +1421,9 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             }
         }
 
+        /// Upload mesh geometry; the returned handle goes into
+        /// `SceneDraw.mesh`. `MESH_HANDLE_NONE` on invalid data or a full
+        /// table. See `wgpu_scene.Renderer.uploadMesh`.
         pub fn uploadMesh(self: *Self, data: teak.MeshData) teak.MeshHandle {
             return self.scene.uploadMesh(data);
         }

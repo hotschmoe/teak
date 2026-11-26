@@ -212,9 +212,12 @@ image key 1 are different resources.
 field, a map. Build the slices once. Hide a layer by omitting its
 `.geometry` primitive; that does not re-upload. `examples/vector_canvas`
 keeps four resources (braces, members, overlays, nodes). On its fit view
-the steady frame build dropped from about 24 ms to about 0.3 ms
-(ReleaseFast, lavapipe, aarch64); the tessellation is paid on the frame
-that uploads. Leave a chart, a polyline that changes every frame, or a
+with every frame rebuilt the steady frame build dropped from about 23 ms
+to about 0.05 ms (ReleaseFast, x86_64, lavapipe); the tessellation, about
+25 ms, is paid on the frame that uploads. The GPU now transforms every
+retained vertex each frame with nothing culled on the CPU: free on a
+hardware GPU, but a software rasterizer spends as long there as it did
+before. Leave a chart, a polyline that changes every frame, or a
 few dozen segments on the immediate path: a `rev` bump tessellates again.
 
 **What is stored.** Polylines, `lines`, circles, arcs, polygons,
@@ -224,12 +227,12 @@ and `screen_radius` stay in screen pixels and expand in the vertex shader
 weight at every zoom. Joins are exact for a uniform scale, including a
 y-flip (`|sx| == |sy|`); `|sx| != |sy|` only approximates them. `hline`,
 `vline`, `text` and a nested `.geometry` are skipped. `antialias` is
-baked: toggling it without a new `rev` leaves the old edges. World arcs
-are chorded once at 44 px per world unit (`arc_ref_px` in
-`src/render/canvas_geom.zig`), the 0.25 px chord error the immediate
-path uses at that scale. Further in, the retained chords grow; the
-immediate path would retessellate. 3D plane layers ignore `.geometry`
-(no coverage shader), the same as canvas `text`.
+baked: toggling it without a new `rev` leaves the old edges. A world
+arc has no pixel size until the transform is known, so it is not chorded:
+the shader draws it analytically (like a circle) and it stays round at
+every zoom. A `screen_radius` arc is chorded once, at its pixel radius.
+3D plane layers ignore `.geometry` (no coverage shader), the same as
+canvas `text`.
 
 **Painter's order.** `OverlaySplit.geoms` is the count of retained draws
 in the base layer, the same kind of split as `images` and `scenes`.
@@ -247,9 +250,11 @@ drawn after the base layer's text.
 rect the way the immediate path does (`canvas_tess.clipSegment`). A
 trimmed antialiased end is then extended by `thickness/2 + 1`, and the
 quad grows one more pixel. Immediate solids have no scissor, so that
-bulge is painted just outside the rect on both paths. Hard fills and
-circles are discarded on the rect; antialiased strokes and polygon
-fringes keep a 3 px fragment pad so the bulge survives.
+bulge is painted just outside the rect on both paths. Hard fills,
+circles and world arcs are discarded on the rect; antialiased strokes
+and polygon fringes keep a 3 px fragment pad so the bulge survives (a
+stroke thicker than about 1.5 px is cut slightly tighter at the canvas
+edge than on the immediate path).
 
 **Residency.** Same rules as meshes and images: 0 is reserved, a failed
 upload is handle 0 and is not retried until `rev` changes, and an empty

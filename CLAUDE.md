@@ -316,6 +316,7 @@ examples/                                     -- each its own build.zig; consume
   viewport/                                   -- Viewport example: a pan / zoom canvas and a scrollable list with a scrollbar — the two
 
 shaders/
+  canvas_geom.wgsl                            -- Retained canvas geometry: canvas transform and stroke expansion over world-space records
   glyph.wgsl                                  -- Instanced glyph quads sampled from an R8 coverage atlas page
   image.wgsl                                  -- RGBA image: multiply texture color by tint. `color` is the
   quad.wgsl                                   -- Solid quads, antialiased canvas edges (color.a <= -1.5, see

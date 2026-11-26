@@ -139,18 +139,15 @@ pub fn emitCanvasPrimitiveOpts(
             strokeWindowPath(verts, alloc, pts, full, ar.thickness, ar.color, o.aa, clip);
         },
         .polygon => |pg| emitPolygon(verts, alloc, canvas, pg, clip, o),
-        // Retained: `buildFrame` emits a draw record instead of tessellating.
-        // Plane layers have no coverage shader, so a geometry prim is a no-op
-        // there, same as text.
         .geometry => {},
     }
 }
 
-const MAX_ARC_POINTS = 512;
+pub const MAX_ARC_POINTS = 512;
 
 /// Segments for an arc of radius `r` px through `sweep` radians so the chord
 /// error stays under a quarter pixel.
-fn arcSegments(r: f32, sweep: f32) usize {
+pub fn arcSegments(r: f32, sweep: f32) usize {
     const tol: f32 = 0.25;
     const ratio = std.math.clamp(1 - tol / @max(r, tol), -1, 1);
     const step = @max(2 * std.math.acos(ratio), 0.02);
@@ -222,7 +219,7 @@ fn strokePoints(verts: *std.ArrayList(Vertex), alloc: std.mem.Allocator, canvas:
 /// How far to extend a segment end into a join so the two quads meeting
 /// there leave no notch: half the width times tan(turn / 2), capped at half
 /// the width (a square cap at sharp turns).
-fn joinExt(hw: f32, ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) f32 {
+pub fn joinExt(hw: f32, ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) f32 {
     const d1x = bx - ax;
     const d1y = by - ay;
     const d2x = cx - bx;
@@ -441,7 +438,7 @@ fn cross(o: [2]f32, a: [2]f32, b: [2]f32) f32 {
     return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
 }
 
-fn isEar(pts: []const [2]f32, ring: []const u32, ia: u32, ib: u32, ic: u32, sign: f32) bool {
+pub fn isEar(pts: []const [2]f32, ring: []const u32, ia: u32, ib: u32, ic: u32, sign: f32) bool {
     const a = pts[ia];
     const b = pts[ib];
     const c = pts[ic];

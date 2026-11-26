@@ -73,9 +73,6 @@ const Sampled = struct {
 
 const ImageCache = GrowSlotTable(Sampled, IMAGE_MAX_SLOTS);
 
-/// Retained canvas-geometry buffers. One slot per uploaded resource;
-/// 0 stays the none handle. Empty tessellations are resident (null
-/// buffer, zero verts) so a rev is not retried.
 const GEOM_MAX_SLOTS: u32 = 1024;
 const GeomBuf = struct {
     buf: ?zgpu.Buffer,
@@ -86,9 +83,6 @@ const GeomBuf = struct {
 };
 const GeomCache = GrowSlotTable(GeomBuf, GEOM_MAX_SLOTS);
 
-/// One staged retained draw. The web pass cannot take a dynamic uniform
-/// offset, so each draw owns a bind group at a 256-byte slot of
-/// `geom_uni_buf` (`canvas_geom.draw_uniform_align`).
 const GeomStaged = struct {
     buf: zgpu.Buffer,
     count: u32,
@@ -235,15 +229,9 @@ pub const Gpu = struct {
     scene_ov: usize,
     geom_ov: usize,
 
-    // Retained canvas geometry. Tessellated once in `uploadCanvasGeometry`.
-    // Each frame's draws carry a transform and a clip; the vertex shader
-    // applies them. The pipeline is created on first use.
     geom_pipeline: ?zgpu.RenderPipeline,
     geom_bgl: ?zgpu.BindGroupLayout,
-    /// Logical size + device scale. Rewritten by `writeScreenSize` and
-    /// again in `uploadCanvasGeoms` so a later device-pixel ratio is current.
     geom_screen_buf: zgpu.Buffer,
-    /// Per-draw uniforms, 256-byte slots (`canvas_geom.draw_uniform_align`).
     geom_uni_buf: ?zgpu.Buffer,
     geom_uni_size: u32,
     geoms: GeomCache,
@@ -467,9 +455,6 @@ pub const Gpu = struct {
         self.writeGeomScreen();
     }
 
-    /// Logical size plus device pixels per logical pixel. The fragment
-    /// clip test divides `@builtin(position)` by `scale`. A missing
-    /// canvas (init, before the backing store exists) uses scale 1.
     fn writeGeomScreen(self: *Gpu) void {
         const canvas = zgpu.canvasSize();
         const scale: f32 = if (self.width > 0 and canvas.w > 0)
@@ -834,9 +819,8 @@ pub const Gpu = struct {
         self.image_pipeline = uiPipeline(self.text_pl, zgpu.createShaderModule(SHADER_IMAGE), &layouts, self.samples);
     }
 
-    /// Tessellate `prims` in world space and upload the buffer. The
-    /// handle is non-zero even when the tessellation is empty (nothing
-    /// to draw, and the rev is not retried). 0 means the upload failed.
+    /// Tessellate `prims` in world space and upload the buffer. 0 means
+    /// the upload failed; an empty tessellation still gets a handle.
     pub fn uploadCanvasGeometry(self: *Gpu, prims: []const teak.CanvasPrimitive, antialias: bool) u32 {
         const verts = canvas_geom.tessellate(image_gpa, prims, antialias) catch return 0;
         defer image_gpa.free(verts);
@@ -859,9 +843,7 @@ pub const Gpu = struct {
         if (self.geoms.remove(image_gpa, handle)) |e| e.release();
     }
 
-    /// Stage this frame's retained draws. Each surviving draw gets a bind
-    /// group: binding 0 is the screen uniform, binding 1 is a 32-byte
-    /// slice at a 256-byte offset of `geom_uni_buf`.
+    /// Stage this frame's retained draws: one bind group per draw at its uniform slot.
     pub fn uploadCanvasGeoms(self: *Gpu, draws: []const teak.CanvasGeomDraw) void {
         for (self.geom_draws.items) |d| zgpu.release(d.bind_group);
         self.geom_draws.clearRetainingCapacity();
@@ -910,8 +892,6 @@ pub const Gpu = struct {
         }
     }
 
-    /// The retained-geometry pipeline, compiled on first use. Two uniform
-    /// bindings, neither dynamic: the web pass API has no offset argument.
     fn ensureGeomPipeline(self: *Gpu) bool {
         if (self.geom_pipeline != null) return true;
         const G = canvas_geom.GeomVertex;

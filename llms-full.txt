@@ -3691,19 +3691,15 @@ Accessibility tree builder.
 > Where the overlay layer (HARDLINE §2 hatch 5: base z=0, overlay z=1)
 > starts inside each staged list, as counts of what the base layer
 > produced. A Gpu that honours it draws base solids, images, scene
-> composites, retained canvas geometry and text first, THEN the overlay's
-> solids, images, composites, geometry and text, so an opaque overlay
-> panel hides base-layer text, images and retained geometry beneath it.
-> Within one layer the
-> order is solids, images, scene composites, retained geometry, text:
-> a retained draw sits above that layer's immediate canvas primitives.
+> composites, retained canvas geometry and text first, THEN the overlay's,
+> so an opaque overlay panel hides base-layer text, images and retained
+> geometry beneath it. Within a layer a retained draw sits above that
+> layer's immediate canvas primitives.
 - `struct OverlaySplit`
   - fields: `verts, text, images, scenes, geoms`
 > One retained canvas-geometry draw. `handle` is the app key until
-> `stageDraws` remaps it to a backend handle. `tx` / `ty` already include
-> the canvas origin (`canvas + transform`). The clip is the canvas rect
-> intersected with the scroll clip, in window logical px; the shader
-> discards fragments outside it.
+> `stageDraws` remaps it. `tx` / `ty` include the canvas origin; the clip
+> is the canvas rect intersected with the scroll clip, in window logical px.
 - `struct CanvasGeomDraw`
   - fields: `handle, sx, sy, tx, ty, clip_x, clip_y, clip_w, clip_h`
 > Generic over the Cmd slice type. Walks (cmd, rect) pairs and emits

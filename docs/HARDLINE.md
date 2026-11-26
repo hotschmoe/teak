@@ -266,7 +266,8 @@ records. It is the level-triggered sibling of `Sub` (hatch 6): the app
   failed upload leaves the key non-resident (its draws are skipped) and is
   retried only when `rev` changes. `antialias` on a canvas-geometry
   resource is baked into the buffer; changing it is a new `rev`.
-- Unique keys per kind (0 is reserved), at most 128 resident resources.
+- Unique keys per kind (0 is reserved), at most 1024 resident resources
+  (`MAX_RESOURCES`).
 
 ---
 

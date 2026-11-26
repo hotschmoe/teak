@@ -22,7 +22,9 @@ Triangle runs read one packed record per instance; line segments use stride zero
 
 ## src/gpu/web.zig
 
-The image cache grows to 65,536 live images and falls back to a tinted placeholder when full. Scene targets render offscreen and their composite bind groups are rebuilt when targets change. Overlay staging separates base and overlay records: each layer draws solids, images, scene composites, then text, so opaque overlays cover base text. This order matches the native GPU core.
+The image cache grows to 65,536 live images and falls back to a tinted placeholder when full. Scene targets render offscreen and their composite bind groups are rebuilt when targets change. Overlay staging separates base and overlay records: each layer draws solids, images, scene composites, retained canvas geometry, then text, so opaque overlays cover base text. This order matches the native GPU core.
+
+The web render pass cannot take a dynamic uniform offset, so each staged retained-geometry draw owns a bind group at a 256-byte slot of one uniform buffer; the bind groups are rebuilt every frame. The retained-geometry pipeline is compiled on first use. The geometry screen uniform is rewritten in `uploadCanvasGeoms` as well as on resize so a changed device-pixel ratio is current; before the canvas has a backing store the scale is 1.
 
 The zunk atlas uses a downward y-axis from the baseline; glyph pixel (0,0) is at `(pen + bearing_x, baseline - bearing_y)`. The solid vertex buffer is also bound read-only in the fragment stage for SDF records.
 
@@ -32,7 +34,9 @@ Image handles are slot indices plus one; zero is the sentinel. Scene bind groups
 
 Native resource release order is bind groups, views, textures, then vertex buffers. A presented frame texture must be released before reconfiguring the surface; holding it prevents DX12 swapchain resize. The screen-size uniform must be rewritten even for the primary window after a secondary window is rendered.
 
-The solid vertex buffer is bound in the fragment stage for SDF records. The glyph sampler uses nearest magnification to avoid re-blurring rasterized antialiasing and linear minification. Each layer draws solids, images, scene composites and then text; the overlay follows the base so it covers base text. Scene targets use device resolution and are composited 1:1.
+The solid vertex buffer is bound in the fragment stage for SDF records. The glyph sampler uses nearest magnification to avoid re-blurring rasterized antialiasing and linear minification. Each layer draws solids, images, scene composites, retained canvas geometry and then text; the overlay follows the base so it covers base text. Scene targets use device resolution and are composited 1:1.
+
+Retained canvas geometry keeps one vertex buffer per uploaded resource (1024 slots; handle zero is the sentinel). An empty tessellation is resident with a null buffer so its revision is not retried. Per-draw uniforms live in one buffer at 256-byte slots and are selected by a dynamic offset on a single bind group, which is rebuilt whenever that buffer is reallocated. The pipeline is created on first use so a shader problem cannot stop an app that never retains geometry. The geometry screen uniform is rewritten together with the solid screen-size uniform for primary, secondary and offscreen targets.
 
 ## src/gpu/wgpu_scene.zig
 
@@ -133,6 +137,12 @@ Per-item placement uses `scene_pass.Packed` (80 bytes); normals use the linear t
 
 Each glyph instance uses raw 32-bit attributes shared by native and web. Positions are device pixels, while the screen uniform is logical size, so clip-space division uses `screen * scale`. Flag bits 0–1 select coverage, distance field or RGBA; bits 16–31 encode quad scale in 1/256 units. Coverage uses exact pixel-aligned fetches; distance fields use bilinear sampling and a derivative-sized edge transition. Colour glyphs use their own RGB and instance alpha.
 
+## shaders/canvas_geom.wgsl
+
+Draws the world-space records of `src/render/canvas_geom.zig` (layout and kinds there) under a per-draw transform and clip. Segment expansion and coverage match `canvas_tess.emitAaSegment` and `shaders/quad.wgsl`, so a retained draw stays within a couple of 8-bit levels of the immediate path. A stroke's centre line is clipped to the draw rect in the vertex stage (Liang-Barsky, as `canvas_tess.clipSegment`); a trimmed antialiased end is then extended by `thickness/2 + 1`, as `strokeSegment` does. A fully clipped quad collapses to one point with `w = 1`. In the fragment stage hard fills, markers and circles are discarded on the rect, while antialiased strokes and fringes keep a 3 px pad because the immediate path's solids are not scissored and paint that bulge; strokes thicker than about 1.5 px are therefore cut slightly tighter at the canvas edge than on the immediate path. The clip test divides the framebuffer position by the screen uniform's device scale.
+
+A world arc is a bounding quad whose fragment coverage is the distance to the ring (an ellipse under a non-uniform scale) times a ramp past each end angle, so it is round at every zoom where the immediate path re-chords per frame; it differs from the immediate path by the chord error and has no join dips. Angles are in world orientation, so the fragment undoes the transform's axis signs before `atan2`. A hard (non-antialiased) arc keeps the coverage ramp at its exact thickness, because a per-pixel step would alias where MSAA smooths the immediate path's hard quads.
+
 ## shaders/quad.wgsl
 
 Solids, antialiased canvas edges and SDF quads share a stream to preserve painter order. Vertex alpha selects solid (`>= 0`), SDF (`-1`) or antialiased edge (`<= -1.5`, with opacity `-2 - a`); the SDF vertex's red field indexes a six-vertex header containing the 36-float record defined in `src/render/sdf.zig`. UVs are pixel offsets from the rect centre. Radii are ordered bottom-right, top-right, bottom-left, top-left with y increasing downward. Derivatives size antialiasing to a device pixel; gradients and shadows use dither to reduce 8-bit banding.
@@ -165,7 +175,7 @@ Grid passes rescan direct children while skipping subtrees via `Rect.end`, visit
 
 ## src/render/build.zig
 
-Base rendering pushes a zero clip for overlay children, defensively suppressing them until the overlay pass. A group's panel and text-selection highlights are emitted before their contents so painter order places content on top. Missing image handles render tinted placeholders. Disabled controls omit interaction feedback, focus, selection and caret. IME preedit comes from `TransientState`, draws inline with an underline, and is committed through the normal text-input message path; the caret moves to the end of the preedit. Canvas primitives use the intersection of their own rect and enclosing scroll or overlay clip; rotated polylines additionally use data-space Liang–Barsky clipping.
+Base rendering pushes a zero clip for overlay children, defensively suppressing them until the overlay pass. A group's panel and text-selection highlights are emitted before their contents so painter order places content on top. Missing image handles render tinted placeholders. Disabled controls omit interaction feedback, focus, selection and caret. IME preedit comes from `TransientState`, draws inline with an underline, and is committed through the normal text-input message path; the caret moves to the end of the preedit. Canvas primitives use the intersection of their own rect and enclosing scroll or overlay clip; rotated polylines additionally use data-space Liang–Barsky clipping. A `.geometry` primitive lowers no vertices: it appends a `CanvasGeomDraw` (transform including the canvas origin, plus that clip) whose `handle` is the app key until `stageDraws` remaps it. Retained draws are staged with image and scene composites, so within a layer they paint above every immediate primitive and below text.
 
 ## src/core/dropdown.zig
 
@@ -222,6 +232,22 @@ Wayland clipboard writes are non-blocking and unfinished bytes are handled by `p
 ## src/input/a11y.zig
 
 The tree builder collects overlay nodes first; a modal overlay suppresses base-layer nodes so assistive technology does not expose controls blocked from input. Containers that do not emit a node pass their nearest emitted ancestor through to descendants. Overlay bounds respect the parent clip, and the overlay establishes a clip for its children, matching hit-test behavior. Queued actions retain text storage until the action queue empties, so compaction does not invalidate offsets.
+
+## src/render/canvas_geom.zig
+
+The run loop tessellates a `.canvas_geometry` resource once, in world space with no transform baked in; pan and zoom never come back through this file. Stroke widths stay in screen pixels, so a vertex stores segment endpoints plus thickness and the vertex shader expands the quad. A vertex is 20 floats (80 bytes), bound as ten `vec2` attributes: `(kind, corner)`, `a`, `b`, `c`, `d`, `(r, g)`, `(b, a)`, `(sr, sg)`, `(sb, sa)`, `(e0, e1)`. A quad is six vertices with corners 0,1,2,0,2,3; a fill triangle is three.
+
+| kind | a | b | c | d | other |
+|---|---|---|---|---|---|
+| 0 world segment | world start | world end | thickness px, antialias flag | | `e0`, `e1` = join extensions in px |
+| 1 triangle | world position | | | | per-vertex colour |
+| 2 circle | world centre | world radius (0 if screen), screen-radius flag | screen radius px, stroke thickness px | has fill, has stroke | `rgba` fill, `srgba` stroke |
+| 3 fringe | world edge start | world edge end | world shoelace sign | | one-pixel outward band, rebuilt after the transform |
+| 4 marker | world centre | size px | | | |
+| 5 screen segment | world centre | start offset px | end offset px | thickness px, antialias flag | offsets are taken before the axis signs; `e0`, `e1` as kind 0 |
+| 6 world arc | world centre | world radius, thickness px | start, sweep (radians, world orientation) | antialias flag | drawn analytically |
+
+`hline`, `vline` and `text` are skipped because they span the canvas or need the shaper; a nested `.geometry` is skipped too. Antialiasing is baked, so toggling it is a new revision. Join extensions come from the stored point directions: exact for a uniform scale (a y-flip included), approximate when `|sx| != |sy|`. A world-radius arc cannot be chorded here because its pixel size depends on the transform (and on the app's world unit), so it is stored as one record and the fragment shader draws it; a `screen_radius` arc is chorded at its pixel radius into kind 5 segments. Each segment costs six 80-byte vertices (480 bytes), against six 32-byte vertices re-uploaded per frame on the immediate path. Ear clipping, join and arc-chord helpers are shared with `canvas_tess.zig`.
 
 ## src/render/canvas_tess.zig
 
@@ -321,7 +347,7 @@ The popover intentionally overlaps the parts table so its opaque backdrop exerci
 
 ## examples/vector_canvas/src/app.zig
 
-Moment diagrams use the parabola of a uniformly loaded simple span. When a diagram changes sign, zero crossings split it into one filled polygon per lobe. Drawing order is braces, members, overlays, then node dots; view reuses slices owned by the Model.
+Moment diagrams use the parabola of a uniformly loaded simple span. When a diagram changes sign, zero crossings split it into one filled polygon per lobe. Drawing order is braces, members, overlays, then node dots, each a retained `.canvas_geometry` resource over slices owned by the Model, so pan and zoom change only the transform. Hiding the braces omits their draw without releasing the buffer.
 
 ## examples/scene_layers/src/app.zig
 
