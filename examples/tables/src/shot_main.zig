@@ -59,7 +59,10 @@ pub fn main(init: std.process.Init) !void {
     const h: u32 = 700;
     var host = try Host.init(gpa, w, h, options);
     defer host.deinit();
-    var gpu = try Gpu.initOffscreen(w, h, .{ .msaa = false, .gpu_fallback = options.gpu_fallback });
+    var gpu = try Gpu.initOffscreen(host.nativeHandle(), w, h, .{
+        .msaa = false,
+        .gpu_fallback = options.gpu_fallback,
+    });
     defer gpu.deinit();
     options.idle_skip = false;
     var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, options);

@@ -873,11 +873,14 @@ fn monotonicMs() u64 {
 pub const Host = struct {
     lib_loaded: bool,
     st: *State,
+    /// Face table and text caches shared with the Gpu; freed by `deinit`.
+    text_state: *text.TextState,
     /// The last synchronous file dialog's path (`openFileDialog`).
     dialog_buf: [4096]u8 = undefined,
 
     pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
-        @import("native_fonts.zig").configure(text, options);
+        const text_state = try @import("native_fonts.zig").open(text, gpa, options);
+        errdefer text_state.close();
         client.load() catch return error.WaylandLoadFailed;
         // A disconnected clipboard reader must not terminate the process.
         _ = signal(13, @ptrFromInt(1)); // SIGPIPE -> SIG_IGN
@@ -951,12 +954,11 @@ pub const Host = struct {
         s.updateScale();
         s.initCursor();
         s.now_ms = monotonicMs();
-        return .{ .lib_loaded = true, .st = s };
+        return .{ .lib_loaded = true, .st = s, .text_state = text_state };
     }
 
     pub fn deinit(self: *Host) void {
         const s = self.st;
-        text.releaseFaces();
         s.abortTransfer();
         for (&s.writes) |*w| if (w.*) |j| {
             _ = close(j.fd);
@@ -975,6 +977,7 @@ pub const Host = struct {
         client.api.display_disconnect(s.display);
         if (s.cursor_lib) |*c| c.lib.close();
         gpa.destroy(s);
+        self.text_state.close();
     }
 
     /// Drain the connection without blocking and fold events into the input
@@ -1006,10 +1009,19 @@ pub const Host = struct {
         return !self.st.running;
     }
 
-    pub const NativeHandle = struct { display: *anyopaque, surface: *anyopaque };
+    pub const NativeHandle = struct {
+        display: *anyopaque,
+        surface: *anyopaque,
+        /// The Host's text state, lent to the Gpu.
+        text: *text.TextState,
+    };
 
     pub fn nativeHandle(self: *const Host) NativeHandle {
-        return .{ .display = @ptrCast(self.st.display), .surface = @ptrCast(self.st.surface) };
+        return .{
+            .display = @ptrCast(self.st.display),
+            .surface = @ptrCast(self.st.surface),
+            .text = self.text_state,
+        };
     }
 
     pub fn setTitle(self: *Host, title: []const u8) void {
@@ -1018,11 +1030,7 @@ pub const Host = struct {
     }
 
     pub fn textMeasurer(self: *Host) TextMeasurer {
-        return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
-    }
-
-    fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        return text.measure(text_bytes, font);
+        return self.text_state.measurer();
     }
 
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
@@ -1048,8 +1056,13 @@ pub const Host = struct {
         self.st.effects.setAppName(name) catch {};
     }
 
-    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
-        try text.registerFace(family, weight, ttf);
+    pub fn registerFont(
+        self: *Host,
+        family: teak.FontFamily,
+        weight: teak.FontWeight,
+        ttf: []const u8,
+    ) !void {
+        try text.registerFace(self.text_state, family, weight, ttf);
     }
 
     /// The clipboard: `write` owns the selection through a `wl_data_source`;

@@ -104,7 +104,7 @@ Prefer the lower-level pieces when you want to inspect state between steps:
 ```zig
 var host = try Host.init(gpa, 1280, 800, options);
 defer host.deinit();
-var gpu = try Gpu.initOffscreen(1280, 800, .{ .msaa = true });
+var gpu = try Gpu.initOffscreen(host.nativeHandle(), 1280, 800, .{ .msaa = true });
 defer gpu.deinit();
 var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, .{});
 defer rt.deinit();
@@ -116,11 +116,11 @@ const rgba = try gpu.readFrame(gpa);                 // RGBA8, width*height*4
 ## `Gpu.initOffscreen` / `readFrame` (native wgpu backend)
 
 ```zig
-Gpu.initOffscreen(width: u32, height: u32, options: InitOptions) !Gpu
+Gpu.initOffscreen(handle: Host.NativeHandle, width: u32, height: u32, options: InitOptions) !Gpu
 Gpu.readFrame(self: *Gpu, allocator: std.mem.Allocator) ![]u8   // RGBA8; caller frees; error.NotOffscreen on a windowed Gpu
 ```
 
-A surface-less device (Vulkan / Metal / D3D12 adapter) plus an offscreen BGRA8 colour target of the windowed format and the same MSAA path (`InitOptions.msaa`). `renderFrame` "presents" into that target; `readFrame` blocks until the GPU is done and returns the last frame converted to RGBA. `resize` recreates the target. Both are optional extensions (not in `validateGpu`). `initFromDevice(instance, null, ctx, ..)` + `renderToTexture` remain the lower-level hooks the GPU tests use.
+`handle` is the headless Host's `nativeHandle()`: it carries the text state the Host measures with, so layout and glyphs agree ([migration](../migration-text-state.md)). A surface-less device (Vulkan / Metal / D3D12 adapter) plus an offscreen BGRA8 colour target of the windowed format and the same MSAA path (`InitOptions.msaa`). `renderFrame` "presents" into that target; `readFrame` blocks until the GPU is done and returns the last frame converted to RGBA. `resize` recreates the target. Both are optional extensions (not in `validateGpu`). `initFromDevice(instance, null, ctx, ..)` + `renderToTexture` remain the lower-level hooks the GPU tests use.
 
 ## `HeadlessHost` (`platform/headless.zig`)
 

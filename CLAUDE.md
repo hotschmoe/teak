@@ -58,6 +58,7 @@ zig build test-heavy -j4                    # Background checks
 zig build sim -- --app todo --seed 1        # Deterministic Runtime simulation
 zig build sim -- --replay zig-out/sim/todo-1.jsonl
 zig build sim-heavy                         # Budgeted seed campaigns
+zig build text-state -- --seed 1            # Text states share nothing (24 seeds also run in test)
 
 # Example: counter_greeter (CLI + wgpu UI)
 cd examples/counter_greeter
@@ -327,11 +328,13 @@ src/                                          -- the library, consumable as a Zi
     face.zig                                  -- Font faces for the teak-text module: the stb_truetype Font wrapper, the (family, weight) face
     fallback.zig                              -- Glyph fallback for the native text path (text-engine section 11, risk 2)
     hb_shaper.zig                             -- HarfBuzz shaper (optional; -Dharfbuzz=true, docs/features/harfbuzz.md)
+    kern_cache.zig                            -- See SRC.md, src/text/kern_cache.zig
     measure.zig                               -- Text measurement over the shaper: width == sum(advances), so layout, the caret and the
     raster.zig                                -- Native glyph rasterizer provider for the wgpu text path
     shaper.zig                                -- SimpleShaper: UTF-8 -> positioned glyph ids for Latin and unshaped scripts
     stb_wasm_shim.zig                         -- libc stand-ins for stb_truetype on wasm32-freestanding (no libc there): stb_wasm_impl.c points
     text.zig                                  -- teak-text: the shared native text module (face table, shaper, measurer, rasterizer)
+    text_state.zig                            -- See SRC.md, src/text/text_state.zig
 
 examples/                                     -- each its own build.zig; consume teak as a module
   chrome/                                     -- Chrome: a 1970s engineering-workstation shell built only from stock Teak
@@ -373,6 +376,7 @@ tools/
   showcase.sh                                 -- Regenerate docs/images/showcase/; see SRC.md
   teak_drive.zig                              -- teak-drive: drive a running teak app from a shell or from an LLM agent
   test-e2e.sh                                 -- ) [[ -n "$output" ]]
+  text_state_check.zig                        -- See SRC.md, tools/text_state_check.zig
   tidy.zig                                    -- TigerStyle AST measurements and exact numeric ratchets
   web-frame-bench.mjs                         -- Frame-time benchmark for web examples; see SRC.md
   web-ime-test.mjs                            -- Web IME acceptance test; see SRC.md

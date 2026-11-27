@@ -128,7 +128,7 @@ fn stress(init: std.process.Init, o: Opts, options: teak.Options) !void {
 
     var host = try Host.init(gpa, w, h, options);
     defer host.deinit();
-    var gpu = try Gpu.initOffscreen(w, h, .{
+    var gpu = try Gpu.initOffscreen(host.nativeHandle(), w, h, .{
         .msaa = false,
         .scale = o.scale,
         .max_atlas_pages = o.max_pages,

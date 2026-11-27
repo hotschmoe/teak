@@ -117,7 +117,7 @@ Gpu 'MyGpu' is missing declaration 'uploadVertices'
 - **At most 16 scenes per frame**, 128 meshes, 64 images; extras are dropped / refused.
 - **No post-process passes.** Adding one would expand the contract to a `beginFrame` / `endFrame` pair — not planned.
 - **No query objects / timestamps.** Profiling happens externally.
-- **`init` signatures differ.** Native takes the Host's `nativeHandle()` (an HWND pair on Windows, a `Display*` + `Window` on Linux — duck-typed via `anytype`) and window dimensions; web takes an empty placeholder (canvas is implicit to zunk). Example builds bind them explicitly.
+- **`init` signatures differ.** Native takes the Host's `nativeHandle()` (an HWND pair on Windows, a `Display*` + `Window` on Linux — duck-typed via `anytype`) and window dimensions; web takes the wasm Host's handle, which carries only the text state (canvas is implicit to zunk). `initOffscreen` takes the headless Host's handle first. Example builds bind them explicitly.
 - **Multi-window: Win32 only so far.** `renderToWindow(id)` works for both primary (id 0) and secondary windows on Win32 + native wgpu, with per-surface tables on both Host and Gpu layers. The shared uniform buffer holds the target window's dims and is rewritten at the start of every `renderToWindow` call so cross-window renders don't bleed each other's viewports. The Linux X11 backend currently exposes the primary surface only (secondary X11 windows are not yet wired). Wasm `openSecondaryWindow` returns null — no secondary surfaces on web.
 
 ## Checks

@@ -93,8 +93,9 @@ pub fn Env(comptime Host: type, comptime Gpu: type) type {
 ///     pub fn host(gpa: std.mem.Allocator, o: teak.Options) !Host {
 ///         return Host.init(gpa, 720, 600, o);
 ///     }
-///     pub fn gpu(host: *Host, o: teak.Options) !Gpu {
-///         return Gpu.initOffscreen(720, 600, .{ .gpu_fallback = o.gpu_fallback });
+///     pub fn gpu(h: *Host, o: teak.Options) !Gpu {
+///         const handle = h.nativeHandle();
+///         return Gpu.initOffscreen(handle, 720, 600, .{ .gpu_fallback = o.gpu_fallback });
 ///     }
 /// };
 /// comptime { teak.dev.Plugin(App, Host, Gpu, Init).exportAll(); }

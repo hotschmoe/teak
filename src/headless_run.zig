@@ -6,7 +6,8 @@
 //!
 //! ```zig
 //! var host = try Host.init(gpa, 1280, 800, .{});   // teak-platform-headless
-//! var gpu = try Gpu.initOffscreen(1280, 800, .{ .msaa = true }); // teak-gpu-headless
+//! const handle = host.nativeHandle();
+//! var gpu = try Gpu.initOffscreen(handle, 1280, 800, .{ .msaa = true }); // teak-gpu-headless
 //! var rt = try teak.Runtime(App, Host, Gpu).init(gpa, &host, &gpu, .{});
 //! try teak.headless.play(&rt, &host, &.{
 //!     .{ .frames = 2 },
@@ -127,7 +128,7 @@ pub fn shot(
     var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+    var gpu = try Gpu.initOffscreen(host.nativeHandle(), o.width, o.height, .{
         .msaa = o.msaa,
         .scale = envScale(o.scale, o.run.scale),
         .gpu_fallback = o.run.gpu_fallback,
@@ -223,7 +224,7 @@ pub fn idleCheck(
     var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+    var gpu = try Gpu.initOffscreen(host.nativeHandle(), o.width, o.height, .{
         .msaa = o.msaa,
         .scale = envScale(o.scale, o.run.scale),
         .gpu_fallback = o.run.gpu_fallback,
@@ -339,7 +340,7 @@ pub fn latencyCheck(
     var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
     for (o.fonts) |f| try host.registerFont(f.family, f.weight, f.bytes);
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+    var gpu = try Gpu.initOffscreen(host.nativeHandle(), o.width, o.height, .{
         .msaa = o.msaa,
         .scale = envScale(o.scale, o.run.scale),
         .gpu_fallback = o.run.gpu_fallback,
@@ -388,7 +389,7 @@ pub fn serve(
 ) !void {
     var host = try Host.init(gpa, o.width, o.height, o.run);
     defer host.deinit();
-    var gpu = try Gpu.initOffscreen(o.width, o.height, .{
+    var gpu = try Gpu.initOffscreen(host.nativeHandle(), o.width, o.height, .{
         .msaa = o.msaa,
         .gpu_fallback = o.run.gpu_fallback,
     });

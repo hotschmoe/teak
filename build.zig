@@ -24,12 +24,12 @@ pub fn build(b: *std.Build) void {
     version_options.addOption([]const u8, "version", versionString(b));
     version_options.addOption([]const u8, "manifest_version", @import("build.zig.zon").version);
     mod.addOptions("build_options", version_options);
-    if (b.pkg_hash.len == 0) add_sim(b, b.graph.host, version_options);
 
     const blocking = b.step("test", "Run the blocking end-to-end checks");
     const blocking_run = b.addSystemCommand(&.{ "bash", "tools/test-e2e.sh", "blocking" });
     blocking_run.setCwd(b.path("."));
     blocking.dependOn(&blocking_run.step);
+    if (b.pkg_hash.len == 0) add_sim(b, b.graph.host, version_options, &blocking_run.step);
     const tidy_exe = b.addExecutable(.{
         .name = "teak-tidy",
         .root_module = b.createModule(.{
@@ -154,6 +154,7 @@ fn add_sim(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     version_options: *std.Build.Step.Options,
+    blocking: *std.Build.Step,
 ) void {
     @import("src/assert.zig").assert(b.pkg_hash.len == 0);
     @import("src/assert.zig").assert(target.result.os.tag != .freestanding);
@@ -208,6 +209,46 @@ fn add_sim(
     run_sim.step.dependOn(&install.step);
     b.step("sim", "Seeded Runtime simulation without a GPU").dependOn(&run_sim.step);
     add_sim_heavy(b, exe);
+    blocking.dependOn(add_text_state_check(b, teak_mod, text_mod));
+}
+
+fn add_text_state_check(
+    b: *std.Build,
+    teak_mod: *std.Build.Module,
+    text_mod: *std.Build.Module,
+) *std.Build.Step {
+    @import("src/assert.zig").assert(b.pkg_hash.len == 0);
+    @import("src/assert.zig").assert(teak_mod != text_mod);
+    const check_mod = b.createModule(.{
+        .root_source_file = b.path("tools/text_state_check.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+        .imports = &.{
+            .{ .name = "teak", .module = teak_mod },
+            .{ .name = "teak-text", .module = text_mod },
+        },
+    });
+    for ([_][2][]const u8{
+        .{ "font-plex-sub", "tests/fonts/IBMPlexMonoSub-Regular.ttf" },
+        .{ "font-plex-accents", "tests/fonts/IBMPlexMonoAccents.ttf" },
+        .{ "font-plex-marks", "tests/fonts/IBMPlexMonoMarks.ttf" },
+        .{ "font-quicksand", "tests/fonts/QuicksandSub-Regular.ttf" },
+        .{ "font-quicksand-nolig", "tests/fonts/QuicksandSub-NoLig.ttf" },
+    }) |font| {
+        check_mod.addAnonymousImport(font[0], .{ .root_source_file = b.path(font[1]) });
+    }
+    const exe = b.addExecutable(.{ .name = "teak-text-state-check", .root_module = check_mod });
+    const gate = b.addRunArtifact(exe);
+    gate.addArgs(&.{ "--seeds", "24" });
+    gate.has_side_effects = true;
+    gate.stdio = .inherit;
+    const manual = b.addRunArtifact(exe);
+    manual.has_side_effects = true;
+    manual.stdio = .inherit;
+    manual.addPassthruArgs();
+    b.step("text-state", "Check that text states share nothing (-- --seed N, --seeds M)")
+        .dependOn(&manual.step);
+    return &gate.step;
 }
 
 fn add_sim_heavy(b: *std.Build, exe: *std.Build.Step.Compile) void {

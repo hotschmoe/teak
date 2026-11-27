@@ -70,8 +70,9 @@ view -> Cmd(text | text_input | text_area | rich_text) -> layout (text_wrap: wra
 - **Fallback chain** ([#44](https://github.com/hotschmoe/teak/pull/44)): primary face, other weights of the family, other
   registered families, `registerFallbackFace` chain, then system faces (native only; `TEAK_FALLBACK_FONTS` adds paths).
   Missing everywhere draws .notdef, one em wide for wide scripts.
-- **Measure caches**: `src/text/measure.zig` caches widths of runs up to 48 bytes in a 1024-slot direct-mapped table keyed
-  on the full text and font, invalidated when the face table changes; `text_stage` caches shaped runs across frames.
+- **Measure caches**: `src/text/measure.zig` caches metrics of runs up to 96 bytes (48 on wasm) in a table keyed on the
+  full text and font, invalidated when the face table changes; `text_stage` caches shaped runs across frames. Table sizes
+  are the `Limits` given to `TextState.open`; a full slot is overwritten and counted in `TextState.report()`.
   Layout of an unchanged screen therefore measures almost nothing.
 - **Wrap, ellipsis, shrink** (`core/text_wrap.zig`, pure, allocation-free; [layout.md](layout.md)): `text` takes
   `wrap = none | word | char | ellipsis`, `max_lines`, `text_align`; groups and scrolls take `shrink`. Layout runs two extra
@@ -114,6 +115,8 @@ the default face (`TEAK_FONT=/path/to.ttf` overrides the system search). `exampl
 ## Invariants
 
 - The measurer and the rasterizer use one shaper and one face table: layout width equals drawn width.
+- That table, the fallback chain and every cache are one `TextState`, created by the Host and lent to the Gpu through
+  `nativeHandle()`. There is no module state: two states share nothing (`zig build text-state` checks it).
 - Core never sees a platform type: text reaches the GPU as `TextDraw` data; the atlas and rasterizer live behind the Gpu
   and Host interfaces (HARDLINE hatch 4).
 - Editing keeps all state in the Model; the run loop only turns input into data (`TextEvent`), never into mutation.

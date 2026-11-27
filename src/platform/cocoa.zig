@@ -386,9 +386,12 @@ fn nsStringFrom(bytes: []const u8) Id {
 
 pub const Host = struct {
     st: *State,
+    /// Face table and text caches shared with the Gpu; freed by `deinit`.
+    text_state: *text.TextState,
 
     pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
-        @import("native_fonts.zig").configure(text, options);
+        const text_state = try @import("native_fonts.zig").open(text, gpa, options);
+        errdefer text_state.close();
         try objc.load();
         const pool = objc.poolPush();
         defer objc.poolPop(pool);
@@ -427,7 +430,7 @@ pub const Host = struct {
         msg(void, app, sel("activateIgnoringOtherApps:"), .{true});
         msg(void, app, sel("finishLaunching"), .{});
 
-        var host: Host = .{ .st = s };
+        var host: Host = .{ .st = s, .text_state = text_state };
         host.syncGeometry();
         s.first_resize = true;
         return host;
@@ -437,12 +440,12 @@ pub const Host = struct {
         const s = self.st;
         const pool = objc.poolPush();
         defer objc.poolPop(pool);
-        text.releaseFaces();
         msg(void, s.window, sel("close"), .{});
         s.effects.destroy();
         s.drop_uris.deinit(gpa);
         if (s.scratch) |b| gpa.free(b);
         gpa.destroy(s);
+        self.text_state.close();
     }
 
     /// Re-read the view size and backing scale; flag a resize on change and
@@ -520,10 +523,14 @@ pub const Host = struct {
     }
 
     /// The CAMetalLayer the wgpu Metal surface renders into.
-    pub const NativeHandle = struct { layer: *anyopaque };
+    pub const NativeHandle = struct {
+        layer: *anyopaque,
+        /// The Host's text state, lent to the Gpu.
+        text: *text.TextState,
+    };
 
     pub fn nativeHandle(self: *const Host) NativeHandle {
-        return .{ .layer = self.st.layer.? };
+        return .{ .layer = self.st.layer.?, .text = self.text_state };
     }
 
     pub fn setTitle(self: *Host, title: []const u8) void {
@@ -533,11 +540,7 @@ pub const Host = struct {
     }
 
     pub fn textMeasurer(self: *Host) TextMeasurer {
-        return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
-    }
-
-    fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        return text.measure(text_bytes, font);
+        return self.text_state.measurer();
     }
 
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
@@ -579,8 +582,13 @@ pub const Host = struct {
         self.st.effects.setAppName(name) catch {};
     }
 
-    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
-        try text.registerFace(family, weight, ttf);
+    pub fn registerFont(
+        self: *Host,
+        family: teak.FontFamily,
+        weight: teak.FontWeight,
+        ttf: []const u8,
+    ) !void {
+        try text.registerFace(self.text_state, family, weight, ttf);
     }
 
     pub fn clipboard(self: *Host) Clipboard {

@@ -8,9 +8,8 @@
 //! asked for (lighter wins a tie); a family with no registered face falls
 //! back to a system monospace TTF (`TEAK_FONT` overrides the search).
 //!
-//! The table is module state (this module is instantiated once and shared
-//! by the Host and the Gpu; they have no other common object). The UI is
-//! single-threaded.
+//! The table lives in the `TextState` every function takes first; the Host owns it and
+//! lends it to the Gpu. The UI is single-threaded.
 //!
 //! Pure CPU + libc: no wgpu, no X11. stb's edge-list temporaries go
 //! through STBTT_malloc -> libc malloc/free (see stb_truetype_impl.c), so
@@ -22,6 +21,9 @@ const assert = teak.assert;
 
 pub const c = @import("stb-c");
 const fallback = @import("fallback.zig");
+const text_state = @import("text_state.zig");
+
+const TextState = text_state.TextState;
 
 pub const Source = struct {
     options: teak.Options,
@@ -58,11 +60,10 @@ pub const Font = struct {
         return font;
     }
 
-    /// Load the fallback face: the bytes given to `setFallbackBytes` if any
-    /// (the web Host embeds one), else the system font (`TEAK_FONT`, then the
-    /// candidate list).
-    pub fn loadSystem(allocator: std.mem.Allocator, source: ?Source) !Font {
-        if (fallback_bytes) |bytes| return fromBytes(bytes);
+    /// Load the fallback face: `embedded` (the bytes given to `setFallbackBytes`; the web
+    /// Host embeds one) if any, else the system font (`TEAK_FONT`, then the candidate list).
+    pub fn loadSystem(allocator: std.mem.Allocator, embedded: ?[]const u8, source: ?Source) !Font {
+        if (embedded) |bytes| return fromBytes(bytes);
         const provider = source orelse return error.FontNotFound;
         const data = try provider.primary(allocator, provider.options);
         errdefer allocator.free(data);
@@ -130,19 +131,9 @@ pub const Font = struct {
     }
 
     /// Kerning between two glyphs of this face, in font units (legacy `kern`
-    /// table or GPOS pair adjustment, whichever stb finds).
+    /// table or GPOS pair adjustment, whichever stb finds). Uncached: see `KernCache`.
     pub fn kernUnits(self: *const Font, left: u16, right: u16) i32 {
-        // Kerning cache misses recompute from the face's kern/GPOS tables.
-        if (kern_epoch != epoch) {
-            kern_cache = std.mem.zeroes([8192]KernSlot);
-            kern_epoch = epoch;
-        }
-        const key: u64 = (@as(u64, @intFromPtr(self)) << 20) ^ (@as(u64, left) << 16) ^ right;
-        const slot = &kern_cache[@as(usize, @truncate((key *% 0x9E3779B97F4A7C15) >> 51))];
-        if (slot.used and slot.face == @intFromPtr(self) and slot.left == left and slot.right == right) return slot.value;
-        const v = c.stbtt_GetGlyphKernAdvance(&self.info, left, right);
-        slot.* = .{ .used = true, .face = @intFromPtr(self), .left = left, .right = right, .value = v };
-        return v;
+        return c.stbtt_GetGlyphKernAdvance(&self.info, left, right);
     }
 
     /// True when the face has one advance for every glyph probed ('i' and 'W').
@@ -155,50 +146,48 @@ pub const Font = struct {
     }
 };
 
-const KernSlot = struct { used: bool, left: u16, right: u16, value: i32, face: usize };
-var kern_epoch: u64 = 0;
-var kern_cache: [8192]KernSlot = std.mem.zeroes([8192]KernSlot);
-
 const family_count = std.enums.values(teak.FontFamily).len;
 const weight_count = std.enums.values(teak.FontWeight).len;
 
-const Registry = struct {
+pub const Registry = struct {
     source: ?Source = null,
     faces: [family_count][weight_count]?Font = @splat(@splat(null)),
     /// System fallback, loaded on first use. `fallback_tried` stops a missing
     /// font from being searched for again every frame.
     fallback: ?Font = null,
     fallback_tried: bool = false,
+    /// Bumped whenever the face table changes; caches of shaped text compare it.
+    epoch: u64 = 1,
+    /// Embedded fallback face for hosts without a file system (wasm).
+    fallback_bytes: ?[]const u8 = null,
 };
-
-var registry: Registry = .{};
-
-/// Bumped whenever the face table changes; caches of shaped text compare it.
-pub var epoch: u64 = 1;
-
-/// Embedded fallback face for hosts without a file system (wasm).
-var fallback_bytes: ?[]const u8 = null;
 
 /// Use `ttf` (borrowed; keep it alive) as the fallback face instead of probing
 /// for a system font. Call before the first text is shaped.
-pub fn setFallbackBytes(ttf: []const u8) void {
-    fallback_bytes = ttf;
-    epoch += 1;
+pub fn setFallbackBytes(state: *TextState, ttf: []const u8) void {
+    state.faces.fallback_bytes = ttf;
+    state.faces_changed();
 }
 
 /// Register `ttf` as the face for (`family`, `weight`), replacing an earlier
 /// one. The bytes are borrowed: keep them alive (an `@embedFile` slice is).
-pub fn registerFace(family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) error{FontInitFailed}!void {
-    registry.faces[@backingInt(family)][@backingInt(weight)] = Font.fromBytes(ttf) catch return error.FontInitFailed;
-    epoch += 1;
+pub fn registerFace(
+    state: *TextState,
+    family: teak.FontFamily,
+    weight: teak.FontWeight,
+    ttf: []const u8,
+) error{FontInitFailed}!void {
+    const font = Font.fromBytes(ttf) catch return error.FontInitFailed;
+    state.faces.faces[@backingInt(family)][@backingInt(weight)] = font;
+    state.faces_changed();
 }
 
 /// Forget every registered face and the loaded fallback.
-pub fn releaseFaces() void {
-    fallback.release();
-    if (registry.fallback) |*f| f.deinit();
-    registry = .{};
-    epoch += 1;
+pub fn releaseFaces(state: *TextState) void {
+    fallback.release(state);
+    if (state.faces.fallback) |*f| f.deinit();
+    state.faces = .{ .epoch = state.faces.epoch, .fallback_bytes = state.faces.fallback_bytes };
+    state.faces_changed();
 }
 
 /// Face-table index of (`family`, `weight`); also the `ShapedGlyph.face` value.
@@ -210,23 +199,27 @@ pub fn faceId(family: teak.FontFamily, weight: teak.FontWeight) u16 {
 pub const fallback_face_id: u16 = family_count * weight_count;
 
 /// The face behind a `ShapedGlyph.face` id, or null when nothing is registered there.
-pub fn faceById(id: u16) ?*const Font {
+pub fn faceById(state: *const TextState, id: u16) ?*const Font {
     if (id == fallback_face_id) {
-        if (registry.fallback) |*f| return f;
+        if (state.faces.fallback) |*f| return f;
         return null;
     }
-    if (id > fallback_face_id) return fallback.faceByExtraId(id);
+    if (id > fallback_face_id) return fallback.faceByExtraId(state, id);
     const fam = id / weight_count;
     const w = id % weight_count;
-    if (registry.faces[fam][w]) |*f| return f;
+    if (state.faces.faces[fam][w]) |*f| return f;
     return null;
 }
 
 /// The id `faceFor` resolved to (registered weight, system fallback or the
 /// any-registered last resort). Null only when no font exists at all.
-pub fn resolveFace(family: teak.FontFamily, weight: teak.FontWeight) ?struct { face: *const Font, id: u16 } {
-    const f = faceFor(family, weight) orelse return null;
-    for (&registry.faces, 0..) |*row, fi| {
+pub fn resolveFace(
+    state: *TextState,
+    family: teak.FontFamily,
+    weight: teak.FontWeight,
+) ?struct { face: *const Font, id: u16 } {
+    const f = faceFor(state, family, weight) orelse return null;
+    for (&state.faces.faces, 0..) |*row, fi| {
         for (row, 0..) |*slot, wi| {
             if (slot.*) |*p| {
                 if (p == f) return .{ .face = f, .id = @intCast(fi * weight_count + wi) };
@@ -239,7 +232,8 @@ pub fn resolveFace(family: teak.FontFamily, weight: teak.FontWeight) ?struct { f
 /// The face for a request: the registered weight of `family` nearest to
 /// `weight` (lighter on a tie), else the system fallback, else any
 /// registered face. Null only when no font exists at all.
-pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
+pub fn faceFor(state: *TextState, family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
+    const registry = &state.faces;
     const row = &registry.faces[@backingInt(family)];
     const want: i32 = @backingInt(weight);
     var best: ?usize = null;
@@ -258,7 +252,8 @@ pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
 
     if (!registry.fallback_tried) {
         registry.fallback_tried = true;
-        registry.fallback = Font.loadSystem(std.heap.page_allocator, registry.source) catch null;
+        const embedded = registry.fallback_bytes;
+        registry.fallback = Font.loadSystem(state.allocator, embedded, registry.source) catch null;
         if (registry.source != null) {
             if (registry.fallback == null) std.log.warn("teak: no font found (register one or set TEAK_FONT); text will not draw", .{});
         }
@@ -272,7 +267,8 @@ pub fn faceFor(family: teak.FontFamily, weight: teak.FontWeight) ?*const Font {
     return null;
 }
 
-pub fn configure(source: Source) void {
+pub fn configure(state: *TextState, source: Source) void {
+    const registry = &state.faces;
     assert(registry.fallback == null or registry.fallback_tried);
     defer assert((source.options.font_path == null and source.options.windows_directory == null) or
         registry.fallback_tried);
@@ -280,13 +276,14 @@ pub fn configure(source: Source) void {
     if (source.options.font_path == null and source.options.windows_directory == null) return;
     if (!registry.fallback_tried) {
         registry.fallback_tried = true;
-        registry.fallback = Font.loadSystem(std.heap.page_allocator, source) catch null;
+        const embedded = registry.fallback_bytes;
+        registry.fallback = Font.loadSystem(state.allocator, embedded, source) catch null;
     }
 }
 
-pub fn load_fallback(index: u16) !?Font {
-    const source = registry.source orelse return null;
-    const allocator = std.heap.page_allocator;
+pub fn load_fallback(state: *TextState, index: u16) !?Font {
+    const source = state.faces.source orelse return null;
+    const allocator = state.allocator;
     const data = (try source.extra(allocator, source.options, index)) orelse return null;
     errdefer allocator.free(data);
     var font = try Font.fromBytes(data);

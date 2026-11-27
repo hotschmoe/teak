@@ -85,16 +85,6 @@ fn buildCanvas(cb: *CB, n: usize) void {
     cb.canvas(.{ .width = 1260, .height = 780, .transform = .{ .sx = 1.05, .sy = 1.05, .tx = 4, .ty = 4 }, .antialias = true }, prims);
 }
 
-const Measurer = struct {
-    fn measure(_: *anyopaque, bytes: []const u8, font: teak.FontSpec) teak.TextMetrics {
-        return text.measure(bytes, font);
-    }
-    var dummy: u8 = 0;
-    fn get() teak.TextMeasurer {
-        return .{ .ctx = @ptrCast(&dummy), .measure_fn = measure };
-    }
-};
-
 const Row = struct { rows: usize, cmds: usize, view: f64, layout: f64, hit: f64, render: f64, eq: f64 };
 
 fn run(gpa: std.mem.Allocator, n: usize, comptime build: fn (*CB, usize) void, measurer: teak.TextMeasurer) !Row {
@@ -153,10 +143,11 @@ fn printRow(label: []const u8, r: Row) void {
 
 pub fn main(init: std.process.Init) !void {
     const options = try teak.options_from_environment(init, .{});
-    @import("native-fonts").configure(text, options);
     var gpa_impl: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_impl.deinit();
     const gpa = gpa_impl.allocator();
+    const text_state = try @import("native-fonts").open(text, gpa, options);
+    defer text_state.close();
 
     std.debug.print("teak bench ({d} iters, ms/frame)\n", .{ITERS});
     std.debug.print("{s:<6} {s:>7} {s:>8} {s:>9} {s:>9} {s:>9} {s:>9} {s:>9}\n", .{ "case", "rows", "cmds", "view", "layout", "hit", "render", "cmdsEq" });
@@ -167,7 +158,8 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(canvas_nodes);
     for ([_]usize{ 20_000, 80_000 }) |n| printRow("canvas", try run(gpa, n, buildCanvas, teak.monoMeasurer()));
 
-    if (text.faceFor(.sans, .regular) != null) {
-        for ([_]usize{ 200, 2_000 }) |n| printRow("prose", try run(gpa, n, buildProse, Measurer.get()));
+    if (text.faceFor(text_state, .sans, .regular) != null) {
+        const measurer = text_state.measurer();
+        for ([_]usize{ 200, 2_000 }) |n| printRow("prose", try run(gpa, n, buildProse, measurer));
     } else std.debug.print("prose  n/a (no system font; set TEAK_FONT)\n", .{});
 }
