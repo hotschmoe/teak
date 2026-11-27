@@ -46,12 +46,12 @@
             .hash = "N-V-__8AAFWheQIu8DV1xiTixrDsCJ0xr7-Ssy-XhEIkgx5u",
             .lazy = true,
         },
-        // zunk (wasm build tool + web bindings), pinned to master after v0.16.0 (1e80890).
+        // zunk (wasm build tool + web bindings), pinned to master after v0.16.0 (620957e).
         // Co-developing zunk? Build with `zig build --fork=../zunk` to use a
         // local checkout instead of this pin (see CLAUDE.md, "zunk").
         .zunk = .{
-            .url = "git+https://github.com/hotschmoe/zunk.git#1e808902378cae4df20aa02785e00e363597ca3e",
-            .hash = "zunk-0.16.0-gquBQg_zBACuyzPF0O2kh3xKXaGsl-GOlxJ7ozZ_SX9T",
+            .url = "git+https://github.com/hotschmoe/zunk.git#620957eadfd0a0cfb34ffeb5ae0bac7748367c47",
+            .hash = "zunk-0.16.0-gquBQua6BgAcn2lQTv8Vg1bplkp2A7tktpea3hJ0PYKh",
         },
         // HarfBuzz 11.2.1 (MIT) — the optional complex-script shaper. Fetched
         // only when a build asks for it (`-Dharfbuzz=true` /
