@@ -866,6 +866,9 @@ Logical time and every statistics clock sample are separate transcript entries. 
 measurer returned during initialization is wrapped at the first frame, when Runtime has
 its final address. Recorded measurements make layout independent of local font metrics.
 This wrapper is an ordinary Host interface value; Cmds and Models carry no callbacks.
+`supported` is false on wasm, where no Host has the files a recording needs: `begin`,
+`finish` and `value` pass straight through and the transcript code is not compiled, which
+keeps about 6 KB (brotli) out of every web build. `TEAK_RECORD`/`TEAK_REPLAY` do nothing there.
 
 ## src/input/keys.zig
 

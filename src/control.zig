@@ -210,6 +210,7 @@ pub fn start(st: *State, host: anytype, opts: anytype) !void {
     if (st.inspect) st.log_msgs = true;
 
     if (st.files == null) return;
+    if (comptime !record_session.supported) return;
     st.rec_path = opts.record_path;
 
     if (opts.replay_path) |path| {
@@ -294,6 +295,7 @@ pub fn begin_record(rt: anytype) !void {
     assert(!session.in_frame);
     assert(session.storage_used <= session.scratch.len);
     try session.begin(rt.ctl.frame_no);
+    if (comptime !record_session.supported) return;
     if (session.replay == null) return;
     var validation = session.*;
     for (0..validation.used) |_| {
