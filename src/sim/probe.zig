@@ -2,6 +2,7 @@
 const assert = @import("../assert.zig").assert;
 const effects_mod = @import("../core/effects.zig");
 const Resource = @import("../core/resources.zig").Resource;
+const hashing = @import("hash.zig");
 
 const generation_max = 1000000;
 const initial_requests = [_]effects_mod.Effect{
@@ -27,8 +28,11 @@ pub const Model = struct {
     shown: bool = false,
     text: [7]u8 = "sim://a".*,
     requests: [initial_requests.len]effects_mod.Effect = initial_requests,
+    replies: u32 = 0,
+    reply_digest: u64 = 0,
+    reply_limits: u32 = 0,
 };
-pub const Msg = union(enum) { advance };
+pub const Msg = union(enum) { advance, answer: u64, answer_limit };
 
 pub fn update(model: *Model, message: Msg) void {
     assert(model.generation < generation_max);
@@ -47,6 +51,11 @@ pub fn update(model: *Model, message: Msg) void {
             model.requests[0].http.url = &model.text;
             model.requests[3].write_clipboard.text = &model.text;
         },
+        .answer => |digest| {
+            model.replies += 1;
+            model.reply_digest = (model.reply_digest *% 31) +% digest;
+        },
+        .answer_limit => model.reply_limits += 1,
     }
 }
 
@@ -68,8 +77,8 @@ pub fn effects(model: *const Model) []const effects_mod.Effect {
 pub fn effectMsg(model: *const Model, result: effects_mod.EffectResult) ?Msg {
     assert(model.generation <= generation_max);
     assert(model.requests[0] == .http);
-    _ = result;
-    return null;
+    const digest = hashing.hash(result) catch return .answer_limit;
+    return .{ .answer = digest };
 }
 
 pub fn resources(model: *const Model) []const Resource {

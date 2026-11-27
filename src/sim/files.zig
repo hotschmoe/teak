@@ -5,11 +5,12 @@ const FileIo = @import("../platform/host.zig").FileIo;
 
 pub const files_max = 4;
 pub const name_bytes_max = 128;
-pub const file_bytes_max = 256 * 1024;
+pub const file_bytes_max = @import("../input_record.zig").recording_bytes_max;
+pub const storage_bytes_max = files_max * file_bytes_max;
 const Entry = struct {
     name: [name_bytes_max]u8 = undefined,
     name_len: u16 = 0,
-    bytes: [file_bytes_max]u8 = undefined,
+    bytes: []u8 = &.{},
     len: u32 = 0,
 };
 
@@ -19,6 +20,16 @@ pub const Table = struct {
     limits: u64 = 0,
     reads: u64 = 0,
     writes: [3]u64 = @splat(0),
+    storage: []u8 = &.{},
+
+    pub fn init(self: *Table, storage: []u8) void {
+        assert(self.count == 0);
+        assert(self.storage.len == 0);
+        assert(storage.len == storage_bytes_max);
+        self.storage = storage;
+        for (&self.entries, 0..) |*entry, index|
+            entry.bytes = self.storage[index * file_bytes_max ..][0..file_bytes_max];
+    }
 
     pub fn capability(self: *Table) FileIo {
         return .{ .ctx = self, .read = read, .write = write };

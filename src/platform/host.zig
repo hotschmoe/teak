@@ -311,6 +311,7 @@ pub fn validateHost(comptime T: type) void {
 
     // Optional Host extensions and pairing rules: HARDLINE §2 and SRC.md.
     const optional = [_]HostDecl{
+        .{ .name = "replay_value", .sig = "fn(*Host, comptime Call, anytype) void" },
         .{ .name = "files", .sig = "fn(*Host) FileIo" },
         .{ .name = "now_ns", .sig = "fn(*const Host) u64" },
         .{ .name = "scaleFactor", .sig = "fn(*const Host) f32" },

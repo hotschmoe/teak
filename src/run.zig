@@ -184,6 +184,7 @@ const control = @import("control.zig");
 const frame_stats = @import("frame_stats.zig");
 const keys_mod = @import("input/keys.zig");
 const commands_mod = @import("core/commands.zig");
+const assert = @import("assert.zig").assert;
 
 const Rect = layout.Rect;
 const TransientState = transient.TransientState;
@@ -244,7 +245,7 @@ pub const Options = struct {
     /// See docs/features/agent-driver.md for the optional Host control surface.
     control_path: ?[]const u8 = null,
     record_path: ?[]const u8 = null,
-    /// Replay requires a Host with injectInput.
+    /// See docs/migration-recording.md for the versioned Host-result stream.
     replay_path: ?[]const u8 = null,
     inspect: bool = false,
     /// F12 toggles the inspector (the key is consumed). On in Debug builds;
@@ -525,6 +526,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         gpu: *Gpu,
         opts: Options,
         measurer: text.TextMeasurer,
+        source_measurer: ?text.TextMeasurer = null,
+        source_files: ?teak.FileIo = null,
 
         model: App.Model,
         /// `@tagName` of the last dispatched Msg, for the live snapshot header.
@@ -692,7 +695,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 std.log.warn("teak: App declares deprecated pointer hooks {s}; migrate to `pointerMsg` (docs/migration-pointer-msg.md)", .{deprecated_names});
             }
             var ctl = control.State.init(gpa);
-            control.start(&ctl, host, opts);
+            errdefer ctl.deinit();
+            try control.start(&ctl, host, opts);
             const files = if (@hasDecl(Host, "files")) host.files() else null;
             return .{
                 .ctl = ctl,
@@ -722,16 +726,17 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// `exit_after_frames` (or `TEAK_EXIT_AFTER_FRAMES`) frames have run.
         /// `run` stops on it; a Host that owns the loop may poll it.
         pub fn exitRequested(self: *const Self) bool {
-            return self.exit_after_frames != 0 and self.frames_run >= self.exit_after_frames;
+            return (self.ctl.replay_data != null and self.ctl.replayDone()) or
+                (self.exit_after_frames != 0 and self.frames_run >= self.exit_after_frames);
         }
 
         /// See docs/features/host.md for the now_ns and nowMs clock contract.
-        fn clockNs(self: *const Self) u64 {
-            if (comptime @hasDecl(Host, "now_ns")) return self.host.now_ns();
-            return self.host.nowMs() *| std.time.ns_per_ms;
+        fn clockNs(self: *Self) u64 {
+            if (comptime @hasDecl(Host, "now_ns")) return control.host_call(self, .now_ns, .{});
+            return control.host_call(self, .nowMs, .{}) *| std.time.ns_per_ms;
         }
 
-        fn msSince(self: *const Self, t0: u64) f32 {
+        fn msSince(self: *Self, t0: u64) f32 {
             const t1 = self.clockNs();
             if (t1 <= t0) return 0;
             return @as(f32, @floatFromInt(t1 - t0)) / std.time.ns_per_ms;
@@ -796,16 +801,121 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// One loop iteration. Returns early, before presenting, when the
         /// host reports close during the input poll.
         pub fn frame(self: *Self) !void {
+            assert(!self.ctl.session.in_frame);
+            if (self.source_measurer == null) {
+                self.source_measurer = self.measurer;
+                self.measurer = .{ .ctx = self, .measure_fn = recorded_measure };
+                self.source_files = self.ctl.files;
+                if (self.source_files != null) {
+                    const files: teak.FileIo = .{
+                        .ctx = self,
+                        .read = recorded_file_read,
+                        .write = recorded_file_write,
+                    };
+                    self.snap.files = files;
+                    self.stats_sink.files = files;
+                }
+            }
+            try control.begin_record(self);
+            try self.frame_inner();
+            try control.finish_record(self);
+            control.afterFrame(self);
+        }
+
+        fn recorded_measure(
+            raw: *anyopaque,
+            bytes: []const u8,
+            font: text.FontSpec,
+        ) text.TextMetrics {
+            const self: *Self = @ptrCast(@alignCast(raw));
+            assert(self.source_measurer != null);
+            assert(font.size_px > 0);
+            const source = self.source_measurer.?;
+            const actual = if (self.ctl.session.in_frame and self.ctl.session.replay != null)
+                std.mem.zeroes(text.TextMetrics)
+            else
+                source.measure(bytes, font);
+            const measured = self.ctl.session.value(.measure, actual);
+            if (self.ctl.session.failure != null) return .{
+                .width = 0,
+                .height = font.size_px,
+                .ascent = font.size_px,
+                .descent = 0,
+            };
+            return measured;
+        }
+
+        fn recorded_file_read(
+            raw: ?*anyopaque,
+            allocator: std.mem.Allocator,
+            path: []const u8,
+            limit: u32,
+        ) ![]u8 {
+            const self: *Self = @ptrCast(@alignCast(raw.?));
+            assert(self.source_files != null);
+            assert(!self.ctl.session.in_frame);
+            const files = self.source_files.?;
+            return files.read(files.ctx, allocator, path, limit);
+        }
+
+        fn recorded_file_write(
+            raw: ?*anyopaque,
+            path: []const u8,
+            bytes: []const u8,
+            mode: teak.FileIo.WriteMode,
+        ) !void {
+            const self: *Self = @ptrCast(@alignCast(raw.?));
+            assert(self.source_files != null);
+            assert(self.ctl.session.position <= self.ctl.session.buffer.len);
+            const files = self.source_files.?;
+            const replay = self.ctl.session.in_frame and self.ctl.session.replay != null;
+            if (replay and !self.ctl.session.value(.file_write, false))
+                return error.RecordedHostWrite;
+            files.write(files.ctx, path, bytes, mode) catch |err| {
+                if (!replay) {
+                    _ = self.ctl.session.value(.file_write, false);
+                    return err;
+                }
+                std.log.warn("teak: replay output {s}: {s}", .{ path, @errorName(err) });
+            };
+            if (!replay) _ = self.ctl.session.value(.file_write, true);
+        }
+
+        fn frame_inner(self: *Self) !void {
             const t_frame = self.clockNs();
             self.stats_cur = .{ .index = self.frames_run };
             control.beforePoll(self);
-            defer control.afterFrame(self);
-            const input = self.host.pollInputs();
+            control.record_control(self);
+            const input = control.host_call(self, .pollInputs, .{});
+            if (self.ctl.session.failure) |err| return err;
             control.afterPoll(self, input);
-            if (self.host.shouldClose()) return;
+            if (control.host_call(self, .shouldClose, .{})) return;
             defer self.endFrameStats(t_frame);
+            self.route_frame_input(input, t_frame);
+            if (self.ctl.session.failure) |err| return err;
+            if (self.quiet) {
+                if (self.blinkDue()) {
+                    self.ts.blink_on = !self.ts.blink_on;
+                    const last = self.current;
+                    self.uploadFrameTimed(
+                        self.bufs[last].cmds.items,
+                        self.rects[last].items,
+                        self.ts,
+                    );
+                    self.prev_ts = self.ts;
+                    self.present(self.opts.clear_color orelse self.bufs[last].theme.palette.bg);
+                }
+                return;
+            }
+            try self.render_frame(input);
+        }
+
+        fn route_frame_input(self: *Self, input: Input, t_frame: u64) void {
+            assert(self.ctl.session.in_frame);
+            assert(input.width == self.ctl.width and input.height == self.ctl.height);
             if (comptime @hasDecl(Host, "scaleFactor") and @hasDecl(Gpu, "setScale")) {
-                const sf = self.host.scaleFactor();
+                const sf = control.host_call(self, .scaleFactor, .{});
+                if (self.ctl.session.failure != null) return;
                 if (self.host_scale != 0 and sf != self.host_scale) self.gpu.setScale(sf);
                 self.host_scale = sf;
             }
@@ -813,7 +923,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (input.resized) {
                 self.gpu.resize(input.width, input.height);
                 if (@hasDecl(App, "windowMsg")) {
-                    if (App.windowMsg(&self.model, @floatFromInt(input.width), @floatFromInt(input.height))) |m| self.dispatch(m);
+                    if (App.windowMsg(
+                        &self.model,
+                        @floatFromInt(input.width),
+                        @floatFromInt(input.height),
+                    )) |message|
+                        self.dispatch(message);
                 }
             }
 
@@ -837,26 +952,22 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.serviceEffects();
 
             self.stats_cur.update_ms = self.msSince(t_frame);
-            self.quiet = self.opts.idle_skip and !self.continuous and self.built_once and !self.posted and
-                self.dispatch_count == dispatched_before and !self.layout_dirty and self.inputIdle(input) and !self.ctl.consumeDirty();
+            self.quiet = self.opts.idle_skip and !self.continuous and self.built_once and
+                !self.posted and self.dispatch_count == dispatched_before and
+                !self.layout_dirty and self.inputIdle(input) and !self.ctl.consumeDirty();
             self.posted = false;
             self.last_mouse_x = input.mouse_x;
             self.last_mouse_y = input.mouse_y;
             self.last_buttons = input.buttons;
             self.stats_cur.quiet = self.quiet;
-            if (self.quiet) {
-                if (self.blinkDue()) {
-                    self.ts.blink_on = !self.ts.blink_on;
-                    const last = self.current;
-                    self.uploadFrameTimed(self.bufs[last].cmds.items, self.rects[last].items, self.ts);
-                    self.prev_ts = self.ts;
-                    self.present(self.opts.clear_color orelse self.bufs[last].theme.palette.bg);
-                }
-                return;
-            }
+        }
+
+        fn render_frame(self: *Self, input: Input) !void {
+            assert(self.ctl.session.in_frame);
+            assert(!self.quiet);
             self.built_once = true;
             self.layout_dirty = false;
-
+            const prev = self.current;
             const cur = try self.buildView(input);
             const before_layout = self.dispatch_count;
             self.reportLayout(prev, cur);
@@ -868,7 +979,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.updateImeSpot(cur);
             self.pushTitle();
 
-            const res_changed = has_resources and self.res_table.sync(self.gpu, App.resources(&self.model));
+            const res_changed = has_resources and
+                self.res_table.sync(self.gpu, App.resources(&self.model));
             const diff = FrameDiff{
                 .cmds_same = cmdsEqual(Msg, cur_cmds, self.bufs[prev].cmds.items),
                 .rects_same = rectsEqual(cur_rects, self.rects[prev].items),
@@ -888,13 +1000,23 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
 
             if (self.snap.enabled) {
                 const sec_open_now = sec.title != null;
-                if (self.snap_first or diff.changed() or sec_open_now != self.prev_secondary_open or sec.content_changed) {
-                    self.snap.writeFrame(.{
-                        .window_w = @floatFromInt(input.width),
-                        .window_h = @floatFromInt(input.height),
-                        .frame = self.ts.frame_counter,
-                        .last_msg = self.last_msg,
-                    }, cur_cmds, cur_rects, &self.ts, sec.title, self.secondary.bufs[self.secondary.cur].cmds.items, self.secondary.rects[self.secondary.cur].items);
+                if (self.snap_first or diff.changed() or
+                    sec_open_now != self.prev_secondary_open or sec.content_changed)
+                {
+                    self.snap.writeFrame(
+                        .{
+                            .window_w = @floatFromInt(input.width),
+                            .window_h = @floatFromInt(input.height),
+                            .frame = self.ts.frame_counter,
+                            .last_msg = self.last_msg,
+                        },
+                        cur_cmds,
+                        cur_rects,
+                        &self.ts,
+                        sec.title,
+                        self.secondary.bufs[self.secondary.cur].cmds.items,
+                        self.secondary.rects[self.secondary.cur].items,
+                    );
                 }
                 self.snap_first = false;
                 self.prev_secondary_open = sec_open_now;
@@ -911,7 +1033,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (input.wheel_dx != 0 or input.wheel_dy != 0) return false;
             if (input.chars.len != 0 or input.keys.len != 0) return false;
             if (self.animating) return false;
-            if (self.ts.ime_active or self.host.imeState().active) return false;
+            if (self.ts.ime_active or control.host_call(self, .imeState, .{}).active) return false;
             if (has_secondary and App.secondaryWindow(&self.model) != null) return false;
             if (has_secondary and self.secondary.window_id != null) return false;
             return true;
@@ -921,7 +1043,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn blinkPhase(self: *Self) bool {
             const half = self.opts.blink_half_ms;
             if (half == 0) return true;
-            return (self.host.nowMs() / half) & 1 == 0;
+            return (control.host_call(self, .nowMs, .{}) / half) & 1 == 0;
         }
 
         /// A focused text input's caret is showing the wrong phase.
@@ -935,7 +1057,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         pub fn idleTimeoutMs(self: *Self) u32 {
             const cap: u32 = if (self.issued.len != 0 or self.ctl.active) 16 else 1000;
             var wait: u32 = cap;
-            const now = self.host.nowMs();
+            const now = control.host_call(self, .nowMs, .{});
             if (self.opts.blink_half_ms != 0 and self.ts.focus_index != null) {
                 const half = self.opts.blink_half_ms;
                 wait = @min(wait, @as(u32, @intCast(half - now % half)));
@@ -991,10 +1113,10 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn routeA11yActions(self: *Self, prev: u1) void {
             if (!self.opts.a11y or !@hasDecl(Host, "pollA11yActions")) return;
             var buf: [16]a11y.Action = undefined;
-            const n = self.host.pollA11yActions(&buf);
+            const actions = control.poll_results(self, .pollA11yActions, &buf);
             const cmds = self.bufs[prev].cmds.items;
             const rects = self.rects[prev].items;
-            for (buf[0..n]) |act| {
+            for (actions) |act| {
                 const idx: usize = act.cmd_index;
                 if (idx >= cmds.len or idx >= rects.len) continue;
                 switch (act.kind) {
@@ -1322,7 +1444,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .w = rect.w,
                 .h = rect.h,
                 .mods = input.mods,
-                .now_ms = self.host.nowMs(),
+                .now_ms = control.host_call(self, .nowMs, .{}),
             };
         }
 
@@ -1333,7 +1455,13 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const cmds = self.bufs[prev].cmds.items;
             const rects = self.rects[prev].items;
             const idx: ?usize = self.navResolve(cmds) orelse focusIndex(App, &self.model, cmds);
-            var ev: PE = .{ .kind = .context, .x = input.mouse_x, .y = input.mouse_y, .mods = input.mods, .now_ms = self.host.nowMs() };
+            var ev: PE = .{
+                .kind = .context,
+                .x = input.mouse_x,
+                .y = input.mouse_y,
+                .mods = input.mods,
+                .now_ms = control.host_call(self, .nowMs, .{}),
+            };
             if (idx) |i| if (i < rects.len) {
                 const r = rects[i];
                 ev.x = r.x;
@@ -1410,7 +1538,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 .x = input.mouse_x,
                 .y = input.mouse_y,
                 .mods = input.mods,
-                .now_ms = self.host.nowMs(),
+                .now_ms = control.host_call(self, .nowMs, .{}),
             };
             if (hit) |h| {
                 ev.hit = h.msg;
@@ -1683,8 +1811,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 },
                 .canvas => |cv| {
                     if (cv.pointer and cv.id != 0 and has_canvas_hook) {
-                        const ev: PE = .{ .kind = .key, .x = 0, .y = 0, .key = k, .target = .{ .canvas = cv.id }, .now_ms = self.host.nowMs() };
-                        if (self.deliver(ev).msg) return true;
+                        if (self.canvas_key(cv, k)) return true;
                     }
                     if (k == .enter) return self.navActivate(cmds);
                     return self.navScroll(cmds, prev, idx, k);
@@ -1715,7 +1842,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     }
                     v = std.math.clamp(v, 0, 1);
                     var ev: PE = .{ .kind = .key, .x = 0, .y = 0, .key = k, .target = .{ .slider = .{ .grab = sl.grab_msg, .value = v } } };
-                    ev.now_ms = self.host.nowMs();
+                    ev.now_ms = control.host_call(self, .nowMs, .{});
                     return self.deliver(ev).claimed;
                 },
                 else => return false,
@@ -1726,6 +1853,20 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// scroll region that contains it, through `scrollMsg` (arrows a line,
         /// PageUp / PageDown a viewport less a line, Home / End to the ends; the
         /// app clamps like it does for the wheel).
+        fn canvas_key(self: *Self, canvas: anytype, key: keys_mod.SpecialKey) bool {
+            assert(canvas.id != 0);
+            assert(canvas.pointer);
+            const event: PE = .{
+                .kind = .key,
+                .x = 0,
+                .y = 0,
+                .key = key,
+                .target = .{ .canvas = canvas.id },
+                .now_ms = control.host_call(self, .nowMs, .{}),
+            };
+            return self.deliver(event).msg;
+        }
+
         fn navScroll(self: *Self, cmds: anytype, prev: u1, idx: usize, k: @import("input/keys.zig").SpecialKey) bool {
             if (comptime !has_scroll_hook) return false;
             var depth: i32 = 0;
@@ -1766,7 +1907,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             if (along == 0) return false;
             const dx: f32 = if (horiz) along else 0;
             const dy: f32 = if (horiz) 0 else along;
-            const ev: PE = .{ .kind = .wheel, .x = 0, .y = 0, .dx = dx, .dy = dy, .target = .{ .scroll = sc.id }, .now_ms = self.host.nowMs() };
+            const ev: PE = .{
+                .kind = .wheel,
+                .x = 0,
+                .y = 0,
+                .dx = dx,
+                .dy = dy,
+                .target = .{ .scroll = sc.id },
+                .now_ms = control.host_call(self, .nowMs, .{}),
+            };
             return self.deliver(ev).msg;
         }
 
@@ -1782,11 +1931,12 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             const clip = self.host.clipboard();
             var pasted: []const u8 = "";
             if (k == .ctrl_v) {
-                pasted = clip.read();
+                const actual = if (self.ctl.session.replay != null) "" else clip.read();
+                pasted = self.ctl.session.value(.clipboard_read, actual);
                 if (pasted.len == 0) return;
             } else if (@hasDecl(App, "clipboardText")) {
                 if (App.clipboardText(&self.model, k)) |t| {
-                    if (t.len > 0) clip.write(t);
+                    if (t.len > 0 and self.ctl.session.replay == null) clip.write(t);
                 }
             }
             if (@hasDecl(App, "clipboardMsg")) {
@@ -1960,7 +2110,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             switch (kind) {
                 .down => {
                     if (button != .left) return false;
-                    const now = self.host.nowMs();
+                    const now = control.host_call(self, .nowMs, .{});
                     const c = &self.text_click;
                     const near = @abs(input.mouse_x - c.x) <= 4 and @abs(input.mouse_y - c.y) <= 4;
                     c.count = if (c.count > 0 and c.count < 3 and near and now -| c.ms <= 400) c.count + 1 else 1;
@@ -2204,7 +2354,15 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     const old = findPointerCanvas(prev_cmds, t.id);
                     const same = old != null and std.meta.eql(prev_rects[old.?], rects[i]);
                     if (!same) {
-                        _ = self.dispatchCanvas(.{ .kind = .layout, .target = .{ .canvas = t.id }, .x = rects[i].x, .y = rects[i].y, .w = rects[i].w, .h = rects[i].h, .now_ms = self.host.nowMs() });
+                        _ = self.dispatchCanvas(.{
+                            .kind = .layout,
+                            .target = .{ .canvas = t.id },
+                            .x = rects[i].x,
+                            .y = rects[i].y,
+                            .w = rects[i].w,
+                            .h = rects[i].h,
+                            .now_ms = control.host_call(self, .nowMs, .{}),
+                        });
                     }
                 },
                 .text_area => if (has_text_hook) self.reportTextMetrics(cmds, rects, i),
@@ -2250,7 +2408,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                     d.rt.dispatch(msg);
                 }
             };
-            const now_ms = self.host.nowMs();
+            const now_ms = control.host_call(self, .nowMs, .{});
             const since = self.last_sub_ms orelse now_ms; // first frame: no window, no fire
             const subs = App.subscribe(&self.model);
             sub_mod.runSubs(Msg, subs, since, now_ms, Dispatch{ .rt = self });
@@ -2269,8 +2427,8 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         fn deliverEffectResults(self: *Self) void {
             if (comptime !(has_effect_msg and host_effects)) return;
             var buf: [effect_batch]effects_mod.EffectResult = undefined;
-            const n = self.host.pollEffectResults(&buf);
-            for (buf[0..n]) |r| self.deliverEffectResult(r);
+            const results = control.poll_results(self, .pollEffectResults, &buf);
+            for (results) |r| self.deliverEffectResult(r);
         }
 
         fn deliverEffectResult(self: *Self, r: effects_mod.EffectResult) void {
@@ -2299,7 +2457,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
                 if (self.issued.contains(e.id())) continue;
                 if (self.issued.isFull()) break; // the rest wait for a free slot
                 const status: effects_mod.EffectSubmit = if (comptime host_effects)
-                    self.host.submit(e)
+                    control.host_call(self, .submit, .{e})
                 else
                     .unsupported;
                 switch (status) {
@@ -2361,7 +2519,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             self.ts.frame_counter +%= 1;
             self.ts.blink_on = self.blinkPhase();
 
-            const ime = self.host.imeState();
+            const ime = control.host_call(self, .imeState, .{});
             self.ts.ime_active = ime.active;
             const n = @min(ime.text.len, self.ime_bufs[cur].len);
             @memcpy(self.ime_bufs[cur][0..n], ime.text[0..n]);
@@ -2438,7 +2596,7 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
             }
 
             const wid = self.secondary.window_id orelse return .{};
-            const si = self.host.pollSecondaryInputs(wid) orelse {
+            const si = control.host_call(self, .pollSecondaryInputs, .{wid}) orelse {
                 self.closeSecondary(wid);
                 self.suppressed_spec = spec;
                 if (@hasDecl(App, "secondaryClosedMsg")) {
@@ -2478,9 +2636,32 @@ pub fn Runtime(comptime App: type, comptime Host: type, comptime Gpu: type) type
         /// Create the OS window, then its GPU surface. Back out cleanly if
         /// either half fails so we never leak a window with no renderer.
         fn openSecondary(self: *Self, s: SecondaryWindowSpec) void {
-            const wid = self.host.openSecondaryWindow(s.title, s.width, s.height) orelse return;
-            const handle = self.host.secondaryWindowHandle(wid) orelse return self.host.closeSecondaryWindow(wid);
-            if (self.gpu.openSecondarySurface(handle, s.width, s.height) == null) return self.host.closeSecondaryWindow(wid);
+            assert(self.secondary.window_id == null);
+            assert(self.ctl.session.in_frame);
+            const replay = self.ctl.session.replay != null;
+            if (replay and !self.ctl.session.value(.secondary_opened, false)) return;
+            const opened = self.host.openSecondaryWindow(s.title, s.width, s.height);
+            if (!replay) _ = self.ctl.session.value(.secondary_opened, opened != null);
+            const wid = opened orelse {
+                if (replay) self.ctl.session.failure = error.ReplayWindowUnavailable;
+                return;
+            };
+            if (replay and !self.ctl.session.value(.secondary_handle, false))
+                return self.host.closeSecondaryWindow(wid);
+            const handle = self.host.secondaryWindowHandle(wid);
+            if (!replay) _ = self.ctl.session.value(.secondary_handle, handle != null);
+            if (handle == null) {
+                if (replay) self.ctl.session.failure = error.ReplayWindowUnavailable;
+                return self.host.closeSecondaryWindow(wid);
+            }
+            if (replay and !self.ctl.session.value(.secondary_surface, false))
+                return self.host.closeSecondaryWindow(wid);
+            const surface = self.gpu.openSecondarySurface(handle.?, s.width, s.height);
+            if (!replay) _ = self.ctl.session.value(.secondary_surface, surface != null);
+            if (surface == null) {
+                if (replay) self.ctl.session.failure = error.ReplayWindowUnavailable;
+                return self.host.closeSecondaryWindow(wid);
+            }
             self.secondary.window_id = wid;
         }
 

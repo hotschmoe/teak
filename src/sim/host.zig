@@ -40,6 +40,7 @@ pub fn Host(comptime Metrics: type) type {
         clip_len: u32 = 0,
         captures: [effects_max]Captured = undefined,
         capture_count: u16 = 0,
+        answers_sent: u16 = 0,
         capture_bytes: [capture_bytes_max]u8 = undefined,
         bytes_used: u32 = 0,
         headers: [headers_max]effects.Header = undefined,
@@ -52,7 +53,6 @@ pub fn Host(comptime Metrics: type) type {
         title_hash: u64 = 0,
         failure: ?anyerror = null,
         file_table: memory_files.Table = .{},
-        recorded_input: ?recording.FrameRec = null,
 
         pub fn init() !Self {
             const metrics = try Metrics.init();
@@ -80,8 +80,6 @@ pub fn Host(comptime Metrics: type) type {
             assert(self.live);
             assert(self.next.count <= input.events_max);
             self.queue.beginFrame();
-            if (self.recorded_input) |*record| self.apply_record(record);
-            self.recorded_input = null;
             var resized = self.first_poll;
             var focus_lost = false;
             for (self.next.events[0..self.next.count]) |event| switch (event) {
@@ -135,19 +133,21 @@ pub fn Host(comptime Metrics: type) type {
             return self.file_table.capability();
         }
 
-        fn apply_record(self: *Self, record: *const recording.FrameRec) void {
+        pub fn replay_value(self: *Self, comptime call: recording.Call, value: anytype) void {
             assert(self.live);
-            assert(record.chars_len <= Queue.CHARS_CAP and record.keys_len <= Queue.KEYS_CAP);
-            if (record.move) |point| self.queue.pointerMoved(point[0], point[1]);
-            if (record.mods) |mods| self.queue.mods = mods;
-            const buttons = [_]@import("../core/pointer.zig").Button{ .left, .middle, .right };
-            inline for (buttons) |button| {
-                if (@field(record.down, @tagName(button))) self.queue.buttonDown(button);
-                if (@field(record.up, @tagName(button))) self.queue.buttonUp(button);
+            assert(self.next.count <= input.events_max);
+            switch (call) {
+                .pollInputs => {
+                    self.last = value;
+                    self.width = value.width;
+                    self.height = value.height;
+                    self.first_poll = false;
+                },
+                .nowMs => self.clock_ms = value,
+                .now_ns => self.clock_ms = value / 1000000,
+                .scaleFactor => self.scale = value,
+                else => {},
             }
-            self.queue.wheel(record.wheel[0], record.wheel[1]);
-            self.queue.pushText(record.charsSlice());
-            for (record.keysSlice()) |key| self.apply_key(key);
         }
 
         fn apply_text(self: *Self, sample: u8) void {
@@ -290,9 +290,50 @@ pub fn Host(comptime Metrics: type) type {
 
         pub fn pollEffectResults(self: *Self, buffer: []interface.EffectResult) usize {
             assert(self.live);
-            assert(self.capture_count <= effects_max);
-            _ = buffer;
-            return 0;
+            assert(self.answers_sent <= self.capture_count);
+            var count: u16 = 0;
+            for (self.captures[self.answers_sent..self.capture_count]) |capture| {
+                if (count == buffer.len) break;
+                self.answers_sent += 1;
+                const result = self.answer(capture.effect) orelse continue;
+                buffer[count] = result;
+                count += 1;
+                self.unanswered -= 1;
+            }
+            return count;
+        }
+
+        fn answer(self: *Self, effect: interface.Effect) ?interface.EffectResult {
+            assert(self.live);
+            assert(self.answers_sent <= self.capture_count);
+            return switch (effect) {
+                .http => |request| .{ .http = .{
+                    .id = request.id,
+                    .status = 200,
+                    .body = request.url,
+                } },
+                .download => |request| .{ .downloaded = .{ .id = request.id, .ok = true } },
+                .open_file => |request| .{ .file_opened = .{
+                    .id = request.id,
+                    .name = "sim.txt",
+                    .mime = "text/plain",
+                    .bytes = "answer\x00\xff\n",
+                } },
+                .storage_get => |request| .{ .storage_value = .{
+                    .id = request.id,
+                    .value = request.key,
+                } },
+                .clock => |request| .{ .clock = .{
+                    .id = request.id,
+                    .unix_ms = @intCast(self.clock_ms),
+                    .utc_offset_min = -420,
+                } },
+                .query_param => |request| .{ .query_value = .{
+                    .id = request.id,
+                    .value = request.name,
+                } },
+                .storage_set, .write_clipboard, .write_clipboard_image => null,
+            };
         }
 
         fn copy_bytes(self: *Self, bytes: []const u8) error{CaptureLimit}![]const u8 {

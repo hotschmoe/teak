@@ -54,7 +54,7 @@ export fn resize(w: u32, h: u32) void { gpu.resize(w, h); }
 iteration; returns early without presenting if the host reports close during the
 input poll), `deinit()`. The value holds the Model, the double-buffered cmd/rect
 storage and all loop bookkeeping — create it once and don't move it. `frame`
-errors are allocation failures only. All three examples' `web_main.zig` are this
+errors include allocation and recording/replay failures. All three examples' `web_main.zig` are this
 shape; there are no hand-copied pipelines, fixed allocators or rect caps.
 
 The secondary-window path compiles away when the Gpu has no
@@ -307,8 +307,15 @@ serialized bytes to FileIo in `.atomic` mode and never opens a file itself. Dept
 [snapshot.md](snapshot.md).
 
 Recording, replay, CSV statistics and the summary use the same optional FileIo capability.
-Replay reads the complete source at startup, bounded at 64 MiB. Recording replaces the
-complete stream every 32 nonempty input records, on control `quit`, and at shutdown.
+Replay reads the complete source at startup, bounded at 64 MiB, and rejects obsolete or
+unknown versions. Each frame records the ordered results of Host calls, including input,
+time, scale, IME, accessibility, clipboard reads, effect answers and text measurements.
+Replay supplies those results at the same calls; it never reassembles input through a device
+queue or issues effects to the outside world. Every transition still follows normal routing
+and `update`. Recording writes every 32 complete frame records, on control `quit`, and at
+shutdown: the first write replaces the file, later writes append the new frames.
+Limits stop recording once with a warning and counter; partial frames are never published.
+See [recording migration](../migration-recording.md) for limits and secondary-window scope.
 CSV statistics create/truncate at startup and append at 16 KiB or shutdown; the summary
 replaces `<path>.summary.txt` at shutdown and is also printed to stderr. Web keeps these
 features unavailable. See [host.md](host.md#runtime-file-capability).

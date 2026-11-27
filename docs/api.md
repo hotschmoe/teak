@@ -3036,7 +3036,7 @@ See docs/features/agent-driver.md.
 > Loop-owned bookkeeping for the control channel and record/replay. Holds no
 > application state.
 - `struct State`
-  - fields: `files, gpa, active, log_msgs, frame_no, width, height, busy, acts, act_i, pool, note, line_buf, ring, ring_len, ring_total, rec_path, rec_buf, rec_lines_unflushed, tracker, replay_data, replay_pos, inspect, dirty, app_len, timings`
+  - fields: `files, gpa, active, log_msgs, frame_no, width, height, busy, acts, act_i, pool, note, line_buf, ring, ring_len, ring_total, rec_path, rec_lines_unflushed, rec_flushed, rec_write_failed, session, replay_data, inspect, dirty, app_len, timings`
   - `pub fn init(gpa: std.mem.Allocator) State`
   - `pub fn deinit(self: *State) void`
   > Replay file fully consumed (or none loaded).
@@ -3050,20 +3050,24 @@ See docs/features/agent-driver.md.
   - `pub fn msgCount(self: *const State) usize`
   > Record the Msg `msg` (formatted as text) in the ring.
   - `pub fn logMsg(self: *State, comptime Msg: type, msg: Msg) void`
-> Start the requested control services from the supplied options.
-> Failures degrade to "feature off" with a log line, never a crash.
-- `pub fn start(st: *State, host: anytype, opts: anytype) void`
+> See SRC.md for control startup and recording failures.
+- `pub fn start(st: *State, host: anytype, opts: anytype) !void`
 - `pub fn toggleInspect(st: *State) void`
 > Append the inspector overlay for the frame being built into `cb`, from the
 > previous frame `prev` (cmds, rects), then remember where the app's own
 > cmds end in `cb` so the next frame skips the overlay.
 - `pub fn appendInspectorFor(rt: anytype, cb: anytype, cur: u1, prev: u1, window_w: f32, window_h: f32) void`
-> Before the Host is polled: replayed input, then the control channel.
+> See SRC.md for control commands before the Host poll.
 - `pub fn beforePoll(rt: anytype) void`
-> After the Host is polled: capture the frame's input into the recording.
+> See SRC.md for input limits and frame dimensions.
 - `pub fn afterPoll(rt: anytype, input: anytype) void`
+- `pub fn record_control(rt: anytype) void`
+- `pub fn begin_record(rt: anytype) !void`
 > After the frame is built and presented: finish the command in flight.
 - `pub fn afterFrame(rt: anytype) void`
+- `pub fn finish_record(rt: anytype) !void`
+- `pub fn host_call(rt: anytype, comptime call: record.Call, args: anytype) @typeInfo( @TypeOf(@field(@TypeOf(rt.host.*), @tagName(call))), ).@"fn".return_type.?`
+- `pub fn poll_results(rt: anytype, comptime call: record.Call, buffer: anytype) []const @typeInfo( @typeInfo(@TypeOf(buffer)).pointer.child, ).array.child`
 
 ### `teak.frame_stats` (`src/frame_stats.zig`)
 
@@ -3107,26 +3111,21 @@ Frame timing and perf counters for the run loop: `FrameStats`, the percentile su
 
 ### `teak.input_record` (`src/input_record.zig`)
 
-Input record / replay file format (`TEAK_RECORD` / `TEAK_REPLAY`).
+See SRC.md, src/input_record.zig.
 
-- `pub const max_chars = 64`
-- `pub const max_keys = 32`
-> One frame's recorded input, as written to / parsed from a line.
-- `struct FrameRec`
-  - fields: `frame, move, down, up, mods, wheel, chars, chars_len, keys, keys_len`
-  - `pub fn charsSlice(self: *const FrameRec) []const u8`
-  - `pub fn keysSlice(self: *const FrameRec) []const keys.SpecialKey`
-  > True when the frame carries nothing worth a line.
-  - `pub fn isEmpty(self: *const FrameRec) bool`
-> Append one line (with newline) for `r`.
-- `pub fn writeLine(w: *std.Io.Writer, r: *const FrameRec) std.Io.Writer.Error!void`
-- `pub const ParseError = error{BadRecordLine}`
-> Parse one line. Returns null for a blank line or a comment.
-- `pub fn parseLine(line: []const u8) ParseError!?FrameRec`
-> Turns a stream of per-frame input into `FrameRec`s, tracking what changed
-> since the last frame (pointer position, modifiers).
-- `struct Tracker`
-  - fields: `last_x, last_y, last_mods`
-  > `input` is any struct with the `InputState` input fields. Returns null
-  > when the frame had no input worth recording.
-  - `pub fn observe(self: *Tracker, frame: u32, input: anytype) ?FrameRec`
+- `pub const Error = codec.Error || error{ RecordingVersion, RecordingOrder }`
+- `pub const version = "teak-recording 2\n"`
+- `pub const frame_bytes_max = 1024 * 1024`
+- `pub const recording_bytes_max = 64 * 1024 * 1024`
+- `pub const frames_max = 100032`
+- `pub const text_max = 256`
+- `pub const keys_max = 64`
+- `pub const chords_max = 16`
+- `enum Call`
+  - fields: `control_state, pollInputs, shouldClose, nowMs, now_ns, scaleFactor, imeState, pollEffectResults, submit, pollA11yActions, clipboard_read, pollSecondaryInputs, secondary_opened, secondary_handle, secondary_surface, measure, file_write`
+- `struct Frame`
+  - fields: `index, bytes`
+- `pub fn validate_version(bytes: []const u8) Error!u32`
+- `pub fn next_frame(bytes: []u8, position: *u32, index: u32) Error!Frame`
+- `pub fn write_frame(target: []u8, frame: Frame) Error!u32`
+- `pub fn check_input(input: anytype) Error!void`

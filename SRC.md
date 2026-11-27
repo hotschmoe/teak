@@ -20,7 +20,7 @@ size, scale, pointer/buttons, text, keys, modifiers, shortcuts and focus loss. T
 simulator format, not an extension of input_record.zig or a golden-output check.
 
 OS backends, event translation, IME, accessibility action delivery, secondary windows, GPU
-pixels/drivers, glyph atlases, native shaping, backend faults, effect responses and allocation
+pixels/drivers, glyph atlases, native shaping, backend faults, real effect services and allocation
 failure remain outside this version. Live background checks remain necessary. Hashing knows
 the active-length schemas used by these apps; new consumers must audit their container schemas.
 No custom eql method or revision key suppresses data in this hash.
@@ -38,8 +38,10 @@ the runner rejects a verification-disabled build.
 Only Frame.advance_ms advances time, once per poll. Clipboard bytes, input queues, font state
 and effect captures are owned. Every accepted effect is copied, including HTTP headers and
 payload strings/bytes, then checked at shutdown against its submission digest. No effect is
-performed or answered. effects_issued counts accepted requests; effects_unanswered counts
-requests expecting a result. Fire-and-forget requests are captured too. Bounds are 1,024
+performed outside the simulation. Deterministic HTTP, download, file, storage, clock and query
+answers are delivered on later polls; the probe folds every result into its Model digest.
+effects_issued counts accepted requests; effects_unanswered counts remaining replies.
+Fire-and-forget requests are captured too. Bounds are 1,024
 captures, 65,536 payload bytes, 1,024 headers and 8,192 clipboard bytes. Full storage skips the
 operation and increments limits. Input bounds are checked before using InputQueue so its
 logging overflow path cannot run. Unsupported dialogs/windows return cancellation/failure
@@ -50,18 +52,19 @@ camel_case inventory is 32. There are no forwarding aliases. The platform CLI is
 
 ## src/sim/files.zig
 
-The Host owns four named files, each limited to 256 KiB with a 128-byte name. Replace and
+The Host owns four named files, each limited to 64 MiB with a 128-byte name. Replace and
 atomic both publish a complete new value after checking capacity; append preserves the prefix.
 No filesystem is used. Limits return FileLimit and increment the table's limits counter;
 a failed write preserves the old value. Reads return an allocator-owned copy as required by
 FileIo. The runner calls this before the replay's frame loop. Shutdown copies the recording
-into its reserved buffer without allocating. The read method's one allocation site remains
-visible as the unapproved sim allocation ratchet movement 0 -> 1; its baseline stays zero.
+into its reserved buffer without allocating. Config.file_bytes supplies the file storage;
+the CLI reserves it once with the trace workspace and reuses it between completed passes.
+Reads allocate the FileIo-owned copy at replay startup.
 Writes allocate nothing. The table's address must remain stable while FileIo is retained.
 Normal runs exercise recording replacement, atomic snapshot replacement, statistics append
 and summary replacement. Reads are exercised by the optional recording replay; file_reads is
 zero in normal runs because these apps have no other file reader. The owned
-table occupies about 1 MiB; simulator stack use is not certified for Windows' default stack.
+table borrows 256 MiB of address space off the stack. It owns no allocation.
 
 ## src/sim/metrics.zig
 
@@ -200,22 +203,13 @@ a claim about every possible reachable state, all starting widgets, or reverse l
 
 ## src/sim/recording.zig
 
-`--record-check 1` replaces the second generated run with a fresh runtime fed only parsed
-input_record.FrameRec values from the first run's memory file. Runtime options are identical,
-including recording/snapshot/statistics options. The simulator feeds decoded records into its
-Host queue; this checks recording and decoding,
-not control.replayTick or the optional injectInput Host extension.
-A fixed 16 ms poll is the replay default; original time/size/scale/focus-loss data is not
-smuggled in from the simulator trace. The same
-per-frame hashes must match. Read and parse errors fail the run; diagnostics name record_replay.
-The recorder omits window dimensions/resizes, scale, focus loss, elapsed time and shortcut
-chords, the resize flag, current held-button state and within-poll button edge order. Replaying
-both edges always injects down then up; a poll ending with a repeated down cannot be recovered.
-It also truncates text to 64 bytes and special keys to 32 per poll, versus Host bounds
-of 256 bytes and 64 keys. Button holds reset by focus loss therefore cannot replay either.
-Todo seed 1 fails at frame 1 on the input/clock hash because probe time is zero. The flag is
-excluded from blocking seeds and sim-heavy; the recorder is deliberately unchanged. Simulator
-JSONL replay retains the full generated facts and the focus-probe marker, and remains independent.
+This module only names the input recording and snapshot memory files. `--record-check 1`
+passes the first run's memory recording to a fresh Runtime's ordinary `replay_path` at
+initialization. There is no simulator decoder, queue reconstruction or trace-based clock
+override. SimHost's optional `replay_value` mirrors the supplied input, clock and scale for
+the input fingerprint. Per-frame hashes must match; failures name record_replay. Every
+blocking fixed seed and sim-heavy app enables the check. Simulator JSONL trace replay remains
+independent and can reproduce the workload that caused a recording checker failure.
 
 ## src/sim/runner.zig
 
@@ -248,8 +242,9 @@ in the examples; probe pressures capture storage. Dialog/secondary/IME results a
 
 A small real Runtime app complements the examples: one button changes all nine effects and
 alternates two resources. HTTP/clipboard strings borrow mutable Model storage, so retaining
-caller slices instead of copying them fails capture lifetime validation. No response is
-synthesized. Its single Tab stop cannot move focus to another widget. Text, scrolling and
+caller slices instead of copying them fails capture lifetime validation. The Host supplies
+deterministic responses, including binary file bytes; every delivered answer changes the
+Model digest through Msg/update. Its single Tab stop cannot move focus to another widget. Text, scrolling and
 group drag are unreachable. This is an end-to-end app, not canned assertions about mocks.
 
 ## src/sim/trace.zig
@@ -274,7 +269,10 @@ The former three CLI canaries move to the background script, keeping eight block
 including the wasm compile canary. Real OS/GPU paths remain background work.
 
 The entry point owns startup allocations, seed generation, throughput, trace I/O and the
-panic diagnostic pointer. The two entry-point globals hold the active Diagnostics pointer
+panic diagnostic pointer. Workspace reserves 128 MiB for traces (its first 64 MiB also holds
+the completed recording) and 256 MiB for reusable memory-file storage. Persisting a failed
+recording precedes trace serialization because the recording and trace buffers overlap.
+The two entry-point globals hold the active Diagnostics pointer
 and a panic-report reentrancy guard; they let a library assertion save its input prefix without
 changing the library's panic contract. Neither is app or simulator state. Bounds are
 100,000 workload frames plus the
@@ -816,13 +814,58 @@ control uses only the pure PNG encoder. Gpu readback is through the supplied Gpu
 
 ## src/control.zig
 
-Record/replay uses the supplied FileIo. Replay reads at startup with a 64 MiB limit.
-Recording still replaces the complete accumulated stream every 32 nonempty input lines,
-on control `quit`, and during shutdown; it deliberately does not append or change coverage.
+Record/replay uses supplied FileIo. Replay reads at startup with a 64 MiB limit and rejects
+old/unknown versions. A session captures ordered Host results for every frame. Its in-memory
+publication is all-or-nothing: a failed frame never extends the complete stream. The file is
+written every 32 complete records, on control `quit`, and at shutdown: the first write
+replaces it and later writes append only the new frames, so a flush costs the same at frame
+100,000 as at frame 32. A crash can leave a partial last frame; replay runs up to it and then
+fails. Neither mode implies fsync. A write failure disables recording and reports once.
+Recorded effect submissions are not performed during replay; their outcomes and subsequent
+result bytes take the normal delivery path. Clipboard reads are captured before effect polls.
+The record path borrows from Options, whose strings already outlive Runtime; no path copy is
+needed. Session buffers are reserved together at startup.
+The inspector's control state is captured after control processing. Raw control requests,
+replies and screenshots are driver scheduling/outputs; injected input is captured after polling.
 
-Commands are driven over frames: a click separates press and release because the runtime routes input against the previous frame's layout. Text is sent in 32-byte batches to stay within the 64-byte per-frame input queue. Selector offsets are relative to the node centre and allow interactions with specific regions of a widget.
+Commands are driven over frames: a click separates press and release because routing uses
+the previous frame's layout. Text uses conservative 32-byte batches; the Host accepts 256
+bytes. Selector offsets are relative to the node centre.
 
-The control socket starts listening during runtime initialization, but commands stay queued in the transport until the first frame has been built. Selectors and frame queries then see laid-out commands even when the client connects immediately. Replay still injects input on frame zero so recorded frame numbers retain their meaning.
+The socket starts listening during initialization; commands wait until the first frame has
+been built, so selectors see laid-out commands. Replay supplies results starting at frame zero.
+
+## src/input_record.zig
+
+Pure format types, bounds and frame header parsing/writing. Version 2 begins with an exact
+ASCII version line, followed by binary length-prefixed frame records, including quiet frames.
+Each payload preserves Host call order. Unknown tags/versions, malformed values, missing or
+extra calls and nonconsecutive frame numbers return errors. No old-format fallback exists.
+Limits and integer/slice encoding are in docs/migration-recording.md.
+
+## src/record_codec.zig
+
+An explicit 1,024-job stack walks plain-data values with a one-million-visit bound. Jobs
+carry typed visitors; payloads are scheduled, never recursively visited. Structs follow
+declaration order, arrays and slices preserve order, enums/unions validate tags, and floats
+retain their exact bits. Decoding reserves slices from the startup scratch buffer, aligned
+to at most 16 bytes. It copies no pointers or padding and allocates nothing.
+
+## src/record_session.zig
+
+One startup reservation supplies the 1 MiB frame buffer, 1 MiB decoded-slice scratch and,
+when recording, 64 MiB complete-stream buffer. No buffer grows. Every frame is validated
+before routing on replay, then decoded into stable per-frame scratch as calls consume it.
+Limit exhaustion stops recording once, counts it, and retains the complete prefix. Decode
+failures latch a typed frame error; no failed replay calls the outside world as fallback.
+Snapshot/statistics file-write success or failure is recorded when it happens inside a frame.
+Replay reproduces a recorded failure without writing; successful outputs can still be written
+locally. A local replay-output failure is logged without changing the recorded sink outcome.
+Recorder persistence itself stays outside its own transcript, avoiding self-recording flushes.
+Logical time and every statistics clock sample are separate transcript entries. The
+measurer returned during initialization is wrapped at the first frame, when Runtime has
+its final address. Recorded measurements make layout independent of local font metrics.
+This wrapper is an ordinary Host interface value; Cmds and Models carry no callbacks.
 
 ## src/input/keys.zig
 
