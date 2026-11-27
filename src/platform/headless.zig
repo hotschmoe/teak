@@ -71,6 +71,8 @@ pub const Host = struct {
     pub const MAX_INJECTED = 32;
 
     gpa: std.mem.Allocator,
+    /// Face table and text caches shared with the Gpu; freed by `deinit`.
+    text_state: *text.TextState,
     width: u32,
     height: u32,
 
@@ -99,12 +101,13 @@ pub const Host = struct {
     injected_len: usize = 0,
 
     pub fn init(gpa: std.mem.Allocator, width: u32, height: u32, options: teak.Options) !Host {
-        @import("native_fonts.zig").configure(text, options);
-        return .{ .gpa = gpa, .width = width, .height = height };
+        const text_state = try @import("native_fonts.zig").open(text, gpa, options);
+        return .{ .gpa = gpa, .text_state = text_state, .width = width, .height = height };
     }
 
     pub fn deinit(self: *Host) void {
         self.ctl.deinit();
+        self.text_state.close();
         for (self.captured.items) |c| freeCaptured(self.gpa, c);
         self.captured.deinit(self.gpa);
     }
@@ -221,7 +224,12 @@ pub const Host = struct {
         self.close();
     }
 
-    pub fn nativeHandle(_: *Host) void {}
+    /// What `Gpu.initOffscreen` takes: the text state this Host measures with.
+    pub const NativeHandle = struct { text: *text.TextState };
+
+    pub fn nativeHandle(self: *Host) NativeHandle {
+        return .{ .text = self.text_state };
+    }
 
     /// Event-driven idle (`Options.idle_skip`): `run` calls this after a
     /// quiet frame. A real Host blocks until an input event or `timeout_ms`;
@@ -262,17 +270,18 @@ pub const Host = struct {
     }
 
     pub fn textMeasurer(self: *Host) teak.TextMeasurer {
-        return .{ .ctx = @ptrCast(self), .measure_fn = measure };
-    }
-
-    fn measure(_: *anyopaque, bytes: []const u8, font: teak.FontSpec) teak.TextMetrics {
-        return text.measure(bytes, font);
+        return self.text_state.measurer();
     }
 
     /// Register the TTF `ttf` as the face for (`family`, `weight`) (shared with the Gpu's
     /// rasterizer through the face table). The bytes are borrowed: pass an `@embedFile` slice.
-    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
-        try text.registerFace(family, weight, ttf);
+    pub fn registerFont(
+        self: *Host,
+        family: teak.FontFamily,
+        weight: teak.FontWeight,
+        ttf: []const u8,
+    ) !void {
+        try text.registerFace(self.text_state, family, weight, ttf);
     }
 
     pub fn clipboard(self: *Host) teak.Clipboard {

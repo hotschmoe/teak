@@ -545,6 +545,8 @@ fn preeditCaret(_: ?*anyopaque, client_data: ?*anyopaque, call: ?*anyopaque) cal
 pub const NativeHandle = struct {
     display: *anyopaque,
     window: u64,
+    /// The Host's text state, lent to the Gpu (the rasterizer shapes and draws from its faces).
+    text: *text.TextState,
 };
 
 /// Secondary top-level windows (`openSecondaryWindow`): ids are slot + 1.
@@ -572,6 +574,8 @@ pub const Host = struct {
     atoms: Atoms,
     /// Effect servicing (HTTP worker threads, storage files, ...).
     effects: *native_effects.Service,
+    /// Face table and text caches shared with the Gpu; freed by `deinit`.
+    text_state: *text.TextState,
     /// The last synchronous file dialog's path (`openFileDialog`).
     dialog_buf: [4096]u8 = undefined,
     secondaries: [MAX_SECONDARY_WINDOWS]?SecondaryWindow = @splat(null),
@@ -625,7 +629,8 @@ pub const Host = struct {
     cursors: [std.enums.values(teak.CursorShape).len]c_ulong,
 
     pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
-        @import("native_fonts.zig").configure(text, options);
+        const text_state = try @import("native_fonts.zig").open(text, gpa, options);
+        errdefer text_state.close();
         var lib = std.DynLib.open("libX11.so.6") catch return error.X11LoadFailed;
         errdefer lib.close();
         const x = try Xlib.load(&lib);
@@ -680,6 +685,7 @@ pub const Host = struct {
             .window = window,
             .atoms = atoms,
             .effects = effects,
+            .text_state = text_state,
             .width = width,
             .height = height,
             .scale = scale,
@@ -704,7 +710,6 @@ pub const Host = struct {
 
     pub fn deinit(self: *Host) void {
         self.ctl.deinit();
-        text.releaseFaces();
         self.abortTransfer();
         if (self.clip_out) |b| gpa.free(b);
         if (self.clip_png) |b| gpa.free(b);
@@ -725,6 +730,7 @@ pub const Host = struct {
             gpa.destroy(xc);
         }
         self.lib.close();
+        self.text_state.close();
     }
 
     pub fn pollInputs(self: *Host) InputState {
@@ -1337,7 +1343,11 @@ pub const Host = struct {
     }
 
     pub fn nativeHandle(self: *const Host) NativeHandle {
-        return .{ .display = @ptrCast(self.display), .window = @intCast(self.window) };
+        return .{
+            .display = @ptrCast(self.display),
+            .window = @intCast(self.window),
+            .text = self.text_state,
+        };
     }
 
     /// Show `shape` over the window. Cursors are created once and cached;
@@ -1364,11 +1374,7 @@ pub const Host = struct {
     }
 
     pub fn textMeasurer(self: *Host) TextMeasurer {
-        return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
-    }
-
-    fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        return text.measure(text_bytes, font);
+        return self.text_state.measurer();
     }
 
     pub fn submit(self: *Host, e: teak.Effect) teak.EffectSubmit {
@@ -1404,8 +1410,13 @@ pub const Host = struct {
     /// bytes are borrowed: pass an `@embedFile` slice. Register before the
     /// first frame; up to three weights per family. A family without a
     /// registered face uses the system monospace font (`TEAK_FONT`).
-    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
-        try text.registerFace(family, weight, ttf);
+    pub fn registerFont(
+        self: *Host,
+        family: teak.FontFamily,
+        weight: teak.FontWeight,
+        ttf: []const u8,
+    ) !void {
+        try text.registerFace(self.text_state, family, weight, ttf);
     }
 
     /// The CLIPBOARD selection. `write` takes ownership and serves the text
@@ -1562,7 +1573,11 @@ pub const Host = struct {
     pub fn secondaryWindowHandle(self: *const Host, id: u32) ?NativeHandle {
         if (id == 0 or id > MAX_SECONDARY_WINDOWS) return null;
         const sw = self.secondaries[id - 1] orelse return null;
-        return .{ .display = @ptrCast(self.display), .window = @intCast(sw.window) };
+        return .{
+            .display = @ptrCast(self.display),
+            .window = @intCast(sw.window),
+            .text = self.text_state,
+        };
     }
 
     /// Async file-dialog surface. Like the blocking `openFileDialog`

@@ -223,7 +223,7 @@ pub const Gpu = struct {
         return initWithOptions(handle, width, height, .{});
     }
 
-    pub fn initWithOptions(_: anytype, width: u32, height: u32, options: InitOptions) !Gpu {
+    pub fn initWithOptions(handle: anytype, width: u32, height: u32, options: InitOptions) !Gpu {
         const samples: u32 = if (options.msaa) scene_common.msaa_samples else 1;
         const shader = zgpu.createShaderModule(SHADER_SOLID);
 
@@ -291,7 +291,7 @@ pub const Gpu = struct {
 
         const web_text = try TextStage.init(
             std.heap.wasm_allocator,
-            .{ .inner = try text.StbttRasterizer.init(std.heap.wasm_allocator) },
+            .{ .inner = try text.StbttRasterizer.init(std.heap.wasm_allocator, handle.text) },
             options.max_atlas_pages,
             1,
         );

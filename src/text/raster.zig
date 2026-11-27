@@ -1,7 +1,7 @@
 //! Native glyph rasterizer provider for the wgpu text path. `wgpu_core.Gpu`
 //! is generic over this contract (duck-typed, like the Surface provider):
 //!
-//!   init(Allocator) !Self / deinit
+//!   init(Allocator, *TextState) !Self / deinit
 //!   shape(self, text, FontSpec, []ShapedGlyph) ShapeResult   -- one shaper for layout and render
 //!   ascent(self, FontSpec, scale) f32                        -- baseline offset at device size
 //!   rasterizeGlyph(self, face, gid, size_px, bin) ?GlyphBitmap
@@ -13,6 +13,9 @@ const std = @import("std");
 const teak = @import("teak");
 const face_mod = @import("face.zig");
 const shaper = @import("shaper.zig");
+const text_state = @import("text_state.zig");
+
+const TextState = text_state.TextState;
 
 const c = face_mod.c;
 
@@ -40,11 +43,15 @@ pub const StbttRasterizer = struct {
     /// Source em size of `rasterizeSdf` bitmaps (px).
     pub const sdf_em: f32 = sdf_source_em;
 
+    /// What `init` takes besides the allocator: the Host's text state, lent to the Gpu.
+    pub const Context = *TextState;
+
     allocator: std.mem.Allocator,
+    state: *TextState,
     cover: std.ArrayList(u8) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator) !StbttRasterizer {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: std.mem.Allocator, state: *TextState) !StbttRasterizer {
+        return .{ .allocator = allocator, .state = state };
     }
 
     pub fn deinit(self: *StbttRasterizer) void {
@@ -52,17 +59,22 @@ pub const StbttRasterizer = struct {
     }
 
     /// Changes whenever the face table does; the text stage drops cached runs.
-    pub fn epoch(_: *const StbttRasterizer) u64 {
-        return face_mod.epoch;
+    pub fn epoch(self: *const StbttRasterizer) u64 {
+        return self.state.faces.epoch;
     }
 
-    pub fn shape(_: *StbttRasterizer, text: []const u8, font: teak.FontSpec, out: []teak.ShapedGlyph) teak.ShapeResult {
-        return shaper.shape(text, font, out);
+    pub fn shape(
+        self: *StbttRasterizer,
+        text: []const u8,
+        font: teak.FontSpec,
+        out: []teak.ShapedGlyph,
+    ) teak.ShapeResult {
+        return shaper.shape(self.state, text, font, out);
     }
 
     /// Ascent in px of `font` at `font.size_px * scale` (0 with no font).
-    pub fn ascent(_: *StbttRasterizer, font: teak.FontSpec, scale: f32) f32 {
-        const r = face_mod.resolveFace(font.family, font.weight) orelse return 0;
+    pub fn ascent(self: *StbttRasterizer, font: teak.FontSpec, scale: f32) f32 {
+        const r = face_mod.resolveFace(self.state, font.family, font.weight) orelse return 0;
         return r.face.vMetrics(font.size_px * scale).ascent;
     }
 
@@ -70,7 +82,7 @@ pub const StbttRasterizer = struct {
     /// bitmap; bearings are in source px at that size, relative to the baseline pen).
     /// Blank glyphs return a zero-size bitmap. `pixels` is valid until the next call.
     pub fn rasterizeSdf(self: *StbttRasterizer, face: u16, gid: u16) ?GlyphBitmap {
-        const f = face_mod.faceById(face) orelse return null;
+        const f = face_mod.faceById(self.state, face) orelse return null;
         const s = f.scaleForEm(sdf_source_em);
         var w: c_int = 0;
         var h: c_int = 0;
@@ -86,7 +98,7 @@ pub const StbttRasterizer = struct {
     }
 
     pub fn rasterizeGlyph(self: *StbttRasterizer, face: u16, gid: u16, size_px: f32, bin: u2) ?GlyphBitmap {
-        const f = face_mod.faceById(face) orelse return null;
+        const f = face_mod.faceById(self.state, face) orelse return null;
         const s = f.scaleForEm(size_px);
         const shift: f32 = @as(f32, @floatFromInt(bin)) * 0.25;
         var x0: c_int = 0;

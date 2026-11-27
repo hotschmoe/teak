@@ -40,7 +40,7 @@ pub const FileDialogResult = teak.FileDialogResult;
 pub const FileDialogFilter = teak.FileDialogFilter;
 pub const FileDialogPoll = teak.FileDialogPoll;
 
-pub const NativeHandle = struct {};
+pub const NativeHandle = struct { text: *teak_text.TextState };
 
 /// DOM `keyCode` -> shortcut key (see `InputQueue.pushShortcut`); built at
 /// comptime from the key enum so letters, digits and F-keys cost no lines.
@@ -338,16 +338,19 @@ var g_active_host: ?*Host = null;
 /// The default face (Plex Mono subset) is the fallback for every family without
 /// a registered face, like the system font on native; then each `.fonts` file
 /// goes into its slot and weight.
-fn registerEmbeddedFonts() void {
-    if (font_data.default_font.len > 0) teak_text.face.setFallbackBytes(font_data.default_font);
+fn registerEmbeddedFonts(state: *teak_text.TextState) void {
+    const default_font = font_data.default_font;
+    if (default_font.len > 0) teak_text.face.setFallbackBytes(state, default_font);
     for (font_data.faces) |f| {
         const family: teak.FontFamily = @fromBackingInt(@intCast(f.slot));
         const weight: teak.FontWeight = if (f.weight < 450) .regular else if (f.weight < 600) .medium else .bold;
-        teak_text.registerFace(family, weight, f.bytes) catch {};
+        teak_text.registerFace(state, family, weight, f.bytes) catch {};
     }
 }
 
 pub const Host = struct {
+    /// Face table and text caches shared with the Gpu; freed by `deinit`.
+    text_state: *teak_text.TextState,
     width: u32,
     height: u32,
     first_poll: bool = true,
@@ -378,8 +381,9 @@ pub const Host = struct {
     pub fn init(title: []const u8, width: u32, height: u32) !Host {
         zinput.init();
         zapp.setTitle(title);
-        registerEmbeddedFonts();
-        return .{ .width = width, .height = height };
+        const text_state = try teak_text.TextState.open(std.heap.wasm_allocator, .{});
+        registerEmbeddedFonts(text_state);
+        return .{ .text_state = text_state, .width = width, .height = height };
     }
 
     /// Register the address of an initialized Host so the wasm export
@@ -389,8 +393,9 @@ pub const Host = struct {
         g_active_host = self;
     }
 
-    pub fn deinit(_: *Host) void {
+    pub fn deinit(self: *Host) void {
         g_active_host = null;
+        self.text_state.close();
     }
 
     pub fn pollInputs(self: *Host) InputState {
@@ -458,8 +463,8 @@ pub const Host = struct {
         return false;
     }
 
-    pub fn nativeHandle(_: *const Host) NativeHandle {
-        return .{};
+    pub fn nativeHandle(self: *const Host) NativeHandle {
+        return .{ .text = self.text_state };
     }
 
     /// Measures with the shared stb_truetype shaper (`teak-text`), on the
@@ -467,18 +472,19 @@ pub const Host = struct {
     /// the same numbers as every native backend. Results are cached by the
     /// module, so repeated labels cost a hash.
     pub fn textMeasurer(self: *Host) TextMeasurer {
-        return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
-    }
-
-    fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        return teak_text.measure(text_bytes, font);
+        return self.text_state.measurer();
     }
 
     /// Register a TTF for (`family`, `weight`) at runtime; the bytes are
     /// borrowed (an `@embedFile` slice). The `.fonts` build option already
     /// registers its files at `init`.
-    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
-        try teak_text.registerFace(family, weight, ttf);
+    pub fn registerFont(
+        self: *Host,
+        family: teak.FontFamily,
+        weight: teak.FontWeight,
+        ttf: []const u8,
+    ) !void {
+        try teak_text.registerFace(self.text_state, family, weight, ttf);
     }
 
     /// Clipboard vtable. `write` goes through the effects bridge

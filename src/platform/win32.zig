@@ -1979,11 +1979,15 @@ fn wndProc(hwnd: HANDLE, msg: UINT, wp: WPARAM, lp: LPARAM) callconv(WINAPI) LRE
 pub const NativeHandle = struct {
     hinstance: HANDLE,
     hwnd: HANDLE,
+    /// The Host's text state, lent to the Gpu (the rasterizer shapes and draws from its faces).
+    text: *text.TextState,
 };
 
 pub const Host = struct {
     hinstance: HANDLE,
     hwnd: HANDLE,
+    /// Face table and text caches shared with the Gpu; freed by `deinit`.
+    text_state: *text.TextState,
     /// Declarative-effects service (HTTP workers, storage, clock, ...);
     /// the picker / clipboard / drop effects are handled by this Host.
     effects: *native_effects.Service,
@@ -2010,11 +2014,13 @@ pub const Host = struct {
     file_dialog_slots: [MAX_FILE_DIALOG_SLOTS]FileDialogSlot = @splat(.{}),
 
     pub fn init(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
-        @import("native_fonts.zig").configure(text, options);
         return init_window(title, width, height, options);
     }
 
     fn init_window(title: []const u8, width: u32, height: u32, options: teak.Options) !Host {
+        const fonts = @import("native_fonts.zig");
+        const text_state = try fonts.open(text, std.heap.page_allocator, options);
+        errdefer text_state.close();
         // DPI awareness must be set before creating windows.
         _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         g_scale = dpiScale(GetDpiForSystem());
@@ -2076,12 +2082,8 @@ pub const Host = struct {
         return .{
             .hinstance = hinstance,
             .hwnd = hwnd,
+            .text_state = text_state,
             .effects = effects,
-            .clipboard_buf = undefined,
-            .clipboard_len = 0,
-            .dialog_path_buf = undefined,
-            .dialog_path_len = 0,
-            .file_dialog_slots = @splat(.{}),
         };
     }
 
@@ -2098,7 +2100,7 @@ pub const Host = struct {
         unregisterDropTarget(self.hwnd);
         g_effects = null;
         self.effects.destroy();
-        text.releaseFaces();
+        self.text_state.close();
     }
 
     pub fn pollInputs(_: *Host) InputState {
@@ -2121,7 +2123,7 @@ pub const Host = struct {
     }
 
     pub fn nativeHandle(self: *const Host) NativeHandle {
-        return .{ .hinstance = self.hinstance, .hwnd = self.hwnd };
+        return .{ .hinstance = self.hinstance, .hwnd = self.hwnd, .text = self.text_state };
     }
 
     /// Update the window title from a UTF-8 string. Mirrors init's title
@@ -2190,11 +2192,7 @@ pub const Host = struct {
     /// scale math the Gpu rasterizes from, so layout and render agree and
     /// `FontSpec.letter_spacing` is honoured identically on every native OS.
     pub fn textMeasurer(self: *Host) TextMeasurer {
-        return .{ .ctx = @ptrCast(self), .measure_fn = stbMeasure };
-    }
-
-    fn stbMeasure(_: *anyopaque, text_bytes: []const u8, font: FontSpec) TextMetrics {
-        return text.measure(text_bytes, font);
+        return self.text_state.measurer();
     }
 
     /// Register the TTF `ttf` (typically `@embedFile`, borrowed — keep it
@@ -2202,8 +2200,13 @@ pub const Host = struct {
     /// and the Gpu's rasterizer. Register before the first frame. A family
     /// without a registered face uses the system monospace font
     /// (`%WINDIR%\Fonts\consola.ttf`, or `TEAK_FONT`).
-    pub fn registerFont(_: *Host, family: teak.FontFamily, weight: teak.FontWeight, ttf: []const u8) !void {
-        try text.registerFace(family, weight, ttf);
+    pub fn registerFont(
+        self: *Host,
+        family: teak.FontFamily,
+        weight: teak.FontWeight,
+        ttf: []const u8,
+    ) !void {
+        try text.registerFace(self.text_state, family, weight, ttf);
     }
 
     pub fn clipboard(self: *Host) Clipboard {
@@ -2438,7 +2441,7 @@ pub const Host = struct {
         if (window_id == 0 or window_id > MAX_SECONDARY_WINDOWS) return null;
         const slot_idx: usize = @intCast(window_id - 1);
         if (g_secondaries[slot_idx]) |sw| {
-            return .{ .hinstance = self.hinstance, .hwnd = sw.hwnd };
+            return .{ .hinstance = self.hinstance, .hwnd = sw.hwnd, .text = self.text_state };
         }
         return null;
     }

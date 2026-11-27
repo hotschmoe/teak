@@ -542,7 +542,7 @@ Native requests complete during `wgpuInstanceProcessEvents`, with callbacks stor
 
 ## src/text/hb_shaper.zig
 
-Bidirectional RTL runs remain RTL regardless of guessed script, and RTL run groups are emitted in reverse order. Tracking is disabled for joining scripts. When a run exceeds the output buffer, it is split at a code point boundary so shaping can resume.
+Bidirectional RTL runs remain RTL regardless of guessed script, and RTL run groups are emitted in reverse order. Tracking is disabled for joining scripts. When a run exceeds the output buffer, it is split at a code point boundary so shaping can resume. The hb objects, buffer and run scratch are the `hb` field of the `TextState` and are dropped whenever the face table changes. A run whose face has no slot, or whose glyphs overflow the 768-glyph scratch, is not shaped and is counted as skipped in the state's report.
 
 ## src/gpu/web_scene.zig
 
@@ -590,6 +590,27 @@ The API generator excludes module aliases nested inside modules and emits only n
 ## tools/gen_unicode.zig
 
 Line-break and bidirectional classes apply Unicode file defaults before explicit entries. East Asian wide and fullwidth values set bit 7. Paired brackets pack as `cp | pair << 21 | is_close << 42` in code-point order.
+
+## tools/text_state_check.zig
+
+`zig build text-state` is the checker for the rule that the text path keeps no state outside
+its `TextState`. A seed generates two scripts of 360 operations over the five test fonts in
+`tests/fonts` (no system font is ever read): face registrations and replacements, releases,
+fallback faces past the chain limit, embedded fallback bytes, and measurements and shaping of
+generated text (ligature words, kerning pairs, accents, combining marks, Greek, Cyrillic,
+Hebrew, CJK, an emoji, invalid UTF-8, texts past the cache entry size, repeated queries).
+Each script runs alone in a fresh state, again after other states lived and died in the
+process, with two-slot caches, and in two states at once under five schedules (one then the
+other, alternating, shuffled, the other then one, and the same script in both). Every result
+digest and every limit report must equal the solo run's. Independent of the code under test,
+a model of the face choice rule is compared with `faceFor` after every registration and
+query, a measurement is compared with an uncached recomputation, and the sum of shaped
+advances with the reported width. Failures print seed, schedule, state and operation index;
+`-- --seed N` replays one. The digest includes the face-table epoch, so a counter shared
+between states shows too. The allocator reports leaks, which checks that `close` frees
+everything. Known gap: pure-ASCII right-to-left runs take a measurement shortcut that sums
+kerning in logical order, so the oracle for them is the module's own `width`, not the
+shaper sum.
 
 ## tools/audit.zig
 
@@ -885,7 +906,7 @@ Sorting is stable for equal rows in either direction. The header stays fixed out
 
 ## src/text/measure.zig
 
-Cache entries compare text and every font field; the hash selects a slot but is not identity. The cache is cleared when the face table changes, and runs longer than `max_text` bypass it. Native builds use a larger two-way table; wasm uses a small table and an all-zero initial representation to avoid occupying the data section. Short ASCII runs bypass hashing and cache lookup.
+Cache entries compare text and every font field; the hash selects a slot but is not identity. The cache is cleared when the face table changes, and runs longer than `max_text` bypass it and are counted. Native builds probe a slot and its neighbour; wasm probes one. A write into an occupied slot is an eviction and is counted. The slots are a slice of the state's `Limits.measure_slots`, zeroed at open, so wasm does not carry them in the data section. Short ASCII runs bypass hashing and cache lookup. A `FontSpec` is app input: the hash must accept every value, including `snap_advance = true`.
 
 ## src/platform/host.zig
 
@@ -943,23 +964,57 @@ returns `EnvironmentTooLarge`; allocation failure is returned. Web and simulated
 explicit options without invoking the builder. Empty values retain the previous per-variable
 semantics, including presence-only Cocoa debug and Wayland viewport switches.
 
+## src/text/text_state.zig
+
+One `TextState` is everything the native text path remembers: face table, fallback chain,
+kerning cache, measurement cache, HarfBuzz objects and the counters of what a limit skipped.
+The Host creates it with `open` before any other work, frees it in `deinit` and gives the Gpu
+a pointer through `nativeHandle()`. That is the only sharing: Host and Gpu are the two layers
+allowed mutable platform state (HARDLINE hatch 4), and they had no other common object. A
+pointer to one singleton in a global would have hidden the state; each state is allocated
+separately so a second one shares nothing and a second run starts from the same bytes.
+`open` allocates every buffer for the declared `Limits` (two powers of two) and nothing
+allocates afterwards except system fonts loaded on demand, which the state owns and frees.
+At a limit a cache overwrites its slot (an eviction) or skips the cache (a bypass); a chain
+past four faces, a long right-to-left run in logical order and a HarfBuzz run that does not
+fit are skipped. Each is counted and `report()` returns the counts. `close` logs a warning
+only when a result was degraded, not merely slower: evictions are normal for a
+direct-mapped cache and would otherwise warn on every exit. `faces_changed` is the single
+place that invalidates caches, so a registration cannot forget one. Turned down: embedding
+the state by value in each Host (about 0.7 MB moved by every `Host.init` return and by hot
+reload's environment copy), and one process-wide state
+with a reference count (shares what the checker exists to prove is not shared).
+
+## src/text/kern_cache.zig
+
+Direct-mapped, keyed by face-table index and glyph pair instead of the face's address, so
+slot placement and the eviction count do not depend on where the allocator put the state.
+An index is stable until `faces_changed` clears the cache. The slice is sized once by
+`Limits.kern_slots`; overwriting an occupied slot is counted.
+
 ## src/text/face.zig
 
 Native Host startup supplies a Source containing captured options and two byte loaders.
 Text owns parsing and the existing caches; it never opens a file or chooses a system path.
 Primary overrides resolve at startup; default loading stays lazy. Embedded fallback bytes
 take precedence over the source. Without either, only registered faces are available.
-Source options borrow the entry point's startup storage. Registry/cache ownership stays
-for the later phase 1 step. The first configured source remains until release, preserving
-the old first-configuration fallback paths across Hosts; explicit primary overrides still
-apply on the first primary load.
+Source options borrow the entry point's startup storage. The registry (faces, loaded fallback,
+embedded fallback bytes, source and epoch) is the `faces` field of the `TextState` passed
+to every function; nothing here is module state. Faces the state loaded itself use the
+state's allocator and are freed by `releaseFaces` or `close`. The first configured source
+remains until release, so a second Host in the process configures its own state from its
+own options; explicit primary overrides still apply on the first primary load. Kerning is
+cached by `kern_cache.zig`, not by the face, so `Font.kernUnits` is a plain table read.
+`releaseFaces` keeps the embedded fallback bytes and the epoch, which only grows.
 
 ## src/text/fallback.zig
 
 The cache retains four explicit faces, four source-supplied override slots and twenty
 source-supplied system slots, preserving face ids and search order. It asks the configured
 source for bytes on the first miss and remembers failed slots. Embedded web faces work
-without a source. Discovery belongs to native_fonts; parsing and cache ownership stay here.
+without a source. Discovery belongs to native_fonts; parsing stays here and the chain is the `chain` field of
+the `TextState`. Registering a fallback face past the fourth returns `ChainFull`, is counted
+in the state's report, and, like every change to the face table, invalidates the caches.
 
 ## src/dev.zig
 
@@ -998,6 +1053,8 @@ and twenty system fallback paths. Reads share native_io and retain the 32 MiB fo
 Missing primary candidates continue to the next path; allocation failure returns to the
 text caller. Empty files fail. Unlike the former libc fread loop, read errors are returned
 rather than treated as end-of-file. Fonts remain lazy except for explicit primary overrides.
+`open` creates the Host's `TextState` and configures it with this provider, so a Host owns the
+state from its first line and frees it on every error path after it.
 
 ## src/core/widgets/split.zig
 

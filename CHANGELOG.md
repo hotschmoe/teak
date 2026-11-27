@@ -13,7 +13,19 @@
   exercise runtime snapshots, recording and statistics. `--record-check 1` uses the ordinary
   runtime replay path and is enabled in fixed-seed and background simulation gates.
 
+- `zig build text-state`: a seeded check that builds independent text states in one process,
+  drives registrations, measurements and shaping through them in several interleavings and
+  requires results and limit reports identical to a fresh solo run. 24 seeds run in the
+  blocking gate; `-- --seed N` reproduces one.
+
 ### Changed
+
+- The native text path keeps no module-level state. The face table, fallback chain, kerning and
+  measurement caches and HarfBuzz objects are one `TextState` the Host creates with declared
+  `Limits`, frees in `deinit` and lends to the Gpu through `nativeHandle()`; a full cache slot is
+  overwritten and counted in `TextState.report()`. `Gpu.initOffscreen` takes the headless Host's
+  `nativeHandle()` first; direct `teak-text` users pass the state to every call. See
+  [migration-text-state.md](docs/migration-text-state.md).
 
 - Input recordings now carry every frame's ordered Host results, including clocks, complete
   input, IME, accessibility, clipboard bytes, effect answers and text metrics. Old files are
@@ -34,6 +46,11 @@
 ### Fixed
 
 - Injected text lengths can represent the Host's full 256-byte input capacity.
+
+- Measuring text over 16 bytes (or not plain ASCII) with `FontSpec.snap_advance = true` panicked
+  with integer overflow in safe builds: the measurement cache hash added to a one-bit integer.
+- `registerFallbackFace` left measurements cached before the call in place; it now invalidates
+  the caches like `registerFace`.
 
 - Tree clamps its scroll offset using runtime-reported viewport/content extents.
 - A later modal backdrop blocks earlier overlay click, wheel and drag targets.

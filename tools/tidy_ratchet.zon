@@ -5,6 +5,10 @@
         "src/options.zig",
         "src/platform/native_fonts.zig",
         "src/platform/sim/main.zig",
+        "src/text/kern_cache.zig",
+        "src/text/measure.zig",
+        "src/text/text_state.zig",
+        "tools/text_state_check.zig",
     },
     .metrics = .{
         "long_lines",
@@ -110,8 +114,8 @@
         .{
             .name = "src/platform",
             .counts = .{
-                273, 4,  87,  786, 36, 0,
-                0,   6,  577, 122, 12, 4,
+                267, 4,  87,  784, 36, 0,
+                0,   6,  572, 122, 12, 4,
                 3,   65, 1,   59,  0,  0,
             },
         },
@@ -150,17 +154,49 @@
         .{
             .name = "src/text",
             .counts = .{
-                43, 1, 90, 100, 6, 0,
-                0,  0, 47, 3,   0, 0,
-                0,  0, 0,  14,  0, 0,
+                28, 1, 90, 91, 5, 0,
+                0,  0, 43, 3,  0, 0,
+                0,  0, 0,  0,  0, 0,
+            },
+        },
+        .{
+            .name = "src/text/kern_cache.zig",
+            .counts = .{
+                0, 0, 18, 0, 0, 0,
+                0, 0, 0,  1, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/text/measure.zig",
+            .counts = .{
+                0, 0, 31, 0, 0, 0,
+                0, 0, 0,  1, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/text/text_state.zig",
+            .counts = .{
+                0, 0, 21, 0, 0, 0,
+                0, 0, 0,  1, 0, 0,
+                0, 0, 0,  0, 0, 0,
             },
         },
         .{
             .name = "tools",
             .counts = .{
-                209, 11, 153, 288, 5,  0,
+                208, 11, 153, 288, 5,  0,
                 0,   1,  140, 147, 13, 4,
-                3,   80, 11,  20,  0,  0,
+                3,   80, 11,  19,  0,  0,
+            },
+        },
+        .{
+            .name = "tools/text_state_check.zig",
+            .counts = .{
+                0, 0, 26, 0, 0, 0,
+                0, 0, 0,  4, 0, 0,
+                0, 0, 0,  0, 0, 0,
             },
         },
         .{

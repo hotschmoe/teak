@@ -44,6 +44,7 @@ case "${1:-}" in
     status=$?
     (cd "$root" && "$zig" build gates -j4) || status=1
     (cd "$root" && "$zig" build sim-heavy -j4) || status=1
+    (cd "$root" && "$zig" build text-state -j4 -- --seeds 2000) || status=1
     exit "$status" ;;
   *) echo 'usage: tools/test-e2e.sh blocking|heavy' >&2; exit 2 ;;
 esac

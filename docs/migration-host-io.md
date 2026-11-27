@@ -21,12 +21,12 @@ Both return owned font bytes, freed through the supplied allocator when faces ar
 The primary loader returns the first readable primary face. Extra indices 0..3 are override
 slots, 4..23 are the ordered system fallback slots; absent slots return null or an error.
 Parsing stays in `Font.fromBytes`; neither loader should parse a Font. Options slices must
-remain alive until faces are released. Existing process-wide registry/cache ownership is
-unchanged. Configure before measuring or rasterizing.
+remain alive until faces are released. Configure before measuring or rasterizing. The registry
+and caches belong to a `TextState`, not the process ([migration-text-state.md](migration-text-state.md)).
 The registry retains the first Source until `releaseFaces`, as it previously retained the
 first configured fallback paths. Explicit primary overrides apply at the first primary load.
 
-`Font.loadSystem(allocator, source: ?face.Source)` now requires the supplied loader rather
+`Font.loadSystem(allocator, embedded, source: ?face.Source)` now requires the supplied loader rather
 than Options; null permits embedded fallback bytes only. Direct file helpers
 `face.readAbsolute` and `face.windowsFontCandidate` are removed. Use entry-point I/O and
 `Font.fromBytes`, or supply a Source. Embedded clients can keep using `setFallbackBytes`,

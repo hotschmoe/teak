@@ -103,6 +103,10 @@ allowed and belong here.
   like `canvasMsg`, it turns pointer input over a `text_area` into plain
   `TextEvent` data (byte index, wrapped line, layout metrics) resolved with
   the Host's measurer; the app maps it to a Msg, and no fn pointer sits on a Cmd.
+  The native text path follows the same rule: its face table and caches are one
+  `TextState` (`src/text`), created by the Host in `Host.init`, freed in `deinit` and
+  lent to the Gpu through `nativeHandle()`. `src/text` declares the type and holds no
+  variables, so two Hosts share nothing (`zig build text-state`).
 
 Cross-boundary interface values (e.g. `TextMeasurer` in
 `src/core/text.zig`, a `*anyopaque` + fn-pointer pair returned by

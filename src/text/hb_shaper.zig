@@ -9,7 +9,7 @@
 //! * Faces: HarfBuzz reads the OpenType tables straight from the bytes the face
 //!   table already holds (read-only blob, no copy); outlines are still rasterized
 //!   by stb from the same glyph ids. One hb face/font per face-table slot, rebuilt
-//!   when `face.epoch` changes.
+//!   when the face table changes (`TextState.faces_changed`).
 //! * Face choice is by coverage: a run uses the primary face while it has the
 //!   glyphs, else the first registered face that does. That is how one line can
 //!   mix Latin, Hebrew, Arabic and Devanagari faces.
@@ -28,11 +28,13 @@ const std = @import("std");
 const teak = @import("teak");
 const face_mod = @import("face.zig");
 const shaper = @import("shaper.zig");
+const text_state = @import("text_state.zig");
 
 const ShapedGlyph = teak.ShapedGlyph;
 const ShapeResult = teak.ShapeResult;
 const FontSpec = teak.FontSpec;
 const Font = face_mod.Font;
+const TextState = text_state.TextState;
 
 const hb = struct {
     const Blob = opaque {};
@@ -73,27 +75,43 @@ const Slot = struct {
     font: *hb.HFont,
 };
 
-var slots: [max_faces]?Slot = @splat(null);
-var slots_epoch: u64 = 0;
-var buffer: ?*hb.Buffer = null;
+const Run = struct { start: usize, len: usize, face_id: u16, rtl: bool = false };
+const max_runs = 48;
+const scratch_cap = 768;
 
-fn dropSlots() void {
-    for (&slots) |*s| {
-        if (s.*) |v| {
-            hb.hb_font_destroy(v.font);
-            hb.hb_face_destroy(v.face);
-            hb.hb_blob_destroy(v.blob);
-            s.* = null;
+/// The HarfBuzz objects of one `TextState`: one hb face/font per face-table slot, the
+/// shaping buffer and the run scratch.
+pub const Hb = struct {
+    slots: [max_faces]?Slot = @splat(null),
+    buffer: ?*hb.Buffer = null,
+    scratch: Scratch = .{},
+    skipped: u64 = 0,
+
+    pub fn dropSlots(self: *Hb) void {
+        for (&self.slots) |*s| {
+            if (s.*) |v| {
+                hb.hb_font_destroy(v.font);
+                hb.hb_face_destroy(v.face);
+                hb.hb_blob_destroy(v.blob);
+                s.* = null;
+            }
         }
     }
-}
 
-fn slotFor(id: u16, f: *const Font) ?*const Slot {
-    if (slots_epoch != face_mod.epoch) {
-        dropSlots();
-        slots_epoch = face_mod.epoch;
+    /// Free every hb object (shutdown). The next shape rebuilds them.
+    pub fn deinit(self: *Hb) void {
+        self.dropSlots();
+        if (self.buffer) |b| hb.hb_buffer_destroy(b);
+        self.buffer = null;
     }
-    if (id >= max_faces) return null;
+};
+
+fn slotFor(state: *TextState, id: u16, f: *const Font) ?*const Slot {
+    const slots = &state.hb.slots;
+    if (id >= max_faces) {
+        state.hb.skipped += 1;
+        return null;
+    }
     if (slots[id] == null) {
         const blob = hb.hb_blob_create(f.data.ptr, @intCast(f.data.len), hb.MEMORY_MODE_READONLY, null, null);
         const face = hb.hb_face_create(blob, 0);
@@ -103,13 +121,6 @@ fn slotFor(id: u16, f: *const Font) ?*const Slot {
         slots[id] = .{ .blob = blob, .face = face, .font = font };
     }
     return &slots[id].?;
-}
-
-/// Free every hb object (tests, shutdown). The next shape rebuilds them.
-pub fn deinit() void {
-    dropSlots();
-    if (buffer) |b| hb.hb_buffer_destroy(b);
-    buffer = null;
 }
 
 /// True when `cp` belongs to a script that needs more than cmap + kerning.
@@ -144,32 +155,29 @@ fn isNeutral(cp: u21) bool {
 
 /// First registered face (the primary, then its family, then any) that has a
 /// glyph for `cp`; null when none does.
-fn coveringFace(primary_id: u16, cp: u21) ?u16 {
-    if (face_mod.faceById(primary_id)) |f| {
+fn coveringFace(state: *TextState, primary_id: u16, cp: u21) ?u16 {
+    if (face_mod.faceById(state, primary_id)) |f| {
         if (f.glyphIndex(cp) != 0) return primary_id;
     }
     var id: u16 = 0;
     while (id < max_faces) : (id += 1) {
         if (id == primary_id) continue;
-        const f = face_mod.faceById(id) orelse continue;
+        const f = face_mod.faceById(state, id) orelse continue;
         if (f.glyphIndex(cp) != 0) return id;
     }
     return null;
 }
 
-const Run = struct { start: usize, len: usize, face_id: u16, rtl: bool = false };
-const max_runs = 48;
-const scratch_cap = 768;
-
 /// Next face run starting at `pos`: a maximal span the same face covers.
-fn nextRun(text: []const u8, pos: usize, primary_id: u16) Run {
+fn nextRun(state: *TextState, text: []const u8, pos: usize, primary_id: u16) Run {
     var face_id = primary_id;
     var chosen = false;
     var i = pos;
     while (i < text.len) {
         const d = shaper.decode(text, i);
         if (!isNeutral(d.cp)) {
-            const want = coveringFace(primary_id, d.cp) orelse (if (chosen) face_id else primary_id);
+            const fallback_id = if (chosen) face_id else primary_id;
+            const want = coveringFace(state, primary_id, d.cp) orelse fallback_id;
             if (!chosen) {
                 face_id = want;
                 chosen = true;
@@ -189,12 +197,13 @@ const Scratch = struct {
 
 /// Shape `text[run.start..][0..run.len]` into `sc` (x relative to the run's own
 /// pen start). Returns false when it does not fit in the scratch.
-fn shapeRun(text: []const u8, run: *Run, font: FontSpec, sc: *Scratch) bool {
-    const f = face_mod.faceById(run.face_id) orelse return false;
-    const slot = slotFor(run.face_id, f) orelse return false;
-    const buf = buffer orelse blk: {
+fn shapeRun(state: *TextState, text: []const u8, run: *Run, font: FontSpec) bool {
+    const sc = &state.hb.scratch;
+    const f = face_mod.faceById(state, run.face_id) orelse return false;
+    const slot = slotFor(state, run.face_id, f) orelse return false;
+    const buf = state.hb.buffer orelse blk: {
         const b = hb.hb_buffer_create();
-        buffer = b;
+        state.hb.buffer = b;
         break :blk b;
     };
     hb.hb_buffer_clear_contents(buf);
@@ -207,7 +216,10 @@ fn shapeRun(text: []const u8, run: *Run, font: FontSpec, sc: *Scratch) bool {
     var n: c_uint = 0;
     const infos = hb.hb_buffer_get_glyph_infos(buf, &n);
     const poss = hb.hb_buffer_get_glyph_positions(buf, null);
-    if (n > scratch_cap) return false;
+    if (n > scratch_cap) {
+        state.hb.skipped += 1;
+        return false;
+    }
     const scale = f.scaleForEm(font.size_px);
     const spacing: f32 = if (run.rtl) 0 else font.letter_spacing;
     var x: f32 = 0;
@@ -228,12 +240,11 @@ fn shapeRun(text: []const u8, run: *Run, font: FontSpec, sc: *Scratch) bool {
     return true;
 }
 
-var scratch: Scratch = .{};
-
 /// Shape `text`; same contract as `shaper.shape` (see the file header for the
 /// direction stand-in).
-pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
-    const resolved = face_mod.resolveFace(font.family, font.weight) orelse
+pub fn shape(state: *TextState, text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
+    const scratch = &state.hb.scratch;
+    const resolved = face_mod.resolveFace(state, font.family, font.weight) orelse
         return .{ .count = 0, .width = 0, .consumed = text.len };
     const primary_id = resolved.id;
 
@@ -241,7 +252,7 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     var nruns: usize = 0;
     var p: usize = 0;
     while (p < text.len and nruns < max_runs) {
-        const r = nextRun(text, p, primary_id);
+        const r = nextRun(state, text, p, primary_id);
         runs[nruns] = r;
         nruns += 1;
         p += r.len;
@@ -253,13 +264,13 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     var i: usize = 0;
     while (i < nruns) {
         var first = runs[i];
-        if (!shapeRun(text, &first, font, &scratch)) break;
+        if (!shapeRun(state, text, &first, font)) break;
         runs[i] = first;
         var j = i + 1;
         if (first.rtl) {
             while (j < nruns) : (j += 1) {
                 var r = runs[j];
-                if (!shapeRun(text, &r, font, &scratch)) break;
+                if (!shapeRun(state, text, &r, font)) break;
                 if (!r.rtl) break;
                 runs[j] = r;
             }
@@ -268,10 +279,10 @@ pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
         while (k > i) {
             k -= 1;
             var r = runs[k];
-            if (!shapeRun(text, &r, font, &scratch)) return finishPartial(count, x, consumed);
+            if (!shapeRun(state, text, &r, font)) return finishPartial(count, x, consumed);
             if (count + scratch.count > out.len) {
                 if (count == 0 and scratch.count > 0) {
-                    return shapeCut(text, r, font, out);
+                    return shapeCut(state, text, r, font, out);
                 }
                 return finishPartial(count, x, consumed);
             }
@@ -295,13 +306,20 @@ fn finishPartial(count: usize, x: f32, consumed: usize) ShapeResult {
 }
 
 /// `run` alone yields more glyphs than `out` holds: shape a shorter prefix.
-fn shapeCut(text: []const u8, run: Run, font: FontSpec, out: []ShapedGlyph) ShapeResult {
+fn shapeCut(
+    state: *TextState,
+    text: []const u8,
+    run: Run,
+    font: FontSpec,
+    out: []ShapedGlyph,
+) ShapeResult {
+    const scratch = &state.hb.scratch;
     var len = @min(run.len / 2, out.len);
     while (len > 0) {
         while (len > 0 and (text[run.start + len] & 0xC0) == 0x80) len -= 1;
         if (len == 0) break;
         var r = Run{ .start = run.start, .len = len, .face_id = run.face_id };
-        if (shapeRun(text, &r, font, &scratch) and scratch.count <= out.len) {
+        if (shapeRun(state, text, &r, font) and scratch.count <= out.len) {
             @memcpy(out[0..scratch.count], scratch.glyphs[0..scratch.count]);
             return .{ .count = scratch.count, .width = scratch.width, .consumed = run.start + len };
         }

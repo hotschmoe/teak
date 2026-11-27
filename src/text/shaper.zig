@@ -17,11 +17,13 @@ const teak = @import("teak");
 const face_mod = @import("face.zig");
 const fallback = @import("fallback.zig");
 const compose_table = @import("compose_table.zig");
+const text_state = @import("text_state.zig");
 
 const Font = face_mod.Font;
 const ShapedGlyph = teak.ShapedGlyph;
 const ShapeResult = teak.ShapeResult;
 const FontSpec = teak.FontSpec;
+const State = text_state.TextState;
 
 const replacement: u21 = 0xFFFD;
 
@@ -54,14 +56,20 @@ const Unit = struct {
 
 /// Glyph for `cp`: the primary face, else another registered weight of the same
 /// family. Missing everywhere yields the primary face's glyph 0 (.notdef).
-fn mapGlyph(primary: *const Font, primary_id: u16, family: teak.FontFamily, cp: u21) struct { glyph: u16, face_id: u16, face: *const Font } {
+fn mapGlyph(
+    state: *State,
+    primary: *const Font,
+    primary_id: u16,
+    family: teak.FontFamily,
+    cp: u21,
+) struct { glyph: u16, face_id: u16, face: *const Font } {
     const g = primary.glyphIndex(cp);
     if (g != 0) return .{ .glyph = g, .face_id = primary_id, .face = primary };
     var w: u8 = 0;
     while (w < 3) : (w += 1) {
         const id = face_mod.faceId(family, @fromBackingInt(@intCast(w)));
         if (id == primary_id) continue;
-        const f = face_mod.faceById(id) orelse continue;
+        const f = face_mod.faceById(state, id) orelse continue;
         const alt = f.glyphIndex(cp);
         if (alt != 0) return .{ .glyph = alt, .face_id = id, .face = f };
     }
@@ -72,12 +80,14 @@ fn mapGlyph(primary: *const Font, primary_id: u16, family: teak.FontFamily, cp: 
         var w2: u8 = 0;
         while (w2 < 3) : (w2 += 1) {
             const id = face_mod.faceId(fam, @fromBackingInt(@intCast(w2)));
-            const f = face_mod.faceById(id) orelse continue;
+            const f = face_mod.faceById(state, id) orelse continue;
             const alt = f.glyphIndex(cp);
             if (alt != 0) return .{ .glyph = alt, .face_id = id, .face = f };
         }
     }
-    if (fallback.glyphFor(cp)) |h| return .{ .glyph = h.glyph, .face_id = h.face_id, .face = h.face };
+    if (fallback.glyphFor(state, cp)) |h| {
+        return .{ .glyph = h.glyph, .face_id = h.face_id, .face = h.face };
+    }
     return .{ .glyph = 0, .face_id = primary_id, .face = primary };
 }
 
@@ -103,14 +113,22 @@ fn ligatureAt(face: *const Font, text: []const u8, i: usize) ?struct { glyph: u1
     return null;
 }
 
-fn nextUnit(primary: *const Font, primary_id: u16, text: []const u8, i: usize, font: FontSpec, ligatures: bool) Unit {
+fn nextUnit(
+    state: *State,
+    primary: *const Font,
+    primary_id: u16,
+    text: []const u8,
+    i: usize,
+    font: FontSpec,
+    ligatures: bool,
+) Unit {
     if (ligatures) {
         if (ligatureAt(primary, text, i)) |lig| {
             return .{ .glyph = lig.glyph, .face_id = primary_id, .face = primary, .len = lig.len };
         }
     }
     const d = decode(text, i);
-    const m = mapGlyph(primary, primary_id, font.family, d.cp);
+    const m = mapGlyph(state, primary, primary_id, font.family, d.cp);
     const adv: ?u16 = if (d.cp < 128 and m.face == primary) primary.ascii_adv[d.cp] else null;
     return .{ .glyph = m.glyph, .face_id = m.face_id, .face = m.face, .len = d.len, .adv = adv, .wide = m.glyph == 0 and isWide(d.cp), .mark = isCombining(d.cp), .cp = d.cp };
 }
@@ -144,9 +162,9 @@ fn isCombining(cp: u21) bool {
 /// to summing `shape`'s advances. Null when the run needs the full shaper: a
 /// non-ASCII byte, a glyph the primary face lacks, a possible ligature, or a run
 /// longer than one shaper chunk.
-pub fn asciiWidth(text: []const u8, font: FontSpec) ?f32 {
+pub fn asciiWidth(state: *State, text: []const u8, font: FontSpec) ?f32 {
     if (text.len > 256) return null;
-    const resolved = face_mod.resolveFace(font.family, font.weight) orelse return null;
+    const resolved = face_mod.resolveFace(state, font.family, font.weight) orelse return null;
     const face = resolved.face;
     const scale = face.scaleForEm(font.size_px);
     const ligatures = font.letter_spacing == 0 and font.family != .mono and !face.isFixedPitch();
@@ -160,7 +178,8 @@ pub fn asciiWidth(text: []const u8, font: FontSpec) ?f32 {
         if (g == 0) return null;
         if (ligatures and b == 'f' and i + 1 < text.len and (text[i + 1] == 'f' or text[i + 1] == 'i' or text[i + 1] == 'l')) return null;
         if (pending_glyph != 0) {
-            pending_raw += @as(f32, @floatFromInt(face.kernUnits(pending_glyph, g))) * scale;
+            const kern = state.kern.units(face, resolved.id, pending_glyph, g);
+            pending_raw += @as(f32, @floatFromInt(kern)) * scale;
             x += if (snap) @round(pending_raw) else pending_raw;
         }
         pending_raw = @as(f32, @floatFromInt(face.ascii_adv[b])) * scale + font.letter_spacing;
@@ -176,11 +195,11 @@ const hb_shaper = if (use_harfbuzz) @import("hb_shaper.zig") else struct {};
 /// Shape `text` into `out`: HarfBuzz for complex scripts when built with
 /// `-Dharfbuzz=true`, the built-in shaper otherwise. Without any font the
 /// result is empty (count 0, width 0, consumed = text.len).
-pub fn shape(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
+pub fn shape(state: *State, text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     if (comptime use_harfbuzz) {
-        if (hb_shaper.needsShaping(text)) return hb_shaper.shape(text, font, out);
+        if (hb_shaper.needsShaping(text)) return hb_shaper.shape(state, text, font, out);
     }
-    return shapeSimple(text, font, out);
+    return shapeSimple(state, text, font, out);
 }
 
 /// Longest right-to-left run (bytes) shaped in visual order; longer ones fall
@@ -191,7 +210,7 @@ const RTL_BUF = 2048;
 /// right, then point every glyph's `cluster` back at its source offset. The
 /// built-in shaper has no joining, so this is exact for Hebrew-like scripts;
 /// HarfBuzz handles joining itself (and takes `font.rtl` as its direction).
-fn shapeRtl(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
+fn shapeRtl(state: *State, text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     var vis: [RTL_BUF + 8]u8 = undefined;
     const Map = struct { vis: u32, src: u32 };
     var map: [RTL_BUF]Map = undefined;
@@ -219,7 +238,7 @@ fn shapeRtl(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
     }
     var f = font;
     f.rtl = false;
-    const r = shapeLogical(vis[0..vlen], f, out);
+    const r = shapeLogical(state, vis[0..vlen], f, out);
     for (out[0..r.count]) |*g| {
         var k = n_map;
         while (k > 0) {
@@ -235,13 +254,19 @@ fn shapeRtl(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
 
 /// The built-in shaper (cmap, ligatures, kerning, centred marks), always available.
 /// `font.rtl` runs come out in visual order.
-pub fn shapeSimple(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
-    if (font.rtl and text.len <= RTL_BUF) return shapeRtl(text, font, out);
-    return shapeLogical(text, font, out);
+pub fn shapeSimple(
+    state: *State,
+    text: []const u8,
+    font: FontSpec,
+    out: []ShapedGlyph,
+) ShapeResult {
+    if (font.rtl and text.len <= RTL_BUF) return shapeRtl(state, text, font, out);
+    if (font.rtl) state.counts.rtl_unordered += 1;
+    return shapeLogical(state, text, font, out);
 }
 
-fn shapeLogical(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
-    const resolved = face_mod.resolveFace(font.family, font.weight) orelse
+fn shapeLogical(state: *State, text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
+    const resolved = face_mod.resolveFace(state, font.family, font.weight) orelse
         return .{ .count = 0, .width = 0, .consumed = text.len };
     const primary = resolved.face;
     const primary_id = resolved.id;
@@ -265,7 +290,7 @@ fn shapeLogical(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResul
             pos += d.len;
             continue;
         }
-        const u = nextUnit(primary, primary_id, text, pos, font, ligatures);
+        const u = nextUnit(state, primary, primary_id, text, pos, font, ligatures);
         if (u.mark) {
             if (have_pending and pending_cp != 0) {
                 if (compose_table.compose(pending_cp, u.cp)) |composed| {
@@ -301,7 +326,7 @@ fn shapeLogical(text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResul
         }
         if (have_pending) {
             if (pending_face == u.face) {
-                const k = u.face.kernUnits(pending_glyph, u.glyph);
+                const k = state.kern.units(u.face, u.face_id, pending_glyph, u.glyph);
                 pending_raw += @as(f32, @floatFromInt(k)) * pending_scale;
             }
             x += finish(&out[pending_idx], pending_raw, font.snapsAdvance());
@@ -337,12 +362,13 @@ fn finish(g: *ShapedGlyph, raw: f32, snap: bool) f32 {
     return adv;
 }
 
-/// The `teak.Shaper` interface value for the built-in shaper. Stateless.
-pub fn shaper() teak.Shaper {
+/// The `teak.Shaper` interface value for the built-in shaper over `state`.
+pub fn shaper(state: *State) teak.Shaper {
     const S = struct {
-        fn call(_: *anyopaque, text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
-            return shape(text, font, out);
+        fn call(ctx: *anyopaque, text: []const u8, font: FontSpec, out: []ShapedGlyph) ShapeResult {
+            const owner: *State = @ptrCast(@alignCast(ctx));
+            return shape(owner, text, font, out);
         }
     };
-    return .{ .ctx = undefined, .shape_fn = &S.call };
+    return .{ .ctx = state, .shape_fn = &S.call };
 }

@@ -110,9 +110,10 @@ const SurfaceSlot = struct {
 
 /// Build a concrete GPU backend from a surface provider + rasterizer.
 /// `Surface` must expose `Handle` and `createSurface(WGPUInstance,
-/// Handle) !WGPUSurface`; `Rasterizer` must expose `init(Allocator)
-/// !Self`, `deinit`, and `rasterize(bytes, FontSpec, [4]f32, w, h)
-/// ?Bitmap`. The returned struct satisfies `teak.validateGpu`.
+/// Handle) !WGPUSurface`; `Rasterizer` must expose `Context`, `init(Allocator,
+/// Context) !Self`, `deinit`, and `rasterize(bytes, FontSpec, [4]f32, w, h)
+/// ?Bitmap`. The Host's `NativeHandle` carries the `Context` in its `text` field.
+/// The returned struct satisfies `teak.validateGpu`.
 pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
     return struct {
         const Self = @This();
@@ -213,7 +214,18 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             const instance = c.wgpuCreateInstance(&instance_desc) orelse return error.InstanceCreateFailed;
             const surface = try Surface.createSurface(instance, handle);
             const ctx = try wgpu_c.requestDevice(instance, surface, options.gpu_fallback);
-            return initFromDevice(instance, surface, ctx, width, height, options);
+            return initFromDevice(instance, surface, ctx, text_of(handle), width, height, options);
+        }
+
+        /// The rasterizer context inside a Host `NativeHandle`: its `text` field, or that of
+        /// whichever variant a tagged handle (Linux) holds.
+        fn text_of(handle: anytype) Rasterizer.Context {
+            return switch (@typeInfo(@TypeOf(handle))) {
+                .@"union" => switch (handle) {
+                    inline else => |variant| variant.text,
+                },
+                else => handle.text,
+            };
         }
 
         /// A surface-less Gpu for headless runs (agents, CI screenshots): a
@@ -223,10 +235,11 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
         /// ("presents" to it) and `readFrame` reads it back. Needs a GPU
         /// driver (software Vulkan works where wgpu supports it) but no
         /// window system.
-        pub fn initOffscreen(width: u32, height: u32, options: InitOptions) !Self {
+        pub fn initOffscreen(handle: anytype, width: u32, height: u32, options: InitOptions) !Self {
             const instance = wgpu_c.createInstance(c.WGPUInstanceBackend_Primary) orelse return error.InstanceCreateFailed;
             const ctx = try wgpu_c.requestDevice(instance, null, options.gpu_fallback);
-            var gpu = try initFromDevice(instance, null, ctx, width, height, options);
+            const text_context = text_of(handle);
+            var gpu = try initFromDevice(instance, null, ctx, text_context, width, height, options);
             errdefer gpu.deinit();
             try gpu.recreateOffscreen(gpu.width, gpu.height);
             return gpu;
@@ -263,6 +276,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
             instance: c.WGPUInstance,
             surface: c.WGPUSurface,
             ctx: wgpu_c.DeviceContext,
+            text_context: Rasterizer.Context,
             width: u32,
             height: u32,
             options: InitOptions,
@@ -379,7 +393,7 @@ pub fn Gpu(comptime Surface: type, comptime Rasterizer: type) type {
 
             const scene = try wgpu_scene.Renderer.init(device, ctx.queue, surf_format, options.scene_msaa);
 
-            const raster = try Rasterizer.init(std.heap.page_allocator);
+            const raster = try Rasterizer.init(std.heap.page_allocator, text_context);
 
             const scale: f32 = if (options.scale > 0) options.scale else 1;
             var text = try text_stage.TextStage(Rasterizer).init(std.heap.page_allocator, raster, options.max_atlas_pages, scale);

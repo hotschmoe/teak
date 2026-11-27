@@ -12,8 +12,11 @@ const Init = struct {
     pub fn host(gpa: std.mem.Allocator, options: teak.Options) !Host {
         return Host.init(gpa, 720, 600, options);
     }
-    pub fn gpu(_: *Host, options: teak.Options) !Gpu {
-        return Gpu.initOffscreen(720, 600, .{ .msaa = true, .gpu_fallback = options.gpu_fallback });
+    pub fn gpu(h: *Host, options: teak.Options) !Gpu {
+        return Gpu.initOffscreen(h.nativeHandle(), 720, 600, .{
+            .msaa = true,
+            .gpu_fallback = options.gpu_fallback,
+        });
     }
 };
 

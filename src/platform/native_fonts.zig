@@ -46,10 +46,22 @@ const extra_candidates = [_][]const u8{
     "/usr/share/fonts/opentype/unifont/unifont.otf",
 };
 
-pub fn configure(comptime Text: type, options: teak.Options) void {
+pub fn open(
+    comptime Text: type,
+    allocator: std.mem.Allocator,
+    options: teak.Options,
+) !*Text.TextState {
     assert(Text.fallback.system_count == extra_candidates.len);
     assert(Text.fallback.first_id == Text.face.fallback_face_id + 1);
-    Text.face.configure(.{ .options = options, .primary = read_primary, .extra = read_extra });
+    const state = try Text.TextState.open(allocator, .{});
+    const source: Text.face.Source = .{
+        .options = options,
+        .primary = read_primary,
+        .extra = read_extra,
+    };
+    Text.face.configure(state, source);
+    assert(state.faces.source != null);
+    return state;
 }
 
 fn read_primary(allocator: std.mem.Allocator, options: teak.Options) ![]u8 {
