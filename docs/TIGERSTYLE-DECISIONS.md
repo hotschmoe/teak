@@ -1,4 +1,4 @@
-# Teak and Zunk rewrite: decisions D1 to D11
+# TigerStyle rewrite: decisions D1 to D11 (teak, zunk, webzocket, rich_zig)
 
 Made 2026-11-26 by Claude at the owner's direction ("i will need YOU to make d1 through d11 decisions").
 Each entry gives the decision, the reason, the alternatives turned down, and what it would cost to reverse.
@@ -315,3 +315,56 @@ Four questions were put to the owner with a recommendation each; the owner agree
   bring the package inside the rules.
 
 Stacked pull requests are merged in order with merge commits, not squashed.
+
+## Amendment 3 (2026-11-26): rich_zig and webzocket join the rewrite; a correction
+
+**Scope.** Amendment 1 said the two packages "are not rewritten as part of this effort. The request was teak
+and zunk." The owner has now asked for them: the TigerStyle and simulation work extends to rich_zig and
+webzocket. The same decisions D1 to D11 and the same rule sheet apply in each, and each carries the shared
+`tools/tidy.zig` with its own configuration block.
+
+**Order.**
+- webzocket first. It parses bytes from the network, which is where a seeded generative tester pays most,
+  and zunk's dev server simulation depends on it. Its 38 `test` declarations are the only oracle it has
+  today, so they stay until a seeded tester covers what they cover; tidy holds the count as a ratchet, so
+  it can only go down.
+- rich_zig second. It is an output sink with one input-facing part, the markup parser, which teak's
+  counter_greeter example also uses; that parser gets the first tester. The rest starts with phase 0 only
+  (tidy, assert, rule sheet) and an inventory of what a simulator would have to stand in for (terminal
+  size and capabilities, environment, time for progress and live displays, threads).
+
+**Turned down.** Rewriting either in one pass. Together they are about 22,000 lines, more than zunk; the
+order above is the same one teak and zunk followed (measure, build the oracle, then rewrite).
+
+**Correction to amendment 2.** It said rich_zig would leave teak's root manifest once "the terminal library"
+moved out of counter_greeter's app module. That rested on a guess I had not checked. The example uses
+rich_zig's markup parser in its view (`src/rich_zig_adapter.zig`); that is the point of the example. The
+lazy `sim_rich_zig` entry in teak's root manifest stays for as long as the simulator builds that example.
+
+## Amendment 4 (2026-11-26): rulings from the first pass over webzocket and rich_zig
+
+Made while reviewing the first agents' work on the two packages. Each was a place where the brief was
+silent or wrong.
+
+- **The test count is a ratchet, not a ban.** The shared tidy failed on any `test` declaration. webzocket's
+  38 are its only oracle until the seeded tester covers them, so the count is stored and may only fall, like
+  every other number. In teak and zunk it is stored as zero, which is the same rule as before. Turned down:
+  a per-repository switch in tidy's configuration, which is a second rule where one will do.
+- **A crash that outside bytes can cause is fixed when found, not saved for the rewrite.** The first brief
+  said "nothing is rewritten yet" and the agent left two crashes in webzocket (a 64-bit frame length that
+  overflowed, a short request line that sliced out of range). Both are now typed errors. Looseness against
+  RFC 6455 that is not a crash stays for the rewrite and is listed per module in webzocket's SRC.md.
+- **webzocket's maximum bounds overflow storage only.** I first ruled that the configured maximum should
+  apply to every message. That would have made zunk's dev server reject every frame: it sets the maximum to
+  zero to forbid overflow storage and reads frames from a static buffer. The check was removed again, the
+  tester gained zunk's configuration as an ordinary accepted case, and the mismatch (a maximum below the
+  static buffer has no effect) is listed for the rewrite.
+- **In rich_zig markup, a tag that is not a style is text.** The agent made unclosed and unknown tags an
+  error on the strength of an error table in SPEC.md. Before that, `Text.fromMarkup` silently dropped an
+  unknown tag, so zunk's `[green][OK][/]` printed no label. Neither is right. An unknown opening tag or
+  closer is kept as written in every API, an unclosed style runs to the end of the text, and a Text owns
+  the link addresses it returns. Turned down: strict errors (breaks every caller that prints brackets) and
+  keeping the silent drop (loses the caller's text).
+- **A package's build.zig adds its own tools only when it is the root package.** Tidy, the testers and the
+  examples are behind `b.pkg_hash.len == 0`; a project that depends on webzocket or rich_zig gets the
+  module and nothing else, and `.paths` does not grow.

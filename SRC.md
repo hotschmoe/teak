@@ -387,7 +387,10 @@ The columns mean:
   measured too. `tests` counts AST test declarations in every discovered
   nongenerated Zig file, even outside style scope. Held files' tests belong to
   their individual group; all other tests and all scripts belong to `repository`,
-  so totals do not double-count. Tests must always be zero.
+  so totals do not double-count. The stored test count is a ratchet like the
+  others: zero here, and in a repository that still has tests it can only fall.
+- `clock` includes `std.Io.Timestamp.now`; `threads` includes `io.concurrent` and
+  `io.async` task spawns, by method name.
 
 The standard allocation field-call names are `alloc`, `alignedAlloc`,
 `allocSentinel`, `allocWithOptions`, `allocAdvanced`, `create`, `realloc`, `remap`,
