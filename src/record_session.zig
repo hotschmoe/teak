@@ -3,6 +3,9 @@ const std = @import("std");
 const assert = @import("assert.zig").assert;
 const record = @import("input_record.zig");
 
+/// False on the web, where no Host supplies the files a recording is read from or written to.
+pub const supported = !@import("builtin").cpu.arch.isWasm();
+
 pub const Session = struct {
     backing: []align(16) u8 = &.{},
     buffer: []u8 = &.{},
@@ -48,6 +51,10 @@ pub const Session = struct {
     pub fn begin(self: *Session, index: u32) !void {
         assert(!self.in_frame);
         assert(self.position <= record.frame_bytes_max);
+        if (comptime !supported) {
+            self.in_frame = true;
+            return;
+        }
         self.position = 0;
         self.used = 0;
         self.storage_used = 0;
@@ -65,6 +72,7 @@ pub const Session = struct {
         assert(self.in_frame);
         assert(self.stream_len <= self.stream.len);
         self.in_frame = false;
+        if (comptime !supported) return false;
         if (self.failure) |err| return err;
         if (self.replay != null and self.position != self.used) return error.RecordingOrder;
         if (!self.recording) return false;
@@ -90,6 +98,7 @@ pub const Session = struct {
     pub fn value(self: *Session, comptime call: record.Call, result: anytype) @TypeOf(result) {
         assert(self.position <= self.buffer.len);
         assert(self.used <= self.buffer.len);
+        if (comptime !supported) return result;
         if (!self.in_frame or (!self.recording and self.replay == null)) return result;
         if (self.failure != null) return std.mem.zeroes(@TypeOf(result));
         var copy = result;

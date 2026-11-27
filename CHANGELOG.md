@@ -18,6 +18,8 @@
 - Input recordings now carry every frame's ordered Host results, including clocks, complete
   input, IME, accessibility, clipboard bytes, effect answers and text metrics. Old files are
   rejected at startup. See [recording migration](docs/migration-recording.md).
+- Web builds no longer carry the recording code (no web Host has files to record to): about
+  6 KB smaller compressed, back to their size before recordings carried Host results.
 - The zunk pin moves to master 620957e: a bounded wasm reader, import names escaped in the
   generated JS, and the dev server as one state machine. Web output for the examples is
   unchanged.
